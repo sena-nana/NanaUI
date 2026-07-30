@@ -1,8 +1,8 @@
 use iced::widget::canvas::{Path, Stroke};
 use iced::widget::{canvas, text};
-use iced::{Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme, alignment, mouse};
+use iced::{Color, Pixels, Point, Rectangle, Renderer, Size, Theme, alignment, mouse};
 
-use crate::theme::Colors;
+use crate::theme::{Colors, ui_font};
 
 /// A small native canvas that demonstrates the node-editor surface boundary.
 ///
@@ -94,7 +94,7 @@ impl NodeCanvas {
             color: self.colors.text,
             size: Pixels::from(13),
             line_height: text::LineHeight::default(),
-            font: Font::DEFAULT,
+            font: ui_font(iced::font::Weight::Normal),
             align_x: text::Alignment::Left,
             align_y: alignment::Vertical::Top,
             shaping: text::Shaping::Basic,
@@ -107,7 +107,7 @@ impl NodeCanvas {
             color: self.colors.muted,
             size: Pixels::from(11),
             line_height: text::LineHeight::default(),
-            font: Font::DEFAULT,
+            font: ui_font(iced::font::Weight::Normal),
             align_x: text::Alignment::Left,
             align_y: alignment::Vertical::Top,
             shaping: text::Shaping::Basic,
@@ -174,7 +174,7 @@ impl<Message> canvas::Program<Message> for NodeCanvas {
                 color: self.colors.accent,
                 size: Pixels::from(11),
                 line_height: text::LineHeight::default(),
-                font: Font::DEFAULT,
+                font: ui_font(iced::font::Weight::Normal),
                 align_x: text::Alignment::Left,
                 align_y: alignment::Vertical::Top,
                 shaping: text::Shaping::Basic,

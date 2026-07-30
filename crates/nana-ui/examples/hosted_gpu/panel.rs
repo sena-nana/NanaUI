@@ -1,7 +1,7 @@
 use iced::widget::{button, column, container, row, shader, space, text};
 use iced::{Alignment, Element, Length};
 use nana_ui::widgets::{button_style, card_style, toolbar_style};
-use nana_ui::{ButtonKind, CardKind, Colors, GpuTextureView, HostTexture, ThemeMode};
+use nana_ui::{ButtonKind, CardKind, Colors, GpuTextureView, HostTexture, ThemeMode, UI_METRICS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Message {
@@ -49,8 +49,8 @@ impl DemoPanel {
                     })
                     .size(13),
                 )
-                .height(Length::Fixed(32.0))
-                .padding([0, 10])
+                .height(Length::Fixed(UI_METRICS.control_height))
+                .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(Message::ToggleTheme)
                 .style(button_style(colors, ButtonKind::Text)),
             ]
@@ -77,8 +77,8 @@ impl DemoPanel {
                     .size(12)
                     .color(colors.muted),
                 button(text("刷新预览").size(13))
-                    .height(Length::Fixed(32.0))
-                    .padding([0, 12])
+                    .height(Length::Fixed(UI_METRICS.control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
                     .on_press(Message::Refresh)
                     .style(button_style(colors, ButtonKind::Primary)),
             ]
@@ -86,7 +86,7 @@ impl DemoPanel {
         )
         .width(Length::Fixed(220.0))
         .height(Length::Fill)
-        .padding([14, 16])
+        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .style(card_style(colors, CardKind::Surface));
 
         container(column![

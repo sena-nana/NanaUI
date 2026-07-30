@@ -8,18 +8,39 @@ NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。当前基座为 Ic
 `crates/nana-ui` 以 LiliaUI 的视觉层级和工作区交互为基线，提供：
 
 - `WorkspaceController`：统一管理 Region 布局、折叠、可见性、尺寸约束、
-  分隔条拖动、双击复位、窗口尺寸和 DPI；
+  分隔条拖动、双击复位、按需帧驱动的折叠过渡、窗口尺寸和 DPI；
 - `WorkspaceRegions` / `workspace_view`：按注册顺序接收任意 Region 内容，根据
   role、placement 与 scope 编排起始区、主区、结束区和上下区域；
 - `WorkspaceSlots`：标准六区应用的便捷适配器，不限制框架的动态区域模型；
 - `WorkspaceLayout`：提供稳定/自定义 Region ID、响应式策略、JSON 持久化以及
   逻辑/物理像素几何；
+- `SidebarFrame` / `SidebarSection` / `SidebarRow` / `SidebarFooter`：
+  提供可滚动主体、固定外槽、带高度与箭头过渡的分区折叠、层级导航与真实
+  Footer 操作；
+- `SettingsModel` / `SettingsState`：提供稳定设置 Tab、别名恢复、普通/full-page
+  页面和可序列化导航状态；
+- `AppearanceSettings` / `ThemeTokens`：提供可序列化的标准圆角设置，内部派生
+  四档圆角，并让宿主以 `UI_METRICS` 为默认值即时覆盖公共控件外观；
+- `settings_sidebar` / `settings_page` / `SettingsRow` / `SettingsCard`：
+  提供与 LiliaUI 一致的紧凑设置布局；
 - `app_shell` / `app_title_bar`：提供可复用的应用壳层；
-- light/dark 主题、基础控件、浮层和 WGPU 内容插槽。
+- light/dark 主题、LiliaUI 同源的 Noto Sans SC 400/500/600/700 字体、
+  基础控件、浮层和 WGPU 内容插槽。
 
 `WorkspaceState` 只是可运行示例。Code、Github 与 Live2D 三套布局使用同一动态
-Region 框架注册不同结构；节点添加、文档切换、搜索、预览刷新、参数调整、主题
-切换和所有面板交互都连接到真实 Rust 状态，框架不依赖 Demo 的业务模型。
+Region 框架注册不同结构；三者都以单个 220px `Resources` Region 承载导航、
+资源列表和固定 Footer。进入设置后，同一位置切换为设置分类，设置界面使用独立
+WorkspaceController。主题、面板显隐、尺寸复位、返回导航和所有操作都连接到
+真实 Rust 状态，框架不依赖 Demo 的业务模型。
+
+`ThemeMode`、`AppearanceSettings`、`SettingsState` 与 `WorkspaceLayout` 均可
+序列化。NanaUI 不选择配置目录或自行写盘，消费应用负责将这些状态组合进自己的
+配置文件。
+
+消费应用创建 Iced application 时应注册 `ui_font_sources()` 并将
+`ui_font(Normal)` 设为默认字体；仓库中的所有 Demo 和离屏 renderer 已执行该
+注册。字体文件由 LiliaUI 使用的同一组 Noto Sans SC WOFF2 无损转换为 TTF，
+许可见 `crates/nana-ui/assets/fonts/OFL.txt`。
 
 运行工作区 Demo：
 

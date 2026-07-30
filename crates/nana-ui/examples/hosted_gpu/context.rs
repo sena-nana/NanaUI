@@ -1,4 +1,4 @@
-use iced::{Font, Pixels, Size};
+use iced::{Pixels, Size};
 use iced_wgpu::graphics::core::renderer;
 use iced_wgpu::graphics::{Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
@@ -21,6 +21,14 @@ pub struct HostGraphics {
 
 impl HostGraphics {
     pub fn new(window: Arc<winit::window::Window>) -> Self {
+        let mut font_system = iced_wgpu::graphics::text::font_system()
+            .write()
+            .expect("font system");
+        for source in nana_ui::ui_font_sources() {
+            font_system.load_font(std::borrow::Cow::Borrowed(source));
+        }
+        drop(font_system);
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -77,7 +85,7 @@ impl HostGraphics {
                 Shell::headless(),
             ),
             renderer::Settings {
-                default_font: Font::DEFAULT,
+                default_font: nana_ui::ui_font(iced::font::Weight::Normal),
                 default_text_size: Pixels::from(13),
                 metrics_hinting: true,
             },

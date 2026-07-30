@@ -390,7 +390,7 @@ impl Default for WorkspaceLayout {
                     .min_size(44.0)
                     .max_size(96.0),
                 RegionState::new(RegionId::Resources, RegionRole::Resources)
-                    .size(240.0)
+                    .size(260.0)
                     .min_size(180.0)
                     .max_size(520.0)
                     .collapsible(true)
@@ -398,12 +398,12 @@ impl Default for WorkspaceLayout {
                 RegionState::new(RegionId::PrimaryToolbar, RegionRole::Utility)
                     .placement(RegionPlacement::Top)
                     .scope(RegionScope::Primary)
-                    .size(42.0),
+                    .size(34.0),
                 RegionState::new(RegionId::Primary, RegionRole::Primary)
                     .min_size(320.0)
                     .fill_priority(1),
                 RegionState::new(RegionId::Inspector, RegionRole::Inspector)
-                    .size(240.0)
+                    .size(280.0)
                     .min_size(200.0)
                     .max_size(560.0)
                     .collapsible(true)
@@ -436,6 +436,22 @@ impl WorkspaceLayout {
 
     pub fn regions(&self) -> &[RegionState] {
         &self.regions
+    }
+
+    pub(crate) fn with_transient_extents(
+        &self,
+        extents: impl IntoIterator<Item = (RegionId, f32)>,
+    ) -> Self {
+        let mut layout = self.clone();
+        for (id, extent) in extents {
+            let Some(region) = layout.region_mut(&id) else {
+                continue;
+            };
+            region.collapsed = false;
+            region.min_size = 0.0;
+            region.size = Some(finite_non_negative(extent));
+        }
+        layout
     }
 
     pub fn region(&self, id: &RegionId) -> Option<&RegionState> {
@@ -521,6 +537,18 @@ impl WorkspaceLayout {
         }
         region.collapsed = !region.collapsed;
         true
+    }
+
+    pub fn set_collapsed(&mut self, id: &RegionId, collapsed: bool) -> bool {
+        let Some(region) = self.region_mut(id) else {
+            return false;
+        };
+        if !region.collapsible || region.hidden || region.disabled {
+            return false;
+        }
+        let changed = region.collapsed != collapsed;
+        region.collapsed = collapsed;
+        changed
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -655,6 +683,29 @@ mod tests {
         );
         assert!(!layout.resize_by(&RegionId::GlobalNavigation, 8.0));
         assert!(!layout.resize_by(&RegionId::Primary, 80.0));
+    }
+
+    #[test]
+    fn deterministic_region_updates_respect_constraints() {
+        let mut layout = WorkspaceLayout::default();
+        assert!(layout.set_collapsed(&RegionId::Resources, true));
+        assert!(!layout.set_collapsed(&RegionId::Resources, true));
+        assert!(
+            layout
+                .region(&RegionId::Resources)
+                .expect("resources")
+                .collapsed_value()
+        );
+
+        assert!(layout.set_size(&RegionId::Inspector, 9_999.0));
+        assert_eq!(
+            layout
+                .region(&RegionId::Inspector)
+                .expect("inspector")
+                .size_value(),
+            Some(560.0)
+        );
+        assert!(!layout.set_size(&RegionId::Primary, 480.0));
     }
 
     #[test]
