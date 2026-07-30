@@ -4,6 +4,8 @@
 
 当前输出：
 
+- `titlebar-custom-dark.png`、`titlebar-custom-light.png`；
+- `titlebar-native-leading-dark.png`；
 - `workspace-dark.png`、`workspace-light.png`；
 - `workspace-custom-radius-dark.png`；
 - `workspace-lilia-viewport-dark.png`；
@@ -24,6 +26,8 @@
 本机 2026-07-30 在 WGPU 30 上重新生成并检查：
 
 - 36px 标题栏、左侧 Code/Github/Live2D 切换、居中动态标题和 28px 真实操作按钮完整；
+- custom controls 快照覆盖最小化、最大化/还原、关闭与 danger hover；
+- native-leading 快照确认标题栏 leading 内容避让 78px 原生交通灯区域；
 - Code、Github 与 Live2D 均只有一个 220px 左侧栏；普通列表与设置分类在同一位置互斥切换；
 - 普通导航、设置返回与设置分类复用同一 `SidebarRow`，行高、圆角、内距和状态层级一致；
 - Github 不注册底部区，Live2D 使用 timeline，Code 使用 console；主内容与 inspector 边界完整；
@@ -68,6 +72,6 @@ cargo run --release -p nana-ui --example ui-snapshots --locked
 
 截图工具会执行 GPU→CPU 回读和 PNG 编码，只属于验收工具。正式窗口 Demo 与宿主纹理直显不会复用该读取逻辑。
 
-当前命令生成 23 张无损 PNG。离屏快照可以证明布局和像素内容，但不能证明原生
+当前命令生成 26 张无损 PNG。离屏快照可以证明布局和像素内容，但不能证明原生
 窗口材质、鼠标命中、IME、窗口 resize 或不同 DPI 显示器上的最终表现；这些仍
 需在解锁的真实窗口和目标平台补测。

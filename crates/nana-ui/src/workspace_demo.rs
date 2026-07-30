@@ -1,7 +1,7 @@
 use iced::widget::{
     button, checkbox, column, container, row, scrollable, slider, space, text, text_input, toggler,
 };
-use iced::{Alignment, Element, Length, Subscription};
+use iced::{Alignment, Element, Length, Subscription, Task};
 
 use crate::geometry::WorkspaceGeometry;
 use crate::icons::{Icon, icon, status_indicator};
@@ -24,6 +24,7 @@ use crate::widgets::{
     scrollable_style, segmented_button_style, segmented_surface_style, selection_button_style,
     slider_style, text_input_style, toggler_style, toolbar_style, vertical_scrollbar,
 };
+use crate::window_chrome::{WindowChromeEvent, WindowChromeState};
 use crate::workspace::{WorkspaceAction, WorkspaceController, WorkspaceRegions, workspace_view};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +72,7 @@ pub enum Message {
     SetIntensity(u8),
     TogglePostProcess(bool),
     SearchChanged(String),
+    WindowChrome(WindowChromeEvent),
 }
 
 /// Application state for the runnable NanaUI workspace demo.
@@ -95,6 +97,7 @@ pub struct WorkspaceState {
     intensity: u8,
     post_process: bool,
     search_query: String,
+    pub(crate) window_chrome: WindowChromeState,
 }
 
 impl Default for WorkspaceState {
@@ -124,6 +127,7 @@ impl WorkspaceState {
             intensity: 65,
             post_process: true,
             search_query: String::new(),
+            window_chrome: WindowChromeState::default(),
         }
     }
 
@@ -208,6 +212,7 @@ impl WorkspaceState {
             self.active_workspace()
                 .subscription()
                 .map(Message::Workspace),
+            WindowChromeState::subscription().map(Message::WindowChrome),
         ];
         if self.active_navigation != Navigation::Settings {
             subscriptions.push(
@@ -219,8 +224,22 @@ impl WorkspaceState {
         Subscription::batch(subscriptions)
     }
 
+    pub fn update_windowed(&mut self, message: Message) -> Task<Message> {
+        if let Message::WindowChrome(event) = message {
+            return self
+                .window_chrome
+                .update_iced(event)
+                .map(Message::WindowChrome);
+        }
+        self.update(message);
+        Task::none()
+    }
+
     pub fn update(&mut self, message: Message) {
         match message {
+            Message::WindowChrome(event) => {
+                self.window_chrome.update(event);
+            }
             Message::Workspace(action) => {
                 let synchronize_viewport = matches!(
                     &action,

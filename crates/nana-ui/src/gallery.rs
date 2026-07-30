@@ -2,14 +2,14 @@ use iced::widget::{
     button, checkbox, column, container, mouse_area, progress_bar, row, rule, scrollable, slider,
     space, stack, text, text_editor, text_input, toggler, tooltip,
 };
-use iced::{Alignment, Element, Length, Subscription};
+use iced::{Alignment, Element, Length, Subscription, Task};
 
 use crate::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 use crate::icons::{Icon, icon, spinner_icon, status_indicator};
 use crate::menu::{MenuConfirmation, MenuSelection};
 use crate::overlay::ExclusiveOverlay;
 use crate::selection::{SelectionMove, SingleSelection};
-use crate::shell::app_title_bar;
+use crate::shell::AppTitleBar;
 use crate::theme::{Colors, ThemeMode, UI_METRICS, ui_font};
 use crate::tooltip::TooltipConfig;
 use crate::widgets::{
@@ -20,6 +20,7 @@ use crate::widgets::{
     selection_button_style, slider_style, text_editor_style, text_input_style, toggler_style,
     tooltip_style, vertical_scrollbar,
 };
+use crate::window_chrome::{WindowChromeEvent, WindowChromeState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GalleryTab {
@@ -74,6 +75,7 @@ pub enum GalleryMessage {
     EditText(text_editor::Action),
     ToggleContextMenu,
     ContextAction(ContextAction),
+    WindowChrome(WindowChromeEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +148,7 @@ pub struct GalleryState {
     preview_refreshes: u32,
     editor: text_editor::Content,
     primary_clicks: u32,
+    window_chrome: WindowChromeState,
 }
 
 impl Default for GalleryState {
@@ -175,6 +178,7 @@ impl GalleryState {
             preview_refreshes: 0,
             editor: text_editor::Content::with_text("节点说明\n保持预览连续更新"),
             primary_clicks: 0,
+            window_chrome: WindowChromeState::default(),
         }
     }
 
@@ -200,11 +204,29 @@ impl GalleryState {
         } else {
             Subscription::none()
         };
-        Subscription::batch([interaction, loading])
+        Subscription::batch([
+            interaction,
+            loading,
+            WindowChromeState::subscription().map(GalleryMessage::WindowChrome),
+        ])
+    }
+
+    pub fn update_windowed(&mut self, message: GalleryMessage) -> Task<GalleryMessage> {
+        if let GalleryMessage::WindowChrome(event) = message {
+            return self
+                .window_chrome
+                .update_iced(event)
+                .map(GalleryMessage::WindowChrome);
+        }
+        self.update(message);
+        Task::none()
     }
 
     pub fn update(&mut self, message: GalleryMessage) {
         match message {
+            GalleryMessage::WindowChrome(event) => {
+                self.window_chrome.update(event);
+            }
             GalleryMessage::ToggleTheme => self.theme = self.theme.toggle(),
             GalleryMessage::SelectTab(tab) => {
                 self.tab = tab;
@@ -303,14 +325,25 @@ impl GalleryState {
 
     pub fn view(&self) -> Element<'_, GalleryMessage> {
         let colors = self.theme.colors();
-        let header = app_title_bar(
-            "Component Gallery",
-            "组件",
-            self.theme,
-            GalleryMessage::ToggleTheme,
-            None,
-            colors,
-        );
+        let theme_icon = match self.theme {
+            ThemeMode::Dark => Icon::Appearance,
+            ThemeMode::Light => Icon::Moon,
+        };
+        let header_actions = row![
+            text("组件").size(11).color(colors.muted),
+            button(icon(theme_icon, 14.0, colors.accent))
+                .on_press(GalleryMessage::ToggleTheme)
+                .width(Length::Fixed(UI_METRICS.icon_button_size))
+                .height(Length::Fixed(UI_METRICS.icon_button_size))
+                .padding(0)
+                .style(button_style(colors, ButtonKind::Text)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        let header = AppTitleBar::new("Component Gallery", colors)
+            .trailing(header_actions)
+            .window_chrome(&self.window_chrome, GalleryMessage::WindowChrome)
+            .view();
 
         let tabs = row![
             self.tab_button("控件", GalleryTab::Controls, colors),

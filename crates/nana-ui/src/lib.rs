@@ -21,6 +21,7 @@ pub mod sidebar;
 pub mod theme;
 pub mod tooltip;
 pub mod widgets;
+pub mod window_chrome;
 pub mod workspace;
 mod workspace_demo;
 
@@ -41,7 +42,7 @@ pub use settings::{
     AppearanceSettings, SettingsCard, SettingsError, SettingsModel, SettingsRow, SettingsState,
     SettingsTab, SettingsTabId, settings_page, settings_sidebar,
 };
-pub use shell::{app_shell, app_title_bar};
+pub use shell::{AppTitleBar, app_shell, app_title_bar};
 pub use sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
     SidebarSection, SidebarSectionState,
@@ -52,6 +53,10 @@ pub use theme::{
 };
 pub use tooltip::{TooltipConfig, TooltipPlacement};
 pub use widgets::{ButtonKind, CardKind};
+pub use window_chrome::{
+    WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,
+    custom_title_bar_window,
+};
 pub use workspace::{
     WorkspaceAction, WorkspaceController, WorkspaceRegion, WorkspaceRegions, WorkspaceSlots,
     workspace_view,

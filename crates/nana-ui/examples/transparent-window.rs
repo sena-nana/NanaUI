@@ -1,18 +1,23 @@
-use iced::widget::{button, column, container, row, space, text};
-use iced::{Alignment, Color, Element, Length};
+use iced::widget::{button, column, container, text};
+use iced::{Alignment, Color, Element, Length, Subscription, Task};
 use nana_ui::widgets::button_style;
-use nana_ui::{ButtonKind, Colors, ThemeMode, UI_METRICS, ui_font, ui_font_sources};
+use nana_ui::{
+    AppTitleBar, ButtonKind, Colors, ThemeMode, UI_METRICS, WindowChromeEvent, WindowChromeState,
+    custom_title_bar_window, ui_font, ui_font_sources,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Message {
     ToggleTheme,
     TogglePanel,
+    WindowChrome(WindowChromeEvent),
 }
 
 #[derive(Debug, Clone)]
 struct TransparentWindowState {
     theme: ThemeMode,
     panel_visible: bool,
+    window_chrome: WindowChromeState,
 }
 
 impl Default for TransparentWindowState {
@@ -20,44 +25,50 @@ impl Default for TransparentWindowState {
         Self {
             theme: ThemeMode::Dark,
             panel_visible: true,
+            window_chrome: WindowChromeState::default(),
         }
     }
 }
 
 impl TransparentWindowState {
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ToggleTheme => self.theme = self.theme.toggle(),
             Message::TogglePanel => self.panel_visible = !self.panel_visible,
+            Message::WindowChrome(event) => {
+                return self
+                    .window_chrome
+                    .update_iced(event)
+                    .map(Message::WindowChrome);
+            }
         }
+        Task::none()
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        WindowChromeState::subscription().map(Message::WindowChrome)
     }
 
     fn view(&self) -> Element<'_, Message> {
         let colors = self.theme.colors();
-        let title = container(
-            row![
-                text("NANA").size(12).color(colors.accent),
-                text("透明窗口预览").size(15).color(colors.text),
-                space().width(Length::Fill),
+        let title = AppTitleBar::new("透明窗口预览", colors)
+            .leading(text("NANA").size(12).color(colors.accent))
+            .trailing(
                 button(
                     text(if self.theme == ThemeMode::Dark {
                         "浅色"
                     } else {
                         "深色"
                     })
-                    .size(13)
+                    .size(13),
                 )
                 .height(Length::Fixed(UI_METRICS.control_height))
                 .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(Message::ToggleTheme)
                 .style(button_style(colors, ButtonKind::Text)),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-        )
-        .padding([0, 16])
-        .height(Length::Fixed(44.0))
-        .style(panel_style(colors, 0.72));
+            )
+            .window_chrome(&self.window_chrome, Message::WindowChrome)
+            .view();
 
         let preview = container(
             column![
@@ -136,13 +147,14 @@ fn main() -> iced::Result {
     .title("NanaUI Transparent Window Demo")
     .theme(|state: &TransparentWindowState| state.theme.iced_theme())
     .default_font(ui_font(iced::font::Weight::Normal))
+    .subscription(TransparentWindowState::subscription)
     .transparent(true)
-    .window(iced::window::Settings {
+    .window(custom_title_bar_window(iced::window::Settings {
         size: iced::Size::new(920.0, 620.0),
         min_size: Some(iced::Size::new(640.0, 420.0)),
         blur: true,
         ..iced::window::Settings::default()
-    })
+    }))
     .centered();
     for source in ui_font_sources() {
         application = application.font(source);

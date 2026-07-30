@@ -1,32 +1,55 @@
-use iced::widget::{button, column, container, row, shader, space, text};
-use iced::{Alignment, Element, Length};
-use nana_ui::widgets::{button_style, card_style, toolbar_style};
-use nana_ui::{ButtonKind, CardKind, Colors, GpuTextureView, HostTexture, ThemeMode, UI_METRICS};
+use iced::widget::{button, column, container, row, shader, text};
+use iced::{Element, Length};
+use nana_ui::widgets::{button_style, card_style};
+use nana_ui::{
+    AppTitleBar, ButtonKind, CardKind, Colors, GpuTextureView, HostTexture, ThemeMode, UI_METRICS,
+    WindowChromeAction, WindowChromeEvent, WindowChromeState,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Message {
     Refresh,
     ToggleTheme,
+    WindowChrome(WindowChromeEvent),
 }
 
 #[derive(Debug, Default)]
 pub struct DemoPanel {
     theme: ThemeMode,
     revision: u32,
+    window_chrome: WindowChromeState,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PanelUpdate {
+    pub appearance_changed: bool,
+    pub window_action: Option<WindowChromeAction>,
 }
 
 impl DemoPanel {
-    pub fn update(&mut self, message: Message) -> bool {
+    pub fn update(&mut self, message: Message) -> PanelUpdate {
         match message {
             Message::Refresh => {
                 self.revision = self.revision.saturating_add(1);
-                false
+                PanelUpdate::default()
             }
             Message::ToggleTheme => {
                 self.theme = self.theme.toggle();
-                true
+                PanelUpdate {
+                    appearance_changed: true,
+                    window_action: None,
+                }
             }
+            Message::WindowChrome(event) => PanelUpdate {
+                appearance_changed: false,
+                window_action: self.window_chrome.update(event),
+            },
         }
+    }
+
+    pub fn sync_maximized(&mut self, maximized: bool) {
+        self.window_chrome
+            .update(WindowChromeEvent::MaximizedChanged(maximized));
     }
 
     pub fn view(
@@ -35,12 +58,9 @@ impl DemoPanel {
         translucent_window: bool,
     ) -> Element<'_, Message, iced::Theme, iced_wgpu::Renderer> {
         let colors = self.colors();
-        let title_bar = container(
-            row![
-                text("NANA").size(12).color(colors.accent),
-                space().width(Length::Fill),
-                text("实时预览").size(13),
-                space().width(Length::Fill),
+        let title_bar = AppTitleBar::new("实时预览", colors)
+            .leading(text("NANA").size(12).color(colors.accent))
+            .trailing(
                 button(
                     text(if self.theme == ThemeMode::Dark {
                         "浅色"
@@ -53,12 +73,9 @@ impl DemoPanel {
                 .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(Message::ToggleTheme)
                 .style(button_style(colors, ButtonKind::Text)),
-            ]
-            .align_y(Alignment::Center),
-        )
-        .height(Length::Fixed(36.0))
-        .padding([0, 14])
-        .style(toolbar_style(colors));
+            )
+            .window_chrome(&self.window_chrome, Message::WindowChrome)
+            .view();
 
         let preview = container(
             shader(GpuTextureView::new(texture))

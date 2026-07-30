@@ -1539,6 +1539,8 @@ dependencies = [
 name = "nana-window"
 version = "0.1.0"
 dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "raw-window-handle",
  "window-vibrancy",
 ]

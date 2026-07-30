@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use iced::{Color, Element, Pixels, Size, Theme, font, mouse};
+use iced::widget::{column, container, space, text};
+use iced::{Color, Element, Length, Pixels, Size, Theme, font, mouse};
 use iced_wgpu::graphics::{Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::core::time::Instant;
@@ -9,8 +10,9 @@ use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
-    Document, GalleryMessage, GalleryState, GalleryTab, LayoutPreset, Message as WorkspaceMessage,
-    Navigation, RegionId, SettingsTabId, SurfaceView, WorkspaceAction, WorkspaceState,
+    AppTitleBar, Document, GalleryMessage, GalleryState, GalleryTab, LayoutPreset,
+    Message as WorkspaceMessage, Navigation, RegionId, SettingsTabId, SurfaceView, ThemeMode,
+    WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction, WorkspaceState,
 };
 
 use crate::write;
@@ -52,6 +54,49 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     }
     drop(font_system);
     let output = std::env::current_dir()?.join("target/ui-snapshots");
+
+    let titlebar_custom_dark_pixels = snapshot_with_cursor(
+        &mut renderer,
+        titlebar_view(ThemeMode::Dark, WindowChrome::custom()),
+        &ThemeMode::Dark.iced_theme(),
+        ThemeMode::Dark.colors().background,
+        Size::new(900, 120),
+        mouse::Cursor::Available(iced::Point::new(880.0, 18.0)),
+    );
+    let titlebar_custom_dark_path = output.join("titlebar-custom-dark.png");
+    write::png(
+        &titlebar_custom_dark_path,
+        Size::new(900, 120),
+        &titlebar_custom_dark_pixels,
+    )?;
+
+    let titlebar_custom_light_pixels = snapshot(
+        &mut renderer,
+        titlebar_view(ThemeMode::Light, WindowChrome::custom()),
+        &ThemeMode::Light.iced_theme(),
+        ThemeMode::Light.colors().background,
+        Size::new(900, 120),
+    );
+    let titlebar_custom_light_path = output.join("titlebar-custom-light.png");
+    write::png(
+        &titlebar_custom_light_path,
+        Size::new(900, 120),
+        &titlebar_custom_light_pixels,
+    )?;
+
+    let titlebar_native_leading_pixels = snapshot(
+        &mut renderer,
+        titlebar_view(ThemeMode::Dark, WindowChrome::native_leading(78.0)),
+        &ThemeMode::Dark.iced_theme(),
+        ThemeMode::Dark.colors().background,
+        Size::new(900, 120),
+    );
+    let titlebar_native_leading_path = output.join("titlebar-native-leading-dark.png");
+    write::png(
+        &titlebar_native_leading_path,
+        Size::new(900, 120),
+        &titlebar_native_leading_pixels,
+    )?;
 
     let workspace = WorkspaceState::new();
     let workspace_pixels = snapshot(
@@ -433,6 +478,9 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     )?;
 
     Ok(vec![
+        titlebar_custom_dark_path,
+        titlebar_custom_light_path,
+        titlebar_native_leading_path,
         workspace_path,
         workspace_lilia_viewport_path,
         workspace_primary_start_edge_path,
@@ -457,6 +505,29 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         gallery_context_menu_path,
         gallery_dialog_path,
     ])
+}
+
+fn titlebar_view(
+    theme: ThemeMode,
+    chrome: WindowChrome,
+) -> Element<'static, WindowChromeEvent, Theme, Renderer> {
+    let colors = theme.colors();
+    let state = WindowChromeState::new(chrome);
+    let titlebar = AppTitleBar::new("NanaUI", colors)
+        .leading(text("NANA").size(12).color(colors.accent))
+        .trailing(text("预览").size(11).color(colors.muted))
+        .window_chrome(&state, |event| event)
+        .view();
+
+    container(column![titlebar, space().height(Length::Fill)])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_theme| {
+            iced::widget::container::Style::default()
+                .background(colors.background)
+                .color(colors.text)
+        })
+        .into()
 }
 
 fn snapshot<Message>(

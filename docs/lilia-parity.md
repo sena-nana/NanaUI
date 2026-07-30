@@ -5,7 +5,7 @@ NanaUI 不依赖 Vue、DOM 或 CSS，但视觉与交互参数直接以当前 Lil
 | NanaUI 层 | LiliaUI 基线 | 已对齐内容 |
 | --- | --- | --- |
 | `theme` | `packages/theme/src/styles/tokens.css` | dark/light 语义色、五档交互状态色、16px 基准圆角 |
-| `shell` | `LiliaGithub/src/layouts/AppShell.vue`、`TitleBar.vue`、`app-shell.css` | 36px 标题栏、28px 侧栏折叠按钮、居中工作区标题、6px 边缘内距 |
+| `shell` | `LiliaGithub/src/layouts/AppShell.vue`、`TitleBar.vue`、`useNativeWindowChrome.ts`、`app-shell.css` | 36px 自绘标题栏、三列居中、28px 窗口按钮、4px 拖拽阈值、macOS 78px 原生交通灯 inset、Windows/Linux 自绘 controls |
 | `workspace` | `LiliaWorkspace.vue`、`workspace.css`、`LiliaWorkspaceRegion.vue` | 动态 Region 注册顺序、role/placement/scope、尺寸约束、折叠/overlay 响应式行为、主区域 `edge-start` / `edge-end` 自动圆角、覆盖在区域边缘的 8px resize 命中区、2px 状态指示线与双击复位 |
 | `widgets` | `UiButton.vue`、`UiInput.vue`、`UiTextarea.vue`、`UiCheckbox.vue`、`UiSwitch.vue`、`UiRangeField.vue` | md 控件尺寸、圆角、按钮内容双轴居中、hover/pressed/selected/disabled/invalid 层级 |
 | `selection` | `UiListItem.vue`、`UiTabs.vue`、`UiSegmentedControl.vue` | 34px 行高、方向键/Home/End 导航、独立 selected-hover/pressed、分段控件内外同心圆角 |
@@ -51,7 +51,7 @@ NanaUI 内置并注册 LiliaUI `fonts.css` 对应的 Noto Sans SC
 400/500/600/700 字体面；标题使用同样的 0.2px tracking，分区与 Card 标题使用
 0.5px tracking。这样文字宽度来自同一字体数据，而不是依赖平台 fallback。
 
-`ui-snapshots` 使用真实 `WorkspaceState::view` / `GalleryState::view` 和 Iced WGPU 30 renderer 生成 Code/Github/Live2D、dark/light、控件、表面、菜单与对话框快照。`WorkspaceState::view` 本身通过公共 `WorkspaceRegions` / `workspace_view` 组合，因此快照覆盖的是动态框架路径而非单独制作的 Demo 布局。LiliaGithub 的实际 AppShell、SecondaryPanel、SidebarFooter 与 LiliaUI token/CSS 源码是结构、尺寸和颜色的权威依据。
+`ui-snapshots` 使用真实 `WorkspaceState::view` / `GalleryState::view` 和 Iced WGPU 30 renderer 生成 Code/Github/Live2D、dark/light、控件、表面、菜单与对话框快照，并单独覆盖 custom controls 与 native-leading 标题栏。`WorkspaceState::view` 本身通过公共 `WorkspaceRegions` / `workspace_view` 组合，因此快照覆盖的是动态框架路径而非单独制作的 Demo 布局。LiliaGithub 的实际 AppShell、SecondaryPanel、SidebarFooter 与 LiliaUI token/CSS 源码是结构、尺寸和颜色的权威依据。
 
 仍不能由离屏快照证明的项目是原生窗口材质、鼠标命中、IME、真实窗口 resize、
 不同 DPI，以及 Windows/Linux 的最终抗锯齿差异。字体族与字重数据已经统一，
