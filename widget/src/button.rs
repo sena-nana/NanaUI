@@ -16,6 +16,7 @@
 //!     button("Press me!").on_press(Message::ButtonPressed).into()
 //! }
 //! ```
+use crate::core::alignment;
 use crate::core::border::{self, Border};
 use crate::core::layout;
 use crate::core::mouse;
@@ -27,8 +28,8 @@ use crate::core::widget::Operation;
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
 use crate::core::{
-    Background, Color, Element, Event, Layout, Length, Padding, Rectangle, Shadow, Shell, Size,
-    Theme, Vector, Widget,
+    Alignment, Background, Color, Element, Event, Layout, Length, Padding, Rectangle, Shadow,
+    Shell, Size, Theme, Vector, Widget,
 };
 
 /// A generic widget that produces a message when pressed.
@@ -78,6 +79,8 @@ where
     width: Length,
     height: Length,
     padding: Padding,
+    horizontal_alignment: alignment::Horizontal,
+    vertical_alignment: alignment::Vertical,
     clip: bool,
     class: Theme::Class<'a>,
     status: Option<Status>,
@@ -112,6 +115,8 @@ where
             width: Length::Fit,
             height: Length::Fit,
             padding: DEFAULT_PADDING,
+            horizontal_alignment: alignment::Horizontal::Center,
+            vertical_alignment: alignment::Vertical::Center,
             clip: false,
             class: Theme::default(),
             status: None,
@@ -133,6 +138,18 @@ where
     /// Sets the [`Padding`] of the [`Button`].
     pub fn padding<P: Into<Padding>>(mut self, padding: P) -> Self {
         self.padding = padding.into();
+        self
+    }
+
+    /// Sets the horizontal alignment of the [`Button`] contents.
+    pub fn align_x(mut self, alignment: impl Into<alignment::Horizontal>) -> Self {
+        self.horizontal_alignment = alignment.into();
+        self
+    }
+
+    /// Sets the vertical alignment of the [`Button`] contents.
+    pub fn align_y(mut self, alignment: impl Into<alignment::Vertical>) -> Self {
+        self.vertical_alignment = alignment.into();
         self
     }
 
@@ -233,11 +250,26 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        layout::padded(limits, self.width, self.height, self.padding, |limits| {
-            self.content
-                .as_widget_mut()
-                .layout(&mut tree.children[0], renderer, limits)
-        })
+        layout::positioned(
+            limits,
+            self.width,
+            self.height,
+            self.padding,
+            |limits| {
+                self.content.as_widget_mut().layout(
+                    &mut tree.children[0],
+                    renderer,
+                    &limits.loose(),
+                )
+            },
+            |content, size| {
+                content.align(
+                    Alignment::from(self.horizontal_alignment),
+                    Alignment::from(self.vertical_alignment),
+                    size,
+                )
+            },
+        )
     }
 
     fn operate(
