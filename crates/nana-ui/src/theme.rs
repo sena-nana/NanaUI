@@ -96,11 +96,21 @@ impl Default for ThemeMetrics {
 pub struct ThemeTokens {
     pub colors: Colors,
     pub metrics: ThemeMetrics,
+    pub workspace_corners_enabled: bool,
 }
 
 impl ThemeTokens {
     pub const fn new(colors: Colors, metrics: ThemeMetrics) -> Self {
-        Self { colors, metrics }
+        Self {
+            colors,
+            metrics,
+            workspace_corners_enabled: true,
+        }
+    }
+
+    pub const fn with_workspace_corners(mut self, enabled: bool) -> Self {
+        self.workspace_corners_enabled = enabled;
+        self
     }
 }
 
@@ -238,10 +248,7 @@ impl ThemeMode {
     }
 
     pub fn tokens(self) -> ThemeTokens {
-        ThemeTokens {
-            colors: self.colors(),
-            metrics: self.metrics(),
-        }
+        ThemeTokens::new(self.colors(), self.metrics())
     }
 
     /// Converts the semantic palette to Iced's application theme.

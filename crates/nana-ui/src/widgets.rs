@@ -591,6 +591,44 @@ pub fn workspace_region_style(colors: Colors) -> impl Fn(&Theme) -> container::S
     }
 }
 
+/// Styles the workspace primary surface using LiliaUI's edge-aware corners.
+///
+/// A side becomes square only when the primary track is the first or last
+/// expanded track in the workspace middle row.
+pub fn primary_region_style(
+    theme: impl Into<ThemeTokens>,
+    edge_start: bool,
+    edge_end: bool,
+) -> impl Fn(&Theme) -> container::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let radius = primary_region_radius(tokens, edge_start, edge_end);
+    move |_theme| {
+        container::Style::default()
+            .background(colors.background)
+            .color(colors.text)
+            .border(Border::default().rounded(radius))
+    }
+}
+
+pub(crate) fn primary_region_radius(
+    tokens: ThemeTokens,
+    edge_start: bool,
+    edge_end: bool,
+) -> iced::border::Radius {
+    let radius = if tokens.workspace_corners_enabled {
+        tokens.metrics.radius_lg
+    } else {
+        0.0
+    };
+    iced::border::Radius {
+        top_left: if edge_start { 0.0 } else { radius },
+        top_right: if edge_end { 0.0 } else { radius },
+        bottom_right: if edge_end { 0.0 } else { radius },
+        bottom_left: if edge_start { 0.0 } else { radius },
+    }
+}
+
 pub fn menu_surface_style(
     theme: impl Into<ThemeTokens>,
 ) -> impl Fn(&Theme) -> container::Style + 'static {
