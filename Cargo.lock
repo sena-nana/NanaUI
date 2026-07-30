@@ -1121,6 +1121,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "cryoglyph"
 version = "0.1.0"
+source = "git+https://github.com/sena-nana/cryoglyph.git?rev=3fe41b131eda1288d08df89ad5ba56de97713308#3fe41b131eda1288d08df89ad5ba56de97713308"
 dependencies = [
  "cosmic-text",
  "etagere",
