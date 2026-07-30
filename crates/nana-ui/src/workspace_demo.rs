@@ -20,9 +20,9 @@ use crate::sidebar::{
 };
 use crate::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, ui_font};
 use crate::widgets::{
-    ButtonKind, button_style, canvas_style, checkbox_style, panel_style, scrollable_style,
-    segmented_surface_style, selection_button_style, slider_style, text_input_style, toggler_style,
-    toolbar_style, vertical_scrollbar,
+    ButtonKind, SEGMENTED_CONTROL_INSET, button_style, canvas_style, checkbox_style, panel_style,
+    scrollable_style, segmented_button_style, segmented_surface_style, selection_button_style,
+    slider_style, text_input_style, toggler_style, toolbar_style, vertical_scrollbar,
 };
 use crate::workspace::{WorkspaceAction, WorkspaceController, WorkspaceRegions, workspace_view};
 
@@ -638,7 +638,7 @@ impl WorkspaceState {
                     .height(Length::Fixed(UI_METRICS.compact_control_height))
                     .padding([0.0, UI_METRICS.selection_padding_x])
                     .on_press(Message::SetTheme(ThemeMode::Dark))
-                    .style(selection_button_style(
+                    .style(segmented_button_style(
                         tokens,
                         self.theme == ThemeMode::Dark,
                     )),
@@ -646,7 +646,7 @@ impl WorkspaceState {
                     .height(Length::Fixed(UI_METRICS.compact_control_height))
                     .padding([0.0, UI_METRICS.selection_padding_x])
                     .on_press(Message::SetTheme(ThemeMode::Light))
-                    .style(selection_button_style(
+                    .style(segmented_button_style(
                         tokens,
                         self.theme == ThemeMode::Light,
                     )),
@@ -654,7 +654,7 @@ impl WorkspaceState {
             .spacing(2),
         )
         .height(Length::Fixed(UI_METRICS.selection_height))
-        .padding(2)
+        .padding(SEGMENTED_CONTROL_INSET)
         .style(segmented_surface_style(tokens));
         let theme_card = SettingsCard::new(
             "主题",

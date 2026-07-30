@@ -13,11 +13,12 @@ use crate::shell::app_title_bar;
 use crate::theme::{Colors, ThemeMode, UI_METRICS, ui_font};
 use crate::tooltip::TooltipConfig;
 use crate::widgets::{
-    ButtonKind, CardKind, button_style, canvas_style, card_style, checkbox_style,
-    dialog_close_style, dialog_scrim_style, dialog_surface_style, interactive_card_style,
-    list_item_style, menu_item_style, menu_surface_style, panel_style, progress_style,
-    scrollable_style, segmented_surface_style, selection_button_style, slider_style,
-    text_editor_style, text_input_style, toggler_style, tooltip_style, vertical_scrollbar,
+    ButtonKind, CardKind, SEGMENTED_CONTROL_INSET, button_style, canvas_style, card_style,
+    checkbox_style, dialog_close_style, dialog_scrim_style, dialog_surface_style,
+    interactive_card_style, list_item_style, menu_item_style, menu_surface_style, panel_style,
+    progress_style, scrollable_style, segmented_button_style, segmented_surface_style,
+    selection_button_style, slider_style, text_editor_style, text_input_style, toggler_style,
+    tooltip_style, vertical_scrollbar,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,7 +693,7 @@ impl GalleryState {
                     .height(Length::Fixed(UI_METRICS.compact_control_height))
                     .padding([0.0, UI_METRICS.selection_padding_x])
                     .on_press(GalleryMessage::SelectSurfaceView(SurfaceView::Overview))
-                    .style(selection_button_style(
+                    .style(segmented_button_style(
                         colors,
                         selected_view == SurfaceView::Overview
                     )),
@@ -700,7 +701,7 @@ impl GalleryState {
                     .height(Length::Fixed(UI_METRICS.compact_control_height))
                     .padding([0.0, UI_METRICS.selection_padding_x])
                     .on_press(GalleryMessage::SelectSurfaceView(SurfaceView::Nodes))
-                    .style(selection_button_style(
+                    .style(segmented_button_style(
                         colors,
                         selected_view == SurfaceView::Nodes
                     )),
@@ -708,7 +709,7 @@ impl GalleryState {
             .spacing(2),
         )
         .height(Length::Fixed(UI_METRICS.selection_height))
-        .padding(2)
+        .padding(SEGMENTED_CONTROL_INSET)
         .style(segmented_surface_style(colors));
 
         container(

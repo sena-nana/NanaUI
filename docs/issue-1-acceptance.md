@@ -42,7 +42,7 @@ revision 前，GitHub Runner 不能复现本机结果。
 ## 2026-07-30 本机验证
 
 ```text
-NanaUI  cargo test --workspace --all-targets --locked       63 passed / 9 suites
+NanaUI  cargo test --workspace --all-targets --locked       64 passed / 9 suites
 NanaUI  cargo check --workspace --all-targets               passed
 NanaUI  cargo clippy --workspace --all-targets --all-features -- -D warnings
                                                                passed

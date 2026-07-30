@@ -25,6 +25,10 @@ pub enum CardKind {
     Selected,
 }
 
+const SEGMENTED_CONTROL_BORDER_WIDTH: f32 = 1.0;
+const SEGMENTED_CONTROL_PADDING: f32 = 2.0;
+pub const SEGMENTED_CONTROL_INSET: f32 = SEGMENTED_CONTROL_BORDER_WIDTH + SEGMENTED_CONTROL_PADDING;
+
 pub fn button_style(
     theme: impl Into<ThemeTokens>,
     kind: ButtonKind,
@@ -132,8 +136,27 @@ pub fn selection_button_style(
     selected: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
     let tokens = theme.into();
+    selection_button_style_with_radius(tokens, selected, tokens.metrics.radius_sm)
+}
+
+pub fn segmented_button_style(
+    theme: impl Into<ThemeTokens>,
+    selected: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    let tokens = theme.into();
+    selection_button_style_with_radius(
+        tokens,
+        selected,
+        (tokens.metrics.radius_md - SEGMENTED_CONTROL_INSET).max(0.0),
+    )
+}
+
+fn selection_button_style_with_radius(
+    tokens: ThemeTokens,
+    selected: bool,
+    radius: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
     let colors = tokens.colors;
-    let metrics = tokens.metrics;
     move |_theme, status| {
         let background = match status {
             button::Status::Hovered if selected => colors.selected_hover,
@@ -154,7 +177,7 @@ pub fn selection_button_style(
 
         let mut style = button::Style::default().with_background(background);
         style.text_color = foreground;
-        style.border = Border::default().rounded(metrics.radius_sm);
+        style.border = Border::default().rounded(radius);
         style.shadow = Shadow::default();
         style.snap = true;
         style
@@ -714,7 +737,7 @@ pub fn segmented_surface_style(
             .border(
                 Border::default()
                     .rounded(metrics.radius_md)
-                    .width(1.0)
+                    .width(SEGMENTED_CONTROL_BORDER_WIDTH)
                     .color(colors.border),
             )
     }
@@ -766,7 +789,8 @@ mod tests {
     use iced::widget::{button, checkbox, text_input, toggler};
 
     use super::{
-        CardKind, card_style, checkbox_style, list_item_style, text_input_style, toggler_style,
+        CardKind, SEGMENTED_CONTROL_INSET, card_style, checkbox_style, list_item_style,
+        segmented_button_style, segmented_surface_style, text_input_style, toggler_style,
     };
     use crate::theme::ThemeMode;
 
@@ -805,5 +829,22 @@ mod tests {
         assert_eq!(selected_card.background, Some(colors.selected.into()));
         assert_eq!(selected_card.border.width, 1.0);
         assert_eq!(selected_card.border.color, colors.accent);
+    }
+
+    #[test]
+    fn segmented_geometry_uses_a_balanced_concentric_inset() {
+        let tokens = ThemeMode::Dark.tokens();
+        let theme = Theme::Dark;
+        let surface = segmented_surface_style(tokens)(&theme);
+        let segment = segmented_button_style(tokens, true)(&theme, button::Status::Active);
+
+        assert_eq!(
+            tokens.metrics.selection_height - tokens.metrics.compact_control_height,
+            SEGMENTED_CONTROL_INSET * 2.0
+        );
+        assert_eq!(
+            segment.border.radius.top_left,
+            surface.border.radius.top_left - SEGMENTED_CONTROL_INSET
+        );
     }
 }
