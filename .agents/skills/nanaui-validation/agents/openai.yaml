@@ -1,0 +1,4 @@
+interface:
+  display_name: "NanaUI Validation"
+  short_description: "Validate UI GPU window and performance behavior"
+  default_prompt: "Use $nanaui-validation to choose and run functional validation for a NanaUI change."
