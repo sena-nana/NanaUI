@@ -8,7 +8,7 @@ NanaUI 不依赖 Vue、DOM 或 CSS，但视觉与交互参数直接以当前 Lil
 | `shell` | `LiliaGithub/src/layouts/AppShell.vue`、`TitleBar.vue`、`app-shell.css` | 36px 标题栏、28px 侧栏折叠按钮、居中工作区标题、6px 边缘内距 |
 | `workspace` | `LiliaWorkspace.vue`、`workspace.css`、`LiliaWorkspaceRegion.vue` | 动态 Region 注册顺序、role/placement/scope、尺寸约束、折叠/overlay 响应式行为、主区域 `edge-start` / `edge-end` 自动圆角、覆盖在区域边缘的 8px resize 命中区、2px 状态指示线与双击复位 |
 | `widgets` | `UiButton.vue`、`UiInput.vue`、`UiTextarea.vue`、`UiCheckbox.vue`、`UiSwitch.vue`、`UiRangeField.vue` | md 控件尺寸、圆角、按钮内容双轴居中、hover/pressed/selected/disabled/invalid 层级 |
-| `selection` | `UiListItem.vue`、`UiTabs.vue`、`UiSegmentedControl.vue` | 34px 行高、方向键/Home/End 导航、独立 selected-hover/pressed |
+| `selection` | `UiListItem.vue`、`UiTabs.vue`、`UiSegmentedControl.vue` | 34px 行高、方向键/Home/End 导航、独立 selected-hover/pressed、分段控件内外同心圆角 |
 | `sidebar` | `LiliaGithub/src/layouts/SecondaryPanel.vue`、`SidebarFooter.vue`、`LiliaSidebarFrame.vue`、`LiliaSidebarSection.vue`、`LiliaSidebarRow.vue` | 单个 220px ResourcePanel、可滚动主体、固定 Footer、26px 设置图标按钮、统一 28px 列表/分区行、折叠与 selected/disabled/tone |
 | `settings` | `settings.ts`、`SettingsSidebar.vue`、`SettingsPage.vue`、`SettingsRow.vue` | 稳定 Tab、别名回退、返回导航、复用 28px `SidebarRow` 分类、普通/full-page 页面、label/hint 行，以及可即时预览的主题与标准圆角 |
 | `overlays` | `Tooltip.vue`、`overlay.css`、`action-menu.css` | 350ms tooltip、6px gap、菜单密度、Dialog 尺寸/Scrim/Header/Body/Footer |
