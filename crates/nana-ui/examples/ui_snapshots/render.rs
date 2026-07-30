@@ -1,15 +1,16 @@
 use std::path::PathBuf;
 
-use iced::{Color, Element, Font, Pixels, Size, Theme, mouse};
+use iced::{Color, Element, Pixels, Size, Theme, font, mouse};
 use iced_wgpu::graphics::{Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
-use iced_winit::core::renderer;
+use iced_winit::core::time::Instant;
+use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
-    GalleryMessage, GalleryState, GalleryTab, LayoutPreset, Message as WorkspaceMessage,
-    SurfaceView, WorkspaceState,
+    Document, GalleryMessage, GalleryState, GalleryTab, LayoutPreset, Message as WorkspaceMessage,
+    Navigation, SettingsTabId, SurfaceView, WorkspaceState,
 };
 
 use crate::write;
@@ -38,11 +39,18 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut renderer = Renderer::new(
         engine,
         renderer::Settings {
-            default_font: Font::DEFAULT,
+            default_font: nana_ui::ui_font(font::Weight::Normal),
             default_text_size: Pixels::from(13),
             metrics_hinting: true,
         },
     );
+    let mut font_system = iced_wgpu::graphics::text::font_system()
+        .write()
+        .expect("font system");
+    for source in nana_ui::ui_font_sources() {
+        font_system.load_font(std::borrow::Cow::Borrowed(source));
+    }
+    drop(font_system);
     let output = std::env::current_dir()?.join("target/ui-snapshots");
 
     let workspace = WorkspaceState::new();
@@ -55,6 +63,20 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     );
     let workspace_path = output.join("workspace-dark.png");
     write::png(&workspace_path, Size::new(1440, 900), &workspace_pixels)?;
+
+    let workspace_lilia_viewport_pixels = snapshot(
+        &mut renderer,
+        workspace.view(),
+        &workspace.theme_mode().iced_theme(),
+        workspace.theme_mode().colors().background,
+        Size::new(1280, 720),
+    );
+    let workspace_lilia_viewport_path = output.join("workspace-lilia-viewport-dark.png");
+    write::png(
+        &workspace_lilia_viewport_path,
+        Size::new(1280, 720),
+        &workspace_lilia_viewport_pixels,
+    )?;
 
     let mut workspace_light = WorkspaceState::new();
     workspace_light.update(WorkspaceMessage::ToggleTheme);
@@ -102,6 +124,154 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &workspace_live2d_path,
         Size::new(1440, 900),
         &workspace_live2d_pixels,
+    )?;
+
+    let mut workspace_nodes = WorkspaceState::new();
+    workspace_nodes.update(WorkspaceMessage::SelectDocument(Document::Nodes));
+    let workspace_nodes_pixels = snapshot(
+        &mut renderer,
+        workspace_nodes.view(),
+        &workspace_nodes.theme_mode().iced_theme(),
+        workspace_nodes.theme_mode().colors().background,
+        Size::new(1440, 900),
+    );
+    let workspace_nodes_path = output.join("workspace-nodes-dark.png");
+    write::png(
+        &workspace_nodes_path,
+        Size::new(1440, 900),
+        &workspace_nodes_pixels,
+    )?;
+
+    let mut workspace_search = WorkspaceState::new();
+    workspace_search.update(WorkspaceMessage::SelectNavigation(Navigation::Search));
+    let workspace_search_pixels = snapshot(
+        &mut renderer,
+        workspace_search.view(),
+        &workspace_search.theme_mode().iced_theme(),
+        workspace_search.theme_mode().colors().background,
+        Size::new(1440, 900),
+    );
+    let workspace_search_path = output.join("workspace-search-dark.png");
+    write::png(
+        &workspace_search_path,
+        Size::new(1440, 900),
+        &workspace_search_pixels,
+    )?;
+
+    let mut workspace_preview = WorkspaceState::new();
+    workspace_preview.update(WorkspaceMessage::SelectDocument(Document::Preview));
+    let workspace_preview_pixels = snapshot(
+        &mut renderer,
+        workspace_preview.view(),
+        &workspace_preview.theme_mode().iced_theme(),
+        workspace_preview.theme_mode().colors().background,
+        Size::new(1440, 900),
+    );
+    let workspace_preview_path = output.join("workspace-preview-dark.png");
+    write::png(
+        &workspace_preview_path,
+        Size::new(1440, 900),
+        &workspace_preview_pixels,
+    )?;
+
+    let mut workspace_settings = WorkspaceState::new();
+    workspace_settings.update(WorkspaceMessage::SelectNavigation(
+        nana_ui::Navigation::Settings,
+    ));
+    let workspace_settings_pixels = snapshot(
+        &mut renderer,
+        workspace_settings.view(),
+        &workspace_settings.theme_mode().iced_theme(),
+        workspace_settings.theme_mode().colors().background,
+        Size::new(1440, 900),
+    );
+    let workspace_settings_path = output.join("workspace-settings-appearance-dark.png");
+    write::png(
+        &workspace_settings_path,
+        Size::new(1440, 900),
+        &workspace_settings_pixels,
+    )?;
+
+    let workspace_settings_lilia_viewport_pixels = snapshot(
+        &mut renderer,
+        workspace_settings.view(),
+        &workspace_settings.theme_mode().iced_theme(),
+        workspace_settings.theme_mode().colors().background,
+        Size::new(1280, 720),
+    );
+    let workspace_settings_lilia_viewport_path =
+        output.join("workspace-settings-lilia-viewport-dark.png");
+    write::png(
+        &workspace_settings_lilia_viewport_path,
+        Size::new(1280, 720),
+        &workspace_settings_lilia_viewport_pixels,
+    )?;
+
+    let mut workspace_custom_radius = WorkspaceState::new();
+    workspace_custom_radius.update(WorkspaceMessage::SetStandardRadius(8));
+    let workspace_custom_radius_pixels = snapshot_with_cursor(
+        &mut renderer,
+        workspace_custom_radius.view(),
+        &workspace_custom_radius.theme_mode().iced_theme(),
+        workspace_custom_radius.theme_mode().colors().background,
+        Size::new(1440, 900),
+        mouse::Cursor::Available(iced::Point::new(100.0, 184.0)),
+    );
+    let workspace_custom_radius_path = output.join("workspace-custom-radius-dark.png");
+    write::png(
+        &workspace_custom_radius_path,
+        Size::new(1440, 900),
+        &workspace_custom_radius_pixels,
+    )?;
+
+    workspace_settings.update(WorkspaceMessage::SetTheme(nana_ui::ThemeMode::Light));
+    let workspace_settings_light_pixels = snapshot(
+        &mut renderer,
+        workspace_settings.view(),
+        &workspace_settings.theme_mode().iced_theme(),
+        workspace_settings.theme_mode().colors().background,
+        Size::new(1440, 900),
+    );
+    let workspace_settings_light_path = output.join("workspace-settings-appearance-light.png");
+    write::png(
+        &workspace_settings_light_path,
+        Size::new(1440, 900),
+        &workspace_settings_light_pixels,
+    )?;
+
+    workspace_settings.update(WorkspaceMessage::SetTheme(nana_ui::ThemeMode::Dark));
+    workspace_settings.update(WorkspaceMessage::SelectSettingsTab(SettingsTabId::from(
+        "workspace",
+    )));
+    let workspace_settings_layout_pixels = snapshot(
+        &mut renderer,
+        workspace_settings.view(),
+        &workspace_settings.theme_mode().iced_theme(),
+        workspace_settings.theme_mode().colors().background,
+        Size::new(1440, 900),
+    );
+    let workspace_settings_layout_path = output.join("workspace-settings-layout-dark.png");
+    write::png(
+        &workspace_settings_layout_path,
+        Size::new(1440, 900),
+        &workspace_settings_layout_pixels,
+    )?;
+
+    workspace_settings.update(WorkspaceMessage::SelectSettingsTab(SettingsTabId::from(
+        "about",
+    )));
+    let workspace_settings_about_pixels = snapshot(
+        &mut renderer,
+        workspace_settings.view(),
+        &workspace_settings.theme_mode().iced_theme(),
+        workspace_settings.theme_mode().colors().background,
+        Size::new(1440, 900),
+    );
+    let workspace_settings_about_path = output.join("workspace-settings-about-dark.png");
+    write::png(
+        &workspace_settings_about_path,
+        Size::new(1440, 900),
+        &workspace_settings_about_pixels,
     )?;
 
     let gallery_controls = GalleryState::new();
@@ -220,9 +390,19 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
 
     Ok(vec![
         workspace_path,
+        workspace_lilia_viewport_path,
         workspace_light_path,
         workspace_github_path,
         workspace_live2d_path,
+        workspace_nodes_path,
+        workspace_search_path,
+        workspace_preview_path,
+        workspace_settings_path,
+        workspace_settings_lilia_viewport_path,
+        workspace_custom_radius_path,
+        workspace_settings_light_path,
+        workspace_settings_layout_path,
+        workspace_settings_about_path,
         gallery_controls_path,
         gallery_controls_light_path,
         gallery_loading_path,
@@ -240,6 +420,24 @@ fn snapshot<Message>(
     background: Color,
     size: Size<u32>,
 ) -> Vec<u8> {
+    snapshot_with_cursor(
+        renderer,
+        view,
+        theme,
+        background,
+        size,
+        mouse::Cursor::Unavailable,
+    )
+}
+
+fn snapshot_with_cursor<Message>(
+    renderer: &mut Renderer,
+    view: Element<'_, Message, Theme, Renderer>,
+    theme: &Theme,
+    background: Color,
+    size: Size<u32>,
+    cursor: mouse::Cursor,
+) -> Vec<u8> {
     let viewport = Viewport::with_physical_size(size, renderer::Scale::default());
     let mut interface = UserInterface::build(
         view,
@@ -247,13 +445,25 @@ fn snapshot<Message>(
         user_interface::Cache::new(),
         renderer,
     );
+    let window = window::Headless;
+    let waker = shell::Waker::noop();
+    let _ = interface.update(
+        &window,
+        &waker,
+        &[Event::Window(
+            window::Event::RedrawRequested(Instant::now()),
+        )],
+        cursor,
+        renderer,
+        &mut Vec::new(),
+    );
     interface.draw(
         renderer,
         theme,
         &renderer::Style {
             text_color: theme.palette().background.base.text,
         },
-        mouse::Cursor::Unavailable,
+        cursor,
     );
     let cache = interface.into_cache();
     let pixels = renderer.screenshot(&viewport, background);

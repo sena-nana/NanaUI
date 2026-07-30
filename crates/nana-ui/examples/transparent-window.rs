@@ -1,7 +1,7 @@
 use iced::widget::{button, column, container, row, space, text};
 use iced::{Alignment, Color, Element, Length};
 use nana_ui::widgets::button_style;
-use nana_ui::{ButtonKind, Colors, ThemeMode};
+use nana_ui::{ButtonKind, Colors, ThemeMode, UI_METRICS, ui_font, ui_font_sources};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Message {
@@ -47,8 +47,8 @@ impl TransparentWindowState {
                     })
                     .size(13)
                 )
-                .height(Length::Fixed(32.0))
-                .padding([0, 10])
+                .height(Length::Fixed(UI_METRICS.control_height))
+                .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(Message::ToggleTheme)
                 .style(button_style(colors, ButtonKind::Text)),
             ]
@@ -71,8 +71,8 @@ impl TransparentWindowState {
                     })
                     .size(13)
                 )
-                .height(Length::Fixed(32.0))
-                .padding([0, 10])
+                .height(Length::Fixed(UI_METRICS.control_height))
+                .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(Message::TogglePanel)
                 .style(button_style(colors, ButtonKind::Primary)),
             ]
@@ -121,20 +121,21 @@ fn panel_style(
         border: iced::Border {
             color: colors.border,
             width: 1.0,
-            radius: 16.0.into(),
+            radius: UI_METRICS.radius_md.into(),
         },
         ..Default::default()
     }
 }
 
 fn main() -> iced::Result {
-    iced::application(
+    let mut application = iced::application(
         TransparentWindowState::default,
         TransparentWindowState::update,
         TransparentWindowState::view,
     )
     .title("NanaUI Transparent Window Demo")
     .theme(|state: &TransparentWindowState| state.theme.iced_theme())
+    .default_font(ui_font(iced::font::Weight::Normal))
     .transparent(true)
     .window(iced::window::Settings {
         size: iced::Size::new(920.0, 620.0),
@@ -142,6 +143,9 @@ fn main() -> iced::Result {
         blur: true,
         ..iced::window::Settings::default()
     })
-    .centered()
-    .run()
+    .centered();
+    for source in ui_font_sources() {
+        application = application.font(source);
+    }
+    application.run()
 }

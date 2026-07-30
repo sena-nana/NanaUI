@@ -1,7 +1,10 @@
 use iced::widget::{button, column, container, row, shader, space, text};
 use iced::{Alignment, Element, Length};
 use nana_ui::widgets::{button_style, card_style, toolbar_style};
-use nana_ui::{ButtonKind, CardKind, GpuView, GpuViewMode, GpuViewPalette, ThemeMode};
+use nana_ui::{
+    ButtonKind, CardKind, GpuView, GpuViewMode, GpuViewPalette, ThemeMode, UI_METRICS, ui_font,
+    ui_font_sources,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Message {
@@ -39,8 +42,8 @@ impl GpuViewDemo {
                     })
                     .size(13),
                 )
-                .height(Length::Fixed(32.0))
-                .padding([0, 10])
+                .height(Length::Fixed(UI_METRICS.control_height))
+                .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(Message::ToggleTheme)
                 .style(button_style(colors, ButtonKind::Text)),
             ]
@@ -96,8 +99,8 @@ impl GpuViewDemo {
                 text("缩略预览").size(12).color(colors.muted),
                 thumbnail,
                 button(text("刷新预览").size(13))
-                    .height(Length::Fixed(32.0))
-                    .padding([0, 10])
+                    .height(Length::Fixed(UI_METRICS.control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
                     .on_press(Message::Refresh)
                     .style(button_style(colors, ButtonKind::Primary)),
             ]
@@ -105,7 +108,7 @@ impl GpuViewDemo {
         )
         .width(Length::Fixed(220.0))
         .height(Length::Fill)
-        .padding([14, 16])
+        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .style(card_style(colors, CardKind::Surface));
 
         container(column![
@@ -127,14 +130,19 @@ impl GpuViewDemo {
 }
 
 fn main() -> iced::Result {
-    iced::application(GpuViewDemo::default, GpuViewDemo::update, GpuViewDemo::view)
-        .title("NanaUI GPU View Demo")
-        .theme(|state: &GpuViewDemo| state.theme.iced_theme())
-        .window(iced::window::Settings {
-            size: iced::Size::new(1100.0, 720.0),
-            min_size: Some(iced::Size::new(760.0, 520.0)),
-            ..iced::window::Settings::default()
-        })
-        .centered()
-        .run()
+    let mut application =
+        iced::application(GpuViewDemo::default, GpuViewDemo::update, GpuViewDemo::view)
+            .title("NanaUI GPU View Demo")
+            .theme(|state: &GpuViewDemo| state.theme.iced_theme())
+            .default_font(ui_font(iced::font::Weight::Normal))
+            .window(iced::window::Settings {
+                size: iced::Size::new(1100.0, 720.0),
+                min_size: Some(iced::Size::new(760.0, 520.0)),
+                ..iced::window::Settings::default()
+            })
+            .centered();
+    for source in ui_font_sources() {
+        application = application.font(source);
+    }
+    application.run()
 }

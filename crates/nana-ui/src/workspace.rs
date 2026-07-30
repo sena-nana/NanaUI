@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use iced::widget::{column, container, mouse_area, row, space, stack};
-use iced::{Element, Length, Point, Subscription};
+use iced::{Animation, Element, Length, Padding, Point, Subscription};
 
 use crate::geometry::{RESIZE_HANDLE_SIZE, WorkspaceGeometry};
 use crate::layout::{
@@ -8,11 +10,15 @@ use crate::layout::{
 use crate::theme::Colors;
 use crate::widgets::{canvas_style, workspace_region_style};
 
+const REGION_COLLAPSE_DURATION: iced::time::Duration = iced::time::Duration::from_millis(240);
+
 /// Framework-owned workspace interaction message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkspaceAction {
     ToggleRegion(RegionId),
+    SetRegionCollapsed(RegionId, bool),
     SetRegionVisible(RegionId, bool),
+    SetRegionSize(RegionId, f32),
     ResetRegionSize(RegionId),
     ResizeStart(RegionId),
     ResizeHover(Option<RegionId>),
@@ -20,6 +26,7 @@ pub enum WorkspaceAction {
     ResizeEnd,
     WindowResized { width: f32, height: f32 },
     WindowScaleFactorChanged(f32),
+    AnimationFrame(iced::time::Instant),
 }
 
 #[derive(Debug, Clone)]
@@ -28,11 +35,19 @@ struct ResizeState {
     last_position: Option<Point>,
 }
 
+#[derive(Debug, Clone)]
+struct RegionTransition {
+    expansion: Animation<bool>,
+    target_collapsed: bool,
+    overlay: bool,
+}
+
 /// Owns region registrations, persisted layout, resize interaction, and host
 /// viewport geometry. Application content remains outside the controller.
 #[derive(Debug, Clone)]
 pub struct WorkspaceController {
     layout: WorkspaceLayout,
+    transitions: HashMap<RegionId, RegionTransition>,
     resizing: Option<ResizeState>,
     hovered_resize: Option<RegionId>,
     window_width: f32,
@@ -54,6 +69,7 @@ impl WorkspaceController {
     pub fn with_layout(layout: WorkspaceLayout) -> Self {
         Self {
             layout,
+            transitions: HashMap::new(),
             resizing: None,
             hovered_resize: None,
             window_width: 1440.0,
@@ -67,12 +83,14 @@ impl WorkspaceController {
     }
 
     pub fn layout_mut(&mut self) -> &mut WorkspaceLayout {
+        self.transitions.clear();
         &mut self.layout
     }
 
     pub fn replace_layout(&mut self, layout: WorkspaceLayout) -> WorkspaceLayout {
         self.resizing = None;
         self.hovered_resize = None;
+        self.transitions.clear();
         std::mem::replace(&mut self.layout, layout)
     }
 
@@ -88,6 +106,7 @@ impl WorkspaceController {
         self.layout.restore_json(value)?;
         self.resizing = None;
         self.hovered_resize = None;
+        self.transitions.clear();
         Ok(())
     }
 
@@ -97,7 +116,16 @@ impl WorkspaceController {
         logical_height: f32,
         scale_factor: f32,
     ) -> WorkspaceGeometry {
-        WorkspaceGeometry::new(&self.layout, logical_width, logical_height, scale_factor)
+        if self.transitions.is_empty() {
+            WorkspaceGeometry::new(&self.layout, logical_width, logical_height, scale_factor)
+        } else {
+            let layout = self.layout.with_transient_extents(
+                self.transitions
+                    .keys()
+                    .map(|id| (id.clone(), self.region_extent(id))),
+            );
+            WorkspaceGeometry::new(&layout, logical_width, logical_height, scale_factor)
+        }
     }
 
     pub fn viewport_geometry(&self) -> WorkspaceGeometry {
@@ -109,16 +137,35 @@ impl WorkspaceController {
         if self.resizing.is_some() {
             subscriptions.push(iced::event::listen_with(resize_event));
         }
+        if !self.transitions.is_empty() {
+            subscriptions.push(iced::window::frames().map(WorkspaceAction::AnimationFrame));
+        }
         Subscription::batch(subscriptions)
     }
 
     /// Applies one framework action and reports whether observable state changed.
     pub fn update(&mut self, action: WorkspaceAction) -> bool {
         match action {
-            WorkspaceAction::ToggleRegion(region) => self.layout.toggle_collapsed(&region),
+            WorkspaceAction::ToggleRegion(region) => {
+                let Some(state) = self.layout.region(&region) else {
+                    return false;
+                };
+                let collapsed = self
+                    .transitions
+                    .get(&region)
+                    .map_or(state.collapsed_value(), |transition| {
+                        transition.target_collapsed
+                    });
+                self.set_region_collapsed(region, !collapsed)
+            }
+            WorkspaceAction::SetRegionCollapsed(region, collapsed) => {
+                self.set_region_collapsed(region, collapsed)
+            }
             WorkspaceAction::SetRegionVisible(region, visible) => {
+                self.transitions.remove(&region);
                 self.layout.set_hidden(&region, !visible)
             }
+            WorkspaceAction::SetRegionSize(region, size) => self.layout.set_size(&region, size),
             WorkspaceAction::ResetRegionSize(region) => self.layout.reset_size(&region),
             WorkspaceAction::ResizeStart(region) => {
                 let Some(state) = self.layout.region(&region) else {
@@ -128,6 +175,7 @@ impl WorkspaceController {
                     || state.disabled_value()
                     || !state.requested_visible()
                     || state.fill_priority_value() > 0
+                    || self.transitions.contains_key(&region)
                 {
                     return false;
                 }
@@ -185,7 +233,87 @@ impl WorkspaceController {
                 self.scale_factor = scale_factor;
                 changed
             }
+            WorkspaceAction::AnimationFrame(now) => {
+                let had_transitions = !self.transitions.is_empty();
+                self.transitions
+                    .retain(|_, transition| transition.expansion.is_animating(now));
+                had_transitions
+            }
         }
+    }
+
+    fn set_region_collapsed(&mut self, region: RegionId, collapsed: bool) -> bool {
+        let Some(state) = self.layout.region(&region) else {
+            return false;
+        };
+        let current_target = self
+            .transitions
+            .get(&region)
+            .map_or(state.collapsed_value(), |transition| {
+                transition.target_collapsed
+            });
+        if current_target == collapsed {
+            return false;
+        }
+        if !state.collapsible_value() || state.hidden_value() || state.disabled_value() {
+            return false;
+        }
+
+        let now = iced::time::Instant::now();
+        let overlay = self.transitions.get(&region).map_or_else(
+            || state.responsive_overlay(self.window_width),
+            |value| value.overlay,
+        );
+        if !self.layout.set_collapsed(&region, collapsed) {
+            return false;
+        }
+        if let Some(transition) = self.transitions.get_mut(&region) {
+            transition.expansion.go_mut(!collapsed, now);
+            transition.target_collapsed = collapsed;
+        } else {
+            let mut expansion = Animation::new(!current_target)
+                .duration(REGION_COLLAPSE_DURATION)
+                .easing(iced::animation::Easing::EaseOutCubic);
+            expansion.go_mut(!collapsed, now);
+            self.transitions.insert(
+                region,
+                RegionTransition {
+                    expansion,
+                    target_collapsed: collapsed,
+                    overlay,
+                },
+            );
+        }
+        true
+    }
+
+    fn region_visible(&self, state: &RegionState) -> bool {
+        if self.transitions.contains_key(state.id()) {
+            !state.hidden_value() && !state.responsive_collapsed(self.inline_size())
+        } else {
+            state.visible_at(self.inline_size())
+        }
+    }
+
+    fn region_overlay(&self, state: &RegionState) -> bool {
+        self.transitions.get(state.id()).map_or_else(
+            || state.responsive_overlay(self.inline_size()),
+            |value| value.overlay,
+        )
+    }
+
+    fn region_extent(&self, region: &RegionId) -> f32 {
+        self.region_extent_at(region, iced::time::Instant::now())
+    }
+
+    fn region_extent_at(&self, region: &RegionId, at: iced::time::Instant) -> f32 {
+        let Some(state) = self.layout.region(region) else {
+            return 0.0;
+        };
+        self.transitions.get(region).map_or_else(
+            || state.extent(),
+            |transition| transition.expansion.interpolate(0.0, state.extent(), at),
+        )
     }
 
     fn resize_highlighted(&self, region: &RegionId) -> bool {
@@ -313,14 +441,14 @@ where
             continue;
         };
         let region = content.remove(index);
-        if !state.visible_at(controller.inline_size()) {
+        if !controller.region_visible(state) {
             continue;
         }
         let view = RegionView {
             state,
             content: region.content,
         };
-        if state.responsive_overlay(controller.inline_size()) {
+        if controller.region_overlay(state) {
             overlays.push(view);
             continue;
         }
@@ -402,31 +530,39 @@ where
         state.placement_value(),
         RegionPlacement::Start | RegionPlacement::Primary | RegionPlacement::End
     );
-    let (width, height) = track_lengths(state);
+    let (width, height) = track_lengths(controller, state);
     let surface = region_surface(region.content, state, width, height, colors);
-    if !state.resizable_value() || state.disabled_value() || state.fill_priority_value() > 0 {
+    if !state.resizable_value()
+        || state.disabled_value()
+        || state.fill_priority_value() > 0
+        || controller.transitions.contains_key(state.id())
+    {
         return surface;
     }
 
     let handle = resize_handle(controller, state, colors, on_action);
-    match state.placement_value() {
-        RegionPlacement::Start | RegionPlacement::Primary => row![surface, handle]
-            .width(if horizontal { Length::Shrink } else { width })
-            .height(height)
-            .into(),
-        RegionPlacement::End => row![handle, surface]
-            .width(Length::Shrink)
-            .height(height)
-            .into(),
-        RegionPlacement::Top => column![surface, handle]
-            .width(width)
-            .height(Length::Shrink)
-            .into(),
-        RegionPlacement::Bottom => column![handle, surface]
-            .width(width)
-            .height(Length::Shrink)
-            .into(),
-    }
+    let handle = match state.placement_value() {
+        RegionPlacement::Start | RegionPlacement::Primary => container(handle)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_right(Length::Fill),
+        RegionPlacement::End => container(handle)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_left(Length::Fill),
+        RegionPlacement::Top => container(handle)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_bottom(Length::Fill),
+        RegionPlacement::Bottom => container(handle)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_top(Length::Fill),
+    };
+    stack![surface, handle]
+        .width(if horizontal { width } else { Length::Fill })
+        .height(if horizontal { Length::Fill } else { height })
+        .into()
 }
 
 fn render_overlay<'a, Message>(
@@ -471,19 +607,50 @@ fn region_surface<'a, Message>(
 where
     Message: 'a,
 {
+    let content = if state.placement_value() == RegionPlacement::Bottom {
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding {
+                top: 1.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 0.0,
+            })
+            .into()
+    } else {
+        content
+    };
     let surface = container(content).width(width).height(height).clip(true);
     if state.role() == RegionRole::Primary {
         surface.style(canvas_style(colors)).into()
+    } else if state.placement_value() == RegionPlacement::Bottom {
+        let separator = container(space())
+            .width(Length::Fill)
+            .height(Length::Fixed(1.0))
+            .style(move |_theme| {
+                iced::widget::container::Style::default().background(colors.border_soft)
+            });
+        stack![
+            surface.style(workspace_region_style(colors)),
+            container(separator)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_top(Length::Fill)
+        ]
+        .width(width)
+        .height(height)
+        .into()
     } else {
         surface.style(workspace_region_style(colors)).into()
     }
 }
 
-fn track_lengths(state: &RegionState) -> (Length, Length) {
+fn track_lengths(controller: &WorkspaceController, state: &RegionState) -> (Length, Length) {
     let track = if state.fill_priority_value() > 0 {
         Length::FillPortion(state.fill_priority_value())
-    } else if let Some(size) = state.size_value() {
-        Length::Fixed(size)
+    } else if state.size_value().is_some() {
+        Length::Fixed(controller.region_extent(state.id()))
     } else {
         Length::Shrink
     };
@@ -688,7 +855,81 @@ mod tests {
             (50.0, 0.0),
         );
         assert!(controller.update(WorkspaceAction::ResetRegionSize(RegionId::Resources)));
-        assert_eq!(size(&controller, &RegionId::Resources), 240.0);
+        assert_eq!(size(&controller, &RegionId::Resources), 260.0);
+    }
+
+    #[test]
+    fn controller_applies_deterministic_region_state() {
+        let mut controller = WorkspaceController::new();
+        assert!(controller.update(WorkspaceAction::SetRegionCollapsed(
+            RegionId::Resources,
+            true,
+        )));
+        assert!(!controller.update(WorkspaceAction::SetRegionCollapsed(
+            RegionId::Resources,
+            true,
+        )));
+        assert!(controller.update(WorkspaceAction::SetRegionSize(RegionId::Inspector, 320.0,)));
+        assert_eq!(size(&controller, &RegionId::Inspector), 320.0);
+    }
+
+    #[test]
+    fn controller_animates_region_extent_and_commits_the_target_immediately() {
+        let mut controller = WorkspaceController::new();
+        let started = iced::time::Instant::now();
+
+        assert!(controller.update(WorkspaceAction::SetRegionCollapsed(
+            RegionId::Resources,
+            true,
+        )));
+        assert!(
+            controller
+                .layout()
+                .region(&RegionId::Resources)
+                .expect("resources")
+                .collapsed_value()
+        );
+
+        let middle = controller.region_extent_at(
+            &RegionId::Resources,
+            started + iced::time::Duration::from_millis(120),
+        );
+        assert!(middle > 0.0 && middle < 260.0);
+
+        let finished = started + iced::time::Duration::from_millis(300);
+        assert_eq!(
+            controller.region_extent_at(&RegionId::Resources, finished),
+            0.0
+        );
+        assert!(controller.update(WorkspaceAction::AnimationFrame(finished)));
+        assert!(!controller.transitions.contains_key(&RegionId::Resources));
+    }
+
+    #[test]
+    fn controller_reverses_an_active_collapse_without_losing_region_state() {
+        let mut controller = WorkspaceController::new();
+        assert!(controller.update(WorkspaceAction::SetRegionCollapsed(
+            RegionId::Resources,
+            true,
+        )));
+        assert!(controller.update(WorkspaceAction::SetRegionCollapsed(
+            RegionId::Resources,
+            false,
+        )));
+        assert!(
+            !controller
+                .layout()
+                .region(&RegionId::Resources)
+                .expect("resources")
+                .collapsed_value()
+        );
+        assert!(
+            !controller
+                .transitions
+                .get(&RegionId::Resources)
+                .expect("transition")
+                .target_collapsed
+        );
     }
 
     #[test]

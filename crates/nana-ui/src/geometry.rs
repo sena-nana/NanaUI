@@ -130,7 +130,7 @@ impl WorkspaceGeometry {
                 false,
                 scale_factor,
             );
-            y += height + handle_extent(region);
+            y += height;
         }
 
         y = middle_bottom;
@@ -139,11 +139,11 @@ impl WorkspaceGeometry {
             set_region(
                 &mut regions,
                 region.id(),
-                LogicalRect::new(0.0, y + handle_extent(region), logical_width, height),
+                LogicalRect::new(0.0, y, logical_width, height),
                 false,
                 scale_factor,
             );
-            y += height + handle_extent(region);
+            y += height;
         }
 
         let starts_total = group_extent(&starts);
@@ -162,12 +162,11 @@ impl WorkspaceGeometry {
                 false,
                 scale_factor,
             );
-            x += width + handle_extent(region);
+            x += width;
         }
 
         x = primary_end;
         for region in ends {
-            x += handle_extent(region);
             let width = region.extent();
             set_region(
                 &mut regions,
@@ -195,7 +194,7 @@ impl WorkspaceGeometry {
                 false,
                 scale_factor,
             );
-            y += height + handle_extent(region);
+            y += height;
         }
 
         let primary_widths = allocate_primary_widths(&primaries, primary_width);
@@ -208,12 +207,11 @@ impl WorkspaceGeometry {
                 false,
                 scale_factor,
             );
-            x += width + handle_extent(region);
+            x += width;
         }
 
         y = primary_middle_y + primary_middle_height;
         for region in primary_bottom {
-            y += handle_extent(region);
             let height = region.extent();
             set_region(
                 &mut regions,
@@ -269,26 +267,13 @@ impl WorkspaceGeometry {
 }
 
 fn group_extent(regions: &[&RegionState]) -> f32 {
-    regions
-        .iter()
-        .map(|region| region.extent() + handle_extent(region))
-        .sum()
-}
-
-fn handle_extent(region: &RegionState) -> f32 {
-    if region.resizable_value() && !region.disabled_value() && region.fill_priority_value() == 0 {
-        RESIZE_HANDLE_SIZE
-    } else {
-        0.0
-    }
+    regions.iter().map(|region| region.extent()).sum()
 }
 
 fn allocate_primary_widths(regions: &[&RegionState], total_width: f32) -> Vec<f32> {
     if regions.is_empty() {
         return Vec::new();
     }
-    let handles: f32 = regions.iter().map(|region| handle_extent(region)).sum();
-    let available = (total_width - handles).max(0.0);
     let fixed: f32 = regions
         .iter()
         .filter(|region| region.fill_priority_value() == 0)
@@ -303,7 +288,7 @@ fn allocate_primary_widths(regions: &[&RegionState], total_width: f32) -> Vec<f3
         .iter()
         .map(|region| u32::from(region.fill_priority_value()))
         .sum();
-    let extra = (available - fixed - fill_minimum).max(0.0);
+    let extra = (total_width - fixed - fill_minimum).max(0.0);
 
     regions
         .iter()
@@ -370,8 +355,8 @@ mod tests {
 
         assert_eq!(geometry.logical_size, (1440.0, 900.0));
         assert_eq!(geometry.physical_size, (2880, 1800));
-        assert_eq!(region(&geometry, &RegionId::Resources).logical.width, 240.0);
-        assert_eq!(region(&geometry, &RegionId::Resources).physical.width, 480);
+        assert_eq!(region(&geometry, &RegionId::Resources).logical.width, 260.0);
+        assert_eq!(region(&geometry, &RegionId::Resources).physical.width, 520);
         assert_eq!(
             region(&geometry, &RegionId::GlobalNavigation).logical.y,
             TITLE_BAR_HEIGHT
@@ -382,6 +367,25 @@ mod tests {
             region(&geometry, &RegionId::PrimaryToolbar).logical.width,
             region(&geometry, &RegionId::Primary).logical.width
         );
+    }
+
+    #[test]
+    fn resize_handles_overlay_lilia_region_tracks_without_consuming_space() {
+        let geometry = WorkspaceGeometry::new(&WorkspaceLayout::default(), 1280.0, 720.0, 1.0);
+
+        let global = region(&geometry, &RegionId::GlobalNavigation).logical;
+        let resources = region(&geometry, &RegionId::Resources).logical;
+        let toolbar = region(&geometry, &RegionId::PrimaryToolbar).logical;
+        let primary = region(&geometry, &RegionId::Primary).logical;
+        let inspector = region(&geometry, &RegionId::Inspector).logical;
+        let diagnostics = region(&geometry, &RegionId::Diagnostics).logical;
+
+        assert_eq!(global, LogicalRect::new(0.0, 36.0, 56.0, 684.0));
+        assert_eq!(resources, LogicalRect::new(56.0, 36.0, 260.0, 684.0));
+        assert_eq!(toolbar, LogicalRect::new(316.0, 36.0, 684.0, 34.0));
+        assert_eq!(primary, LogicalRect::new(316.0, 70.0, 684.0, 450.0));
+        assert_eq!(inspector, LogicalRect::new(1000.0, 36.0, 280.0, 684.0));
+        assert_eq!(diagnostics, LogicalRect::new(316.0, 520.0, 684.0, 200.0));
     }
 
     #[test]

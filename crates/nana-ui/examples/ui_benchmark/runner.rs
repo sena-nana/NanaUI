@@ -1,15 +1,15 @@
 use std::time::Instant;
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
-use iced::{Alignment, Element, Font, Length, Pixels, Point, Size, Theme};
+use iced::{Alignment, Element, Length, Pixels, Point, Size, Theme};
 use iced_wgpu::graphics::{Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::core::{Event, mouse, renderer, shell, window};
 use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
-use nana_ui::ThemeMode;
 use nana_ui::widgets::{list_item_style, panel_style, scrollable_style, vertical_scrollbar};
+use nana_ui::{ThemeMode, UI_METRICS, status_indicator, ui_font, ui_font_sources};
 
 use crate::report::{AdapterReport, BenchmarkReport, CaseReport, Sample};
 
@@ -41,6 +41,13 @@ pub fn run() -> BenchmarkReport {
     }))
     .expect("benchmark must create a WGPU device");
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut font_system = iced_wgpu::graphics::text::font_system()
+        .write()
+        .expect("font system");
+    for source in ui_font_sources() {
+        font_system.load_font(std::borrow::Cow::Borrowed(source));
+    }
+    drop(font_system);
     let engine = Engine::new(
         &adapter,
         device.clone(),
@@ -52,7 +59,7 @@ pub fn run() -> BenchmarkReport {
     let mut renderer = Renderer::new(
         engine,
         renderer::Settings {
-            default_font: Font::DEFAULT,
+            default_font: ui_font(iced::font::Weight::Normal),
             default_text_size: Pixels::from(13),
             metrics_hinting: true,
         },
@@ -232,13 +239,15 @@ fn list_view(item_count: usize, selected: usize) -> Element<'static, usize, Them
         items = items.push(
             button(
                 row![
-                    text(if is_selected { "●" } else { "○" })
-                        .size(10)
-                        .color(if is_selected {
+                    status_indicator(
+                        is_selected,
+                        10.0,
+                        if is_selected {
                             colors.accent
                         } else {
                             colors.faint
-                        }),
+                        },
+                    ),
                     text(format!("节点 {}", index + 1)).size(13),
                     space().width(Length::Fill),
                     text(format!("{:04}", index + 1))
@@ -249,8 +258,11 @@ fn list_view(item_count: usize, selected: usize) -> Element<'static, usize, Them
                 .align_y(Alignment::Center),
             )
             .width(Length::Fill)
-            .height(Length::Fixed(34.0))
-            .padding([6, 9])
+            .height(Length::Fixed(UI_METRICS.selection_height))
+            .padding([
+                UI_METRICS.list_item_padding_y,
+                UI_METRICS.list_item_padding_x,
+            ])
             .on_press(index)
             .style(list_item_style(colors, is_selected)),
         );

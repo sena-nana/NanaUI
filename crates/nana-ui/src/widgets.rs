@@ -3,7 +3,7 @@ use iced::widget::{
 };
 use iced::{Border, Color, Shadow, Theme, Vector};
 
-use crate::theme::Colors;
+use crate::theme::{Colors, ThemeTokens};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -26,9 +26,12 @@ pub enum CardKind {
 }
 
 pub fn button_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     kind: ButtonKind,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let (base, foreground, border_color) = match kind {
             ButtonKind::Ghost => (Color::TRANSPARENT, colors.text, Color::TRANSPARENT),
@@ -85,7 +88,7 @@ pub fn button_style(
         let mut style = button::Style::default().with_background(background);
         style.text_color = text_color;
         style.border = Border::default()
-            .rounded(12.0)
+            .rounded(metrics.radius_sm)
             .width(if matches!(kind, ButtonKind::Subtle) {
                 1.0
             } else {
@@ -103,8 +106,11 @@ pub fn button_style(
 }
 
 pub fn dialog_close_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let (background, foreground) = match status {
             button::Status::Hovered => (colors.hover, colors.text),
@@ -114,7 +120,7 @@ pub fn dialog_close_style(
         };
         let mut style = button::Style::default().with_background(background);
         style.text_color = foreground;
-        style.border = Border::default().rounded(12.0);
+        style.border = Border::default().rounded(metrics.radius_sm);
         style.shadow = Shadow::default();
         style.snap = true;
         style
@@ -122,9 +128,12 @@ pub fn dialog_close_style(
 }
 
 pub fn selection_button_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     selected: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let background = match status {
             button::Status::Hovered if selected => colors.selected_hover,
@@ -145,7 +154,7 @@ pub fn selection_button_style(
 
         let mut style = button::Style::default().with_background(background);
         style.text_color = foreground;
-        style.border = Border::default().rounded(12.0);
+        style.border = Border::default().rounded(metrics.radius_sm);
         style.shadow = Shadow::default();
         style.snap = true;
         style
@@ -153,10 +162,13 @@ pub fn selection_button_style(
 }
 
 pub fn menu_item_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     danger: bool,
     pending: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let danger_soft = fade(
             colors.danger,
@@ -183,7 +195,7 @@ pub fn menu_item_style(
         } else {
             foreground
         };
-        style.border = Border::default().rounded(12.0);
+        style.border = Border::default().rounded(metrics.radius_sm);
         style.shadow = Shadow::default();
         style.snap = true;
         style
@@ -191,9 +203,12 @@ pub fn menu_item_style(
 }
 
 pub fn text_input_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     invalid: bool,
 ) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let disabled = matches!(status, text_input::Status::Disabled);
         let focused = matches!(status, text_input::Status::Focused { .. });
@@ -215,7 +230,7 @@ pub fn text_input_style(
                 colors.background.into()
             },
             border: Border::default()
-                .rounded(12.0)
+                .rounded(metrics.radius_sm)
                 .width(if focused { 2.0 } else { 1.0 })
                 .color(border_color),
             icon: if disabled { colors.faint } else { colors.muted },
@@ -227,9 +242,12 @@ pub fn text_input_style(
 }
 
 pub fn text_editor_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     invalid: bool,
 ) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let disabled = matches!(status, text_editor::Status::Disabled);
         let focused = matches!(status, text_editor::Status::Focused { .. });
@@ -251,7 +269,7 @@ pub fn text_editor_style(
                 colors.background.into()
             },
             border: Border::default()
-                .rounded(12.0)
+                .rounded(metrics.radius_sm)
                 .width(if focused { 2.0 } else { 1.0 })
                 .color(border_color),
             placeholder: colors.faint,
@@ -394,9 +412,12 @@ pub fn progress_style(colors: Colors) -> impl Fn(&Theme) -> progress_bar::Style 
 }
 
 pub fn list_item_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     selected: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let background = match (selected, status) {
             (true, button::Status::Active) => colors.selected,
@@ -414,7 +435,7 @@ pub fn list_item_style(
             colors.text
         };
         style.border = Border::default()
-            .rounded(12.0)
+            .rounded(metrics.radius_sm)
             .width(1.0)
             .color(Color::TRANSPARENT);
         style.shadow = Shadow::default();
@@ -423,7 +444,13 @@ pub fn list_item_style(
     }
 }
 
-pub fn card_style(colors: Colors, kind: CardKind) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn card_style(
+    theme: impl Into<ThemeTokens>,
+    kind: CardKind,
+) -> impl Fn(&Theme) -> container::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme| {
         let (background, border, shadow) = match kind {
             CardKind::Surface => (colors.surface, Color::TRANSPARENT, Shadow::default()),
@@ -453,7 +480,7 @@ pub fn card_style(colors: Colors, kind: CardKind) -> impl Fn(&Theme) -> containe
             .color(colors.text)
             .border(
                 Border::default()
-                    .rounded(16.0)
+                    .rounded(metrics.radius_md)
                     .width(if matches!(kind, CardKind::Outlined | CardKind::Selected) {
                         1.0
                     } else {
@@ -466,9 +493,12 @@ pub fn card_style(colors: Colors, kind: CardKind) -> impl Fn(&Theme) -> containe
 }
 
 pub fn interactive_card_style(
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     selected: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme, status| {
         let background = match (selected, status) {
             (true, button::Status::Active) => colors.selected,
@@ -487,7 +517,7 @@ pub fn interactive_card_style(
             colors.text
         };
         style.border = Border::default()
-            .rounded(16.0)
+            .rounded(metrics.radius_md)
             .width(if selected { 1.0 } else { 0.0 })
             .color(if status == button::Status::Disabled {
                 fade(colors.accent, 0.55)
@@ -534,14 +564,17 @@ pub fn vertical_scrollbar() -> scrollable::Direction {
     scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(12).scroller_width(4))
 }
 
-pub fn panel_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn panel_style(theme: impl Into<ThemeTokens>) -> impl Fn(&Theme) -> container::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme| {
         container::Style::default()
             .background(colors.surface)
             .color(colors.text)
             .border(
                 Border::default()
-                    .rounded(12.0)
+                    .rounded(metrics.radius_sm)
                     .width(1.0)
                     .color(colors.border),
             )
@@ -558,7 +591,12 @@ pub fn workspace_region_style(colors: Colors) -> impl Fn(&Theme) -> container::S
     }
 }
 
-pub fn menu_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn menu_surface_style(
+    theme: impl Into<ThemeTokens>,
+) -> impl Fn(&Theme) -> container::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme| {
         let is_light = colors.background.r > 0.5;
         container::Style::default()
@@ -566,7 +604,7 @@ pub fn menu_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style
             .color(colors.text)
             .border(
                 Border::default()
-                    .rounded(16.0)
+                    .rounded(metrics.radius_md)
                     .width(1.0)
                     .color(colors.border_soft),
             )
@@ -578,7 +616,12 @@ pub fn menu_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style
     }
 }
 
-pub fn dialog_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn dialog_surface_style(
+    theme: impl Into<ThemeTokens>,
+) -> impl Fn(&Theme) -> container::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme| {
         let is_light = colors.background.r > 0.5;
         container::Style::default()
@@ -586,7 +629,7 @@ pub fn dialog_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Sty
             .color(colors.text)
             .border(
                 Border::default()
-                    .rounded(16.0)
+                    .rounded(metrics.radius_md)
                     .width(1.0)
                     .color(colors.border_soft),
             )
@@ -620,14 +663,19 @@ pub fn tooltip_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 's
     }
 }
 
-pub fn segmented_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn segmented_surface_style(
+    theme: impl Into<ThemeTokens>,
+) -> impl Fn(&Theme) -> container::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme| {
         container::Style::default()
             .background(colors.background)
             .color(colors.text)
             .border(
                 Border::default()
-                    .rounded(16.0)
+                    .rounded(metrics.radius_md)
                     .width(1.0)
                     .color(colors.border),
             )
@@ -652,17 +700,17 @@ fn mix(foreground: Color, background: Color, foreground_ratio: f32) -> Color {
     }
 }
 
-pub fn canvas_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+pub fn canvas_style(
+    theme: impl Into<ThemeTokens>,
+) -> impl Fn(&Theme) -> container::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
     move |_theme| {
         container::Style::default()
             .background(colors.background)
             .color(colors.text)
-            .border(
-                Border::default()
-                    .rounded(20.0)
-                    .width(1.0)
-                    .color(colors.border),
-            )
+            .border(Border::default().rounded(metrics.radius_lg))
     }
 }
 
@@ -671,7 +719,6 @@ pub fn toolbar_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 's
         container::Style::default()
             .background(colors.surface)
             .color(colors.text)
-            .border(Border::default().width(1.0).color(colors.border))
     }
 }
 

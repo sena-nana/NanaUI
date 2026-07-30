@@ -10,7 +10,8 @@ WGPU View 属于 `nana-ui`；系统窗口材质属于 `nana-window`，普通控�
 应用状态 / 应用消息
         │
         ├── app_shell / app_title_bar
-        │
+        ├── SidebarFrame / SidebarSection / SidebarRow
+        ├── SettingsModel / SettingsState / settings_page
         └── WorkspaceRegions / WorkspaceSlots
                 │
                 ▼
@@ -31,6 +32,8 @@ WGPU View 属于 `nana-ui`；系统窗口材质属于 `nana-window`，普通控�
 - `WorkspaceRegions` 将应用内容绑定到动态注册的 Region ID；
 - `WorkspaceSlots` 只为标准六区提供便捷构造，不是框架结构上限；
 - `workspace_view` 统一施加区域尺寸、裁剪、表面层级和分隔条；
+- Sidebar 原语只负责通用结构与交互消息，不内置应用链接、状态或路由；
+- Settings model 只维护稳定 Tab 和恢复规则，具体设置值仍由应用状态拥有；
 - `WorkspaceState` 只保存节点、文档、搜索、预览和设置等示例业务状态。
 
 因此消费者不需要复制 `WorkspaceState`，也不需要自己重写区域编排和 resize
@@ -55,9 +58,20 @@ WGPU View 属于 `nana-ui`；系统窗口材质属于 `nana-window`，普通控�
 起始、结束和上下区域。`register` 拒绝重复 ID，`unregister`、JSON restore 与
 几何计算都保持剩余区域的注册顺序和结构。
 
-分隔条具有 8px 命中区和 2px hover/drag 指示线；拖动按区域位置决定增量方向，
-双击恢复默认尺寸。折叠或隐藏区域不会渲染、不会响应 resize，并在几何快照中
-同时释放空间；overlay 区域则显示但不占用 primary 空间。
+分隔条具有覆盖在区域边缘的 8px 命中区和 2px hover/drag 指示线，不增加 grid
+track；拖动按区域位置决定增量方向，双击恢复默认尺寸。折叠或隐藏区域不会
+渲染、不会响应 resize，并在几何快照中同时释放空间；overlay 区域则显示但
+不占用 primary 空间。
+
+确定性的 `SetRegionCollapsed` 与 `SetRegionSize` action 供设置页和宿主状态同步
+使用；它们与拖拽路径共享相同约束。Demo 的设置页使用独立
+`WorkspaceController`，因此进入设置不会覆盖应用工作区的尺寸和折叠状态；窗口
+尺寸与 DPI 事件会同步给两套控制器。
+
+Region 折叠目标会立即写入 `WorkspaceLayout`，保证序列化与设置页读取到确定
+状态；渲染层同时保留一个 240ms 的临时 extent，使用 ease-out 曲线释放或恢复
+工作区空间。只有存在过渡时才订阅窗口帧，完成后自动移除临时状态。快速反向
+切换会从当前插值位置继续，不重置尺寸或产生跳变。
 
 `WorkspaceGeometry` 将相同布局映射为逻辑与物理像素矩形，供宿主 WGPU View
 设置 viewport/scissor。它不创建窗口或 GPU 资源。
@@ -84,15 +98,19 @@ Iced Engine 接收宿主 `Device`/`Queue`，不会再次请求设备；`GpuTextu
 | `app_shell` / `app_title_bar` | `LiliaAppShell` |
 | `WorkspaceController` | `LiliaWorkspace` 的布局上下文 |
 | `RegionState` / `WorkspaceRegions` / `workspace_view` | `LiliaWorkspaceRegion` 的注册合同与区域组合 |
+| `SidebarFrame` / `SidebarSection` / `SidebarRow` | `LiliaSidebarFrame` / `LiliaSidebarSection` / `LiliaSidebarRow` |
+| `SettingsModel` / `settings_sidebar` / `settings_page` | LiliaUI settings model、`SettingsSidebar` 与 `SettingsPage` |
 | `GlobalNavigation` | `LiliaGlobalNavigation` |
 | `Resources` | `LiliaResourcePanel` |
 | `Primary` | `LiliaPrimaryContent` |
 | `Inspector` | `LiliaInspector` |
 | `Diagnostics` | bottom console/timeline region |
 
-Demo 直接复现 LiliaUI `workspace-regions` 示例的三种结构：Code 使用 global +
-section + resources，Github 动态增加 Pull Requests 且不注册 bottom，Live2D
-不注册 global navigation 并将 bottom role 设为 timeline。布局切换器位于应用
-标题栏，标题随当前工作区变化。
+Demo 直接采用 LiliaGithub 实际 AppShell 的单侧栏结构：Code、Github 与 Live2D
+都只注册一个 220px `Resources` 起始 Region；项目导航、资源列表和设置 Footer
+位于同一 `SidebarFrame`，设置态在同一位置替换普通列表。Github 不注册 bottom，
+Live2D 将 bottom role 设为 timeline。Inspector、Toolbar 与 Bottom 只演示
+Workspace Region 能力，不构成额外侧栏。布局切换器位于应用标题栏，标题随当前
+工作区变化。
 
 原生实现共享视觉层级和交互语义，不引入 Vue、DOM、CSS 或 LiliaUI 运行时依赖。

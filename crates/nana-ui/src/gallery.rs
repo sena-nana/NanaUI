@@ -5,11 +5,12 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Subscription};
 
 use crate::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+use crate::icons::{Icon, icon, spinner_icon, status_indicator};
 use crate::menu::{MenuConfirmation, MenuSelection};
 use crate::overlay::ExclusiveOverlay;
 use crate::selection::{SelectionMove, SingleSelection};
 use crate::shell::app_title_bar;
-use crate::theme::{Colors, ThemeMode};
+use crate::theme::{Colors, ThemeMode, UI_METRICS, ui_font};
 use crate::tooltip::TooltipConfig;
 use crate::widgets::{
     ButtonKind, CardKind, button_style, canvas_style, card_style, checkbox_style,
@@ -316,9 +317,11 @@ impl GalleryState {
             self.tab_button("反馈", GalleryTab::Feedback, colors),
         ]
         .spacing(2)
-        .height(Length::Fixed(34.0));
+        .height(Length::Fixed(UI_METRICS.selection_height));
         let tabs = column![
-            container(tabs).height(Length::Fixed(34.0)).padding([0, 16]),
+            container(tabs)
+                .height(Length::Fixed(UI_METRICS.selection_height))
+                .padding([0.0, UI_METRICS.panel_padding_x]),
             rule::horizontal(1).style(move |_theme| iced::widget::rule::Style {
                 color: colors.border,
                 radius: 0.0.into(),
@@ -359,8 +362,8 @@ impl GalleryState {
         colors: Colors,
     ) -> iced::widget::Button<'a, GalleryMessage> {
         button(text(label).size(13))
-            .height(Length::Fixed(34.0))
-            .padding([0, 12])
+            .height(Length::Fixed(UI_METRICS.selection_height))
+            .padding([0.0, UI_METRICS.selection_padding_x])
             .on_press(GalleryMessage::SelectTab(tab))
             .style(selection_button_style(colors, self.tab == tab))
     }
@@ -369,10 +372,9 @@ impl GalleryState {
         let input_invalid = self.input.trim().is_empty();
         let editor_invalid = self.editor.text().trim().chars().count() < 4;
         let editor_enabled = self.editor_enabled();
-        let spinner_frames = ["◴", "◷", "◶", "◵"];
         let loading_content = if self.loading {
             row![
-                text(spinner_frames[usize::from(self.loading_ticks % 4)]).size(14),
+                spinner_icon(self.loading_ticks, 14.0, colors.accent),
                 text("处理中").size(13),
             ]
             .spacing(6)
@@ -381,8 +383,8 @@ impl GalleryState {
             row![text("加载").size(13)]
         };
         let loading_button = button(loading_content)
-            .height(Length::Fixed(32.0))
-            .padding([0, 10])
+            .height(Length::Fixed(UI_METRICS.control_height))
+            .padding([0.0, UI_METRICS.control_padding_x])
             .style(button_style(colors, ButtonKind::Text));
         let loading_button = if self.loading {
             loading_button
@@ -394,23 +396,23 @@ impl GalleryState {
                 text("操作").size(12).color(colors.muted),
                 row![
                     button(text("次要").size(13))
-                        .height(Length::Fixed(32.0))
-                        .padding([0, 10])
+                        .height(Length::Fixed(UI_METRICS.control_height))
+                        .padding([0.0, UI_METRICS.control_padding_x])
                         .on_press(GalleryMessage::PrimaryAction)
                         .style(button_style(colors, ButtonKind::Subtle)),
                     button(text("主要").size(13))
-                        .height(Length::Fixed(32.0))
-                        .padding([0, 10])
+                        .height(Length::Fixed(UI_METRICS.control_height))
+                        .padding([0.0, UI_METRICS.control_padding_x])
                         .on_press(GalleryMessage::PrimaryAction)
                         .style(button_style(colors, ButtonKind::Primary)),
                     button(text("禁用").size(13))
-                        .height(Length::Fixed(32.0))
-                        .padding([0, 10])
+                        .height(Length::Fixed(UI_METRICS.control_height))
+                        .padding([0.0, UI_METRICS.control_padding_x])
                         .style(button_style(colors, ButtonKind::Subtle)),
                     loading_button,
-                    button(text("＋").size(14))
-                        .width(Length::Fixed(30.0))
-                        .height(Length::Fixed(30.0))
+                    button(icon(Icon::Add, 14.0, colors.text))
+                        .width(Length::Fixed(UI_METRICS.icon_button_size))
+                        .height(Length::Fixed(UI_METRICS.icon_button_size))
                         .padding(0)
                         .on_press(GalleryMessage::PrimaryAction)
                         .style(button_style(colors, ButtonKind::Ghost)),
@@ -424,18 +426,17 @@ impl GalleryState {
         )
         .width(Length::FillPortion(1))
         .height(Length::Fixed(132.0))
-        .padding([14, 16])
+        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .style(panel_style(colors));
 
         let fields = container(
             column![
-                text("节点名称 *").size(13).font(iced::Font {
-                    weight: iced::font::Weight::Semibold,
-                    ..iced::Font::DEFAULT
-                }),
+                text("节点名称 *")
+                    .size(13)
+                    .font(ui_font(iced::font::Weight::Semibold)),
                 text_input("输入节点名称", &self.input)
                     .on_input(GalleryMessage::InputChanged)
-                    .padding([6, 9])
+                    .padding([UI_METRICS.field_padding_y, UI_METRICS.field_padding_x,])
                     .size(13)
                     .width(Length::Fill)
                     .style(text_input_style(colors, input_invalid)),
@@ -451,7 +452,7 @@ impl GalleryState {
                     colors.success
                 }),
                 text_input("", "系统节点")
-                    .padding([6, 9])
+                    .padding([UI_METRICS.field_padding_y, UI_METRICS.field_padding_x,])
                     .size(13)
                     .width(Length::Fill)
                     .style(text_input_style(colors, false)),
@@ -460,7 +461,7 @@ impl GalleryState {
         )
         .width(Length::FillPortion(1))
         .height(Length::Fixed(132.0))
-        .padding([14, 16])
+        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .style(panel_style(colors));
 
         let editor_toggle = toggler(self.switched)
@@ -501,7 +502,7 @@ impl GalleryState {
         )
         .width(Length::FillPortion(1))
         .height(Length::Fixed(132.0))
-        .padding([14, 16])
+        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .style(panel_style(colors));
 
         let editor = text_editor(&self.editor)
@@ -518,10 +519,9 @@ impl GalleryState {
         };
         let text_area = container(
             column![
-                text("节点说明").size(13).font(iced::Font {
-                    weight: iced::font::Weight::Semibold,
-                    ..iced::Font::DEFAULT
-                }),
+                text("节点说明")
+                    .size(13)
+                    .font(ui_font(iced::font::Weight::Semibold)),
                 editor,
                 text(if editor_invalid {
                     "请至少输入 4 个字符"
@@ -543,7 +543,7 @@ impl GalleryState {
         )
         .width(Length::FillPortion(1))
         .height(Length::Fill)
-        .padding([14, 16])
+        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .style(panel_style(colors));
 
         let items = [
@@ -569,13 +569,15 @@ impl GalleryState {
             let selected = self.selected_item == index;
             let item = button(
                 row![
-                    text(if selected { "●" } else { "○" })
-                        .size(10)
-                        .color(if selected {
+                    status_indicator(
+                        selected,
+                        10.0,
+                        if selected {
                             colors.accent
                         } else {
                             colors.faint
-                        }),
+                        },
+                    ),
                     text(label).size(13),
                     space().width(Length::Fill),
                     text(if disabled { "不可用" } else { "" })
@@ -586,8 +588,11 @@ impl GalleryState {
                 .align_y(Alignment::Center),
             )
             .width(Length::Fill)
-            .height(Length::Fixed(34.0))
-            .padding([6, 9])
+            .height(Length::Fixed(UI_METRICS.selection_height))
+            .padding([
+                UI_METRICS.list_item_padding_y,
+                UI_METRICS.list_item_padding_x,
+            ])
             .style(list_item_style(colors, selected));
             list = list.push(if disabled {
                 item
@@ -606,7 +611,7 @@ impl GalleryState {
             .spacing(8),
         )
         .width(Length::FillPortion(1))
-        .padding([14, 16])
+        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .height(Length::Fill)
         .style(panel_style(colors));
 
@@ -641,7 +646,7 @@ impl GalleryState {
             )
             .width(Length::FillPortion(1))
             .height(Length::Fixed(96.0))
-            .padding([14, 16])
+            .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
             .style(card_style(colors, kind))
         };
         let preview = match selected_view {
@@ -668,7 +673,7 @@ impl GalleryState {
                     )
                     .width(Length::FillPortion(1))
                     .height(Length::Fixed(96.0))
-                    .padding([14, 16])
+                    .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
                     .align_x(iced::alignment::Horizontal::Left)
                     .style(interactive_card_style(colors, selected));
                     cards = cards.push(if disabled {
@@ -684,16 +689,16 @@ impl GalleryState {
         let segmented = container(
             row![
                 button(text("概览").size(13))
-                    .height(Length::Fixed(28.0))
-                    .padding([0, 12])
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.selection_padding_x])
                     .on_press(GalleryMessage::SelectSurfaceView(SurfaceView::Overview))
                     .style(selection_button_style(
                         colors,
                         selected_view == SurfaceView::Overview
                     )),
                 button(text("节点").size(13))
-                    .height(Length::Fixed(28.0))
-                    .padding([0, 12])
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.selection_padding_x])
                     .on_press(GalleryMessage::SelectSurfaceView(SurfaceView::Nodes))
                     .style(selection_button_style(
                         colors,
@@ -702,7 +707,7 @@ impl GalleryState {
             ]
             .spacing(2),
         )
-        .height(Length::Fixed(34.0))
+        .height(Length::Fixed(UI_METRICS.selection_height))
         .padding(2)
         .style(segmented_surface_style(colors));
 
@@ -719,7 +724,7 @@ impl GalleryState {
                     .spacing(8)
                     .align_y(Alignment::Center),
                 )
-                .padding([14, 16])
+                .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x,])
                 .style(panel_style(colors)),
                 preview,
             ]
@@ -760,20 +765,20 @@ impl GalleryState {
                     .size(11),
                 )
                 .width(Length::Fill)
-                .height(Length::Fixed(32.0))
-                .padding([0, 11])
+                .height(Length::Fixed(UI_METRICS.control_height))
+                .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(GalleryMessage::ToggleDialog)
                 .style(button_style(colors, ButtonKind::Primary)),
                 button(text("更多操作").size(11))
                     .width(Length::Fill)
-                    .height(Length::Fixed(32.0))
-                    .padding([0, 11])
+                    .height(Length::Fixed(UI_METRICS.control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
                     .on_press(GalleryMessage::ToggleContextMenu)
                     .style(button_style(colors, ButtonKind::Subtle)),
                 tooltip(
-                    container(text("ⓘ").size(13).color(colors.muted))
-                        .width(Length::Fixed(28.0))
-                        .height(Length::Fixed(28.0))
+                    container(icon(Icon::About, 13.0, colors.muted))
+                        .width(Length::Fixed(UI_METRICS.icon_button_size))
+                        .height(Length::Fixed(UI_METRICS.icon_button_size))
                         .align_x(iced::alignment::Horizontal::Center)
                         .align_y(iced::alignment::Vertical::Center),
                     container(
@@ -821,7 +826,7 @@ impl GalleryState {
                     )
                     .width(Length::Fill)
                     .height(Length::Fixed(124.0))
-                    .padding([14, 16])
+                    .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x,])
                     .style(panel_style(colors)),
                     actions,
                 ]
@@ -858,15 +863,15 @@ impl GalleryState {
                 column![
                     button(text("复制节点").size(13))
                         .width(Length::Fill)
-                        .height(Length::Fixed(28.0))
-                        .padding([0, 10])
+                        .height(Length::Fixed(UI_METRICS.compact_control_height))
+                        .padding([0.0, UI_METRICS.control_padding_x])
                         .align_x(iced::alignment::Horizontal::Left)
                         .on_press(GalleryMessage::ContextAction(ContextAction::Duplicate))
                         .style(menu_item_style(colors, false, false)),
                     button(text("重命名节点").size(13))
                         .width(Length::Fill)
-                        .height(Length::Fixed(28.0))
-                        .padding([0, 10])
+                        .height(Length::Fixed(UI_METRICS.compact_control_height))
+                        .padding([0.0, UI_METRICS.control_padding_x])
                         .align_x(iced::alignment::Horizontal::Left)
                         .on_press(GalleryMessage::ContextAction(ContextAction::Rename))
                         .style(menu_item_style(colors, false, false)),
@@ -879,8 +884,8 @@ impl GalleryState {
                         .size(13)
                     )
                     .width(Length::Fill)
-                    .height(Length::Fixed(28.0))
-                    .padding([0, 10])
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
                     .align_x(iced::alignment::Horizontal::Left)
                     .on_press(GalleryMessage::ContextAction(ContextAction::Remove))
                     .style(menu_item_style(colors, true, remove_pending)),
@@ -919,9 +924,9 @@ impl GalleryState {
                 ]
                 .spacing(4)
                 .width(Length::Fill),
-                button(text("×").size(16))
-                    .width(Length::Fixed(28.0))
-                    .height(Length::Fixed(28.0))
+                button(icon(Icon::Close, 14.0, colors.muted))
+                    .width(Length::Fixed(UI_METRICS.icon_button_size))
+                    .height(Length::Fixed(UI_METRICS.icon_button_size))
                     .padding(0)
                     .on_press(GalleryMessage::RequestDialogClose(
                         DialogCloseTrigger::CloseButton
@@ -955,15 +960,15 @@ impl GalleryState {
             row![
                 space().width(Length::Fill),
                 button(text("取消").size(13))
-                    .height(Length::Fixed(32.0))
-                    .padding([0, 10])
+                    .height(Length::Fixed(UI_METRICS.control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
                     .on_press(GalleryMessage::RequestDialogClose(
                         DialogCloseTrigger::CloseButton
                     ))
                     .style(button_style(colors, ButtonKind::Ghost)),
                 button(text("确认刷新").size(13))
-                    .height(Length::Fixed(32.0))
-                    .padding([0, 10])
+                    .height(Length::Fixed(UI_METRICS.control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
                     .on_press(GalleryMessage::ConfirmDialog)
                     .style(button_style(colors, ButtonKind::Primary)),
             ]
