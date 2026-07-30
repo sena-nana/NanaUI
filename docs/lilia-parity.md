@@ -15,21 +15,21 @@ NanaUI 不依赖 Vue、DOM 或 CSS，但视觉与交互参数直接以当前 Lil
 
 实际 LiliaGithub AppShell 只注册一个 `id="sidebar"` 的 ResourcePanel。普通
 `SecondaryPanel` 与 `LiliaSettingsSidebar` 在该 Region 内互斥切换，不存在常驻
-global rail、section navigation 与 resources 三列侧栏。NanaUI Demo 的
-1280×720 Code 基线因此采用以下单侧栏矩阵：
+global rail、section navigation 与 resources 三列侧栏。NanaUI Gallery 同样只
+保留一个分类侧栏；1280×800 工作区分类采用以下矩阵：
 
 | 区域 | x | y | width | height |
 | --- | ---: | ---: | ---: | ---: |
 | titlebar | 0 | 0 | 1280 | 36 |
-| sidebar | 0 | 36 | 220 | 684 |
+| sidebar | 0 | 36 | 220 | 764 |
 | primary toolbar | 220 | 36 | 780 | 34 |
-| primary | 220 | 70 | 780 | 450 |
-| inspector | 1000 | 36 | 280 | 684 |
-| bottom | 220 | 520 | 780 | 200 |
+| primary | 220 | 70 | 780 | 550 |
+| inspector | 1000 | 36 | 280 | 764 |
+| bottom | 220 | 620 | 780 | 180 |
 
-resize handle 是绝对覆盖层，不参与上述 grid track 尺寸；底部内容从 1px 分隔线
-后的 y=521 开始。Code/Github/Live2D 的可选 Inspector、Toolbar 与 Bottom
-继续用于演示 Workspace Region 能力，但不会增加第二层左侧导航。
+resize handle 是绝对覆盖层，不参与上述 grid track 尺寸。Inspector、Toolbar 与
+Bottom 只在工作区分类启用；切换到控件、表面或反馈时隐藏，但不会增加第二层左侧
+导航，也不会丢失用户调整过的尺寸和折叠状态。
 
 结构区域和内容卡片保持不同语义：侧栏、检查器和底部面板为方形、无边框的
 workspace region；只有 Card 与主内容裁剪边界使用圆角。主区域不是固定四角：
@@ -51,7 +51,12 @@ NanaUI 内置并注册 LiliaUI `fonts.css` 对应的 Noto Sans SC
 400/500/600/700 字体面；标题使用同样的 0.2px tracking，分区与 Card 标题使用
 0.5px tracking。这样文字宽度来自同一字体数据，而不是依赖平台 fallback。
 
-`ui-snapshots` 使用真实 `WorkspaceState::view` / `GalleryState::view` 和 Iced WGPU 30 renderer 生成 Code/Github/Live2D、dark/light、控件、表面、菜单与对话框快照，并单独覆盖 custom controls 与 native-leading 标题栏。`WorkspaceState::view` 本身通过公共 `WorkspaceRegions` / `workspace_view` 组合，因此快照覆盖的是动态框架路径而非单独制作的 Demo 布局。LiliaGithub 的实际 AppShell、SecondaryPanel、SidebarFooter 与 LiliaUI token/CSS 源码是结构、尺寸和颜色的权威依据。
+`ui-snapshots` 使用真实 `GalleryState::view` 和 Iced WGPU 30 renderer 生成四个
+Gallery 分类、dark/light、设置、菜单与对话框快照，并单独覆盖 custom controls
+与 native-leading 标题栏。Gallery 本身通过公共 `WorkspaceRegions` /
+`workspace_view` 组合，因此快照覆盖动态框架路径而非单独制作的静态布局。
+LiliaGithub 的实际 AppShell、SecondaryPanel、SidebarFooter 与 LiliaUI token/CSS
+源码仍是结构、尺寸和颜色的权威依据。
 
 仍不能由离屏快照证明的项目是原生窗口材质、鼠标命中、IME、真实窗口 resize、
 不同 DPI，以及 Windows/Linux 的最终抗锯齿差异。字体族与字重数据已经统一，

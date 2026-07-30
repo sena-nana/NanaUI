@@ -1,5 +1,5 @@
 use iced::widget::{button, column, container, mouse_area, row, space, text};
-use iced::{Alignment, Border, Color, Element, Length, Padding, Shadow, Theme, font};
+use iced::{Alignment, Element, Length, Padding, font};
 use std::rc::Rc;
 
 use crate::geometry::TITLE_BAR_HEIGHT;
@@ -9,78 +9,6 @@ use crate::widgets::{ButtonKind, button_style};
 use crate::window_chrome::{
     WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
 };
-use crate::workspace_demo::{LayoutPreset, Message, WorkspaceState};
-
-pub(crate) fn title_bar<'a>(state: &WorkspaceState, tokens: ThemeTokens) -> Element<'a, Message> {
-    let colors = tokens.colors;
-    let sidebar_toggle = button(icon(
-        Icon::Sidebar,
-        16.0,
-        if state.sidebar_toggle_message().is_some() {
-            colors.muted
-        } else {
-            colors.faint
-        },
-    ))
-    .width(Length::Fixed(UI_METRICS.icon_button_size))
-    .height(Length::Fixed(UI_METRICS.icon_button_size))
-    .padding(0)
-    .on_press_maybe(state.sidebar_toggle_message())
-    .style(button_style(
-        tokens,
-        if state.sidebar_collapsed() {
-            ButtonKind::Selected
-        } else {
-            ButtonKind::Ghost
-        },
-    ));
-    let mut workspace_switcher = row![].spacing(2).align_y(Alignment::Center);
-    for (preset, label) in [
-        (LayoutPreset::Code, "Code"),
-        (LayoutPreset::Github, "Github"),
-        (LayoutPreset::Live2D, "Live2D"),
-    ] {
-        workspace_switcher = workspace_switcher.push(
-            button(text(label).size(14))
-                .height(Length::Fixed(UI_METRICS.control_height))
-                .padding([0.0, UI_METRICS.control_padding_x])
-                .on_press(Message::SelectLayout(preset))
-                .style(layout_switcher_style(
-                    tokens,
-                    state.layout_preset() == preset,
-                )),
-        );
-    }
-    AppTitleBar::new(state.layout_title(), tokens)
-        .leading(
-            row![sidebar_toggle, workspace_switcher]
-                .spacing(4)
-                .align_y(Alignment::Center),
-        )
-        .window_chrome(&state.window_chrome, Message::WindowChrome)
-        .view()
-}
-
-fn layout_switcher_style(
-    tokens: ThemeTokens,
-    selected: bool,
-) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
-    let colors = tokens.colors;
-    move |_theme, status| {
-        let background = match status {
-            button::Status::Pressed => colors.active,
-            button::Status::Hovered => colors.hover,
-            button::Status::Active if selected => colors.hover,
-            button::Status::Active | button::Status::Disabled => Color::TRANSPARENT,
-        };
-        let mut style = button::Style::default().with_background(background);
-        style.text_color = if selected { colors.text } else { colors.muted };
-        style.border = Border::default().rounded(tokens.metrics.radius_sm);
-        style.shadow = Shadow::default();
-        style.snap = true;
-        style
-    }
-}
 
 pub fn app_title_bar<'a, Message>(
     title: &'a str,
@@ -330,11 +258,14 @@ where
         .into()
 }
 
-pub(crate) fn section_heading<'a>(
+pub(crate) fn section_heading<'a, Message>(
     title: &'a str,
     trailing: Option<Element<'a, Message>>,
     colors: Colors,
-) -> Element<'a, Message> {
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
     let mut content = row![
         text(title)
             .size(12)

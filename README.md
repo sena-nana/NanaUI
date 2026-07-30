@@ -27,11 +27,11 @@ NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。当前基座为 Ic
 - light/dark 主题、LiliaUI 同源的 Noto Sans SC 400/500/600/700 字体、
   基础控件、浮层和 WGPU 内容插槽。
 
-`WorkspaceState` 只是可运行示例。Code、Github 与 Live2D 三套布局使用同一动态
-Region 框架注册不同结构；三者都以单个 220px `Resources` Region 承载导航、
-资源列表和固定 Footer。进入设置后，同一位置切换为设置分类，设置界面使用独立
-WorkspaceController。主题、面板显隐、尺寸复位、返回导航和所有操作都连接到
-真实 Rust 状态，框架不依赖 Demo 的业务模型。
+`GalleryState` 是唯一的标准 UI 示例。它以单个 220px `Resources` Region 承载
+控件、表面、反馈和工作区分类及固定设置 Footer；进入设置后，同一位置切换为设置
+分类。工作区分类会启用 Toolbar、Inspector 与 Bottom Region，其他分类保持简洁的
+侧栏 + 主内容结构。主题、面板显隐、尺寸复位、返回导航和所有组件操作都连接到
+真实 Rust 状态，框架不依赖 Gallery 的展示模型。
 
 `ThemeMode`、`AppearanceSettings`、`SettingsState` 与 `WorkspaceLayout` 均可
 序列化。NanaUI 不选择配置目录或自行写盘，消费应用负责将这些状态组合进自己的
@@ -42,13 +42,7 @@ WorkspaceController。主题、面板显隐、尺寸复位、返回导航和所�
 注册。字体文件由 LiliaUI 使用的同一组 Noto Sans SC WOFF2 无损转换为 TTF，
 许可见 `crates/nana-ui/assets/fonts/OFL.txt`。
 
-运行工作区 Demo：
-
-```bash
-cargo run -p nana-ui --example workspace-demo
-```
-
-运行组件状态画廊：
+运行 UI Gallery：
 
 ```bash
 cargo run -p nana-ui --example component-gallery
@@ -90,7 +84,7 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-生成 Workspace 与 Component Gallery 的 dark/light 验收快照：
+生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
 
 ```bash
 cargo run --release -p nana-ui --example ui-snapshots --locked

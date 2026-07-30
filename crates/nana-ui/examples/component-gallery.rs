@@ -7,13 +7,13 @@ fn main() -> iced::Result {
         GalleryState::update_windowed,
         GalleryState::view,
     )
-    .title("NanaUI Component Gallery")
+    .title("NanaUI Gallery")
     .theme(|state: &GalleryState| state.theme_mode().iced_theme())
     .default_font(ui_font(iced::font::Weight::Normal))
     .subscription(GalleryState::subscription)
     .window(custom_title_bar_window(window::Settings {
-        size: iced::Size::new(1180.0, 760.0),
-        min_size: Some(iced::Size::new(900.0, 620.0)),
+        size: iced::Size::new(1280.0, 800.0),
+        min_size: Some(iced::Size::new(960.0, 640.0)),
         ..window::Settings::default()
     }))
     .centered();

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use iced::widget::{column, container, space, text};
 use iced::{Color, Element, Length, Pixels, Size, Theme, font, mouse};
@@ -10,12 +10,13 @@ use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
-    AppTitleBar, Document, GalleryMessage, GalleryState, GalleryTab, LayoutPreset,
-    Message as WorkspaceMessage, Navigation, RegionId, SettingsTabId, SurfaceView, ThemeMode,
-    WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction, WorkspaceState,
+    AppTitleBar, GalleryMessage, GallerySection, GalleryState, RegionId, SettingsTabId,
+    SurfaceView, ThemeMode, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
 };
 
 use crate::write;
+
+const GALLERY_SIZE: Size<u32> = Size::new(1280, 800);
 
 pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -53,458 +54,201 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         font_system.load_font(std::borrow::Cow::Borrowed(source));
     }
     drop(font_system);
+
     let output = std::env::current_dir()?.join("target/ui-snapshots");
+    let mut paths = vec![
+        titlebar_snapshot(
+            &mut renderer,
+            &output,
+            "titlebar-custom-dark.png",
+            ThemeMode::Dark,
+            WindowChrome::custom(),
+            mouse::Cursor::Available(iced::Point::new(880.0, 18.0)),
+        )?,
+        titlebar_snapshot(
+            &mut renderer,
+            &output,
+            "titlebar-custom-light.png",
+            ThemeMode::Light,
+            WindowChrome::custom(),
+            mouse::Cursor::Unavailable,
+        )?,
+        titlebar_snapshot(
+            &mut renderer,
+            &output,
+            "titlebar-native-leading-dark.png",
+            ThemeMode::Dark,
+            WindowChrome::native_leading(78.0),
+            mouse::Cursor::Unavailable,
+        )?,
+    ];
 
-    let titlebar_custom_dark_pixels = snapshot_with_cursor(
+    let controls = GalleryState::new();
+    paths.push(gallery_snapshot(
         &mut renderer,
-        titlebar_view(ThemeMode::Dark, WindowChrome::custom()),
-        &ThemeMode::Dark.iced_theme(),
-        ThemeMode::Dark.colors().background,
-        Size::new(900, 120),
-        mouse::Cursor::Available(iced::Point::new(880.0, 18.0)),
-    );
-    let titlebar_custom_dark_path = output.join("titlebar-custom-dark.png");
-    write::png(
-        &titlebar_custom_dark_path,
-        Size::new(900, 120),
-        &titlebar_custom_dark_pixels,
-    )?;
+        &output,
+        "gallery-controls-dark.png",
+        &controls,
+    )?);
 
-    let titlebar_custom_light_pixels = snapshot(
+    let mut controls_light = GalleryState::new();
+    controls_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    paths.push(gallery_snapshot(
         &mut renderer,
-        titlebar_view(ThemeMode::Light, WindowChrome::custom()),
-        &ThemeMode::Light.iced_theme(),
-        ThemeMode::Light.colors().background,
-        Size::new(900, 120),
-    );
-    let titlebar_custom_light_path = output.join("titlebar-custom-light.png");
-    write::png(
-        &titlebar_custom_light_path,
-        Size::new(900, 120),
-        &titlebar_custom_light_pixels,
-    )?;
+        &output,
+        "gallery-controls-light.png",
+        &controls_light,
+    )?);
 
-    let titlebar_native_leading_pixels = snapshot(
+    let mut loading = GalleryState::new();
+    loading.update(GalleryMessage::ToggleLoading);
+    paths.push(gallery_snapshot(
         &mut renderer,
-        titlebar_view(ThemeMode::Dark, WindowChrome::native_leading(78.0)),
-        &ThemeMode::Dark.iced_theme(),
-        ThemeMode::Dark.colors().background,
-        Size::new(900, 120),
-    );
-    let titlebar_native_leading_path = output.join("titlebar-native-leading-dark.png");
-    write::png(
-        &titlebar_native_leading_path,
-        Size::new(900, 120),
-        &titlebar_native_leading_pixels,
-    )?;
+        &output,
+        "gallery-loading-dark.png",
+        &loading,
+    )?);
 
-    let workspace = WorkspaceState::new();
-    let workspace_pixels = snapshot(
+    let mut surfaces = GalleryState::new();
+    surfaces.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
+    paths.push(gallery_snapshot(
         &mut renderer,
-        workspace.view(),
-        &workspace.theme_mode().iced_theme(),
-        workspace.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_path = output.join("workspace-dark.png");
-    write::png(&workspace_path, Size::new(1440, 900), &workspace_pixels)?;
+        &output,
+        "gallery-surfaces-dark.png",
+        &surfaces,
+    )?);
 
-    let workspace_lilia_viewport_pixels = snapshot(
+    let mut cards = GalleryState::new();
+    cards.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
+    cards.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
+    paths.push(gallery_snapshot(
         &mut renderer,
-        workspace.view(),
-        &workspace.theme_mode().iced_theme(),
-        workspace.theme_mode().colors().background,
-        Size::new(1280, 720),
-    );
-    let workspace_lilia_viewport_path = output.join("workspace-lilia-viewport-dark.png");
-    write::png(
-        &workspace_lilia_viewport_path,
-        Size::new(1280, 720),
-        &workspace_lilia_viewport_pixels,
-    )?;
+        &output,
+        "gallery-cards-dark.png",
+        &cards,
+    )?);
 
-    let mut workspace_primary_start_edge = WorkspaceState::new();
-    workspace_primary_start_edge.update(WorkspaceMessage::Workspace(
+    let mut feedback = GalleryState::new();
+    feedback.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-feedback-dark.png",
+        &feedback,
+    )?);
+
+    let mut context_menu = GalleryState::new();
+    context_menu.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    context_menu.update(GalleryMessage::ToggleContextMenu);
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-context-menu-dark.png",
+        &context_menu,
+    )?);
+
+    let mut dialog = GalleryState::new();
+    dialog.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    dialog.update(GalleryMessage::ToggleDialog);
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-dialog-dark.png",
+        &dialog,
+    )?);
+
+    let mut workspace = GalleryState::new();
+    workspace.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-workspace-dark.png",
+        &workspace,
+    )?);
+
+    let mut sidebar_collapsed = GalleryState::new();
+    sidebar_collapsed.update(GalleryMessage::Workspace(
         WorkspaceAction::SetRegionCollapsed(RegionId::Resources, true),
     ));
-    workspace_primary_start_edge.update(WorkspaceMessage::Workspace(
-        WorkspaceAction::AnimationFrame(Instant::now() + iced::time::Duration::from_millis(300)),
-    ));
-    let workspace_primary_start_edge_pixels = snapshot(
+    sidebar_collapsed.update(GalleryMessage::Workspace(WorkspaceAction::AnimationFrame(
+        Instant::now() + iced::time::Duration::from_millis(300),
+    )));
+    paths.push(gallery_snapshot(
         &mut renderer,
-        workspace_primary_start_edge.view(),
-        &workspace_primary_start_edge.theme_mode().iced_theme(),
-        workspace_primary_start_edge
-            .theme_mode()
-            .colors()
-            .background,
-        Size::new(1440, 900),
-    );
-    let workspace_primary_start_edge_path = output.join("workspace-primary-start-edge-dark.png");
-    write::png(
-        &workspace_primary_start_edge_path,
-        Size::new(1440, 900),
-        &workspace_primary_start_edge_pixels,
-    )?;
+        &output,
+        "gallery-sidebar-collapsed-dark.png",
+        &sidebar_collapsed,
+    )?);
 
-    let mut workspace_primary_corners_disabled = WorkspaceState::new();
-    workspace_primary_corners_disabled.update(WorkspaceMessage::SetWorkspaceCorners(false));
-    let workspace_primary_corners_disabled_pixels = snapshot(
+    let mut settings = GalleryState::new();
+    settings.update(GalleryMessage::OpenSettings);
+    paths.push(gallery_snapshot(
         &mut renderer,
-        workspace_primary_corners_disabled.view(),
-        &workspace_primary_corners_disabled.theme_mode().iced_theme(),
-        workspace_primary_corners_disabled
-            .theme_mode()
-            .colors()
-            .background,
-        Size::new(1440, 900),
-    );
-    let workspace_primary_corners_disabled_path =
-        output.join("workspace-primary-corners-disabled-dark.png");
-    write::png(
-        &workspace_primary_corners_disabled_path,
-        Size::new(1440, 900),
-        &workspace_primary_corners_disabled_pixels,
-    )?;
+        &output,
+        "gallery-settings-appearance-dark.png",
+        &settings,
+    )?);
 
-    let mut workspace_light = WorkspaceState::new();
-    workspace_light.update(WorkspaceMessage::ToggleTheme);
-    let workspace_light_pixels = snapshot(
+    settings.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    paths.push(gallery_snapshot(
         &mut renderer,
-        workspace_light.view(),
-        &workspace_light.theme_mode().iced_theme(),
-        workspace_light.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_light_path = output.join("workspace-light.png");
-    write::png(
-        &workspace_light_path,
-        Size::new(1440, 900),
-        &workspace_light_pixels,
-    )?;
+        &output,
+        "gallery-settings-appearance-light.png",
+        &settings,
+    )?);
 
-    let mut workspace_github = WorkspaceState::new();
-    workspace_github.update(WorkspaceMessage::SelectLayout(LayoutPreset::Github));
-    let workspace_github_pixels = snapshot(
-        &mut renderer,
-        workspace_github.view(),
-        &workspace_github.theme_mode().iced_theme(),
-        workspace_github.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_github_path = output.join("workspace-github-dark.png");
-    write::png(
-        &workspace_github_path,
-        Size::new(1440, 900),
-        &workspace_github_pixels,
-    )?;
-
-    let mut workspace_live2d = WorkspaceState::new();
-    workspace_live2d.update(WorkspaceMessage::SelectLayout(LayoutPreset::Live2D));
-    let workspace_live2d_pixels = snapshot(
-        &mut renderer,
-        workspace_live2d.view(),
-        &workspace_live2d.theme_mode().iced_theme(),
-        workspace_live2d.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_live2d_path = output.join("workspace-live2d-dark.png");
-    write::png(
-        &workspace_live2d_path,
-        Size::new(1440, 900),
-        &workspace_live2d_pixels,
-    )?;
-
-    let mut workspace_nodes = WorkspaceState::new();
-    workspace_nodes.update(WorkspaceMessage::SelectDocument(Document::Nodes));
-    let workspace_nodes_pixels = snapshot(
-        &mut renderer,
-        workspace_nodes.view(),
-        &workspace_nodes.theme_mode().iced_theme(),
-        workspace_nodes.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_nodes_path = output.join("workspace-nodes-dark.png");
-    write::png(
-        &workspace_nodes_path,
-        Size::new(1440, 900),
-        &workspace_nodes_pixels,
-    )?;
-
-    let mut workspace_search = WorkspaceState::new();
-    workspace_search.update(WorkspaceMessage::SelectNavigation(Navigation::Search));
-    let workspace_search_pixels = snapshot(
-        &mut renderer,
-        workspace_search.view(),
-        &workspace_search.theme_mode().iced_theme(),
-        workspace_search.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_search_path = output.join("workspace-search-dark.png");
-    write::png(
-        &workspace_search_path,
-        Size::new(1440, 900),
-        &workspace_search_pixels,
-    )?;
-
-    let mut workspace_preview = WorkspaceState::new();
-    workspace_preview.update(WorkspaceMessage::SelectDocument(Document::Preview));
-    let workspace_preview_pixels = snapshot(
-        &mut renderer,
-        workspace_preview.view(),
-        &workspace_preview.theme_mode().iced_theme(),
-        workspace_preview.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_preview_path = output.join("workspace-preview-dark.png");
-    write::png(
-        &workspace_preview_path,
-        Size::new(1440, 900),
-        &workspace_preview_pixels,
-    )?;
-
-    let mut workspace_settings = WorkspaceState::new();
-    workspace_settings.update(WorkspaceMessage::SelectNavigation(
-        nana_ui::Navigation::Settings,
-    ));
-    let workspace_settings_pixels = snapshot(
-        &mut renderer,
-        workspace_settings.view(),
-        &workspace_settings.theme_mode().iced_theme(),
-        workspace_settings.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_settings_path = output.join("workspace-settings-appearance-dark.png");
-    write::png(
-        &workspace_settings_path,
-        Size::new(1440, 900),
-        &workspace_settings_pixels,
-    )?;
-
-    let workspace_settings_lilia_viewport_pixels = snapshot(
-        &mut renderer,
-        workspace_settings.view(),
-        &workspace_settings.theme_mode().iced_theme(),
-        workspace_settings.theme_mode().colors().background,
-        Size::new(1280, 720),
-    );
-    let workspace_settings_lilia_viewport_path =
-        output.join("workspace-settings-lilia-viewport-dark.png");
-    write::png(
-        &workspace_settings_lilia_viewport_path,
-        Size::new(1280, 720),
-        &workspace_settings_lilia_viewport_pixels,
-    )?;
-
-    let mut workspace_custom_radius = WorkspaceState::new();
-    workspace_custom_radius.update(WorkspaceMessage::SetStandardRadius(8));
-    let workspace_custom_radius_pixels = snapshot_with_cursor(
-        &mut renderer,
-        workspace_custom_radius.view(),
-        &workspace_custom_radius.theme_mode().iced_theme(),
-        workspace_custom_radius.theme_mode().colors().background,
-        Size::new(1440, 900),
-        mouse::Cursor::Available(iced::Point::new(100.0, 184.0)),
-    );
-    let workspace_custom_radius_path = output.join("workspace-custom-radius-dark.png");
-    write::png(
-        &workspace_custom_radius_path,
-        Size::new(1440, 900),
-        &workspace_custom_radius_pixels,
-    )?;
-
-    workspace_settings.update(WorkspaceMessage::SetTheme(nana_ui::ThemeMode::Light));
-    let workspace_settings_light_pixels = snapshot(
-        &mut renderer,
-        workspace_settings.view(),
-        &workspace_settings.theme_mode().iced_theme(),
-        workspace_settings.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_settings_light_path = output.join("workspace-settings-appearance-light.png");
-    write::png(
-        &workspace_settings_light_path,
-        Size::new(1440, 900),
-        &workspace_settings_light_pixels,
-    )?;
-
-    workspace_settings.update(WorkspaceMessage::SetTheme(nana_ui::ThemeMode::Dark));
-    workspace_settings.update(WorkspaceMessage::SelectSettingsTab(SettingsTabId::from(
+    settings.update(GalleryMessage::SetTheme(ThemeMode::Dark));
+    settings.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
         "workspace",
     )));
-    let workspace_settings_layout_pixels = snapshot(
+    paths.push(gallery_snapshot(
         &mut renderer,
-        workspace_settings.view(),
-        &workspace_settings.theme_mode().iced_theme(),
-        workspace_settings.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_settings_layout_path = output.join("workspace-settings-layout-dark.png");
-    write::png(
-        &workspace_settings_layout_path,
-        Size::new(1440, 900),
-        &workspace_settings_layout_pixels,
-    )?;
+        &output,
+        "gallery-settings-workspace-dark.png",
+        &settings,
+    )?);
 
-    workspace_settings.update(WorkspaceMessage::SelectSettingsTab(SettingsTabId::from(
-        "about",
-    )));
-    let workspace_settings_about_pixels = snapshot(
-        &mut renderer,
-        workspace_settings.view(),
-        &workspace_settings.theme_mode().iced_theme(),
-        workspace_settings.theme_mode().colors().background,
-        Size::new(1440, 900),
-    );
-    let workspace_settings_about_path = output.join("workspace-settings-about-dark.png");
-    write::png(
-        &workspace_settings_about_path,
-        Size::new(1440, 900),
-        &workspace_settings_about_pixels,
-    )?;
+    Ok(paths)
+}
 
-    let gallery_controls = GalleryState::new();
-    let gallery_controls_pixels = snapshot(
-        &mut renderer,
-        gallery_controls.view(),
-        &gallery_controls.theme_mode().iced_theme(),
-        gallery_controls.theme_mode().colors().background,
-        Size::new(1180, 760),
+fn titlebar_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+    chrome: WindowChrome,
+    cursor: mouse::Cursor,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let size = Size::new(900, 120);
+    let pixels = snapshot_with_cursor(
+        renderer,
+        titlebar_view(theme, chrome),
+        &theme.iced_theme(),
+        theme.colors().background,
+        size,
+        cursor,
     );
-    let gallery_controls_path = output.join("component-gallery-controls-dark.png");
-    write::png(
-        &gallery_controls_path,
-        Size::new(1180, 760),
-        &gallery_controls_pixels,
-    )?;
+    let path = output.join(name);
+    write::png(&path, size, &pixels)?;
+    Ok(path)
+}
 
-    let mut gallery_controls_light = GalleryState::new();
-    gallery_controls_light.update(GalleryMessage::ToggleTheme);
-    let gallery_controls_light_pixels = snapshot(
-        &mut renderer,
-        gallery_controls_light.view(),
-        &gallery_controls_light.theme_mode().iced_theme(),
-        gallery_controls_light.theme_mode().colors().background,
-        Size::new(1180, 760),
+fn gallery_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    state: &GalleryState,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let pixels = snapshot(
+        renderer,
+        state.view(),
+        &state.theme_mode().iced_theme(),
+        state.theme_mode().colors().background,
+        GALLERY_SIZE,
     );
-    let gallery_controls_light_path = output.join("component-gallery-controls-light.png");
-    write::png(
-        &gallery_controls_light_path,
-        Size::new(1180, 760),
-        &gallery_controls_light_pixels,
-    )?;
-
-    let mut gallery_loading = GalleryState::new();
-    gallery_loading.update(GalleryMessage::ToggleLoading);
-    let gallery_loading_pixels = snapshot(
-        &mut renderer,
-        gallery_loading.view(),
-        &gallery_loading.theme_mode().iced_theme(),
-        gallery_loading.theme_mode().colors().background,
-        Size::new(1180, 760),
-    );
-    let gallery_loading_path = output.join("component-gallery-loading-dark.png");
-    write::png(
-        &gallery_loading_path,
-        Size::new(1180, 760),
-        &gallery_loading_pixels,
-    )?;
-
-    let mut gallery_surfaces = GalleryState::new();
-    gallery_surfaces.update(GalleryMessage::SelectTab(GalleryTab::Surfaces));
-    let gallery_surfaces_pixels = snapshot(
-        &mut renderer,
-        gallery_surfaces.view(),
-        &gallery_surfaces.theme_mode().iced_theme(),
-        gallery_surfaces.theme_mode().colors().background,
-        Size::new(1180, 760),
-    );
-    let gallery_surfaces_path = output.join("component-gallery-surfaces-dark.png");
-    write::png(
-        &gallery_surfaces_path,
-        Size::new(1180, 760),
-        &gallery_surfaces_pixels,
-    )?;
-
-    let mut gallery_surface_cards = GalleryState::new();
-    gallery_surface_cards.update(GalleryMessage::SelectTab(GalleryTab::Surfaces));
-    gallery_surface_cards.update(GalleryMessage::SelectSurfaceView(SurfaceView::Nodes));
-    let gallery_surface_cards_pixels = snapshot(
-        &mut renderer,
-        gallery_surface_cards.view(),
-        &gallery_surface_cards.theme_mode().iced_theme(),
-        gallery_surface_cards.theme_mode().colors().background,
-        Size::new(1180, 760),
-    );
-    let gallery_surface_cards_path = output.join("component-gallery-surface-cards-dark.png");
-    write::png(
-        &gallery_surface_cards_path,
-        Size::new(1180, 760),
-        &gallery_surface_cards_pixels,
-    )?;
-
-    let mut gallery_context_menu = GalleryState::new();
-    gallery_context_menu.update(GalleryMessage::SelectTab(GalleryTab::Feedback));
-    gallery_context_menu.update(GalleryMessage::ToggleContextMenu);
-    let gallery_context_menu_pixels = snapshot(
-        &mut renderer,
-        gallery_context_menu.view(),
-        &gallery_context_menu.theme_mode().iced_theme(),
-        gallery_context_menu.theme_mode().colors().background,
-        Size::new(1180, 760),
-    );
-    let gallery_context_menu_path = output.join("component-gallery-context-menu-dark.png");
-    write::png(
-        &gallery_context_menu_path,
-        Size::new(1180, 760),
-        &gallery_context_menu_pixels,
-    )?;
-
-    let mut gallery_dialog = GalleryState::new();
-    gallery_dialog.update(GalleryMessage::SelectTab(GalleryTab::Feedback));
-    gallery_dialog.update(GalleryMessage::ToggleDialog);
-    let gallery_dialog_pixels = snapshot(
-        &mut renderer,
-        gallery_dialog.view(),
-        &gallery_dialog.theme_mode().iced_theme(),
-        gallery_dialog.theme_mode().colors().background,
-        Size::new(1180, 760),
-    );
-    let gallery_dialog_path = output.join("component-gallery-dialog-dark.png");
-    write::png(
-        &gallery_dialog_path,
-        Size::new(1180, 760),
-        &gallery_dialog_pixels,
-    )?;
-
-    Ok(vec![
-        titlebar_custom_dark_path,
-        titlebar_custom_light_path,
-        titlebar_native_leading_path,
-        workspace_path,
-        workspace_lilia_viewport_path,
-        workspace_primary_start_edge_path,
-        workspace_primary_corners_disabled_path,
-        workspace_light_path,
-        workspace_github_path,
-        workspace_live2d_path,
-        workspace_nodes_path,
-        workspace_search_path,
-        workspace_preview_path,
-        workspace_settings_path,
-        workspace_settings_lilia_viewport_path,
-        workspace_custom_radius_path,
-        workspace_settings_light_path,
-        workspace_settings_layout_path,
-        workspace_settings_about_path,
-        gallery_controls_path,
-        gallery_controls_light_path,
-        gallery_loading_path,
-        gallery_surfaces_path,
-        gallery_surface_cards_path,
-        gallery_context_menu_path,
-        gallery_dialog_path,
-    ])
+    let path = output.join(name);
+    write::png(&path, GALLERY_SIZE, &pixels)?;
+    Ok(path)
 }
 
 fn titlebar_view(
@@ -515,7 +259,7 @@ fn titlebar_view(
     let state = WindowChromeState::new(chrome);
     let titlebar = AppTitleBar::new("NanaUI", colors)
         .leading(text("NANA").size(12).color(colors.accent))
-        .trailing(text("预览").size(11).color(colors.muted))
+        .trailing(text("Gallery").size(11).color(colors.muted))
         .window_chrome(&state, |event| event)
         .view();
 
