@@ -1,0 +1,11 @@
+[package]
+name = "nana-window"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Native window material boundary for Nana applications"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+raw-window-handle = "0.6"
+window-vibrancy = "0.8.0"

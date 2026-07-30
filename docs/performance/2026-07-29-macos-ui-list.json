@@ -1,0 +1,133 @@
+{
+  "profile": "release",
+  "adapter": {
+    "name": "Apple M4",
+    "backend": "Metal",
+    "device_type": "IntegratedGpu"
+  },
+  "iterations": 60,
+  "warmup_iterations": 10,
+  "viewport": [
+    900,
+    640
+  ],
+  "cases": [
+    {
+      "item_count": 100,
+      "view_construction_ms": {
+        "median": 0.061,
+        "p95": 0.067,
+        "min": 0.026,
+        "max": 0.087
+      },
+      "layout_diff_ms": {
+        "median": 0.036,
+        "p95": 0.044,
+        "min": 0.028,
+        "max": 0.046
+      },
+      "event_update_ms": {
+        "median": 0.003,
+        "p95": 0.003,
+        "min": 0.002,
+        "max": 0.003
+      },
+      "draw_cpu_ms": {
+        "median": 0.004,
+        "p95": 0.004,
+        "min": 0.003,
+        "max": 0.011
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.569,
+        "p95": 1.619,
+        "min": 1.157,
+        "max": 1.665
+      },
+      "total_ms": {
+        "median": 1.666,
+        "p95": 1.713,
+        "min": 1.259,
+        "max": 1.77
+      }
+    },
+    {
+      "item_count": 500,
+      "view_construction_ms": {
+        "median": 0.198,
+        "p95": 0.237,
+        "min": 0.152,
+        "max": 0.257
+      },
+      "layout_diff_ms": {
+        "median": 0.152,
+        "p95": 0.181,
+        "min": 0.121,
+        "max": 0.216
+      },
+      "event_update_ms": {
+        "median": 0.016,
+        "p95": 0.02,
+        "min": 0.013,
+        "max": 0.021
+      },
+      "draw_cpu_ms": {
+        "median": 0.005,
+        "p95": 0.007,
+        "min": 0.004,
+        "max": 0.01
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.576,
+        "p95": 1.605,
+        "min": 1.128,
+        "max": 1.615
+      },
+      "total_ms": {
+        "median": 1.952,
+        "p95": 2.027,
+        "min": 1.569,
+        "max": 2.078
+      }
+    },
+    {
+      "item_count": 1000,
+      "view_construction_ms": {
+        "median": 0.373,
+        "p95": 0.447,
+        "min": 0.291,
+        "max": 0.47
+      },
+      "layout_diff_ms": {
+        "median": 0.289,
+        "p95": 0.341,
+        "min": 0.23,
+        "max": 0.35
+      },
+      "event_update_ms": {
+        "median": 0.03,
+        "p95": 0.036,
+        "min": 0.024,
+        "max": 0.038
+      },
+      "draw_cpu_ms": {
+        "median": 0.007,
+        "p95": 0.008,
+        "min": 0.005,
+        "max": 0.009
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.581,
+        "p95": 1.599,
+        "min": 1.111,
+        "max": 1.603
+      },
+      "total_ms": {
+        "median": 2.276,
+        "p95": 2.422,
+        "min": 1.795,
+        "max": 2.456
+      }
+    }
+  ]
+}

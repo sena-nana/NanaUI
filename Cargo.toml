@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/nana-ui", "crates/nana-window"]
+resolver = "2"
