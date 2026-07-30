@@ -35,9 +35,9 @@ WGPU View 属于 `nana-ui`；系统窗口材质与必须依赖原生句柄的 ma
 - `workspace_view` 统一施加区域尺寸、裁剪、表面层级和分隔条；
 - Sidebar 原语只负责通用结构与交互消息，不内置应用链接、状态或路由；
 - Settings model 只维护稳定 Tab 和恢复规则，具体设置值仍由应用状态拥有；
-- `WorkspaceState` 只保存节点、文档、搜索、预览和设置等示例业务状态。
+- `GalleryState` 只保存分类导航、组件交互、外观和设置等示例状态。
 
-因此消费者不需要复制 `WorkspaceState`，也不需要自己重写区域编排和 resize
+因此消费者不需要复制 `GalleryState`，也不需要自己重写区域编排和 resize
 事件流；只需注册自己的区域合同和内容。
 
 ## 窗口 Chrome 合同
@@ -121,11 +121,10 @@ Iced Engine 接收宿主 `Device`/`Queue`，不会再次请求设备；`GpuTextu
 | `Inspector` | `LiliaInspector` |
 | `Diagnostics` | bottom console/timeline region |
 
-Demo 直接采用 LiliaGithub 实际 AppShell 的单侧栏结构：Code、Github 与 Live2D
-都只注册一个 220px `Resources` 起始 Region；项目导航、资源列表和设置 Footer
-位于同一 `SidebarFrame`，设置态在同一位置替换普通列表。Github 不注册 bottom，
-Live2D 将 bottom role 设为 timeline。Inspector、Toolbar 与 Bottom 只演示
-Workspace Region 能力，不构成额外侧栏。布局切换器位于应用标题栏，标题随当前
-工作区变化。
+Gallery 直接采用 LiliaGithub 实际 AppShell 的单侧栏结构：一个 220px
+`Resources` 起始 Region 承载分类导航与设置 Footer，设置态在同一位置替换普通
+列表。控件、表面与反馈分类只显示主内容；工作区分类启用 Toolbar、Inspector 与
+Bottom，以真实折叠、resize 和复位操作展示 Workspace Region 能力。标题栏固定为
+`NanaUI Gallery`，只承载侧栏、主题与窗口操作。
 
 原生实现共享视觉层级和交互语义，不引入 Vue、DOM、CSS 或 LiliaUI 运行时依赖。

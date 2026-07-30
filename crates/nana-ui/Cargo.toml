@@ -28,10 +28,6 @@ iced_winit = { path = "../../../iced/winit" }
 png = "0.18.1"
 
 [[example]]
-name = "workspace-demo"
-path = "examples/workspace-demo.rs"
-
-[[example]]
 name = "component-gallery"
 path = "examples/component-gallery.rs"
 

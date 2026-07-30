@@ -27,15 +27,14 @@ revision 前，GitHub Runner 不能复现本机结果。
 | Region 几何 | 已完成本阶段 | 任意注册区域的逻辑/物理像素矩形与窗口 DPI；折叠释放空间，overlay 不占用 primary |
 | 通用侧边栏 | 已完成本阶段 | 单层 Frame、Section、28px 左对齐 Row、26px Footer 图标按钮；滚动主体、固定外槽、160ms 分组高度/箭头折叠动画与交互状态 |
 | 设置界面 | 已完成本阶段 | 与普通列表共用单个 Sidebar Region；稳定 Tab/别名恢复、普通/full-page 页面、SettingsRow/Card、主区域圆角开关与宿主持久化契约 |
-| 工作区 Demo | 已完成本阶段 | Code/Github/Live2D 均使用单个 220px 侧栏和独立设置工作区；返回时保留应用布局，设置操作连接真实 Region 状态 |
 | LiliaUI 风格主题与壳层 | 已完成本阶段 | dark/light 语义令牌、Noto Sans SC 四字重、36px 标题栏、紧凑导航和工作区表面层级 |
-| Component Gallery | 已完成本阶段 | 基础控件、选择控件、Tooltip、Dialog、Context Menu 与状态交互 |
+| NanaUI Gallery | 已完成本阶段 | 唯一标准 UI Demo；单侧栏组织控件、表面、反馈和工作区分类，独立设置工作区与所有操作均连接真实状态 |
 | `GpuView` / `RenderSlot` | 已完成基础合同 | viewport/scissor、当前 RenderPass 与同 Encoder 独立 Pass |
 | 宿主掌握 WGPU 上下文 | 已完成基础合同 | 宿主创建唯一 Device/Queue，Iced 与宿主场景共享 |
 | 宿主纹理直显 | 已完成基础合同 | `GpuTextureView` 直接采样宿主 `TextureView` |
 | 按需重绘 | 已完成 | `ControlFlow::Wait`，没有空闲帧定时订阅 |
 | 原生窗口材质 | 已实现，待目标机复验 | macOS Vibrancy、Windows Mica/Acrylic 与纯色回退 |
-| 离屏视觉基线 | 已重新生成 | WGPU 30 上的 Code/Github/Live2D Workspace、Gallery dark/light 与浮层 PNG |
+| 离屏视觉基线 | 已重新生成 | WGPU 30 上的 Gallery 四分类、Workspace、设置、dark/light 与浮层 PNG |
 | Release 运行时基线 | 已复测 | Apple M4/Metal 首帧、示例体积、静置 CPU/RSS 与列表 benchmark |
 | NanaShader | 未修改 | 当前工作区与仓库状态检查均未发现 NanaShader 变更 |
 

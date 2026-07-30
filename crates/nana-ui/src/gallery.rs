@@ -1,51 +1,63 @@
 use iced::widget::{
-    button, checkbox, column, container, mouse_area, progress_bar, row, rule, scrollable, slider,
-    space, stack, text, text_editor, text_input, toggler, tooltip,
+    button, checkbox, column, container, mouse_area, progress_bar, row, scrollable, slider, space,
+    stack, text, text_editor, text_input, toggler, tooltip,
 };
 use iced::{Alignment, Element, Length, Subscription, Task};
 
 use crate::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 use crate::icons::{Icon, icon, spinner_icon, status_indicator};
+use crate::layout::{
+    RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
+};
 use crate::menu::{MenuConfirmation, MenuSelection};
 use crate::overlay::ExclusiveOverlay;
 use crate::selection::{SelectionMove, SingleSelection};
-use crate::shell::AppTitleBar;
-use crate::theme::{Colors, ThemeMode, UI_METRICS, ui_font};
+use crate::settings::{
+    AppearanceSettings, SettingsCard, SettingsModel, SettingsRow, SettingsState, SettingsTab,
+    SettingsTabId, settings_page, settings_sidebar as settings_sidebar_view,
+};
+use crate::shell::{AppTitleBar, app_shell, section_heading};
+use crate::sidebar::{
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarSection,
+};
+use crate::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, ui_font};
 use crate::tooltip::TooltipConfig;
 use crate::widgets::{
     ButtonKind, CardKind, SEGMENTED_CONTROL_INSET, button_style, canvas_style, card_style,
     checkbox_style, dialog_close_style, dialog_scrim_style, dialog_surface_style,
     interactive_card_style, list_item_style, menu_item_style, menu_surface_style, panel_style,
     progress_style, scrollable_style, segmented_button_style, segmented_surface_style,
-    selection_button_style, slider_style, text_editor_style, text_input_style, toggler_style,
-    tooltip_style, vertical_scrollbar,
+    slider_style, text_editor_style, text_input_style, toggler_style, toolbar_style, tooltip_style,
+    vertical_scrollbar,
 };
 use crate::window_chrome::{WindowChromeEvent, WindowChromeState};
+use crate::workspace::{WorkspaceAction, WorkspaceController, WorkspaceRegions, workspace_view};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GalleryTab {
+pub enum GallerySection {
     Controls,
     Surfaces,
     Feedback,
+    Workspace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceView {
     Overview,
-    Nodes,
+    Cards,
 }
 
 impl SurfaceView {
     const fn index(self) -> usize {
         match self {
             Self::Overview => 0,
-            Self::Nodes => 1,
+            Self::Cards => 1,
         }
     }
 
     const fn from_index(index: usize) -> Self {
         if index == 1 {
-            Self::Nodes
+            Self::Cards
         } else {
             Self::Overview
         }
@@ -54,8 +66,17 @@ impl SurfaceView {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GalleryMessage {
+    Workspace(WorkspaceAction),
     ToggleTheme,
-    SelectTab(GalleryTab),
+    SetTheme(ThemeMode),
+    SetStandardRadius(u8),
+    SetWorkspaceCorners(bool),
+    ResetAppearance,
+    SelectSection(GallerySection),
+    OpenSettings,
+    BackFromSettings,
+    SelectSettingsTab(SettingsTabId),
+    ResetWorkspaceLayout,
     PrimaryAction,
     ToggleLoading,
     LoadingTick,
@@ -131,7 +152,13 @@ fn surface_selection_event(
 #[derive(Debug)]
 pub struct GalleryState {
     theme: ThemeMode,
-    tab: GalleryTab,
+    appearance: AppearanceSettings,
+    workspace: WorkspaceController,
+    settings_workspace: WorkspaceController,
+    settings_model: SettingsModel,
+    settings: SettingsState,
+    section: GallerySection,
+    settings_open: bool,
     input: String,
     checked: bool,
     switched: bool,
@@ -145,7 +172,7 @@ pub struct GalleryState {
     dialog_policy: DialogClosePolicy,
     menu_confirmation: MenuConfirmation<ContextAction>,
     context_action: Option<ContextAction>,
-    preview_refreshes: u32,
+    confirmed_actions: u32,
     editor: text_editor::Content,
     primary_clicks: u32,
     window_chrome: WindowChromeState,
@@ -159,9 +186,17 @@ impl Default for GalleryState {
 
 impl GalleryState {
     pub fn new() -> Self {
+        let settings_model = settings_model();
+        let settings = SettingsState::new(&settings_model);
         Self {
             theme: ThemeMode::Dark,
-            tab: GalleryTab::Controls,
+            appearance: AppearanceSettings::default(),
+            workspace: WorkspaceController::with_layout(gallery_layout(false)),
+            settings_workspace: WorkspaceController::with_layout(settings_layout()),
+            settings_model,
+            settings,
+            section: GallerySection::Controls,
+            settings_open: false,
             input: String::new(),
             checked: true,
             switched: true,
@@ -175,8 +210,8 @@ impl GalleryState {
             dialog_policy: DialogClosePolicy::default(),
             menu_confirmation: MenuConfirmation::new(),
             context_action: None,
-            preview_refreshes: 0,
-            editor: text_editor::Content::with_text("节点说明\n保持预览连续更新"),
+            confirmed_actions: 0,
+            editor: text_editor::Content::with_text("示例说明\n用于展示多行文本编辑"),
             primary_clicks: 0,
             window_chrome: WindowChromeState::default(),
         }
@@ -186,6 +221,11 @@ impl GalleryState {
         self.theme
     }
 
+    fn theme_tokens(&self) -> ThemeTokens {
+        ThemeTokens::new(self.theme.colors(), self.appearance.metrics())
+            .with_workspace_corners(self.appearance.workspace_corners_enabled())
+    }
+
     fn editor_enabled(&self) -> bool {
         self.checked && self.switched
     }
@@ -193,7 +233,7 @@ impl GalleryState {
     pub fn subscription(&self) -> Subscription<GalleryMessage> {
         let interaction = if self.overlay.is_open() {
             iced::event::listen_with(overlay_event)
-        } else if self.tab == GalleryTab::Surfaces {
+        } else if !self.settings_open && self.section == GallerySection::Surfaces {
             iced::event::listen_with(surface_selection_event)
         } else {
             Subscription::none()
@@ -207,6 +247,9 @@ impl GalleryState {
         Subscription::batch([
             interaction,
             loading,
+            self.active_workspace()
+                .subscription()
+                .map(GalleryMessage::Workspace),
             WindowChromeState::subscription().map(GalleryMessage::WindowChrome),
         ])
     }
@@ -227,11 +270,63 @@ impl GalleryState {
             GalleryMessage::WindowChrome(event) => {
                 self.window_chrome.update(event);
             }
+            GalleryMessage::Workspace(action) => {
+                let synchronize_viewport = matches!(
+                    &action,
+                    WorkspaceAction::WindowResized { .. }
+                        | WorkspaceAction::WindowScaleFactorChanged(_)
+                );
+                if self.settings_open {
+                    self.settings_workspace.update(action.clone());
+                    if synchronize_viewport {
+                        self.workspace.update(action);
+                    }
+                } else {
+                    self.workspace.update(action.clone());
+                    if synchronize_viewport {
+                        self.settings_workspace.update(action);
+                    }
+                }
+            }
             GalleryMessage::ToggleTheme => self.theme = self.theme.toggle(),
-            GalleryMessage::SelectTab(tab) => {
-                self.tab = tab;
+            GalleryMessage::SetTheme(theme) => self.theme = theme,
+            GalleryMessage::SetStandardRadius(radius) => {
+                self.appearance.set_standard_radius(f32::from(radius));
+            }
+            GalleryMessage::SetWorkspaceCorners(enabled) => {
+                self.appearance.set_workspace_corners_enabled(enabled);
+            }
+            GalleryMessage::ResetAppearance => {
+                self.appearance.reset();
+            }
+            GalleryMessage::SelectSection(section) => {
+                self.section = section;
+                self.settings_open = false;
+                self.set_workspace_showcase_visible(section == GallerySection::Workspace);
                 self.overlay.dismiss();
                 self.menu_confirmation.clear();
+            }
+            GalleryMessage::OpenSettings => {
+                if let Some(size) = self
+                    .workspace
+                    .layout()
+                    .region(&RegionId::Resources)
+                    .and_then(RegionState::size_value)
+                {
+                    self.settings_workspace
+                        .update(WorkspaceAction::SetRegionSize(RegionId::Resources, size));
+                }
+                self.settings_open = true;
+                self.overlay.dismiss();
+                self.menu_confirmation.clear();
+            }
+            GalleryMessage::BackFromSettings => self.settings_open = false,
+            GalleryMessage::SelectSettingsTab(tab) => {
+                self.settings.select(&self.settings_model, &tab);
+            }
+            GalleryMessage::ResetWorkspaceLayout => {
+                self.workspace
+                    .replace_layout(gallery_layout(self.section == GallerySection::Workspace));
             }
             GalleryMessage::PrimaryAction => {
                 self.primary_clicks = self.primary_clicks.saturating_add(1);
@@ -267,7 +362,7 @@ impl GalleryState {
             }
             GalleryMessage::ConfirmDialog => {
                 if self.overlay.contains(&GalleryOverlay::Dialog) {
-                    self.preview_refreshes = self.preview_refreshes.saturating_add(1);
+                    self.confirmed_actions = self.confirmed_actions.saturating_add(1);
                     self.context_action = None;
                     self.overlay.dismiss();
                 }
@@ -315,7 +410,7 @@ impl GalleryState {
                 self.primary_clicks = self.primary_clicks.saturating_add(1);
             }
             ContextAction::Rename => {
-                self.editor = text_editor::Content::with_text("已重命名节点");
+                self.editor = text_editor::Content::with_text("已重命名项目");
             }
             ContextAction::Remove => {
                 self.selected_item = 0;
@@ -324,60 +419,35 @@ impl GalleryState {
     }
 
     pub fn view(&self) -> Element<'_, GalleryMessage> {
-        let colors = self.theme.colors();
-        let theme_icon = match self.theme {
-            ThemeMode::Dark => Icon::Appearance,
-            ThemeMode::Light => Icon::Moon,
+        let tokens = self.theme_tokens();
+        let colors = tokens.colors;
+        let regions = if self.settings_open {
+            WorkspaceRegions::new()
+                .with_region(RegionId::Resources, self.settings_sidebar())
+                .with_region(RegionId::Primary, self.settings_content(colors))
+        } else {
+            let mut regions = WorkspaceRegions::new()
+                .with_region(RegionId::Resources, self.gallery_sidebar(colors))
+                .with_region(RegionId::Primary, self.gallery_content(colors));
+            if self.section == GallerySection::Workspace {
+                regions = regions
+                    .with_region(RegionId::PrimaryToolbar, self.workspace_toolbar(colors))
+                    .with_region(RegionId::Inspector, self.workspace_inspector(colors))
+                    .with_region(RegionId::Diagnostics, self.workspace_bottom(colors));
+            }
+            regions
         };
-        let header_actions = row![
-            text("组件").size(11).color(colors.muted),
-            button(icon(theme_icon, 14.0, colors.accent))
-                .on_press(GalleryMessage::ToggleTheme)
-                .width(Length::Fixed(UI_METRICS.icon_button_size))
-                .height(Length::Fixed(UI_METRICS.icon_button_size))
-                .padding(0)
-                .style(button_style(colors, ButtonKind::Text)),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
-        let header = AppTitleBar::new("Component Gallery", colors)
-            .trailing(header_actions)
-            .window_chrome(&self.window_chrome, GalleryMessage::WindowChrome)
-            .view();
-
-        let tabs = row![
-            self.tab_button("控件", GalleryTab::Controls, colors),
-            self.tab_button("表面", GalleryTab::Surfaces, colors),
-            self.tab_button("反馈", GalleryTab::Feedback, colors),
-        ]
-        .spacing(2)
-        .height(Length::Fixed(UI_METRICS.selection_height));
-        let tabs = column![
-            container(tabs)
-                .height(Length::Fixed(UI_METRICS.selection_height))
-                .padding([0.0, UI_METRICS.panel_padding_x]),
-            rule::horizontal(1).style(move |_theme| iced::widget::rule::Style {
-                color: colors.border,
-                radius: 0.0.into(),
-                fill_mode: iced::widget::rule::FillMode::Full,
-                snap: true,
-            }),
-        ];
-
-        let content = match self.tab {
-            GalleryTab::Controls => self.controls(colors),
-            GalleryTab::Surfaces => self.surfaces(colors),
-            GalleryTab::Feedback => self.feedback(colors),
+        let workspace = if self.settings_open {
+            workspace_view(
+                &self.settings_workspace,
+                regions,
+                tokens,
+                GalleryMessage::Workspace,
+            )
+        } else {
+            workspace_view(&self.workspace, regions, tokens, GalleryMessage::Workspace)
         };
-
-        let base = container(column![header, tabs, content])
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(move |_theme| {
-                iced::widget::container::Style::default()
-                    .background(colors.background)
-                    .color(colors.text)
-            });
+        let base = app_shell(self.title_bar(tokens), workspace, colors);
 
         if self.overlay.contains(&GalleryOverlay::Dialog) {
             stack![base, self.dialog(colors)]
@@ -385,21 +455,388 @@ impl GalleryState {
                 .height(Length::Fill)
                 .into()
         } else {
-            base.into()
+            base
         }
     }
 
-    fn tab_button<'a>(
-        &'a self,
-        label: &'a str,
-        tab: GalleryTab,
-        colors: Colors,
-    ) -> iced::widget::Button<'a, GalleryMessage> {
-        button(text(label).size(13))
-            .height(Length::Fixed(UI_METRICS.selection_height))
-            .padding([0.0, UI_METRICS.selection_padding_x])
-            .on_press(GalleryMessage::SelectTab(tab))
-            .style(selection_button_style(colors, self.tab == tab))
+    fn active_workspace(&self) -> &WorkspaceController {
+        if self.settings_open {
+            &self.settings_workspace
+        } else {
+            &self.workspace
+        }
+    }
+
+    fn set_workspace_showcase_visible(&mut self, visible: bool) {
+        for id in [
+            RegionId::PrimaryToolbar,
+            RegionId::Inspector,
+            RegionId::Diagnostics,
+        ] {
+            self.workspace
+                .update(WorkspaceAction::SetRegionVisible(id, visible));
+        }
+    }
+
+    fn title_bar(&self, tokens: ThemeTokens) -> Element<'_, GalleryMessage> {
+        let colors = tokens.colors;
+        let active_workspace = self.active_workspace();
+        let sidebar_collapsed = active_workspace
+            .layout()
+            .region(&RegionId::Resources)
+            .is_some_and(RegionState::collapsed_value);
+        let sidebar_toggle = button(icon(Icon::Sidebar, 16.0, colors.muted))
+            .width(Length::Fixed(UI_METRICS.icon_button_size))
+            .height(Length::Fixed(UI_METRICS.icon_button_size))
+            .padding(0)
+            .on_press(GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(
+                RegionId::Resources,
+            )))
+            .style(button_style(
+                tokens,
+                if sidebar_collapsed {
+                    ButtonKind::Selected
+                } else {
+                    ButtonKind::Ghost
+                },
+            ));
+        let theme_icon = match self.theme {
+            ThemeMode::Dark => Icon::Appearance,
+            ThemeMode::Light => Icon::Moon,
+        };
+        let context = if self.settings_open {
+            "设置"
+        } else {
+            section_label(self.section)
+        };
+        let trailing = row![
+            text(context).size(11).color(colors.muted),
+            button(icon(theme_icon, 14.0, colors.accent))
+                .on_press(GalleryMessage::ToggleTheme)
+                .width(Length::Fixed(UI_METRICS.icon_button_size))
+                .height(Length::Fixed(UI_METRICS.icon_button_size))
+                .padding(0)
+                .style(button_style(tokens, ButtonKind::Text)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        AppTitleBar::new("NanaUI Gallery", tokens)
+            .leading(sidebar_toggle)
+            .trailing(trailing)
+            .window_chrome(&self.window_chrome, GalleryMessage::WindowChrome)
+            .view()
+    }
+
+    fn gallery_sidebar(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        let tokens = self.theme_tokens();
+        let mut section = SidebarSection::new("Gallery").count(4);
+        for (target, label, row_icon) in [
+            (GallerySection::Controls, "控件", Icon::Settings),
+            (GallerySection::Surfaces, "表面", Icon::Folder),
+            (GallerySection::Feedback, "反馈", Icon::About),
+            (GallerySection::Workspace, "工作区", Icon::Workspace),
+        ] {
+            section = section.push(
+                SidebarRow::new(label)
+                    .leading(icon(row_icon, 14.0, colors.muted))
+                    .state(if self.section == target {
+                        SidebarRowState::Active
+                    } else {
+                        SidebarRowState::Idle
+                    })
+                    .on_select(GalleryMessage::SelectSection(target))
+                    .view(tokens),
+            );
+        }
+        let footer = SidebarFooter::new()
+            .push(
+                SidebarFooterButton::new("设置", Icon::Settings)
+                    .on_press(GalleryMessage::OpenSettings)
+                    .view(tokens),
+            )
+            .view(colors);
+        SidebarFrame::new(section.view(tokens))
+            .footer(footer)
+            .view(colors)
+    }
+
+    fn gallery_content(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        match self.section {
+            GallerySection::Controls => self.controls(colors),
+            GallerySection::Surfaces => self.surfaces(colors),
+            GallerySection::Feedback => self.feedback(colors),
+            GallerySection::Workspace => self.workspace_gallery(colors),
+        }
+    }
+
+    fn settings_sidebar(&self) -> Element<'_, GalleryMessage> {
+        settings_sidebar_view(
+            &self.settings_model,
+            &self.settings,
+            GalleryMessage::BackFromSettings,
+            GalleryMessage::SelectSettingsTab,
+            self.theme_tokens(),
+        )
+    }
+
+    fn settings_content(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        let content = match self.settings.active_tab().as_str() {
+            "workspace" => self.workspace_settings(),
+            _ => self.appearance_settings(colors),
+        };
+        settings_page(
+            &self.settings_model,
+            &self.settings,
+            content,
+            self.theme_tokens(),
+        )
+    }
+
+    fn appearance_settings(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        let tokens = self.theme_tokens();
+        let theme_control = container(
+            row![
+                button(text("暗色").size(13))
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.selection_padding_x])
+                    .on_press(GalleryMessage::SetTheme(ThemeMode::Dark))
+                    .style(segmented_button_style(
+                        tokens,
+                        self.theme == ThemeMode::Dark,
+                    )),
+                button(text("浅色").size(13))
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.selection_padding_x])
+                    .on_press(GalleryMessage::SetTheme(ThemeMode::Light))
+                    .style(segmented_button_style(
+                        tokens,
+                        self.theme == ThemeMode::Light,
+                    )),
+            ]
+            .spacing(2),
+        )
+        .height(Length::Fixed(UI_METRICS.selection_height))
+        .padding(SEGMENTED_CONTROL_INSET)
+        .style(segmented_surface_style(tokens));
+        let theme_card = SettingsCard::new(
+            "主题",
+            SettingsRow::new("配色", theme_control)
+                .first_in_group()
+                .last_in_group()
+                .view(tokens),
+        )
+        .view(tokens);
+
+        let standard_radius = self.appearance.standard_radius().round() as u8;
+        let radius_control = row![
+            slider(
+                AppearanceSettings::MIN_STANDARD_RADIUS..=AppearanceSettings::MAX_STANDARD_RADIUS,
+                standard_radius,
+                GalleryMessage::SetStandardRadius,
+            )
+            .width(Length::Fixed(180.0))
+            .height(16)
+            .style(slider_style(colors)),
+            text(format!("{standard_radius} px"))
+                .size(11)
+                .color(colors.muted)
+                .width(Length::Fixed(36.0)),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let radius_rows = column![
+            SettingsRow::new(
+                "主区域圆角",
+                toggler(self.appearance.workspace_corners_enabled())
+                    .on_toggle(GalleryMessage::SetWorkspaceCorners)
+                    .size(16)
+                    .style(toggler_style(colors, false)),
+            )
+            .first_in_group()
+            .divided(true)
+            .view(tokens),
+            SettingsRow::new("标准圆角", radius_control)
+                .divided(true)
+                .view(tokens),
+            SettingsRow::new(
+                "默认样式",
+                button(text("恢复默认").size(12))
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
+                    .on_press(GalleryMessage::ResetAppearance)
+                    .style(button_style(tokens, ButtonKind::Subtle)),
+            )
+            .last_in_group()
+            .view(tokens),
+        ];
+        let radius_card = SettingsCard::new("圆角", radius_rows).view(tokens);
+        column![theme_card, radius_card].into()
+    }
+
+    fn workspace_settings(&self) -> Element<'_, GalleryMessage> {
+        let tokens = self.theme_tokens();
+        SettingsCard::new(
+            "工作区",
+            SettingsRow::new(
+                "布局",
+                button(text("恢复默认").size(12))
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
+                    .on_press(GalleryMessage::ResetWorkspaceLayout)
+                    .style(button_style(tokens, ButtonKind::Subtle)),
+            )
+            .first_in_group()
+            .last_in_group()
+            .view(tokens),
+        )
+        .view(tokens)
+    }
+
+    fn workspace_gallery(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        let tokens = self.theme_tokens();
+        let toggle = |label: &'static str, id: RegionId| {
+            let expanded = region_expanded(self.workspace.layout(), &id);
+            button(text(format!("{}{label}", if expanded { "隐藏" } else { "显示" })).size(12))
+                .height(Length::Fixed(UI_METRICS.control_height))
+                .padding([0.0, UI_METRICS.control_padding_x])
+                .on_press(GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(id)))
+                .style(button_style(tokens, ButtonKind::Subtle))
+        };
+        container(
+            column![
+                text("工作区").size(16).color(colors.text),
+                container(
+                    column![
+                        row![
+                            toggle("侧栏", RegionId::Resources),
+                            toggle("检查器", RegionId::Inspector),
+                            toggle("底部面板", RegionId::Diagnostics),
+                        ]
+                        .spacing(8),
+                        text("拖动区域边缘调整尺寸，双击恢复默认值。")
+                            .size(12)
+                            .color(colors.muted),
+                    ]
+                    .spacing(10),
+                )
+                .width(Length::Fill)
+                .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
+                .style(panel_style(tokens)),
+            ]
+            .spacing(14),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(iced::Padding {
+            top: 20.0,
+            right: 24.0,
+            bottom: 20.0,
+            left: 24.0,
+        })
+        .style(canvas_style(tokens))
+        .into()
+    }
+
+    fn workspace_toolbar(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        let tokens = self.theme_tokens();
+        container(
+            row![
+                text("工作区")
+                    .size(13)
+                    .font(ui_font(iced::font::Weight::Bold)),
+                space().width(Length::Fill),
+                button(text("恢复默认").size(12))
+                    .height(Length::Fixed(UI_METRICS.compact_control_height))
+                    .padding([0.0, UI_METRICS.control_padding_x])
+                    .on_press(GalleryMessage::ResetWorkspaceLayout)
+                    .style(button_style(tokens, ButtonKind::Text)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .height(Length::Fill)
+        .padding([0, 10])
+        .style(toolbar_style(colors))
+        .into()
+    }
+
+    fn workspace_inspector(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        let tokens = self.theme_tokens();
+        let radius = self.appearance.standard_radius().round() as u8;
+        container(column![
+            section_heading::<GalleryMessage>(
+                "检查器",
+                Some(
+                    button(text("收起").size(11))
+                        .height(Length::Fixed(UI_METRICS.compact_control_height))
+                        .padding([0.0, UI_METRICS.compact_control_padding_x])
+                        .on_press(GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(
+                            RegionId::Inspector
+                        ),))
+                        .style(button_style(tokens, ButtonKind::Text))
+                        .into(),
+                ),
+                colors,
+            ),
+            container(
+                column![
+                    text("标准圆角").size(11).color(colors.muted),
+                    slider(
+                        AppearanceSettings::MIN_STANDARD_RADIUS
+                            ..=AppearanceSettings::MAX_STANDARD_RADIUS,
+                        radius,
+                        GalleryMessage::SetStandardRadius,
+                    )
+                    .height(16)
+                    .style(slider_style(colors)),
+                    text(format!("{radius} px")).size(11).color(colors.accent),
+                    toggler(self.appearance.workspace_corners_enabled())
+                        .label("主区域圆角")
+                        .on_toggle(GalleryMessage::SetWorkspaceCorners)
+                        .size(16)
+                        .spacing(8)
+                        .text_size(13)
+                        .style(toggler_style(colors, false)),
+                ]
+                .spacing(10),
+            )
+            .padding([0, 12]),
+        ])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn workspace_bottom(&self, colors: Colors) -> Element<'_, GalleryMessage> {
+        let tokens = self.theme_tokens();
+        container(column![
+            section_heading::<GalleryMessage>(
+                "底部面板",
+                Some(
+                    button(text("收起").size(11))
+                        .height(Length::Fixed(UI_METRICS.compact_control_height))
+                        .padding([0.0, UI_METRICS.compact_control_padding_x])
+                        .on_press(GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(
+                            RegionId::Diagnostics
+                        ),))
+                        .style(button_style(tokens, ButtonKind::Text))
+                        .into(),
+                ),
+                colors,
+            ),
+            container(
+                row![
+                    status_indicator(true, 10.0, colors.success),
+                    text("布局就绪").size(11).color(colors.muted),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding([0, 12]),
+        ])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     fn controls(&self, colors: Colors) -> Element<'_, GalleryMessage> {
@@ -465,10 +902,10 @@ impl GalleryState {
 
         let fields = container(
             column![
-                text("节点名称 *")
+                text("字段名称 *")
                     .size(13)
                     .font(ui_font(iced::font::Weight::Semibold)),
-                text_input("输入节点名称", &self.input)
+                text_input("输入字段名称", &self.input)
                     .on_input(GalleryMessage::InputChanged)
                     .padding([UI_METRICS.field_padding_y, UI_METRICS.field_padding_x,])
                     .size(13)
@@ -485,7 +922,7 @@ impl GalleryState {
                 } else {
                     colors.success
                 }),
-                text_input("", "系统节点")
+                text_input("", "只读字段")
                     .padding([UI_METRICS.field_padding_y, UI_METRICS.field_padding_x,])
                     .size(13)
                     .width(Length::Fill)
@@ -511,9 +948,9 @@ impl GalleryState {
         };
         let toggles = container(
             column![
-                text("节点设置").size(12).color(colors.muted),
+                text("选择控件").size(12).color(colors.muted),
                 checkbox(self.checked)
-                    .label("启用当前节点")
+                    .label("启用选项")
                     .on_toggle(GalleryMessage::ToggleCheck)
                     .size(16)
                     .spacing(8)
@@ -553,7 +990,7 @@ impl GalleryState {
         };
         let text_area = container(
             column![
-                text("节点说明")
+                text("多行文本")
                     .size(13)
                     .font(ui_font(iced::font::Weight::Semibold)),
                 editor,
@@ -562,7 +999,7 @@ impl GalleryState {
                 } else if editor_enabled {
                     "说明可编辑"
                 } else if !self.checked {
-                    "节点停用时说明不可编辑"
+                    "选项停用时不可编辑"
                 } else {
                     "说明已锁定"
                 })
@@ -581,22 +1018,22 @@ impl GalleryState {
         .style(panel_style(colors));
 
         let items = [
-            ("输入节点", false),
-            ("颜色处理", false),
-            ("预览输出", false),
-            ("位置变换", false),
-            ("尺寸约束", false),
-            ("透明度", false),
-            ("混合模式", false),
-            ("实验节点", true),
-            ("描边设置", false),
-            ("阴影设置", false),
-            ("遮罩输入", false),
-            ("纹理采样", false),
-            ("参数映射", false),
-            ("时间轴", false),
-            ("输出检查", false),
-            ("发布设置", false),
+            ("默认列表项", false),
+            ("选中列表项", false),
+            ("带图标列表项", false),
+            ("带辅助信息", false),
+            ("紧凑列表项", false),
+            ("长文本列表项", false),
+            ("可操作列表项", false),
+            ("禁用列表项", true),
+            ("普通状态", false),
+            ("悬停状态", false),
+            ("按下状态", false),
+            ("成功状态", false),
+            ("警告状态", false),
+            ("错误状态", false),
+            ("加载状态", false),
+            ("空状态", false),
         ];
         let mut list = column![].spacing(4);
         for (index, (label, disabled)) in items.into_iter().enumerate() {
@@ -636,7 +1073,7 @@ impl GalleryState {
         }
         let list = container(
             column![
-                text("节点列表").size(12).color(colors.muted),
+                text("列表").size(12).color(colors.muted),
                 scrollable(list)
                     .direction(vertical_scrollbar())
                     .style(scrollable_style(colors))
@@ -657,7 +1094,7 @@ impl GalleryState {
             .spacing(10),
         )
         .padding(iced::Padding {
-            top: 0.0,
+            top: 16.0,
             right: 16.0,
             bottom: 16.0,
             left: 16.0,
@@ -683,20 +1120,20 @@ impl GalleryState {
             .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
             .style(card_style(colors, kind))
         };
-        let preview = match selected_view {
+        let surface_content = match selected_view {
             SurfaceView::Overview => row![
                 card("基础表面", "主工作区内容层", CardKind::Surface),
                 card("抬升表面", "侧栏与工具面板", CardKind::Raised),
                 card("选中表面", "当前激活的内容", CardKind::Selected),
             ],
-            SurfaceView::Nodes => {
-                let nodes = [
-                    ("输入节点", "接收模型参数", false),
-                    ("颜色处理", "调整颜色与透明度", false),
-                    ("预览输出", "等待渲染器接入", true),
+            SurfaceView::Cards => {
+                let cards_data = [
+                    ("默认卡片", "普通内容容器", false),
+                    ("交互卡片", "支持选择操作", false),
+                    ("禁用卡片", "不可进行操作", true),
                 ];
                 let mut cards = row![].spacing(10);
-                for (index, (title, detail, disabled)) in nodes.into_iter().enumerate() {
+                for (index, (title, detail, disabled)) in cards_data.into_iter().enumerate() {
                     let selected = self.selected_surface_card == index;
                     let node = button(
                         column![
@@ -730,13 +1167,13 @@ impl GalleryState {
                         colors,
                         selected_view == SurfaceView::Overview
                     )),
-                button(text("节点").size(13))
+                button(text("卡片").size(13))
                     .height(Length::Fixed(UI_METRICS.compact_control_height))
                     .padding([0.0, UI_METRICS.selection_padding_x])
-                    .on_press(GalleryMessage::SelectSurfaceView(SurfaceView::Nodes))
+                    .on_press(GalleryMessage::SelectSurfaceView(SurfaceView::Cards))
                     .style(segmented_button_style(
                         colors,
-                        selected_view == SurfaceView::Nodes
+                        selected_view == SurfaceView::Cards
                     )),
             ]
             .spacing(2),
@@ -751,7 +1188,7 @@ impl GalleryState {
                 text("基础、抬升与选中状态").size(11).color(colors.muted),
                 container(
                     row![
-                        text("表面预览").size(12),
+                        text("表面状态").size(12),
                         space().width(Length::Fill),
                         segmented,
                     ]
@@ -760,12 +1197,12 @@ impl GalleryState {
                 )
                 .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x,])
                 .style(panel_style(colors)),
-                preview,
+                surface_content,
             ]
             .spacing(12),
         )
         .padding(iced::Padding {
-            top: 0.0,
+            top: 16.0,
             right: 16.0,
             bottom: 16.0,
             left: 16.0,
@@ -783,8 +1220,8 @@ impl GalleryState {
             Some(ContextAction::Duplicate) => "已复制".to_owned(),
             Some(ContextAction::Rename) => "已重命名".to_owned(),
             Some(ContextAction::Remove) => "已移除".to_owned(),
-            None if self.preview_refreshes > 0 => {
-                format!("预览已刷新 {} 次", self.preview_refreshes)
+            None if self.confirmed_actions > 0 => {
+                format!("操作已确认 {} 次", self.confirmed_actions)
             }
             None => "等待操作".to_owned(),
         };
@@ -842,7 +1279,7 @@ impl GalleryState {
 
         let content = container(
             column![
-                text("Feedback").size(14).color(colors.text),
+                text("反馈").size(14).color(colors.text),
                 row![
                     container(
                         column![
@@ -871,7 +1308,7 @@ impl GalleryState {
             .spacing(12),
         )
         .padding(iced::Padding {
-            top: 0.0,
+            top: 16.0,
             right: 16.0,
             bottom: 16.0,
             left: 16.0,
@@ -895,14 +1332,14 @@ impl GalleryState {
         let menu = mouse_area(
             container(
                 column![
-                    button(text("复制节点").size(13))
+                    button(text("复制项目").size(13))
                         .width(Length::Fill)
                         .height(Length::Fixed(UI_METRICS.compact_control_height))
                         .padding([0.0, UI_METRICS.control_padding_x])
                         .align_x(iced::alignment::Horizontal::Left)
                         .on_press(GalleryMessage::ContextAction(ContextAction::Duplicate))
                         .style(menu_item_style(colors, false, false)),
-                    button(text("重命名节点").size(13))
+                    button(text("重命名项目").size(13))
                         .width(Length::Fill)
                         .height(Length::Fixed(UI_METRICS.compact_control_height))
                         .padding([0.0, UI_METRICS.control_padding_x])
@@ -913,7 +1350,7 @@ impl GalleryState {
                         text(if remove_pending {
                             "再次点击确认移除"
                         } else {
-                            "移除节点"
+                            "移除项目"
                         })
                         .size(13)
                     )
@@ -953,8 +1390,8 @@ impl GalleryState {
         let header = container(
             row![
                 column![
-                    text("刷新预览").size(14).color(colors.text),
-                    text("确认后重新执行当前预览").size(12).color(colors.muted),
+                    text("确认操作").size(14).color(colors.text),
+                    text("此操作会更新当前状态").size(12).color(colors.muted),
                 ]
                 .spacing(4)
                 .width(Length::Fill),
@@ -978,7 +1415,7 @@ impl GalleryState {
         });
 
         let body = container(
-            text("将使用当前节点和参数重新生成预览。")
+            text("确认后将记录一次完整操作。")
                 .size(13)
                 .color(colors.text),
         )
@@ -1000,7 +1437,7 @@ impl GalleryState {
                         DialogCloseTrigger::CloseButton
                     ))
                     .style(button_style(colors, ButtonKind::Ghost)),
-                button(text("确认刷新").size(13))
+                button(text("确认").size(13))
                     .height(Length::Fixed(UI_METRICS.control_height))
                     .padding([0.0, UI_METRICS.control_padding_x])
                     .on_press(GalleryMessage::ConfirmDialog)
@@ -1045,29 +1482,109 @@ impl GalleryState {
     }
 }
 
+fn gallery_layout(show_workspace: bool) -> WorkspaceLayout {
+    WorkspaceLayout::new([
+        RegionState::new(RegionId::Resources, RegionRole::Resources)
+            .size(220.0)
+            .min_size(180.0)
+            .max_size(480.0)
+            .collapsible(true)
+            .resizable(true),
+        RegionState::new(RegionId::PrimaryToolbar, RegionRole::Utility)
+            .placement(RegionPlacement::Top)
+            .scope(RegionScope::Primary)
+            .size(34.0)
+            .hidden(!show_workspace),
+        RegionState::new(RegionId::Primary, RegionRole::Primary)
+            .min_size(320.0)
+            .fill_priority(1),
+        RegionState::new(RegionId::Inspector, RegionRole::Inspector)
+            .size(280.0)
+            .min_size(200.0)
+            .max_size(560.0)
+            .collapsible(true)
+            .resizable(true)
+            .hidden(!show_workspace),
+        RegionState::new(RegionId::Diagnostics, RegionRole::Utility)
+            .placement(RegionPlacement::Bottom)
+            .scope(RegionScope::Primary)
+            .size(180.0)
+            .min_size(96.0)
+            .max_size(420.0)
+            .collapsible(true)
+            .resizable(true)
+            .hidden(!show_workspace),
+    ])
+    .expect("gallery workspace region ids are unique")
+}
+
+fn settings_layout() -> WorkspaceLayout {
+    WorkspaceLayout::new([
+        RegionState::new(RegionId::Resources, RegionRole::Resources)
+            .size(220.0)
+            .min_size(180.0)
+            .max_size(480.0)
+            .collapsible(true)
+            .resizable(true),
+        RegionState::new(RegionId::Primary, RegionRole::Primary)
+            .min_size(420.0)
+            .fill_priority(1),
+    ])
+    .expect("gallery settings region ids are unique")
+}
+
+fn settings_model() -> SettingsModel {
+    SettingsModel::new(
+        "appearance",
+        [
+            SettingsTab::new("appearance", "外观").icon(Icon::Appearance),
+            SettingsTab::new("workspace", "工作区").icon(Icon::Workspace),
+        ],
+    )
+    .expect("gallery settings model is valid")
+}
+
+fn section_label(section: GallerySection) -> &'static str {
+    match section {
+        GallerySection::Controls => "控件",
+        GallerySection::Surfaces => "表面",
+        GallerySection::Feedback => "反馈",
+        GallerySection::Workspace => "工作区",
+    }
+}
+
+fn region_expanded(layout: &WorkspaceLayout, id: &RegionId) -> bool {
+    layout
+        .region(id)
+        .is_some_and(|region| !region.collapsed_value() && !region.hidden_value())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextAction, GalleryMessage, GalleryOverlay, GalleryState, GalleryTab, SurfaceView,
+        ContextAction, GalleryMessage, GalleryOverlay, GallerySection, GalleryState, SurfaceView,
     };
+    use crate::layout::RegionId;
     use crate::selection::SelectionMove;
+    use crate::theme::ThemeMode;
+    use crate::workspace::WorkspaceAction;
 
     #[test]
     fn gallery_interactions_update_real_state() {
         let mut state = GalleryState::new();
         state.update(GalleryMessage::PrimaryAction);
         state.update(GalleryMessage::ToggleLoading);
-        state.update(GalleryMessage::InputChanged("Node".to_owned()));
-        state.update(GalleryMessage::SelectTab(GalleryTab::Feedback));
+        state.update(GalleryMessage::InputChanged("Field".to_owned()));
+        state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
         state.update(GalleryMessage::ToggleContextMenu);
         state.update(GalleryMessage::ContextAction(ContextAction::Rename));
 
         assert_eq!(state.primary_clicks, 1);
         assert!(state.loading);
-        assert_eq!(state.input, "Node");
-        assert_eq!(state.tab, GalleryTab::Feedback);
+        assert_eq!(state.input, "Field");
+        assert_eq!(state.section, GallerySection::Feedback);
         assert!(!state.overlay.is_open());
-        assert_eq!(state.editor.text(), "已重命名节点");
+        assert_eq!(state.context_action, Some(ContextAction::Rename));
     }
 
     #[test]
@@ -1088,7 +1605,7 @@ mod tests {
     fn destructive_menu_action_requires_confirmation() {
         let mut state = GalleryState::new();
         state.update(GalleryMessage::SelectListItem(2));
-        state.update(GalleryMessage::SelectTab(GalleryTab::Feedback));
+        state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
         state.update(GalleryMessage::ToggleContextMenu);
 
         state.update(GalleryMessage::ContextAction(ContextAction::Remove));
@@ -1113,13 +1630,13 @@ mod tests {
 
         state.update(GalleryMessage::ConfirmDialog);
         assert!(!state.overlay.is_open());
-        assert_eq!(state.preview_refreshes, 1);
+        assert_eq!(state.confirmed_actions, 1);
     }
 
     #[test]
     fn segmented_surface_view_supports_click_and_roving_selection() {
         let mut state = GalleryState::new();
-        state.update(GalleryMessage::SelectSurfaceView(SurfaceView::Nodes));
+        state.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
         assert_eq!(state.surface_selection.selected(), 1);
 
         state.update(GalleryMessage::SelectSurfaceCard(1));
@@ -1147,7 +1664,7 @@ mod tests {
     }
 
     #[test]
-    fn node_and_edit_switches_control_editor_availability() {
+    fn selection_and_edit_switches_control_editor_availability() {
         let mut state = GalleryState::new();
         assert!(state.editor_enabled());
 
@@ -1157,5 +1674,74 @@ mod tests {
         state.update(GalleryMessage::ToggleCheck(true));
         state.update(GalleryMessage::ToggleSwitch(false));
         assert!(!state.editor_enabled());
+    }
+
+    #[test]
+    fn workspace_section_controls_auxiliary_regions_without_losing_sizes() {
+        let mut state = GalleryState::new();
+        for id in [
+            RegionId::PrimaryToolbar,
+            RegionId::Inspector,
+            RegionId::Diagnostics,
+        ] {
+            assert!(
+                state
+                    .workspace
+                    .layout()
+                    .region(&id)
+                    .expect("gallery region")
+                    .hidden_value()
+            );
+        }
+
+        state.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+        state.update(GalleryMessage::Workspace(WorkspaceAction::SetRegionSize(
+            RegionId::Inspector,
+            340.0,
+        )));
+        assert!(
+            !state
+                .workspace
+                .layout()
+                .region(&RegionId::Inspector)
+                .expect("inspector")
+                .hidden_value()
+        );
+
+        state.update(GalleryMessage::SelectSection(GallerySection::Controls));
+        assert!(
+            state
+                .workspace
+                .layout()
+                .region(&RegionId::Inspector)
+                .expect("inspector")
+                .hidden_value()
+        );
+
+        state.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+        let inspector = state
+            .workspace
+            .layout()
+            .region(&RegionId::Inspector)
+            .expect("inspector");
+        assert!(!inspector.hidden_value());
+        assert_eq!(inspector.size_value(), Some(340.0));
+    }
+
+    #[test]
+    fn settings_return_to_the_gallery_and_appearance_updates_immediately() {
+        let mut state = GalleryState::new();
+        state.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
+        state.update(GalleryMessage::OpenSettings);
+        assert!(state.settings_open);
+
+        state.update(GalleryMessage::SetTheme(ThemeMode::Light));
+        state.update(GalleryMessage::SetStandardRadius(8));
+        state.update(GalleryMessage::BackFromSettings);
+
+        assert!(!state.settings_open);
+        assert_eq!(state.section, GallerySection::Surfaces);
+        assert_eq!(state.theme_mode(), ThemeMode::Light);
+        assert_eq!(state.appearance.standard_radius(), 8.0);
     }
 }

@@ -1,8 +1,8 @@
 //! NanaUI's native Lilia-style application framework.
 //!
 //! [`WorkspaceController`], [`WorkspaceSlots`], and [`workspace_view`] provide
-//! the reusable workspace contract. [`WorkspaceState`] is a runnable demo that
-//! exercises the framework with real application state.
+//! the reusable workspace contract. [`GalleryState`] powers the runnable
+//! component gallery with real application state.
 
 pub mod dialog;
 pub mod gallery;
@@ -12,7 +12,6 @@ pub mod gpu_view;
 pub mod icons;
 pub mod layout;
 pub mod menu;
-mod node_canvas;
 pub mod overlay;
 pub mod selection;
 pub mod settings;
@@ -23,10 +22,9 @@ pub mod tooltip;
 pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
-mod workspace_demo;
 
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-pub use gallery::{ContextAction, GalleryMessage, GalleryState, GalleryTab, SurfaceView};
+pub use gallery::{ContextAction, GalleryMessage, GallerySection, GalleryState, SurfaceView};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 pub use gpu_texture::{GpuTextureView, HostTexture};
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
@@ -61,4 +59,3 @@ pub use workspace::{
     WorkspaceAction, WorkspaceController, WorkspaceRegion, WorkspaceRegions, WorkspaceSlots,
     workspace_view,
 };
-pub use workspace_demo::{Document, LayoutPreset, Message, Navigation, WorkspaceState};
