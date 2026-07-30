@@ -92,6 +92,7 @@ impl Compositor {
             power_preference: wgpu::PowerPreference::from_env().unwrap_or(power_preference),
             compatible_surface: compatible_surface.as_ref(),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         };
 
         let adapter = instance
@@ -248,7 +249,7 @@ pub fn present(
 
             // Present the frame
             on_pre_present();
-            frame.present();
+            renderer.engine.queue.present(frame);
 
             Ok(())
         }
@@ -322,6 +323,7 @@ impl graphics::Compositor for Compositor {
             &wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: self.format,
+                color_space: wgpu::SurfaceColorSpace::Srgb,
                 present_mode: self.settings.present_mode,
                 width,
                 height,

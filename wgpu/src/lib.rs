@@ -269,7 +269,9 @@ impl Renderer {
             timeout: None,
         });
 
-        let mapped_buffer = slice.get_mapped_range();
+        let mapped_buffer = slice
+            .get_mapped_range()
+            .expect("the screenshot output buffer must be mapped after polling");
 
         mapped_buffer
             .chunks(dimensions.padded_bytes_per_row)
@@ -916,6 +918,7 @@ impl renderer::Headless for Renderer {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .ok()?;
