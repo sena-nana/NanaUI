@@ -1,5 +1,5 @@
 use iced::widget::{
-    button, checkbox, column, container, row, scrollable, slider, space, text, text_input,
+    button, checkbox, column, container, row, scrollable, slider, space, text, text_input, toggler,
 };
 use iced::{Alignment, Element, Length, Subscription};
 
@@ -21,8 +21,8 @@ use crate::sidebar::{
 use crate::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, ui_font};
 use crate::widgets::{
     ButtonKind, button_style, canvas_style, checkbox_style, panel_style, scrollable_style,
-    segmented_surface_style, selection_button_style, slider_style, text_input_style, toolbar_style,
-    vertical_scrollbar,
+    segmented_surface_style, selection_button_style, slider_style, text_input_style, toggler_style,
+    toolbar_style, vertical_scrollbar,
 };
 use crate::workspace::{WorkspaceAction, WorkspaceController, WorkspaceRegions, workspace_view};
 
@@ -55,6 +55,7 @@ pub enum Message {
     ToggleTheme,
     SetTheme(ThemeMode),
     SetStandardRadius(u8),
+    SetWorkspaceCorners(bool),
     ResetAppearance,
     SelectLayout(LayoutPreset),
     SelectNavigation(Navigation),
@@ -140,6 +141,7 @@ impl WorkspaceState {
 
     pub(crate) fn theme_tokens(&self) -> ThemeTokens {
         ThemeTokens::new(self.colors(), self.appearance.metrics())
+            .with_workspace_corners(self.appearance.workspace_corners_enabled())
     }
 
     pub fn layout(&self) -> &WorkspaceLayout {
@@ -245,6 +247,9 @@ impl WorkspaceState {
             Message::SetStandardRadius(radius) => {
                 self.appearance.set_standard_radius(f32::from(radius));
             }
+            Message::SetWorkspaceCorners(enabled) => {
+                self.appearance.set_workspace_corners_enabled(enabled);
+            }
             Message::ResetAppearance => {
                 self.appearance.reset();
             }
@@ -316,7 +321,7 @@ impl WorkspaceState {
             let workspace = workspace_view(
                 &self.settings_workspace,
                 regions,
-                colors,
+                tokens,
                 Message::Workspace,
             );
             return app_shell(title_bar(self, tokens), workspace, colors);
@@ -330,7 +335,7 @@ impl WorkspaceState {
         if self.layout().region(&RegionId::Diagnostics).is_some() {
             regions = regions.with_region(RegionId::Diagnostics, self.diagnostics(colors));
         }
-        let workspace = workspace_view(&self.workspace, regions, colors, Message::Workspace);
+        let workspace = workspace_view(&self.workspace, regions, tokens, Message::Workspace);
         app_shell(title_bar(self, tokens), workspace, colors)
     }
 
@@ -679,20 +684,30 @@ impl WorkspaceState {
         .spacing(10)
         .align_y(Alignment::Center);
         let radius_rows = column![
+            SettingsRow::new(
+                "主区域圆角",
+                toggler(self.appearance.workspace_corners_enabled())
+                    .on_toggle(Message::SetWorkspaceCorners)
+                    .size(16)
+                    .style(toggler_style(colors, false)),
+            )
+            .hint("控制主区域是否使用贴边自适应圆角。")
+            .first_in_group()
+            .divided(true)
+            .view(tokens),
             SettingsRow::new("标准圆角", radius_control)
                 .hint("统一调整控件、列表、卡片与页面圆角。")
-                .first_in_group()
                 .divided(true)
                 .view(tokens),
             SettingsRow::new(
                 "默认样式",
-                button(text("恢复默认圆角").size(12))
+                button(text("恢复默认设置").size(12))
                     .height(Length::Fixed(UI_METRICS.compact_control_height))
                     .padding([0.0, UI_METRICS.control_padding_x])
                     .on_press(Message::ResetAppearance)
                     .style(button_style(tokens, ButtonKind::Subtle)),
             )
-            .hint("恢复 NanaUI 的默认圆角大小。")
+            .hint("恢复默认圆角大小和主区域圆角开关。")
             .last_in_group()
             .view(tokens),
         ]
@@ -1428,10 +1443,13 @@ mod tests {
         let mut state = WorkspaceState::new();
         state.update(Message::SelectNavigation(Navigation::Settings));
         state.update(Message::SetStandardRadius(12));
+        state.update(Message::SetWorkspaceCorners(false));
 
         state.update(Message::SelectSettingsTab(SettingsTabId::from("about")));
         state.update(Message::BackFromSettings);
         assert_eq!(state.appearance().standard_radius(), 12.0);
+        assert!(!state.appearance().workspace_corners_enabled());
+        assert!(!state.theme_tokens().workspace_corners_enabled);
         assert_eq!(state.theme_tokens().metrics.radius_xs, 4.0);
         assert_eq!(state.theme_tokens().metrics.radius_sm, 8.0);
         assert_eq!(state.theme_tokens().metrics.radius_md, 12.0);
@@ -1439,6 +1457,8 @@ mod tests {
 
         state.update(Message::ResetAppearance);
         assert_eq!(state.appearance().metrics(), UI_METRICS);
+        assert!(state.appearance().workspace_corners_enabled());
+        assert!(state.theme_tokens().workspace_corners_enabled);
     }
 
     #[test]

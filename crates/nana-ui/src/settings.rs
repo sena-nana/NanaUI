@@ -16,6 +16,7 @@ const RADIUS_STEP: f32 = 4.0;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct AppearanceSettings {
     standard_radius: f32,
+    workspace_corners_enabled: bool,
 }
 
 impl AppearanceSettings {
@@ -25,11 +26,16 @@ impl AppearanceSettings {
     pub fn new(standard_radius: f32) -> Self {
         Self {
             standard_radius: normalize_standard_radius(standard_radius),
+            workspace_corners_enabled: true,
         }
     }
 
     pub fn standard_radius(&self) -> f32 {
         self.standard_radius
+    }
+
+    pub fn workspace_corners_enabled(&self) -> bool {
+        self.workspace_corners_enabled
     }
 
     pub fn metrics(&self) -> ThemeMetrics {
@@ -51,11 +57,20 @@ impl AppearanceSettings {
         true
     }
 
+    pub fn set_workspace_corners_enabled(&mut self, enabled: bool) -> bool {
+        if self.workspace_corners_enabled == enabled {
+            return false;
+        }
+        self.workspace_corners_enabled = enabled;
+        true
+    }
+
     pub fn reset(&mut self) -> bool {
-        if self.standard_radius == UI_METRICS.radius_md {
+        if self.standard_radius == UI_METRICS.radius_md && self.workspace_corners_enabled {
             return false;
         }
         self.standard_radius = UI_METRICS.radius_md;
+        self.workspace_corners_enabled = true;
         true
     }
 
@@ -83,10 +98,14 @@ impl<'de> Deserialize<'de> for AppearanceSettings {
         #[derive(Deserialize)]
         struct PersistedAppearance {
             standard_radius: f32,
+            workspace_corners_enabled: bool,
         }
 
         let persisted = PersistedAppearance::deserialize(deserializer)?;
-        Ok(Self::new(persisted.standard_radius))
+        Ok(Self {
+            standard_radius: normalize_standard_radius(persisted.standard_radius),
+            workspace_corners_enabled: persisted.workspace_corners_enabled,
+        })
     }
 }
 
@@ -664,6 +683,7 @@ mod tests {
         let mut appearance = AppearanceSettings::default();
 
         assert_eq!(appearance.standard_radius(), 10.0);
+        assert!(appearance.workspace_corners_enabled());
         assert_eq!(appearance.metrics(), UI_METRICS);
 
         assert!(appearance.set_standard_radius(24.0));
@@ -678,10 +698,11 @@ mod tests {
         assert!(appearance.set_standard_radius(f32::NAN));
         assert_eq!(appearance.standard_radius(), UI_METRICS.radius_md);
 
-        assert!(!appearance.reset());
+        assert!(appearance.set_workspace_corners_enabled(false));
         assert!(appearance.set_standard_radius(8.0));
         assert!(appearance.reset());
         assert_eq!(appearance.metrics(), UI_METRICS);
+        assert!(appearance.workspace_corners_enabled());
         assert!(!appearance.reset());
     }
 
@@ -689,6 +710,7 @@ mod tests {
     fn appearance_round_trip_normalizes_persisted_values() {
         let persisted = AppearanceSettings {
             standard_radius: -4.0,
+            workspace_corners_enabled: false,
         };
         let encoded = persisted.to_json().expect("appearance serializes");
         let mut restored = AppearanceSettings::default();
@@ -701,11 +723,18 @@ mod tests {
         assert_eq!(restored.metrics().radius_sm, 4.0);
         assert_eq!(restored.metrics().radius_md, 8.0);
         assert_eq!(restored.metrics().radius_lg, 12.0);
+        assert!(!restored.workspace_corners_enabled());
 
         let legacy = serde_json::json!({ "metrics": UI_METRICS });
         assert!(
             restored.restore_json(&legacy.to_string()).is_err(),
             "legacy metrics format must be rejected"
+        );
+        assert!(
+            restored
+                .restore_json(r#"{"standard_radius":10.0}"#)
+                .is_err(),
+            "appearance settings without the corner switch must be rejected"
         );
     }
 }

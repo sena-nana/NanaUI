@@ -10,7 +10,7 @@ use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
     Document, GalleryMessage, GalleryState, GalleryTab, LayoutPreset, Message as WorkspaceMessage,
-    Navigation, SettingsTabId, SurfaceView, WorkspaceState,
+    Navigation, RegionId, SettingsTabId, SurfaceView, WorkspaceAction, WorkspaceState,
 };
 
 use crate::write;
@@ -76,6 +76,50 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &workspace_lilia_viewport_path,
         Size::new(1280, 720),
         &workspace_lilia_viewport_pixels,
+    )?;
+
+    let mut workspace_primary_start_edge = WorkspaceState::new();
+    workspace_primary_start_edge.update(WorkspaceMessage::Workspace(
+        WorkspaceAction::SetRegionCollapsed(RegionId::Resources, true),
+    ));
+    workspace_primary_start_edge.update(WorkspaceMessage::Workspace(
+        WorkspaceAction::AnimationFrame(Instant::now() + iced::time::Duration::from_millis(300)),
+    ));
+    let workspace_primary_start_edge_pixels = snapshot(
+        &mut renderer,
+        workspace_primary_start_edge.view(),
+        &workspace_primary_start_edge.theme_mode().iced_theme(),
+        workspace_primary_start_edge
+            .theme_mode()
+            .colors()
+            .background,
+        Size::new(1440, 900),
+    );
+    let workspace_primary_start_edge_path = output.join("workspace-primary-start-edge-dark.png");
+    write::png(
+        &workspace_primary_start_edge_path,
+        Size::new(1440, 900),
+        &workspace_primary_start_edge_pixels,
+    )?;
+
+    let mut workspace_primary_corners_disabled = WorkspaceState::new();
+    workspace_primary_corners_disabled.update(WorkspaceMessage::SetWorkspaceCorners(false));
+    let workspace_primary_corners_disabled_pixels = snapshot(
+        &mut renderer,
+        workspace_primary_corners_disabled.view(),
+        &workspace_primary_corners_disabled.theme_mode().iced_theme(),
+        workspace_primary_corners_disabled
+            .theme_mode()
+            .colors()
+            .background,
+        Size::new(1440, 900),
+    );
+    let workspace_primary_corners_disabled_path =
+        output.join("workspace-primary-corners-disabled-dark.png");
+    write::png(
+        &workspace_primary_corners_disabled_path,
+        Size::new(1440, 900),
+        &workspace_primary_corners_disabled_pixels,
     )?;
 
     let mut workspace_light = WorkspaceState::new();
@@ -391,6 +435,8 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     Ok(vec![
         workspace_path,
         workspace_lilia_viewport_path,
+        workspace_primary_start_edge_path,
+        workspace_primary_corners_disabled_path,
         workspace_light_path,
         workspace_github_path,
         workspace_live2d_path,

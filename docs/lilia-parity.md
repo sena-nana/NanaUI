@@ -6,7 +6,7 @@ NanaUI 不依赖 Vue、DOM 或 CSS，但视觉与交互参数直接以当前 Lil
 | --- | --- | --- |
 | `theme` | `packages/theme/src/styles/tokens.css` | dark/light 语义色、五档交互状态色、16px 基准圆角 |
 | `shell` | `LiliaGithub/src/layouts/AppShell.vue`、`TitleBar.vue`、`app-shell.css` | 36px 标题栏、28px 侧栏折叠按钮、居中工作区标题、6px 边缘内距 |
-| `workspace` | `LiliaWorkspace.vue`、`workspace.css`、`LiliaWorkspaceRegion.vue` | 动态 Region 注册顺序、role/placement/scope、尺寸约束、折叠/overlay 响应式行为、覆盖在区域边缘的 8px resize 命中区、2px 状态指示线与双击复位 |
+| `workspace` | `LiliaWorkspace.vue`、`workspace.css`、`LiliaWorkspaceRegion.vue` | 动态 Region 注册顺序、role/placement/scope、尺寸约束、折叠/overlay 响应式行为、主区域 `edge-start` / `edge-end` 自动圆角、覆盖在区域边缘的 8px resize 命中区、2px 状态指示线与双击复位 |
 | `widgets` | `UiButton.vue`、`UiInput.vue`、`UiTextarea.vue`、`UiCheckbox.vue`、`UiSwitch.vue`、`UiRangeField.vue` | md 控件尺寸、圆角、按钮内容双轴居中、hover/pressed/selected/disabled/invalid 层级 |
 | `selection` | `UiListItem.vue`、`UiTabs.vue`、`UiSegmentedControl.vue` | 34px 行高、方向键/Home/End 导航、独立 selected-hover/pressed |
 | `sidebar` | `LiliaGithub/src/layouts/SecondaryPanel.vue`、`SidebarFooter.vue`、`LiliaSidebarFrame.vue`、`LiliaSidebarSection.vue`、`LiliaSidebarRow.vue` | 单个 220px ResourcePanel、可滚动主体、固定 Footer、26px 设置图标按钮、统一 28px 列表/分区行、折叠与 selected/disabled/tone |
@@ -31,7 +31,12 @@ resize handle 是绝对覆盖层，不参与上述 grid track 尺寸；底部内
 后的 y=521 开始。Code/Github/Live2D 的可选 Inspector、Toolbar 与 Bottom
 继续用于演示 Workspace Region 能力，但不会增加第二层左侧导航。
 
-结构区域和内容卡片保持不同语义：侧栏、检查器和底部面板为方形、无边框的 workspace region；只有 Card 与主内容裁剪边界使用圆角。resize handle 空闲时透明，悬停或拖动时只显示居中的 2px 指示线。
+结构区域和内容卡片保持不同语义：侧栏、检查器和底部面板为方形、无边框的
+workspace region；只有 Card 与主内容裁剪边界使用圆角。主区域不是固定四角：
+展开的 start/end Region 会让相邻侧保留页面圆角，缺少对应 Region 时主区域贴边，
+该侧上下两角归零。这还原的是 LiliaUI 在 `60e0e2b` 移除前由
+`data-edge-start` / `data-edge-end` 驱动的原始行为。resize handle 空闲时透明，
+悬停或拖动时只显示居中的 2px 指示线。
 
 同一网格行中的 Card 使用等分宽度和统一高度；菜单、列表、侧栏按钮显式左对齐，
 其余文本、图标及组合操作按钮在自身边界内水平、垂直居中。
@@ -39,7 +44,8 @@ resize handle 是绝对覆盖层，不参与上述 grid track 尺寸；底部内
 设置 Demo 不复制 Vue Router 或 localStorage。独立设置 Workspace 保留应用工作区
 状态，`SettingsState`、`ThemeMode`、`AppearanceSettings` 与 `WorkspaceLayout`
 交由宿主组合持久化。侧栏分区标题与列表项读取同一运行时控件圆角，不再维护两份
-样式常量。
+样式常量。`AppearanceSettings` 同时持久化主区域圆角开关：默认开启贴边自适应
+圆角，关闭后四角均为直角；旧配置缺少开关字段时直接拒绝，不进行迁移。
 
 NanaUI 内置并注册 LiliaUI `fonts.css` 对应的 Noto Sans SC
 400/500/600/700 字体面；标题使用同样的 0.2px tracking，分区与 Card 标题使用

@@ -7,6 +7,8 @@
 - `workspace-dark.png`、`workspace-light.png`；
 - `workspace-custom-radius-dark.png`；
 - `workspace-lilia-viewport-dark.png`；
+- `workspace-primary-start-edge-dark.png`；
+- `workspace-primary-corners-disabled-dark.png`；
 - `workspace-github-dark.png`、`workspace-live2d-dark.png`；
 - `workspace-nodes-dark.png`、`workspace-search-dark.png`、`workspace-preview-dark.png`；
 - `workspace-settings-appearance-dark.png`、`workspace-settings-appearance-light.png`；
@@ -32,6 +34,9 @@
 - 外观页的标准圆角为真实滑杆，内部派生四档圆角；自定义圆角快照以悬停分区
   标题和选中列表项确认两者共享完整宽度、28px 高度和运行时控件圆角；
 - 1280×720 工作区的 220/780/280 列与 34/450/200 行逐像素对齐；
+- 默认工作区四角保留圆角；折叠左侧栏后左侧两角自动归零而右侧两角保持圆角；
+  设置工作区则以左侧保留、右侧贴边的反向组合验证两侧独立计算；
+- 外观设置提供真实的主区域圆角开关；关闭后的独立快照确认主区域四角全部归零；
 - workspace region 由公共 `WorkspaceRegions` / `workspace_view` 动态组合；8px resize 命中区覆盖边缘而不消耗 grid track；
 - Noto Sans SC 四个字重、标题 0.2px tracking 和分区标题 0.5px tracking 已由同源字体数据渲染；
 - 节点画布网格、节点、连接线和裁剪区域正确；
@@ -61,6 +66,6 @@ cargo run --release -p nana-ui --example ui-snapshots --locked
 
 截图工具会执行 GPU→CPU 回读和 PNG 编码，只属于验收工具。正式窗口 Demo 与宿主纹理直显不会复用该读取逻辑。
 
-当前命令生成 21 张无损 PNG。离屏快照可以证明布局和像素内容，但不能证明原生
+当前命令生成 23 张无损 PNG。离屏快照可以证明布局和像素内容，但不能证明原生
 窗口材质、鼠标命中、IME、窗口 resize 或不同 DPI 显示器上的最终表现；这些仍
 需在解锁的真实窗口和目标平台补测。

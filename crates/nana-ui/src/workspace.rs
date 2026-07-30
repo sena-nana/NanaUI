@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 
-use iced::widget::{column, container, mouse_area, row, space, stack};
-use iced::{Animation, Element, Length, Padding, Point, Subscription};
+use iced::widget::canvas::{Fill, Path, Style, fill};
+use iced::widget::{canvas, column, container, mouse_area, row, space, stack};
+use iced::{
+    Animation, Element, Length, Padding, Point, Rectangle, Renderer, Subscription, Theme, mouse,
+};
 
 use crate::geometry::{RESIZE_HANDLE_SIZE, WorkspaceGeometry};
 use crate::layout::{
     RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
 };
-use crate::theme::Colors;
-use crate::widgets::{canvas_style, workspace_region_style};
+use crate::theme::{Colors, ThemeTokens};
+use crate::widgets::{primary_region_radius, primary_region_style, workspace_region_style};
 
 const REGION_COLLAPSE_DURATION: iced::time::Duration = iced::time::Duration::from_millis(240);
 
@@ -413,6 +416,13 @@ impl<'a, Message> From<WorkspaceSlots<'a, Message>> for WorkspaceRegions<'a, Mes
 struct RegionView<'a, Message> {
     state: &'a RegionState,
     content: Element<'a, Message>,
+    edges: RegionEdges,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RegionEdges {
+    start: bool,
+    end: bool,
 }
 
 /// Composes registered application content using the same start/primary/end,
@@ -420,12 +430,14 @@ struct RegionView<'a, Message> {
 pub fn workspace_view<'a, Message>(
     controller: &'a WorkspaceController,
     regions: impl Into<WorkspaceRegions<'a, Message>>,
-    colors: Colors,
+    theme: impl Into<ThemeTokens>,
     on_action: impl Fn(WorkspaceAction) -> Message + Copy,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
+    let tokens = theme.into();
+    let colors = tokens.colors;
     let mut content = regions.into().regions;
     let mut starts = Vec::new();
     let mut primaries = Vec::new();
@@ -447,6 +459,7 @@ where
         let view = RegionView {
             state,
             content: region.content,
+            edges: RegionEdges::default(),
         };
         if controller.region_overlay(state) {
             overlays.push(view);
@@ -463,9 +476,11 @@ where
         }
     }
 
+    resolve_primary_edges(&starts, &mut primaries, &ends);
+
     let mut primary_column = column![].width(Length::Fill).height(Length::Fill);
     for region in primary_top {
-        primary_column = primary_column.push(render_region(controller, region, colors, on_action));
+        primary_column = primary_column.push(render_region(controller, region, tokens, on_action));
     }
 
     let mut primary_row = row![].width(Length::Fill).height(Length::Fill);
@@ -473,31 +488,31 @@ where
         primary_row = primary_row.push(space().width(Length::Fill).height(Length::Fill));
     } else {
         for region in primaries {
-            primary_row = primary_row.push(render_region(controller, region, colors, on_action));
+            primary_row = primary_row.push(render_region(controller, region, tokens, on_action));
         }
     }
     primary_column = primary_column.push(primary_row);
 
     for region in primary_bottom {
-        primary_column = primary_column.push(render_region(controller, region, colors, on_action));
+        primary_column = primary_column.push(render_region(controller, region, tokens, on_action));
     }
 
     let mut middle = row![].width(Length::Fill).height(Length::Fill);
     for region in starts {
-        middle = middle.push(render_region(controller, region, colors, on_action));
+        middle = middle.push(render_region(controller, region, tokens, on_action));
     }
     middle = middle.push(primary_column);
     for region in ends {
-        middle = middle.push(render_region(controller, region, colors, on_action));
+        middle = middle.push(render_region(controller, region, tokens, on_action));
     }
 
     let mut base = column![].width(Length::Fill).height(Length::Fill);
     for region in workspace_top {
-        base = base.push(render_region(controller, region, colors, on_action));
+        base = base.push(render_region(controller, region, tokens, on_action));
     }
     base = base.push(middle);
     for region in workspace_bottom {
-        base = base.push(render_region(controller, region, colors, on_action));
+        base = base.push(render_region(controller, region, tokens, on_action));
     }
 
     let base = container(base)
@@ -505,33 +520,60 @@ where
         .height(Length::Fill)
         .style(move |_theme| {
             iced::widget::container::Style::default()
-                .background(colors.background)
+                .background(colors.surface)
                 .color(colors.text)
         });
 
     let mut layers = stack![base];
     for overlay in overlays {
-        layers = layers.push(render_overlay(controller, overlay, colors, on_action));
+        layers = layers.push(render_overlay(controller, overlay, tokens, on_action));
     }
     layers.width(Length::Fill).height(Length::Fill).into()
+}
+
+fn resolve_primary_edges<Message>(
+    starts: &[RegionView<'_, Message>],
+    primaries: &mut [RegionView<'_, Message>],
+    ends: &[RegionView<'_, Message>],
+) {
+    let mut has_track_before = starts.iter().any(|region| !region.state.collapsed_value());
+    let has_end_track = ends.iter().any(|region| !region.state.collapsed_value());
+
+    for index in 0..primaries.len() {
+        let expanded = !primaries[index].state.collapsed_value();
+        let has_track_after = primaries[index + 1..]
+            .iter()
+            .any(|region| !region.state.collapsed_value())
+            || has_end_track;
+        primaries[index].edges = primary_edges(expanded, has_track_before, has_track_after);
+        has_track_before |= expanded;
+    }
+}
+
+fn primary_edges(expanded: bool, has_track_before: bool, has_track_after: bool) -> RegionEdges {
+    RegionEdges {
+        start: expanded && !has_track_before,
+        end: expanded && !has_track_after,
+    }
 }
 
 fn render_region<'a, Message>(
     controller: &'a WorkspaceController,
     region: RegionView<'a, Message>,
-    colors: Colors,
+    tokens: ThemeTokens,
     on_action: impl Fn(WorkspaceAction) -> Message + Copy,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
+    let colors = tokens.colors;
     let state = region.state;
     let horizontal = matches!(
         state.placement_value(),
         RegionPlacement::Start | RegionPlacement::Primary | RegionPlacement::End
     );
     let (width, height) = track_lengths(controller, state);
-    let surface = region_surface(region.content, state, width, height, colors);
+    let surface = region_surface(region.content, state, region.edges, width, height, tokens);
     if !state.resizable_value()
         || state.disabled_value()
         || state.fill_priority_value() > 0
@@ -568,14 +610,14 @@ where
 fn render_overlay<'a, Message>(
     controller: &'a WorkspaceController,
     region: RegionView<'a, Message>,
-    colors: Colors,
+    tokens: ThemeTokens,
     on_action: impl Fn(WorkspaceAction) -> Message + Copy,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
     let placement = region.state.placement_value();
-    let overlay = render_region(controller, region, colors, on_action);
+    let overlay = render_region(controller, region, tokens, on_action);
     let aligned = match placement {
         RegionPlacement::Start | RegionPlacement::Primary => container(overlay)
             .width(Length::Fill)
@@ -600,13 +642,15 @@ where
 fn region_surface<'a, Message>(
     content: Element<'a, Message>,
     state: &RegionState,
+    edges: RegionEdges,
     width: Length,
     height: Length,
-    colors: Colors,
+    tokens: ThemeTokens,
 ) -> Element<'a, Message>
 where
     Message: 'a,
 {
+    let colors = tokens.colors;
     let content = if state.placement_value() == RegionPlacement::Bottom {
         container(content)
             .width(Length::Fill)
@@ -623,7 +667,14 @@ where
     };
     let surface = container(content).width(width).height(height).clip(true);
     if state.role() == RegionRole::Primary {
-        surface.style(canvas_style(colors)).into()
+        let surface = surface.style(primary_region_style(tokens, edges.start, edges.end));
+        let mask = canvas(PrimaryCornerMask {
+            radius: primary_region_radius(tokens, edges.start, edges.end),
+            color: colors.surface,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
+        stack![surface, mask].width(width).height(height).into()
     } else if state.placement_value() == RegionPlacement::Bottom {
         let separator = container(space())
             .width(Length::Fill)
@@ -643,6 +694,43 @@ where
         .into()
     } else {
         surface.style(workspace_region_style(colors)).into()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PrimaryCornerMask {
+    radius: iced::border::Radius,
+    color: iced::Color,
+}
+
+impl<Message> canvas::Program<Message> for PrimaryCornerMask {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        if self.radius == iced::border::Radius::default() {
+            return Vec::new();
+        }
+
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let mask = Path::new(|builder| {
+            builder.rectangle(Point::ORIGIN, bounds.size());
+            builder.rounded_rectangle(Point::ORIGIN, bounds.size(), self.radius);
+        });
+        frame.fill(
+            &mask,
+            Fill {
+                style: Style::Solid(self.color),
+                rule: fill::Rule::EvenOdd,
+            },
+        );
+        vec![frame.into_geometry()]
     }
 }
 
@@ -778,7 +866,7 @@ fn window_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkspaceAction, WorkspaceController};
+    use super::{RegionEdges, WorkspaceAction, WorkspaceController, primary_edges};
     use crate::layout::{RegionId, RegionRole, RegionState, WorkspaceLayout};
 
     #[test]
@@ -950,6 +1038,39 @@ mod tests {
 
         assert_eq!(restored.layout(), controller.layout());
         assert_eq!(controller.viewport_geometry().physical_size, (1500, 1050));
+    }
+
+    #[test]
+    fn primary_corners_follow_the_first_and_last_expanded_middle_tracks() {
+        assert_eq!(
+            primary_edges(true, true, true),
+            RegionEdges {
+                start: false,
+                end: false,
+            }
+        );
+        assert_eq!(
+            primary_edges(true, false, true),
+            RegionEdges {
+                start: true,
+                end: false,
+            }
+        );
+        assert_eq!(
+            primary_edges(true, true, false),
+            RegionEdges {
+                start: false,
+                end: true,
+            }
+        );
+        assert_eq!(
+            primary_edges(true, false, false),
+            RegionEdges {
+                start: true,
+                end: true,
+            }
+        );
+        assert_eq!(primary_edges(false, false, false), RegionEdges::default());
     }
 
     fn resize(
