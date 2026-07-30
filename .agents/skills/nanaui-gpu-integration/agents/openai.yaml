@@ -1,0 +1,4 @@
+interface:
+  display_name: "NanaUI GPU Integration"
+  short_description: "Integrate NanaUI with one host-owned GPU context"
+  default_prompt: "Use $nanaui-gpu-integration to implement or review NanaUI host GPU integration."

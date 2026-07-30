@@ -1,0 +1,4 @@
+interface:
+  display_name: "NanaUI Window Materials"
+  short_description: "Maintain truthful native window material behavior"
+  default_prompt: "Use $nanaui-window-materials to implement or review NanaUI native window material behavior."
