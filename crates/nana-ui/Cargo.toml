@@ -1,0 +1,56 @@
+[package]
+name = "nana-ui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Rust-native UI foundation for the Nana application family"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_ui"
+path = "src/lib.rs"
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+iced = {
+    path = "../../../iced",
+    default-features = false,
+    features = ["wgpu", "canvas", "smol", "thread-pool", "x11", "wayland"],
+}
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wgpu = "30.0.0"
+
+[dev-dependencies]
+iced_wgpu = { path = "../../../iced/wgpu" }
+iced_winit = { path = "../../../iced/winit" }
+nana-window = { path = "../nana-window" }
+png = "0.18.1"
+
+[[example]]
+name = "workspace-demo"
+path = "examples/workspace-demo.rs"
+
+[[example]]
+name = "component-gallery"
+path = "examples/component-gallery.rs"
+
+[[example]]
+name = "transparent-window"
+path = "examples/transparent-window.rs"
+
+[[example]]
+name = "gpu-view-demo"
+path = "examples/gpu-view-demo.rs"
+
+[[example]]
+name = "hosted-gpu-demo"
+path = "examples/hosted-gpu-demo.rs"
+
+[[example]]
+name = "ui-benchmark"
+path = "examples/ui-benchmark.rs"
+
+[[example]]
+name = "ui-snapshots"
+path = "examples/ui-snapshots.rs"

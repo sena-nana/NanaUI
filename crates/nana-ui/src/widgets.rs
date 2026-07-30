@@ -1,0 +1,724 @@
+use iced::widget::{
+    button, checkbox, container, progress_bar, scrollable, slider, text_editor, text_input, toggler,
+};
+use iced::{Border, Color, Shadow, Theme, Vector};
+
+use crate::theme::Colors;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    Ghost,
+    Subtle,
+    Selected,
+    Primary,
+    Warning,
+    Danger,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardKind {
+    Surface,
+    Outlined,
+    Raised,
+    Flat,
+    Selected,
+}
+
+pub fn button_style(
+    colors: Colors,
+    kind: ButtonKind,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    move |_theme, status| {
+        let (base, foreground, border_color) = match kind {
+            ButtonKind::Ghost => (Color::TRANSPARENT, colors.text, Color::TRANSPARENT),
+            ButtonKind::Subtle => (colors.subtle, colors.text, colors.border_soft),
+            ButtonKind::Selected => (colors.active, colors.text, Color::TRANSPARENT),
+            ButtonKind::Primary => (
+                colors.accent_soft,
+                colors.accent_on_soft,
+                Color::TRANSPARENT,
+            ),
+            ButtonKind::Warning => (
+                fade(
+                    colors.warning,
+                    if colors.background.r > 0.5 {
+                        0.12
+                    } else {
+                        0.16
+                    },
+                ),
+                colors.warning,
+                Color::TRANSPARENT,
+            ),
+            ButtonKind::Danger => (Color::TRANSPARENT, colors.danger, Color::TRANSPARENT),
+            ButtonKind::Text => (Color::TRANSPARENT, colors.accent, Color::TRANSPARENT),
+        };
+
+        let background = match status {
+            button::Status::Hovered => match kind {
+                ButtonKind::Primary => {
+                    Color::from_rgba(colors.accent.r, colors.accent.g, colors.accent.b, 0.20)
+                }
+                ButtonKind::Warning => fade(colors.warning, 0.20),
+                ButtonKind::Danger => fade(colors.danger, 0.18),
+                ButtonKind::Selected => colors.selected_hover,
+                _ => colors.hover,
+            },
+            button::Status::Pressed => match kind {
+                ButtonKind::Primary => {
+                    Color::from_rgba(colors.accent.r, colors.accent.g, colors.accent.b, 0.23)
+                }
+                ButtonKind::Warning => fade(colors.warning, 0.24),
+                ButtonKind::Danger => fade(colors.danger, 0.22),
+                ButtonKind::Selected => colors.selected_pressed,
+                _ => colors.active,
+            },
+            button::Status::Disabled => fade(base, 0.45),
+            button::Status::Active => base,
+        };
+        let text_color = if status == button::Status::Disabled {
+            fade(foreground, 0.45)
+        } else {
+            foreground
+        };
+        let mut style = button::Style::default().with_background(background);
+        style.text_color = text_color;
+        style.border = Border::default()
+            .rounded(12.0)
+            .width(if matches!(kind, ButtonKind::Subtle) {
+                1.0
+            } else {
+                0.0
+            })
+            .color(if status == button::Status::Disabled {
+                fade(border_color, 0.45)
+            } else {
+                border_color
+            });
+        style.shadow = Shadow::default();
+        style.snap = true;
+        style
+    }
+}
+
+pub fn dialog_close_style(
+    colors: Colors,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    move |_theme, status| {
+        let (background, foreground) = match status {
+            button::Status::Hovered => (colors.hover, colors.text),
+            button::Status::Pressed => (colors.active, colors.text),
+            button::Status::Disabled => (Color::TRANSPARENT, fade(colors.muted, 0.55)),
+            button::Status::Active => (Color::TRANSPARENT, colors.muted),
+        };
+        let mut style = button::Style::default().with_background(background);
+        style.text_color = foreground;
+        style.border = Border::default().rounded(12.0);
+        style.shadow = Shadow::default();
+        style.snap = true;
+        style
+    }
+}
+
+pub fn selection_button_style(
+    colors: Colors,
+    selected: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    move |_theme, status| {
+        let background = match status {
+            button::Status::Hovered if selected => colors.selected_hover,
+            button::Status::Hovered => colors.hover,
+            button::Status::Pressed if selected => colors.selected_pressed,
+            button::Status::Pressed => colors.active,
+            button::Status::Disabled => Color::TRANSPARENT,
+            button::Status::Active if selected => colors.selected,
+            button::Status::Active => Color::TRANSPARENT,
+        };
+        let foreground = if status == button::Status::Disabled {
+            fade(colors.muted, 0.45)
+        } else if selected {
+            colors.text
+        } else {
+            colors.muted
+        };
+
+        let mut style = button::Style::default().with_background(background);
+        style.text_color = foreground;
+        style.border = Border::default().rounded(12.0);
+        style.shadow = Shadow::default();
+        style.snap = true;
+        style
+    }
+}
+
+pub fn menu_item_style(
+    colors: Colors,
+    danger: bool,
+    pending: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    move |_theme, status| {
+        let danger_soft = fade(
+            colors.danger,
+            if colors.background.r > 0.5 {
+                0.10
+            } else {
+                0.14
+            },
+        );
+        let foreground = if danger { colors.danger } else { colors.text };
+        let background = match status {
+            button::Status::Hovered if danger => danger_soft,
+            button::Status::Hovered => colors.hover,
+            button::Status::Pressed if danger => fade(colors.danger, 0.20),
+            button::Status::Pressed => colors.active,
+            button::Status::Disabled => Color::TRANSPARENT,
+            button::Status::Active if pending => danger_soft,
+            button::Status::Active => Color::TRANSPARENT,
+        };
+
+        let mut style = button::Style::default().with_background(background);
+        style.text_color = if status == button::Status::Disabled {
+            fade(foreground, 0.45)
+        } else {
+            foreground
+        };
+        style.border = Border::default().rounded(12.0);
+        style.shadow = Shadow::default();
+        style.snap = true;
+        style
+    }
+}
+
+pub fn text_input_style(
+    colors: Colors,
+    invalid: bool,
+) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + 'static {
+    move |_theme, status| {
+        let disabled = matches!(status, text_input::Status::Disabled);
+        let focused = matches!(status, text_input::Status::Focused { .. });
+        let border_color = if invalid {
+            colors.danger
+        } else {
+            match status {
+                text_input::Status::Hovered => colors.border_strong,
+                text_input::Status::Focused { .. } => colors.accent,
+                text_input::Status::Disabled => colors.border_soft,
+                text_input::Status::Active => colors.border,
+            }
+        };
+
+        text_input::Style {
+            background: if disabled {
+                colors.subtle.into()
+            } else {
+                colors.background.into()
+            },
+            border: Border::default()
+                .rounded(12.0)
+                .width(if focused { 2.0 } else { 1.0 })
+                .color(border_color),
+            icon: if disabled { colors.faint } else { colors.muted },
+            placeholder: colors.faint,
+            value: if disabled { colors.faint } else { colors.text },
+            selection: colors.accent_soft,
+        }
+    }
+}
+
+pub fn text_editor_style(
+    colors: Colors,
+    invalid: bool,
+) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style + 'static {
+    move |_theme, status| {
+        let disabled = matches!(status, text_editor::Status::Disabled);
+        let focused = matches!(status, text_editor::Status::Focused { .. });
+        let border_color = if invalid {
+            colors.danger
+        } else {
+            match status {
+                text_editor::Status::Hovered => colors.border_strong,
+                text_editor::Status::Focused { .. } => colors.accent,
+                text_editor::Status::Disabled => colors.border_soft,
+                text_editor::Status::Active => colors.border,
+            }
+        };
+
+        text_editor::Style {
+            background: if disabled {
+                colors.subtle.into()
+            } else {
+                colors.background.into()
+            },
+            border: Border::default()
+                .rounded(12.0)
+                .width(if focused { 2.0 } else { 1.0 })
+                .color(border_color),
+            placeholder: colors.faint,
+            value: if disabled { colors.faint } else { colors.text },
+            selection: colors.accent_soft,
+        }
+    }
+}
+
+pub fn checkbox_style(
+    colors: Colors,
+    invalid: bool,
+) -> impl Fn(&Theme, checkbox::Status) -> checkbox::Style + 'static {
+    move |_theme, status| {
+        let (is_checked, hovered, disabled) = match status {
+            checkbox::Status::Active { is_checked } => (is_checked, false, false),
+            checkbox::Status::Hovered { is_checked } => (is_checked, true, false),
+            checkbox::Status::Disabled { is_checked } => (is_checked, false, true),
+        };
+        let border_color = if invalid {
+            colors.danger
+        } else if disabled {
+            colors.border
+        } else if is_checked || hovered {
+            colors.accent
+        } else {
+            colors.border_strong
+        };
+
+        let background = if is_checked {
+            colors.accent
+        } else if disabled {
+            colors.subtle
+        } else {
+            colors.background
+        };
+
+        checkbox::Style {
+            background: fade(background, if disabled { 0.55 } else { 1.0 }).into(),
+            icon_color: if disabled {
+                fade(colors.accent_text, 0.55)
+            } else {
+                colors.accent_text
+            },
+            border: Border::default()
+                .rounded(4.0)
+                .width(1.0)
+                .color(fade(border_color, if disabled { 0.55 } else { 1.0 })),
+            text_color: Some(if disabled {
+                fade(colors.text, 0.55)
+            } else {
+                colors.text
+            }),
+        }
+    }
+}
+
+pub fn toggler_style(
+    colors: Colors,
+    invalid: bool,
+) -> impl Fn(&Theme, toggler::Status) -> toggler::Style + 'static {
+    move |_theme, status| {
+        let (is_toggled, hovered, disabled) = match status {
+            toggler::Status::Active { is_toggled } => (is_toggled, false, false),
+            toggler::Status::Hovered { is_toggled } => (is_toggled, true, false),
+            toggler::Status::Disabled { is_toggled } => (is_toggled, false, true),
+        };
+        let background = if is_toggled {
+            colors.accent
+        } else if hovered {
+            colors.active
+        } else {
+            mix(colors.hover, colors.background, 0.78)
+        };
+        let border_color = if invalid {
+            colors.danger
+        } else if is_toggled {
+            colors.accent
+        } else if hovered {
+            mix(colors.accent, colors.border_strong, 0.42)
+        } else {
+            colors.border_strong
+        };
+
+        toggler::Style {
+            background: fade(background, if disabled { 0.55 } else { 1.0 }).into(),
+            background_border_width: 1.0,
+            background_border_color: fade(border_color, if disabled { 0.55 } else { 1.0 }),
+            foreground: fade(
+                if is_toggled {
+                    colors.accent_text
+                } else {
+                    mix(colors.faint, colors.background, 0.70)
+                },
+                if disabled { 0.55 } else { 1.0 },
+            )
+            .into(),
+            foreground_border_width: 0.0,
+            foreground_border_color: Color::TRANSPARENT,
+            text_color: Some(if disabled { colors.faint } else { colors.text }),
+            border_radius: None,
+            padding_ratio: 0.1875,
+        }
+    }
+}
+
+pub fn slider_style(colors: Colors) -> impl Fn(&Theme, slider::Status) -> slider::Style + 'static {
+    move |_theme, status| {
+        let handle = match status {
+            slider::Status::Active => colors.accent,
+            slider::Status::Hovered => colors.accent_strong,
+            slider::Status::Dragged => colors.accent_strong,
+        };
+
+        slider::Style {
+            rail: slider::Rail {
+                backgrounds: (
+                    colors.accent.into(),
+                    mix(colors.hover, colors.background, 0.78).into(),
+                ),
+                width: 8.0,
+                border: Border::default().rounded(999.0),
+            },
+            handle: slider::Handle {
+                shape: slider::HandleShape::Circle { radius: 7.0 },
+                background: handle.into(),
+                border_width: 0.0,
+                border_color: Color::TRANSPARENT,
+            },
+        }
+    }
+}
+
+pub fn progress_style(colors: Colors) -> impl Fn(&Theme) -> progress_bar::Style + 'static {
+    move |_theme| progress_bar::Style {
+        background: colors.subtle.into(),
+        bar: colors.accent.into(),
+        border: Border::default().rounded(999.0),
+    }
+}
+
+pub fn list_item_style(
+    colors: Colors,
+    selected: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    move |_theme, status| {
+        let background = match (selected, status) {
+            (true, button::Status::Active) => colors.selected,
+            (true, button::Status::Hovered) => colors.selected_hover,
+            (true, button::Status::Pressed) => colors.selected_pressed,
+            (true, button::Status::Disabled) => fade(colors.selected, 0.50),
+            (false, button::Status::Hovered) => colors.hover,
+            (false, button::Status::Pressed) => colors.active,
+            (false, button::Status::Disabled | button::Status::Active) => Color::TRANSPARENT,
+        };
+        let mut style = button::Style::default().with_background(background);
+        style.text_color = if status == button::Status::Disabled {
+            fade(colors.text, 0.50)
+        } else {
+            colors.text
+        };
+        style.border = Border::default()
+            .rounded(12.0)
+            .width(1.0)
+            .color(Color::TRANSPARENT);
+        style.shadow = Shadow::default();
+        style.snap = true;
+        style
+    }
+}
+
+pub fn card_style(colors: Colors, kind: CardKind) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        let (background, border, shadow) = match kind {
+            CardKind::Surface => (colors.surface, Color::TRANSPARENT, Shadow::default()),
+            CardKind::Outlined => (colors.surface, colors.border, Shadow::default()),
+            CardKind::Raised => (
+                colors.surface,
+                Color::TRANSPARENT,
+                Shadow {
+                    color: fade(
+                        Color::BLACK,
+                        if colors.background.r > 0.5 {
+                            0.20
+                        } else {
+                            0.42
+                        },
+                    ),
+                    offset: Vector::new(0.0, 4.0),
+                    blur_radius: 12.0,
+                },
+            ),
+            CardKind::Flat => (Color::TRANSPARENT, Color::TRANSPARENT, Shadow::default()),
+            CardKind::Selected => (colors.selected, colors.accent, Shadow::default()),
+        };
+
+        container::Style::default()
+            .background(background)
+            .color(colors.text)
+            .border(
+                Border::default()
+                    .rounded(16.0)
+                    .width(if matches!(kind, CardKind::Outlined | CardKind::Selected) {
+                        1.0
+                    } else {
+                        0.0
+                    })
+                    .color(border),
+            )
+            .shadow(shadow)
+    }
+}
+
+pub fn interactive_card_style(
+    colors: Colors,
+    selected: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    move |_theme, status| {
+        let background = match (selected, status) {
+            (true, button::Status::Active) => colors.selected,
+            (true, button::Status::Hovered) => colors.selected_hover,
+            (true, button::Status::Pressed) => colors.selected_pressed,
+            (true, button::Status::Disabled) => fade(colors.selected, 0.55),
+            (false, button::Status::Active) => colors.surface,
+            (false, button::Status::Hovered) => colors.hover,
+            (false, button::Status::Pressed) => colors.active,
+            (false, button::Status::Disabled) => fade(colors.surface, 0.55),
+        };
+        let mut style = button::Style::default().with_background(background);
+        style.text_color = if status == button::Status::Disabled {
+            fade(colors.text, 0.55)
+        } else {
+            colors.text
+        };
+        style.border = Border::default()
+            .rounded(16.0)
+            .width(if selected { 1.0 } else { 0.0 })
+            .color(if status == button::Status::Disabled {
+                fade(colors.accent, 0.55)
+            } else {
+                colors.accent
+            });
+        style.shadow = Shadow::default();
+        style.snap = true;
+        style
+    }
+}
+
+pub fn scrollable_style(
+    colors: Colors,
+) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style + 'static {
+    move |theme, status| {
+        let opacity = match status {
+            scrollable::Status::Active { .. } => 0.0,
+            scrollable::Status::Hovered {
+                is_horizontal_scrollbar_hovered,
+                is_vertical_scrollbar_hovered,
+                ..
+            } if is_horizontal_scrollbar_hovered || is_vertical_scrollbar_hovered => 1.0,
+            scrollable::Status::Hovered { .. } => 0.35,
+            scrollable::Status::Dragged { .. } => 1.0,
+        };
+        let rail = scrollable::Rail {
+            background: None,
+            border: Border::default(),
+            scroller: scrollable::Scroller {
+                background: fade(colors.border_strong, opacity).into(),
+                border: Border::default().rounded(999.0),
+            },
+        };
+        scrollable::Style {
+            vertical_rail: rail,
+            horizontal_rail: rail,
+            ..scrollable::default(theme, status)
+        }
+    }
+}
+
+pub fn vertical_scrollbar() -> scrollable::Direction {
+    scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(12).scroller_width(4))
+}
+
+pub fn panel_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        container::Style::default()
+            .background(colors.surface)
+            .color(colors.text)
+            .border(
+                Border::default()
+                    .rounded(12.0)
+                    .width(1.0)
+                    .color(colors.border),
+            )
+    }
+}
+
+/// Workspace regions are structural surfaces, not cards. LiliaUI leaves these
+/// regions square and borderless; only the primary region owns a rounded clip.
+pub fn workspace_region_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        container::Style::default()
+            .background(colors.surface)
+            .color(colors.text)
+    }
+}
+
+pub fn menu_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        let is_light = colors.background.r > 0.5;
+        container::Style::default()
+            .background(colors.surface)
+            .color(colors.text)
+            .border(
+                Border::default()
+                    .rounded(16.0)
+                    .width(1.0)
+                    .color(colors.border_soft),
+            )
+            .shadow(Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, if is_light { 0.30 } else { 0.55 }),
+                offset: Vector::new(0.0, 10.0),
+                blur_radius: if is_light { 14.0 } else { 18.0 },
+            })
+    }
+}
+
+pub fn dialog_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        let is_light = colors.background.r > 0.5;
+        container::Style::default()
+            .background(colors.surface)
+            .color(colors.text)
+            .border(
+                Border::default()
+                    .rounded(16.0)
+                    .width(1.0)
+                    .color(colors.border_soft),
+            )
+            .shadow(Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, if is_light { 0.28 } else { 0.45 }),
+                offset: Vector::new(0.0, 14.0),
+                blur_radius: 30.0,
+            })
+    }
+}
+
+pub fn dialog_scrim_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        container::Style::default()
+            .background(Color::from_rgba(0.0, 0.0, 0.0, 0.45))
+            .color(colors.text)
+    }
+}
+
+pub fn tooltip_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        container::Style::default()
+            .background(colors.surface)
+            .color(colors.text)
+            .border(
+                Border::default()
+                    .rounded(4.0)
+                    .width(1.0)
+                    .color(colors.border_soft),
+            )
+    }
+}
+
+pub fn segmented_surface_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        container::Style::default()
+            .background(colors.background)
+            .color(colors.text)
+            .border(
+                Border::default()
+                    .rounded(16.0)
+                    .width(1.0)
+                    .color(colors.border),
+            )
+    }
+}
+
+fn fade(color: Color, opacity: f32) -> Color {
+    Color {
+        a: color.a * opacity,
+        ..color
+    }
+}
+
+fn mix(foreground: Color, background: Color, foreground_ratio: f32) -> Color {
+    let ratio = foreground_ratio.clamp(0.0, 1.0);
+    let inverse = 1.0 - ratio;
+    Color {
+        r: foreground.r * ratio + background.r * inverse,
+        g: foreground.g * ratio + background.g * inverse,
+        b: foreground.b * ratio + background.b * inverse,
+        a: foreground.a * ratio + background.a * inverse,
+    }
+}
+
+pub fn canvas_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        container::Style::default()
+            .background(colors.background)
+            .color(colors.text)
+            .border(
+                Border::default()
+                    .rounded(20.0)
+                    .width(1.0)
+                    .color(colors.border),
+            )
+    }
+}
+
+pub fn toolbar_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 'static {
+    move |_theme| {
+        container::Style::default()
+            .background(colors.surface)
+            .color(colors.text)
+            .border(Border::default().width(1.0).color(colors.border))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::Theme;
+    use iced::widget::{button, checkbox, text_input, toggler};
+
+    use super::{
+        CardKind, card_style, checkbox_style, list_item_style, text_input_style, toggler_style,
+    };
+    use crate::theme::ThemeMode;
+
+    #[test]
+    fn semantic_control_states_have_distinct_visual_contracts() {
+        let colors = ThemeMode::Dark.colors();
+        let theme = Theme::Dark;
+
+        let focused = text_input_style(colors, false)(
+            &theme,
+            text_input::Status::Focused { is_hovered: false },
+        );
+        assert_eq!(focused.border.color, colors.accent);
+        assert_eq!(focused.border.width, 2.0);
+
+        let invalid = text_input_style(colors, true)(&theme, text_input::Status::Active);
+        assert_eq!(invalid.border.color, colors.danger);
+
+        let checked =
+            checkbox_style(colors, false)(&theme, checkbox::Status::Active { is_checked: true });
+        assert_eq!(checked.background, colors.accent.into());
+
+        let toggled =
+            toggler_style(colors, false)(&theme, toggler::Status::Active { is_toggled: true });
+        let idle =
+            toggler_style(colors, false)(&theme, toggler::Status::Active { is_toggled: false });
+        assert_ne!(toggled.background, idle.background);
+
+        let selected_hover = list_item_style(colors, true)(&theme, button::Status::Hovered);
+        assert_eq!(
+            selected_hover.background,
+            Some(colors.selected_hover.into())
+        );
+
+        let selected_card = card_style(colors, CardKind::Selected)(&theme);
+        assert_eq!(selected_card.background, Some(colors.selected.into()));
+        assert_eq!(selected_card.border.width, 1.0);
+        assert_eq!(selected_card.border.color, colors.accent);
+    }
+}
