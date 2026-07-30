@@ -13,8 +13,12 @@ use iced_winit::core::time::Instant;
 use iced_winit::core::window;
 use iced_winit::runtime::user_interface::{self, UserInterface};
 use iced_winit::winit;
+use nana_ui::WindowChromeAction;
+#[cfg(target_os = "macos")]
+use nana_window::drag_custom_title_bar;
 use nana_window::{
     Appearance, FallbackColor, MaterialOutcome, apply_system_material, clear_system_material,
+    prepare_custom_title_bar,
 };
 
 use std::sync::Arc;
@@ -60,15 +64,10 @@ impl ApplicationHandler for Runner {
 
         let window = Arc::new(
             event_loop
-                .create_window(
-                    winit::window::WindowAttributes::default()
-                        .with_title("NanaUI Hosted GPU Demo")
-                        .with_transparent(true)
-                        .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0))
-                        .with_min_inner_size(winit::dpi::LogicalSize::new(760.0, 520.0)),
-                )
+                .create_window(hosted_window_attributes())
                 .expect("host must create the demo window"),
         );
+        let _ = prepare_custom_title_bar(window.as_ref());
         let material = apply_system_material(
             window.as_ref(),
             Appearance::Dark,
@@ -140,6 +139,7 @@ impl ApplicationHandler for Runner {
             }
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 state.resized = true;
+                state.panel.sync_maximized(state.window.is_maximized());
             }
             _ => {}
         }
@@ -148,13 +148,13 @@ impl ApplicationHandler for Runner {
             conversion::window_event(event, state.window.scale_factor() as f32, state.modifiers)
         {
             state.events.push(event);
-            state.update_interface();
+            state.update_interface(event_loop);
         }
     }
 }
 
 impl Ready {
-    fn update_interface(&mut self) {
+    fn update_interface(&mut self, event_loop: &ActiveEventLoop) {
         let mut interface = UserInterface::build(
             self.panel
                 .view(self.scene.texture(), self.material.is_native()),
@@ -176,9 +176,12 @@ impl Ready {
         self.apply_cursor_state(state);
 
         for message in messages {
-            let appearance_changed = self.panel.update(message);
-            if appearance_changed {
+            let update = self.panel.update(message);
+            if update.appearance_changed {
                 self.refresh_material();
+            }
+            if let Some(action) = update.window_action {
+                self.apply_window_action(action, event_loop);
             }
             let colors = self.panel.colors();
             self.scene.update(
@@ -189,6 +192,24 @@ impl Ready {
             );
         }
         self.window.request_redraw();
+    }
+
+    fn apply_window_action(&mut self, action: WindowChromeAction, event_loop: &ActiveEventLoop) {
+        match action {
+            WindowChromeAction::Drag => {
+                #[cfg(target_os = "macos")]
+                let _ = drag_custom_title_bar(self.window.as_ref());
+                #[cfg(not(target_os = "macos"))]
+                let _ = self.window.drag_window();
+            }
+            WindowChromeAction::Minimize => self.window.set_minimized(true),
+            WindowChromeAction::ToggleMaximize => {
+                let maximized = !self.window.is_maximized();
+                self.window.set_maximized(maximized);
+                self.panel.sync_maximized(maximized);
+            }
+            WindowChromeAction::Close => event_loop.exit(),
+        }
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
@@ -316,5 +337,29 @@ impl Ready {
 impl Drop for Ready {
     fn drop(&mut self) {
         clear_system_material(self.window.as_ref());
+    }
+}
+
+fn hosted_window_attributes() -> winit::window::WindowAttributes {
+    let attributes = winit::window::WindowAttributes::default()
+        .with_title("NanaUI Hosted GPU Demo")
+        .with_transparent(true)
+        .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0))
+        .with_min_inner_size(winit::dpi::LogicalSize::new(760.0, 520.0));
+
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::WindowAttributesExtMacOS;
+
+        attributes
+            .with_decorations(true)
+            .with_title_hidden(true)
+            .with_titlebar_transparent(true)
+            .with_fullsize_content_view(true)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        attributes.with_decorations(false)
     }
 }

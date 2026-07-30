@@ -25,3 +25,9 @@ winit Window / EventLoop（宿主）
 当前已经覆盖复用现有 RenderPass 的简单内容路径、用同一 CommandEncoder 创建独立 Pass 的组合路径、宿主创建 `winit::Window`/`Surface`/`Device`/`Queue` 后注入 Iced renderer，以及宿主纹理直显。真实 Live2D/NanaShader 内容接入与同一复杂渲染图中的时序整合仍未完成，不能用等价渐变场景作为这些验收项的替代证据。
 
 `hosted-gpu-demo` 通过 `nana-window` 接入 macOS Vibrancy 和 Windows Mica/Acrylic，并在无原生能力时切换为不透明主题背景；平台矩阵与限制见 `window-materials.md`。`transparent-window` 仍只使用 Iced 标准入口的透明/模糊设置，不作为原生材质验收证据。
+
+Hosted runner 与标准 Iced 示例共享 `AppTitleBar`、`WindowChromeState` 和
+`WindowChromeAction`。Runner 仍拥有 Winit Window，并直接执行拖拽、最小化、
+最大化/还原和关闭；macOS 仅在空白父区域收到按下事件时通过 `nana-window` 的
+无状态桥接启动原生拖拽，交互子控件会先消费事件。这一适配没有改变 Surface、
+Device、Queue、纹理或同帧提交路径。

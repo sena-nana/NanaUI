@@ -3,13 +3,14 @@
 ## 职责边界
 
 当前仓库包含 `nana-ui` 与 `nana-window` 两个 crate。控件、主题、工作区框架和
-WGPU View 属于 `nana-ui`；系统窗口材质属于 `nana-window`，普通控件不会直接
-访问平台窗口 API。
+WGPU View 属于 `nana-ui`；系统窗口材质与必须依赖原生句柄的 macOS 标题区交互
+桥接属于 `nana-window`，普通控件不会直接访问平台窗口 API。
 
 ```text
 应用状态 / 应用消息
         │
-        ├── app_shell / app_title_bar
+        ├── app_shell / AppTitleBar
+        │      └── WindowChromeState → 宿主窗口动作
         ├── SidebarFrame / SidebarSection / SidebarRow
         ├── SettingsModel / SettingsState / settings_page
         └── WorkspaceRegions / WorkspaceSlots
@@ -38,6 +39,20 @@ WGPU View 属于 `nana-ui`；系统窗口材质属于 `nana-window`，普通控�
 
 因此消费者不需要复制 `WorkspaceState`，也不需要自己重写区域编排和 resize
 事件流；只需注册自己的区域合同和内容。
+
+## 窗口 Chrome 合同
+
+`AppTitleBar` 统一组合 leading、居中标题、trailing 与窗口控制区；
+`WindowChromeState` 只维护拖拽手势和最大化显示状态，并向宿主发出
+drag/minimize/toggle-maximize/close 语义动作。标准 Iced 应用通过公共控制器执行
+`iced::window` Task，宿主事件循环则直接消费同一动作；普通控件不读取原生句柄。
+
+macOS 使用 transparent titlebar 与 full-size content view，把 36px NanaUI 标题栏
+绘制到窗口顶部，并为左侧原生交通灯保留 78px。Windows/Linux 关闭系统 decorations，
+由 `AppTitleBar` 绘制三枚窗口按钮。macOS 默认禁止系统标题区抢占鼠标事件，只有
+空白父区域收到按下事件时才通过 `nana-window` 启动 AppKit 原生拖拽；按钮等子控件
+会先消费事件。拖拽阈值由 AppKit 负责，其他平台由公共状态机的 4px 阈值负责。
+材质与标题栏状态、布局和动作语义仍是彼此独立的宿主合同。
 
 ## 工作区合同
 
@@ -95,7 +110,7 @@ Iced Engine 接收宿主 `Device`/`Queue`，不会再次请求设备；`GpuTextu
 
 | NanaUI | LiliaUI 语义 |
 | --- | --- |
-| `app_shell` / `app_title_bar` | `LiliaAppShell` |
+| `app_shell` / `AppTitleBar` / `WindowChromeState` | `LiliaAppShell` / `TitleBar` / `useNativeWindowChrome` |
 | `WorkspaceController` | `LiliaWorkspace` 的布局上下文 |
 | `RegionState` / `WorkspaceRegions` / `workspace_view` | `LiliaWorkspaceRegion` 的注册合同与区域组合 |
 | `SidebarFrame` / `SidebarSection` / `SidebarRow` | `LiliaSidebarFrame` / `LiliaSidebarSection` / `LiliaSidebarRow` |

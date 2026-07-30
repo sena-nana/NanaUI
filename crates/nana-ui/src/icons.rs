@@ -13,8 +13,11 @@ pub enum Icon {
     Eye,
     File,
     Folder,
+    Maximize,
+    Minimize,
     Moon,
     Nodes,
+    Restore,
     Search,
     Settings,
     Sidebar,
@@ -201,6 +204,16 @@ impl<Message> canvas::Program<Message> for LineIcon {
                 });
                 self.stroke(&mut frame, &folder, scale);
             }
+            Icon::Maximize => {
+                let square = Path::rectangle(
+                    point(scale, offset, 5.0, 5.0),
+                    Size::new(14.0 * scale, 14.0 * scale),
+                );
+                self.stroke(&mut frame, &square, scale);
+            }
+            Icon::Minimize => {
+                self.line(&mut frame, scale, offset, (5.0, 12.0), (19.0, 12.0));
+            }
             Icon::Moon => {
                 let moon = Path::new(|builder| {
                     builder.move_to(point(scale, offset, 17.5, 3.5));
@@ -239,6 +252,19 @@ impl<Message> canvas::Program<Message> for LineIcon {
                 self.circle(&mut frame, scale, offset, (6.0, 18.0), 2.0);
                 self.line(&mut frame, scale, offset, (8.0, 6.8), (16.0, 11.2));
                 self.line(&mut frame, scale, offset, (8.0, 17.2), (16.0, 12.8));
+            }
+            Icon::Restore => {
+                let restore = Path::new(|builder| {
+                    builder.move_to(point(scale, offset, 8.0, 5.0));
+                    builder.line_to(point(scale, offset, 19.0, 5.0));
+                    builder.line_to(point(scale, offset, 19.0, 16.0));
+                    builder.move_to(point(scale, offset, 16.0, 8.0));
+                    builder.line_to(point(scale, offset, 5.0, 8.0));
+                    builder.line_to(point(scale, offset, 5.0, 19.0));
+                    builder.line_to(point(scale, offset, 16.0, 19.0));
+                    builder.close();
+                });
+                self.stroke(&mut frame, &restore, scale);
             }
             Icon::Search => {
                 self.circle(&mut frame, scale, offset, (10.5, 10.5), 6.5);
