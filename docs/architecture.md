@@ -142,11 +142,13 @@ Bottom，以真实折叠、resize 和复位操作展示 Workspace Region 能力�
 
 ## 编译与加载边界
 
-`nana-ui` 默认只编译基础核心；Cargo 不会根据消费代码引用自动推断 feature，
-消费者按职责显式启用 `calendar`、`controls`、`feedback`、`image-viewer`、
-`overlays`、`popover`、`selects`、`settings-components`、`surfaces` 或
-`xy-pad`。`gallery`、`gpu` 与 `bundled-fonts` 是彼此独立的上层边界，完整能力
-由 `full` 聚合，完整组件集合由 `components` 聚合。
+`nana-ui` 默认启用 `component-gallery` 所需的 `bundled-fonts` 与 `gallery`，
+但不启用 GPU 扩展，保证仓库主示例可直接运行。只使用框架核心或部分组件的消费者
+关闭默认 feature，再按职责显式启用 `calendar`、`controls`、`feedback`、
+`image-viewer`、`overlays`、`popover`、`selects`、`settings-components`、
+`surfaces` 或 `xy-pad`。Cargo 不会根据消费代码引用自动推断 feature。
+`gallery`、`gpu` 与 `bundled-fonts` 是彼此独立的上层边界，完整能力由 `full`
+聚合，完整组件集合由 `components` 聚合。
 
 组件族拥有稳定的 `components::<family>` 子模块，同时保留 crate 根的现有
 re-export。未启用模块不参与编译；已启用但未引用的 Rust item 由 Release 链接器

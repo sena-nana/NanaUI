@@ -44,15 +44,17 @@ NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。当前基座为 Ic
 
 ## 按需构建
 
-默认只编译基础主题、Shell、Workspace、Sidebar、窗口合同、操作按钮和菜单。
-Cargo 不会根据消费代码中的 `use` 自动推断 feature；消费者应显式启用实际使用的
-组件族：
+默认配置启用 `component-gallery` 所需的 `bundled-fonts` 与 `gallery`，不启用
+GPU 扩展，因此仓库的主示例无需额外参数即可运行。只使用框架核心或部分组件的
+消费者应关闭默认 feature，再显式启用实际使用的组件族：
 
 ```toml
 [dependencies]
-nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["controls", "surfaces"] }
+nana-ui = { path = "../NanaUI/crates/nana-ui", default-features = false, features = ["controls", "surfaces"] }
 ```
 
+Cargo 不会根据消费代码中的 `use` 自动推断 feature。基础主题、Shell、Workspace、
+Sidebar、窗口合同、操作按钮和菜单无需 feature；
 可选组件族包括 `calendar`、`controls`、`feedback`、`image-viewer`、
 `overlays`、`popover`、`selects`、`settings-components`、`surfaces` 与
 `xy-pad`；`components` 一次启用全部组件。`gallery` 只用于完整示例，`gpu`
@@ -68,7 +70,7 @@ Web 动态 `import()`：未启用的组件由 Cargo feature 在编译期排除�
 运行 UI Gallery：
 
 ```bash
-cargo run -p nana-ui --example component-gallery --features bundled-fonts,gallery
+cargo run -p nana-ui --example component-gallery
 ```
 
 运行自定义 WGPU 内容插槽：
@@ -114,8 +116,7 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
 
 ```bash
-cargo run --release -p nana-ui --example ui-snapshots \
-  --features bundled-fonts,gallery --locked
+cargo run --release -p nana-ui --example ui-snapshots --locked
 ```
 
 PNG 输出到 `target/ui-snapshots`。快照工具会执行 GPU→CPU 读取；正式窗口、
