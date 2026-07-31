@@ -3,7 +3,8 @@ use iced::{Element, Length, Subscription, Task};
 use nana_ui::widgets::{button_style, card_style};
 use nana_ui::{
     AppTitleBar, ButtonKind, CardKind, GpuView, GpuViewMode, GpuViewPalette, ThemeMode, UI_METRICS,
-    WindowChromeEvent, WindowChromeState, custom_title_bar_window, ui_font, ui_font_sources,
+    WindowChromeEvent, WindowChromeState, custom_title_bar_window, ui_font, ui_font_defaults,
+    ui_font_sources,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -137,18 +138,21 @@ impl GpuViewDemo {
 }
 
 fn main() -> iced::Result {
-    let mut application =
-        iced::application(GpuViewDemo::default, GpuViewDemo::update, GpuViewDemo::view)
-            .title("NanaUI GPU View Demo")
-            .theme(|state: &GpuViewDemo| state.theme.iced_theme())
-            .default_font(ui_font(iced::font::Weight::Normal))
-            .subscription(GpuViewDemo::subscription)
-            .window(custom_title_bar_window(iced::window::Settings {
-                size: iced::Size::new(1100.0, 720.0),
-                min_size: Some(iced::Size::new(760.0, 520.0)),
-                ..iced::window::Settings::default()
-            }))
-            .centered();
+    let mut application = iced::application(
+        || (GpuViewDemo::default(), ui_font_defaults()),
+        GpuViewDemo::update,
+        GpuViewDemo::view,
+    )
+    .title("NanaUI GPU View Demo")
+    .theme(|state: &GpuViewDemo| state.theme.iced_theme())
+    .default_font(ui_font(iced::font::Weight::Normal))
+    .subscription(GpuViewDemo::subscription)
+    .window(custom_title_bar_window(iced::window::Settings {
+        size: iced::Size::new(1100.0, 720.0),
+        min_size: Some(iced::Size::new(760.0, 520.0)),
+        ..iced::window::Settings::default()
+    }))
+    .centered();
     for source in ui_font_sources() {
         application = application.font(source);
     }

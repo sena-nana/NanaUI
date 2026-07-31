@@ -3,7 +3,7 @@ use iced::{Alignment, Color, Element, Length, Subscription, Task};
 use nana_ui::widgets::button_style;
 use nana_ui::{
     AppTitleBar, ButtonKind, Colors, ThemeMode, UI_METRICS, WindowChromeEvent, WindowChromeState,
-    custom_title_bar_window, ui_font, ui_font_sources,
+    custom_title_bar_window, ui_font, ui_font_defaults, ui_font_sources,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,7 +140,7 @@ fn panel_style(
 
 fn main() -> iced::Result {
     let mut application = iced::application(
-        TransparentWindowState::default,
+        || (TransparentWindowState::default(), ui_font_defaults()),
         TransparentWindowState::update,
         TransparentWindowState::view,
     )

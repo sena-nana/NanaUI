@@ -11,7 +11,8 @@ use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
     AppTitleBar, GalleryMessage, GallerySection, GalleryState, RegionId, SettingsTabId,
-    SurfaceView, ThemeMode, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
+    SurfaceView, ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
+    WorkspaceAction,
 };
 
 use crate::write;
@@ -43,7 +44,7 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         engine,
         renderer::Settings {
             default_font: nana_ui::ui_font(font::Weight::Normal),
-            default_text_size: Pixels::from(13),
+            default_text_size: Pixels::from(UI_BASE_TEXT_SIZE),
             metrics_hinting: true,
         },
     );

@@ -2,6 +2,8 @@
 
 `ui-snapshots` 使用与原生窗口相同的 `GalleryState::view`、主题和 Iced WGPU
 renderer，在离屏纹理生成 PNG。它不是重新制作的静态 mock。
+原生 Gallery 启动任务与离屏 Renderer 都使用 `UI_BASE_TEXT_SIZE` 的 13px 基准，
+因此未显式覆盖字号的标准正文不会在真实窗口中回退到 Iced 的 16px 默认值。
 
 当前输出：
 
@@ -31,6 +33,8 @@ renderer，在离屏纹理生成 PNG。它不是重新制作的静态 mock。
   更新真实状态；
 - 侧栏折叠后主区域贴边圆角正确，dark/light 的文字、语义色和边框均可辨；
 - Noto Sans SC 四个字重、标题 tracking、分区标题、滚动条和固定 Footer 正常。
+- Controls 的中号按钮、输入、选择与列表主标签共享 13px 基准，辅助文字仍保持
+  10–12px 的语义层级，不出现真实窗口独有的 16px 放大。
 
 首次实现快照时，普通 Text 未显示而 Canvas/TextArea 正常。根因是 snapshot 工具
 在 GPU 读取前丢弃 `UserInterface::Cache`，使普通文本上传缓存的弱引用失效。当前

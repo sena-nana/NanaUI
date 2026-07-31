@@ -2,14 +2,21 @@ use std::collections::BTreeMap;
 
 use iced::widget::{button, column, container, text};
 use iced::{Alignment, Element, Fill, Point, Subscription, Task, window};
-use nana_ui::{AppTitleBar, ThemeMode, WindowChrome, WindowChromeEvent, WindowChromeState};
+use nana_ui::{
+    AppTitleBar, ThemeMode, WindowChrome, WindowChromeEvent, WindowChromeState, ui_font,
+    ui_font_defaults, ui_font_sources,
+};
 
 fn main() -> iced::Result {
-    iced::daemon(Smoke::new, Smoke::update, Smoke::view)
+    let mut application = iced::daemon(Smoke::new, Smoke::update, Smoke::view)
         .title(Smoke::title)
         .theme(Smoke::theme)
-        .subscription(Smoke::subscription)
-        .run()
+        .default_font(ui_font(iced::font::Weight::Normal))
+        .subscription(Smoke::subscription);
+    for source in ui_font_sources() {
+        application = application.font(source);
+    }
+    application.run()
 }
 
 struct Smoke {
@@ -37,7 +44,7 @@ impl Smoke {
         };
         let first = smoke.open_window();
         let second = smoke.open_window();
-        (smoke, Task::batch([first, second]))
+        (smoke, Task::batch([first, second, ui_font_defaults()]))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {

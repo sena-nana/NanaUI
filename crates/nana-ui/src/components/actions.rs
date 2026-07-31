@@ -4,7 +4,7 @@ use iced::widget::{button, container, row, text, tooltip};
 use iced::{Alignment, Element, Length, Padding, font};
 
 use crate::icons::{Icon, icon, spinner_icon};
-use crate::theme::{ThemeTokens, UI_METRICS, ui_font};
+use crate::theme::{ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, ui_font};
 use crate::widgets::{ButtonKind, button_style, tooltip_style};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -34,9 +34,9 @@ impl ControlSize {
 
     pub const fn text_size(self) -> f32 {
         match self {
-            Self::Small => 12.0,
-            Self::Medium => 13.0,
-            Self::Large => 14.0,
+            Self::Small => UI_BASE_TEXT_SIZE - 1.0,
+            Self::Medium => UI_BASE_TEXT_SIZE,
+            Self::Large => UI_BASE_TEXT_SIZE + 1.0,
         }
     }
 
@@ -51,7 +51,7 @@ impl ControlSize {
 
 /// A Lilia-style action button with shared sizing, loading and disabled behavior.
 pub struct Button<'a, Message> {
-    content: Element<'a, Message>,
+    content: ButtonContent<'a, Message>,
     on_press: Option<Message>,
     kind: ButtonKind,
     size: ControlSize,
@@ -61,13 +61,26 @@ pub struct Button<'a, Message> {
     loading_phase: u8,
 }
 
+enum ButtonContent<'a, Message> {
+    Custom(Element<'a, Message>),
+    Label(Cow<'a, str>),
+}
+
 impl<'a, Message> Button<'a, Message>
 where
     Message: Clone + 'a,
 {
     pub fn new(content: impl Into<Element<'a, Message>>) -> Self {
+        Self::with_content(ButtonContent::Custom(content.into()))
+    }
+
+    pub fn label(label: impl Into<Cow<'a, str>>) -> Self {
+        Self::with_content(ButtonContent::Label(label.into()))
+    }
+
+    fn with_content(content: ButtonContent<'a, Message>) -> Self {
         Self {
-            content: content.into(),
+            content,
             on_press: None,
             kind: ButtonKind::Ghost,
             size: ControlSize::Medium,
@@ -76,10 +89,6 @@ where
             loading: false,
             loading_phase: 0,
         }
-    }
-
-    pub fn label(label: impl Into<Cow<'a, str>>) -> Self {
-        Self::new(text(label.into()).font(ui_font(font::Weight::Medium)))
     }
 
     pub fn on_press(mut self, message: Message) -> Self {
@@ -116,6 +125,13 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
+        let content: Element<'a, Message> = match self.content {
+            ButtonContent::Custom(content) => content,
+            ButtonContent::Label(label) => text(label)
+                .size(self.size.text_size())
+                .font(ui_font(font::Weight::Medium))
+                .into(),
+        };
         let content: Element<'a, Message> = if self.loading {
             row![
                 spinner_icon(
@@ -123,13 +139,13 @@ where
                     self.size.icon_size(),
                     button_foreground(colors, self.kind),
                 ),
-                self.content,
+                content,
             ]
             .spacing(6)
             .align_y(Alignment::Center)
             .into()
         } else {
-            self.content
+            content
         };
 
         button(content)

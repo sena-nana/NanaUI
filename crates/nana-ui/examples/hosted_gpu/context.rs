@@ -86,7 +86,7 @@ impl HostGraphics {
             ),
             renderer::Settings {
                 default_font: nana_ui::ui_font(iced::font::Weight::Normal),
-                default_text_size: Pixels::from(13),
+                default_text_size: Pixels::from(nana_ui::UI_BASE_TEXT_SIZE),
                 metrics_hinting: true,
             },
         );
