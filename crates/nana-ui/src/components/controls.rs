@@ -5,11 +5,11 @@ use iced::widget::{
     button, checkbox, column, container, pick_list, row, slider, text, text_editor, text_input,
     toggler,
 };
-use iced::{Alignment, Element, Length, font};
+use iced::{Alignment, Element, Length, Pixels, font};
 
 use crate::components::ControlSize;
 use crate::icons::{Icon, icon};
-use crate::theme::{ThemeTokens, UI_METRICS, ui_font};
+use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{
     SEGMENTED_CONTROL_INSET, checkbox_style, pick_list_menu_style, pick_list_style,
     segmented_button_style, segmented_surface_style, selection_button_style, slider_style,
@@ -21,6 +21,7 @@ pub struct Checkbox<'a, Message> {
     checked: bool,
     label: Cow<'a, str>,
     on_toggle: Option<Box<dyn Fn(bool) -> Message + 'a>>,
+    size: ControlSize,
     disabled: bool,
     invalid: bool,
 }
@@ -34,6 +35,7 @@ where
             checked,
             label: label.into(),
             on_toggle: None,
+            size: ControlSize::Medium,
             disabled: false,
             invalid: false,
         }
@@ -41,6 +43,11 @@ where
 
     pub fn on_toggle(mut self, on_toggle: impl Fn(bool) -> Message + 'a) -> Self {
         self.on_toggle = Some(Box::new(on_toggle));
+        self
+    }
+
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
         self
     }
 
@@ -55,20 +62,25 @@ where
     }
 
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
-        let colors = theme.into().colors;
+        let tokens = theme.into();
+        let colors = tokens.colors;
         let control = checkbox(self.checked)
             .label(self.label)
             .size(16)
             .spacing(8)
             .text_size(13)
             .style(checkbox_style(colors, self.invalid));
-        if self.disabled {
+        let control: Element<'a, Message> = if self.disabled {
             control.into()
         } else if let Some(on_toggle) = self.on_toggle {
             control.on_toggle(on_toggle).into()
         } else {
             control.into()
-        }
+        };
+        container(control)
+            .height(Length::Fixed(self.size.height_in(tokens.metrics)))
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
     }
 }
 
@@ -78,6 +90,7 @@ pub struct Switch<'a, Message> {
     label: Cow<'a, str>,
     hint: Option<Cow<'a, str>>,
     on_toggle: Option<Box<dyn Fn(bool) -> Message + 'a>>,
+    size: ControlSize,
     disabled: bool,
     invalid: bool,
 }
@@ -92,6 +105,7 @@ where
             label: label.into(),
             hint: None,
             on_toggle: None,
+            size: ControlSize::Medium,
             disabled: false,
             invalid: false,
         }
@@ -107,6 +121,11 @@ where
         self
     }
 
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -118,10 +137,12 @@ where
     }
 
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
-        let colors = theme.into().colors;
+        let tokens = theme.into();
+        let colors = tokens.colors;
+        let has_hint = self.hint.is_some();
         let mut labels = column![
             text(self.label)
-                .size(13)
+                .size(self.size.text_size())
                 .font(ui_font(font::Weight::Medium))
                 .color(colors.text)
         ]
@@ -140,10 +161,15 @@ where
         } else {
             control.into()
         };
-        row![labels, control]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .into()
+        let content = row![labels, control].spacing(10).align_y(Alignment::Center);
+        if has_hint {
+            content.into()
+        } else {
+            container(content)
+                .height(Length::Fixed(self.size.height_in(tokens.metrics)))
+                .align_y(iced::alignment::Vertical::Center)
+                .into()
+        }
     }
 }
 
@@ -152,6 +178,7 @@ pub struct Input<'a, Message> {
     placeholder: &'a str,
     value: &'a str,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
+    size: ControlSize,
     disabled: bool,
     invalid: bool,
 }
@@ -165,6 +192,7 @@ where
             placeholder,
             value,
             on_input: None,
+            size: ControlSize::Medium,
             disabled: false,
             invalid: false,
         }
@@ -172,6 +200,11 @@ where
 
     pub fn on_input(mut self, on_input: impl Fn(String) -> Message + 'a) -> Self {
         self.on_input = Some(Box::new(on_input));
+        self
+    }
+
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
         self
     }
 
@@ -189,10 +222,13 @@ where
         let tokens = theme.into();
         let field = text_input(self.placeholder, self.value)
             .padding([
-                tokens.metrics.field_padding_y,
-                tokens.metrics.field_padding_x,
+                self.size.vertical_padding(tokens.metrics),
+                self.size.padding_x(),
             ])
-            .size(13)
+            .size(self.size.text_size())
+            .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
+                self.size.line_height(),
+            )))
             .width(Length::Fill)
             .style(text_input_style(tokens, self.invalid));
         if self.disabled {
@@ -251,7 +287,7 @@ where
     }
 
     pub fn height(mut self, height: f32) -> Self {
-        self.height = height.max(UI_METRICS.control_height);
+        self.height = height.max(ControlSize::Medium.height());
         self
     }
 
@@ -281,6 +317,7 @@ pub struct RangeField<'a, Message> {
     on_change: Box<dyn Fn(f32) -> Message + 'a>,
     label: Option<Cow<'a, str>>,
     unit: Option<Cow<'a, str>>,
+    size: ControlSize,
 }
 
 impl<'a, Message> RangeField<'a, Message>
@@ -298,6 +335,7 @@ where
             on_change: Box::new(on_change),
             label: None,
             unit: None,
+            size: ControlSize::Medium,
         }
     }
 
@@ -311,8 +349,14 @@ where
         self
     }
 
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
-        let colors = theme.into().colors;
+        let tokens = theme.into();
+        let colors = tokens.colors;
         let mut content = row![].spacing(8).align_y(Alignment::Center);
         if let Some(label) = self.label {
             content = content.push(text(label).size(11).color(colors.text));
@@ -330,7 +374,10 @@ where
                     .color(colors.accent),
             );
         }
-        content.into()
+        container(content)
+            .height(Length::Fixed(self.size.height_in(tokens.metrics)))
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
     }
 }
 
@@ -368,6 +415,7 @@ pub struct SegmentedControl<'a, T, Message> {
     value: T,
     options: Vec<SelectionOption<'a, T>>,
     on_select: Box<dyn Fn(T) -> Message + 'a>,
+    size: ControlSize,
 }
 
 impl<'a, T, Message> SegmentedControl<'a, T, Message>
@@ -384,11 +432,24 @@ where
             value,
             options: options.into_iter().collect(),
             on_select: Box::new(on_select),
+            size: ControlSize::Medium,
         }
     }
 
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
-        selection_view(self.value, self.options, self.on_select, theme.into(), true)
+        selection_view(
+            self.value,
+            self.options,
+            self.on_select,
+            self.size,
+            theme.into(),
+            true,
+        )
     }
 }
 
@@ -397,6 +458,7 @@ pub struct Tabs<'a, T, Message> {
     value: T,
     options: Vec<SelectionOption<'a, T>>,
     on_select: Box<dyn Fn(T) -> Message + 'a>,
+    size: ControlSize,
 }
 
 /// A native single-value select. Disabled options stay visible as the selected
@@ -474,8 +536,14 @@ where
             .collect();
         let mut control = pick_list(selected, enabled_options, |option| option.label.to_string())
             .width(Length::Fill)
-            .padding([0.0, self.size.padding_x()])
+            .padding([
+                self.size.vertical_padding(tokens.metrics),
+                self.size.padding_x(),
+            ])
             .text_size(self.size.text_size())
+            .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
+                self.size.line_height(),
+            )))
             .style(pick_list_style(tokens, self.invalid))
             .menu_style(pick_list_menu_style(tokens));
         if let Some(placeholder) = self.placeholder {
@@ -503,7 +571,13 @@ where
             value,
             options: options.into_iter().collect(),
             on_select: Box::new(on_select),
+            size: ControlSize::Small,
         }
+    }
+
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
     }
 
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
@@ -511,6 +585,7 @@ where
             self.value,
             self.options,
             self.on_select,
+            self.size,
             theme.into(),
             false,
         )
@@ -521,6 +596,7 @@ fn selection_view<'a, T, Message>(
     value: T,
     options: Vec<SelectionOption<'a, T>>,
     on_select: Box<dyn Fn(T) -> Message + 'a>,
+    size: ControlSize,
     tokens: ThemeTokens,
     segmented: bool,
 ) -> Element<'a, Message>
@@ -529,6 +605,12 @@ where
     Message: Clone + 'a,
 {
     let colors = tokens.colors;
+    let height = size.height_in(tokens.metrics);
+    let option_height = if segmented {
+        (height - SEGMENTED_CONTROL_INSET * 2.0).max(0.0)
+    } else {
+        height
+    };
     let mut options_row = row![].spacing(if segmented { 2 } else { 4 });
     for option in options {
         let selected = option.value == value;
@@ -536,15 +618,15 @@ where
         if let Some(option_icon) = option.icon {
             content = content.push(icon(
                 option_icon,
-                13.0,
+                size.icon_size(),
                 if selected { colors.text } else { colors.muted },
             ));
         }
-        content = content.push(text(option.label).size(13));
+        content = content.push(text(option.label).size(size.text_size()));
         let message = (!option.disabled).then(|| on_select(option.value));
         let option_button = button(content)
-            .height(Length::Fixed(UI_METRICS.compact_control_height))
-            .padding([0.0, UI_METRICS.selection_padding_x])
+            .height(Length::Fixed(option_height))
+            .padding([0.0, size.padding_x() + 2.0])
             .on_press_maybe(message);
         options_row = options_row.push(if segmented {
             option_button.style(segmented_button_style(tokens, selected))
@@ -554,7 +636,7 @@ where
     }
     if segmented {
         container(options_row)
-            .height(Length::Fixed(UI_METRICS.selection_height))
+            .height(Length::Fixed(height))
             .padding(SEGMENTED_CONTROL_INSET)
             .style(segmented_surface_style(tokens))
             .into()
@@ -573,11 +655,37 @@ fn format_number(value: f32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_number;
+    use super::{
+        Checkbox, ControlSize, Input, RangeField, SegmentedControl, Select, SelectionOption,
+        Switch, Tabs, format_number,
+    };
 
     #[test]
     fn range_readout_keeps_integers_compact_without_losing_fractional_values() {
         assert_eq!(format_number(8.0), "8");
         assert_eq!(format_number(8.25), "8.2");
+    }
+
+    #[test]
+    fn single_line_controls_use_the_contextual_default_tiers() {
+        assert_eq!(Checkbox::<()>::new(false, "选项").size, ControlSize::Medium);
+        assert_eq!(Switch::<()>::new(false, "开关").size, ControlSize::Medium);
+        assert_eq!(Input::<()>::new("", "").size, ControlSize::Medium);
+        assert_eq!(
+            RangeField::new(0.0..=1.0, 0.5, |_| ()).size,
+            ControlSize::Medium
+        );
+        assert_eq!(
+            SegmentedControl::new(false, [SelectionOption::new(false, "关")], |_| ()).size,
+            ControlSize::Medium
+        );
+        assert_eq!(
+            Select::new(Some(false), [SelectionOption::new(false, "关")], |_| ()).size,
+            ControlSize::Medium
+        );
+        assert_eq!(
+            Tabs::new(false, [SelectionOption::new(false, "标签")], |_| ()).size,
+            ControlSize::Small
+        );
     }
 }

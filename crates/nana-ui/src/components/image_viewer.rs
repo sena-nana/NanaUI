@@ -7,8 +7,9 @@ use iced::{
     Element, Event, Length, Padding, Point, Rectangle, Size, Theme, Transformation, Vector, touch,
 };
 
+use crate::components::ControlSize;
 use crate::icons::{Icon, icon};
-use crate::theme::{ThemeTokens, UI_METRICS, ui_font};
+use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{ButtonKind, button_style};
 
 /// Host-rendered visual content and the human-readable metadata shown by
@@ -112,8 +113,12 @@ where
         }
 
         let close = button(icon(Icon::Close, 16.0, colors.muted))
-            .width(Length::Fixed(UI_METRICS.icon_button_size))
-            .height(Length::Fixed(UI_METRICS.icon_button_size))
+            .width(Length::Fixed(
+                ControlSize::Small.height_in(self.tokens.metrics),
+            ))
+            .height(Length::Fixed(
+                ControlSize::Small.height_in(self.tokens.metrics),
+            ))
             .padding(0)
             .on_press(self.on_close)
             .style(button_style(self.tokens, ButtonKind::Subtle));

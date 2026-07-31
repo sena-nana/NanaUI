@@ -23,7 +23,7 @@
 | `UiIconButton` | `IconButton` | 方形尺寸、selected/disabled、可见 tooltip |
 | `UiCard` | `Card` | surface/outlined/raised/flat/selected、标题与 loading |
 | `UiInteractiveCard` | `InteractiveCard` | selected/disabled 与真实选择消息 |
-| `UiListItem` | `ListItem` | leading/content/trailing、selected/disabled 与真实选择消息 |
+| `UiListItem` | `ListItem` | 三档行高、leading/content/trailing、selected/disabled 与真实选择消息 |
 | `UiFormField` | `FormField` | label、hint、error 与任意原生控件内容 |
 | `UiEmptyState` | `EmptyState` | 图标、标题、信息与真实 action 内容 |
 | `UiProgress` | `Progress` | 数值约束、标签与真实取消消息 |
@@ -32,13 +32,13 @@
 | `UiStatusBadge` | `StatusBadge` | neutral/info/success/warning/danger |
 | `UiToast` | `Toast` | 四种 tone、描述与真实 dismiss 消息 |
 | `UiValidationMessage` | `ValidationMessage` | warning/danger |
-| `UiCheckbox` | `Checkbox` | checked、disabled、invalid 与真实 toggle 消息 |
-| `UiInput` | `Input` | 统一尺寸、disabled、invalid 与真实输入消息 |
-| `UiRangeField` | `RangeField` | 范围、单位读数与真实 change 消息 |
-| `UiSwitch` | `Switch` | label/hint、disabled、invalid 与真实 toggle 消息 |
+| `UiCheckbox` | `Checkbox` | 三档行高、checked、disabled、invalid 与真实 toggle 消息 |
+| `UiInput` | `Input` | 三档行高、disabled、invalid 与真实输入消息 |
+| `UiRangeField` | `RangeField` | 三档行高、范围、单位读数与真实 change 消息 |
+| `UiSwitch` | `Switch` | 三档单行高度、label/hint、disabled、invalid 与真实 toggle 消息 |
 | `UiTextarea` | `Textarea` | 调用方拥有 Content，支持 disabled、invalid 与真实 Action |
-| `UiSegmentedControl` | `SegmentedControl` | 通用值类型、图标、disabled option 与真实选择消息 |
-| `UiTabs` | `Tabs` | 与分段控件共享选择合同，使用独立的 Tab 表面 |
+| `UiSegmentedControl` | `SegmentedControl` | 三档行高、通用值类型、图标、disabled option 与真实选择消息 |
+| `UiTabs` | `Tabs` | 三档行高，与分段控件共享选择合同，使用独立的 Tab 表面 |
 | `UiSelect` | `Select` | Iced 原生 pick-list、三档尺寸、loading/disabled/invalid；自定义菜单仍由 `Dropdown` 补齐 |
 | `UiXYPad` | `XYPad` | 指针与触摸拖动、Shift 主轴锁定、量化、键盘步进、Input/Change 两阶段事件 |
 | `Dropdown` | `Dropdown` | 单选/多选、hint、受控选择事件；使用原生菜单的键盘导航和视口约束 |
@@ -48,7 +48,7 @@
 | `UiDrawer` | `Drawer` | 左右方向、正文、Footer、关闭与内部交互消息 |
 | `Tooltip` | `Tooltip` | 统一 placement、delay、viewport padding 与视觉样式 |
 | `UiPopover` | `Popover` | 自定义 Iced overlay、受控打开、四向锚定、Escape/外部点击关闭与嵌套交互 |
-| `ActionMenuItem` | `ActionMenuItem` | leading/hint/active/danger/disabled 与真实消息 |
+| `ActionMenuItem` | `ActionMenuItem` | 三档行高、leading/hint/active/danger/disabled 与真实消息 |
 | `AnchoredActionMenu` | `AnchoredActionMenu` | 四种锚点方向和视口边界约束 |
 | `ContextMenuHost` | `ContextMenuHost` | 层级菜单、搜索、确认标签、危险操作和统一关闭事件 |
 | `OverlayHost` | `OverlayHost` | 保持视觉与事件顺序的原生 Stack 宿主 |
@@ -56,7 +56,7 @@
 | `UiImageViewer` | `ImageViewer` | 接收宿主渲染内容、指针中心滚轮缩放、鼠标/触摸平移与关闭合同；不强制编解码器或 CPU 像素副本 |
 | `TitleBar` | `AppTitleBar` / `WindowChromeState` | 原生窗口动作与拖拽合同 |
 | `LiliaSidebarFrame` | `SidebarFrame` | 固定 top/footer 与独立滚动正文 |
-| `LiliaSidebarRow` / `LiliaSidebarNavRow` | `SidebarRow` | 状态、tone、层级、leading/trailing、disclosure |
+| `LiliaSidebarRow` / `LiliaSidebarNavRow` | `SidebarRow` | 三档行高、状态、tone、层级、leading/trailing、disclosure |
 | `LiliaSidebarSection` / `SidebarCollapse` | `SidebarSection` / `SidebarSectionState` | 真实展开状态与按需帧订阅 |
 | `LiliaSidebarFooter` | `SidebarFooter` / `SidebarFooterButton` | 固定 Footer 与真实消息 |
 | `SettingsRow` | `SettingsRow` | label、hint、stacked/divided/loose |

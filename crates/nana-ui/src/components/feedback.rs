@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use iced::widget::{button, column, container, progress_bar, row, space, text};
 use iced::{Alignment, Border, Color, Element, Length, Padding, font};
 
+use crate::components::ControlSize;
 use crate::icons::{spinner_icon, status_indicator};
 use crate::theme::{Colors, ThemeTokens, ui_font};
 use crate::widgets::{ButtonKind, CardKind, button_style, card_style, progress_style};
@@ -61,10 +62,11 @@ where
                 heading = heading.push(space().width(Length::Fill));
             }
             if let Some(message) = self.on_cancel {
+                let size = ControlSize::Small.height_in(tokens.metrics);
                 heading = heading.push(
                     button(text("×").size(15))
-                        .width(Length::Fixed(24.0))
-                        .height(Length::Fixed(24.0))
+                        .width(Length::Fixed(size))
+                        .height(Length::Fixed(size))
                         .padding(0)
                         .on_press(message)
                         .style(button_style(tokens, ButtonKind::Ghost)),
@@ -310,10 +312,11 @@ where
             .spacing(8)
             .align_y(Alignment::Center);
         if let Some(message) = self.on_dismiss {
+            let size = ControlSize::Small.height_in(tokens.metrics);
             content = content.push(
                 button(text("×").size(15))
-                    .width(Length::Fixed(24.0))
-                    .height(Length::Fixed(24.0))
+                    .width(Length::Fixed(size))
+                    .height(Length::Fixed(size))
                     .padding(0)
                     .on_press(message)
                     .style(button_style(tokens, ButtonKind::Ghost)),

@@ -3,10 +3,10 @@ use std::borrow::Cow;
 use iced::widget::{button, column, container, mouse_area, row, space, text, tooltip};
 use iced::{Alignment, Element, Length, Padding, font};
 
-use crate::components::Button as UiButton;
+use crate::components::{Button as UiButton, ControlSize};
 use crate::dialog::DialogSize;
 use crate::icons::{Icon, icon};
-use crate::theme::{ThemeTokens, UI_METRICS, ui_font};
+use crate::theme::{ThemeTokens, ui_font};
 use crate::tooltip::TooltipConfig;
 use crate::widgets::{
     ButtonKind, dialog_close_style, dialog_scrim_style, dialog_surface_style, tooltip_style,
@@ -98,8 +98,8 @@ where
         let mut header = row![heading].spacing(12).align_y(Alignment::Start);
         if !self.close_hidden {
             let close = button(icon(Icon::Close, 14.0, colors.muted))
-                .width(Length::Fixed(UI_METRICS.icon_button_size))
-                .height(Length::Fixed(UI_METRICS.icon_button_size))
+                .width(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
+                .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
                 .padding(0)
                 .on_press_maybe(self.on_close.clone())
                 .style(dialog_close_style(tokens));
@@ -311,8 +311,8 @@ where
                 .font(ui_font(font::Weight::Semibold))
                 .width(Length::Fill),
             button(icon(Icon::Close, 14.0, colors.muted))
-                .width(Length::Fixed(UI_METRICS.icon_button_size))
-                .height(Length::Fixed(UI_METRICS.icon_button_size))
+                .width(Length::Fixed(ControlSize::Small.height_in(tokens.metrics),))
+                .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics),))
                 .padding(0)
                 .on_press(self.on_close.clone())
                 .style(dialog_close_style(tokens)),

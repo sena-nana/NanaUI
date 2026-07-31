@@ -4,7 +4,7 @@ use std::rc::Rc;
 use iced::widget::{button, column, container, row, space, text};
 use iced::{Alignment, Element, Length, Padding};
 
-use super::{RangeField, SegmentedControl, SelectionOption, Switch};
+use super::{ControlSize, RangeField, SegmentedControl, SelectionOption, Switch};
 use crate::icons::{Icon, disclosure_icon};
 use crate::settings::{AppearanceSettings, SettingsCard, SettingsRow};
 use crate::theme::{ThemeMode, ThemeTokens, UI_METRICS, ui_font};
@@ -66,8 +66,8 @@ where
             16.0,
             colors.muted,
         ))
-        .width(Length::Fixed(UI_METRICS.icon_button_size))
-        .height(Length::Fixed(UI_METRICS.icon_button_size))
+        .width(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
+        .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
         .padding(0)
         .on_press_maybe((!self.disabled).then_some(self.on_toggle))
         .style(button_style(tokens, ButtonKind::Ghost));
@@ -158,7 +158,7 @@ where
         .unit(" px")
         .view(tokens);
         let reset = button(text("恢复默认").size(12))
-            .height(Length::Fixed(UI_METRICS.compact_control_height))
+            .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
             .padding([0.0, UI_METRICS.control_padding_x])
             .on_press((self.on_event)(AppearanceEvent::Reset))
             .style(button_style(tokens, ButtonKind::Subtle));

@@ -2,10 +2,11 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use iced::widget::{Stack, button, column, container, mouse_area, pin, row, text, text_input};
-use iced::{Alignment, Element, Length, Point, Size};
+use iced::{Alignment, Element, Length, Pixels, Point, Size};
 
+use crate::components::ControlSize;
 use crate::icons::{Icon, icon};
-use crate::theme::{ThemeTokens, UI_METRICS, ui_font};
+use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{menu_item_style, menu_surface_style, text_input_style};
 
 /// A selectable row shared by anchored action menus and context menus.
@@ -14,6 +15,7 @@ pub struct ActionMenuItem<'a, Message> {
     hint: Option<Cow<'a, str>>,
     leading: Option<Icon>,
     on_press: Option<Message>,
+    size: ControlSize,
     active: bool,
     danger: bool,
     disabled: bool,
@@ -29,6 +31,7 @@ where
             hint: None,
             leading: None,
             on_press: None,
+            size: ControlSize::Small,
             active: false,
             danger: false,
             disabled: false,
@@ -47,6 +50,11 @@ where
 
     pub fn on_press(mut self, message: Message) -> Self {
         self.on_press = Some(message);
+        self
+    }
+
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
         self
     }
 
@@ -72,7 +80,7 @@ where
         if let Some(leading) = self.leading {
             content = content.push(icon(
                 leading,
-                13.0,
+                self.size.icon_size(),
                 if self.danger {
                     colors.danger
                 } else {
@@ -82,7 +90,7 @@ where
         }
         content = content.push(
             text(self.label)
-                .size(13)
+                .size(self.size.text_size())
                 .font(ui_font(iced::font::Weight::Medium))
                 .width(Length::Fill),
         );
@@ -91,8 +99,8 @@ where
         }
         button(content)
             .width(Length::Fill)
-            .height(Length::Fixed(UI_METRICS.selection_height))
-            .padding([0.0, UI_METRICS.list_item_padding_x])
+            .height(Length::Fixed(self.size.height_in(tokens.metrics)))
+            .padding([0.0, self.size.padding_x()])
             .align_x(iced::alignment::Horizontal::Left)
             .on_press_maybe((!self.disabled).then_some(self.on_press).flatten())
             .style(menu_item_style(tokens, self.danger, self.active))
@@ -417,7 +425,12 @@ where
         }
 
         let panel_count = panels.len() as f32;
-        let search_height = if self.searchable { 38.0 } else { 0.0 };
+        let search_size = ControlSize::Small;
+        let search_height = if self.searchable {
+            search_size.height_in(self.tokens.metrics) + 10.0
+        } else {
+            0.0
+        };
         let mut content = column![].spacing(4);
         if self.searchable {
             content = content.push(
@@ -426,8 +439,14 @@ where
                         let on_event = Rc::clone(&self.on_event);
                         move |query| on_event(ContextMenuEvent::Search(query))
                     })
-                    .padding([6, 8])
-                    .size(12)
+                    .padding([
+                        search_size.vertical_padding(self.tokens.metrics),
+                        search_size.padding_x(),
+                    ])
+                    .size(search_size.text_size())
+                    .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
+                        search_size.line_height(),
+                    )))
                     .style(text_input_style(self.tokens, false)),
             );
         }
@@ -519,7 +538,10 @@ fn collect_matches<'a, T>(
 
 #[cfg(test)]
 mod tests {
-    use super::{AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuItem, collect_matches};
+    use super::{
+        ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuItem, ControlSize,
+        collect_matches,
+    };
     use iced::{Point, Size};
 
     #[test]
@@ -540,5 +562,10 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].0, vec![0, 1]);
         assert_eq!(matches[0].1.value, "remove");
+    }
+
+    #[test]
+    fn action_menu_items_default_to_the_small_density_tier() {
+        assert_eq!(ActionMenuItem::<()>::new("操作").size, ControlSize::Small);
     }
 }

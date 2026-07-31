@@ -6,8 +6,9 @@ use iced::{
     font,
 };
 
+use crate::components::ControlSize;
 use crate::icons::{Icon, disclosure_icon, icon};
-use crate::theme::{Colors, ThemeTokens, UI_METRICS, tracked_label, ui_font};
+use crate::theme::{Colors, ThemeTokens, tracked_label, ui_font};
 use crate::widgets::{scrollable_style, vertical_scrollbar};
 
 const FRAME_PADDING_TOP: f32 = 10.0;
@@ -15,7 +16,6 @@ const FRAME_PADDING_RIGHT: f32 = 8.0;
 const FRAME_PADDING_BOTTOM: f32 = 10.0;
 const FRAME_PADDING_LEFT: f32 = 12.0;
 const FRAME_GAP: f32 = 14.0;
-const ROW_HEIGHT: f32 = UI_METRICS.navigation_row_height;
 const ROW_PADDING_LEFT: f32 = 8.0;
 const ROW_ICON_SLOT_WIDTH: f32 = 16.0;
 const SECTION_ANIMATION_DURATION: iced::time::Duration = iced::time::Duration::from_millis(160);
@@ -174,7 +174,7 @@ pub struct SidebarRow<'a, Message> {
     leading: Option<Element<'a, Message>>,
     trailing: Option<Element<'a, Message>>,
     depth: u16,
-    height: f32,
+    size: ControlSize,
     state: SidebarRowState,
     tone: SidebarRowTone,
     on_select: Option<Message>,
@@ -191,7 +191,7 @@ where
             leading: None,
             trailing: None,
             depth: 0,
-            height: ROW_HEIGHT,
+            size: ControlSize::Small,
             state: SidebarRowState::Idle,
             tone: SidebarRowTone::Default,
             on_select: None,
@@ -214,8 +214,14 @@ where
         self
     }
 
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    #[deprecated(note = "use SidebarRow::size with ControlSize")]
     pub fn height(mut self, height: f32) -> Self {
-        self.height = height.max(ROW_HEIGHT);
+        self.size = ControlSize::nearest(height);
         self
     }
 
@@ -242,6 +248,7 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
+        let row_height = self.size.height_in(tokens.metrics);
         let disabled = self.state == SidebarRowState::Disabled;
         let depth_inset = ROW_PADDING_LEFT + f32::from(self.depth) * 14.0;
         let has_disclosure = self.disclosure.is_some();
@@ -261,7 +268,7 @@ where
         }
         content = content.push(
             text(self.label)
-                .size(13)
+                .size(self.size.text_size())
                 .font(ui_font(if self.state == SidebarRowState::AncestorActive {
                     font::Weight::Semibold
                 } else {
@@ -277,7 +284,7 @@ where
 
         let select = button(content)
             .width(Length::Fill)
-            .height(Length::Fixed(self.height))
+            .height(Length::Fixed(row_height))
             .padding(Padding {
                 top: 0.0,
                 right: 8.0,
@@ -301,7 +308,7 @@ where
                 colors.muted,
             ))
             .width(Length::Fixed(14.0))
-            .height(Length::Fixed(20.0))
+            .height(Length::Fixed(row_height))
             .padding(0)
             .on_press_maybe((!disabled).then_some(on_toggle))
             .style(disclosure_style(colors, tokens.metrics.radius_xs));
@@ -321,7 +328,7 @@ where
         }
         container(layers)
             .width(Length::Fill)
-            .height(Length::Fixed(self.height))
+            .height(Length::Fixed(row_height))
             .into()
     }
 }
@@ -334,6 +341,7 @@ pub struct SidebarSection<'a, Message> {
     on_toggle: Option<Message>,
     empty_text: Option<Cow<'a, str>>,
     children: Vec<Element<'a, Message>>,
+    size: ControlSize,
     animation_progress: Option<f32>,
 }
 
@@ -349,6 +357,7 @@ where
             on_toggle: None,
             empty_text: None,
             children: Vec::new(),
+            size: ControlSize::Small,
             animation_progress: None,
         }
     }
@@ -378,6 +387,11 @@ where
         self
     }
 
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn push(mut self, child: impl Into<Element<'a, Message>>) -> Self {
         self.children.push(child.into());
         self
@@ -386,6 +400,7 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
+        let row_height = self.size.height_in(tokens.metrics);
         let collapsible = self.on_toggle.is_some();
         let expansion = if collapsible {
             self.animation_progress
@@ -413,7 +428,7 @@ where
 
         let header = button(heading)
             .width(Length::Fill)
-            .height(Length::Fixed(ROW_HEIGHT))
+            .height(Length::Fixed(row_height))
             .padding([0.0, ROW_PADDING_LEFT])
             .align_x(iced::alignment::Horizontal::Left)
             .on_press_maybe(self.on_toggle)
@@ -437,10 +452,12 @@ where
                     0.0
                 }
             } else {
+                let fallback_height = ControlSize::Small.height_in(tokens.metrics);
+                let content_height = fixed_children_height(&self.children, fallback_height, 1.0);
                 for child in self.children {
                     children = children.push(child);
                 }
-                child_count as f32 * ROW_HEIGHT + child_count.saturating_sub(1) as f32
+                content_height
             };
             if content_height > 0.0 {
                 section = section.push(
@@ -494,6 +511,7 @@ impl<'a, Message: 'a> Default for SidebarFooter<'a, Message> {
 pub struct SidebarFooterButton<'a, Message> {
     label: Cow<'a, str>,
     icon: Icon,
+    size: ControlSize,
     selected: bool,
     on_press: Option<Message>,
 }
@@ -506,6 +524,7 @@ where
         Self {
             label: label.into(),
             icon,
+            size: ControlSize::Small,
             selected: false,
             on_press: None,
         }
@@ -513,6 +532,11 @@ where
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
         self
     }
 
@@ -529,9 +553,10 @@ where
         } else {
             colors.muted.scale_alpha(0.44)
         };
-        let action = button(icon(self.icon, 14.0, icon_color))
-            .width(Length::Fixed(UI_METRICS.sidebar_footer_button_size))
-            .height(Length::Fixed(UI_METRICS.sidebar_footer_button_size))
+        let size = self.size.height_in(tokens.metrics);
+        let action = button(icon(self.icon, self.size.icon_size(), icon_color))
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
             .padding(0)
             .on_press_maybe(self.on_press)
             .style(sidebar_footer_button_style(
@@ -540,15 +565,32 @@ where
                 tokens.metrics.radius_sm,
             ));
         tooltip(
-            container(action)
-                .width(Length::Fixed(UI_METRICS.control_height))
-                .align_x(iced::alignment::Horizontal::Center),
+            action,
             container(text(self.label).size(11)).padding([4, 7]),
             tooltip::Position::Top,
         )
         .gap(6)
         .into()
     }
+}
+
+fn fixed_element_height<Message>(element: &Element<'_, Message>) -> Option<f32> {
+    match element.as_widget().size().height {
+        Length::Fixed(height) => Some(height),
+        _ => None,
+    }
+}
+
+fn fixed_children_height<Message>(
+    children: &[Element<'_, Message>],
+    fallback: f32,
+    spacing: f32,
+) -> f32 {
+    children
+        .iter()
+        .map(|child| fixed_element_height(child).unwrap_or(fallback))
+        .sum::<f32>()
+        + children.len().saturating_sub(1) as f32 * spacing
 }
 
 fn sidebar_row_style(
@@ -680,8 +722,8 @@ mod tests {
     use iced::widget::button;
 
     use super::{
-        SidebarRowState, SidebarRowTone, SidebarSectionState, section_header_style,
-        sidebar_row_style,
+        ControlSize, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSectionState,
+        fixed_children_height, section_header_style, sidebar_row_style,
     };
     use crate::theme::{ThemeMode, UI_METRICS};
 
@@ -722,5 +764,26 @@ mod tests {
         );
 
         assert_eq!(row.border.radius, section.border.radius);
+    }
+
+    #[test]
+    fn section_height_uses_each_child_control_tier() {
+        let tokens = ThemeMode::Dark.tokens();
+        let children = [
+            SidebarRow::<()>::new("小")
+                .size(ControlSize::Small)
+                .view(tokens),
+            SidebarRow::<()>::new("中")
+                .size(ControlSize::Medium)
+                .view(tokens),
+            SidebarRow::<()>::new("大")
+                .size(ControlSize::Large)
+                .view(tokens),
+        ];
+
+        assert_eq!(
+            fixed_children_height(&children, ControlSize::Small.height(), 1.0),
+            98.0
+        );
     }
 }
