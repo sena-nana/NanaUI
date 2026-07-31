@@ -19,6 +19,7 @@ pub struct AdapterReport {
 
 #[derive(Debug, Serialize)]
 pub struct CaseReport {
+    pub scenario: String,
     pub item_count: usize,
     pub view_construction_ms: Distribution,
     pub layout_diff_ms: Distribution,
@@ -56,8 +57,13 @@ impl Sample {
 }
 
 impl CaseReport {
-    pub fn from_samples(item_count: usize, samples: &[Sample]) -> Self {
+    pub fn from_samples(
+        scenario: impl Into<String>,
+        item_count: usize,
+        samples: &[Sample],
+    ) -> Self {
         Self {
+            scenario: scenario.into(),
             item_count,
             view_construction_ms: summarize(
                 samples.iter().map(|sample| sample.view_construction_ms),
@@ -124,8 +130,9 @@ mod tests {
                 gpu_submit_wait_ms: 14.0,
             },
         ];
-        let report = CaseReport::from_samples(100, &samples);
+        let report = CaseReport::from_samples("list-100", 100, &samples);
 
+        assert_eq!(report.scenario, "list-100");
         assert_eq!(report.item_count, 100);
         assert_eq!(report.view_construction_ms.median, 2.0);
         assert_eq!(report.view_construction_ms.p95, 10.0);

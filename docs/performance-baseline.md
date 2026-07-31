@@ -112,6 +112,54 @@ macOS `vibrancy` 材质。普通模式静置 15 秒时为 0.0% CPU、99,168KiB R
 -0.016、+0.003 和 +0.007ms，没有表现出列表路径回退。p95 仍包含 Metal 提交
 与阻塞等待抖动，不作为纯 GPU Pass 时间。
 
+## 2026-07-30 LiliaUI 完整组件覆盖复测
+
+完成组件覆盖矩阵中的控件、表面、反馈、菜单/浮层、日历、图片查看器、设置区块
+与桌面/弹窗 Shell 后，在同一 Apple M4 / Metal 环境重新执行 10 次预热和 60 次
+采样。完整中位数与 p95 保存在
+`docs/performance/2026-07-30-macos-component-suite.json`。
+
+| 场景 | 总计中位数 | 总计 p95 |
+| --- | ---: | ---: |
+| 100 项列表 | 0.527 ms | 0.845 ms |
+| 500 项列表 | 0.707 ms | 0.765 ms |
+| 1000 项列表 | 1.011 ms | 1.186 ms |
+| 控件页 | 0.623 ms | 0.902 ms |
+| 表面页 | 0.555 ms | 0.593 ms |
+| 反馈页（日历指针） | 0.569 ms | 0.685 ms |
+| 工作区页 | 0.577 ms | 0.710 ms |
+| 三个设置页 | 0.535–0.551 ms | 0.650–0.657 ms |
+| Dialog | 1.183 ms | 1.288 ms |
+| Popover | 0.574 ms | 0.690 ms |
+| Context Menu | 1.056 ms | 1.191 ms |
+| ImageViewer（指针缩放） | 1.187 ms | 1.340 ms |
+| 500 项 Dropdown | 0.309 ms | 0.399 ms |
+| 200 项 SearchDropdown | 0.297 ms | 0.309 ms |
+| 120 项 Context Menu | 0.342 ms | 0.400 ms |
+| 20 Region + resize/collapse | 2.514 ms | 2.673 ms |
+| 50 Region + resize/collapse | 6.058 ms | 6.284 ms |
+
+相对同日只发送滚轮的 WGPU 30 列表基线，100 项总计中位数增加 0.001ms，500 项
+增加 0.019ms，1000 项增加 0.255ms；本轮每次迭代同时发送指针移动、主键按下/
+释放和滚轮输入，因此事件遍历成本更完整。1000 项列表 p95 为 1.186ms。常规
+完整页面中位数低于 0.7ms；全屏 Dialog、Context Menu 和带裁剪、缩放、平移
+变换的 ImageViewer 均低于 1.2ms。50 Region 压力场景同时执行连续
+resize/collapse，总计 p95 为 6.284ms，仍低于 60Hz 的 16.67ms 帧预算。
+
+`/usr/bin/time -l` 记录全部 19 个场景顺序运行时 `ui-benchmark` 最大 RSS 为
+121,274,368 字节（约 115.66MiB），peak memory footprint 为 410,977,120
+字节；该峰值包含单一 Renderer 累积的 20/50 Region Canvas 与 GPU pipeline
+缓存。真实
+`component-gallery` Metal 窗口静置 25 秒后为 0.0% CPU、106,864KiB RSS
+（约 104.36MiB）和 sleeping 状态，没有持续重绘。
+
+`component-gallery` Release 二进制为 22,457,328 字节（约 21.42MiB）。
+链接映射确认其中 10,087,364 字节（约 9.62MiB）来自为中英文一致字重而注册
+的 Noto Sans SC Regular、Medium、SemiBold、Bold 四个字体文件；图片查看器
+接收宿主已渲染内容，不启用 Iced 图片编解码 feature，也没有引入第二套 GPU
+上下文或 CPU 回读路径。因此当前体积增长来自明确的字体资产与完整组件实例化，
+不是图片编解码器或重复 GPU 运行时。
+
 ## 尚未完成的基线
 
 以下数据仍需在屏幕解锁、固定窗口尺寸及对应目标平台上采集，不能从当前结果外推：

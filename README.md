@@ -67,21 +67,24 @@ cargo run -p nana-ui --example hosted-gpu-demo
 
 ## 当前依赖基线
 
-- Iced：`0.15.0-dev`，基于 `sena-nana/iced`；
+- Iced：`0.15.0-dev`，固定到 `sena-nana/iced`
+  `f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6`；
 - WGPU：`30.0.0`，依赖图中只有一个 WGPU 主版本；
-- Cryoglyph：随 Iced 分叉同步迁移到 WGPU 30；
+- Cryoglyph：随 Iced 分叉同步迁移到 WGPU 30，并固定到
+  `sena-nana/cryoglyph` `3fe41b131eda1288d08df89ad5ba56de97713308`；
 - Rust edition：2024，最低 Rust `1.92`。
 
-开发工作区暂时通过相邻的 `../iced` 与 `../cryoglyph` 本地路径验证三个仓库的
-同步修改；在变更经确认并形成固定 commit 后，再改为可复现的 Git revision。
+Iced 与 Cryoglyph 均使用完整 Git revision，`Cargo.lock` 记录解析后的 commit。
+GitHub Actions 从独立 checkout 运行 `--locked` 测试与全目标检查，不依赖相邻
+仓库。
 
 ## 验证
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo check --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
