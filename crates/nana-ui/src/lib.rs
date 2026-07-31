@@ -15,6 +15,7 @@ pub mod icons;
 pub mod layout;
 pub mod menu;
 pub mod overlay;
+mod resize_drag;
 pub mod selection;
 pub mod settings;
 mod shell;

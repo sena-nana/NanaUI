@@ -1,4 +1,5 @@
 use super::*;
+use iced::Vector;
 use iced::widget::column;
 
 struct RegionView<'a, Message> {
@@ -426,5 +427,16 @@ where
             iced::mouse::Interaction::ResizingVertically
         },
     )
+    .translate(resize_handle_translation(state.placement_value()))
     .into()
+}
+
+pub(super) fn resize_handle_translation(placement: RegionPlacement) -> Vector {
+    let offset = RESIZE_HANDLE_SIZE / 2.0;
+    match placement {
+        RegionPlacement::Start | RegionPlacement::Primary => Vector::new(offset, 0.0),
+        RegionPlacement::End => Vector::new(-offset, 0.0),
+        RegionPlacement::Top => Vector::new(0.0, offset),
+        RegionPlacement::Bottom => Vector::new(0.0, -offset),
+    }
 }
