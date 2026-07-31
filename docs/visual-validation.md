@@ -11,7 +11,8 @@ renderer，在离屏纹理生成 PNG。它不是重新制作的静态 mock。
 - `titlebar-native-leading-dark.png`；
 - `gallery-controls-dark.png`、`gallery-controls-light.png`；
 - `gallery-loading-dark.png`；
-- `gallery-surfaces-dark.png`、`gallery-cards-dark.png`；
+- `gallery-surfaces-dark.png`、`gallery-surfaces-light.png`；
+- `gallery-cards-dark.png`、`gallery-cards-light.png`；
 - `gallery-feedback-dark.png`；
 - `gallery-context-menu-dark.png`、`gallery-dialog-dark.png`；
 - `gallery-workspace-dark.png`、`gallery-sidebar-collapsed-dark.png`；
@@ -25,7 +26,10 @@ renderer，在离屏纹理生成 PNG。它不是重新制作的静态 mock。
 - 控件、表面、反馈和工作区分类使用同一 Gallery 状态，不出现消费应用业务语义；
 - 控件覆盖按钮、输入校验、TextArea、Checkbox、Switch、Slider、Scrollable、
   ListItem、loading 与 disabled 状态；
-- 表面覆盖基础、抬升、选中以及普通、交互、禁用卡片；
+- 原生 Gallery 中的输入框、TextArea、下拉、搜索下拉与 XYPad 在 focused /
+  opened 状态只使用中性浅边框且不改变背景，invalid 状态仍保持危险色边框；
+- 表面覆盖基础、抬升、选中以及普通、交互、禁用卡片；选中卡片在深浅主题下均
+  使用柔和状态背景与浅边框，不使用蓝色强调描边；
 - Feedback 覆盖进度、Tooltip、Context Menu 的危险确认和 Dialog 关闭策略；
 - 工作区分类真实启用 Toolbar、Inspector 与 Bottom，支持折叠、resize、双击复位，
   离开分类后隐藏辅助 Region，重新进入时保留尺寸和折叠状态；

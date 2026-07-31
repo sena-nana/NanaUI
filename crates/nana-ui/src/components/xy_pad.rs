@@ -396,7 +396,7 @@ impl<Message> canvas::Program<Message> for XYPad<'_, Message> {
         let border = if self.invalid {
             colors.danger
         } else if state.focused {
-            colors.accent
+            colors.border_soft
         } else {
             colors.border
         };
@@ -404,7 +404,11 @@ impl<Message> canvas::Program<Message> for XYPad<'_, Message> {
             &surface,
             canvas::Stroke::default()
                 .with_color(with_alpha(border, opacity))
-                .with_width(if state.focused { 2.0 } else { 1.0 }),
+                .with_width(if state.focused && self.invalid {
+                    2.0
+                } else {
+                    1.0
+                }),
         );
 
         let crosshair = with_alpha(colors.border_strong, 0.55 * opacity);
