@@ -10,8 +10,37 @@ license = "MIT OR Apache-2.0"
 name = "nana_ui"
 path = "src/lib.rs"
 
+[features]
+default = []
+full = ["bundled-fonts", "gallery", "gpu"]
+bundled-fonts = []
+components = [
+    "calendar",
+    "controls",
+    "feedback",
+    "image-viewer",
+    "overlays",
+    "popover",
+    "selects",
+    "settings-components",
+    "surfaces",
+    "xy-pad",
+]
+calendar = []
+controls = []
+feedback = []
+image-viewer = []
+overlays = []
+popover = []
+selects = []
+settings-components = ["controls"]
+surfaces = ["feedback"]
+xy-pad = []
+gallery = ["components"]
+gpu = ["dep:bytemuck", "dep:wgpu"]
+
 [dependencies]
-bytemuck = { version = "1.24", features = ["derive"] }
+bytemuck = { version = "1.24", features = ["derive"], optional = true }
 iced = {
     git = "https://github.com/sena-nana/iced.git",
     rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
@@ -21,7 +50,7 @@ iced = {
 nana-window = { path = "../nana-window" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-wgpu = "30.0.0"
+wgpu = { version = "30.0.0", optional = true }
 
 [dev-dependencies]
 iced_wgpu = { git = "https://github.com/sena-nana/iced.git", rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6" }
@@ -31,27 +60,34 @@ png = "0.18.1"
 [[example]]
 name = "component-gallery"
 path = "examples/component-gallery.rs"
+required-features = ["bundled-fonts", "gallery"]
 
 [[example]]
 name = "transparent-window"
 path = "examples/transparent-window.rs"
+required-features = ["bundled-fonts"]
 
 [[example]]
 name = "gpu-view-demo"
 path = "examples/gpu-view-demo.rs"
+required-features = ["bundled-fonts", "gpu"]
 
 [[example]]
 name = "hosted-gpu-demo"
 path = "examples/hosted-gpu-demo.rs"
+required-features = ["bundled-fonts", "gpu"]
 
 [[example]]
 name = "window-chrome-multi-window"
 path = "examples/window-chrome-multi-window.rs"
+required-features = ["bundled-fonts"]
 
 [[example]]
 name = "ui-benchmark"
 path = "examples/ui-benchmark.rs"
+required-features = ["bundled-fonts", "gallery"]
 
 [[example]]
 name = "ui-snapshots"
 path = "examples/ui-snapshots.rs"
+required-features = ["bundled-fonts", "gallery"]

@@ -25,7 +25,9 @@ jobs:
             libwayland-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Check minimal feature set
+        run: cargo check -p nana-ui --lib --no-default-features --locked
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --all-targets --all-features --locked
       - name: Check all targets
-        run: cargo check --workspace --all-targets --locked
+        run: cargo check --workspace --all-targets --all-features --locked

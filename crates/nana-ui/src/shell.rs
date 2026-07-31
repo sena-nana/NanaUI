@@ -7,7 +7,9 @@ use crate::geometry::TITLE_BAR_HEIGHT;
 use crate::icons::{Icon, icon};
 use crate::layout::RegionId;
 use crate::sidebar::SidebarFrame;
-use crate::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, tracked_label, ui_font};
+use crate::theme::{Colors, ThemeMode, ThemeTokens, tracked_label};
+#[cfg(feature = "gallery")]
+use crate::theme::{UI_METRICS, ui_font};
 use crate::widgets::{ButtonKind, button_style};
 use crate::window_chrome::{
     WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
@@ -534,6 +536,7 @@ where
         .into()
 }
 
+#[cfg(feature = "gallery")]
 pub(crate) fn section_heading<'a, Message>(
     title: &'a str,
     trailing: Option<Element<'a, Message>>,

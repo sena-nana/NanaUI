@@ -139,3 +139,21 @@ Bottom，以真实折叠、resize 和复位操作展示 Workspace Region 能力�
 `NanaUI Gallery`，只承载侧栏、主题与窗口操作。
 
 原生实现共享视觉层级和交互语义，不引入 Vue、DOM、CSS 或 LiliaUI 运行时依赖。
+
+## 编译与加载边界
+
+`nana-ui` 默认只编译基础核心；Cargo 不会根据消费代码引用自动推断 feature，
+消费者按职责显式启用 `calendar`、`controls`、`feedback`、`image-viewer`、
+`overlays`、`popover`、`selects`、`settings-components`、`surfaces` 或
+`xy-pad`。`gallery`、`gpu` 与 `bundled-fonts` 是彼此独立的上层边界，完整能力
+由 `full` 聚合，完整组件集合由 `components` 聚合。
+
+组件族拥有稳定的 `components::<family>` 子模块，同时保留 crate 根的现有
+re-export。未启用模块不参与编译；已启用但未引用的 Rust item 由 Release 链接器
+裁剪。内置字体只在 `bundled-fonts` 开启时通过 `include_bytes!` 进入编译图，
+关闭后宿主可注册自己的同名字体。
+
+运行时不引入第二套动态模块系统。Iced 只构造当前 `view` 返回的组件树；Gallery
+仅为当前分类构造视图，并用单线程 `OnceCell` 在首次显示反馈页时创建日历模型、
+首次打开上下文菜单时创建菜单数据。Workspace 组合与几何计算按 Region 数量线性
+处理，不在每个 Region 上重复扫描完整注册表。

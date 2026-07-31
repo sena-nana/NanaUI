@@ -144,19 +144,24 @@ impl From<Colors> for ThemeTokens {
 }
 
 /// LiliaUI's regular Noto Sans SC face, converted losslessly to TTF for Iced.
+#[cfg(feature = "bundled-fonts")]
 pub const UI_FONT_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf").as_slice();
 /// LiliaUI's medium Noto Sans SC face, converted losslessly to TTF for Iced.
+#[cfg(feature = "bundled-fonts")]
 pub const UI_FONT_MEDIUM: &[u8] =
     include_bytes!("../assets/fonts/NotoSansSC-Medium.ttf").as_slice();
 /// LiliaUI's semibold Noto Sans SC face, converted losslessly to TTF for Iced.
+#[cfg(feature = "bundled-fonts")]
 pub const UI_FONT_SEMIBOLD: &[u8] =
     include_bytes!("../assets/fonts/NotoSansSC-SemiBold.ttf").as_slice();
 /// LiliaUI's bold Noto Sans SC face, converted losslessly to TTF for Iced.
+#[cfg(feature = "bundled-fonts")]
 pub const UI_FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSansSC-Bold.ttf").as_slice();
 
 /// Returns every bundled UI face for registration with an Iced application or
 /// renderer.
+#[cfg(feature = "bundled-fonts")]
 pub const fn ui_font_sources() -> [&'static [u8]; 4] {
     [
         UI_FONT_REGULAR,
@@ -168,7 +173,7 @@ pub const fn ui_font_sources() -> [&'static [u8]; 4] {
 
 /// Resolves LiliaUI's Noto Sans SC family at the requested weight.
 ///
-/// Hosts must register [`ui_font_sources`] once when they construct their Iced
+/// Hosts using the `bundled-fonts` feature must register `ui_font_sources` once when they construct their Iced
 /// application or renderer and run [`ui_font_defaults`] during application
 /// startup.
 pub fn ui_font(weight: font::Weight) -> Font {
