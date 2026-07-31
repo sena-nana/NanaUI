@@ -47,6 +47,17 @@ WGPU View 属于 `nana-ui`；系统窗口材质与必须依赖原生句柄的 ma
 drag/minimize/toggle-maximize/close 语义动作。标准 Iced 应用通过公共控制器执行
 `iced::window` Task，宿主事件循环则直接消费同一动作；普通控件不读取原生句柄。
 
+标准 Iced 控制器始终绑定明确的 `window::Id`。`new`/`Default` 为单窗口应用提供
+便利入口：状态只绑定收到的首个 `Opened`，并过滤其他窗口的生命周期事件；多窗口
+应用在 `window::open` 返回 ID 后使用 `for_window` 创建每个窗口独立的状态。
+`Opened`、`Resized`、`Closed` 和最大化查询结果都保留来源 ID，所有窗口 Task 直接
+使用该 ID，不依赖 `window::latest()`。显式绑定窗口关闭后不会自动接管其他窗口；
+重建窗口时由应用调用 `bind`，旧 ID 的迟到结果会因目标不匹配被丢弃。
+
+宿主事件循环仍可通过 `update` 消费相同的语义动作，并通过 `set_maximized` 同步
+实际 Winit Window 状态；这个路径不把窗口所有权交给 Iced，也不会执行 Iced
+窗口 Task。
+
 macOS 使用 transparent titlebar 与 full-size content view，把 36px NanaUI 标题栏
 绘制到窗口顶部，并为左侧原生交通灯保留 78px。Windows/Linux 关闭系统 decorations，
 由 `AppTitleBar` 绘制三枚窗口按钮。macOS 默认禁止系统标题区抢占鼠标事件，只有

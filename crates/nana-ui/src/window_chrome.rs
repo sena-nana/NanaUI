@@ -93,28 +93,63 @@ pub enum WindowChromeEvent {
     PointerReleased,
     PointerCancelled,
     Action(WindowChromeAction),
-    PrepareWindow,
-    SyncMaximized,
-    MaximizedChanged(bool),
+    PrepareWindow(window::Id),
+    SyncMaximized(window::Id),
+    WindowClosed(window::Id),
+    MaximizedChanged { window: window::Id, maximized: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IcedWindowCommand {
+    Prepare(window::Id),
+    SyncMaximized(window::Id),
+    Action {
+        window: window::Id,
+        action: WindowChromeAction,
+    },
 }
 
 /// Interaction state shared by title bar views and their window runtime.
 #[derive(Debug, Clone)]
 pub struct WindowChromeState {
     chrome: WindowChrome,
+    window: Option<window::Id>,
+    auto_bind: bool,
     cursor_position: Option<Point>,
     drag_origin: Option<Point>,
     maximized: bool,
 }
 
 impl WindowChromeState {
+    /// Creates a state that binds to the first window opened by the Iced runtime.
     pub fn new(chrome: WindowChrome) -> Self {
         Self {
             chrome,
+            window: None,
+            auto_bind: true,
             cursor_position: None,
             drag_origin: None,
             maximized: false,
         }
+    }
+
+    /// Creates a state bound to a specific Iced window.
+    pub fn for_window(window: window::Id, chrome: WindowChrome) -> Self {
+        let mut state = Self::new(chrome);
+        state.bind(window);
+        state
+    }
+
+    /// Binds this state to a specific Iced window.
+    ///
+    /// Binding explicitly disables automatic rebinding after the window closes.
+    pub fn bind(&mut self, window: window::Id) {
+        self.auto_bind = false;
+        self.set_window(Some(window));
+    }
+
+    pub const fn window_id(&self) -> Option<window::Id> {
+        self.window
     }
 
     pub const fn chrome(&self) -> WindowChrome {
@@ -123,6 +158,11 @@ impl WindowChromeState {
 
     pub const fn is_maximized(&self) -> bool {
         self.maximized
+    }
+
+    /// Synchronizes the visible maximize/restore state for a host-owned window.
+    pub fn set_maximized(&mut self, maximized: bool) {
+        self.maximized = maximized;
     }
 
     /// Reduces a title bar event and returns a runtime action when one is ready.
@@ -158,31 +198,73 @@ impl WindowChromeState {
                 }
                 Some(action)
             }
-            WindowChromeEvent::MaximizedChanged(maximized) => {
-                self.maximized = maximized;
+            WindowChromeEvent::MaximizedChanged { window, maximized } => {
+                if self.window == Some(window) {
+                    self.set_maximized(maximized);
+                }
                 None
             }
-            WindowChromeEvent::PrepareWindow => None,
-            WindowChromeEvent::SyncMaximized => None,
+            WindowChromeEvent::WindowClosed(window) => {
+                if self.window == Some(window) {
+                    self.set_window(None);
+                }
+                None
+            }
+            WindowChromeEvent::PrepareWindow(_) | WindowChromeEvent::SyncMaximized(_) => None,
         }
     }
 
-    /// Handles an event using the standard Iced single-window runtime.
+    /// Handles an event using the standard Iced window runtime.
     pub fn update_iced(&mut self, event: WindowChromeEvent) -> Task<WindowChromeEvent> {
-        if event == WindowChromeEvent::PrepareWindow {
-            return prepare_window();
+        match self.iced_command(event) {
+            Some(IcedWindowCommand::Prepare(window)) => prepare_window(window),
+            Some(IcedWindowCommand::SyncMaximized(window)) => sync_maximized(window),
+            Some(IcedWindowCommand::Action { window, action }) => {
+                perform_window_action(window, action)
+            }
+            None => Task::none(),
         }
-        if event == WindowChromeEvent::SyncMaximized {
-            return sync_maximized();
-        }
-
-        self.update(event)
-            .map_or_else(Task::none, perform_window_action)
     }
 
-    /// Tracks window creation and resize so the maximize/restore icon stays current.
+    /// Tracks window creation, resize, and close events for all application windows.
+    ///
+    /// Each [`WindowChromeState`] filters this stream against its own binding.
     pub fn subscription() -> Subscription<WindowChromeEvent> {
         iced::event::listen_with(window_event)
+    }
+
+    fn iced_command(&mut self, event: WindowChromeEvent) -> Option<IcedWindowCommand> {
+        match event {
+            WindowChromeEvent::PrepareWindow(window) => {
+                if self.window.is_none() && self.auto_bind {
+                    self.set_window(Some(window));
+                }
+                (self.window == Some(window)).then_some(IcedWindowCommand::Prepare(window))
+            }
+            WindowChromeEvent::SyncMaximized(window) => {
+                (self.window == Some(window)).then_some(IcedWindowCommand::SyncMaximized(window))
+            }
+            WindowChromeEvent::WindowClosed(window) => {
+                self.update(WindowChromeEvent::WindowClosed(window));
+                None
+            }
+            WindowChromeEvent::MaximizedChanged { window, maximized } => {
+                self.update(WindowChromeEvent::MaximizedChanged { window, maximized });
+                None
+            }
+            event => {
+                let window = self.window?;
+                self.update(event)
+                    .map(|action| IcedWindowCommand::Action { window, action })
+            }
+        }
+    }
+
+    fn set_window(&mut self, window: Option<window::Id>) {
+        self.window = window;
+        self.cursor_position = None;
+        self.drag_origin = None;
+        self.maximized = false;
     }
 }
 
@@ -210,14 +292,21 @@ pub fn custom_title_bar_window(mut settings: window::Settings) -> window::Settin
     settings
 }
 
-fn perform_window_action(action: WindowChromeAction) -> Task<WindowChromeEvent> {
-    window::latest().and_then(move |id| match action {
-        WindowChromeAction::Drag => perform_drag(id),
-        WindowChromeAction::Minimize => window::minimize::<WindowChromeEvent>(id, true),
-        WindowChromeAction::ToggleMaximize => window::toggle_maximize::<WindowChromeEvent>(id)
-            .chain(window::is_maximized(id).map(WindowChromeEvent::MaximizedChanged)),
-        WindowChromeAction::Close => window::close::<WindowChromeEvent>(id),
-    })
+fn perform_window_action(
+    window: window::Id,
+    action: WindowChromeAction,
+) -> Task<WindowChromeEvent> {
+    match action {
+        WindowChromeAction::Drag => perform_drag(window),
+        WindowChromeAction::Minimize => window::minimize::<WindowChromeEvent>(window, true),
+        WindowChromeAction::ToggleMaximize => window::toggle_maximize::<WindowChromeEvent>(window)
+            .chain(
+                window::is_maximized(window).map(move |maximized| {
+                    WindowChromeEvent::MaximizedChanged { window, maximized }
+                }),
+            ),
+        WindowChromeAction::Close => window::close::<WindowChromeEvent>(window),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -233,28 +322,31 @@ fn perform_drag(id: window::Id) -> Task<WindowChromeEvent> {
     window::drag(id)
 }
 
-fn sync_maximized() -> Task<WindowChromeEvent> {
-    window::latest()
-        .and_then(|id| window::is_maximized(id).map(WindowChromeEvent::MaximizedChanged))
+fn sync_maximized(window: window::Id) -> Task<WindowChromeEvent> {
+    window::is_maximized(window)
+        .map(move |maximized| WindowChromeEvent::MaximizedChanged { window, maximized })
 }
 
-fn prepare_window() -> Task<WindowChromeEvent> {
-    window::latest().and_then(|id| {
-        window::run(id, |window| {
-            let _ = nana_window::prepare_custom_title_bar(window);
-            WindowChromeEvent::SyncMaximized
-        })
+fn prepare_window(window: window::Id) -> Task<WindowChromeEvent> {
+    window::run(window, move |handle| {
+        let _ = nana_window::prepare_custom_title_bar(handle);
+        WindowChromeEvent::SyncMaximized(window)
     })
 }
 
 fn window_event(
     event: iced::Event,
     _status: iced::event::Status,
-    _window: window::Id,
+    window: window::Id,
 ) -> Option<WindowChromeEvent> {
     match event {
-        iced::Event::Window(window::Event::Opened { .. }) => Some(WindowChromeEvent::PrepareWindow),
-        iced::Event::Window(window::Event::Resized(_)) => Some(WindowChromeEvent::SyncMaximized),
+        iced::Event::Window(window::Event::Opened { .. }) => {
+            Some(WindowChromeEvent::PrepareWindow(window))
+        }
+        iced::Event::Window(window::Event::Resized(_)) => {
+            Some(WindowChromeEvent::SyncMaximized(window))
+        }
+        iced::Event::Window(window::Event::Closed) => Some(WindowChromeEvent::WindowClosed(window)),
         _ => None,
     }
 }
@@ -273,10 +365,11 @@ fn distance(from: Point, to: Point) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use iced::Point;
+    use iced::{Point, Size, event, window};
 
     use super::{
-        WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,
+        IcedWindowCommand, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
+        WindowControlMode, window_event,
     };
 
     #[cfg(not(target_os = "macos"))]
@@ -344,8 +437,117 @@ mod tests {
         );
         assert!(state.is_maximized());
 
-        state.update(WindowChromeEvent::MaximizedChanged(false));
+        state.set_maximized(false);
         assert!(!state.is_maximized());
+    }
+
+    #[test]
+    fn window_events_preserve_their_source_window() {
+        let window = window::Id::unique();
+        let opened = iced::Event::Window(window::Event::Opened {
+            position: None,
+            size: Size::new(800.0, 600.0),
+            scale_factor: 1.0,
+        });
+        let resized = iced::Event::Window(window::Event::Resized(Size::new(900.0, 700.0)));
+        let closed = iced::Event::Window(window::Event::Closed);
+
+        assert_eq!(
+            window_event(opened, event::Status::Ignored, window),
+            Some(WindowChromeEvent::PrepareWindow(window))
+        );
+        assert_eq!(
+            window_event(resized, event::Status::Ignored, window),
+            Some(WindowChromeEvent::SyncMaximized(window))
+        );
+        assert_eq!(
+            window_event(closed, event::Status::Ignored, window),
+            Some(WindowChromeEvent::WindowClosed(window))
+        );
+    }
+
+    #[test]
+    fn explicit_states_route_rebind_and_ignore_stale_results() {
+        let window_a = window::Id::unique();
+        let window_b = window::Id::unique();
+        let mut state_a = WindowChromeState::for_window(window_a, WindowChrome::platform_default());
+        let mut state_b = WindowChromeState::for_window(window_b, WindowChrome::platform_default());
+
+        assert_eq!(
+            state_a.iced_command(WindowChromeEvent::SyncMaximized(window_b)),
+            None
+        );
+        assert_eq!(
+            state_a.iced_command(WindowChromeEvent::SyncMaximized(window_a)),
+            Some(IcedWindowCommand::SyncMaximized(window_a))
+        );
+        assert_eq!(
+            state_a.iced_command(WindowChromeEvent::Action(WindowChromeAction::Minimize)),
+            Some(IcedWindowCommand::Action {
+                window: window_a,
+                action: WindowChromeAction::Minimize,
+            })
+        );
+        assert_eq!(
+            state_b.iced_command(WindowChromeEvent::Action(WindowChromeAction::Close)),
+            Some(IcedWindowCommand::Action {
+                window: window_b,
+                action: WindowChromeAction::Close,
+            })
+        );
+
+        state_a.iced_command(WindowChromeEvent::WindowClosed(window_a));
+        assert_eq!(state_a.window_id(), None);
+        assert_eq!(
+            state_a.iced_command(WindowChromeEvent::PrepareWindow(window_b)),
+            None
+        );
+
+        state_a.bind(window_b);
+        state_a.iced_command(WindowChromeEvent::MaximizedChanged {
+            window: window_a,
+            maximized: true,
+        });
+        assert!(!state_a.is_maximized());
+        assert_eq!(
+            state_a.iced_command(WindowChromeEvent::Action(
+                WindowChromeAction::ToggleMaximize
+            )),
+            Some(IcedWindowCommand::Action {
+                window: window_b,
+                action: WindowChromeAction::ToggleMaximize,
+            })
+        );
+        assert!(state_a.is_maximized());
+    }
+
+    #[test]
+    fn automatic_state_binds_first_window_and_rebinds_after_it_closes() {
+        let window_a = window::Id::unique();
+        let window_b = window::Id::unique();
+        let mut state = WindowChromeState::default();
+
+        assert_eq!(state.window_id(), None);
+        assert_eq!(
+            state.iced_command(WindowChromeEvent::PrepareWindow(window_a)),
+            Some(IcedWindowCommand::Prepare(window_a))
+        );
+        assert_eq!(state.window_id(), Some(window_a));
+        assert_eq!(
+            state.iced_command(WindowChromeEvent::PrepareWindow(window_b)),
+            None
+        );
+
+        assert_eq!(
+            state.iced_command(WindowChromeEvent::WindowClosed(window_a)),
+            None
+        );
+        assert_eq!(state.window_id(), None);
+        assert_eq!(
+            state.iced_command(WindowChromeEvent::PrepareWindow(window_b)),
+            Some(IcedWindowCommand::Prepare(window_b))
+        );
+        assert_eq!(state.window_id(), Some(window_b));
     }
 
     #[test]

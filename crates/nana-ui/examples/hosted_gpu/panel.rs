@@ -48,8 +48,7 @@ impl DemoPanel {
     }
 
     pub fn sync_maximized(&mut self, maximized: bool) {
-        self.window_chrome
-            .update(WindowChromeEvent::MaximizedChanged(maximized));
+        self.window_chrome.set_maximized(maximized);
     }
 
     pub fn view(
