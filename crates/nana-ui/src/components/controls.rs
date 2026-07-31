@@ -5,7 +5,7 @@ use iced::widget::{
     button, checkbox, column, container, pick_list, row, slider, text, text_editor, text_input,
     toggler,
 };
-use iced::{Alignment, Element, Length, Pixels, font};
+use iced::{Alignment, Element, Length, Padding, Pixels, font};
 
 use crate::components::ControlSize;
 use crate::icons::{Icon, icon};
@@ -179,8 +179,11 @@ pub struct Input<'a, Message> {
     value: &'a str,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     size: ControlSize,
+    padding: Option<Padding>,
+    line_height: Option<f32>,
     disabled: bool,
     invalid: bool,
+    secure: bool,
 }
 
 impl<'a, Message> Input<'a, Message>
@@ -193,8 +196,11 @@ where
             value,
             on_input: None,
             size: ControlSize::Medium,
+            padding: None,
+            line_height: None,
             disabled: false,
             invalid: false,
+            secure: false,
         }
     }
 
@@ -208,6 +214,16 @@ where
         self
     }
 
+    pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
+        self.padding = Some(padding.into());
+        self
+    }
+
+    pub fn line_height(mut self, line_height: f32) -> Self {
+        self.line_height = Some(line_height.max(1.0));
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -218,16 +234,27 @@ where
         self
     }
 
+    /// Masks the field value while preserving the caller-owned input state.
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
+        self
+    }
+
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
-        let field = text_input(self.placeholder, self.value)
-            .padding([
+        let padding = self.padding.unwrap_or_else(|| {
+            Padding::from([
                 self.size.vertical_padding(tokens.metrics),
                 self.size.padding_x(),
             ])
+        });
+        let line_height = self.line_height.unwrap_or_else(|| self.size.line_height());
+        let field = text_input(self.placeholder, self.value)
+            .secure(self.secure)
+            .padding(padding)
             .size(self.size.text_size())
             .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
-                self.size.line_height(),
+                line_height,
             )))
             .width(Length::Fill)
             .style(text_input_style(tokens, self.invalid));

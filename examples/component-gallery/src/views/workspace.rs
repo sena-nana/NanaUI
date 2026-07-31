@@ -4,14 +4,6 @@ use iced::widget::column;
 impl GalleryState {
     pub(super) fn workspace_gallery(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
-        let toggle = |label: &'static str, id: RegionId| {
-            let expanded = region_expanded(self.workspace.layout(), &id);
-            button(text(format!("{}{label}", if expanded { "隐藏" } else { "显示" })).size(12))
-                .height(Length::Fixed(ControlSize::Medium.height_in(tokens.metrics)))
-                .padding([0.0, UI_METRICS.control_padding_x])
-                .on_press(GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(id)))
-                .style(button_style(tokens, ButtonKind::Subtle))
-        };
         let popup_title_bar = PopupTitleBarFrame::new(
             text("弹窗标题").size(12),
             GalleryMessage::PrimaryAction,
@@ -32,26 +24,96 @@ impl GalleryState {
         )
         .title_bar(popup_title_bar)
         .view(tokens);
+        let dock_panel = |label: &'static str, hint: &'static str| {
+            container(
+                column![
+                    text(label).size(12).color(colors.text),
+                    text(hint).size(10).color(colors.muted),
+                ]
+                .spacing(5),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(10)
+        };
+        let dock = dock_workspace(
+            &self.dock,
+            DockSurfaceId(0),
+            DockContents::new()
+                .insert(
+                    "gallery.editor",
+                    dock_panel("Preview · Program", "不可移动的主内容节点"),
+                )
+                .insert("gallery.scenes", dock_panel("Scene A", "选择当前场景"))
+                .insert("gallery.sources", dock_panel("Image", "当前场景实例"))
+                .insert(
+                    "gallery.properties",
+                    dock_panel("Transform", "位置、缩放与旋转"),
+                )
+                .insert(
+                    "gallery.connection",
+                    dock_panel("NanaLive", "已连接的 Actor 输入"),
+                )
+                .insert("gallery.mixer", dock_panel("Master", "音量与静音"))
+                .insert("gallery.cue", dock_panel("Cue 01", "确定性执行队列"))
+                .insert(
+                    "gallery.controls",
+                    dock_panel("Controls", "Take 与输出状态"),
+                ),
+            GalleryMessage::Dock,
+            tokens,
+        );
+        let locked = self.dock.layout().locked;
+        let hidden_sources = !self.dock.is_visible(&DockId::from("gallery.sources"));
+        let floating_count = self.dock.layout().floating.len();
         container(
             column![
                 text("工作区").size(16).color(colors.text),
                 container(
                     column![
                         row![
-                            toggle("侧栏", RegionId::Resources),
-                            toggle("检查器", RegionId::Inspector),
-                            toggle("底部面板", RegionId::Diagnostics),
+                            button(text(if locked { "解锁 Dock" } else { "锁定 Dock" }).size(11))
+                                .height(Length::Fixed(28.0))
+                                .padding([0.0, 8.0])
+                                .on_press(GalleryMessage::Dock(DockAction::SetLocked(!locked)))
+                                .style(button_style(tokens, ButtonKind::Subtle)),
+                            button(
+                                text(if hidden_sources {
+                                    "恢复 Sources"
+                                } else {
+                                    "隐藏 Sources"
+                                })
+                                .size(11)
+                            )
+                            .height(Length::Fixed(28.0))
+                            .padding([0.0, 8.0])
+                            .on_press(GalleryMessage::Dock(if hidden_sources {
+                                DockAction::Show(DockId::from("gallery.sources"))
+                            } else {
+                                DockAction::Hide(DockId::from("gallery.sources"))
+                            }))
+                            .style(button_style(tokens, ButtonKind::Subtle)),
+                            button(text("重置 Dock").size(11))
+                                .height(Length::Fixed(28.0))
+                                .padding([0.0, 8.0])
+                                .on_press(GalleryMessage::Dock(DockAction::Reset))
+                                .style(button_style(tokens, ButtonKind::Subtle)),
                         ]
                         .spacing(8),
-                        text("拖动区域边缘调整尺寸，双击恢复默认值。")
-                            .size(12)
-                            .color(colors.muted),
+                        text(format!(
+                            "拖动分隔条调整，双击复位；当前浮窗 {floating_count} 个。"
+                        ))
+                        .size(12)
+                        .color(colors.muted),
                     ]
                     .spacing(10),
                 )
                 .width(Length::Fill)
                 .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
                 .style(panel_style(tokens)),
+                container(dock)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(430.0)),
                 container(popup)
                     .width(Length::Fixed(360.0))
                     .height(Length::Fixed(150.0))

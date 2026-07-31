@@ -4,6 +4,9 @@ use iced::Rectangle;
 use iced::wgpu;
 use iced::widget::shader;
 
+use crate::geometry::LogicalRect;
+use crate::gpu_view::RenderSlot;
+
 const SOURCE: &str = r#"
 @group(0) @binding(0)
 var source: texture_2d<f32>;
@@ -84,10 +87,11 @@ impl<Message> shader::Program<Message> for GpuTextureView {
         &self,
         _state: &Self::State,
         _cursor: iced::mouse::Cursor,
-        _bounds: Rectangle,
+        bounds: Rectangle,
     ) -> Self::Primitive {
         GpuTexturePrimitive {
             texture: self.texture.clone(),
+            logical_bounds: LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
         }
     }
 }
@@ -96,6 +100,7 @@ impl<Message> shader::Program<Message> for GpuTextureView {
 #[derive(Debug, Clone)]
 pub struct GpuTexturePrimitive {
     texture: HostTexture,
+    logical_bounds: LogicalRect,
 }
 
 impl shader::Primitive for GpuTexturePrimitive {
@@ -107,8 +112,13 @@ impl shader::Primitive for GpuTexturePrimitive {
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
         _bounds: &Rectangle,
-        _viewport: &shader::Viewport,
+        viewport: &shader::Viewport,
     ) {
+        let slot = RenderSlot::new(
+            self.texture.id,
+            self.logical_bounds,
+            viewport.scale_factor(),
+        );
         let needs_rebind = pipeline
             .textures
             .get(&self.texture.id)
@@ -134,22 +144,62 @@ impl shader::Primitive for GpuTexturePrimitive {
                 PreparedTexture {
                     generation: self.texture.generation,
                     bind_group,
+                    slot,
                     used: true,
                 },
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&self.texture.id) {
+            prepared.slot = slot;
             prepared.used = true;
         }
     }
 
-    fn draw(&self, pipeline: &Self::Pipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
+    fn draw(&self, _pipeline: &Self::Pipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
+        false
+    }
+
+    fn render(
+        &self,
+        pipeline: &Self::Pipeline,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        clip_bounds: &Rectangle<u32>,
+    ) {
         let Some(texture) = pipeline.textures.get(&self.texture.id) else {
-            return false;
+            return;
         };
+        let bounds = intersect_physical(texture.slot.physical, *clip_bounds);
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("nana-ui host texture render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        render_pass.set_viewport(
+            bounds.x as f32,
+            bounds.y as f32,
+            bounds.width as f32,
+            bounds.height as f32,
+            0.0,
+            1.0,
+        );
+        render_pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_bind_group(0, &texture.bind_group, &[]);
         render_pass.draw(0..3, 0..1);
-        true
     }
 }
 
@@ -247,5 +297,28 @@ impl shader::Pipeline for GpuTexturePipeline {
 struct PreparedTexture {
     generation: u64,
     bind_group: wgpu::BindGroup,
+    slot: RenderSlot,
     used: bool,
+}
+
+fn intersect_physical(
+    bounds: crate::geometry::PhysicalRect,
+    clip: Rectangle<u32>,
+) -> Rectangle<u32> {
+    let left = bounds.x.max(clip.x);
+    let top = bounds.y.max(clip.y);
+    let right = bounds
+        .x
+        .saturating_add(bounds.width)
+        .min(clip.x.saturating_add(clip.width));
+    let bottom = bounds
+        .y
+        .saturating_add(bounds.height)
+        .min(clip.y.saturating_add(clip.height));
+    Rectangle {
+        x: left,
+        y: top,
+        width: right.saturating_sub(left),
+        height: bottom.saturating_sub(top),
+    }
 }

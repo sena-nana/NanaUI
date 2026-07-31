@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-full = ["bundled-fonts", "components", "gpu"]
+full = ["bundled-fonts", "components", "hosted"]
 bundled-fonts = []
 components = [
     "calendar",
@@ -37,10 +37,13 @@ settings-components = ["controls"]
 surfaces = ["feedback"]
 xy-pad = []
 gpu = ["dep:bytemuck", "dep:wgpu"]
+hosted = ["gpu", "dep:iced_wgpu", "dep:iced_winit"]
 
 [dependencies]
 bytemuck = { version = "1.24", features = ["derive"], optional = true }
 iced.workspace = true
+iced_wgpu = { workspace = true, optional = true }
+iced_winit = { workspace = true, optional = true }
 nana-window = { path = "../nana-window" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -63,7 +66,7 @@ required-features = ["bundled-fonts", "gpu"]
 [[example]]
 name = "hosted-gpu-demo"
 path = "examples/hosted-gpu-demo.rs"
-required-features = ["bundled-fonts", "gpu"]
+required-features = ["bundled-fonts", "hosted"]
 
 [[example]]
 name = "window-chrome-multi-window"

@@ -80,6 +80,28 @@ pub fn apply_system_material<W: HasWindowHandle + ?Sized>(
     platform::apply(window, appearance, fallback)
 }
 
+/// Applies the platform material that is safe for a host-owned GPU surface.
+///
+/// AppKit visual-effect subviews composite above the content view's CAMetalLayer,
+/// so macOS hosted renderers must use their opaque surface fallback until the
+/// window owns a separate content view behind the WGPU layer.
+pub fn apply_hosted_system_material<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    appearance: Appearance,
+    fallback: FallbackColor,
+) -> MaterialOutcome {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (appearance, fallback);
+        platform::clear(window);
+        MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        platform::apply(window, appearance, fallback)
+    }
+}
+
 pub fn clear_system_material<W: HasWindowHandle + ?Sized>(window: &W) {
     platform::clear(window);
 }

@@ -1,7 +1,5 @@
-use iced::{Pixels, Size};
-use iced_wgpu::graphics::core::renderer;
-use iced_wgpu::graphics::{Shell, Viewport};
-use iced_wgpu::{Engine, Renderer, wgpu};
+use iced::Size;
+use iced_wgpu::wgpu;
 use iced_winit::futures::futures::executor;
 use iced_winit::winit;
 
@@ -9,26 +7,16 @@ use std::sync::Arc;
 
 pub struct HostGraphics {
     instance: wgpu::Instance,
-    _adapter: wgpu::Adapter,
+    pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub format: wgpu::TextureFormat,
-    pub renderer: Renderer,
-    pub viewport: Viewport,
     configuration: wgpu::SurfaceConfiguration,
 }
 
 impl HostGraphics {
     pub fn new(window: Arc<winit::window::Window>) -> Self {
-        let mut font_system = iced_wgpu::graphics::text::font_system()
-            .write()
-            .expect("font system");
-        for source in nana_ui::ui_font_sources() {
-            font_system.load_font(std::borrow::Cow::Borrowed(source));
-        }
-        drop(font_system);
-
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -75,51 +63,19 @@ impl HostGraphics {
         };
         surface.configure(&device, &configuration);
 
-        let renderer = Renderer::new(
-            Engine::new(
-                &adapter,
-                device.clone(),
-                queue.clone(),
-                format,
-                None,
-                Shell::headless(),
-            ),
-            renderer::Settings {
-                default_font: nana_ui::ui_font(iced::font::Weight::Normal),
-                default_text_size: Pixels::from(nana_ui::UI_BASE_TEXT_SIZE),
-                metrics_hinting: true,
-            },
-        );
-        let viewport = Viewport::with_physical_size(
-            Size::new(size.width, size.height),
-            renderer::Scale {
-                window: window.scale_factor() as f32,
-                application: 1.0,
-            },
-        );
-
         Self {
             instance,
-            _adapter: adapter,
+            adapter,
             device,
             queue,
             surface,
             format,
-            renderer,
-            viewport,
             configuration,
         }
     }
 
     pub fn resize(&mut self, window: &winit::window::Window) {
         let size = window.inner_size();
-        self.viewport = Viewport::with_physical_size(
-            Size::new(size.width, size.height),
-            renderer::Scale {
-                window: window.scale_factor() as f32,
-                application: 1.0,
-            },
-        );
         if size.width == 0 || size.height == 0 {
             return;
         }
@@ -142,8 +98,11 @@ impl HostGraphics {
     }
 
     pub fn is_drawable(&self) -> bool {
-        let size = self.viewport.physical_size();
-        size.width > 0 && size.height > 0
+        self.configuration.width > 0 && self.configuration.height > 0
+    }
+
+    pub fn physical_size(&self) -> Size<u32> {
+        Size::new(self.configuration.width, self.configuration.height)
     }
 }
 

@@ -5,12 +5,15 @@
 
 pub mod components;
 pub mod dialog;
+pub mod dock;
 mod drag_handle;
 pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu_texture;
 #[cfg(feature = "gpu")]
 pub mod gpu_view;
+#[cfg(feature = "hosted")]
+pub mod hosted_renderer;
 pub mod icons;
 pub mod layout;
 pub mod menu;
@@ -68,11 +71,18 @@ pub use components::surfaces::{Card, EmptyState, FormField, InteractiveCard, Lis
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+pub use dock::{
+    DockAction, DockAxis, DockBounds, DockContents, DockController, DockDropTarget, DockDropZone,
+    DockError, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
+    DockUpdate, FloatingDock, dock_workspace,
+};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{GpuTextureView, HostTexture};
 #[cfg(feature = "gpu")]
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
+#[cfg(feature = "hosted")]
+pub use hosted_renderer::{HostedUiFrame, HostedUiRenderer, HostedUiTarget};
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
