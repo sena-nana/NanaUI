@@ -10,6 +10,7 @@ use crate::geometry::{RESIZE_HANDLE_SIZE, WorkspaceGeometry};
 use crate::layout::{
     RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
 };
+use crate::resize_drag::{ResizeAxis, ResizeDrag};
 use crate::theme::{Colors, ThemeTokens};
 use crate::widgets::{primary_region_radius, primary_region_style, workspace_region_style};
 
@@ -43,7 +44,7 @@ pub enum WorkspaceAction {
 #[derive(Debug, Clone)]
 struct ResizeState {
     region: RegionId,
-    last_position: Option<Point>,
+    drag: ResizeDrag,
 }
 
 #[derive(Debug, Clone)]
@@ -187,10 +188,11 @@ impl WorkspaceController {
                 {
                     return false;
                 }
+                let (axis, direction) = resize_direction(state.placement_value());
                 self.hovered_resize = Some(region.clone());
                 self.resizing = Some(ResizeState {
                     region,
-                    last_position: None,
+                    drag: ResizeDrag::new(axis, state.extent(), direction),
                 });
                 true
             }
@@ -206,18 +208,14 @@ impl WorkspaceController {
                 let Some(resizing) = &mut self.resizing else {
                     return false;
                 };
-                let Some(region) = self.layout.region(&resizing.region) else {
+                if self.layout.region(&resizing.region).is_none() {
                     self.resizing = None;
                     return false;
+                }
+                let Some(size) = resizing.drag.value(Point::new(x, y)) else {
+                    return false;
                 };
-                let placement = region.placement_value();
-                let position = Point::new(x, y);
-                let changed = resizing.last_position.is_some_and(|last_position| {
-                    let delta = resize_delta(placement, last_position, position);
-                    self.layout.resize_by(&resizing.region, delta)
-                });
-                resizing.last_position = Some(position);
-                changed
+                self.layout.set_size(&resizing.region, size)
             }
             WorkspaceAction::ResizeEnd => {
                 let changed = self.resizing.is_some() || self.hovered_resize.is_some();
@@ -333,12 +331,12 @@ impl WorkspaceController {
     }
 }
 
-fn resize_delta(placement: RegionPlacement, previous: Point, current: Point) -> f32 {
+fn resize_direction(placement: RegionPlacement) -> (ResizeAxis, f32) {
     match placement {
-        RegionPlacement::Start | RegionPlacement::Primary => current.x - previous.x,
-        RegionPlacement::End => previous.x - current.x,
-        RegionPlacement::Top => current.y - previous.y,
-        RegionPlacement::Bottom => previous.y - current.y,
+        RegionPlacement::Start | RegionPlacement::Primary => (ResizeAxis::Horizontal, 1.0),
+        RegionPlacement::End => (ResizeAxis::Horizontal, -1.0),
+        RegionPlacement::Top => (ResizeAxis::Vertical, 1.0),
+        RegionPlacement::Bottom => (ResizeAxis::Vertical, -1.0),
     }
 }
 

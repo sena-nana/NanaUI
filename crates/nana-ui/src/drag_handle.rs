@@ -109,6 +109,7 @@ impl DragHandleState {
 
 pub(crate) struct DragHandle<'a, Message> {
     content: Element<'a, Message>,
+    translation: Vector,
     on_start: Message,
     on_move: Rc<dyn Fn(Point) -> Message + 'a>,
     on_end: Message,
@@ -129,6 +130,7 @@ impl<'a, Message> DragHandle<'a, Message> {
     ) -> Self {
         Self {
             content: content.into(),
+            translation: Vector::ZERO,
             on_start,
             on_move: Rc::new(on_move),
             on_end,
@@ -136,6 +138,11 @@ impl<'a, Message> DragHandle<'a, Message> {
             on_hover: Rc::new(on_hover),
             interaction,
         }
+    }
+
+    pub(crate) fn translate(mut self, translation: Vector) -> Self {
+        self.translation = translation;
+        self
     }
 }
 
@@ -165,9 +172,11 @@ where
         renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.content
+        let content = self
+            .content
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
+            .layout(&mut tree.children[0], renderer, limits);
+        translated_layout(content, self.translation)
     }
 
     fn update(
@@ -180,10 +189,12 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let signals =
-            tree.state
-                .downcast_mut::<DragHandleState>()
-                .signals(event, layout.bounds(), cursor);
+        let content_layout = layout.children().next().expect("drag handle content");
+        let signals = tree.state.downcast_mut::<DragHandleState>().signals(
+            event,
+            content_layout.bounds(),
+            cursor,
+        );
         if !signals.is_empty() {
             for signal in signals {
                 shell.publish(match signal {
@@ -201,7 +212,7 @@ where
         self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
-            layout,
+            content_layout,
             cursor,
             renderer,
             shell,
@@ -219,12 +230,13 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let content_layout = layout.children().next().expect("drag handle content");
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
             theme,
             style,
-            layout,
+            content_layout,
             cursor,
             viewport,
         );
@@ -237,9 +249,13 @@ where
         renderer: &iced::Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        self.content
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
+        let content_layout = layout.children().next().expect("drag handle content");
+        self.content.as_widget_mut().operate(
+            &mut tree.children[0],
+            content_layout,
+            renderer,
+            operation,
+        );
     }
 
     fn mouse_interaction(
@@ -250,13 +266,14 @@ where
         viewport: &Rectangle,
         renderer: &iced::Renderer,
     ) -> mouse::Interaction {
+        let content_layout = layout.children().next().expect("drag handle content");
         let state = tree.state.downcast_ref::<DragHandleState>();
-        if state.source.is_some() || cursor.is_over(layout.bounds()) {
+        if state.source.is_some() || cursor.is_over(content_layout.bounds()) {
             self.interaction
         } else {
             self.content.as_widget().mouse_interaction(
                 &tree.children[0],
-                layout,
+                content_layout,
                 cursor,
                 viewport,
                 renderer,
@@ -272,14 +289,20 @@ where
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        let content_layout = layout.children().next().expect("drag handle content");
         self.content.as_widget_mut().overlay(
             &mut tree.children[0],
-            layout,
+            content_layout,
             renderer,
             viewport,
             translation,
         )
     }
+}
+
+fn translated_layout(content: layout::Node, translation: Vector) -> layout::Node {
+    let size = content.size();
+    layout::Node::with_children(size, vec![content.translate(translation)])
 }
 
 impl<'a, Message> From<DragHandle<'a, Message>> for Element<'a, Message>
@@ -294,6 +317,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translation_moves_the_hit_content_without_consuming_layout_space() {
+        let layout = translated_layout(
+            layout::Node::new(Size::new(8.0, 100.0)),
+            Vector::new(4.0, 0.0),
+        );
+
+        assert_eq!(layout.size(), Size::new(8.0, 100.0));
+        assert_eq!(
+            layout.children()[0].bounds(),
+            Rectangle::new(Point::new(4.0, 0.0), Size::new(8.0, 100.0))
+        );
+    }
 
     #[test]
     fn mouse_drag_keeps_moving_and_ends_outside_the_handle() {

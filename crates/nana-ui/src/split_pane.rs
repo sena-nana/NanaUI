@@ -3,6 +3,7 @@ use iced::{Element, Length, Point, Subscription};
 use serde::{Deserialize, Serialize};
 
 use crate::drag_handle::DragHandle;
+use crate::resize_drag::{ResizeAxis, ResizeDrag};
 use crate::theme::ThemeTokens;
 
 const HANDLE_SIZE: f32 = 8.0;
@@ -46,10 +47,9 @@ struct PersistedSplitPane {
 #[derive(Debug, Clone)]
 pub struct SplitPaneController {
     persisted: PersistedSplitPane,
-    dragging: bool,
+    resize: Option<ResizeDrag>,
     focused: bool,
     hovered: bool,
-    last_position: Option<Point>,
 }
 
 impl SplitPaneController {
@@ -68,10 +68,9 @@ impl SplitPaneController {
                 keyboard_step: 8.0,
                 from_end: false,
             },
-            dragging: false,
+            resize: None,
             focused: false,
             hovered: false,
-            last_position: None,
         }
     }
 
@@ -103,7 +102,7 @@ impl SplitPaneController {
     }
 
     pub fn is_active(&self) -> bool {
-        self.dragging || self.hovered || self.focused
+        self.resize.is_some() || self.hovered || self.focused
     }
 
     pub fn layout_json(&self) -> Result<String, serde_json::Error> {
@@ -148,35 +147,27 @@ impl SplitPaneController {
                 self.set_size(self.default_size())
             }
             SplitPaneAction::ResizeStart => {
-                let changed = !self.dragging || !self.focused;
-                self.dragging = true;
+                let changed = self.resize.is_none() || !self.focused;
+                let axis = match self.axis() {
+                    SplitAxis::Horizontal => ResizeAxis::Horizontal,
+                    SplitAxis::Vertical => ResizeAxis::Vertical,
+                };
+                let direction = if self.persisted.from_end { -1.0 } else { 1.0 };
+                self.resize = Some(ResizeDrag::new(axis, self.size(), direction));
                 self.focused = true;
-                self.last_position = None;
                 changed
             }
             SplitPaneAction::ResizeMove(position) => {
-                if !self.dragging {
+                let Some(resize) = &mut self.resize else {
                     return false;
-                }
-                let changed = self.last_position.is_some_and(|last| {
-                    let delta = match self.axis() {
-                        SplitAxis::Horizontal => position.x - last.x,
-                        SplitAxis::Vertical => position.y - last.y,
-                    };
-                    let delta = if self.persisted.from_end {
-                        -delta
-                    } else {
-                        delta
-                    };
-                    self.set_size(self.size() + delta)
-                });
-                self.last_position = Some(position);
-                changed
+                };
+                resize
+                    .value(position)
+                    .is_some_and(|size| self.set_size(size))
             }
             SplitPaneAction::ResizeEnd => {
-                let changed = self.dragging || self.last_position.is_some();
-                self.dragging = false;
-                self.last_position = None;
+                let changed = self.resize.is_some();
+                self.resize = None;
                 changed
             }
             SplitPaneAction::Adjust(direction) => {
@@ -193,10 +184,9 @@ impl SplitPaneController {
                 changed
             }
             SplitPaneAction::Blur => {
-                let changed = self.focused || self.dragging;
+                let changed = self.focused || self.resize.is_some();
                 self.focused = false;
-                self.dragging = false;
-                self.last_position = None;
+                self.resize = None;
                 changed
             }
             SplitPaneAction::Hover(hovered) => {
@@ -215,10 +205,9 @@ impl SplitPaneController {
     }
 
     fn cancel_interaction(&mut self) {
-        self.dragging = false;
+        self.resize = None;
         self.focused = false;
         self.hovered = false;
-        self.last_position = None;
     }
 }
 
@@ -408,6 +397,26 @@ mod tests {
         controller.update(SplitPaneAction::Reset);
         assert_eq!(controller.size(), 120.0);
         assert!(!controller.is_active());
+    }
+
+    #[test]
+    fn drag_reenters_limits_at_the_current_pointer_position() {
+        let mut controller = SplitPaneController::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        controller.update(SplitPaneAction::ResizeStart);
+        controller.update(SplitPaneAction::ResizeMove(Point::new(100.0, 0.0)));
+        controller.update(SplitPaneAction::ResizeMove(Point::new(500.0, 0.0)));
+        assert_eq!(controller.size(), 260.0);
+        controller.update(SplitPaneAction::ResizeMove(Point::new(130.0, 0.0)));
+        assert_eq!(controller.size(), 230.0);
+
+        let mut from_end =
+            SplitPaneController::new(SplitAxis::Vertical, 200.0, 140.0, 260.0).from_end(true);
+        from_end.update(SplitPaneAction::ResizeStart);
+        from_end.update(SplitPaneAction::ResizeMove(Point::new(0.0, 100.0)));
+        from_end.update(SplitPaneAction::ResizeMove(Point::new(0.0, 500.0)));
+        assert_eq!(from_end.size(), 140.0);
+        from_end.update(SplitPaneAction::ResizeMove(Point::new(0.0, 70.0)));
+        assert_eq!(from_end.size(), 230.0);
     }
 
     #[test]
