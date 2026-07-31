@@ -241,7 +241,7 @@ pub fn text_input_style(
         } else {
             match status {
                 text_input::Status::Hovered => colors.border_strong,
-                text_input::Status::Focused { .. } => colors.accent,
+                text_input::Status::Focused { .. } => colors.border_soft,
                 text_input::Status::Disabled => colors.border_soft,
                 text_input::Status::Active => colors.border,
             }
@@ -255,7 +255,7 @@ pub fn text_input_style(
             },
             border: Border::default()
                 .rounded(metrics.radius_sm)
-                .width(if focused { 2.0 } else { 1.0 })
+                .width(if focused && invalid { 2.0 } else { 1.0 })
                 .color(border_color),
             icon: if disabled { colors.faint } else { colors.muted },
             placeholder: colors.faint,
@@ -280,7 +280,7 @@ pub fn text_editor_style(
         } else {
             match status {
                 text_editor::Status::Hovered => colors.border_strong,
-                text_editor::Status::Focused { .. } => colors.accent,
+                text_editor::Status::Focused { .. } => colors.border_soft,
                 text_editor::Status::Disabled => colors.border_soft,
                 text_editor::Status::Active => colors.border,
             }
@@ -294,7 +294,7 @@ pub fn text_editor_style(
             },
             border: Border::default()
                 .rounded(metrics.radius_sm)
-                .width(if focused { 2.0 } else { 1.0 })
+                .width(if focused && invalid { 2.0 } else { 1.0 })
                 .color(border_color),
             placeholder: colors.faint,
             value: if disabled { colors.faint } else { colors.text },
@@ -450,7 +450,7 @@ pub fn pick_list_style(
         } else {
             match status {
                 pick_list::Status::Hovered => colors.border_strong,
-                pick_list::Status::Opened { .. } => colors.accent,
+                pick_list::Status::Opened { .. } => colors.border_soft,
                 pick_list::Status::Active | pick_list::Status::Disabled => colors.border,
             }
         };
@@ -465,7 +465,7 @@ pub fn pick_list_style(
             },
             border: Border::default()
                 .rounded(metrics.radius_sm)
-                .width(if opened { 2.0 } else { 1.0 })
+                .width(if opened && invalid { 2.0 } else { 1.0 })
                 .color(border_color),
         }
     }
@@ -562,7 +562,7 @@ pub fn card_style(
                 },
             ),
             CardKind::Flat => (Color::TRANSPARENT, Color::TRANSPARENT, Shadow::default()),
-            CardKind::Selected => (colors.selected, colors.accent, Shadow::default()),
+            CardKind::Selected => (colors.selected, colors.border_soft, Shadow::default()),
         };
 
         container::Style::default()
@@ -610,9 +610,9 @@ pub fn interactive_card_style(
             .rounded(metrics.radius_md)
             .width(if selected { 1.0 } else { 0.0 })
             .color(if status == button::Status::Disabled {
-                fade(colors.accent, 0.55)
+                fade(colors.border_soft, 0.55)
             } else {
-                colors.accent
+                colors.border_soft
             });
         style.shadow = Shadow::default();
         style.snap = true;
@@ -853,11 +853,12 @@ pub fn toolbar_style(colors: Colors) -> impl Fn(&Theme) -> container::Style + 's
 #[cfg(test)]
 mod tests {
     use iced::Theme;
-    use iced::widget::{button, checkbox, text_input, toggler};
+    use iced::widget::{button, checkbox, pick_list, text_editor, text_input, toggler};
 
     use super::{
         CardKind, SEGMENTED_CONTROL_INSET, card_style, checkbox_style, list_item_style,
-        segmented_button_style, segmented_surface_style, text_input_style, toggler_style,
+        pick_list_style, segmented_button_style, segmented_surface_style, text_editor_style,
+        text_input_style, toggler_style,
     };
     use crate::theme::ThemeMode;
 
@@ -870,11 +871,31 @@ mod tests {
             &theme,
             text_input::Status::Focused { is_hovered: false },
         );
-        assert_eq!(focused.border.color, colors.accent);
-        assert_eq!(focused.border.width, 2.0);
+        assert_eq!(focused.background, colors.background.into());
+        assert_eq!(focused.border.color, colors.border_soft);
+        assert_eq!(focused.border.width, 1.0);
 
-        let invalid = text_input_style(colors, true)(&theme, text_input::Status::Active);
+        let focused_editor = text_editor_style(colors, false)(
+            &theme,
+            text_editor::Status::Focused { is_hovered: false },
+        );
+        assert_eq!(focused_editor.background, colors.background.into());
+        assert_eq!(focused_editor.border.color, colors.border_soft);
+        assert_eq!(focused_editor.border.width, 1.0);
+
+        let opened =
+            pick_list_style(colors, false)(&theme, pick_list::Status::Opened { is_hovered: false });
+        assert_eq!(opened.background, colors.background.into());
+        assert_eq!(opened.border.color, colors.border_soft);
+        assert_eq!(opened.border.width, 1.0);
+
+        let invalid = text_input_style(colors, true)(
+            &theme,
+            text_input::Status::Focused { is_hovered: false },
+        );
+        assert_eq!(invalid.background, colors.background.into());
         assert_eq!(invalid.border.color, colors.danger);
+        assert_eq!(invalid.border.width, 2.0);
 
         let checked =
             checkbox_style(colors, false)(&theme, checkbox::Status::Active { is_checked: true });
@@ -895,7 +916,7 @@ mod tests {
         let selected_card = card_style(colors, CardKind::Selected)(&theme);
         assert_eq!(selected_card.background, Some(colors.selected.into()));
         assert_eq!(selected_card.border.width, 1.0);
-        assert_eq!(selected_card.border.color, colors.accent);
+        assert_eq!(selected_card.border.color, colors.border_soft);
     }
 
     #[test]

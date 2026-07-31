@@ -119,6 +119,16 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &surfaces,
     )?);
 
+    let mut surfaces_light = GalleryState::new();
+    surfaces_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    surfaces_light.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-surfaces-light.png",
+        &surfaces_light,
+    )?);
+
     let mut cards = GalleryState::new();
     cards.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
     cards.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
@@ -127,6 +137,14 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &output,
         "gallery-cards-dark.png",
         &cards,
+    )?);
+
+    surfaces_light.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-cards-light.png",
+        &surfaces_light,
     )?);
 
     let mut feedback = GalleryState::new();
