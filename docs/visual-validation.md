@@ -48,8 +48,7 @@ renderer，在离屏纹理生成 PNG。它不是重新制作的静态 mock。
 运行命令：
 
 ```bash
-cargo run --release -p nana-ui --example ui-snapshots \
-  --features bundled-fonts,gallery --locked
+cargo run --release -p nana-ui --example ui-snapshots --locked
 ```
 
 截图工具会执行 GPU→CPU 回读和 PNG 编码，只属于验收工具。正式窗口 Gallery 与

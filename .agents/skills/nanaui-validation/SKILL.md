@@ -29,8 +29,7 @@ cargo check -p nana-ui --lib --no-default-features --locked
 cargo test --workspace --all-targets --all-features --locked
 cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo run --release -p nana-ui --example ui-snapshots \
-  --features bundled-fonts,gallery --locked
+cargo run --release -p nana-ui --example ui-snapshots --locked
 ```
 
 For Skill-only changes, run `quick_validate.py` on each Skill, verify links and metadata, then run

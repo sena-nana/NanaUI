@@ -11,7 +11,7 @@ name = "nana_ui"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["bundled-fonts", "gallery"]
 full = ["bundled-fonts", "gallery", "gpu"]
 bundled-fonts = []
 components = [

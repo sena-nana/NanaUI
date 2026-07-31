@@ -180,8 +180,8 @@ resize/collapse，总计 p95 为 6.284ms，仍低于 60Hz 的 16.67ms 帧预算�
 模型与上下文菜单数据改为首次使用时初始化；Workspace 内容解析、主区域边界判断
 和几何写入从重复线性扫描改为线性处理。
 
-Cargo 默认最小特性集的 Release `nana_ui.rlib` 为 2,721,864 字节，显式全功能为
-16,625,128 字节，减少 83.63%。相同 `transparent-window` 在显式
+Cargo 关闭默认 feature 后的最小 Release `nana_ui.rlib` 为 2,720,832 字节，
+显式全功能为 16,624,904 字节，减少 83.63%。相同 `transparent-window` 在显式
 `full` 全功能构建中为 21,262,736 字节，在仅启用 `bundled-fonts` 时为
 21,236,192 字节，减少 26,544 字节。两者差异较小，说明 Release 链接器原本已
 移除大部分未引用组件；feature 的主要额外收益是让未选模块与字体不进入编译图。
