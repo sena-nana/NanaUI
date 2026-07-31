@@ -449,6 +449,7 @@ where
             self.size,
             theme.into(),
             true,
+            false,
         )
     }
 }
@@ -459,6 +460,7 @@ pub struct Tabs<'a, T, Message> {
     options: Vec<SelectionOption<'a, T>>,
     on_select: Box<dyn Fn(T) -> Message + 'a>,
     size: ControlSize,
+    fill: bool,
 }
 
 /// A native single-value select. Disabled options stay visible as the selected
@@ -572,11 +574,18 @@ where
             options: options.into_iter().collect(),
             on_select: Box::new(on_select),
             size: ControlSize::Small,
+            fill: false,
         }
     }
 
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Distributes all tabs evenly across the available horizontal space.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
         self
     }
 
@@ -588,6 +597,7 @@ where
             self.size,
             theme.into(),
             false,
+            self.fill,
         )
     }
 }
@@ -599,6 +609,7 @@ fn selection_view<'a, T, Message>(
     size: ControlSize,
     tokens: ThemeTokens,
     segmented: bool,
+    fill: bool,
 ) -> Element<'a, Message>
 where
     T: Clone + PartialEq + 'a,
@@ -611,7 +622,9 @@ where
     } else {
         height
     };
-    let mut options_row = row![].spacing(if segmented { 2 } else { 4 });
+    let mut options_row = row![]
+        .spacing(if segmented { 2 } else { 4 })
+        .width(if fill { Length::Fill } else { Length::Shrink });
     for option in options {
         let selected = option.value == value;
         let mut content = row![].spacing(5).align_y(Alignment::Center);
@@ -622,9 +635,21 @@ where
                 if selected { colors.text } else { colors.muted },
             ));
         }
-        content = content.push(text(option.label).size(size.text_size()));
+        content = content.push(
+            text(option.label)
+                .size(size.text_size())
+                .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
+                    size.line_height(),
+                )))
+                .font(ui_font(font::Weight::Medium)),
+        );
         let message = (!option.disabled).then(|| on_select(option.value));
         let option_button = button(content)
+            .width(if fill {
+                Length::FillPortion(1)
+            } else {
+                Length::Shrink
+            })
             .height(Length::Fixed(option_height))
             .padding([0.0, size.padding_x() + 2.0])
             .on_press_maybe(message);

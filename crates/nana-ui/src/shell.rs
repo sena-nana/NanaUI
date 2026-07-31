@@ -281,7 +281,7 @@ pub struct DesktopShell<'a, Message, OnAction> {
 impl<'a, Message, OnAction> DesktopShell<'a, Message, OnAction>
 where
     Message: Clone + 'a,
-    OnAction: Fn(WorkspaceAction) -> Message + Copy,
+    OnAction: Fn(WorkspaceAction) -> Message + Copy + 'a,
 {
     pub fn new(
         title_bar: impl Into<Element<'a, Message>>,

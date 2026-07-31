@@ -5,6 +5,7 @@
 
 pub mod components;
 pub mod dialog;
+mod drag_handle;
 pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu_texture;
@@ -18,6 +19,7 @@ pub mod selection;
 pub mod settings;
 mod shell;
 pub mod sidebar;
+pub mod split_pane;
 pub mod theme;
 pub mod tooltip;
 pub mod widgets;
@@ -89,6 +91,7 @@ pub use sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
     SidebarSection, SidebarSectionState,
 };
+pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController, split_pane};
 pub use theme::{
     Colors, ThemeMetrics, ThemeMode, ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, ui_font,
     ui_font_defaults,

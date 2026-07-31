@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
+use iced::widget::text::LineHeight;
 use iced::widget::{button, container, row, text, tooltip};
-use iced::{Alignment, Element, Length, Padding, font};
+use iced::{Alignment, Element, Length, Padding, Pixels, font};
 
 use crate::icons::{Icon, icon, spinner_icon};
 use crate::theme::{ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, ui_font};
@@ -162,6 +163,7 @@ where
             ButtonContent::Custom(content) => content,
             ButtonContent::Label(label) => text(label)
                 .size(self.size.text_size())
+                .line_height(LineHeight::Absolute(Pixels(self.size.line_height())))
                 .font(ui_font(font::Weight::Medium))
                 .into(),
         };
