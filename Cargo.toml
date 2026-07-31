@@ -1,3 +1,19 @@
 [workspace]
-members = ["crates/nana-ui", "crates/nana-window"]
+members = ["crates/nana-ui", "crates/nana-window", "examples/component-gallery"]
 resolver = "2"
+
+[workspace.dependencies]
+iced = {
+    git = "https://github.com/sena-nana/iced.git",
+    rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
+    default-features = false,
+    features = ["wgpu", "canvas", "advanced", "smol", "thread-pool", "x11", "wayland"],
+}
+iced_wgpu = {
+    git = "https://github.com/sena-nana/iced.git",
+    rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
+}
+iced_winit = {
+    git = "https://github.com/sena-nana/iced.git",
+    rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
+}

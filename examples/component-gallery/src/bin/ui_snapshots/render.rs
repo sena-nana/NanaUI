@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use component_gallery::{GalleryMessage, GallerySection, GalleryState, SurfaceView};
 use iced::widget::{column, container, space, text};
 use iced::{Color, Element, Length, Pixels, Size, Theme, font, mouse};
 use iced_wgpu::graphics::{Shell, Viewport};
@@ -10,9 +11,8 @@ use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
-    AppTitleBar, GalleryMessage, GallerySection, GalleryState, RegionId, SettingsTabId,
-    SurfaceView, ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
-    WorkspaceAction,
+    AppTitleBar, RegionId, SettingsTabId, ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome,
+    WindowChromeEvent, WindowChromeState, WorkspaceAction,
 };
 
 use crate::write;

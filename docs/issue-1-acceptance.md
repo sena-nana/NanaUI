@@ -20,7 +20,7 @@ WGPU 30 渲染基座与可复用的 Lilia 风格工作区框架；NanaShader 不
 
 | Issue #1 验收方向 | 状态 | 当前证据 |
 | --- | --- | --- |
-| Cargo workspace 与三平台 CI | Workspace 与可复现依赖已完成；远端 CI 待运行 | `nana-ui`、`nana-window`、平台矩阵、完整 Git revision 与 `--locked` 命令已配置 |
+| Cargo workspace 与三平台 CI | Workspace 与可复现依赖已完成；远端 CI 待运行 | `nana-ui`、`nana-window`、独立 `component-gallery` Demo、平台矩阵、完整 Git revision 与 `--locked` 命令已配置 |
 | WGPU 30 渲染基座 | 已完成本地迁移 | NanaUI 全目标检查通过；Iced 全 workspace/all-targets 检查通过；Cryoglyph 全目标检查通过 |
 | 可复用工作区框架 | 已完成本阶段 | `WorkspaceController`、动态 `WorkspaceRegions`、便捷 `WorkspaceSlots`、`workspace_view` 与 `app_shell` |
 | Workspace Region | 已完成本阶段 | 动态注册/注销、自定义 ID、role/placement/scope、可见性、240ms 折叠过渡、主区域贴边自动圆角、尺寸约束、响应式策略、拖动调整、双击复位、JSON 持久化 |

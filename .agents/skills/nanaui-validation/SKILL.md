@@ -26,10 +26,12 @@ Select only the relevant layers:
 ```bash
 cargo fmt --all -- --check
 cargo check -p nana-ui --lib --no-default-features --locked
+cargo check -p component-gallery --bin component-gallery --locked
 cargo test --workspace --all-targets --all-features --locked
 cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo run --release -p nana-ui --example ui-snapshots --locked
+cargo run --release -p component-gallery --bin ui-snapshots \
+  --features snapshots --locked
 ```
 
 For Skill-only changes, run `quick_validate.py` on each Skill, verify links and metadata, then run

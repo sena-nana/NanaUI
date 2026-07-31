@@ -424,6 +424,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "component-gallery"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_wgpu",
+ "iced_winit",
+ "nana-ui",
+ "png",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1542,7 +1555,6 @@ dependencies = [
  "iced_wgpu",
  "iced_winit",
  "nana-window",
- "png",
  "serde",
  "serde_json",
  "wgpu",

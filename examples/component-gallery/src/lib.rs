@@ -3,9 +3,9 @@ use std::cell::OnceCell;
 use iced::widget::{
     button, container, row, scrollable, slider, space, stack, text, text_editor, toggler,
 };
-use iced::{Alignment, Element, Length, Point, Size, Subscription, Task};
+use iced::{Alignment, Element, Length, Point, Size, Subscription, Task, font};
 
-use crate::components::{
+use nana_ui::components::{
     AboutMetadata, AboutSection, AnchoredMenuPlacement, AnchoredMenuPosition, AppearanceEvent,
     AppearanceSection, Button as UiButton, CalendarHeatmap as UiCalendarHeatmap,
     CalendarHeatmapActiveCell, CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel,
@@ -20,42 +20,42 @@ use crate::components::{
     Switch as UiSwitch, Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip,
     XYPad as UiXYPad, XYPadEvent, XYPadValue,
 };
-use crate::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-use crate::icons::{Icon, icon, status_indicator};
-use crate::layout::{
+use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+use nana_ui::icons::{Icon, icon, status_indicator};
+use nana_ui::layout::{
     RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
 };
-use crate::menu::{MenuConfirmation, MenuSelection};
-use crate::overlay::ExclusiveOverlay;
-use crate::selection::{SelectionMove, SingleSelection};
-use crate::settings::{
+use nana_ui::menu::{MenuConfirmation, MenuSelection};
+use nana_ui::overlay::ExclusiveOverlay;
+use nana_ui::selection::{SelectionMove, SingleSelection};
+use nana_ui::settings::{
     AppearanceSettings, SettingsModel, SettingsState, SettingsTab, SettingsTabId, settings_page,
     settings_sidebar as settings_sidebar_view,
 };
-use crate::shell::{AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame, section_heading};
-use crate::sidebar::{
+use nana_ui::sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarSection,
 };
-use crate::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, ui_font};
-use crate::tooltip::TooltipConfig;
-use crate::widgets::{
+use nana_ui::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, ui_font};
+use nana_ui::tooltip::TooltipConfig;
+use nana_ui::widgets::{
     ButtonKind, CardKind, button_style, canvas_style, panel_style, scrollable_style, slider_style,
     toggler_style, toolbar_style, vertical_scrollbar,
 };
-use crate::window_chrome::{WindowChromeEvent, WindowChromeState};
-use crate::workspace::{WorkspaceAction, WorkspaceController};
+use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
+use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
+use nana_ui::{AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame};
 
-#[path = "gallery_views/controls.rs"]
+#[path = "views/controls.rs"]
 mod controls_view;
-#[path = "gallery_views/feedback.rs"]
+#[path = "views/feedback.rs"]
 mod feedback_view;
-#[path = "gallery_views/root.rs"]
+#[path = "views/root.rs"]
 mod root_view;
-#[path = "gallery_views/settings.rs"]
+#[path = "views/settings.rs"]
 mod settings_view;
-#[path = "gallery_views/surfaces.rs"]
+#[path = "views/surfaces.rs"]
 mod surfaces_view;
-#[path = "gallery_views/workspace.rs"]
+#[path = "views/workspace.rs"]
 mod workspace_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,6 +552,32 @@ impl GalleryState {
     }
 }
 
+fn section_heading<'a, Message>(
+    title: &'a str,
+    trailing: Option<Element<'a, Message>>,
+    colors: Colors,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    let mut content = row![
+        text(title)
+            .size(12)
+            .font(ui_font(font::Weight::Bold))
+            .color(colors.muted)
+    ]
+    .align_y(Alignment::Center)
+    .spacing(8);
+    if let Some(trailing) = trailing {
+        content = content.push(space().width(Length::Fill)).push(trailing);
+    }
+    container(content)
+        .height(Length::Fixed(ControlSize::Small.height()))
+        .padding([0.0, UI_METRICS.selection_padding_x])
+        .align_y(iced::alignment::Vertical::Center)
+        .into()
+}
+
 fn gallery_layout(show_workspace: bool) -> WorkspaceLayout {
     WorkspaceLayout::new([
         RegionState::new(RegionId::Resources, RegionRole::Resources)
@@ -589,7 +615,7 @@ fn gallery_layout(show_workspace: bool) -> WorkspaceLayout {
 }
 
 fn gallery_calendar_model() -> CalendarHeatmapModel {
-    crate::build_calendar_heatmap_model(
+    nana_ui::build_calendar_heatmap_model(
         &(0..84)
             .map(|offset| {
                 let day = 1 + offset;
@@ -673,5 +699,5 @@ fn region_expanded(layout: &WorkspaceLayout, id: &RegionId) -> bool {
 }
 
 #[cfg(test)]
-#[path = "gallery_tests.rs"]
+#[path = "tests.rs"]
 mod tests;

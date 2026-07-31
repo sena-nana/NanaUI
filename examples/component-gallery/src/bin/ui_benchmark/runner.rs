@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use component_gallery::{GalleryMessage, GallerySection, GalleryState};
 use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Length, Pixels, Point, Size, Theme};
 use iced_wgpu::graphics::{Shell, Viewport};
@@ -11,10 +12,10 @@ use iced_winit::runtime::user_interface;
 use nana_ui::widgets::{panel_style, scrollable_style, vertical_scrollbar};
 use nana_ui::{
     AnchoredMenuPosition, ContextMenuEvent, ContextMenuHost, ContextMenuItem, Dropdown,
-    DropdownEvent, DropdownOption, GalleryMessage, GallerySection, GalleryState, ListItem,
-    RegionId, RegionRole, RegionState, SearchDropdown, SearchDropdownOption, SearchDropdownState,
-    SettingsTabId, ThemeMode, UI_BASE_TEXT_SIZE, WorkspaceAction, WorkspaceController,
-    WorkspaceLayout, WorkspaceRegions, status_indicator, ui_font, ui_font_sources, workspace_view,
+    DropdownEvent, DropdownOption, ListItem, RegionId, RegionRole, RegionState, SearchDropdown,
+    SearchDropdownOption, SearchDropdownState, SettingsTabId, ThemeMode, UI_BASE_TEXT_SIZE,
+    WorkspaceAction, WorkspaceController, WorkspaceLayout, WorkspaceRegions, status_indicator,
+    ui_font, ui_font_sources, workspace_view,
 };
 
 use crate::report::{AdapterReport, BenchmarkReport, CaseReport, Sample};

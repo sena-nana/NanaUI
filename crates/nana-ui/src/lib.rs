@@ -1,13 +1,10 @@
 //! NanaUI's native Lilia-style application framework.
 //!
 //! [`WorkspaceController`], [`WorkspaceSlots`], and [`workspace_view`] provide
-//! the reusable workspace contract. `GalleryState` powers the runnable
-//! component gallery with real application state.
+//! the reusable workspace contract.
 
 pub mod components;
 pub mod dialog;
-#[cfg(feature = "gallery")]
-pub mod gallery;
 pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu_texture;
@@ -68,8 +65,6 @@ pub use components::surfaces::{Card, EmptyState, FormField, InteractiveCard, Lis
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-#[cfg(feature = "gallery")]
-pub use gallery::{ContextAction, GalleryMessage, GallerySection, GalleryState, SurfaceView};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{GpuTextureView, HostTexture};

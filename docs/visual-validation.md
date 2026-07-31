@@ -1,7 +1,8 @@
 # UI 视觉验收
 
-`ui-snapshots` 使用与原生窗口相同的 `GalleryState::view`、主题和 Iced WGPU
-renderer，在离屏纹理生成 PNG。它不是重新制作的静态 mock。
+`component-gallery` crate 中的 `ui-snapshots` 使用与原生窗口相同的
+`GalleryState::view`、主题和 Iced WGPU renderer，在离屏纹理生成 PNG。它不是
+重新制作的静态 mock。
 原生 Gallery 启动任务与离屏 Renderer 都使用 `UI_BASE_TEXT_SIZE` 的 13px 基准，
 因此未显式覆盖字号的标准正文不会在真实窗口中回退到 Iced 的 16px 默认值。
 
@@ -48,7 +49,8 @@ renderer，在离屏纹理生成 PNG。它不是重新制作的静态 mock。
 运行命令：
 
 ```bash
-cargo run --release -p nana-ui --example ui-snapshots --locked
+cargo run --release -p component-gallery --bin ui-snapshots \
+  --features snapshots --locked
 ```
 
 截图工具会执行 GPU→CPU 回读和 PNG 编码，只属于验收工具。正式窗口 Gallery 与

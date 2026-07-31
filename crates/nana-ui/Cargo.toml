@@ -11,8 +11,8 @@ name = "nana_ui"
 path = "src/lib.rs"
 
 [features]
-default = ["bundled-fonts", "gallery"]
-full = ["bundled-fonts", "gallery", "gpu"]
+default = []
+full = ["bundled-fonts", "components", "gpu"]
 bundled-fonts = []
 components = [
     "calendar",
@@ -36,31 +36,19 @@ selects = []
 settings-components = ["controls"]
 surfaces = ["feedback"]
 xy-pad = []
-gallery = ["components"]
 gpu = ["dep:bytemuck", "dep:wgpu"]
 
 [dependencies]
 bytemuck = { version = "1.24", features = ["derive"], optional = true }
-iced = {
-    git = "https://github.com/sena-nana/iced.git",
-    rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
-    default-features = false,
-    features = ["wgpu", "canvas", "advanced", "smol", "thread-pool", "x11", "wayland"],
-}
+iced.workspace = true
 nana-window = { path = "../nana-window" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wgpu = { version = "30.0.0", optional = true }
 
 [dev-dependencies]
-iced_wgpu = { git = "https://github.com/sena-nana/iced.git", rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6" }
-iced_winit = { git = "https://github.com/sena-nana/iced.git", rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6" }
-png = "0.18.1"
-
-[[example]]
-name = "component-gallery"
-path = "examples/component-gallery.rs"
-required-features = ["bundled-fonts", "gallery"]
+iced_wgpu.workspace = true
+iced_winit.workspace = true
 
 [[example]]
 name = "transparent-window"
@@ -81,13 +69,3 @@ required-features = ["bundled-fonts", "gpu"]
 name = "window-chrome-multi-window"
 path = "examples/window-chrome-multi-window.rs"
 required-features = ["bundled-fonts"]
-
-[[example]]
-name = "ui-benchmark"
-path = "examples/ui-benchmark.rs"
-required-features = ["bundled-fonts", "gallery"]
-
-[[example]]
-name = "ui-snapshots"
-path = "examples/ui-snapshots.rs"
-required-features = ["bundled-fonts", "gallery"]
