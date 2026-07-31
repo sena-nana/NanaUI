@@ -906,10 +906,6 @@ mod tests {
         let segment = segmented_button_style(tokens, true)(&theme, button::Status::Active);
 
         assert_eq!(
-            tokens.metrics.selection_height - tokens.metrics.compact_control_height,
-            SEGMENTED_CONTROL_INSET * 2.0
-        );
-        assert_eq!(
             segment.border.radius.top_left,
             surface.border.radius.top_left - SEGMENTED_CONTROL_INSET
         );

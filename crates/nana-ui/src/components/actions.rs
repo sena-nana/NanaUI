@@ -17,10 +17,43 @@ pub enum ControlSize {
 
 impl ControlSize {
     pub const fn height(self) -> f32 {
+        self.height_in(UI_METRICS)
+    }
+
+    pub const fn height_in(self, metrics: crate::theme::ThemeMetrics) -> f32 {
         match self {
-            Self::Small => 26.0,
-            Self::Medium => UI_METRICS.control_height,
-            Self::Large => 38.0,
+            Self::Small => metrics.small_control_height(),
+            Self::Medium => metrics.medium_control_height(),
+            Self::Large => metrics.large_control_height(),
+        }
+    }
+
+    pub const fn line_height(self) -> f32 {
+        match self {
+            Self::Small | Self::Medium => 16.0,
+            Self::Large => 18.0,
+        }
+    }
+
+    pub const fn vertical_padding(self, metrics: crate::theme::ThemeMetrics) -> f32 {
+        let remaining = self.height_in(metrics) - self.line_height();
+        if remaining > 0.0 {
+            remaining / 2.0
+        } else {
+            0.0
+        }
+    }
+
+    pub fn nearest(height: f32) -> Self {
+        if !height.is_finite() {
+            return Self::Medium;
+        }
+        if height <= (Self::Small.height() + Self::Medium.height()) / 2.0 {
+            Self::Small
+        } else if height <= (Self::Medium.height() + Self::Large.height()) / 2.0 {
+            Self::Medium
+        } else {
+            Self::Large
         }
     }
 
@@ -150,7 +183,7 @@ where
 
         button(content)
             .width(self.width)
-            .height(Length::Fixed(self.size.height()))
+            .height(Length::Fixed(self.size.height_in(tokens.metrics)))
             .padding(Padding {
                 top: 0.0,
                 right: self.size.padding_x(),
@@ -227,7 +260,7 @@ where
         } else {
             self.kind
         };
-        let size = self.size.height();
+        let size = self.size.height_in(tokens.metrics);
         let action = button(icon(
             self.icon,
             self.size.icon_size(),
@@ -263,11 +296,41 @@ fn button_foreground(colors: crate::theme::Colors, kind: ButtonKind) -> iced::Co
 #[cfg(test)]
 mod tests {
     use super::ControlSize;
+    use crate::theme::UI_METRICS;
 
     #[test]
     fn control_sizes_preserve_lilia_geometry_order() {
-        assert!(ControlSize::Small.height() < ControlSize::Medium.height());
-        assert!(ControlSize::Medium.height() < ControlSize::Large.height());
+        assert_eq!(ControlSize::Small.height(), 28.0);
+        assert_eq!(ControlSize::Medium.height(), 32.0);
+        assert_eq!(ControlSize::Large.height(), 36.0);
         assert!(ControlSize::Small.padding_x() < ControlSize::Large.padding_x());
+    }
+
+    #[test]
+    fn legacy_heights_snap_to_the_nearest_control_size() {
+        assert_eq!(ControlSize::nearest(27.0), ControlSize::Small);
+        assert_eq!(ControlSize::nearest(31.0), ControlSize::Medium);
+        assert_eq!(ControlSize::nearest(35.0), ControlSize::Large);
+        assert_eq!(ControlSize::nearest(f32::NAN), ControlSize::Medium);
+    }
+
+    #[test]
+    fn control_sizes_resolve_host_metrics_without_changing_the_public_shape() {
+        let metrics = crate::theme::ThemeMetrics {
+            compact_control_height: 30.0,
+            control_height: 34.0,
+            selection_height: 38.0,
+            ..UI_METRICS
+        };
+
+        assert_eq!(ControlSize::Small.height_in(metrics), 30.0);
+        assert_eq!(ControlSize::Medium.height_in(metrics), 34.0);
+        assert_eq!(ControlSize::Large.height_in(metrics), 38.0);
+        for size in [ControlSize::Small, ControlSize::Medium, ControlSize::Large] {
+            assert_eq!(
+                size.line_height() + size.vertical_padding(metrics) * 2.0,
+                size.height_in(metrics)
+            );
+        }
     }
 }

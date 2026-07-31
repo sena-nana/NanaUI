@@ -76,9 +76,9 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
     control_padding_x: 10.0,
     selection_padding_x: 12.0,
     navigation_row_height: 28.0,
-    selection_height: 34.0,
+    selection_height: 36.0,
     icon_button_size: 28.0,
-    sidebar_footer_button_size: 26.0,
+    sidebar_footer_button_size: 28.0,
     panel_padding_x: 16.0,
     panel_padding_y: 14.0,
     field_padding_x: 9.0,
@@ -92,6 +92,26 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
 impl Default for ThemeMetrics {
     fn default() -> Self {
         UI_METRICS
+    }
+}
+
+impl ThemeMetrics {
+    /// Small single-line control height.
+    pub const fn small_control_height(self) -> f32 {
+        self.compact_control_height
+    }
+
+    /// Medium single-line control height.
+    pub const fn medium_control_height(self) -> f32 {
+        self.control_height
+    }
+
+    /// Large single-line control height.
+    ///
+    /// `selection_height` remains the serialized backing field for public
+    /// compatibility, while components consume this semantic accessor.
+    pub const fn large_control_height(self) -> f32 {
+        self.selection_height
     }
 }
 

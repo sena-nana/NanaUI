@@ -2,6 +2,7 @@ use iced::widget::{button, column, container, mouse_area, row, space, text};
 use iced::{Alignment, Element, Length, Padding, font};
 use std::rc::Rc;
 
+use crate::components::ControlSize;
 use crate::geometry::TITLE_BAR_HEIGHT;
 use crate::icons::{Icon, icon};
 use crate::layout::RegionId;
@@ -30,7 +31,7 @@ where
     };
     let leading = container(leading_action.unwrap_or_else(|| {
         space()
-            .width(Length::Fixed(UI_METRICS.icon_button_size))
+            .width(Length::Fixed(ControlSize::Small.height()))
             .into()
     }))
     .width(Length::Fill)
@@ -50,8 +51,8 @@ where
         text(context).size(11).color(colors.muted),
         button(icon(theme_icon, 14.0, colors.accent))
             .on_press(toggle_theme)
-            .width(Length::Fixed(UI_METRICS.icon_button_size))
-            .height(Length::Fixed(UI_METRICS.icon_button_size))
+            .width(Length::Fixed(ControlSize::Small.height()))
+            .height(Length::Fixed(ControlSize::Small.height()))
             .padding(0)
             .style(button_style(colors, ButtonKind::Text)),
     ]
@@ -227,8 +228,8 @@ where
     Message: Clone + 'a,
 {
     button(icon(glyph, 14.0, tokens.colors.muted))
-        .width(Length::Fixed(UI_METRICS.icon_button_size))
-        .height(Length::Fixed(UI_METRICS.icon_button_size))
+        .width(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
+        .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
         .padding(0)
         .on_press(on_event(WindowChromeEvent::Action(action)))
         .style(button_style(
@@ -518,8 +519,8 @@ where
     Message: Clone + 'a,
 {
     button(icon(glyph, 14.0, tokens.colors.muted))
-        .width(Length::Fixed(UI_METRICS.icon_button_size))
-        .height(Length::Fixed(UI_METRICS.icon_button_size))
+        .width(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
+        .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
         .padding(0)
         .on_press(message)
         .style(button_style(
@@ -553,7 +554,7 @@ where
         content = content.push(space().width(Length::Fill)).push(trailing);
     }
     container(content)
-        .height(Length::Fixed(UI_METRICS.selection_height))
+        .height(Length::Fixed(ControlSize::Small.height()))
         .padding([0.0, UI_METRICS.selection_padding_x])
         .align_y(iced::alignment::Vertical::Center)
         .into()

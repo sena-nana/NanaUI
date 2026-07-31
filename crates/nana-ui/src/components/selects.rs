@@ -3,7 +3,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use iced::widget::{combo_box, pick_list, text_input};
-use iced::{Element, Length};
+use iced::{Element, Length, Pixels};
 
 use super::ControlSize;
 use crate::theme::ThemeTokens;
@@ -113,7 +113,7 @@ where
             on_event: Rc::new(on_event),
             placeholder: Cow::Borrowed("-"),
             display_label: None,
-            size: ControlSize::Small,
+            size: ControlSize::Medium,
             width: Length::Shrink,
             disabled: false,
             loading: false,
@@ -168,8 +168,14 @@ where
         let multiple = matches!(self.selection, DropdownSelection::Multiple(_));
         let mut control = pick_list(selected, enabled_options, DropdownOption::menu_label)
             .width(self.width)
-            .padding([0.0, self.size.padding_x()])
+            .padding([
+                self.size.vertical_padding(tokens.metrics),
+                self.size.padding_x(),
+            ])
             .text_size(self.size.text_size())
+            .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
+                self.size.line_height(),
+            )))
             .placeholder(self.placeholder)
             .style(pick_list_style(tokens, self.invalid))
             .menu_style(pick_list_menu_style(tokens))
@@ -388,8 +394,14 @@ where
                 self.placeholder,
                 selected.map_or("", |option| option.label.as_str()),
             )
-            .padding([0.0, self.size.padding_x()])
+            .padding([
+                self.size.vertical_padding(tokens.metrics),
+                self.size.padding_x(),
+            ])
             .size(self.size.text_size())
+            .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
+                self.size.line_height(),
+            )))
             .width(Length::Fill)
             .style(text_input_style(tokens, self.invalid))
             .into();
@@ -403,8 +415,14 @@ where
             move |option| on_select(option.value),
         )
         .width(Length::Fill)
-        .padding([0.0, self.size.padding_x()])
+        .padding([
+            self.size.vertical_padding(tokens.metrics),
+            self.size.padding_x(),
+        ])
         .size(self.size.text_size())
+        .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
+            self.size.line_height(),
+        )))
         .input_style(text_input_style(tokens, self.invalid))
         .menu_style(pick_list_menu_style(tokens));
         if let Some(on_input) = self.on_input {
@@ -422,7 +440,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{DropdownOption, multiple_label};
+    use super::{
+        ControlSize, Dropdown, DropdownOption, SearchDropdown, SearchDropdownOption,
+        SearchDropdownState, multiple_label,
+    };
 
     #[test]
     fn multiple_selection_summary_keeps_two_labels_and_a_remaining_count() {
@@ -434,5 +455,15 @@ mod tests {
         ];
         assert_eq!(multiple_label(&[1, 2, 4], &options, "-"), "一, 二 +1");
         assert_eq!(multiple_label::<i32>(&[], &options, "未选择"), "未选择");
+    }
+
+    #[test]
+    fn dropdown_families_default_to_the_medium_form_tier() {
+        let dropdown = Dropdown::single(None::<u8>, [DropdownOption::new(1, "一")], |_| ());
+        assert_eq!(dropdown.size, ControlSize::Medium);
+
+        let state = SearchDropdownState::new([SearchDropdownOption::new(1, "一")]);
+        let search = SearchDropdown::new(&state, None, |_| ());
+        assert_eq!(search.size, ControlSize::Medium);
     }
 }

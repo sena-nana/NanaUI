@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use iced::widget::{button, column, container, row, text};
 use iced::{Alignment, Element, Length, Padding, font};
 
-use crate::components::{ValidationIntent, ValidationMessage};
+use crate::components::{ControlSize, ValidationIntent, ValidationMessage};
 use crate::icons::{Icon, icon, spinner_icon};
 use crate::theme::{ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, tracked_label, ui_font};
 use crate::widgets::{CardKind, card_style, interactive_card_style, list_item_style};
@@ -135,6 +135,7 @@ pub struct ListItem<'a, Message> {
     leading: Option<Element<'a, Message>>,
     trailing: Option<Element<'a, Message>>,
     on_select: Option<Message>,
+    size: ControlSize,
     selected: bool,
     disabled: bool,
 }
@@ -149,6 +150,7 @@ where
             leading: None,
             trailing: None,
             on_select: None,
+            size: ControlSize::Small,
             selected: false,
             disabled: false,
         }
@@ -177,6 +179,11 @@ where
         self
     }
 
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
@@ -199,8 +206,8 @@ where
         }
         button(content)
             .width(Length::Fill)
-            .height(Length::Fixed(UI_METRICS.selection_height))
-            .padding([0.0, UI_METRICS.list_item_padding_x])
+            .height(Length::Fixed(self.size.height_in(tokens.metrics)))
+            .padding([0.0, self.size.padding_x()])
             .align_x(iced::alignment::Horizontal::Left)
             .on_press_maybe((!self.disabled).then_some(self.on_select).flatten())
             .style(list_item_style(tokens, self.selected))
@@ -326,5 +333,15 @@ where
             .padding([24, 16])
             .center_x(Length::Fill)
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ControlSize, ListItem};
+
+    #[test]
+    fn list_items_default_to_the_small_density_tier() {
+        assert_eq!(ListItem::<()>::label("项目").size, ControlSize::Small);
     }
 }
