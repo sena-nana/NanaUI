@@ -4,11 +4,14 @@ use std::rc::Rc;
 
 use crate::geometry::TITLE_BAR_HEIGHT;
 use crate::icons::{Icon, icon};
+use crate::layout::RegionId;
+use crate::sidebar::SidebarFrame;
 use crate::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, tracked_label, ui_font};
 use crate::widgets::{ButtonKind, button_style};
 use crate::window_chrome::{
     WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
 };
+use crate::workspace::{WorkspaceAction, WorkspaceController, WorkspaceRegions, workspace_view};
 
 pub fn app_title_bar<'a, Message>(
     title: &'a str,
@@ -255,6 +258,278 @@ where
                 .background(colors.background)
                 .color(colors.text)
         })
+        .into()
+}
+
+/// A convenience composition for the common title bar + navigation +
+/// workspace shape. Region state remains owned by [`WorkspaceController`].
+pub struct DesktopShell<'a, Message, OnAction> {
+    title_bar: Element<'a, Message>,
+    controller: &'a WorkspaceController,
+    primary: Element<'a, Message>,
+    navigation: Option<Element<'a, Message>>,
+    navigation_footer: Option<Element<'a, Message>>,
+    inspector: Option<Element<'a, Message>>,
+    bottom: Option<Element<'a, Message>>,
+    extra_regions: Vec<(RegionId, Element<'a, Message>)>,
+    overlays: Vec<Element<'a, Message>>,
+    on_action: OnAction,
+    tokens: ThemeTokens,
+}
+
+impl<'a, Message, OnAction> DesktopShell<'a, Message, OnAction>
+where
+    Message: Clone + 'a,
+    OnAction: Fn(WorkspaceAction) -> Message + Copy,
+{
+    pub fn new(
+        title_bar: impl Into<Element<'a, Message>>,
+        controller: &'a WorkspaceController,
+        primary: impl Into<Element<'a, Message>>,
+        on_action: OnAction,
+        theme: impl Into<ThemeTokens>,
+    ) -> Self {
+        Self {
+            title_bar: title_bar.into(),
+            controller,
+            primary: primary.into(),
+            navigation: None,
+            navigation_footer: None,
+            inspector: None,
+            bottom: None,
+            extra_regions: Vec::new(),
+            overlays: Vec::new(),
+            on_action,
+            tokens: theme.into(),
+        }
+    }
+
+    pub fn navigation(mut self, content: impl Into<Element<'a, Message>>) -> Self {
+        self.navigation = Some(content.into());
+        self
+    }
+
+    pub fn navigation_footer(mut self, footer: impl Into<Element<'a, Message>>) -> Self {
+        self.navigation_footer = Some(footer.into());
+        self
+    }
+
+    pub fn inspector(mut self, content: impl Into<Element<'a, Message>>) -> Self {
+        self.inspector = Some(content.into());
+        self
+    }
+
+    pub fn bottom(mut self, content: impl Into<Element<'a, Message>>) -> Self {
+        self.bottom = Some(content.into());
+        self
+    }
+
+    pub fn region(mut self, id: RegionId, content: impl Into<Element<'a, Message>>) -> Self {
+        self.extra_regions.push((id, content.into()));
+        self
+    }
+
+    pub fn overlay(mut self, overlay: impl Into<Element<'a, Message>>) -> Self {
+        self.overlays.push(overlay.into());
+        self
+    }
+
+    pub fn view(self) -> Element<'a, Message> {
+        let mut regions = WorkspaceRegions::new().with_region(RegionId::Primary, self.primary);
+        if let Some(navigation) = self.navigation {
+            let mut frame = SidebarFrame::new(navigation);
+            if let Some(footer) = self.navigation_footer {
+                frame = frame.footer(footer);
+            }
+            regions = regions.with_region(RegionId::Resources, frame.view(self.tokens.colors));
+        }
+        if let Some(inspector) = self.inspector {
+            regions = regions.with_region(RegionId::Inspector, inspector);
+        }
+        if let Some(bottom) = self.bottom {
+            regions = regions.with_region(RegionId::Diagnostics, bottom);
+        }
+        for (id, content) in self.extra_regions {
+            regions = regions.with_region(id, content);
+        }
+        let workspace = workspace_view(self.controller, regions, self.tokens, self.on_action);
+        let base = app_shell(self.title_bar, workspace, self.tokens.colors);
+        let mut host = crate::components::OverlayHost::new(base);
+        for overlay in self.overlays {
+            host = host.push(overlay);
+        }
+        host.view()
+    }
+}
+
+/// Full-window shell used by compact popup and status windows.
+pub struct PopupShell<'a, Message> {
+    body: Element<'a, Message>,
+    title_bar: Option<Element<'a, Message>>,
+    status: bool,
+}
+
+impl<'a, Message> PopupShell<'a, Message>
+where
+    Message: 'a,
+{
+    pub fn new(body: impl Into<Element<'a, Message>>) -> Self {
+        Self {
+            body: body.into(),
+            title_bar: None,
+            status: false,
+        }
+    }
+
+    pub fn title_bar(mut self, title_bar: impl Into<Element<'a, Message>>) -> Self {
+        self.title_bar = Some(title_bar.into());
+        self
+    }
+
+    pub fn status(mut self, status: bool) -> Self {
+        self.status = status;
+        self
+    }
+
+    pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
+        let colors = theme.into().colors;
+        let body = container(self.body)
+            .width(Length::Fill)
+            .height(Length::Fill);
+        let content: Element<'a, Message> = if self.status {
+            body.into()
+        } else {
+            column![
+                self.title_bar.unwrap_or_else(|| {
+                    space()
+                        .width(Length::Fill)
+                        .height(Length::Fixed(TITLE_BAR_HEIGHT))
+                        .into()
+                }),
+                body,
+            ]
+            .into()
+        };
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(move |_theme| {
+                iced::widget::container::Style::default()
+                    .background(if self.status {
+                        colors.background.scale_alpha(0.0)
+                    } else {
+                        colors.background
+                    })
+                    .color(colors.text)
+            })
+            .into()
+    }
+}
+
+/// Popup-specific title bar with focus-main/new actions and native
+/// minimize/close commands.
+pub struct PopupTitleBarFrame<'a, Message> {
+    center: Element<'a, Message>,
+    on_focus_main: Message,
+    on_new_item: Message,
+    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+    tokens: ThemeTokens,
+}
+
+impl<'a, Message> PopupTitleBarFrame<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    pub fn new(
+        center: impl Into<Element<'a, Message>>,
+        on_focus_main: Message,
+        on_new_item: Message,
+        on_window_event: impl Fn(WindowChromeEvent) -> Message + 'a,
+        theme: impl Into<ThemeTokens>,
+    ) -> Self {
+        Self {
+            center: center.into(),
+            on_focus_main,
+            on_new_item,
+            on_window_event: Rc::new(on_window_event),
+            tokens: theme.into(),
+        }
+    }
+
+    pub fn view(self) -> Element<'a, Message> {
+        let colors = self.tokens.colors;
+        let focus = popup_title_bar_button(Icon::ArrowLeft, self.on_focus_main, false, self.tokens);
+        let new_item = popup_title_bar_button(Icon::Add, self.on_new_item, false, self.tokens);
+        let minimize = popup_title_bar_button(
+            Icon::Minimize,
+            (self.on_window_event)(WindowChromeEvent::Action(WindowChromeAction::Minimize)),
+            false,
+            self.tokens,
+        );
+        let close = popup_title_bar_button(
+            Icon::Close,
+            (self.on_window_event)(WindowChromeEvent::Action(WindowChromeAction::Close)),
+            true,
+            self.tokens,
+        );
+        let bar = container(
+            row![
+                container(row![focus, new_item].spacing(2))
+                    .width(Length::Fixed(72.0))
+                    .padding([0.0, 6.0]),
+                container(self.center)
+                    .width(Length::Fill)
+                    .center(Length::Fill)
+                    .padding([0.0, 10.0]),
+                container(row![minimize, close].spacing(2))
+                    .width(Length::Fixed(72.0))
+                    .align_right(Length::Fill)
+                    .padding([0.0, 6.0]),
+            ]
+            .height(Length::Fill)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(TITLE_BAR_HEIGHT))
+        .style(move |_theme| {
+            iced::widget::container::Style::default()
+                .background(colors.surface)
+                .color(colors.text)
+        });
+        let on_move = self.on_window_event.clone();
+        let on_press = self.on_window_event.clone();
+        let on_release = self.on_window_event.clone();
+        mouse_area(bar)
+            .on_move(move |position| on_move(WindowChromeEvent::PointerMoved(position)))
+            .on_press(on_press(WindowChromeEvent::PointerPressed))
+            .on_release(on_release(WindowChromeEvent::PointerReleased))
+            .on_exit((self.on_window_event)(WindowChromeEvent::PointerCancelled))
+            .into()
+    }
+}
+
+fn popup_title_bar_button<'a, Message>(
+    glyph: Icon,
+    message: Message,
+    danger: bool,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    button(icon(glyph, 14.0, tokens.colors.muted))
+        .width(Length::Fixed(UI_METRICS.icon_button_size))
+        .height(Length::Fixed(UI_METRICS.icon_button_size))
+        .padding(0)
+        .on_press(message)
+        .style(button_style(
+            tokens,
+            if danger {
+                ButtonKind::Danger
+            } else {
+                ButtonKind::Ghost
+            },
+        ))
         .into()
 }
 

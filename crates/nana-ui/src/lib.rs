@@ -4,6 +4,7 @@
 //! the reusable workspace contract. [`GalleryState`] powers the runnable
 //! component gallery with real application state.
 
+pub mod components;
 pub mod dialog;
 pub mod gallery;
 pub mod geometry;
@@ -23,6 +24,21 @@ pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
 
+pub use components::{
+    AboutMetadata, AboutSection, ActionMenuItem, AnchoredActionMenu, AnchoredMenuPlacement,
+    AnchoredMenuPosition, AppearanceEvent, AppearanceSection, Button, CalendarHeatmap,
+    CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum, CalendarHeatmapDayLabel,
+    CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions,
+    CalendarHeatmapState, CalendarLevelResolver, CalendarLevelStrategy, CalendarTitleFormatter,
+    Card, Checkbox, ConfirmDialog, ContextMenuEvent, ContextMenuHost, ContextMenuItem, ControlSize,
+    Dialog, Drawer, DrawerSide, Dropdown, DropdownEvent, DropdownOption, DropdownSelection,
+    EmptyState, FormField, IconButton, ImageViewer, ImageViewerSource, Input, InteractiveCard,
+    ListItem, OverlayHost, Popover, PopoverPlacement, Progress, RangeField, SearchDropdown,
+    SearchDropdownOption, SearchDropdownState, SegmentedControl, Select, SelectionOption,
+    SettingsCollapsibleCard, Skeleton, Spinner, StatusBadge, StatusTone, Switch, Tabs, Textarea,
+    Toast, ToastTone, Tooltip, ValidationIntent, ValidationMessage, XYPad, XYPadEvent, XYPadState,
+    XYPadValue, build_calendar_heatmap_model,
+};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use gallery::{ContextAction, GalleryMessage, GallerySection, GalleryState, SurfaceView};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
@@ -40,7 +56,9 @@ pub use settings::{
     AppearanceSettings, SettingsCard, SettingsError, SettingsModel, SettingsRow, SettingsState,
     SettingsTab, SettingsTabId, settings_page, settings_sidebar,
 };
-pub use shell::{AppTitleBar, app_shell, app_title_bar};
+pub use shell::{
+    AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame, app_shell, app_title_bar,
+};
 pub use sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
     SidebarSection, SidebarSectionState,

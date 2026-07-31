@@ -5,22 +5,22 @@ WGPU 30 渲染基座与可复用的 Lilia 风格工作区框架；NanaShader 不
 
 ## 版本基线
 
-- Iced：`0.15.0-dev`，分叉基线 commit
-  `3c81aac2e1b48125efdf0c996fbbb9c72c06ae50`；
+- Iced：`0.15.0-dev`，固定到分叉 commit
+  `f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6`；
 - Iced WGPU 后端：随分叉迁移到 WGPU `30.0.0`；
-- Cryoglyph：本地同步迁移到 WGPU `30.0.0`；
+- Cryoglyph：固定到分叉 commit
+  `3fe41b131eda1288d08df89ad5ba56de97713308`，同步迁移到 WGPU `30.0.0`；
 - Rust edition：2024，最低 Rust `1.92`。
 
 `Cargo.lock` 和 `cargo tree` 的当前结果只包含 WGPU 30。Iced 与 Cryoglyph
-分叉通过本地路径联调。远端 `sena-nana/iced` 当前仍是 WGPU 29，
-`sena-nana/cryoglyph` 尚不存在，因此在三仓修改经确认、提交并固定 Git
-revision 前，GitHub Runner 不能复现本机结果。
+均通过远端完整 Git revision 获取；GitHub Runner 只需 NanaUI checkout 即可执行
+`--locked` 测试和检查，不依赖相邻仓库。
 
 ## 当前结果
 
 | Issue #1 验收方向 | 状态 | 当前证据 |
 | --- | --- | --- |
-| Cargo workspace 与三平台 CI | Workspace 已完成；CI 配置待依赖交付 | `nana-ui`、`nana-window` 和平台矩阵已配置，但相邻路径依赖尚未变成远端 Git revision |
+| Cargo workspace 与三平台 CI | Workspace 与可复现依赖已完成；远端 CI 待运行 | `nana-ui`、`nana-window`、平台矩阵、完整 Git revision 与 `--locked` 命令已配置 |
 | WGPU 30 渲染基座 | 已完成本地迁移 | NanaUI 全目标检查通过；Iced 全 workspace/all-targets 检查通过；Cryoglyph 全目标检查通过 |
 | 可复用工作区框架 | 已完成本阶段 | `WorkspaceController`、动态 `WorkspaceRegions`、便捷 `WorkspaceSlots`、`workspace_view` 与 `app_shell` |
 | Workspace Region | 已完成本阶段 | 动态注册/注销、自定义 ID、role/placement/scope、可见性、240ms 折叠过渡、主区域贴边自动圆角、尺寸约束、响应式策略、拖动调整、双击复位、JSON 持久化 |
@@ -41,8 +41,8 @@ revision 前，GitHub Runner 不能复现本机结果。
 ## 2026-07-30 本机验证
 
 ```text
-NanaUI  cargo test --workspace --all-targets --locked       64 passed / 9 suites
-NanaUI  cargo check --workspace --all-targets               passed
+NanaUI  cargo test --workspace --all-targets --locked       61 passed / 8 suites
+NanaUI  cargo check --workspace --all-targets --locked      passed
 NanaUI  cargo clippy --workspace --all-targets --all-features -- -D warnings
                                                                passed
 Iced    cargo check --workspace --all-targets               passed
@@ -76,9 +76,10 @@ Issue #1 中以下消费者级验收明确保留到后续：
 - Shader 异步编译、旧 Pipeline 保留和编译诊断；
 - NanaShader 业务面板与 Runtime 渲染图集成。
 
-WGPU 30 迁移已形成本地 Iced `31030688`、按钮布局 `e7429b5f`、Cryoglyph
-`3fe41b1` 与 NanaUI 基线 `cfaa286` 提交，但尚未推送。只有底层 revision 可从
-远端获取并写入 NanaUI 清单后，三平台 CI 才能从“配置存在”升级为“可复现并已运行”。
+WGPU 30 迁移已发布 Iced `31030688`、按钮布局 `e7429b5f`、Cryoglyph
+`3fe41b1`，并由 Iced `f6fddd3c` 固定 Cryoglyph revision。NanaUI 清单固定
+Iced `f6fddd3c`，锁文件同时记录两层完整 Git commit；本机独立依赖获取可证明
+CI 输入可复现，但不能替代远端三平台 Runner 的实际结果。
 
 ## 尚需目标平台验收
 

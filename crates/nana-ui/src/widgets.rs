@@ -1,5 +1,6 @@
 use iced::widget::{
-    button, checkbox, container, progress_bar, scrollable, slider, text_editor, text_input, toggler,
+    button, checkbox, container, overlay::menu, pick_list, progress_bar, scrollable, slider,
+    text_editor, text_input, toggler,
 };
 use iced::{Border, Color, Shadow, Theme, Vector};
 
@@ -431,6 +432,72 @@ pub fn progress_style(colors: Colors) -> impl Fn(&Theme) -> progress_bar::Style 
         background: colors.subtle.into(),
         bar: colors.accent.into(),
         border: Border::default().rounded(999.0),
+    }
+}
+
+pub fn pick_list_style(
+    theme: impl Into<ThemeTokens>,
+    invalid: bool,
+) -> impl Fn(&Theme, pick_list::Status) -> pick_list::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
+    move |_theme, status| {
+        let disabled = status == pick_list::Status::Disabled;
+        let opened = matches!(status, pick_list::Status::Opened { .. });
+        let border_color = if invalid {
+            colors.danger
+        } else {
+            match status {
+                pick_list::Status::Hovered => colors.border_strong,
+                pick_list::Status::Opened { .. } => colors.accent,
+                pick_list::Status::Active | pick_list::Status::Disabled => colors.border,
+            }
+        };
+        pick_list::Style {
+            text_color: if disabled { colors.faint } else { colors.text },
+            placeholder_color: colors.faint,
+            handle_color: if disabled { colors.faint } else { colors.muted },
+            background: if disabled {
+                colors.subtle.into()
+            } else {
+                colors.background.into()
+            },
+            border: Border::default()
+                .rounded(metrics.radius_sm)
+                .width(if opened { 2.0 } else { 1.0 })
+                .color(border_color),
+        }
+    }
+}
+
+pub fn pick_list_menu_style(
+    theme: impl Into<ThemeTokens>,
+) -> impl Fn(&Theme) -> menu::Style + 'static {
+    let tokens = theme.into();
+    let colors = tokens.colors;
+    let metrics = tokens.metrics;
+    move |_theme| menu::Style {
+        background: colors.surface.into(),
+        border: Border::default()
+            .rounded(metrics.radius_md)
+            .width(1.0)
+            .color(colors.border_soft),
+        text_color: colors.text,
+        selected_text_color: colors.text,
+        selected_background: colors.selected.into(),
+        shadow: Shadow {
+            color: fade(
+                Color::BLACK,
+                if colors.background.r > 0.5 {
+                    0.24
+                } else {
+                    0.48
+                },
+            ),
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 16.0,
+        },
     }
 }
 

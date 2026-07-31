@@ -137,6 +137,16 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &feedback,
     )?);
 
+    let mut popover = GalleryState::new();
+    popover.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    popover.update(GalleryMessage::TogglePopover);
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-popover-dark.png",
+        &popover,
+    )?);
+
     let mut context_menu = GalleryState::new();
     context_menu.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu.update(GalleryMessage::ToggleContextMenu);
@@ -155,6 +165,16 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &output,
         "gallery-dialog-dark.png",
         &dialog,
+    )?);
+
+    let mut image_viewer = GalleryState::new();
+    image_viewer.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    image_viewer.update(GalleryMessage::ToggleImageViewer);
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-image-viewer-dark.png",
+        &image_viewer,
     )?);
 
     let mut workspace = GalleryState::new();
@@ -205,6 +225,16 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &mut renderer,
         &output,
         "gallery-settings-workspace-dark.png",
+        &settings,
+    )?);
+
+    settings.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
+        "about",
+    )));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-settings-about-dark.png",
         &settings,
     )?);
 
