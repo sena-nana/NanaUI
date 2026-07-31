@@ -13,8 +13,8 @@ use nana_ui::{
     AnchoredMenuPosition, ContextMenuEvent, ContextMenuHost, ContextMenuItem, Dropdown,
     DropdownEvent, DropdownOption, GalleryMessage, GallerySection, GalleryState, ListItem,
     RegionId, RegionRole, RegionState, SearchDropdown, SearchDropdownOption, SearchDropdownState,
-    SettingsTabId, ThemeMode, WorkspaceAction, WorkspaceController, WorkspaceLayout,
-    WorkspaceRegions, status_indicator, ui_font, ui_font_sources, workspace_view,
+    SettingsTabId, ThemeMode, UI_BASE_TEXT_SIZE, WorkspaceAction, WorkspaceController,
+    WorkspaceLayout, WorkspaceRegions, status_indicator, ui_font, ui_font_sources, workspace_view,
 };
 
 use crate::report::{AdapterReport, BenchmarkReport, CaseReport, Sample};
@@ -66,7 +66,7 @@ pub fn run() -> BenchmarkReport {
         engine,
         renderer::Settings {
             default_font: ui_font(iced::font::Weight::Normal),
-            default_text_size: Pixels::from(13),
+            default_text_size: Pixels::from(UI_BASE_TEXT_SIZE),
             metrics_hinting: true,
         },
     );

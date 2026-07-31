@@ -64,8 +64,8 @@ pub use sidebar::{
     SidebarSection, SidebarSectionState,
 };
 pub use theme::{
-    Colors, ThemeMetrics, ThemeMode, ThemeTokens, UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR,
-    UI_FONT_SEMIBOLD, UI_METRICS, ui_font, ui_font_sources,
+    Colors, ThemeMetrics, ThemeMode, ThemeTokens, UI_BASE_TEXT_SIZE, UI_FONT_BOLD, UI_FONT_MEDIUM,
+    UI_FONT_REGULAR, UI_FONT_SEMIBOLD, UI_METRICS, ui_font, ui_font_defaults, ui_font_sources,
 };
 pub use tooltip::{TooltipConfig, TooltipPlacement};
 pub use widgets::{ButtonKind, CardKind};

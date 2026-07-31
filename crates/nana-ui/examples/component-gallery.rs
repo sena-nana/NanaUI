@@ -1,9 +1,9 @@
 use iced::window;
-use nana_ui::{GalleryState, custom_title_bar_window, ui_font, ui_font_sources};
+use nana_ui::{GalleryState, custom_title_bar_window, ui_font, ui_font_defaults, ui_font_sources};
 
 fn main() -> iced::Result {
     let mut application = iced::application(
-        GalleryState::new,
+        || (GalleryState::new(), ui_font_defaults()),
         GalleryState::update_windowed,
         GalleryState::view,
     )

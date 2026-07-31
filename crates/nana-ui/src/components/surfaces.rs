@@ -5,7 +5,7 @@ use iced::{Alignment, Element, Length, Padding, font};
 
 use crate::components::{ValidationIntent, ValidationMessage};
 use crate::icons::{Icon, icon, spinner_icon};
-use crate::theme::{ThemeTokens, UI_METRICS, tracked_label, ui_font};
+use crate::theme::{ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, tracked_label, ui_font};
 use crate::widgets::{CardKind, card_style, interactive_card_style, list_item_style};
 
 /// A reusable content card with optional title and loading state.
@@ -155,7 +155,11 @@ where
     }
 
     pub fn label(label: impl Into<Cow<'a, str>>) -> Self {
-        Self::new(text(label.into()).font(ui_font(font::Weight::Medium)))
+        Self::new(
+            text(label.into())
+                .size(UI_BASE_TEXT_SIZE)
+                .font(ui_font(font::Weight::Medium)),
+        )
     }
 
     pub fn leading(mut self, leading: impl Into<Element<'a, Message>>) -> Self {

@@ -2,6 +2,9 @@ use iced::widget::{Row, row, text};
 use iced::{Alignment, Color, Font, Theme, font};
 use serde::{Deserialize, Serialize};
 
+/// NanaUI's standard body and medium-control text size.
+pub const UI_BASE_TEXT_SIZE: f32 = 13.0;
+
 /// Semantic colors shared by the NanaUI shell and its widgets.
 ///
 /// The values follow the same hierarchy as LiliaUI's dark/light tokens. They
@@ -146,12 +149,19 @@ pub const fn ui_font_sources() -> [&'static [u8]; 4] {
 /// Resolves LiliaUI's Noto Sans SC family at the requested weight.
 ///
 /// Hosts must register [`ui_font_sources`] once when they construct their Iced
-/// application or renderer.
+/// application or renderer and run [`ui_font_defaults`] during application
+/// startup.
 pub fn ui_font(weight: font::Weight) -> Font {
     Font {
         weight,
         ..Font::new("Noto Sans SC")
     }
+}
+
+/// Applies NanaUI's shared font family and base text size to an Iced
+/// application.
+pub fn ui_font_defaults<Message>() -> iced::Task<Message> {
+    iced::font::set_defaults(ui_font(font::Weight::Normal), UI_BASE_TEXT_SIZE)
 }
 
 pub(crate) fn tracked_label<'a, Message: 'a>(

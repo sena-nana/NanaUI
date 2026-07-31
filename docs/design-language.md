@@ -11,6 +11,11 @@ Iced 可读取的 TTF 后由 `ui_font_sources()` 统一注册；标题使用 0.2
 分区标题与 Card 标题使用 0.5px 字距。平台字体仅作为未注册资源时的降级路径，
 不作为验收基线。
 
+`UI_BASE_TEXT_SIZE` 将标准正文与中号控件统一为 13px；NanaUI 应用在启动时调用
+`ui_font_defaults()`，手动构造的 Renderer 同样使用该常量。统一排版合同不等于
+所有文本使用同一字号：小号控件、辅助文本、标题和展示文字继续保留各自的语义
+层级。
+
 共享控件样式位于 `crates/nana-ui/src/widgets.rs`。输入框采用 13px 文本、默认
 6px 控件圆角和 30px 级高度，hover 使用 `border-strong`，focused 使用 2px
 `accent`，invalid 使用 `danger`；复选框为 16px、4px 圆角，开关为 30px
