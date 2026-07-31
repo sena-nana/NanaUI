@@ -3,7 +3,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use iced::widget::{combo_box, pick_list, text_input};
-use iced::{Element, Length, Pixels};
+use iced::{Element, Length, Padding, Pixels};
 
 use super::ControlSize;
 use crate::theme::ThemeTokens;
@@ -71,6 +71,8 @@ pub struct Dropdown<'a, T, Message> {
     placeholder: Cow<'a, str>,
     display_label: Option<Cow<'a, str>>,
     size: ControlSize,
+    padding: Option<Padding>,
+    line_height: Option<f32>,
     width: Length,
     disabled: bool,
     loading: bool,
@@ -114,6 +116,8 @@ where
             placeholder: Cow::Borrowed("-"),
             display_label: None,
             size: ControlSize::Medium,
+            padding: None,
+            line_height: None,
             width: Length::Shrink,
             disabled: false,
             loading: false,
@@ -133,6 +137,16 @@ where
 
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
+        self
+    }
+
+    pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
+        self.padding = Some(padding.into());
+        self
+    }
+
+    pub fn line_height(mut self, line_height: f32) -> Self {
+        self.line_height = Some(line_height.max(1.0));
         self
     }
 
@@ -166,15 +180,19 @@ where
             .collect();
         let on_event = Rc::clone(&self.on_event);
         let multiple = matches!(self.selection, DropdownSelection::Multiple(_));
-        let mut control = pick_list(selected, enabled_options, DropdownOption::menu_label)
-            .width(self.width)
-            .padding([
+        let padding = self.padding.unwrap_or_else(|| {
+            Padding::from([
                 self.size.vertical_padding(tokens.metrics),
                 self.size.padding_x(),
             ])
+        });
+        let line_height = self.line_height.unwrap_or_else(|| self.size.line_height());
+        let mut control = pick_list(selected, enabled_options, DropdownOption::menu_label)
+            .width(self.width)
+            .padding(padding)
             .text_size(self.size.text_size())
             .line_height(iced::widget::text::LineHeight::Absolute(Pixels(
-                self.size.line_height(),
+                line_height,
             )))
             .placeholder(self.placeholder)
             .style(pick_list_style(tokens, self.invalid))

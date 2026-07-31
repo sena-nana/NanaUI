@@ -2,7 +2,10 @@ use super::{
     ContextAction, ContextMenuEvent, GalleryMessage, GalleryOverlay, GallerySection, GalleryState,
     SurfaceView,
 };
-use nana_ui::{RegionId, SelectionMove, ThemeMode, WorkspaceAction};
+use nana_ui::{
+    DockAction, DockHostEffect, DockId, RegionId, SelectionMove, SplitPaneAction, ThemeMode,
+    WorkspaceAction,
+};
 
 #[test]
 fn gallery_interactions_update_real_state() {
@@ -184,4 +187,47 @@ fn settings_return_to_the_gallery_and_appearance_updates_immediately() {
     assert_eq!(state.section, GallerySection::Surfaces);
     assert_eq!(state.theme_mode(), ThemeMode::Light);
     assert_eq!(state.appearance.standard_radius(), 8.0);
+}
+
+#[test]
+fn split_pane_interactions_persist_the_constrained_size() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::SplitPane(SplitPaneAction::SetSize(210.0)));
+    let encoded = state
+        .split_pane
+        .layout_json()
+        .expect("split pane layout serializes");
+    state.update(GalleryMessage::SplitPane(SplitPaneAction::Reset));
+    assert_eq!(state.split_pane.size(), 120.0);
+    state
+        .split_pane
+        .restore_layout_json(&encoded)
+        .expect("split pane layout restores");
+    assert_eq!(state.split_pane.size(), 210.0);
+}
+
+#[test]
+fn dock_gallery_mutates_the_real_layout_and_emits_host_effects() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::Dock(DockAction::Float {
+        id: DockId::from("gallery.sources"),
+        bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
+        monitor: None,
+    }));
+    assert_eq!(state.dock.layout().floating.len(), 1);
+    assert!(matches!(
+        state.dock_effects.as_slice(),
+        [DockHostEffect::OpenFloating(_)]
+    ));
+
+    state.update(GalleryMessage::Dock(DockAction::SetLocked(true)));
+    state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
+        "gallery.scenes",
+    ))));
+    assert!(state.dock.is_visible(&DockId::from("gallery.scenes")));
+
+    state.update(GalleryMessage::Dock(DockAction::SetLocked(false)));
+    state.update(GalleryMessage::Dock(DockAction::Reset));
+    assert!(state.dock.layout().floating.is_empty());
+    assert!(state.dock.is_visible(&DockId::from("gallery.sources")));
 }

@@ -43,7 +43,11 @@ use nana_ui::widgets::{
 };
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
-use nana_ui::{AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame};
+use nana_ui::{
+    AppTitleBar, DesktopShell, DockAction, DockAxis, DockContents, DockController, DockHostEffect,
+    DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, PopupShell, PopupTitleBarFrame,
+    SplitAxis, SplitPaneAction, SplitPaneController, dock_workspace,
+};
 
 #[path = "views/controls.rs"]
 mod controls_view;
@@ -92,6 +96,8 @@ impl SurfaceView {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GalleryMessage {
     Workspace(WorkspaceAction),
+    SplitPane(SplitPaneAction),
+    Dock(DockAction),
     ToggleTheme,
     SetTheme(ThemeMode),
     SetStandardRadius(u8),
@@ -190,6 +196,9 @@ pub struct GalleryState {
     appearance: AppearanceSettings,
     workspace: WorkspaceController,
     settings_workspace: WorkspaceController,
+    split_pane: SplitPaneController,
+    dock: DockController,
+    dock_effects: Vec<DockHostEffect>,
     settings_model: SettingsModel,
     settings: SettingsState,
     section: GallerySection,
@@ -239,6 +248,9 @@ impl GalleryState {
             appearance: AppearanceSettings::default(),
             workspace: WorkspaceController::with_layout(gallery_layout(false)),
             settings_workspace: WorkspaceController::with_layout(settings_layout()),
+            split_pane: SplitPaneController::new(SplitAxis::Vertical, 120.0, 64.0, 280.0),
+            dock: gallery_dock(),
+            dock_effects: Vec::new(),
             settings_model,
             settings,
             section: GallerySection::Controls,
@@ -321,6 +333,10 @@ impl GalleryState {
             self.active_workspace()
                 .subscription()
                 .map(GalleryMessage::Workspace),
+            self.split_pane
+                .subscription()
+                .map(GalleryMessage::SplitPane),
+            self.dock.subscription().map(GalleryMessage::Dock),
             WindowChromeState::subscription().map(GalleryMessage::WindowChrome),
         ])
     }
@@ -358,6 +374,13 @@ impl GalleryState {
                         self.settings_workspace.update(action);
                     }
                 }
+            }
+            GalleryMessage::SplitPane(action) => {
+                self.split_pane.update(action);
+            }
+            GalleryMessage::Dock(action) => {
+                let update = self.dock.update(action);
+                self.dock_effects.extend(update.effects);
             }
             GalleryMessage::ToggleTheme => self.theme = self.theme.toggle(),
             GalleryMessage::SetTheme(theme) => self.theme = theme,
@@ -552,6 +575,56 @@ impl GalleryState {
     }
 }
 
+fn gallery_dock() -> DockController {
+    let main = DockNode::split(
+        DockAxis::Horizontal,
+        0.26,
+        DockNode::tabs(
+            [
+                DockId::from("gallery.scenes"),
+                DockId::from("gallery.sources"),
+            ],
+            "gallery.scenes",
+        ),
+        DockNode::split(
+            DockAxis::Vertical,
+            0.68,
+            DockNode::split(
+                DockAxis::Horizontal,
+                0.72,
+                DockNode::item("gallery.editor"),
+                DockNode::tabs(
+                    [
+                        DockId::from("gallery.properties"),
+                        DockId::from("gallery.connection"),
+                    ],
+                    "gallery.properties",
+                ),
+            ),
+            DockNode::tabs(
+                [
+                    DockId::from("gallery.mixer"),
+                    DockId::from("gallery.cue"),
+                    DockId::from("gallery.controls"),
+                ],
+                "gallery.mixer",
+            ),
+        ),
+    );
+    let specs = [
+        DockItemSpec::new("gallery.editor", "Studio Editor").limits(360.0, 240.0),
+        DockItemSpec::new("gallery.scenes", "Scenes").limits(150.0, 120.0),
+        DockItemSpec::new("gallery.sources", "Sources").limits(150.0, 120.0),
+        DockItemSpec::new("gallery.properties", "Properties").limits(180.0, 140.0),
+        DockItemSpec::new("gallery.connection", "NanaLive").limits(180.0, 140.0),
+        DockItemSpec::new("gallery.mixer", "Audio Mixer").limits(240.0, 120.0),
+        DockItemSpec::new("gallery.cue", "Cue").limits(140.0, 120.0),
+        DockItemSpec::new("gallery.controls", "Controls").limits(140.0, 120.0),
+    ];
+    DockController::new("gallery.editor", specs, DockLayout::new(main))
+        .expect("gallery dock definition is valid")
+}
+
 fn section_heading<'a, Message>(
     title: &'a str,
     trailing: Option<Element<'a, Message>>,
@@ -690,12 +763,6 @@ fn section_label(section: GallerySection) -> &'static str {
         GallerySection::Feedback => "反馈",
         GallerySection::Workspace => "工作区",
     }
-}
-
-fn region_expanded(layout: &WorkspaceLayout, id: &RegionId) -> bool {
-    layout
-        .region(id)
-        .is_some_and(|region| !region.collapsed_value() && !region.hidden_value())
 }
 
 #[cfg(test)]

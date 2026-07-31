@@ -102,6 +102,10 @@ impl GalleryState {
                     input("大", ControlSize::Large),
                 ]
                 .spacing(6),
+                UiInput::new("配对密钥", &self.input)
+                    .secure(true)
+                    .on_input(GalleryMessage::InputChanged)
+                    .view(tokens),
                 row![
                     dropdown("小", ControlSize::Small),
                     dropdown("中", ControlSize::Medium),
@@ -124,7 +128,7 @@ impl GalleryState {
             .spacing(5),
         )
         .width(Length::FillPortion(1))
-        .height(Length::Fixed(170.0))
+        .height(Length::Fixed(208.0))
         .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
         .style(panel_style(tokens));
 
