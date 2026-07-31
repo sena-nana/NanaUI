@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use iced::widget::text::LineHeight;
 use iced::widget::{Stack, button, column, container, mouse_area, pin, row, text, text_input};
 use iced::{Alignment, Element, Length, Pixels, Point, Size};
 
@@ -91,11 +92,17 @@ where
         content = content.push(
             text(self.label)
                 .size(self.size.text_size())
+                .line_height(LineHeight::Absolute(Pixels(self.size.line_height())))
                 .font(ui_font(iced::font::Weight::Medium))
                 .width(Length::Fill),
         );
         if let Some(hint) = self.hint {
-            content = content.push(text(hint).size(11).color(colors.muted));
+            content = content.push(
+                text(hint)
+                    .size(11)
+                    .line_height(LineHeight::Absolute(Pixels(self.size.line_height())))
+                    .color(colors.muted),
+            );
         }
         button(content)
             .width(Length::Fill)

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use iced::widget::canvas::{Fill, Path, Style, fill};
-use iced::widget::{canvas, container, mouse_area, row, space, stack};
+use iced::widget::{canvas, container, row, space, stack};
 use iced::{
     Animation, Element, Length, Padding, Point, Rectangle, Renderer, Subscription, Theme, mouse,
 };
@@ -145,9 +145,6 @@ impl WorkspaceController {
 
     pub fn subscription(&self) -> Subscription<WorkspaceAction> {
         let mut subscriptions = vec![iced::event::listen_with(window_event)];
-        if self.resizing.is_some() {
-            subscriptions.push(iced::event::listen_with(resize_event));
-        }
         if !self.transitions.is_empty() {
             subscriptions.push(iced::window::frames().map(WorkspaceAction::AnimationFrame));
         }
@@ -350,25 +347,6 @@ fn finite_non_negative(value: f32) -> f32 {
         value.max(0.0)
     } else {
         0.0
-    }
-}
-
-fn resize_event(
-    event: iced::Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<WorkspaceAction> {
-    match event {
-        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-            Some(WorkspaceAction::ResizeMove {
-                x: position.x,
-                y: position.y,
-            })
-        }
-        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
-            Some(WorkspaceAction::ResizeEnd)
-        }
-        _ => None,
     }
 }
 

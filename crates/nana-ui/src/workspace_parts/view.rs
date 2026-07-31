@@ -19,7 +19,7 @@ pub fn workspace_view<'a, Message>(
     controller: &'a WorkspaceController,
     regions: impl Into<WorkspaceRegions<'a, Message>>,
     theme: impl Into<ThemeTokens>,
-    on_action: impl Fn(WorkspaceAction) -> Message + Copy,
+    on_action: impl Fn(WorkspaceAction) -> Message + Copy + 'a,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -174,7 +174,7 @@ fn render_region<'a, Message>(
     controller: &'a WorkspaceController,
     region: RegionView<'a, Message>,
     tokens: ThemeTokens,
-    on_action: impl Fn(WorkspaceAction) -> Message + Copy,
+    on_action: impl Fn(WorkspaceAction) -> Message + Copy + 'a,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -224,7 +224,7 @@ fn render_overlay<'a, Message>(
     controller: &'a WorkspaceController,
     region: RegionView<'a, Message>,
     tokens: ThemeTokens,
-    on_action: impl Fn(WorkspaceAction) -> Message + Copy,
+    on_action: impl Fn(WorkspaceAction) -> Message + Copy + 'a,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -367,7 +367,7 @@ fn resize_handle<'a, Message>(
     controller: &WorkspaceController,
     state: &RegionState,
     colors: Colors,
-    on_action: impl Fn(WorkspaceAction) -> Message + Copy,
+    on_action: impl Fn(WorkspaceAction) -> Message + Copy + 'a,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -408,16 +408,23 @@ where
         .align_y(iced::alignment::Vertical::Center);
     let id = state.id().clone();
 
-    mouse_area(content)
-        .on_press(on_action(WorkspaceAction::ResizeStart(id.clone())))
-        .on_double_click(on_action(WorkspaceAction::ResetRegionSize(id.clone())))
-        .on_release(on_action(WorkspaceAction::ResizeEnd))
-        .on_enter(on_action(WorkspaceAction::ResizeHover(Some(id))))
-        .on_exit(on_action(WorkspaceAction::ResizeHover(None)))
-        .interaction(if horizontal {
+    crate::drag_handle::DragHandle::new(
+        content,
+        on_action(WorkspaceAction::ResizeStart(id.clone())),
+        move |position| {
+            on_action(WorkspaceAction::ResizeMove {
+                x: position.x,
+                y: position.y,
+            })
+        },
+        on_action(WorkspaceAction::ResizeEnd),
+        on_action(WorkspaceAction::ResetRegionSize(id.clone())),
+        move |hovered| on_action(WorkspaceAction::ResizeHover(hovered.then_some(id.clone()))),
+        if horizontal {
             iced::mouse::Interaction::ResizingHorizontally
         } else {
             iced::mouse::Interaction::ResizingVertically
-        })
-        .into()
+        },
+    )
+    .into()
 }
