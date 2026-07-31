@@ -27,11 +27,10 @@ NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。当前基座为 Ic
 - light/dark 主题、LiliaUI 同源的 Noto Sans SC 400/500/600/700 字体、
   基础控件、浮层和 WGPU 内容插槽。
 
-`GalleryState` 是唯一的标准 UI 示例。它以单个 220px `Resources` Region 承载
-控件、表面、反馈和工作区分类及固定设置 Footer；进入设置后，同一位置切换为设置
-分类。工作区分类会启用 Toolbar、Inspector 与 Bottom Region，其他分类保持简洁的
-侧栏 + 主内容结构。主题、面板显隐、尺寸复位、返回导航和所有组件操作都连接到
-真实 Rust 状态，框架不依赖 Gallery 的展示模型。
+`examples/component-gallery` 是独立的标准 UI Demo crate。它以单个 220px
+`Resources` Region 承载控件、表面、反馈和工作区分类及固定设置 Footer；进入设置
+后，同一位置切换为设置分类。主题、面板显隐、尺寸复位、返回导航和所有组件操作
+都连接到 Demo 自己的 Rust 状态，`nana-ui` 不包含或导出 Gallery 展示模型。
 
 `ThemeMode`、`AppearanceSettings`、`SettingsState` 与 `WorkspaceLayout` 均可
 序列化。NanaUI 不选择配置目录或自行写盘，消费应用负责将这些状态组合进自己的
@@ -44,33 +43,31 @@ NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。当前基座为 Ic
 
 ## 按需构建
 
-默认配置启用 `component-gallery` 所需的 `bundled-fonts` 与 `gallery`，不启用
-GPU 扩展，因此仓库的主示例无需额外参数即可运行。只使用框架核心或部分组件的
-消费者应关闭默认 feature，再显式启用实际使用的组件族：
+`nana-ui` 默认不启用可选 feature，只编译基础主题、Shell、Workspace、Sidebar、
+窗口合同、操作按钮和菜单。消费者显式启用实际使用的组件族：
 
 ```toml
 [dependencies]
-nana-ui = { path = "../NanaUI/crates/nana-ui", default-features = false, features = ["controls", "surfaces"] }
+nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["controls", "surfaces"] }
 ```
 
-Cargo 不会根据消费代码中的 `use` 自动推断 feature。基础主题、Shell、Workspace、
-Sidebar、窗口合同、操作按钮和菜单无需 feature；
-可选组件族包括 `calendar`、`controls`、`feedback`、`image-viewer`、
+Cargo 不会根据消费代码中的 `use` 自动推断 feature。可选组件族包括
+`calendar`、`controls`、`feedback`、`image-viewer`、
 `overlays`、`popover`、`selects`、`settings-components`、`surfaces` 与
-`xy-pad`；`components` 一次启用全部组件。`gallery` 只用于完整示例，`gpu`
-启用宿主纹理与自定义 WGPU View，`bundled-fonts` 才会把四个 Noto Sans SC
-字体资源编入目标；需要完整能力时可直接启用 `full`。
+`xy-pad`；`components` 一次启用全部组件。`gpu` 启用宿主纹理与自定义 WGPU
+View，`bundled-fonts` 才会把四个 Noto Sans SC 字体资源编入目标；需要完整库
+能力时可直接启用 `full`。
 
 组件仍可从 crate 根导入以保持兼容，也可以通过
 `nana_ui::components::<family>` 使用稳定的职责子模块。Rust 原生静态链接不等同于
 Web 动态 `import()`：未启用的组件由 Cargo feature 在编译期排除，已启用但未引用
-的函数由 Release 链接裁剪；运行时只构造当前视图，Gallery 的日历模型与菜单数据
-分别在首次访问反馈页和首次打开菜单时初始化。
+的函数由 Release 链接裁剪。独立 Gallery crate 显式依赖完整组件集合，运行时只
+构造当前视图；日历模型与菜单数据分别在首次访问反馈页和首次打开菜单时初始化。
 
 运行 UI Gallery：
 
 ```bash
-cargo run -p nana-ui --example component-gallery
+cargo run -p component-gallery
 ```
 
 运行自定义 WGPU 内容插槽：
@@ -108,6 +105,7 @@ GitHub Actions 从独立 checkout 运行 `--locked` 测试与全目标检查，�
 ```bash
 cargo fmt --all -- --check
 cargo check -p nana-ui --lib --no-default-features --locked
+cargo check -p component-gallery --bin component-gallery --locked
 cargo test --workspace --all-targets --all-features --locked
 cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -116,7 +114,8 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
 
 ```bash
-cargo run --release -p nana-ui --example ui-snapshots --locked
+cargo run --release -p component-gallery --bin ui-snapshots \
+  --features snapshots --locked
 ```
 
 PNG 输出到 `target/ui-snapshots`。快照工具会执行 GPU→CPU 读取；正式窗口、

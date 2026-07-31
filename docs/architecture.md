@@ -2,9 +2,10 @@
 
 ## 职责边界
 
-当前仓库包含 `nana-ui` 与 `nana-window` 两个 crate。控件、主题、工作区框架和
-WGPU View 属于 `nana-ui`；系统窗口材质与必须依赖原生句柄的 macOS 标题区交互
-桥接属于 `nana-window`，普通控件不会直接访问平台窗口 API。
+当前仓库包含公共组件库 `nana-ui`、平台边界 `nana-window` 与独立 Demo
+`component-gallery`。控件、主题、工作区框架和 WGPU View 属于 `nana-ui`；
+系统窗口材质与必须依赖原生句柄的 macOS 标题区交互桥接属于 `nana-window`；
+Gallery 页面、状态、快照与基准属于 Demo crate。
 
 ```text
 应用状态 / 应用消息
@@ -35,10 +36,11 @@ WGPU View 属于 `nana-ui`；系统窗口材质与必须依赖原生句柄的 ma
 - `workspace_view` 统一施加区域尺寸、裁剪、表面层级和分隔条；
 - Sidebar 原语只负责通用结构与交互消息，不内置应用链接、状态或路由；
 - Settings model 只维护稳定 Tab 和恢复规则，具体设置值仍由应用状态拥有；
-- `GalleryState` 只保存分类导航、组件交互、外观和设置等示例状态。
+- `component_gallery::GalleryState` 只保存分类导航、组件交互、外观和设置等
+  Demo 状态，不属于 `nana-ui` 公共 API。
 
-因此消费者不需要复制 `GalleryState`，也不需要自己重写区域编排和 resize
-事件流；只需注册自己的区域合同和内容。
+消费者只需注册自己的区域合同和内容，不需要复制 Demo 状态，也不需要重写区域
+编排和 resize 事件流。
 
 ## 窗口 Chrome 合同
 
@@ -142,20 +144,19 @@ Bottom，以真实折叠、resize 和复位操作展示 Workspace Region 能力�
 
 ## 编译与加载边界
 
-`nana-ui` 默认启用 `component-gallery` 所需的 `bundled-fonts` 与 `gallery`，
-但不启用 GPU 扩展，保证仓库主示例可直接运行。只使用框架核心或部分组件的消费者
-关闭默认 feature，再按职责显式启用 `calendar`、`controls`、`feedback`、
-`image-viewer`、`overlays`、`popover`、`selects`、`settings-components`、
-`surfaces` 或 `xy-pad`。Cargo 不会根据消费代码引用自动推断 feature。
-`gallery`、`gpu` 与 `bundled-fonts` 是彼此独立的上层边界，完整能力由 `full`
-聚合，完整组件集合由 `components` 聚合。
+`nana-ui` 默认不启用可选 feature。消费者按职责显式启用 `calendar`、
+`controls`、`feedback`、`image-viewer`、`overlays`、`popover`、`selects`、
+`settings-components`、`surfaces` 或 `xy-pad`。Cargo 不会根据消费代码引用
+自动推断 feature。`gpu` 与 `bundled-fonts` 是独立的上层边界，完整库能力由
+`full` 聚合，完整组件集合由 `components` 聚合。
 
 组件族拥有稳定的 `components::<family>` 子模块，同时保留 crate 根的现有
 re-export。未启用模块不参与编译；已启用但未引用的 Rust item 由 Release 链接器
 裁剪。内置字体只在 `bundled-fonts` 开启时通过 `include_bytes!` 进入编译图，
 关闭后宿主可注册自己的同名字体。
 
-运行时不引入第二套动态模块系统。Iced 只构造当前 `view` 返回的组件树；Gallery
-仅为当前分类构造视图，并用单线程 `OnceCell` 在首次显示反馈页时创建日历模型、
-首次打开上下文菜单时创建菜单数据。Workspace 组合与几何计算按 Region 数量线性
-处理，不在每个 Region 上重复扫描完整注册表。
+`component-gallery` 作为独立 workspace crate 显式依赖 `components`，并在自己的
+默认 feature 中转发 `bundled-fonts`，因此 `cargo run -p component-gallery`
+无需污染组件库默认能力。Iced 只构造当前 `view` 返回的组件树；Demo 用单线程
+`OnceCell` 在首次显示反馈页时创建日历模型、首次打开上下文菜单时创建菜单数据。
+Workspace 组合与几何计算按 Region 数量线性处理。

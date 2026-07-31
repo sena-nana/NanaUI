@@ -2,10 +2,7 @@ use super::{
     ContextAction, ContextMenuEvent, GalleryMessage, GalleryOverlay, GallerySection, GalleryState,
     SurfaceView,
 };
-use crate::layout::RegionId;
-use crate::selection::SelectionMove;
-use crate::theme::ThemeMode;
-use crate::workspace::WorkspaceAction;
+use nana_ui::{RegionId, SelectionMove, ThemeMode, WorkspaceAction};
 
 #[test]
 fn gallery_interactions_update_real_state() {

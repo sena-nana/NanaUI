@@ -76,7 +76,8 @@ cargo build --release --workspace --examples --locked
 ./target/release/examples/hosted-gpu-demo
 pgrep -x hosted-gpu-demo
 ps -p <PID> -o pid=,pcpu=,pmem=,rss=,etime=,state=
-cargo run --release -p nana-ui --example ui-benchmark --locked
+cargo run --release -p component-gallery --bin ui-benchmark \
+  --features benchmark --locked
 ```
 
 ## 2026-07-30 WGPU 30 与动态工作区框架复测
@@ -176,15 +177,15 @@ resize/collapse，总计 p95 为 6.284ms，仍低于 60Hz 的 16.67ms 帧预算�
 ## 2026-07-31 模块化与按需构建复测
 
 本轮仍使用 Apple M4 / Metal、900×640 离屏 Renderer、10 次预热与 60 次采样。
-改动将 Gallery 页面、Workspace 注册合同和组合渲染按职责拆分；Gallery 的日历
-模型与上下文菜单数据改为首次使用时初始化；Workspace 内容解析、主区域边界判断
-和几何写入从重复线性扫描改为线性处理。
+改动将 Gallery 页面、状态、行为测试、快照和基准提取到独立
+`component-gallery` crate；Gallery 的日历模型与上下文菜单数据在首次使用时
+初始化；Workspace 内容解析、主区域边界判断和几何写入按 Region 数量线性处理。
 
-Cargo 关闭默认 feature 后的最小 Release `nana_ui.rlib` 为 2,720,832 字节，
-显式全功能为 16,624,904 字节，减少 83.63%。相同 `transparent-window` 在显式
-`full` 全功能构建中为 21,262,736 字节，在仅启用 `bundled-fonts` 时为
-21,236,192 字节，减少 26,544 字节。两者差异较小，说明 Release 链接器原本已
-移除大部分未引用组件；feature 的主要额外收益是让未选模块与字体不进入编译图。
+默认空 feature 的 Release `nana_ui.rlib` 为 2,720,320 字节，显式全功能为
+14,217,400 字节，最小构建减少 80.87%。相对提取前 16,624,904 字节的全功能
+`rlib`，公共库减少 14.48%；独立 `component-gallery` Release 二进制为
+22,548,784 字节。Demo 仍显式包含完整组件与字体，但其状态和页面不再进入公共库
+编译图。
 
 改动前后各执行一次完整同参数基准的中位数：
 
@@ -205,3 +206,8 @@ Cargo 关闭默认 feature 后的最小 Release `nana_ui.rlib` 为 2,720,832 字
 中位数为 7.828–8.238ms。CPU 的 view/layout/event/draw 阶段仍是微秒级，因此
 不把这组 GPU 抖动归因为结构拆分，也不据此声称纯 GPU Pass 得到提升。目标平台
 timestamp query 和可见窗口交互仍属于上文未完成基线。
+
+提取到独立 crate 后用相同 Release 参数复跑，100/500/1000 项列表总计中位数为
+0.501/0.701/0.927ms，Gallery 控件页为 0.644ms，50 Region 压力场景为
+7.993ms；均处于提取前同场景的端到端波动范围。crate 边界调整没有改变视图、
+布局或渲染合同。

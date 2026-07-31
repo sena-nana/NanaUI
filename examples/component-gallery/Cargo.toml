@@ -1,0 +1,56 @@
+[package]
+name = "component-gallery"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+default-run = "component-gallery"
+
+[lib]
+name = "component_gallery"
+path = "src/lib.rs"
+
+[features]
+default = ["bundled-fonts"]
+bundled-fonts = ["nana-ui/bundled-fonts"]
+benchmark = [
+    "bundled-fonts",
+    "dep:iced_wgpu",
+    "dep:iced_winit",
+    "dep:serde",
+    "dep:serde_json",
+]
+snapshots = [
+    "bundled-fonts",
+    "dep:iced_wgpu",
+    "dep:iced_winit",
+    "dep:png",
+]
+
+[dependencies]
+iced.workspace = true
+iced_wgpu = { workspace = true, optional = true }
+iced_winit = { workspace = true, optional = true }
+nana-ui = {
+    path = "../../crates/nana-ui",
+    default-features = false,
+    features = ["components"],
+}
+png = { version = "0.18.1", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+
+[[bin]]
+name = "component-gallery"
+path = "src/main.rs"
+required-features = ["bundled-fonts"]
+
+[[bin]]
+name = "ui-benchmark"
+path = "src/bin/ui-benchmark.rs"
+required-features = ["benchmark"]
+
+[[bin]]
+name = "ui-snapshots"
+path = "src/bin/ui-snapshots.rs"
+required-features = ["snapshots"]

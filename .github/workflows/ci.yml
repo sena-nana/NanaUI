@@ -27,6 +27,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check minimal feature set
         run: cargo check -p nana-ui --lib --no-default-features --locked
+      - name: Check Gallery package boundary
+        run: cargo check -p component-gallery --bin component-gallery --locked
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked
       - name: Check all targets

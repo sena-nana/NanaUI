@@ -8,8 +8,6 @@ use crate::icons::{Icon, icon};
 use crate::layout::RegionId;
 use crate::sidebar::SidebarFrame;
 use crate::theme::{Colors, ThemeMode, ThemeTokens, tracked_label};
-#[cfg(feature = "gallery")]
-use crate::theme::{UI_METRICS, ui_font};
 use crate::widgets::{ButtonKind, button_style};
 use crate::window_chrome::{
     WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
@@ -533,32 +531,5 @@ where
                 ButtonKind::Ghost
             },
         ))
-        .into()
-}
-
-#[cfg(feature = "gallery")]
-pub(crate) fn section_heading<'a, Message>(
-    title: &'a str,
-    trailing: Option<Element<'a, Message>>,
-    colors: Colors,
-) -> Element<'a, Message>
-where
-    Message: 'a,
-{
-    let mut content = row![
-        text(title)
-            .size(12)
-            .font(ui_font(font::Weight::Bold))
-            .color(colors.muted)
-    ]
-    .align_y(Alignment::Center)
-    .spacing(8);
-    if let Some(trailing) = trailing {
-        content = content.push(space().width(Length::Fill)).push(trailing);
-    }
-    container(content)
-        .height(Length::Fixed(ControlSize::Small.height()))
-        .padding([0.0, UI_METRICS.selection_padding_x])
-        .align_y(iced::alignment::Vertical::Center)
         .into()
 }
