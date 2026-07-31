@@ -95,22 +95,28 @@ impl WorkspaceGeometry {
         let mut workspace_bottom = Vec::new();
         let mut overlays = Vec::new();
 
-        for region in layout.regions() {
+        for (index, region) in layout.regions().iter().enumerate() {
             if !region.visible_at(inline_size) {
                 continue;
             }
             if region.responsive_overlay(inline_size) {
-                overlays.push(region);
+                overlays.push((index, region));
                 continue;
             }
             match (region.placement_value(), region.scope_value()) {
-                (RegionPlacement::Start, _) => starts.push(region),
-                (RegionPlacement::Primary, _) => primaries.push(region),
-                (RegionPlacement::End, _) => ends.push(region),
-                (RegionPlacement::Top, RegionScope::Workspace) => workspace_top.push(region),
-                (RegionPlacement::Top, RegionScope::Primary) => primary_top.push(region),
-                (RegionPlacement::Bottom, RegionScope::Workspace) => workspace_bottom.push(region),
-                (RegionPlacement::Bottom, RegionScope::Primary) => primary_bottom.push(region),
+                (RegionPlacement::Start, _) => starts.push((index, region)),
+                (RegionPlacement::Primary, _) => primaries.push((index, region)),
+                (RegionPlacement::End, _) => ends.push((index, region)),
+                (RegionPlacement::Top, RegionScope::Workspace) => {
+                    workspace_top.push((index, region))
+                }
+                (RegionPlacement::Top, RegionScope::Primary) => primary_top.push((index, region)),
+                (RegionPlacement::Bottom, RegionScope::Workspace) => {
+                    workspace_bottom.push((index, region))
+                }
+                (RegionPlacement::Bottom, RegionScope::Primary) => {
+                    primary_bottom.push((index, region))
+                }
             }
         }
 
@@ -121,11 +127,10 @@ impl WorkspaceGeometry {
         let middle_bottom = middle_y + middle_height;
 
         let mut y = body_y;
-        for region in workspace_top {
+        for (index, region) in workspace_top {
             let height = region.extent().min((middle_y - y).max(0.0));
             set_region(
-                &mut regions,
-                region.id(),
+                &mut regions[index],
                 LogicalRect::new(0.0, y, logical_width, height),
                 false,
                 scale_factor,
@@ -134,11 +139,10 @@ impl WorkspaceGeometry {
         }
 
         y = middle_bottom;
-        for region in workspace_bottom {
+        for (index, region) in workspace_bottom {
             let height = region.extent().min((logical_height - y).max(0.0));
             set_region(
-                &mut regions,
-                region.id(),
+                &mut regions[index],
                 LogicalRect::new(0.0, y, logical_width, height),
                 false,
                 scale_factor,
@@ -153,11 +157,10 @@ impl WorkspaceGeometry {
         let primary_end = primary_x + primary_width;
 
         let mut x = 0.0;
-        for region in starts {
+        for (index, region) in starts {
             let width = region.extent();
             set_region(
-                &mut regions,
-                region.id(),
+                &mut regions[index],
                 LogicalRect::new(x, middle_y, width, middle_height),
                 false,
                 scale_factor,
@@ -166,11 +169,10 @@ impl WorkspaceGeometry {
         }
 
         x = primary_end;
-        for region in ends {
+        for (index, region) in ends {
             let width = region.extent();
             set_region(
-                &mut regions,
-                region.id(),
+                &mut regions[index],
                 LogicalRect::new(x, middle_y, width, middle_height),
                 false,
                 scale_factor,
@@ -185,11 +187,10 @@ impl WorkspaceGeometry {
             (middle_height - primary_top_total - primary_bottom_total).max(0.0);
 
         y = middle_y;
-        for region in primary_top {
+        for (index, region) in primary_top {
             let height = region.extent();
             set_region(
-                &mut regions,
-                region.id(),
+                &mut regions[index],
                 LogicalRect::new(primary_x, y, primary_width, height),
                 false,
                 scale_factor,
@@ -199,10 +200,9 @@ impl WorkspaceGeometry {
 
         let primary_widths = allocate_primary_widths(&primaries, primary_width);
         x = primary_x;
-        for (region, width) in primaries.into_iter().zip(primary_widths) {
+        for ((index, _), width) in primaries.into_iter().zip(primary_widths) {
             set_region(
-                &mut regions,
-                region.id(),
+                &mut regions[index],
                 LogicalRect::new(x, primary_middle_y, width, primary_middle_height),
                 false,
                 scale_factor,
@@ -211,11 +211,10 @@ impl WorkspaceGeometry {
         }
 
         y = primary_middle_y + primary_middle_height;
-        for region in primary_bottom {
+        for (index, region) in primary_bottom {
             let height = region.extent();
             set_region(
-                &mut regions,
-                region.id(),
+                &mut regions[index],
                 LogicalRect::new(primary_x, y, primary_width, height),
                 false,
                 scale_factor,
@@ -223,7 +222,7 @@ impl WorkspaceGeometry {
             y += height;
         }
 
-        for region in overlays {
+        for (index, region) in overlays {
             let extent = region.extent();
             let logical = match region.placement_value() {
                 RegionPlacement::Start | RegionPlacement::Primary => {
@@ -243,7 +242,7 @@ impl WorkspaceGeometry {
                     extent,
                 ),
             };
-            set_region(&mut regions, region.id(), logical, true, scale_factor);
+            set_region(&mut regions[index], logical, true, scale_factor);
         }
 
         Self {
@@ -266,33 +265,33 @@ impl WorkspaceGeometry {
     }
 }
 
-fn group_extent(regions: &[&RegionState]) -> f32 {
-    regions.iter().map(|region| region.extent()).sum()
+fn group_extent(regions: &[(usize, &RegionState)]) -> f32 {
+    regions.iter().map(|(_, region)| region.extent()).sum()
 }
 
-fn allocate_primary_widths(regions: &[&RegionState], total_width: f32) -> Vec<f32> {
+fn allocate_primary_widths(regions: &[(usize, &RegionState)], total_width: f32) -> Vec<f32> {
     if regions.is_empty() {
         return Vec::new();
     }
     let fixed: f32 = regions
         .iter()
-        .filter(|region| region.fill_priority_value() == 0)
-        .map(|region| region.extent())
+        .filter(|(_, region)| region.fill_priority_value() == 0)
+        .map(|(_, region)| region.extent())
         .sum();
     let fill_minimum: f32 = regions
         .iter()
-        .filter(|region| region.fill_priority_value() > 0)
-        .map(|region| region.min_size_value())
+        .filter(|(_, region)| region.fill_priority_value() > 0)
+        .map(|(_, region)| region.min_size_value())
         .sum();
     let fill_weight: u32 = regions
         .iter()
-        .map(|region| u32::from(region.fill_priority_value()))
+        .map(|(_, region)| u32::from(region.fill_priority_value()))
         .sum();
     let extra = (total_width - fixed - fill_minimum).max(0.0);
 
     regions
         .iter()
-        .map(|region| {
+        .map(|(_, region)| {
             if region.fill_priority_value() == 0 {
                 region.extent()
             } else if fill_weight == 0 {
@@ -305,16 +304,7 @@ fn allocate_primary_widths(regions: &[&RegionState], total_width: f32) -> Vec<f3
         .collect()
 }
 
-fn set_region(
-    regions: &mut [RegionRect],
-    id: &RegionId,
-    logical: LogicalRect,
-    overlay: bool,
-    scale_factor: f32,
-) {
-    let Some(region) = regions.iter_mut().find(|region| &region.id == id) else {
-        return;
-    };
+fn set_region(region: &mut RegionRect, logical: LogicalRect, overlay: bool, scale_factor: f32) {
     region.logical = logical;
     region.physical = physical_rect(logical, scale_factor);
     region.visible = true;

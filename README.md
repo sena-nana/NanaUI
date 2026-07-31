@@ -42,22 +42,45 @@ NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。当前基座为 Ic
 注册。字体文件由 LiliaUI 使用的同一组 Noto Sans SC WOFF2 无损转换为 TTF，
 许可见 `crates/nana-ui/assets/fonts/OFL.txt`。
 
+## 按需构建
+
+默认只编译基础主题、Shell、Workspace、Sidebar、窗口合同、操作按钮和菜单。
+Cargo 不会根据消费代码中的 `use` 自动推断 feature；消费者应显式启用实际使用的
+组件族：
+
+```toml
+[dependencies]
+nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["controls", "surfaces"] }
+```
+
+可选组件族包括 `calendar`、`controls`、`feedback`、`image-viewer`、
+`overlays`、`popover`、`selects`、`settings-components`、`surfaces` 与
+`xy-pad`；`components` 一次启用全部组件。`gallery` 只用于完整示例，`gpu`
+启用宿主纹理与自定义 WGPU View，`bundled-fonts` 才会把四个 Noto Sans SC
+字体资源编入目标；需要完整能力时可直接启用 `full`。
+
+组件仍可从 crate 根导入以保持兼容，也可以通过
+`nana_ui::components::<family>` 使用稳定的职责子模块。Rust 原生静态链接不等同于
+Web 动态 `import()`：未启用的组件由 Cargo feature 在编译期排除，已启用但未引用
+的函数由 Release 链接裁剪；运行时只构造当前视图，Gallery 的日历模型与菜单数据
+分别在首次访问反馈页和首次打开菜单时初始化。
+
 运行 UI Gallery：
 
 ```bash
-cargo run -p nana-ui --example component-gallery
+cargo run -p nana-ui --example component-gallery --features bundled-fonts,gallery
 ```
 
 运行自定义 WGPU 内容插槽：
 
 ```bash
-cargo run -p nana-ui --example gpu-view-demo
+cargo run -p nana-ui --example gpu-view-demo --features bundled-fonts,gpu
 ```
 
 运行由宿主掌握窗口与 WGPU 上下文的组合 Demo：
 
 ```bash
-cargo run -p nana-ui --example hosted-gpu-demo
+cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
 ```
 
 `hosted-gpu-demo` 由宿主创建 `winit::Window`、事件循环、WGPU
@@ -82,15 +105,17 @@ GitHub Actions 从独立 checkout 运行 `--locked` 测试与全目标检查，�
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace --all-targets --locked
-cargo check --workspace --all-targets --locked
+cargo check -p nana-ui --lib --no-default-features --locked
+cargo test --workspace --all-targets --all-features --locked
+cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
 
 ```bash
-cargo run --release -p nana-ui --example ui-snapshots --locked
+cargo run --release -p nana-ui --example ui-snapshots \
+  --features bundled-fonts,gallery --locked
 ```
 
 PNG 输出到 `target/ui-snapshots`。快照工具会执行 GPU→CPU 读取；正式窗口、

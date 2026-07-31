@@ -1,14 +1,17 @@
 //! NanaUI's native Lilia-style application framework.
 //!
 //! [`WorkspaceController`], [`WorkspaceSlots`], and [`workspace_view`] provide
-//! the reusable workspace contract. [`GalleryState`] powers the runnable
+//! the reusable workspace contract. `GalleryState` powers the runnable
 //! component gallery with real application state.
 
 pub mod components;
 pub mod dialog;
+#[cfg(feature = "gallery")]
 pub mod gallery;
 pub mod geometry;
+#[cfg(feature = "gpu")]
 pub mod gpu_texture;
+#[cfg(feature = "gpu")]
 pub mod gpu_view;
 pub mod icons;
 pub mod layout;
@@ -24,25 +27,53 @@ pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
 
-pub use components::{
-    AboutMetadata, AboutSection, ActionMenuItem, AnchoredActionMenu, AnchoredMenuPlacement,
-    AnchoredMenuPosition, AppearanceEvent, AppearanceSection, Button, CalendarHeatmap,
-    CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum, CalendarHeatmapDayLabel,
-    CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions,
-    CalendarHeatmapState, CalendarLevelResolver, CalendarLevelStrategy, CalendarTitleFormatter,
-    Card, Checkbox, ConfirmDialog, ContextMenuEvent, ContextMenuHost, ContextMenuItem, ControlSize,
-    Dialog, Drawer, DrawerSide, Dropdown, DropdownEvent, DropdownOption, DropdownSelection,
-    EmptyState, FormField, IconButton, ImageViewer, ImageViewerSource, Input, InteractiveCard,
-    ListItem, OverlayHost, Popover, PopoverPlacement, Progress, RangeField, SearchDropdown,
-    SearchDropdownOption, SearchDropdownState, SegmentedControl, Select, SelectionOption,
-    SettingsCollapsibleCard, Skeleton, Spinner, StatusBadge, StatusTone, Switch, Tabs, Textarea,
-    Toast, ToastTone, Tooltip, ValidationIntent, ValidationMessage, XYPad, XYPadEvent, XYPadState,
-    XYPadValue, build_calendar_heatmap_model,
+pub use components::actions::{Button, ControlSize, IconButton};
+#[cfg(feature = "calendar")]
+pub use components::calendar::{
+    CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum,
+    CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapMonthLabel,
+    CalendarHeatmapOptions, CalendarHeatmapState, CalendarLevelResolver, CalendarLevelStrategy,
+    CalendarTitleFormatter, build_calendar_heatmap_model,
 };
+#[cfg(feature = "controls")]
+pub use components::controls::{
+    Checkbox, Input, RangeField, SegmentedControl, Select, SelectionOption, Switch, Tabs, Textarea,
+};
+#[cfg(feature = "feedback")]
+pub use components::feedback::{
+    Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone, ValidationIntent,
+    ValidationMessage,
+};
+#[cfg(feature = "image-viewer")]
+pub use components::image_viewer::{ImageViewer, ImageViewerSource};
+pub use components::menus::{
+    ActionMenuItem, AnchoredActionMenu, AnchoredMenuPlacement, AnchoredMenuPosition,
+    ContextMenuEvent, ContextMenuHost, ContextMenuItem, OverlayHost,
+};
+#[cfg(feature = "overlays")]
+pub use components::overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};
+#[cfg(feature = "popover")]
+pub use components::popover::{Popover, PopoverPlacement};
+#[cfg(feature = "selects")]
+pub use components::selects::{
+    Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
+    SearchDropdownOption, SearchDropdownState,
+};
+#[cfg(feature = "settings-components")]
+pub use components::settings_sections::{
+    AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
+};
+#[cfg(feature = "surfaces")]
+pub use components::surfaces::{Card, EmptyState, FormField, InteractiveCard, ListItem};
+#[cfg(feature = "xy-pad")]
+pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+#[cfg(feature = "gallery")]
 pub use gallery::{ContextAction, GalleryMessage, GallerySection, GalleryState, SurfaceView};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
+#[cfg(feature = "gpu")]
 pub use gpu_texture::{GpuTextureView, HostTexture};
+#[cfg(feature = "gpu")]
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{
@@ -64,9 +95,11 @@ pub use sidebar::{
     SidebarSection, SidebarSectionState,
 };
 pub use theme::{
-    Colors, ThemeMetrics, ThemeMode, ThemeTokens, UI_BASE_TEXT_SIZE, UI_FONT_BOLD, UI_FONT_MEDIUM,
-    UI_FONT_REGULAR, UI_FONT_SEMIBOLD, UI_METRICS, ui_font, ui_font_defaults, ui_font_sources,
+    Colors, ThemeMetrics, ThemeMode, ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, ui_font,
+    ui_font_defaults,
 };
+#[cfg(feature = "bundled-fonts")]
+pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};
 pub use tooltip::{TooltipConfig, TooltipPlacement};
 pub use widgets::{ButtonKind, CardKind};
 pub use window_chrome::{
