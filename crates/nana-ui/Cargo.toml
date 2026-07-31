@@ -45,6 +45,10 @@ name = "hosted-gpu-demo"
 path = "examples/hosted-gpu-demo.rs"
 
 [[example]]
+name = "window-chrome-multi-window"
+path = "examples/window-chrome-multi-window.rs"
+
+[[example]]
 name = "ui-benchmark"
 path = "examples/ui-benchmark.rs"
 
