@@ -26,7 +26,7 @@ NanaUI hosted runtime 负责窗口生命周期、Surface 配置和渲染时序�
 布局、状态与内容渲染。`HostedProgramContext` 只暴露事件代理、Iced 窗口 ID、共享
 GPU 资源及窗口几何，不暴露 `Surface` 或 `ActiveEventLoop`。
 
-`hosted-gpu-demo` 只调用一次 `Adapter::request_device`。直接 WGPU 场景使用宿主持有的 Device/Queue 创建管线、更新 uniform，并渲染到同时具有 `RENDER_ATTACHMENT` 与 `TEXTURE_BINDING` 用途的纹理；`GpuTextureView` 直接采样宿主 `TextureView`，`iced_wgpu::Engine` 接收同一 Device/Queue 的克隆句柄并合成到相同 Surface。场景刷新由 NanaUI 按钮消息驱动，事件循环使用 `ControlFlow::Wait`，没有第二套 Device、CPU 回读、图片编码或持续帧订阅。
+`hosted-gpu-demo` 只调用一次 `Adapter::request_device`。直接 WGPU 场景使用宿主持有的 Device/Queue 创建管线、更新 uniform，并渲染到同时具有 `RENDER_ATTACHMENT` 与 `TEXTURE_BINDING` 用途的纹理；`GpuTextureView` 直接采样宿主 `TextureView`，`iced_wgpu::Engine` 接收同一 Device/Queue 的克隆句柄并合成到相同 Surface。Hosted UI 的 Canvas 几何使用 MSAA x4 中间纹理并解析到宿主的单采样目标，不改变 Surface 或 GPU 所有权。场景刷新由 NanaUI 按钮消息驱动，事件循环使用 `ControlFlow::Wait`，没有第二套 Device、CPU 回读、图片编码或持续帧订阅。
 
 交互式宿主通过 `HostedUiRenderer::push_window_event` 入队原生窗口事件并请求重绘；在 `RedrawRequested` 中先调用 `update`、处理产生的消息，再用最新应用状态调用 `render` 和 present。连续且相邻的鼠标移动只保留最新位置，但不会跨越按下、释放、触摸、键盘或窗口事件合并。Surface 仍由宿主配置；低延迟交互窗口推荐将 `desired_maximum_frame_latency` 设为 `1`。
 

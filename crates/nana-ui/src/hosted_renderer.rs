@@ -2,7 +2,7 @@
 
 use iced::{Color, Element, Pixels, Size, Theme, mouse};
 use iced_wgpu::graphics::core::{Event, renderer, shell, time::Instant, window};
-use iced_wgpu::graphics::{Shell, Viewport};
+use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::conversion;
 use iced_winit::runtime::user_interface::{self, UserInterface};
@@ -65,7 +65,7 @@ impl HostedUiRenderer {
                 device.clone(),
                 queue.clone(),
                 format,
-                None,
+                Some(Antialiasing::MSAAx4),
                 Shell::headless(),
             ),
             renderer::Settings {
