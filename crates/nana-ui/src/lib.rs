@@ -13,7 +13,11 @@ pub mod gpu_texture;
 #[cfg(feature = "gpu")]
 pub mod gpu_view;
 #[cfg(feature = "hosted")]
+mod hosted_context;
+#[cfg(feature = "hosted")]
 pub mod hosted_renderer;
+#[cfg(feature = "hosted")]
+mod hosted_runtime;
 pub mod icons;
 pub mod layout;
 pub mod menu;
@@ -82,7 +86,16 @@ pub use gpu_texture::{GpuTextureView, HostTexture};
 #[cfg(feature = "gpu")]
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
 #[cfg(feature = "hosted")]
+pub use hosted_context::{
+    HostedGpuContext, HostedGpuError, HostedGpuResources, HostedSurfaceFrame,
+};
+#[cfg(feature = "hosted")]
 pub use hosted_renderer::{HostedUiFrame, HostedUiRenderer, HostedUiTarget};
+#[cfg(feature = "hosted")]
+pub use hosted_runtime::{
+    HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRunError, HostedRuntimeEvent,
+    HostedWindowEvent, HostedWindowSettings, run_hosted,
+};
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
