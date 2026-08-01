@@ -6,6 +6,12 @@ primitive；`hosted-gpu-demo` 进一步验证宿主控制窗口、事件循环�
 上下文。它们没有对 NanaShader 做任何改动，也不把等价场景验证冒充真实
 NanaShader/Live2D 接入。
 
+`run_hosted` 与 `HostedProgram` 提供推荐的完整宿主入口；应用只实现业务状态、
+视图、业务消息、副作用调度，以及设备恢复后自身 GPU 资源的重建。窗口、Surface、
+唯一 Device/Queue、输入合并、同帧更新与 present、系统材质、窗口按钮、失焦/遮挡、
+设备丢失重试和空闲唤醒均由 NanaUI 负责。需要自定义多窗口或外部事件循环的宿主仍可
+直接使用低层 `HostedGpuContext` 与 `HostedUiRenderer`，两者不会创建第二套 GPU。
+
 当前宿主 Demo 已按以下职责运行：
 
 ```text
@@ -16,7 +22,9 @@ winit Window / EventLoop（宿主）
                     └── NanaUI 工作区与 GPU 内容区域
 ```
 
-宿主负责窗口生命周期、Surface 配置和渲染时序；NanaUI 负责布局、输入、普通控件以及内容区域的逻辑/物理像素矩形。
+NanaUI hosted runtime 负责窗口生命周期、Surface 配置和渲染时序；业务程序负责
+布局、状态与内容渲染。`HostedProgramContext` 只暴露事件代理、Iced 窗口 ID、共享
+GPU 资源及窗口几何，不暴露 `Surface` 或 `ActiveEventLoop`。
 
 `hosted-gpu-demo` 只调用一次 `Adapter::request_device`。直接 WGPU 场景使用宿主持有的 Device/Queue 创建管线、更新 uniform，并渲染到同时具有 `RENDER_ATTACHMENT` 与 `TEXTURE_BINDING` 用途的纹理；`GpuTextureView` 直接采样宿主 `TextureView`，`iced_wgpu::Engine` 接收同一 Device/Queue 的克隆句柄并合成到相同 Surface。场景刷新由 NanaUI 按钮消息驱动，事件循环使用 `ControlFlow::Wait`，没有第二套 Device、CPU 回读、图片编码或持续帧订阅。
 
@@ -32,8 +40,9 @@ winit Window / EventLoop（宿主）
 
 `hosted-gpu-demo` 通过 `nana-window` 接入 macOS Vibrancy 和 Windows Mica/Acrylic，并在无原生能力时切换为不透明主题背景；平台矩阵与限制见 `window-materials.md`。`transparent-window` 仍只使用 Iced 标准入口的透明/模糊设置，不作为原生材质验收证据。
 
-Hosted runner 与标准 Iced 示例共享 `AppTitleBar`、`WindowChromeState` 和
-`WindowChromeAction`。Runner 仍拥有 Winit Window，并直接执行拖拽、最小化、
-最大化/还原和关闭；macOS 仅在空白父区域收到按下事件时通过 `nana-window` 的
+Hosted runtime 与标准 Iced 示例共享 `AppTitleBar`、`WindowChromeState` 和
+`WindowChromeAction`。Runtime 拥有 Winit Window，并直接执行拖拽、最小化和
+最大化/还原；关闭请求交给 `HostedProgram`，业务完成保存或确认后才返回退出。
+macOS 仅在空白父区域收到按下事件时通过 `nana-window` 的
 无状态桥接启动原生拖拽，交互子控件会先消费事件。这一适配没有改变 Surface、
 Device、Queue、纹理或同帧提交路径。

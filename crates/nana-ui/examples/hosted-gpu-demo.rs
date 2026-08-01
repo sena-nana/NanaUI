@@ -1,5 +1,3 @@
-#[path = "hosted_gpu/context.rs"]
-mod context;
 #[path = "hosted_gpu/panel.rs"]
 mod panel;
 #[path = "hosted_gpu/performance.rs"]
@@ -9,6 +7,6 @@ mod runner;
 #[path = "hosted_gpu/scene.rs"]
 mod scene;
 
-fn main() -> Result<(), iced_winit::winit::error::EventLoopError> {
+fn main() -> Result<(), nana_ui::HostedRunError> {
     runner::run(std::time::Instant::now())
 }

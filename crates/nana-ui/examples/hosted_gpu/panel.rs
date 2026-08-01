@@ -22,7 +22,6 @@ pub struct DemoPanel {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PanelUpdate {
-    pub appearance_changed: bool,
     pub window_action: Option<WindowChromeAction>,
 }
 
@@ -36,12 +35,10 @@ impl DemoPanel {
             Message::ToggleTheme => {
                 self.theme = self.theme.toggle();
                 PanelUpdate {
-                    appearance_changed: true,
                     window_action: None,
                 }
             }
             Message::WindowChrome(event) => PanelUpdate {
-                appearance_changed: false,
                 window_action: self.window_chrome.update(event),
             },
         }
@@ -122,10 +119,6 @@ impl DemoPanel {
         .into()
     }
 
-    pub fn theme(&self) -> iced::Theme {
-        self.theme.iced_theme()
-    }
-
     pub fn colors(&self) -> Colors {
         self.theme.colors()
     }
@@ -134,8 +127,8 @@ impl DemoPanel {
         self.revision
     }
 
-    pub fn is_dark(&self) -> bool {
-        self.theme == ThemeMode::Dark
+    pub fn theme_mode(&self) -> ThemeMode {
+        self.theme
     }
 }
 
