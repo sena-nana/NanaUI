@@ -564,7 +564,9 @@ fn initialize<Program: HostedProgram>(
             .create_window(window_attributes(&settings))
             .map_err(|error| format!("failed to create hosted window: {error}"))?,
     );
-    let _ = prepare_custom_title_bar(window.as_ref());
+    if settings.role == HostedWindowRole::Main {
+        let _ = prepare_custom_title_bar(window.as_ref());
+    }
     let graphics = executor::block_on(HostedGpuContext::new(Arc::clone(&window)))
         .map_err(|error| error.to_string())?;
     let iced_window_id = iced::window::Id::unique();
@@ -848,7 +850,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 .create_window(window_attributes(&settings))
                 .map_err(|error| error.to_string())?,
         );
-        let _ = prepare_custom_title_bar(window.as_ref());
+        if settings.role == HostedWindowRole::Main {
+            let _ = prepare_custom_title_bar(window.as_ref());
+        }
         let surface = self
             .graphics
             .create_surface(window.clone())
@@ -1286,11 +1290,15 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
     {
         use winit::platform::macos::WindowAttributesExtMacOS;
 
-        attributes
-            .with_decorations(true)
-            .with_title_hidden(true)
-            .with_titlebar_transparent(true)
-            .with_fullsize_content_view(true)
+        if settings.role == HostedWindowRole::Tool {
+            attributes.with_decorations(true)
+        } else {
+            attributes
+                .with_decorations(true)
+                .with_title_hidden(true)
+                .with_titlebar_transparent(true)
+                .with_fullsize_content_view(true)
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
