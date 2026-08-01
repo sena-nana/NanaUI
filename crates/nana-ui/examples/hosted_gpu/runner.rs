@@ -5,8 +5,9 @@ use std::time::Instant;
 use iced::Element;
 use iced_wgpu::wgpu;
 use nana_ui::{
-    HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRunError, HostedWindowEvent,
-    HostedWindowSettings, ThemeMode, run_hosted,
+    HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError,
+    HostedWindowAction, HostedWindowEvent, HostedWindowId, HostedWindowSettings, ThemeMode,
+    run_hosted,
 };
 use nana_window::MaterialOutcome;
 
@@ -74,8 +75,12 @@ impl HostedProgram for DemoProgram {
             self.panel.revision(),
         );
         HostedProgramUpdate {
-            window_action: update.window_action,
-            request_redraw: true,
+            window_action: update.window_action.map(|action| HostedWindowAction {
+                id: HostedWindowId::PRIMARY,
+                action,
+            }),
+            redraw: HostedRedraw::Primary,
+            window_commands: Vec::new(),
             exit: false,
         }
     }
@@ -94,9 +99,9 @@ impl HostedProgram for DemoProgram {
         context: &HostedProgramContext<Self::Message>,
     ) -> HostedProgramUpdate {
         match event {
-            HostedWindowEvent::Ready { maximized, .. }
-            | HostedWindowEvent::Resized { maximized, .. } => {
-                self.panel.sync_maximized(maximized);
+            HostedWindowEvent::Ready { geometry, .. }
+            | HostedWindowEvent::Resized { geometry, .. } => {
+                self.panel.sync_maximized(geometry.maximized);
                 let size = context.physical_size();
                 self.scene.resize(
                     context.gpu().device(),
@@ -106,7 +111,9 @@ impl HostedProgram for DemoProgram {
                 );
                 HostedProgramUpdate::redraw()
             }
-            HostedWindowEvent::VisibilityChanged { .. } => HostedProgramUpdate::default(),
+            HostedWindowEvent::Moved { .. } | HostedWindowEvent::VisibilityChanged { .. } => {
+                HostedProgramUpdate::default()
+            }
             HostedWindowEvent::CloseRequested { .. } => HostedProgramUpdate::exit(),
         }
     }

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use iced::Rectangle;
 use iced::wgpu;
-use iced::widget::shader;
+use iced::widget::{container, responsive, shader};
+use iced::{Element, Length, Rectangle};
 
 use crate::geometry::LogicalRect;
 use crate::gpu_view::RenderSlot;
@@ -76,6 +76,42 @@ pub struct GpuTextureView {
 impl GpuTextureView {
     pub const fn new(texture: HostTexture) -> Self {
         Self { texture }
+    }
+
+    /// Fits the texture inside the available region while preserving its aspect ratio.
+    pub fn contain<Message: 'static>(self, aspect_ratio: f32) -> Element<'static, Message> {
+        let aspect_ratio = finite_aspect(aspect_ratio);
+        responsive(move |size| {
+            let (width, height) = contain_size(size.width, size.height, aspect_ratio);
+            container(
+                shader(self.clone())
+                    .width(Length::Fixed(width))
+                    .height(Length::Fixed(height)),
+            )
+            .center(Length::Fill)
+        })
+        .into()
+    }
+}
+
+fn finite_aspect(aspect_ratio: f32) -> f32 {
+    if aspect_ratio.is_finite() && aspect_ratio > 0.0 {
+        aspect_ratio
+    } else {
+        1.0
+    }
+}
+
+fn contain_size(width: f32, height: f32, aspect_ratio: f32) -> (f32, f32) {
+    let width = width.max(0.0);
+    let height = height.max(0.0);
+    if width == 0.0 || height == 0.0 {
+        return (width, height);
+    }
+    if width / height > aspect_ratio {
+        (height * aspect_ratio, height)
+    } else {
+        (width, width / aspect_ratio)
     }
 }
 
@@ -320,5 +356,17 @@ fn intersect_physical(
         y: top,
         width: right.saturating_sub(left),
         height: bottom.saturating_sub(top),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{contain_size, finite_aspect};
+
+    #[test]
+    fn contain_preserves_aspect_inside_wide_and_tall_regions() {
+        assert_eq!(contain_size(800.0, 800.0, 16.0 / 9.0), (800.0, 450.0));
+        assert_eq!(contain_size(1920.0, 540.0, 16.0 / 9.0), (960.0, 540.0));
+        assert_eq!(finite_aspect(f32::NAN), 1.0);
     }
 }

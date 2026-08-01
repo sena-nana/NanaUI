@@ -35,8 +35,8 @@ pub use controls::{
 };
 #[cfg(feature = "feedback")]
 pub use feedback::{
-    Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone, ValidationIntent,
-    ValidationMessage,
+    LevelMeter, Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone,
+    ValidationIntent, ValidationMessage,
 };
 #[cfg(feature = "image-viewer")]
 pub use image_viewer::{ImageViewer, ImageViewerSource};
@@ -58,6 +58,8 @@ pub use settings_sections::{
     AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
 };
 #[cfg(feature = "surfaces")]
-pub use surfaces::{Card, EmptyState, FormField, InteractiveCard, ListItem};
+pub use surfaces::{
+    Card, DockPanel, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
+};
 #[cfg(feature = "xy-pad")]
 pub use xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};

@@ -1,4 +1,4 @@
-//! Shared WGPU context for a NanaUI hosted application.
+//! Shared WGPU context for NanaUI hosted applications.
 
 use std::fmt;
 use std::sync::Arc;
@@ -30,20 +30,113 @@ impl HostedGpuResources {
     }
 }
 
-/// The single window, surface, adapter, device, and queue used by a hosted app.
-pub struct HostedGpuContext {
+/// One window and surface attached to a shared hosted GPU context.
+pub struct HostedGpuSurface {
     window: Arc<winit::window::Window>,
-    instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
-    adapter: wgpu::Adapter,
-    resources: HostedGpuResources,
     format: wgpu::TextureFormat,
     configuration: wgpu::SurfaceConfiguration,
+}
+
+impl HostedGpuSurface {
+    pub fn window(&self) -> &Arc<winit::window::Window> {
+        &self.window
+    }
+
+    pub const fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    pub fn physical_size(&self) -> Size<u32> {
+        let size = self.window.inner_size();
+        Size::new(size.width, size.height)
+    }
+
+    pub fn is_drawable(&self) -> bool {
+        let size = self.window.inner_size();
+        size.width > 0 && size.height > 0
+    }
+
+    pub fn resize(&mut self, resources: &HostedGpuResources) {
+        let size = self.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        self.configuration.width = size.width;
+        self.configuration.height = size.height;
+        self.reconfigure(resources);
+    }
+
+    fn reconfigure(&self, resources: &HostedGpuResources) {
+        self.surface
+            .configure(resources.device(), &self.configuration);
+    }
+
+    fn recover(
+        &mut self,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        resources: &HostedGpuResources,
+    ) -> Result<(), HostedGpuError> {
+        let surface = instance
+            .create_surface(self.window.clone())
+            .map_err(|error| HostedGpuError::SurfaceCreation(error.to_string()))?;
+        let capabilities = surface.get_capabilities(adapter);
+        if !capabilities.formats.contains(&self.format) {
+            return Err(HostedGpuError::SurfaceFormatChanged {
+                expected: self.format,
+            });
+        }
+        self.configuration.alpha_mode = preferred_alpha_mode(&capabilities.alpha_modes);
+        self.surface = surface;
+        self.reconfigure(resources);
+        Ok(())
+    }
+
+    fn acquire_frame(
+        &mut self,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        resources: &HostedGpuResources,
+    ) -> Result<HostedSurfaceFrame, HostedGpuError> {
+        if !self.is_drawable() {
+            return Ok(HostedSurfaceFrame::Skipped);
+        }
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => Ok(HostedSurfaceFrame::Ready(frame)),
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                self.reconfigure(resources);
+                Ok(HostedSurfaceFrame::Ready(frame))
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.reconfigure(resources);
+                Ok(HostedSurfaceFrame::Retry)
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                self.recover(instance, adapter, resources)?;
+                Ok(HostedSurfaceFrame::Retry)
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                Ok(HostedSurfaceFrame::Skipped)
+            }
+            wgpu::CurrentSurfaceTexture::Validation => Err(HostedGpuError::SurfaceValidation),
+        }
+    }
+}
+
+/// The only adapter, device and queue used by a hosted application.
+///
+/// The primary surface is retained for source compatibility. Auxiliary
+/// surfaces created with [`Self::create_surface`] share the same GPU resources.
+pub struct HostedGpuContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    resources: HostedGpuResources,
     device_lost: Arc<AtomicBool>,
+    primary: HostedGpuSurface,
 }
 
 impl HostedGpuContext {
-    /// Creates the only GPU context used by both NanaUI and application renderers.
     pub async fn new(window: Arc<winit::window::Window>) -> Result<Self, HostedGpuError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
@@ -58,7 +151,6 @@ impl HostedGpuContext {
         let capabilities = surface.get_capabilities(&adapter);
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
-        let alpha_mode = preferred_alpha_mode(&capabilities.alpha_modes);
         let adapter_features = adapter.features();
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -76,40 +168,24 @@ impl HostedGpuContext {
         device.set_device_lost_callback(move |_reason, _message| {
             device_lost_callback.store(true, Ordering::Release);
         });
-
-        let size = window.inner_size();
-        let configuration = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Srgb,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 1,
+        let resources = HostedGpuResources {
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+            adapter_info: adapter.get_info(),
         };
-        surface.configure(&device, &configuration);
-        let adapter_info = adapter.get_info();
+        let primary = configure_surface(window, surface, format, &capabilities, &resources);
 
         Ok(Self {
-            window,
             instance,
-            surface,
             adapter,
-            resources: HostedGpuResources {
-                device: Arc::new(device),
-                queue: Arc::new(queue),
-                adapter_info,
-            },
-            format,
-            configuration,
+            resources,
             device_lost,
+            primary,
         })
     }
 
     pub fn window(&self) -> &Arc<winit::window::Window> {
-        &self.window
+        self.primary.window()
     }
 
     pub fn adapter(&self) -> &wgpu::Adapter {
@@ -121,82 +197,100 @@ impl HostedGpuContext {
     }
 
     pub const fn format(&self) -> wgpu::TextureFormat {
-        self.format
+        self.primary.format()
     }
 
     pub fn physical_size(&self) -> Size<u32> {
-        let size = self.window.inner_size();
-        Size::new(size.width, size.height)
+        self.primary.physical_size()
     }
 
     pub fn resize(&mut self) {
-        let size = self.window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-        self.configuration.width = size.width;
-        self.configuration.height = size.height;
-        self.reconfigure();
+        self.primary.resize(&self.resources);
     }
 
     pub fn reconfigure(&mut self) {
-        self.surface
-            .configure(self.resources.device(), &self.configuration);
+        self.primary.reconfigure(&self.resources);
     }
 
     pub fn recover_surface(&mut self) -> Result<(), HostedGpuError> {
-        let surface = self
-            .instance
-            .create_surface(self.window.clone())
-            .map_err(|error| HostedGpuError::SurfaceCreation(error.to_string()))?;
-        let capabilities = surface.get_capabilities(&self.adapter);
-        if !capabilities.formats.contains(&self.format) {
-            return Err(HostedGpuError::SurfaceFormatChanged {
-                expected: self.format,
-            });
-        }
-        self.configuration.alpha_mode = preferred_alpha_mode(&capabilities.alpha_modes);
-        self.surface = surface;
-        self.reconfigure();
-        Ok(())
+        self.primary
+            .recover(&self.instance, &self.adapter, &self.resources)
     }
 
     pub fn is_drawable(&self) -> bool {
-        let size = self.window.inner_size();
-        size.width > 0 && size.height > 0
+        self.primary.is_drawable()
     }
 
     pub fn take_device_lost(&self) -> bool {
         self.device_lost.swap(false, Ordering::AcqRel)
     }
 
+    pub fn create_surface(
+        &self,
+        window: Arc<winit::window::Window>,
+    ) -> Result<HostedGpuSurface, HostedGpuError> {
+        let surface = self
+            .instance
+            .create_surface(window.clone())
+            .map_err(|error| HostedGpuError::SurfaceCreation(error.to_string()))?;
+        let capabilities = surface.get_capabilities(&self.adapter);
+        let format = preferred_surface_format(&capabilities.formats)
+            .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        Ok(configure_surface(
+            window,
+            surface,
+            format,
+            &capabilities,
+            &self.resources,
+        ))
+    }
+
+    pub fn resize_surface(&self, surface: &mut HostedGpuSurface) {
+        surface.resize(&self.resources);
+    }
+
+    pub fn acquire_surface_frame(
+        &self,
+        surface: &mut HostedGpuSurface,
+    ) -> Result<HostedSurfaceFrame, HostedGpuError> {
+        surface.acquire_frame(&self.instance, &self.adapter, &self.resources)
+    }
+
     pub fn acquire_frame(&mut self) -> Result<HostedSurfaceFrame, HostedGpuError> {
-        if !self.is_drawable() {
-            return Ok(HostedSurfaceFrame::Skipped);
-        }
-        match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => Ok(HostedSurfaceFrame::Ready(frame)),
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                self.reconfigure();
-                Ok(HostedSurfaceFrame::Ready(frame))
-            }
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                self.reconfigure();
-                Ok(HostedSurfaceFrame::Retry)
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                self.recover_surface()?;
-                Ok(HostedSurfaceFrame::Retry)
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                Ok(HostedSurfaceFrame::Skipped)
-            }
-            wgpu::CurrentSurfaceTexture::Validation => Err(HostedGpuError::SurfaceValidation),
-        }
+        self.primary
+            .acquire_frame(&self.instance, &self.adapter, &self.resources)
     }
 
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
         self.resources.queue().present(frame);
+    }
+}
+
+fn configure_surface(
+    window: Arc<winit::window::Window>,
+    surface: wgpu::Surface<'static>,
+    format: wgpu::TextureFormat,
+    capabilities: &wgpu::SurfaceCapabilities,
+    resources: &HostedGpuResources,
+) -> HostedGpuSurface {
+    let size = window.inner_size();
+    let configuration = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        color_space: wgpu::SurfaceColorSpace::Srgb,
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: wgpu::PresentMode::AutoVsync,
+        alpha_mode: preferred_alpha_mode(&capabilities.alpha_modes),
+        view_formats: vec![],
+        desired_maximum_frame_latency: 1,
+    };
+    surface.configure(resources.device(), &configuration);
+    HostedGpuSurface {
+        window,
+        surface,
+        format,
+        configuration,
     }
 }
 

@@ -116,8 +116,9 @@ Iced WGPU shader primitive；`RenderSlot` 负责逻辑/物理像素换算与裁�
 - panel 描述 NanaUI 内容和应用状态；
 - runner 处理 Winit 事件与同帧调度。
 
-Iced Engine 接收宿主 `Device`/`Queue`，不会再次请求设备；`GpuTextureView`
-直接采样 scene 的 `TextureView`，不进行 CPU 回读或图片编码。
+Iced Engine 接收宿主 `Device`/`Queue`，不会再次请求设备；每个附加工具窗口只新增
+自己的 Window、Surface 和 Iced renderer，并继续共享同一 Adapter/Device/Queue。
+`GpuTextureView` 直接采样 scene 的 `TextureView`，不进行 CPU 回读或图片编码。
 
 ## 与 LiliaUI 的对应关系
 
@@ -154,6 +155,10 @@ Bottom，以真实折叠、resize 和复位操作展示 Workspace Region 能力�
 re-export。未启用模块不参与编译；已启用但未引用的 Rust item 由 Release 链接器
 裁剪。内置字体只在 `bundled-fonts` 开启时通过 `include_bytes!` 进入编译图，
 关闭后宿主可注册自己的同名字体。
+
+`surfaces` 提供标准卡片之外的紧凑 `DockPanel`、`FormField`、`EmptyState` 与
+`LabeledValue`，`feedback` 提供连续采样的 `LevelMeter`。它们只表达通用布局和
+语义状态，不包含场景、Cue、连接或音频总线等业务概念。
 
 `component-gallery` 作为独立 workspace crate 显式依赖 `components`，并在自己的
 默认 feature 中转发 `bundled-fonts`，因此 `cargo run -p component-gallery`

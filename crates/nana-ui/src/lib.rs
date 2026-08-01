@@ -48,8 +48,8 @@ pub use components::controls::{
 };
 #[cfg(feature = "feedback")]
 pub use components::feedback::{
-    Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone, ValidationIntent,
-    ValidationMessage,
+    LevelMeter, Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone,
+    ValidationIntent, ValidationMessage,
 };
 #[cfg(feature = "image-viewer")]
 pub use components::image_viewer::{ImageViewer, ImageViewerSource};
@@ -71,10 +71,14 @@ pub use components::settings_sections::{
     AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
 };
 #[cfg(feature = "surfaces")]
-pub use components::surfaces::{Card, EmptyState, FormField, InteractiveCard, ListItem};
+pub use components::surfaces::{
+    Card, DockPanel, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
+};
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+#[cfg(feature = "hosted")]
+pub use dock::hosted_dock_update;
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockContents, DockController, DockDropTarget, DockDropZone,
     DockError, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
@@ -87,14 +91,15 @@ pub use gpu_texture::{GpuTextureView, HostTexture};
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
-    HostedGpuContext, HostedGpuError, HostedGpuResources, HostedSurfaceFrame,
+    HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface, HostedSurfaceFrame,
 };
 #[cfg(feature = "hosted")]
 pub use hosted_renderer::{HostedUiFrame, HostedUiRenderer, HostedUiTarget};
 #[cfg(feature = "hosted")]
 pub use hosted_runtime::{
-    HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRunError, HostedRuntimeEvent,
-    HostedWindowEvent, HostedWindowSettings, run_hosted,
+    HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError,
+    HostedRuntimeEvent, HostedWindowAction, HostedWindowCommand, HostedWindowEvent,
+    HostedWindowGeometry, HostedWindowId, HostedWindowRole, HostedWindowSettings, run_hosted,
 };
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{
