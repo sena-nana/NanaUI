@@ -11,12 +11,17 @@ use iced_winit::winit;
 /// Cloneable access to the host's only device and queue pair.
 #[derive(Clone)]
 pub struct HostedGpuResources {
+    adapter: wgpu::Adapter,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     adapter_info: wgpu::AdapterInfo,
 }
 
 impl HostedGpuResources {
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
+    }
+
     pub fn device(&self) -> &Arc<wgpu::Device> {
         &self.device
     }
@@ -130,7 +135,6 @@ impl HostedGpuSurface {
 /// surfaces created with [`Self::create_surface`] share the same GPU resources.
 pub struct HostedGpuContext {
     instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
     resources: HostedGpuResources,
     device_lost: Arc<AtomicBool>,
     primary: HostedGpuSurface,
@@ -168,16 +172,17 @@ impl HostedGpuContext {
         device.set_device_lost_callback(move |_reason, _message| {
             device_lost_callback.store(true, Ordering::Release);
         });
+        let adapter_info = adapter.get_info();
         let resources = HostedGpuResources {
+            adapter,
             device: Arc::new(device),
             queue: Arc::new(queue),
-            adapter_info: adapter.get_info(),
+            adapter_info,
         };
         let primary = configure_surface(window, surface, format, &capabilities, &resources);
 
         Ok(Self {
             instance,
-            adapter,
             resources,
             device_lost,
             primary,
@@ -189,7 +194,7 @@ impl HostedGpuContext {
     }
 
     pub fn adapter(&self) -> &wgpu::Adapter {
-        &self.adapter
+        self.resources.adapter()
     }
 
     pub fn resources(&self) -> HostedGpuResources {
@@ -214,7 +219,7 @@ impl HostedGpuContext {
 
     pub fn recover_surface(&mut self) -> Result<(), HostedGpuError> {
         self.primary
-            .recover(&self.instance, &self.adapter, &self.resources)
+            .recover(&self.instance, self.resources.adapter(), &self.resources)
     }
 
     pub fn is_drawable(&self) -> bool {
@@ -233,7 +238,7 @@ impl HostedGpuContext {
             .instance
             .create_surface(window.clone())
             .map_err(|error| HostedGpuError::SurfaceCreation(error.to_string()))?;
-        let capabilities = surface.get_capabilities(&self.adapter);
+        let capabilities = surface.get_capabilities(self.resources.adapter());
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
         Ok(configure_surface(
@@ -253,12 +258,12 @@ impl HostedGpuContext {
         &self,
         surface: &mut HostedGpuSurface,
     ) -> Result<HostedSurfaceFrame, HostedGpuError> {
-        surface.acquire_frame(&self.instance, &self.adapter, &self.resources)
+        surface.acquire_frame(&self.instance, self.resources.adapter(), &self.resources)
     }
 
     pub fn acquire_frame(&mut self) -> Result<HostedSurfaceFrame, HostedGpuError> {
         self.primary
-            .acquire_frame(&self.instance, &self.adapter, &self.resources)
+            .acquire_frame(&self.instance, self.resources.adapter(), &self.resources)
     }
 
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
