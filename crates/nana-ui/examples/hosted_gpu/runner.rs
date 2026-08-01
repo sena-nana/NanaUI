@@ -106,6 +106,7 @@ impl HostedProgram for DemoProgram {
                 );
                 HostedProgramUpdate::redraw()
             }
+            HostedWindowEvent::VisibilityChanged { .. } => HostedProgramUpdate::default(),
             HostedWindowEvent::CloseRequested { .. } => HostedProgramUpdate::exit(),
         }
     }
