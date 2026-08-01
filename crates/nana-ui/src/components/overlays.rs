@@ -1,16 +1,14 @@
 use std::borrow::Cow;
 
-use iced::widget::{button, column, container, mouse_area, row, space, text, tooltip};
+use iced::widget::{button, column, container, mouse_area, row, space, text};
 use iced::{Alignment, Element, Length, Padding, font};
 
 use crate::components::{Button as UiButton, ControlSize};
 use crate::dialog::DialogSize;
 use crate::icons::{Icon, icon};
 use crate::theme::{ThemeTokens, ui_font};
-use crate::tooltip::TooltipConfig;
-use crate::widgets::{
-    ButtonKind, dialog_close_style, dialog_scrim_style, dialog_surface_style, tooltip_style,
-};
+use crate::tooltip::{TooltipConfig, tooltip_view};
+use crate::widgets::{ButtonKind, dialog_close_style, dialog_scrim_style, dialog_surface_style};
 
 /// A modal surface with explicit outside, close and inner-interaction messages.
 ///
@@ -97,13 +95,7 @@ where
         }
         let mut header = row![heading].spacing(12).align_y(Alignment::Start);
         if !self.close_hidden {
-            let close = button(icon(Icon::Close, 14.0, colors.muted))
-                .width(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
-                .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics)))
-                .padding(0)
-                .on_press_maybe(self.on_close.clone())
-                .style(dialog_close_style(tokens));
-            header = header.push(close);
+            header = header.push(dialog_close_button(self.on_close.clone(), tokens));
         }
 
         let mut surface = column![
@@ -310,12 +302,7 @@ where
                 .size(14)
                 .font(ui_font(font::Weight::Semibold))
                 .width(Length::Fill),
-            button(icon(Icon::Close, 14.0, colors.muted))
-                .width(Length::Fixed(ControlSize::Small.height_in(tokens.metrics),))
-                .height(Length::Fixed(ControlSize::Small.height_in(tokens.metrics),))
-                .padding(0)
-                .on_press(self.on_close.clone())
-                .style(dialog_close_style(tokens)),
+            dialog_close_button(Some(self.on_close.clone()), tokens),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
@@ -381,18 +368,20 @@ where
 
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let colors = theme.into().colors;
-        tooltip(
-            self.trigger,
-            container(self.content)
-                .width(self.config.max_width)
-                .padding([4, 7]),
-            self.config.placement.into(),
-        )
-        .gap(self.config.gap)
-        .padding(self.config.viewport_padding)
-        .delay(iced::time::Duration::from_millis(self.config.delay_ms))
-        .snap_within_viewport(true)
-        .style(tooltip_style(colors))
-        .into()
+        tooltip_view(self.trigger, self.content, self.config, colors)
     }
+}
+
+fn dialog_close_button<'a, Message: Clone + 'a>(
+    on_close: Option<Message>,
+    tokens: ThemeTokens,
+) -> Element<'a, Message> {
+    let size = ControlSize::Small.height_in(tokens.metrics);
+    button(icon(Icon::Close, 14.0, tokens.colors.muted))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .padding(0)
+        .on_press_maybe(on_close)
+        .style(dialog_close_style(tokens))
+        .into()
 }
