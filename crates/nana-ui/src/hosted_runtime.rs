@@ -46,6 +46,7 @@ pub struct HostedWindowSettings {
     pub initial_size: Size<f64>,
     pub minimum_size: Size<f64>,
     pub initial_position: Option<(f64, f64)>,
+    pub initial_physical_geometry: Option<(i32, i32, u32, u32)>,
     pub maximized: bool,
     pub transparent: bool,
     pub role: HostedWindowRole,
@@ -59,6 +60,7 @@ impl HostedWindowSettings {
             initial_size: Size::new(1200.0, 800.0),
             minimum_size: Size::new(760.0, 520.0),
             initial_position: None,
+            initial_physical_geometry: None,
             maximized: false,
             transparent: !cfg!(target_os = "macos"),
             role: HostedWindowRole::Main,
@@ -68,6 +70,7 @@ impl HostedWindowSettings {
 
     pub fn initial_size(mut self, width: f64, height: f64) -> Self {
         self.initial_size = Size::new(width, height);
+        self.initial_physical_geometry = None;
         self
     }
 
@@ -78,6 +81,12 @@ impl HostedWindowSettings {
 
     pub fn initial_position(mut self, x: f64, y: f64) -> Self {
         self.initial_position = Some((x, y));
+        self.initial_physical_geometry = None;
+        self
+    }
+
+    pub fn physical_geometry(mut self, x: i32, y: i32, width: u32, height: u32) -> Self {
+        self.initial_physical_geometry = Some((x, y, width, height));
         self
     }
 
@@ -1265,7 +1274,11 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
             settings.minimum_size.height,
         ))
         .with_maximized(settings.maximized);
-    if let Some((x, y)) = settings.initial_position {
+    if let Some((x, y, width, height)) = settings.initial_physical_geometry {
+        attributes = attributes
+            .with_position(winit::dpi::PhysicalPosition::new(x, y))
+            .with_inner_size(winit::dpi::PhysicalSize::new(width, height));
+    } else if let Some((x, y)) = settings.initial_position {
         attributes = attributes.with_position(winit::dpi::LogicalPosition::new(x, y));
     }
 
@@ -1305,7 +1318,7 @@ impl std::error::Error for HostedRunError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{HostedProgramUpdate, HostedRedraw, HostedWindowId};
+    use super::{HostedProgramUpdate, HostedRedraw, HostedWindowId, HostedWindowSettings};
 
     #[test]
     fn redraw_targets_are_explicit() {
@@ -1316,5 +1329,17 @@ mod tests {
             HostedRedraw::Window(HostedWindowId(7))
         );
         assert_eq!(HostedProgramUpdate::redraw_all().redraw, HostedRedraw::All);
+    }
+
+    #[test]
+    fn physical_geometry_overrides_logical_restoration() {
+        let settings = HostedWindowSettings::new("test")
+            .initial_position(10.0, 20.0)
+            .initial_size(640.0, 480.0)
+            .physical_geometry(20, 40, 1280, 960);
+        assert_eq!(
+            settings.initial_physical_geometry,
+            Some((20, 40, 1280, 960))
+        );
     }
 }
