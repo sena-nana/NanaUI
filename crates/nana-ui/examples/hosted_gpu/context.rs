@@ -59,7 +59,7 @@ impl HostGraphics {
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &configuration);
 

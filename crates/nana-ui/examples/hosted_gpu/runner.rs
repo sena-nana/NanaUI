@@ -1,11 +1,9 @@
 use crate::context::HostGraphics;
-use crate::panel::{DemoPanel, window_background};
+use crate::panel::{DemoPanel, Message as PanelMessage, window_background};
 use crate::performance::StartupProbe;
 use crate::scene::SharedScene;
 
 use iced_wgpu::wgpu;
-use iced_winit::conversion;
-use iced_winit::core::mouse;
 use iced_winit::core::renderer;
 use iced_winit::core::time::Instant;
 use iced_winit::winit;
@@ -21,7 +19,6 @@ use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::ModifiersState;
 
 pub fn run(started_at: Instant) -> Result<(), winit::error::EventLoopError> {
     let event_loop = EventLoop::new()?;
@@ -40,7 +37,6 @@ struct Ready {
     ui: HostedUiRenderer,
     scene: SharedScene,
     panel: DemoPanel,
-    modifiers: ModifiersState,
     resized: bool,
     startup: StartupProbe,
     material: MaterialOutcome,
@@ -99,7 +95,6 @@ impl ApplicationHandler for Runner {
             ui,
             scene,
             panel,
-            modifiers: ModifiersState::default(),
             resized: false,
             startup,
             material,
@@ -128,17 +123,6 @@ impl ApplicationHandler for Runner {
                 event_loop.exit();
                 return;
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                state
-                    .ui
-                    .set_cursor(mouse::Cursor::Available(conversion::cursor_position(
-                        *position,
-                        state.window.scale_factor() as f32,
-                    )));
-            }
-            WindowEvent::ModifiersChanged(modifiers) => {
-                state.modifiers = modifiers.state();
-            }
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 state.resized = true;
                 state.panel.sync_maximized(state.window.is_maximized());
@@ -146,10 +130,7 @@ impl ApplicationHandler for Runner {
             _ => {}
         }
 
-        if let Some(event) =
-            conversion::window_event(event, state.window.scale_factor() as f32, state.modifiers)
-        {
-            state.ui.queue_event(event);
+        if state.ui.push_window_event(event, state.window.as_ref()) {
             state.window.request_redraw();
         }
     }
@@ -192,6 +173,15 @@ impl Ready {
         }
         if !self.graphics.is_drawable() {
             return;
+        }
+
+        if self.ui.has_pending_events() {
+            let messages = self.ui.update(
+                self.panel
+                    .view(self.scene.texture(), self.material.is_native()),
+                self.window.as_ref(),
+            );
+            self.process_messages(messages, event_loop);
         }
 
         let frame = match self.graphics.surface.get_current_texture() {
@@ -247,9 +237,19 @@ impl Ready {
                 view: &target,
             },
         );
-        self.apply_cursor_state(ui_frame.mouse_interaction);
         self.graphics.queue.present(frame);
-        for message in ui_frame.messages {
+        let redraw = !ui_frame.messages.is_empty();
+        self.process_messages(ui_frame.messages, event_loop);
+        if redraw {
+            self.window.request_redraw();
+        }
+        if self.startup.record_first_frame(self.material.effect) {
+            event_loop.exit();
+        }
+    }
+
+    fn process_messages(&mut self, messages: Vec<PanelMessage>, event_loop: &ActiveEventLoop) {
+        for message in messages {
             let update = self.panel.update(message);
             if update.appearance_changed {
                 self.refresh_material();
@@ -265,9 +265,6 @@ impl Ready {
                 self.panel.revision(),
             );
         }
-        if self.startup.record_first_frame(self.material.effect) {
-            event_loop.exit();
-        }
     }
 
     fn refresh_material(&mut self) {
@@ -278,15 +275,6 @@ impl Ready {
             (Appearance::Light, FallbackColor::rgba(255, 255, 255, 232))
         };
         self.material = apply_hosted_system_material(self.window.as_ref(), appearance, fallback);
-    }
-
-    fn apply_cursor_state(&self, mouse_interaction: mouse::Interaction) {
-        if let Some(icon) = conversion::mouse_interaction(mouse_interaction) {
-            self.window.set_cursor(icon);
-            self.window.set_cursor_visible(true);
-        } else {
-            self.window.set_cursor_visible(false);
-        }
     }
 }
 
