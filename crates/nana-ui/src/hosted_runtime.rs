@@ -1,10 +1,11 @@
 //! High-level native runtime for applications that host NanaUI in one WGPU context.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iced::{Element, Size};
+use iced::{Element, Point, Size};
 use iced_wgpu::graphics::core::renderer;
 use iced_wgpu::wgpu;
 use iced_winit::futures::futures::executor;
@@ -19,17 +20,35 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 
 use crate::{
-    HostedGpuContext, HostedGpuError, HostedGpuResources, HostedSurfaceFrame, HostedUiRenderer,
-    HostedUiTarget, ThemeMode, WindowChromeAction,
+    HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface, HostedSurfaceFrame,
+    HostedUiRenderer, HostedUiTarget, ThemeMode, WindowChromeAction,
 };
 
-/// Native window configuration for [`run_hosted`].
+/// Stable application-owned identity for one hosted window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostedWindowId(pub u64);
+
+impl HostedWindowId {
+    pub const PRIMARY: Self = Self(0);
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostedWindowRole {
+    #[default]
+    Main,
+    Tool,
+}
+
+/// Native window configuration for [`run_hosted`] and auxiliary windows.
 #[derive(Debug, Clone)]
 pub struct HostedWindowSettings {
     pub title: String,
     pub initial_size: Size<f64>,
     pub minimum_size: Size<f64>,
+    pub initial_position: Option<(f64, f64)>,
+    pub maximized: bool,
     pub transparent: bool,
+    pub role: HostedWindowRole,
     pub gpu_retry_interval: Duration,
 }
 
@@ -39,7 +58,10 @@ impl HostedWindowSettings {
             title: title.into(),
             initial_size: Size::new(1200.0, 800.0),
             minimum_size: Size::new(760.0, 520.0),
+            initial_position: None,
+            maximized: false,
             transparent: !cfg!(target_os = "macos"),
+            role: HostedWindowRole::Main,
             gpu_retry_interval: Duration::from_secs(2),
         }
     }
@@ -54,21 +76,49 @@ impl HostedWindowSettings {
         self
     }
 
+    pub fn initial_position(mut self, x: f64, y: f64) -> Self {
+        self.initial_position = Some((x, y));
+        self
+    }
+
+    pub fn maximized(mut self, maximized: bool) -> Self {
+        self.maximized = maximized;
+        self
+    }
+
     pub fn transparent(mut self, transparent: bool) -> Self {
         self.transparent = transparent;
         self
     }
+
+    pub fn role(mut self, role: HostedWindowRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    pub fn tool_window(mut self) -> Self {
+        self.role = HostedWindowRole::Tool;
+        self
+    }
 }
 
-/// Stable application-facing state for the current native host.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostedWindowGeometry {
+    pub physical_position: Option<(i32, i32)>,
+    pub physical_size: Size<u32>,
+    pub logical_position: Option<Point>,
+    pub logical_size: Size,
+    pub scale_factor: f32,
+    pub maximized: bool,
+}
+
+/// Stable application-facing state for the primary native host.
 #[derive(Clone)]
 pub struct HostedProgramContext<Message: 'static> {
     proxy: EventLoopProxy<Message>,
     gpu: HostedGpuResources,
     window_id: iced::window::Id,
-    physical_size: Size<u32>,
-    scale_factor: f32,
-    maximized: bool,
+    geometry: HostedWindowGeometry,
     window_hidden: bool,
     drawable: bool,
     surface_format: wgpu::TextureFormat,
@@ -87,23 +137,24 @@ impl<Message: 'static> HostedProgramContext<Message> {
         self.window_id
     }
 
-    pub const fn physical_size(&self) -> Size<u32> {
-        self.physical_size
+    pub const fn geometry(&self) -> HostedWindowGeometry {
+        self.geometry
     }
 
-    pub fn logical_size(&self) -> Size {
-        Size::new(
-            self.physical_size.width as f32 / self.scale_factor,
-            self.physical_size.height as f32 / self.scale_factor,
-        )
+    pub const fn physical_size(&self) -> Size<u32> {
+        self.geometry.physical_size
+    }
+
+    pub const fn logical_size(&self) -> Size {
+        self.geometry.logical_size
     }
 
     pub const fn scale_factor(&self) -> f32 {
-        self.scale_factor
+        self.geometry.scale_factor
     }
 
     pub const fn maximized(&self) -> bool {
-        self.maximized
+        self.geometry.maximized
     }
 
     pub const fn window_hidden(&self) -> bool {
@@ -119,28 +170,45 @@ impl<Message: 'static> HostedProgramContext<Message> {
     }
 }
 
-/// Window lifecycle information translated into Iced logical coordinates.
+/// Window lifecycle information translated into logical and physical geometry.
 #[derive(Debug, Clone, Copy)]
 pub enum HostedWindowEvent {
     Ready {
+        id: HostedWindowId,
         window_id: iced::window::Id,
-        logical_size: Size,
-        scale_factor: f32,
-        maximized: bool,
+        geometry: HostedWindowGeometry,
     },
     Resized {
+        id: HostedWindowId,
         window_id: iced::window::Id,
-        logical_size: Size,
-        scale_factor: f32,
-        maximized: bool,
+        geometry: HostedWindowGeometry,
+    },
+    Moved {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        geometry: HostedWindowGeometry,
     },
     VisibilityChanged {
+        id: HostedWindowId,
         window_id: iced::window::Id,
         hidden: bool,
     },
     CloseRequested {
+        id: HostedWindowId,
         window_id: iced::window::Id,
     },
+}
+
+impl HostedWindowEvent {
+    pub const fn id(self) -> HostedWindowId {
+        match self {
+            Self::Ready { id, .. }
+            | Self::Resized { id, .. }
+            | Self::Moved { id, .. }
+            | Self::VisibilityChanged { id, .. }
+            | Self::CloseRequested { id, .. } => id,
+        }
+    }
 }
 
 /// Typed host failures and recoveries. User-facing copy remains app-owned.
@@ -149,13 +217,40 @@ pub enum HostedRuntimeEvent {
     RenderingSuspended(HostedGpuError),
     DeviceRecovered,
     DeviceRecoveryFailed(HostedGpuError),
+    WindowOpenFailed { id: HostedWindowId, message: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum HostedWindowCommand {
+    Open {
+        id: HostedWindowId,
+        settings: HostedWindowSettings,
+    },
+    Close(HostedWindowId),
+    Focus(HostedWindowId),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostedRedraw {
+    #[default]
+    None,
+    Primary,
+    Window(HostedWindowId),
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedWindowAction {
+    pub id: HostedWindowId,
+    pub action: WindowChromeAction,
 }
 
 /// Commands returned after a program handles one event.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct HostedProgramUpdate {
-    pub window_action: Option<WindowChromeAction>,
-    pub request_redraw: bool,
+    pub window_action: Option<HostedWindowAction>,
+    pub redraw: HostedRedraw,
+    pub window_commands: Vec<HostedWindowCommand>,
     pub exit: bool,
 }
 
@@ -163,7 +258,26 @@ impl HostedProgramUpdate {
     pub const fn redraw() -> Self {
         Self {
             window_action: None,
-            request_redraw: true,
+            redraw: HostedRedraw::Primary,
+            window_commands: Vec::new(),
+            exit: false,
+        }
+    }
+
+    pub const fn redraw_window(id: HostedWindowId) -> Self {
+        Self {
+            window_action: None,
+            redraw: HostedRedraw::Window(id),
+            window_commands: Vec::new(),
+            exit: false,
+        }
+    }
+
+    pub const fn redraw_all() -> Self {
+        Self {
+            window_action: None,
+            redraw: HostedRedraw::All,
+            window_commands: Vec::new(),
             exit: false,
         }
     }
@@ -171,17 +285,31 @@ impl HostedProgramUpdate {
     pub const fn exit() -> Self {
         Self {
             window_action: None,
-            request_redraw: false,
+            redraw: HostedRedraw::None,
+            window_commands: Vec::new(),
             exit: true,
         }
     }
 
     pub const fn with_window_action(action: WindowChromeAction) -> Self {
+        Self::with_target_window_action(HostedWindowId::PRIMARY, action)
+    }
+
+    pub const fn with_target_window_action(id: HostedWindowId, action: WindowChromeAction) -> Self {
         Self {
-            window_action: Some(action),
-            request_redraw: true,
+            window_action: Some(HostedWindowAction { id, action }),
+            redraw: HostedRedraw::Window(id),
+            window_commands: Vec::new(),
             exit: false,
         }
+    }
+
+    pub fn with_window_commands(
+        mut self,
+        commands: impl IntoIterator<Item = HostedWindowCommand>,
+    ) -> Self {
+        self.window_commands.extend(commands);
+        self
     }
 }
 
@@ -201,6 +329,11 @@ pub trait HostedProgram: Sized + 'static {
     ) -> HostedProgramUpdate;
 
     fn view(&self, native_material: bool) -> Element<'_, Self::Message>;
+
+    fn view_window(&self, id: HostedWindowId, native_material: bool) -> Element<'_, Self::Message> {
+        let _ = id;
+        self.view(native_material)
+    }
 
     fn theme_mode(&self) -> ThemeMode;
 
@@ -232,10 +365,18 @@ pub trait HostedProgram: Sized + 'static {
         HostedProgramUpdate::default()
     }
 
-    /// Renders application-owned GPU targets before NanaUI consumes them.
     fn prepare_frame(&mut self, _context: &HostedProgramContext<Self::Message>) {}
 
-    /// Rebuilds application GPU resources after the host replaces its device.
+    fn prepare_window_frame(
+        &mut self,
+        id: HostedWindowId,
+        context: &HostedProgramContext<Self::Message>,
+    ) {
+        if id == HostedWindowId::PRIMARY {
+            self.prepare_frame(context);
+        }
+    }
+
     fn rebuild_gpu(&mut self, _context: &HostedProgramContext<Self::Message>) {}
 
     fn frame_presented(
@@ -245,9 +386,21 @@ pub trait HostedProgram: Sized + 'static {
     ) -> HostedProgramUpdate {
         HostedProgramUpdate::default()
     }
+
+    fn window_frame_presented(
+        &mut self,
+        id: HostedWindowId,
+        material: MaterialOutcome,
+        context: &HostedProgramContext<Self::Message>,
+    ) -> HostedProgramUpdate {
+        if id == HostedWindowId::PRIMARY {
+            self.frame_presented(material, context)
+        } else {
+            HostedProgramUpdate::default()
+        }
+    }
 }
 
-/// Starts a native hosted NanaUI application.
 pub fn run_hosted<Program: HostedProgram>(
     settings: HostedWindowSettings,
 ) -> Result<(), HostedRunError> {
@@ -278,6 +431,19 @@ enum HostedRunner<Program: HostedProgram> {
     },
 }
 
+struct HostedAuxiliary {
+    surface: HostedGpuSurface,
+    ui: HostedUiRenderer,
+    iced_window_id: iced::window::Id,
+    material: MaterialOutcome,
+}
+
+impl Drop for HostedAuxiliary {
+    fn drop(&mut self) {
+        clear_system_material(self.surface.window().as_ref());
+    }
+}
+
 struct HostedReady<Program: HostedProgram> {
     graphics: HostedGpuContext,
     ui: HostedUiRenderer,
@@ -286,6 +452,8 @@ struct HostedReady<Program: HostedProgram> {
     iced_window_id: iced::window::Id,
     material: MaterialOutcome,
     settings: HostedWindowSettings,
+    auxiliary: HashMap<HostedWindowId, HostedAuxiliary>,
+    window_ids: HashMap<winit::window::WindowId, HostedWindowId>,
     next_gpu_retry: Option<Instant>,
     window_hidden: bool,
     render_suspended: bool,
@@ -322,9 +490,7 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
             event_loop.exit();
             return;
         }
-        let proxy = proxy.clone();
-        let settings = settings.clone();
-        match initialize::<Program>(event_loop, proxy, settings) {
+        match initialize::<Program>(event_loop, proxy.clone(), settings.clone()) {
             Ok(ready) => *self = Self::Ready(Box::new(ready)),
             Err(error) => self.fail(event_loop, error),
         }
@@ -335,7 +501,6 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
             return;
         };
         ready.process_message(event_loop, message);
-        ready.graphics.window().request_redraw();
     }
 
     fn window_event(
@@ -347,46 +512,10 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
         let Self::Ready(ready) = self else {
             return;
         };
-        if window_id != ready.graphics.window().id() {
+        let Some(id) = ready.window_ids.get(&window_id).copied() else {
             return;
-        }
-
-        match event {
-            WindowEvent::RedrawRequested => {
-                ready.update_interface(event_loop);
-                ready.redraw(event_loop);
-            }
-            WindowEvent::CloseRequested => ready.notify_close_requested(event_loop),
-            event => {
-                let geometry_changed = matches!(
-                    event,
-                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
-                );
-                if geometry_changed {
-                    ready.graphics.resize();
-                    ready.resize_interface();
-                    ready.notify_resized(event_loop);
-                }
-                if let WindowEvent::Occluded(occluded) = &event {
-                    ready.window_hidden = *occluded;
-                    let context = ready.program_context();
-                    let update = ready.program.window_event(
-                        HostedWindowEvent::VisibilityChanged {
-                            window_id: ready.iced_window_id,
-                            hidden: *occluded,
-                        },
-                        &context,
-                    );
-                    ready.apply_program_update(event_loop, update);
-                }
-                if ready
-                    .ui
-                    .push_window_event(event, ready.graphics.window().as_ref())
-                {
-                    ready.graphics.window().request_redraw();
-                }
-            }
-        }
+        };
+        ready.handle_window_event(event_loop, id, event);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -433,7 +562,14 @@ fn initialize<Program: HostedProgram>(
     let context = program_context(&graphics, &proxy, iced_window_id, false);
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     let material = material_for(window.as_ref(), program.theme_mode());
-    let ui = hosted_ui_renderer(&graphics);
+    let ui = hosted_ui_renderer(
+        &graphics,
+        graphics.window(),
+        graphics.format(),
+        graphics.physical_size(),
+    );
+    let mut window_ids = HashMap::new();
+    window_ids.insert(window.id(), HostedWindowId::PRIMARY);
     let mut ready = HostedReady {
         graphics,
         ui,
@@ -442,14 +578,15 @@ fn initialize<Program: HostedProgram>(
         iced_window_id,
         material,
         settings,
+        auxiliary: HashMap::new(),
+        window_ids,
         next_gpu_retry: None,
         window_hidden: false,
         render_suspended: false,
     };
+    let event = ready.primary_event(true);
     let context = ready.program_context();
-    let update = ready
-        .program
-        .window_event(ready.window_event(true), &context);
+    let update = ready.program.window_event(event, &context);
     ready.apply_program_update(event_loop, update);
     for message in startup {
         ready.process_message(event_loop, message);
@@ -468,51 +605,162 @@ impl<Program: HostedProgram> HostedReady<Program> {
         )
     }
 
-    fn window_event(&self, ready: bool) -> HostedWindowEvent {
-        let context = self.program_context();
+    fn primary_event(&self, ready: bool) -> HostedWindowEvent {
+        let geometry = window_geometry(self.graphics.window());
         if ready {
             HostedWindowEvent::Ready {
+                id: HostedWindowId::PRIMARY,
                 window_id: self.iced_window_id,
-                logical_size: context.logical_size(),
-                scale_factor: context.scale_factor(),
-                maximized: context.maximized(),
+                geometry,
             }
         } else {
             HostedWindowEvent::Resized {
+                id: HostedWindowId::PRIMARY,
                 window_id: self.iced_window_id,
-                logical_size: context.logical_size(),
-                scale_factor: context.scale_factor(),
-                maximized: context.maximized(),
+                geometry,
             }
         }
     }
 
-    fn notify_resized(&mut self, event_loop: &ActiveEventLoop) {
-        let event = self.window_event(false);
-        let context = self.program_context();
-        let update = self.program.window_event(event, &context);
-        self.apply_program_update(event_loop, update);
-        self.graphics.window().request_redraw();
+    fn handle_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::RedrawRequested => {
+                self.update_interface(event_loop, id);
+                self.redraw(event_loop, id);
+            }
+            WindowEvent::CloseRequested => self.notify_close_requested(event_loop, id),
+            WindowEvent::Moved(_) => {
+                self.notify_moved(event_loop, id);
+                self.push_window_event(id, event);
+            }
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                self.resize(id);
+                self.notify_resized(event_loop, id);
+                self.push_window_event(id, event);
+            }
+            WindowEvent::Occluded(hidden) => {
+                self.set_hidden(id, hidden);
+                let window_id = self.iced_window_id(id);
+                let context = self.program_context();
+                let update = self.program.window_event(
+                    HostedWindowEvent::VisibilityChanged {
+                        id,
+                        window_id,
+                        hidden,
+                    },
+                    &context,
+                );
+                self.apply_program_update(event_loop, update);
+                self.push_window_event(id, WindowEvent::Occluded(hidden));
+            }
+            event => self.push_window_event(id, event),
+        }
     }
 
-    fn notify_close_requested(&mut self, event_loop: &ActiveEventLoop) {
+    fn push_window_event(&mut self, id: HostedWindowId, event: WindowEvent) {
+        if id == HostedWindowId::PRIMARY {
+            if self
+                .ui
+                .push_window_event(event, self.graphics.window().as_ref())
+            {
+                self.graphics.window().request_redraw();
+            }
+        } else if let Some(host) = self.auxiliary.get_mut(&id)
+            && host
+                .ui
+                .push_window_event(event, host.surface.window().as_ref())
+        {
+            host.surface.window().request_redraw();
+        }
+    }
+
+    fn resize(&mut self, id: HostedWindowId) {
+        if id == HostedWindowId::PRIMARY {
+            self.graphics.resize();
+            self.ui.resize(
+                self.graphics.physical_size(),
+                self.graphics.window().scale_factor() as f32,
+            );
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            self.graphics.resize_surface(&mut host.surface);
+            host.ui.resize(
+                host.surface.physical_size(),
+                host.surface.window().scale_factor() as f32,
+            );
+        }
+    }
+
+    fn notify_resized(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        let Some((window_id, geometry)) = self.window_snapshot(id) else {
+            return;
+        };
         let context = self.program_context();
         let update = self.program.window_event(
-            HostedWindowEvent::CloseRequested {
-                window_id: self.iced_window_id,
+            HostedWindowEvent::Resized {
+                id,
+                window_id,
+                geometry,
+            },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
+        self.request_redraw(id);
+    }
+
+    fn notify_moved(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        let Some((window_id, geometry)) = self.window_snapshot(id) else {
+            return;
+        };
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::Moved {
+                id,
+                window_id,
+                geometry,
             },
             &context,
         );
         self.apply_program_update(event_loop, update);
     }
 
-    fn update_interface(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.ui.has_pending_events() {
+    fn notify_close_requested(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        let window_id = self.iced_window_id(id);
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::CloseRequested { id, window_id },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
+    }
+
+    fn update_interface(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        if id == HostedWindowId::PRIMARY {
+            if !self.ui.has_pending_events() {
+                return;
+            }
+            let messages = self.ui.update(
+                self.program.view_window(id, self.material.is_native()),
+                self.graphics.window().as_ref(),
+            );
+            for message in messages {
+                self.process_message(event_loop, message);
+            }
             return;
         }
-        let messages = self.ui.update(
-            self.program.view(self.material.is_native()),
-            self.graphics.window().as_ref(),
+        let Some(host) = self.auxiliary.get_mut(&id) else {
+            return;
+        };
+        if !host.ui.has_pending_events() {
+            return;
+        }
+        let messages = host.ui.update(
+            self.program.view_window(id, host.material.is_native()),
+            host.surface.window().as_ref(),
         );
         for message in messages {
             self.process_message(event_loop, message);
@@ -524,7 +772,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
         let context = self.program_context();
         let update = self.program.update(message, &context);
         if self.program.theme_mode() != previous_theme {
-            self.refresh_material();
+            self.refresh_materials();
         }
         self.apply_program_update(event_loop, update);
     }
@@ -534,37 +782,144 @@ impl<Program: HostedProgram> HostedReady<Program> {
             event_loop.exit();
             return;
         }
+        for command in update.window_commands {
+            self.apply_window_command(event_loop, command);
+        }
         if let Some(action) = update.window_action {
             self.apply_window_action(event_loop, action);
         }
-        if update.request_redraw {
-            self.graphics.window().request_redraw();
+        match update.redraw {
+            HostedRedraw::None => {}
+            HostedRedraw::Primary => self.request_redraw(HostedWindowId::PRIMARY),
+            HostedRedraw::Window(id) => self.request_redraw(id),
+            HostedRedraw::All => self.request_redraw_all(),
         }
     }
 
-    fn apply_window_action(&mut self, event_loop: &ActiveEventLoop, action: WindowChromeAction) {
-        match action {
+    fn apply_window_command(&mut self, event_loop: &ActiveEventLoop, command: HostedWindowCommand) {
+        match command {
+            HostedWindowCommand::Open { id, settings } => {
+                if id == HostedWindowId::PRIMARY {
+                    self.graphics.window().focus_window();
+                    return;
+                }
+                if let Some(host) = self.auxiliary.get(&id) {
+                    host.surface.window().focus_window();
+                    return;
+                }
+                match self.open_window(event_loop, id, settings) {
+                    Ok(event) => {
+                        let context = self.program_context();
+                        let update = self.program.window_event(event, &context);
+                        self.apply_program_update(event_loop, update);
+                    }
+                    Err(message) => {
+                        let context = self.program_context();
+                        let update = self.program.runtime_event(
+                            HostedRuntimeEvent::WindowOpenFailed { id, message },
+                            &context,
+                        );
+                        self.apply_program_update(event_loop, update);
+                    }
+                }
+            }
+            HostedWindowCommand::Close(id) => self.close_window(id),
+            HostedWindowCommand::Focus(id) => self.focus_window(id),
+        }
+    }
+
+    fn open_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        settings: HostedWindowSettings,
+    ) -> Result<HostedWindowEvent, String> {
+        let window = Arc::new(
+            event_loop
+                .create_window(window_attributes(&settings))
+                .map_err(|error| error.to_string())?,
+        );
+        let _ = prepare_custom_title_bar(window.as_ref());
+        let surface = self
+            .graphics
+            .create_surface(window.clone())
+            .map_err(|error| error.to_string())?;
+        let ui = hosted_ui_renderer(
+            &self.graphics,
+            surface.window(),
+            surface.format(),
+            surface.physical_size(),
+        );
+        let iced_window_id = iced::window::Id::unique();
+        let material = material_for(window.as_ref(), self.program.theme_mode());
+        let geometry = window_geometry(&window);
+        self.window_ids.insert(window.id(), id);
+        self.auxiliary.insert(
+            id,
+            HostedAuxiliary {
+                surface,
+                ui,
+                iced_window_id,
+                material,
+            },
+        );
+        window.request_redraw();
+        Ok(HostedWindowEvent::Ready {
+            id,
+            window_id: iced_window_id,
+            geometry,
+        })
+    }
+
+    fn close_window(&mut self, id: HostedWindowId) {
+        if id == HostedWindowId::PRIMARY {
+            return;
+        }
+        if let Some(host) = self.auxiliary.remove(&id) {
+            self.window_ids.remove(&host.surface.window().id());
+        }
+    }
+
+    fn focus_window(&self, id: HostedWindowId) {
+        if id == HostedWindowId::PRIMARY {
+            self.graphics.window().focus_window();
+        } else if let Some(host) = self.auxiliary.get(&id) {
+            host.surface.window().focus_window();
+        }
+    }
+
+    fn apply_window_action(&mut self, event_loop: &ActiveEventLoop, action: HostedWindowAction) {
+        let Some(window) = self.window(action.id).cloned() else {
+            return;
+        };
+        match action.action {
             WindowChromeAction::Drag => {
                 #[cfg(target_os = "macos")]
-                let _ = nana_window::drag_custom_title_bar(self.graphics.window().as_ref());
+                let _ = nana_window::drag_custom_title_bar(window.as_ref());
                 #[cfg(not(target_os = "macos"))]
-                let _ = self.graphics.window().drag_window();
+                let _ = window.drag_window();
             }
-            WindowChromeAction::Minimize => self.graphics.window().set_minimized(true),
+            WindowChromeAction::Minimize => window.set_minimized(true),
             WindowChromeAction::ToggleMaximize => {
-                self.graphics
-                    .window()
-                    .set_maximized(!self.graphics.window().is_maximized());
-                self.notify_resized(event_loop);
+                window.set_maximized(!window.is_maximized());
+                self.notify_resized(event_loop, action.id);
             }
-            WindowChromeAction::Close => self.notify_close_requested(event_loop),
+            WindowChromeAction::Close => self.notify_close_requested(event_loop, action.id),
         }
     }
 
-    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+    fn redraw(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
         if self.render_suspended {
             return;
         }
+        if id == HostedWindowId::PRIMARY {
+            self.redraw_primary(event_loop);
+        } else {
+            self.redraw_auxiliary(event_loop, id);
+        }
+    }
+
+    fn redraw_primary(&mut self, event_loop: &ActiveEventLoop) {
         let frame = match self.graphics.acquire_frame() {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
             Ok(HostedSurfaceFrame::Retry) => {
@@ -578,16 +933,17 @@ impl<Program: HostedProgram> HostedReady<Program> {
             }
         };
         let context = self.program_context();
-        self.program.prepare_frame(&context);
+        self.program
+            .prepare_window_frame(HostedWindowId::PRIMARY, &context);
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let theme_mode = self.program.theme_mode();
-        let theme = theme_mode.iced_theme();
         let colors = theme_mode.colors();
         let ui_frame = self.ui.render(
-            self.program.view(self.material.is_native()),
-            &theme,
+            self.program
+                .view_window(HostedWindowId::PRIMARY, self.material.is_native()),
+            &theme_mode.iced_theme(),
             renderer::Style {
                 text_color: colors.text,
             },
@@ -606,15 +962,61 @@ impl<Program: HostedProgram> HostedReady<Program> {
             let _ = self.proxy.send_event(message);
         }
         let context = self.program_context();
-        let update = self.program.frame_presented(self.material, &context);
+        let update =
+            self.program
+                .window_frame_presented(HostedWindowId::PRIMARY, self.material, &context);
         self.apply_program_update(event_loop, update);
     }
 
-    fn resize_interface(&mut self) {
-        self.ui.resize(
-            self.graphics.physical_size(),
-            self.graphics.window().scale_factor() as f32,
-        );
+    fn redraw_auxiliary(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        let context = self.program_context();
+        self.program.prepare_window_frame(id, &context);
+        let frame = {
+            let Some(host) = self.auxiliary.get_mut(&id) else {
+                return;
+            };
+            match self.graphics.acquire_surface_frame(&mut host.surface) {
+                Ok(HostedSurfaceFrame::Ready(frame)) => frame,
+                Ok(HostedSurfaceFrame::Retry) => {
+                    host.surface.window().request_redraw();
+                    return;
+                }
+                Ok(HostedSurfaceFrame::Skipped) => return,
+                Err(error) => {
+                    self.suspend_rendering(event_loop, error);
+                    return;
+                }
+            }
+        };
+        let target = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let theme_mode = self.program.theme_mode();
+        let colors = theme_mode.colors();
+        let material = self.auxiliary[&id].material;
+        let ui_frame = {
+            let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
+            host.ui.render(
+                self.program.view_window(id, material.is_native()),
+                &theme_mode.iced_theme(),
+                renderer::Style {
+                    text_color: colors.text,
+                },
+                HostedUiTarget {
+                    window: host.surface.window().as_ref(),
+                    clear_color: Some(window_background(colors.background, material.is_native())),
+                    format: frame.texture.format(),
+                    view: &target,
+                },
+            )
+        };
+        self.graphics.present(frame);
+        for message in ui_frame.messages {
+            let _ = self.proxy.send_event(message);
+        }
+        let context = self.program_context();
+        let update = self.program.window_frame_presented(id, material, &context);
+        self.apply_program_update(event_loop, update);
     }
 
     fn suspend_rendering(&mut self, event_loop: &ActiveEventLoop, error: HostedGpuError) {
@@ -627,33 +1029,76 @@ impl<Program: HostedProgram> HostedReady<Program> {
         self.apply_program_update(event_loop, update);
     }
 
-    fn refresh_material(&mut self) {
+    fn refresh_materials(&mut self) {
         clear_system_material(self.graphics.window().as_ref());
         self.material = material_for(self.graphics.window().as_ref(), self.program.theme_mode());
+        for host in self.auxiliary.values_mut() {
+            clear_system_material(host.surface.window().as_ref());
+            host.material = material_for(host.surface.window().as_ref(), self.program.theme_mode());
+            host.surface.window().request_redraw();
+        }
     }
 
     fn recover_device(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::clone(self.graphics.window());
-        match executor::block_on(HostedGpuContext::new(window)) {
+        let primary_window = Arc::clone(self.graphics.window());
+        match executor::block_on(HostedGpuContext::new(primary_window)) {
             Ok(graphics) => {
-                let ui = hosted_ui_renderer(&graphics);
-                let context = program_context(
+                let ui = hosted_ui_renderer(
                     &graphics,
-                    &self.proxy,
-                    self.iced_window_id,
-                    self.window_hidden,
+                    graphics.window(),
+                    graphics.format(),
+                    graphics.physical_size(),
                 );
-                self.program.rebuild_gpu(&context);
-                self.ui = ui;
+                let mut rebuilt = HashMap::new();
+                let previous = std::mem::take(&mut self.auxiliary);
+                let mut failures = Vec::new();
+                for (id, host) in previous {
+                    let window = Arc::clone(host.surface.window());
+                    match graphics.create_surface(window) {
+                        Ok(surface) => {
+                            let ui = hosted_ui_renderer(
+                                &graphics,
+                                surface.window(),
+                                surface.format(),
+                                surface.physical_size(),
+                            );
+                            rebuilt.insert(
+                                id,
+                                HostedAuxiliary {
+                                    surface,
+                                    ui,
+                                    iced_window_id: host.iced_window_id,
+                                    material: host.material,
+                                },
+                            );
+                        }
+                        Err(error) => {
+                            failures.push((id, host.surface.window().id(), error.to_string()))
+                        }
+                    }
+                }
                 self.graphics = graphics;
+                self.ui = ui;
+                self.auxiliary = rebuilt;
+                self.refresh_materials();
                 self.next_gpu_retry = None;
                 self.render_suspended = false;
                 let context = self.program_context();
+                self.program.rebuild_gpu(&context);
                 let update = self
                     .program
                     .runtime_event(HostedRuntimeEvent::DeviceRecovered, &context);
                 self.apply_program_update(event_loop, update);
-                self.graphics.window().request_redraw();
+                for (id, window_id, message) in failures {
+                    self.window_ids.remove(&window_id);
+                    let context = self.program_context();
+                    let update = self.program.runtime_event(
+                        HostedRuntimeEvent::WindowOpenFailed { id, message },
+                        &context,
+                    );
+                    self.apply_program_update(event_loop, update);
+                }
+                self.request_redraw_all();
             }
             Err(error) => {
                 self.next_gpu_retry = Some(Instant::now() + self.settings.gpu_retry_interval);
@@ -663,6 +1108,51 @@ impl<Program: HostedProgram> HostedReady<Program> {
                     .runtime_event(HostedRuntimeEvent::DeviceRecoveryFailed(error), &context);
                 self.apply_program_update(event_loop, update);
             }
+        }
+    }
+
+    fn set_hidden(&mut self, id: HostedWindowId, hidden: bool) {
+        if id == HostedWindowId::PRIMARY {
+            self.window_hidden = hidden;
+        }
+    }
+
+    fn window(&self, id: HostedWindowId) -> Option<&Arc<winit::window::Window>> {
+        if id == HostedWindowId::PRIMARY {
+            Some(self.graphics.window())
+        } else {
+            self.auxiliary.get(&id).map(|host| host.surface.window())
+        }
+    }
+
+    fn iced_window_id(&self, id: HostedWindowId) -> iced::window::Id {
+        if id == HostedWindowId::PRIMARY {
+            self.iced_window_id
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map_or(self.iced_window_id, |host| host.iced_window_id)
+        }
+    }
+
+    fn window_snapshot(
+        &self,
+        id: HostedWindowId,
+    ) -> Option<(iced::window::Id, HostedWindowGeometry)> {
+        self.window(id)
+            .map(|window| (self.iced_window_id(id), window_geometry(window)))
+    }
+
+    fn request_redraw(&self, id: HostedWindowId) {
+        if let Some(window) = self.window(id) {
+            window.request_redraw();
+        }
+    }
+
+    fn request_redraw_all(&self) {
+        self.graphics.window().request_redraw();
+        for host in self.auxiliary.values() {
+            host.surface.window().request_redraw();
         }
     }
 }
@@ -679,39 +1169,65 @@ fn program_context<Message: Send + 'static>(
     window_id: iced::window::Id,
     window_hidden: bool,
 ) -> HostedProgramContext<Message> {
-    let scale_factor = graphics.window().scale_factor() as f32;
     HostedProgramContext {
         proxy: proxy.clone(),
         gpu: graphics.resources(),
         window_id,
-        physical_size: graphics.physical_size(),
-        scale_factor: if scale_factor.is_finite() && scale_factor > 0.0 {
-            scale_factor
-        } else {
-            1.0
-        },
-        maximized: graphics.window().is_maximized(),
+        geometry: window_geometry(graphics.window()),
         window_hidden,
         drawable: graphics.is_drawable(),
         surface_format: graphics.format(),
     }
 }
 
-fn hosted_ui_renderer(graphics: &HostedGpuContext) -> HostedUiRenderer {
-    let redraw_window = Arc::downgrade(graphics.window());
+fn hosted_ui_renderer(
+    graphics: &HostedGpuContext,
+    window: &Arc<winit::window::Window>,
+    format: wgpu::TextureFormat,
+    physical_size: Size<u32>,
+) -> HostedUiRenderer {
+    let redraw_window = Arc::downgrade(window);
     HostedUiRenderer::new(
         graphics.adapter(),
         graphics.resources().device(),
         graphics.resources().queue(),
-        graphics.format(),
-        graphics.physical_size(),
-        graphics.window().scale_factor() as f32,
+        format,
+        physical_size,
+        window.scale_factor() as f32,
         move || {
             if let Some(window) = redraw_window.upgrade() {
                 window.request_redraw();
             }
         },
     )
+}
+
+fn window_geometry(window: &winit::window::Window) -> HostedWindowGeometry {
+    let scale_factor = normalized_scale_factor(window.scale_factor() as f32);
+    let physical_size = window.inner_size();
+    let physical_position = window.outer_position().ok();
+    HostedWindowGeometry {
+        physical_position: physical_position.map(|position| (position.x, position.y)),
+        physical_size: Size::new(physical_size.width, physical_size.height),
+        logical_position: physical_position.map(|position| {
+            let logical = position.to_logical::<f32>(f64::from(scale_factor));
+            Point::new(logical.x, logical.y)
+        }),
+        logical_size: Size::new(
+            physical_size.width as f32 / scale_factor,
+            physical_size.height as f32 / scale_factor,
+        ),
+        scale_factor,
+        maximized: window.is_maximized(),
+    }
+}
+
+fn normalized_scale_factor(scale_factor: f32) -> f32 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -737,7 +1253,7 @@ fn window_background(mut color: iced::Color, native_material: bool) -> iced::Col
 }
 
 fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAttributes {
-    let attributes = winit::window::WindowAttributes::default()
+    let mut attributes = winit::window::WindowAttributes::default()
         .with_title(settings.title.clone())
         .with_transparent(settings.transparent)
         .with_inner_size(winit::dpi::LogicalSize::new(
@@ -747,7 +1263,11 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
         .with_min_inner_size(winit::dpi::LogicalSize::new(
             settings.minimum_size.width,
             settings.minimum_size.height,
-        ));
+        ))
+        .with_maximized(settings.maximized);
+    if let Some((x, y)) = settings.initial_position {
+        attributes = attributes.with_position(winit::dpi::LogicalPosition::new(x, y));
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -762,7 +1282,7 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
 
     #[cfg(not(target_os = "macos"))]
     {
-        attributes.with_decorations(false)
+        attributes.with_decorations(matches!(settings.role, HostedWindowRole::Tool))
     }
 }
 
@@ -782,3 +1302,19 @@ impl fmt::Display for HostedRunError {
 }
 
 impl std::error::Error for HostedRunError {}
+
+#[cfg(test)]
+mod tests {
+    use super::{HostedProgramUpdate, HostedRedraw, HostedWindowId};
+
+    #[test]
+    fn redraw_targets_are_explicit() {
+        assert_eq!(HostedProgramUpdate::default().redraw, HostedRedraw::None);
+        assert_eq!(HostedProgramUpdate::redraw().redraw, HostedRedraw::Primary);
+        assert_eq!(
+            HostedProgramUpdate::redraw_window(HostedWindowId(7)).redraw,
+            HostedRedraw::Window(HostedWindowId(7))
+        );
+        assert_eq!(HostedProgramUpdate::redraw_all().redraw, HostedRedraw::All);
+    }
+}

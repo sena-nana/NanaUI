@@ -11,6 +11,11 @@ use crate::drag_handle::DragHandle;
 use crate::resize_drag::{ResizeAxis, ResizeDrag};
 use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{ButtonKind, button_style};
+#[cfg(feature = "hosted")]
+use crate::{
+    HostedProgramUpdate, HostedWindowCommand, HostedWindowEvent, HostedWindowId,
+    HostedWindowSettings,
+};
 
 const DOCK_LAYOUT_VERSION: u8 = 1;
 const DIVIDER_HIT_SIZE: f32 = 8.0;
@@ -43,6 +48,20 @@ impl From<&str> for DockId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DockSurfaceId(pub u64);
+
+#[cfg(feature = "hosted")]
+impl From<DockSurfaceId> for HostedWindowId {
+    fn from(value: DockSurfaceId) -> Self {
+        Self(value.0)
+    }
+}
+
+#[cfg(feature = "hosted")]
+impl From<HostedWindowId> for DockSurfaceId {
+    fn from(value: HostedWindowId) -> Self {
+        Self(value.0)
+    }
+}
 
 /// Direction of a dock split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -489,6 +508,52 @@ impl DockController {
         Ok(effects)
     }
 
+    /// Applies geometry and close events emitted by NanaUI's hosted runtime.
+    #[cfg(feature = "hosted")]
+    pub fn update_hosted_window(&mut self, event: HostedWindowEvent) -> DockUpdate {
+        let surface = DockSurfaceId::from(event.id());
+        match event {
+            HostedWindowEvent::Ready { geometry, .. }
+            | HostedWindowEvent::Resized { geometry, .. }
+            | HostedWindowEvent::Moved { geometry, .. } => {
+                let previous = self
+                    .surface_bounds
+                    .get(&surface)
+                    .copied()
+                    .or_else(|| {
+                        self.layout
+                            .floating
+                            .iter()
+                            .find(|floating| floating.surface == surface)
+                            .map(|floating| floating.bounds)
+                    })
+                    .unwrap_or(DockBounds::new(
+                        0.0,
+                        0.0,
+                        geometry.logical_size.width,
+                        geometry.logical_size.height,
+                    ));
+                let position = geometry
+                    .logical_position
+                    .unwrap_or_else(|| Point::new(previous.x, previous.y));
+                self.update(DockAction::SurfaceGeometry {
+                    surface,
+                    bounds: DockBounds::new(
+                        position.x,
+                        position.y,
+                        geometry.logical_size.width,
+                        geometry.logical_size.height,
+                    ),
+                })
+            }
+            HostedWindowEvent::CloseRequested { .. } if surface != DockSurfaceId(0) => {
+                self.update(DockAction::CloseSurface(surface))
+            }
+            HostedWindowEvent::CloseRequested { .. }
+            | HostedWindowEvent::VisibilityChanged { .. } => DockUpdate::default(),
+        }
+    }
+
     pub fn clamp_floating_bounds(
         &mut self,
         monitor_work_areas: &BTreeMap<String, DockBounds>,
@@ -630,8 +695,19 @@ impl DockController {
                     .copied()
                     .unwrap_or(DockBounds::new(0.0, 0.0, size.0, size.1));
                 let bounds = DockBounds::new(previous.x, previous.y, size.0, size.1);
-                let changed = self.surface_bounds.get(&surface) != Some(&bounds);
+                let mut changed = self.surface_bounds.get(&surface) != Some(&bounds);
                 self.surface_bounds.insert(surface, bounds);
+                if let Some(floating) = self
+                    .layout
+                    .floating
+                    .iter_mut()
+                    .find(|floating| floating.surface == surface)
+                {
+                    changed |= floating.bounds.width != bounds.width
+                        || floating.bounds.height != bounds.height;
+                    floating.bounds.width = bounds.width;
+                    floating.bounds.height = bounds.height;
+                }
                 DockUpdate {
                     changed,
                     effects: Vec::new(),
@@ -641,8 +717,17 @@ impl DockController {
                 if !valid_bounds(bounds) {
                     return DockUpdate::default();
                 }
-                let changed = self.surface_bounds.get(&surface) != Some(&bounds);
+                let mut changed = self.surface_bounds.get(&surface) != Some(&bounds);
                 self.surface_bounds.insert(surface, bounds);
+                if let Some(floating) = self
+                    .layout
+                    .floating
+                    .iter_mut()
+                    .find(|floating| floating.surface == surface)
+                {
+                    changed |= floating.bounds != bounds;
+                    floating.bounds = bounds;
+                }
                 DockUpdate {
                     changed,
                     effects: Vec::new(),
@@ -1020,6 +1105,32 @@ impl DockController {
     }
 }
 
+/// Converts Dock window effects into commands understood by [`crate::run_hosted`].
+#[cfg(feature = "hosted")]
+pub fn hosted_dock_update(update: DockUpdate, title: impl Into<String>) -> HostedProgramUpdate {
+    let title = title.into();
+    let commands = update.effects.into_iter().map(|effect| match effect {
+        DockHostEffect::OpenFloating(floating) => HostedWindowCommand::Open {
+            id: HostedWindowId::from(floating.surface),
+            settings: HostedWindowSettings::new(title.clone())
+                .tool_window()
+                .initial_position(f64::from(floating.bounds.x), f64::from(floating.bounds.y))
+                .initial_size(
+                    f64::from(floating.bounds.width),
+                    f64::from(floating.bounds.height),
+                )
+                .minimum_size(160.0, 120.0),
+        },
+        DockHostEffect::CloseFloating(surface) => {
+            HostedWindowCommand::Close(HostedWindowId::from(surface))
+        }
+        DockHostEffect::FocusFloating(surface) => {
+            HostedWindowCommand::Focus(HostedWindowId::from(surface))
+        }
+    });
+    HostedProgramUpdate::redraw_all().with_window_commands(commands)
+}
+
 /// Application-owned contents keyed by stable dock ID.
 pub struct DockContents<'a, Message> {
     items: BTreeMap<DockId, Element<'a, Message>>,
@@ -1248,7 +1359,11 @@ where
         },
     );
     Element::new(DockSurface::new(content, move |bounds| {
-        on_action(DockAction::SurfaceGeometry { surface, bounds })
+        on_action(DockAction::SurfaceResized {
+            surface,
+            width: bounds.width,
+            height: bounds.height,
+        })
     }))
 }
 
@@ -2195,6 +2310,8 @@ fn resize_axis(axis: DockAxis) -> ResizeAxis {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "hosted")]
+    use crate::HostedWindowGeometry;
 
     fn controller() -> DockController {
         let layout = DockLayout::new(DockNode::split(
@@ -2415,5 +2532,58 @@ mod tests {
         );
         assert!(controller.layout().floating.is_empty());
         assert!(controller.is_visible(&DockId::from("sources")));
+    }
+
+    #[cfg(feature = "hosted")]
+    #[test]
+    fn hosted_adapter_preserves_floating_identity_and_geometry() {
+        let mut controller = controller();
+        let dock_update = controller.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let surface = controller.layout().floating[0].surface;
+        let hosted = hosted_dock_update(dock_update, "NanaUI Dock");
+        let HostedWindowCommand::Open { id, settings } = &hosted.window_commands[0] else {
+            panic!("hosted open command")
+        };
+        assert_eq!(*id, HostedWindowId::from(surface));
+        assert_eq!(settings.initial_position, Some((40.0, 50.0)));
+        assert_eq!(settings.initial_size, Size::new(360.0, 280.0));
+
+        let geometry = HostedWindowGeometry {
+            physical_position: Some((120, 160)),
+            physical_size: Size::new(800, 600),
+            logical_position: Some(Point::new(60.0, 80.0)),
+            logical_size: Size::new(400.0, 300.0),
+            scale_factor: 2.0,
+            maximized: false,
+        };
+        let update = controller.update_hosted_window(HostedWindowEvent::Moved {
+            id: HostedWindowId::from(surface),
+            window_id: iced::window::Id::unique(),
+            geometry,
+        });
+        assert!(update.changed);
+        assert_eq!(
+            controller.layout().floating[0].bounds,
+            DockBounds::new(60.0, 80.0, 400.0, 300.0)
+        );
+        controller.update(DockAction::SurfaceResized {
+            surface,
+            width: 420.0,
+            height: 320.0,
+        });
+        assert_eq!(
+            controller.layout().floating[0].bounds,
+            DockBounds::new(60.0, 80.0, 420.0, 320.0)
+        );
+
+        let close = controller.update_hosted_window(HostedWindowEvent::CloseRequested {
+            id: HostedWindowId::from(surface),
+            window_id: iced::window::Id::unique(),
+        });
+        assert_eq!(close.effects, vec![DockHostEffect::CloseFloating(surface)]);
     }
 }

@@ -7,10 +7,13 @@ primitive；`hosted-gpu-demo` 进一步验证宿主控制窗口、事件循环�
 NanaShader/Live2D 接入。
 
 `run_hosted` 与 `HostedProgram` 提供推荐的完整宿主入口；应用只实现业务状态、
-视图、业务消息、副作用调度，以及设备恢复后自身 GPU 资源的重建。窗口、Surface、
-唯一 Device/Queue、输入合并、同帧更新与 present、系统材质、窗口按钮、失焦/遮挡、
-设备丢失重试和空闲唤醒均由 NanaUI 负责。需要自定义多窗口或外部事件循环的宿主仍可
-直接使用低层 `HostedGpuContext` 与 `HostedUiRenderer`，两者不会创建第二套 GPU。
+各窗口视图、业务消息、副作用调度，以及设备恢复后自身 GPU 资源的重建。窗口、
+Surface、唯一 Device/Queue、输入路由与合并、同帧更新与 present、系统材质、窗口
+按钮、失焦/遮挡、设备丢失重试和空闲唤醒均由 NanaUI 负责。业务通过稳定的
+`HostedWindowId` 和 `HostedWindowCommand` 打开、关闭或聚焦工具窗口，不持有 Winit
+窗口或 Surface。需要外部事件循环的宿主仍可直接使用低层 `HostedGpuContext` 与
+`HostedUiRenderer`；附加窗口通过 `HostedGpuContext::create_surface` 接入同一个
+Adapter/Device/Queue，不会再次请求设备。
 
 当前宿主 Demo 已按以下职责运行：
 
@@ -22,15 +25,17 @@ winit Window / EventLoop（宿主）
                     └── NanaUI 工作区与 GPU 内容区域
 ```
 
-NanaUI hosted runtime 负责窗口生命周期、Surface 配置和渲染时序；业务程序负责
-布局、状态与内容渲染。`HostedProgramContext` 只暴露事件代理、Iced 窗口 ID、共享
-GPU 资源及窗口几何，不暴露 `Surface` 或 `ActiveEventLoop`。
+NanaUI hosted runtime 负责主窗口与工具窗口的生命周期、各自 Surface 配置和渲染
+时序；业务程序负责布局、状态与内容渲染。`HostedProgramContext` 只暴露事件代理、
+主窗口 Iced ID、共享 GPU 资源及主窗口几何，不暴露 `Surface` 或
+`ActiveEventLoop`。窗口级回调携带稳定 ID、该窗口的 Iced ID 与逻辑/物理几何；
+`HostedRedraw` 允许业务只重绘主窗口、指定工具窗口或全部窗口。
 
 `hosted-gpu-demo` 只调用一次 `Adapter::request_device`。直接 WGPU 场景使用宿主持有的 Device/Queue 创建管线、更新 uniform，并渲染到同时具有 `RENDER_ATTACHMENT` 与 `TEXTURE_BINDING` 用途的纹理；`GpuTextureView` 直接采样宿主 `TextureView`，`iced_wgpu::Engine` 接收同一 Device/Queue 的克隆句柄并合成到相同 Surface。Hosted UI 的 Canvas 几何使用 MSAA x4 中间纹理并解析到宿主的单采样目标，不改变 Surface 或 GPU 所有权。场景刷新由 NanaUI 按钮消息驱动，事件循环使用 `ControlFlow::Wait`，没有第二套 Device、CPU 回读、图片编码或持续帧订阅。
 
 交互式宿主通过 `HostedUiRenderer::push_window_event` 入队原生窗口事件并请求重绘；在 `RedrawRequested` 中先调用 `update`、处理产生的消息，再用最新应用状态调用 `render` 和 present。连续且相邻的鼠标移动只保留最新位置，但不会跨越按下、释放、触摸、键盘或窗口事件合并。Surface 仍由宿主配置；低延迟交互窗口推荐将 `desired_maximum_frame_latency` 设为 `1`。
 
-`HostTexture` 以稳定 ID 和 generation 包装引用计数的 WGPU `TextureView`。宿主替换或 resize 纹理时递增 generation，NanaUI 只重建对应 bind group；未出现的纹理实例在帧末从 pipeline cache 清除。当前合同接收可过滤的二维 float 纹理，并使用预乘 Alpha 合成。
+`HostTexture` 以稳定 ID 和 generation 包装引用计数的 WGPU `TextureView`。宿主替换或 resize 纹理时递增 generation，NanaUI 只重建对应 bind group；未出现的纹理实例在帧末从 pipeline cache 清除。当前合同接收可过滤的二维 float 纹理，并使用预乘 Alpha 合成。`GpuTextureView::contain` 在布局区域内保持传入宽高比，业务无需重复实现响应式 contain 计算。
 
 `GpuView` 的 `prepare` 直接取得 Iced WGPU renderer 当前的 `Device`、`Queue` 与 `Viewport`；每个实例按稳定 ID 缓存 uniform buffer/bind group。`Inline` 模式复用 Iced 当前的 RenderPass，`Standalone` 模式使用 Iced 同一帧的 CommandEncoder 与目标纹理创建独立 Pass，两者共享 RenderPipeline，但不会共享实例数据。它不创建中间纹理、不进行 CPU 回读或图片编码。未出现在下一帧的实例会从 pipeline cache 移除。
 
@@ -46,3 +51,7 @@ Hosted runtime 与标准 Iced 示例共享 `AppTitleBar`、`WindowChromeState` �
 macOS 仅在空白父区域收到按下事件时通过 `nana-window` 的
 无状态桥接启动原生拖拽，交互子控件会先消费事件。这一适配没有改变 Surface、
 Device、Queue、纹理或同帧提交路径。
+
+设备丢失后 runtime 为现有窗口重建唯一 GPU 上下文、所有 Surface 与 Iced renderer，
+然后调用 `HostedProgram::rebuild_gpu`。业务程序实例不会被替换，因此项目状态、撤销
+历史和连接状态仍由业务持有；业务只重绑依赖旧 Device/Queue 的渲染资源。

@@ -145,6 +145,46 @@ impl Skeleton {
     }
 }
 
+/// A compact determinate meter for continuously sampled levels.
+pub struct LevelMeter {
+    value: f32,
+    height: f32,
+    tone: StatusTone,
+}
+
+impl LevelMeter {
+    pub fn new(value: f32) -> Self {
+        Self {
+            value,
+            height: 4.0,
+            tone: StatusTone::Success,
+        }
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = height.max(1.0);
+        self
+    }
+
+    pub fn tone(mut self, tone: StatusTone) -> Self {
+        self.tone = tone;
+        self
+    }
+
+    pub fn view<'a, Message: 'a>(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
+        let colors = theme.into().colors;
+        let bar = self.tone.color(colors);
+        progress_bar(0.0..=1.0, self.value.clamp(0.0, 1.0))
+            .girth(self.height)
+            .style(move |_theme| iced::widget::progress_bar::Style {
+                background: colors.background.into(),
+                bar: bar.into(),
+                border: Border::default().rounded(self.height / 2.0),
+            })
+            .into()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum StatusTone {
     #[default]

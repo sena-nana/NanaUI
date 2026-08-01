@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use iced::widget::{button, column, container, row, text};
-use iced::{Alignment, Element, Length, Padding, font};
+use iced::{Alignment, Border, Color, Element, Length, Padding, font};
 
 use crate::components::{ControlSize, ValidationIntent, ValidationMessage};
 use crate::icons::{Icon, icon, spinner_icon};
@@ -221,6 +221,7 @@ pub struct FormField<'a, Message> {
     control: Element<'a, Message>,
     hint: Option<Cow<'a, str>>,
     error: Option<Cow<'a, str>>,
+    size: ControlSize,
 }
 
 impl<'a, Message> FormField<'a, Message>
@@ -233,6 +234,7 @@ where
             control: control.into(),
             hint: None,
             error: None,
+            size: ControlSize::Medium,
         }
     }
 
@@ -246,17 +248,28 @@ where
         self
     }
 
+    /// Selects the field density without changing the wrapped control.
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
+        let (label_size, spacing, label_color, label_weight) = match self.size {
+            ControlSize::Small => (11, 2, colors.muted, font::Weight::Normal),
+            ControlSize::Medium => (12, 5, colors.text, font::Weight::Medium),
+            ControlSize::Large => (13, 6, colors.text, font::Weight::Medium),
+        };
         let mut content = column![
             text(self.label)
-                .size(12)
-                .font(ui_font(font::Weight::Medium))
-                .color(colors.text),
+                .size(label_size)
+                .font(ui_font(label_weight))
+                .color(label_color),
             self.control,
         ]
-        .spacing(5)
+        .spacing(spacing)
         .width(Length::Fill);
         if let Some(error) = self.error {
             content =
@@ -274,6 +287,7 @@ pub struct EmptyState<'a, Message> {
     message: Option<Cow<'a, str>>,
     icon: Option<Icon>,
     action: Option<Element<'a, Message>>,
+    compact: bool,
 }
 
 impl<'a, Message> EmptyState<'a, Message>
@@ -286,6 +300,7 @@ where
             message: None,
             icon: None,
             action: None,
+            compact: false,
         }
     }
 
@@ -304,21 +319,36 @@ where
         self
     }
 
+    /// Uses the tighter density intended for dock panels and inspector lists.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
-        let mut content = column![].spacing(6).align_x(Alignment::Center);
+        let (title_size, message_size, spacing, padding, alignment) = if self.compact {
+            (12, 11, 2, Padding::from([8, 6]), Alignment::Start)
+        } else {
+            (13, 12, 6, Padding::from([24, 16]), Alignment::Center)
+        };
+        let mut content = column![].spacing(spacing).align_x(alignment);
         if let Some(empty_icon) = self.icon {
             content = content.push(icon(empty_icon, 22.0, colors.faint));
         }
         content = content.push(
             text(self.title)
-                .size(13)
+                .size(title_size)
                 .font(ui_font(font::Weight::Semibold))
-                .color(colors.text),
+                .color(if self.compact {
+                    colors.muted
+                } else {
+                    colors.text
+                }),
         );
         if let Some(message) = self.message {
-            content = content.push(text(message).size(12).color(colors.muted));
+            content = content.push(text(message).size(message_size).color(colors.muted));
         }
         if let Some(action) = self.action {
             content = content.push(container(action).padding(Padding {
@@ -330,9 +360,109 @@ where
         }
         container(content)
             .width(Length::Fill)
-            .padding([24, 16])
-            .center_x(Length::Fill)
+            .padding(padding)
+            .align_x(if self.compact {
+                iced::alignment::Horizontal::Left
+            } else {
+                iced::alignment::Horizontal::Center
+            })
             .into()
+    }
+}
+
+/// A flat, bordered surface for dense dock and inspector content.
+pub struct DockPanel<'a, Message> {
+    content: Element<'a, Message>,
+    padding: Padding,
+    height: Length,
+}
+
+impl<'a, Message> DockPanel<'a, Message>
+where
+    Message: 'a,
+{
+    pub fn new(content: impl Into<Element<'a, Message>>) -> Self {
+        Self {
+            content: content.into(),
+            padding: Padding::ZERO,
+            height: Length::Shrink,
+        }
+    }
+
+    pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
+        self.padding = padding.into();
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<Length>) -> Self {
+        self.height = height.into();
+        self
+    }
+
+    pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
+        let tokens = theme.into();
+        container(self.content)
+            .width(Length::Fill)
+            .height(self.height)
+            .padding(self.padding)
+            .style(move |_theme| {
+                container::Style::default()
+                    .background(tokens.colors.surface)
+                    .color(tokens.colors.text)
+                    .border(Border {
+                        color: tokens.colors.border_soft,
+                        width: 1.0,
+                        radius: 0.0.into(),
+                    })
+            })
+            .into()
+    }
+}
+
+/// A compact label/value pair for statuses and inspector summaries.
+pub struct LabeledValue<'a> {
+    label: Cow<'a, str>,
+    value: Cow<'a, str>,
+    value_color: Option<Color>,
+    emphasized: bool,
+}
+
+impl<'a> LabeledValue<'a> {
+    pub fn new(label: impl Into<Cow<'a, str>>, value: impl Into<Cow<'a, str>>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            value_color: None,
+            emphasized: true,
+        }
+    }
+
+    pub fn value_color(mut self, color: Color) -> Self {
+        self.value_color = Some(color);
+        self
+    }
+
+    pub fn emphasized(mut self, emphasized: bool) -> Self {
+        self.emphasized = emphasized;
+        self
+    }
+
+    pub fn view<Message: 'a>(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
+        let colors = theme.into().colors;
+        column![
+            text(self.label).size(11).color(colors.faint),
+            text(self.value)
+                .size(12)
+                .font(ui_font(if self.emphasized {
+                    font::Weight::Semibold
+                } else {
+                    font::Weight::Medium
+                }))
+                .color(self.value_color.unwrap_or(colors.text)),
+        ]
+        .spacing(1)
+        .width(Length::Fill)
+        .into()
     }
 }
 
