@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use component_gallery::{GalleryMessage, GallerySection, GalleryState, SurfaceView};
 use iced::widget::{column, container, space, text};
 use iced::{Color, Element, Length, Pixels, Size, Theme, font, mouse};
-use iced_wgpu::graphics::{Shell, Viewport};
+use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::core::time::Instant;
 use iced_winit::core::{Event, renderer, shell, window};
@@ -39,7 +39,14 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
     }))?;
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-    let engine = Engine::new(&adapter, device, queue, format, None, Shell::headless());
+    let engine = Engine::new(
+        &adapter,
+        device,
+        queue,
+        format,
+        Some(Antialiasing::MSAAx4),
+        Shell::headless(),
+    );
     let mut renderer = Renderer::new(
         engine,
         renderer::Settings {

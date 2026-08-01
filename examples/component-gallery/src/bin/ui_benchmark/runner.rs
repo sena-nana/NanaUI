@@ -3,7 +3,7 @@ use std::time::Instant;
 use component_gallery::{GalleryMessage, GallerySection, GalleryState};
 use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Length, Pixels, Point, Size, Theme};
-use iced_wgpu::graphics::{Shell, Viewport};
+use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::core::{Event, mouse, renderer, shell, window};
 use iced_winit::futures::futures::executor;
@@ -60,7 +60,7 @@ pub fn run() -> BenchmarkReport {
         device.clone(),
         queue,
         format,
-        None,
+        Some(Antialiasing::MSAAx4),
         Shell::headless(),
     );
     let mut renderer = Renderer::new(
