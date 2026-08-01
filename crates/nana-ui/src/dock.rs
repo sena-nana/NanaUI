@@ -554,6 +554,24 @@ impl DockController {
         }
     }
 
+    /// Reopens every floating surface already present in a restored layout.
+    #[cfg(feature = "hosted")]
+    pub fn open_hosted_windows(&self, title: impl Into<String>) -> HostedProgramUpdate {
+        hosted_dock_update(
+            DockUpdate {
+                changed: false,
+                effects: self
+                    .layout
+                    .floating
+                    .iter()
+                    .cloned()
+                    .map(DockHostEffect::OpenFloating)
+                    .collect(),
+            },
+            title,
+        )
+    }
+
     pub fn clamp_floating_bounds(
         &mut self,
         monitor_work_areas: &BTreeMap<String, DockBounds>,
@@ -2551,6 +2569,8 @@ mod tests {
         assert_eq!(*id, HostedWindowId::from(surface));
         assert_eq!(settings.initial_position, Some((40.0, 50.0)));
         assert_eq!(settings.initial_size, Size::new(360.0, 280.0));
+        let restored = controller.open_hosted_windows("NanaUI Dock");
+        assert_eq!(restored.window_commands.len(), 1);
 
         let geometry = HostedWindowGeometry {
             physical_position: Some((120, 160)),
