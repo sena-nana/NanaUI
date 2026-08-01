@@ -759,7 +759,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 self.graphics.window().as_ref(),
             );
             for message in messages {
-                self.process_message(event_loop, message);
+                self.process_input_message(event_loop, id, message);
             }
             return;
         }
@@ -774,21 +774,48 @@ impl<Program: HostedProgram> HostedReady<Program> {
             host.surface.window().as_ref(),
         );
         for message in messages {
-            self.process_message(event_loop, message);
+            self.process_input_message(event_loop, id, message);
         }
     }
 
     fn process_message(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
+        self.process_message_inner(event_loop, message, None);
+    }
+
+    fn process_input_message(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        message: Program::Message,
+    ) {
+        self.process_message_inner(event_loop, message, Some(id));
+    }
+
+    fn process_message_inner(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        message: Program::Message,
+        redraw_satisfied_by: Option<HostedWindowId>,
+    ) {
         let previous_theme = self.program.theme_mode();
         let context = self.program_context();
         let update = self.program.update(message, &context);
         if self.program.theme_mode() != previous_theme {
             self.refresh_materials();
         }
-        self.apply_program_update(event_loop, update);
+        self.apply_program_update_inner(event_loop, update, redraw_satisfied_by);
     }
 
     fn apply_program_update(&mut self, event_loop: &ActiveEventLoop, update: HostedProgramUpdate) {
+        self.apply_program_update_inner(event_loop, update, None);
+    }
+
+    fn apply_program_update_inner(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        update: HostedProgramUpdate,
+        redraw_satisfied_by: Option<HostedWindowId>,
+    ) {
         if update.exit {
             event_loop.exit();
             return;
@@ -799,12 +826,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
         if let Some(action) = update.window_action {
             self.apply_window_action(event_loop, action);
         }
-        match update.redraw {
-            HostedRedraw::None => {}
-            HostedRedraw::Primary => self.request_redraw(HostedWindowId::PRIMARY),
-            HostedRedraw::Window(id) => self.request_redraw(id),
-            HostedRedraw::All => self.request_redraw_all(),
-        }
+        self.request_program_redraw(update.redraw, redraw_satisfied_by);
     }
 
     fn apply_window_command(&mut self, event_loop: &ActiveEventLoop, command: HostedWindowCommand) {
@@ -1162,11 +1184,42 @@ impl<Program: HostedProgram> HostedReady<Program> {
         }
     }
 
+    fn request_program_redraw(
+        &self,
+        redraw: HostedRedraw,
+        redraw_satisfied_by: Option<HostedWindowId>,
+    ) {
+        if should_request_redraw(redraw, HostedWindowId::PRIMARY, redraw_satisfied_by) {
+            self.request_redraw(HostedWindowId::PRIMARY);
+        }
+        for id in self.auxiliary.keys().copied() {
+            if should_request_redraw(redraw, id, redraw_satisfied_by) {
+                self.request_redraw(id);
+            }
+        }
+    }
+
     fn request_redraw_all(&self) {
         self.graphics.window().request_redraw();
         for host in self.auxiliary.values() {
             host.surface.window().request_redraw();
         }
+    }
+}
+
+fn should_request_redraw(
+    redraw: HostedRedraw,
+    target: HostedWindowId,
+    redraw_satisfied_by: Option<HostedWindowId>,
+) -> bool {
+    if redraw_satisfied_by == Some(target) {
+        return false;
+    }
+    match redraw {
+        HostedRedraw::None => false,
+        HostedRedraw::Primary => target == HostedWindowId::PRIMARY,
+        HostedRedraw::Window(id) => target == id,
+        HostedRedraw::All => true,
     }
 }
 
@@ -1326,7 +1379,10 @@ impl std::error::Error for HostedRunError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{HostedProgramUpdate, HostedRedraw, HostedWindowId, HostedWindowSettings};
+    use super::{
+        HostedProgramUpdate, HostedRedraw, HostedWindowId, HostedWindowSettings,
+        should_request_redraw,
+    };
 
     #[test]
     fn redraw_targets_are_explicit() {
@@ -1337,6 +1393,52 @@ mod tests {
             HostedRedraw::Window(HostedWindowId(7))
         );
         assert_eq!(HostedProgramUpdate::redraw_all().redraw, HostedRedraw::All);
+    }
+
+    #[test]
+    fn input_frame_satisfies_only_its_own_redraw() {
+        let primary = HostedWindowId::PRIMARY;
+        let tool = HostedWindowId(7);
+
+        assert!(!should_request_redraw(
+            HostedRedraw::Primary,
+            primary,
+            Some(primary)
+        ));
+        assert!(should_request_redraw(HostedRedraw::Primary, primary, None));
+        assert!(!should_request_redraw(
+            HostedRedraw::Window(tool),
+            tool,
+            Some(tool)
+        ));
+        assert!(should_request_redraw(
+            HostedRedraw::Window(tool),
+            tool,
+            Some(primary)
+        ));
+    }
+
+    #[test]
+    fn redraw_all_preserves_every_window_except_the_current_input_frame() {
+        let primary = HostedWindowId::PRIMARY;
+        let tool = HostedWindowId(7);
+
+        assert!(!should_request_redraw(
+            HostedRedraw::All,
+            primary,
+            Some(primary)
+        ));
+        assert!(should_request_redraw(
+            HostedRedraw::All,
+            tool,
+            Some(primary)
+        ));
+        assert!(should_request_redraw(
+            HostedRedraw::All,
+            primary,
+            Some(tool)
+        ));
+        assert!(!should_request_redraw(HostedRedraw::All, tool, Some(tool)));
     }
 
     #[test]
