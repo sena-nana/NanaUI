@@ -1,12 +1,13 @@
 use std::borrow::Cow;
 
 use iced::widget::text::LineHeight;
-use iced::widget::{button, container, row, text, tooltip};
+use iced::widget::{button, row, text};
 use iced::{Alignment, Element, Length, Padding, Pixels, font};
 
 use crate::icons::{Icon, icon, spinner_icon};
 use crate::theme::{ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, ui_font};
-use crate::widgets::{ButtonKind, button_style, tooltip_style};
+use crate::tooltip::{TooltipConfig, TooltipPlacement, tooltip_view};
+use crate::widgets::{ButtonKind, button_style};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ControlSize {
@@ -273,15 +274,15 @@ where
         .padding(0)
         .on_press_maybe((!self.disabled).then_some(self.on_press).flatten())
         .style(button_style(tokens, kind));
-        tooltip(
+        tooltip_view(
             action,
-            container(text(self.label).size(11))
-                .padding([4, 7])
-                .style(tooltip_style(colors)),
-            tooltip::Position::Bottom,
+            text(self.label).size(11),
+            TooltipConfig {
+                placement: TooltipPlacement::Bottom,
+                ..TooltipConfig::default()
+            },
+            colors,
         )
-        .gap(6)
-        .into()
     }
 }
 
