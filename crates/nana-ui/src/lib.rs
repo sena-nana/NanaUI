@@ -107,6 +107,8 @@ pub use layout::{
     WorkspaceLayout, WorkspaceLayoutError,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
+#[cfg(feature = "hosted")]
+pub use nana_window::MaterialOutcome;
 pub use overlay::ExclusiveOverlay;
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
