@@ -134,6 +134,10 @@ pub enum HostedWindowEvent {
         scale_factor: f32,
         maximized: bool,
     },
+    VisibilityChanged {
+        window_id: iced::window::Id,
+        hidden: bool,
+    },
     CloseRequested {
         window_id: iced::window::Id,
     },
@@ -365,6 +369,15 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
                 }
                 if let WindowEvent::Occluded(occluded) = &event {
                     ready.window_hidden = *occluded;
+                    let context = ready.program_context();
+                    let update = ready.program.window_event(
+                        HostedWindowEvent::VisibilityChanged {
+                            window_id: ready.iced_window_id,
+                            hidden: *occluded,
+                        },
+                        &context,
+                    );
+                    ready.apply_program_update(event_loop, update);
                 }
                 if ready
                     .ui
