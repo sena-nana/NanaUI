@@ -80,7 +80,7 @@ pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,
     DockDropTarget, DockDropZone, DockError, DockHostEffect, DockId, DockItemSpec, DockLayout,
-    DockNode, DockSurfaceId, DockUpdate, FloatingDock, dock_workspace,
+    DockNode, DockSurfaceId, DockUpdate, FloatingDock, dock_window_workspace, dock_workspace,
 };
 #[cfg(feature = "hosted")]
 pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};

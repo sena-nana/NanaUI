@@ -11,8 +11,10 @@ use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
-    AppTitleBar, RegionId, SettingsTabId, ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome,
-    WindowChromeEvent, WindowChromeState, WorkspaceAction,
+    AppTitleBar, DockBounds, DockChromeStyle, DockContents, DockController, DockItemSpec,
+    DockLayout, DockNode, DockSurfaceId, FloatingDock, RegionId, SettingsTabId, ThemeMode,
+    UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
+    dock_window_workspace,
 };
 
 use crate::write;
@@ -88,6 +90,20 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             ThemeMode::Dark,
             WindowChrome::native_leading(78.0),
             mouse::Cursor::Unavailable,
+        )?,
+        dock_window_snapshot(
+            &mut renderer,
+            &output,
+            "dock-window-custom-dark.png",
+            ThemeMode::Dark,
+            WindowChrome::custom(),
+        )?,
+        dock_window_snapshot(
+            &mut renderer,
+            &output,
+            "dock-window-native-leading-light.png",
+            ThemeMode::Light,
+            WindowChrome::native_leading(78.0),
         )?,
     ];
 
@@ -284,6 +300,59 @@ fn titlebar_snapshot(
         size,
         cursor,
     );
+    let path = output.join(name);
+    write::png(&path, size, &pixels)?;
+    Ok(path)
+}
+
+fn dock_window_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+    chrome: WindowChrome,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let size = Size::new(420, 320);
+    let surface = DockSurfaceId(1);
+    let mut layout = DockLayout::new(DockNode::item("editor"));
+    layout.floating.push(FloatingDock {
+        surface,
+        root: DockNode::item("scenes"),
+        bounds: DockBounds::new(120.0, 120.0, size.width as f32, size.height as f32),
+        monitor: None,
+    });
+    let mut controller = DockController::new(
+        "editor",
+        [
+            DockItemSpec::new("editor", "Editor").closeable(false),
+            DockItemSpec::new("scenes", "场景"),
+        ],
+        layout,
+    )?;
+    controller.set_chrome_style(DockChromeStyle::Card);
+    let window_chrome = WindowChromeState::new(chrome);
+    let colors = theme.colors();
+    let view = dock_window_workspace(
+        &controller,
+        surface,
+        DockContents::new().insert(
+            "scenes",
+            container(
+                column![
+                    text("Scene A").size(13).color(colors.text),
+                    text("Preview 当前场景").size(11).color(colors.muted),
+                ]
+                .spacing(6),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill),
+        ),
+        &window_chrome,
+        |_| (),
+        |_| (),
+        colors,
+    );
+    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
     let path = output.join(name);
     write::png(&path, size, &pixels)?;
     Ok(path)
