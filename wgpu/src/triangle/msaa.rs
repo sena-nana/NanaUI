@@ -1,4 +1,4 @@
-use crate::core::{Size, Transformation};
+use crate::core::{Rectangle, Size, Transformation};
 use crate::graphics;
 
 use std::num::NonZeroU64;
@@ -310,7 +310,12 @@ impl State {
         pipeline: &Pipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
+        clip_bounds: Rectangle<u32>,
     ) {
+        if clip_bounds.width == 0 || clip_bounds.height == 0 {
+            return;
+        }
+
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("iced_wgpu::triangle::msaa render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -328,6 +333,12 @@ impl State {
             multiview_mask: None,
         });
 
+        render_pass.set_scissor_rect(
+            clip_bounds.x,
+            clip_bounds.y,
+            clip_bounds.width,
+            clip_bounds.height,
+        );
         render_pass.set_pipeline(&pipeline.raw);
         render_pass.set_bind_group(0, &self.constants, &[]);
         render_pass.set_bind_group(

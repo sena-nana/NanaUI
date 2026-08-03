@@ -368,7 +368,7 @@ impl Default for Layer {
             triangles: triangle::Batch::default(),
             primitives: primitive::Batch::default(),
             text: text::Batch::default(),
-            images: image::Batch::default(),
+            images: image::Batch,
             pending_meshes: Vec::new(),
             pending_text: Vec::new(),
         }

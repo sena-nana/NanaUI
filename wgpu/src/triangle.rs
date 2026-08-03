@@ -324,8 +324,10 @@ fn render<'a>(
         }
     }
 
-    if let Some((state, pipeline)) = msaa {
-        state.render(pipeline, encoder, target);
+    if let Some((state, pipeline)) = msaa
+        && let Some(clip_bounds) = bounds.snap()
+    {
+        state.render(pipeline, encoder, target, clip_bounds);
     }
 }
 
