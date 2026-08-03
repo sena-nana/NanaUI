@@ -5,15 +5,15 @@ resolver = "2"
 [workspace.dependencies]
 iced = {
     git = "https://github.com/sena-nana/iced.git",
-    rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
+    rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
     default-features = false,
     features = ["wgpu", "canvas", "advanced", "smol", "thread-pool", "x11", "wayland"],
 }
 iced_wgpu = {
     git = "https://github.com/sena-nana/iced.git",
-    rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
+    rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
 }
 iced_winit = {
     git = "https://github.com/sena-nana/iced.git",
-    rev = "f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6",
+    rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
 }
