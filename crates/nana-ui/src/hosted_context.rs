@@ -141,7 +141,10 @@ pub struct HostedGpuContext {
 }
 
 impl HostedGpuContext {
-    pub async fn new(window: Arc<winit::window::Window>) -> Result<Self, HostedGpuError> {
+    pub async fn new(
+        window: Arc<winit::window::Window>,
+        required_features: wgpu::Features,
+    ) -> Result<Self, HostedGpuError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -155,11 +158,11 @@ impl HostedGpuContext {
         let capabilities = surface.get_capabilities(&adapter);
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
-        let adapter_features = adapter.features();
+        let required_features = adapter.features() & required_features;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("NanaUI hosted shared device"),
-                required_features: adapter_features & wgpu::Features::default(),
+                required_features,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,
