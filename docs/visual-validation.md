@@ -16,7 +16,8 @@
 - `gallery-cards-dark.png`、`gallery-cards-light.png`；
 - `gallery-feedback-dark.png`；
 - `gallery-context-menu-dark.png`、`gallery-dialog-dark.png`；
-- `gallery-workspace-dark.png`、`gallery-sidebar-collapsed-dark.png`；
+- `gallery-workspace-dark.png`、`gallery-workspace-dock-preview-dark.png`、
+  `gallery-workspace-dock-preview-light.png`、`gallery-sidebar-collapsed-dark.png`；
 - `gallery-settings-appearance-dark.png`、`gallery-settings-appearance-light.png`；
 - `gallery-settings-workspace-dark.png`。
 
@@ -34,6 +35,7 @@
 - Feedback 覆盖进度、Tooltip、Context Menu 的危险确认和 Dialog 关闭策略；
 - 工作区分类真实启用 Toolbar、Inspector 与 Bottom，支持折叠、resize、双击复位，
   离开分类后隐藏辅助 Region，重新进入时保留尺寸和折叠状态；
+- Dock 拖拽预览沿用真实布局树：源面板从原位置消失，目标方向显示中性空位，Tab 插入显示待插入标签并激活空位，不使用蓝色遮罩；
 - 设置使用独立 WorkspaceController，主题、标准圆角、主区域圆角和尺寸复位均即时
   更新真实状态；
 - 侧栏折叠后主区域贴边圆角正确，dark/light 的文字、语义色和边框均可辨；

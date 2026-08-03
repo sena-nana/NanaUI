@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
-use iced::widget::{button, column, container, row, space, stack, text};
+use iced::widget::{button, column, container, row, space, text};
 use iced::{Alignment, Element, Event, Length, Padding, Point, Rectangle, Size, Subscription};
 use serde::{Deserialize, Serialize};
 
@@ -406,6 +406,76 @@ struct ActiveDrag {
     target: Option<DockDropTarget>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DockViewItem {
+    Existing(DockId),
+    Placeholder(DockId),
+}
+
+impl DockViewItem {
+    fn id(&self) -> &DockId {
+        match self {
+            Self::Existing(id) | Self::Placeholder(id) => id,
+        }
+    }
+
+    fn is_placeholder(&self) -> bool {
+        matches!(self, Self::Placeholder(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum DockViewNode {
+    Item {
+        item: DockViewItem,
+    },
+    Tabs {
+        tabs: Vec<DockViewItem>,
+        active: DockViewItem,
+    },
+    Split {
+        axis: DockAxis,
+        ratio: f32,
+        first: Box<DockViewNode>,
+        second: Box<DockViewNode>,
+    },
+}
+
+impl From<&DockNode> for DockViewNode {
+    fn from(node: &DockNode) -> Self {
+        match node {
+            DockNode::Item { id } => Self::Item {
+                item: DockViewItem::Existing(id.clone()),
+            },
+            DockNode::Tabs { tabs, active } => Self::Tabs {
+                tabs: tabs.iter().cloned().map(DockViewItem::Existing).collect(),
+                active: DockViewItem::Existing(active.clone()),
+            },
+            DockNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => Self::Split {
+                axis: *axis,
+                ratio: *ratio,
+                first: Box::new(Self::from(first.as_ref())),
+                second: Box::new(Self::from(second.as_ref())),
+            },
+        }
+    }
+}
+
+impl DockViewNode {
+    fn contains(&self, id: &DockId) -> bool {
+        match self {
+            Self::Item { item } => item.id() == id,
+            Self::Tabs { tabs, .. } => tabs.iter().any(|item| item.id() == id),
+            Self::Split { first, second, .. } => first.contains(id) || second.contains(id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DockSurfaceGeometry {
     window: DockBounds,
@@ -543,6 +613,21 @@ impl DockController {
         self.active_drag
             .as_ref()
             .and_then(|drag| drag.target.as_ref())
+    }
+
+    fn preview_root(&self) -> Option<DockViewNode> {
+        let drag = self.active_drag.as_ref()?;
+        let target = drag.target.as_ref()?;
+        if target.surface != DockSurfaceId(0) {
+            return None;
+        }
+
+        let mut root = DockViewNode::from(&self.layout.main);
+        if self.layout.main.contains(&drag.id) {
+            root = remove_view_node(root, &drag.id)?;
+        }
+        let placeholder = DockViewItem::Placeholder(drag.id.clone());
+        insert_view_node(&mut root, &target.id, placeholder, target.zone).then_some(root)
     }
 
     /// Provides arrow-key adjustment after a divider has been clicked or dragged.
@@ -1502,14 +1587,16 @@ where
     Message: Clone + 'a,
 {
     let root = if surface == DockSurfaceId(0) {
-        Some(&controller.layout.main)
+        controller
+            .preview_root()
+            .or_else(|| Some(DockViewNode::from(&controller.layout.main)))
     } else {
         controller
             .layout
             .floating
             .iter()
             .find(|floating| floating.surface == surface)
-            .map(|floating| &floating.root)
+            .map(|floating| DockViewNode::from(&floating.root))
     };
     let content = root.map_or_else(
         || {
@@ -1520,7 +1607,7 @@ where
         },
         |root| {
             dock_node_view(
-                root,
+                &root,
                 surface,
                 Vec::new(),
                 controller,
@@ -1671,7 +1758,7 @@ where
 }
 
 fn dock_node_view<'a, Message>(
-    node: &'a DockNode,
+    node: &DockViewNode,
     surface: DockSurfaceId,
     path: Vec<usize>,
     controller: &'a DockController,
@@ -1683,17 +1770,18 @@ where
     Message: Clone + 'a,
 {
     match node {
-        DockNode::Item { id } => {
-            dock_item_view(id, surface, false, controller, contents, on_action, tokens)
-        }
-        DockNode::Tabs { tabs, active } => {
+        DockViewNode::Item { item } => dock_view_item_view(
+            item, surface, false, controller, contents, on_action, tokens,
+        ),
+        DockViewNode::Tabs { tabs, active } => {
             let chrome_style = controller.chrome_style;
             let tab_bar = tabs.iter().fold(
                 row![].height(Length::Fixed(TITLE_BAR_HEIGHT)),
-                |tabs_row, id| {
-                    let title = controller
-                        .item(id)
-                        .map_or_else(|| id.as_str(), |spec| spec.title.as_str());
+                |tabs_row, item| {
+                    let id = item.id();
+                    let title = dock_item_title(controller, id);
+                    let placeholder = item.is_placeholder();
+                    let active_tab = item == active;
                     let tab = container(
                         text(title)
                             .size(11)
@@ -1702,7 +1790,9 @@ where
                     .center_y(Length::Fill)
                     .padding([0.0, 10.0])
                     .style(move |_theme| {
-                        let background = if id == active {
+                        let background = if placeholder {
+                            tokens.colors.subtle
+                        } else if active_tab {
                             tokens.colors.active
                         } else if chrome_style == DockChromeStyle::Card {
                             iced::Color::TRANSPARENT
@@ -1711,9 +1801,18 @@ where
                         };
                         iced::widget::container::Style::default()
                             .background(background)
-                            .border(dock_tab_border(tokens, chrome_style))
+                            .border(if placeholder {
+                                dock_placeholder_border(tokens)
+                            } else {
+                                dock_tab_border(tokens, chrome_style)
+                            })
                     });
-                    if controller.layout.locked {
+                    if placeholder {
+                        tabs_row.push(
+                            tab.height(Length::Fixed(TITLE_BAR_HEIGHT))
+                                .width(Length::Shrink),
+                        )
+                    } else if controller.layout.locked {
                         tabs_row.push(
                             button(tab)
                                 .height(Length::Fixed(TITLE_BAR_HEIGHT))
@@ -1733,7 +1832,7 @@ where
                     }
                 },
             );
-            let active_item = dock_item_view(
+            let active_item = dock_view_item_view(
                 active, surface, true, controller, contents, on_action, tokens,
             );
             if chrome_style == DockChromeStyle::Card {
@@ -1754,7 +1853,7 @@ where
                     .into()
             }
         }
-        DockNode::Split {
+        DockViewNode::Split {
             axis,
             ratio,
             first,
@@ -1864,8 +1963,36 @@ where
     }
 }
 
+fn dock_view_item_view<'a, Message>(
+    item: &DockViewItem,
+    surface: DockSurfaceId,
+    tabs_own_title: bool,
+    controller: &'a DockController,
+    contents: &mut DockContents<'a, Message>,
+    on_action: impl Fn(DockAction) -> Message + Copy + 'a,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    match item {
+        DockViewItem::Existing(id) => dock_item_view(
+            id,
+            surface,
+            tabs_own_title,
+            controller,
+            contents,
+            on_action,
+            tokens,
+        ),
+        DockViewItem::Placeholder(id) => {
+            dock_placeholder_view(id, tabs_own_title, controller, tokens)
+        }
+    }
+}
+
 fn dock_item_view<'a, Message>(
-    id: &'a DockId,
+    id: &DockId,
     surface: DockSurfaceId,
     tabs_own_title: bool,
     controller: &'a DockController,
@@ -1878,7 +2005,7 @@ where
 {
     let chrome_style = controller.chrome_style;
     let spec = controller.item(id);
-    let title = spec.map_or_else(|| id.as_str(), |spec| spec.title.as_str());
+    let title = dock_item_title(controller, id);
     let title = container(
         text(title)
             .size(11)
@@ -1926,58 +2053,6 @@ where
         chrome_style
     };
     let content = dock_item_body(id, contents, tokens, content_chrome_style);
-    let content = if let Some(target) = controller.drop_target().filter(|target| target.id == *id) {
-        let accent = iced::Color {
-            a: 0.22,
-            ..tokens.colors.accent
-        };
-        let mut overlay = container(space()).style(move |_theme| {
-            iced::widget::container::Style::default()
-                .background(accent)
-                .border(iced::Border {
-                    color: tokens.colors.accent,
-                    width: 2.0,
-                    radius: 0.0.into(),
-                })
-        });
-        overlay = match target.zone {
-            DockDropZone::Left | DockDropZone::Right => {
-                overlay.width(Length::FillPortion(1)).height(Length::Fill)
-            }
-            DockDropZone::Top | DockDropZone::Bottom => {
-                overlay.width(Length::Fill).height(Length::FillPortion(1))
-            }
-            DockDropZone::Tab => overlay.width(Length::Fill).height(Length::Fill),
-        };
-        let overlay = match target.zone {
-            DockDropZone::Left => container(overlay)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_left(Length::Fill),
-            DockDropZone::Right => container(overlay)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_right(Length::Fill),
-            DockDropZone::Top => container(overlay)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_top(Length::Fill),
-            DockDropZone::Bottom => container(overlay)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_bottom(Length::Fill),
-            DockDropZone::Tab => container(overlay)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(16),
-        };
-        stack([content, overlay.into()])
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    } else {
-        content
-    };
     if tabs_own_title || id == &controller.center {
         content
     } else if chrome_style == DockChromeStyle::Card {
@@ -1999,6 +2074,101 @@ where
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+    }
+}
+
+fn dock_item_title(controller: &DockController, id: &DockId) -> String {
+    controller
+        .item(id)
+        .map_or_else(|| id.as_str().to_owned(), |spec| spec.title.clone())
+}
+
+fn dock_placeholder_view<'a, Message>(
+    id: &DockId,
+    tabs_own_title: bool,
+    controller: &DockController,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    let body = dock_placeholder_body(tokens, controller.chrome_style);
+    if tabs_own_title {
+        return body;
+    }
+
+    let title = container(
+        text(dock_item_title(controller, id))
+            .size(11)
+            .font(ui_font(iced::font::Weight::Semibold)),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(TITLE_BAR_HEIGHT))
+    .center_y(Length::Fill);
+    let title_bar: Element<'a, Message> = if controller.chrome_style == DockChromeStyle::Card {
+        dock_card_title_bar(title, tokens)
+    } else {
+        container(title)
+            .width(Length::Fill)
+            .height(Length::Fixed(TITLE_BAR_HEIGHT))
+            .padding([0.0, 6.0])
+            .style(move |_theme| {
+                iced::widget::container::Style::default()
+                    .background(tokens.colors.surface)
+                    .border(dock_placeholder_border(tokens))
+            })
+            .into()
+    };
+
+    if controller.chrome_style == DockChromeStyle::Card {
+        dock_card_shell(column![title_bar, body].height(Length::Fill), tokens)
+    } else {
+        column![title_bar, body]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+}
+
+fn dock_placeholder_body<'a, Message>(
+    tokens: ThemeTokens,
+    chrome_style: DockChromeStyle,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    let body = container(space())
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .clip(true)
+        .style(move |_theme| {
+            iced::widget::container::Style::default()
+                .background(tokens.colors.subtle)
+                .color(tokens.colors.text)
+                .border(dock_placeholder_border(tokens))
+        });
+    if chrome_style == DockChromeStyle::Card {
+        container(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding([6.0, 8.0])
+            .clip(true)
+            .style(move |_theme| {
+                iced::widget::container::Style::default()
+                    .background(tokens.colors.surface)
+                    .color(tokens.colors.text)
+            })
+            .into()
+    } else {
+        body.into()
+    }
+}
+
+fn dock_placeholder_border(tokens: ThemeTokens) -> iced::Border {
+    iced::Border {
+        color: tokens.colors.border_soft,
+        width: 1.0,
+        radius: 0.0.into(),
     }
 }
 
@@ -2028,7 +2198,7 @@ where
 }
 
 fn dock_item_body<'a, Message>(
-    id: &'a DockId,
+    id: &DockId,
     contents: &mut DockContents<'a, Message>,
     tokens: ThemeTokens,
     chrome_style: DockChromeStyle,
@@ -2465,6 +2635,110 @@ fn split_child_bounds(axis: DockAxis, ratio: f32, bounds: DockBounds) -> (DockBo
     }
 }
 
+fn remove_view_node(node: DockViewNode, id: &DockId) -> Option<DockViewNode> {
+    match node {
+        DockViewNode::Item { item } => (item.id() != id).then_some(DockViewNode::Item { item }),
+        DockViewNode::Tabs {
+            mut tabs,
+            mut active,
+        } => {
+            let before = tabs.len();
+            tabs.retain(|item| item.id() != id);
+            if tabs.len() == before {
+                return Some(DockViewNode::Tabs { tabs, active });
+            }
+            match tabs.len() {
+                0 => None,
+                1 => Some(DockViewNode::Item {
+                    item: tabs.remove(0),
+                }),
+                _ => {
+                    if active.id() == id {
+                        active = tabs[0].clone();
+                    }
+                    Some(DockViewNode::Tabs { tabs, active })
+                }
+            }
+        }
+        DockViewNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => match (remove_view_node(*first, id), remove_view_node(*second, id)) {
+            (Some(first), Some(second)) => Some(DockViewNode::Split {
+                axis,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+            (Some(node), None) | (None, Some(node)) => Some(node),
+            (None, None) => None,
+        },
+    }
+}
+
+fn insert_view_node(
+    root: &mut DockViewNode,
+    target: &DockId,
+    item: DockViewItem,
+    zone: DockDropZone,
+) -> bool {
+    if root.contains(target)
+        && matches!(root, DockViewNode::Item { .. } | DockViewNode::Tabs { .. })
+    {
+        if zone == DockDropZone::Tab {
+            return insert_view_tab(root, target, item);
+        }
+        let previous = root.clone();
+        let item = DockViewNode::Item { item };
+        let (axis, first, second) = match zone {
+            DockDropZone::Left => (DockAxis::Horizontal, item, previous),
+            DockDropZone::Right => (DockAxis::Horizontal, previous, item),
+            DockDropZone::Top => (DockAxis::Vertical, item, previous),
+            DockDropZone::Bottom => (DockAxis::Vertical, previous, item),
+            DockDropZone::Tab => unreachable!("tab insertion handled above"),
+        };
+        *root = DockViewNode::Split {
+            axis,
+            ratio: 0.5,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        return true;
+    }
+    match root {
+        DockViewNode::Split { first, second, .. } => {
+            insert_view_node(first, target, item.clone(), zone)
+                || insert_view_node(second, target, item, zone)
+        }
+        _ => false,
+    }
+}
+
+fn insert_view_tab(root: &mut DockViewNode, target: &DockId, item: DockViewItem) -> bool {
+    match root {
+        DockViewNode::Item { item: current } if current.id() == target => {
+            *root = DockViewNode::Tabs {
+                tabs: vec![current.clone(), item.clone()],
+                active: item,
+            };
+            true
+        }
+        DockViewNode::Tabs { tabs, active } if tabs.iter().any(|tab| tab.id() == target) => {
+            if !tabs.iter().any(|tab| tab == &item) {
+                tabs.push(item.clone());
+            }
+            *active = item;
+            true
+        }
+        DockViewNode::Split { first, second, .. } => {
+            insert_view_tab(first, target, item.clone()) || insert_view_tab(second, target, item)
+        }
+        _ => false,
+    }
+}
+
 fn combine_parallel_limits(
     first: (f32, Option<f32>),
     second: (f32, Option<f32>),
@@ -2756,6 +3030,107 @@ mod tests {
             layout,
         )
         .expect("valid dock layout")
+    }
+
+    fn preview_controller(zone: DockDropZone) -> DockController {
+        let layout = DockLayout::new(DockNode::split(
+            DockAxis::Horizontal,
+            0.5,
+            DockNode::item("source"),
+            DockNode::item("editor"),
+        ));
+        let mut controller = DockController::new(
+            "editor",
+            [
+                DockItemSpec::new("editor", "Editor").closeable(false),
+                DockItemSpec::new("source", "Source"),
+            ],
+            layout,
+        )
+        .expect("valid preview dock layout");
+        controller.active_drag = Some(ActiveDrag {
+            surface: DockSurfaceId(0),
+            id: DockId::from("source"),
+            start: None,
+            position: None,
+            moved: true,
+            target: Some(DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: DockId::from("editor"),
+                zone,
+            }),
+        });
+        controller
+    }
+
+    #[test]
+    fn drag_preview_recreates_each_split_zone_without_mutating_layout() {
+        let cases = [
+            (DockDropZone::Left, DockAxis::Horizontal, true),
+            (DockDropZone::Right, DockAxis::Horizontal, false),
+            (DockDropZone::Top, DockAxis::Vertical, true),
+            (DockDropZone::Bottom, DockAxis::Vertical, false),
+        ];
+        for (zone, expected_axis, placeholder_first) in cases {
+            let controller = preview_controller(zone);
+            let before = controller.layout().clone();
+            let preview = controller.preview_root().expect("drag preview");
+            assert_eq!(controller.layout(), &before);
+            let DockViewNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } = preview
+            else {
+                panic!("split preview expected")
+            };
+            assert_eq!(axis, expected_axis);
+            assert_eq!(ratio, 0.5);
+            let (placeholder, target) = if placeholder_first {
+                (&first, &second)
+            } else {
+                (&second, &first)
+            };
+            assert_eq!(
+                placeholder.as_ref(),
+                &DockViewNode::Item {
+                    item: DockViewItem::Placeholder(DockId::from("source")),
+                }
+            );
+            assert_eq!(
+                target.as_ref(),
+                &DockViewNode::Item {
+                    item: DockViewItem::Existing(DockId::from("editor")),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn drag_preview_tabs_make_the_empty_item_active() {
+        let controller = preview_controller(DockDropZone::Tab);
+        let preview = controller.preview_root().expect("tab preview");
+        assert_eq!(
+            preview,
+            DockViewNode::Tabs {
+                tabs: vec![
+                    DockViewItem::Existing(DockId::from("editor")),
+                    DockViewItem::Placeholder(DockId::from("source")),
+                ],
+                active: DockViewItem::Placeholder(DockId::from("source")),
+            }
+        );
+    }
+
+    #[test]
+    fn cancelling_drag_removes_preview_without_changing_layout() {
+        let mut controller = preview_controller(DockDropZone::Left);
+        let before = controller.layout().clone();
+        assert!(controller.preview_root().is_some());
+        controller.update(DockAction::CancelDrag);
+        assert!(controller.preview_root().is_none());
+        assert_eq!(controller.layout(), &before);
     }
 
     #[test]

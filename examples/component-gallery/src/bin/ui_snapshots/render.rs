@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use component_gallery::{GalleryMessage, GallerySection, GalleryState, SurfaceView};
 use iced::widget::{column, container, space, text};
-use iced::{Color, Element, Length, Pixels, Size, Theme, font, mouse};
+use iced::{Color, Element, Length, Pixels, Point, Size, Theme, font, mouse};
 use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::core::time::Instant;
@@ -11,10 +11,10 @@ use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
-    AppTitleBar, DockBounds, DockChromeStyle, DockContents, DockController, DockItemSpec,
-    DockLayout, DockNode, DockSurfaceId, FloatingDock, RegionId, SettingsTabId, ThemeMode,
-    UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
-    dock_window_workspace,
+    AppTitleBar, DockAction, DockBounds, DockChromeStyle, DockContents, DockController, DockId,
+    DockItemSpec, DockLayout, DockNode, DockSurfaceId, FloatingDock, RegionId, SettingsTabId,
+    ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
+    WorkspaceAction, dock_window_workspace,
 };
 
 use crate::write;
@@ -228,6 +228,23 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &workspace,
     )?);
 
+    let mut workspace_dock_preview = GalleryState::new();
+    workspace_dock_preview.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+    prepare_dock_preview(&mut workspace_dock_preview);
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-workspace-dock-preview-dark.png",
+        &workspace_dock_preview,
+    )?);
+    workspace_dock_preview.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-workspace-dock-preview-light.png",
+        &workspace_dock_preview,
+    )?);
+
     let mut sidebar_collapsed = GalleryState::new();
     sidebar_collapsed.update(GalleryMessage::Workspace(
         WorkspaceAction::SetRegionCollapsed(RegionId::Resources, true),
@@ -374,6 +391,22 @@ fn gallery_snapshot(
     let path = output.join(name);
     write::png(&path, GALLERY_SIZE, &pixels)?;
     Ok(path)
+}
+
+fn prepare_dock_preview(state: &mut GalleryState) {
+    let surface = DockSurfaceId(0);
+    state.update(GalleryMessage::Dock(DockAction::DragStart {
+        surface,
+        id: DockId::from("gallery.sources"),
+    }));
+    state.update(GalleryMessage::Dock(DockAction::DragMove {
+        surface,
+        position: Point::new(350.0, 250.0),
+    }));
+    state.update(GalleryMessage::Dock(DockAction::DragMove {
+        surface,
+        position: Point::new(355.0, 250.0),
+    }));
 }
 
 fn titlebar_view(
