@@ -305,9 +305,21 @@ pub enum DockAction {
         surface: DockSurfaceId,
         bounds: DockBounds,
     },
-    DragStart(DockId),
-    DragMove(Point),
-    DragEnd,
+    SurfaceLayout {
+        surface: DockSurfaceId,
+        bounds: DockBounds,
+    },
+    DragStart {
+        surface: DockSurfaceId,
+        id: DockId,
+    },
+    DragMove {
+        surface: DockSurfaceId,
+        position: Point,
+    },
+    DragEnd {
+        surface: DockSurfaceId,
+    },
     CancelDrag,
     Hover(bool),
     Hide(DockId),
@@ -371,11 +383,60 @@ struct ActiveResize {
 
 #[derive(Debug, Clone)]
 struct ActiveDrag {
+    surface: DockSurfaceId,
     id: DockId,
     start: Option<Point>,
     position: Option<Point>,
     moved: bool,
     target: Option<DockDropTarget>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DockSurfaceGeometry {
+    window: DockBounds,
+    layout: Option<DockBounds>,
+}
+
+impl DockSurfaceGeometry {
+    const fn new(window: DockBounds) -> Self {
+        Self {
+            window,
+            layout: None,
+        }
+    }
+
+    fn layout(self) -> DockBounds {
+        self.layout.unwrap_or_else(|| self.default_layout())
+    }
+
+    fn global_layout(self) -> DockBounds {
+        let layout = self.layout();
+        DockBounds::new(
+            self.window.x + layout.x,
+            self.window.y + layout.y,
+            layout.width,
+            layout.height,
+        )
+    }
+
+    fn local_to_global(self, position: Point) -> Point {
+        Point::new(self.window.x + position.x, self.window.y + position.y)
+    }
+
+    fn set_window(&mut self, window: DockBounds) {
+        if self.layout == Some(self.default_layout()) {
+            self.layout = None;
+        }
+        self.window = window;
+    }
+
+    fn set_layout(&mut self, layout: DockBounds) {
+        self.layout = Some(layout);
+    }
+
+    fn default_layout(self) -> DockBounds {
+        DockBounds::new(0.0, 0.0, self.window.width, self.window.height)
+    }
 }
 
 /// Owns a validated dock layout without owning native windows or GPU resources.
@@ -386,7 +447,7 @@ pub struct DockController {
     default_layout: DockLayout,
     layout: DockLayout,
     next_surface: u64,
-    surface_bounds: BTreeMap<DockSurfaceId, DockBounds>,
+    surface_geometry: BTreeMap<DockSurfaceId, DockSurfaceGeometry>,
     active_resize: Option<ActiveResize>,
     focused_split: Option<(DockSurfaceId, Vec<usize>, DockAxis)>,
     active_drag: Option<ActiveDrag>,
@@ -425,9 +486,9 @@ impl DockController {
             default_layout: default_layout.clone(),
             layout: default_layout,
             next_surface,
-            surface_bounds: BTreeMap::from([(
+            surface_geometry: BTreeMap::from([(
                 DockSurfaceId(0),
-                DockBounds::new(0.0, 0.0, 1280.0, 800.0),
+                DockSurfaceGeometry::new(DockBounds::new(0.0, 0.0, 1280.0, 800.0)),
             )]),
             active_resize: None,
             focused_split: None,
@@ -492,18 +553,11 @@ impl DockController {
         self.active_resize = None;
         self.focused_split = None;
         self.active_drag = None;
-        self.surface_bounds.retain(|surface, _| {
-            *surface == DockSurfaceId(0)
-                || self
-                    .layout
-                    .floating
-                    .iter()
-                    .any(|floating| floating.surface == *surface)
-        });
+        self.retain_active_surface_geometry();
         for floating in &self.layout.floating {
-            self.surface_bounds
+            self.surface_geometry
                 .entry(floating.surface)
-                .or_insert(floating.bounds);
+                .or_insert(DockSurfaceGeometry::new(floating.bounds));
         }
         Ok(effects)
     }
@@ -517,9 +571,9 @@ impl DockController {
             | HostedWindowEvent::Resized { geometry, .. }
             | HostedWindowEvent::Moved { geometry, .. } => {
                 let previous = self
-                    .surface_bounds
+                    .surface_geometry
                     .get(&surface)
-                    .copied()
+                    .map(|geometry| geometry.window)
                     .or_else(|| {
                         self.layout
                             .floating
@@ -596,6 +650,10 @@ impl DockController {
             let bounds = floating.bounds.clamped_to(work_area);
             changed |= bounds != floating.bounds;
             floating.bounds = bounds;
+            self.surface_geometry
+                .entry(floating.surface)
+                .or_insert(DockSurfaceGeometry::new(bounds))
+                .set_window(bounds);
         }
         changed
     }
@@ -609,6 +667,7 @@ impl DockController {
                     | DockAction::ActivateTab(_)
                     | DockAction::SurfaceResized { .. }
                     | DockAction::SurfaceGeometry { .. }
+                    | DockAction::SurfaceLayout { .. }
             )
         {
             return DockUpdate::default();
@@ -707,24 +766,23 @@ impl DockController {
                 height,
             } => {
                 let size = (finite_positive(width, 1.0), finite_positive(height, 1.0));
-                let previous = self
-                    .surface_bounds
-                    .get(&surface)
-                    .copied()
-                    .unwrap_or(DockBounds::new(0.0, 0.0, size.0, size.1));
-                let bounds = DockBounds::new(previous.x, previous.y, size.0, size.1);
-                let mut changed = self.surface_bounds.get(&surface) != Some(&bounds);
-                self.surface_bounds.insert(surface, bounds);
+                let layout = DockBounds::new(0.0, 0.0, size.0, size.1);
+                let geometry = self
+                    .surface_geometry
+                    .entry(surface)
+                    .or_insert(DockSurfaceGeometry::new(layout));
+                let mut changed = geometry.layout() != layout;
+                geometry.set_layout(layout);
                 if let Some(floating) = self
                     .layout
                     .floating
                     .iter_mut()
                     .find(|floating| floating.surface == surface)
                 {
-                    changed |= floating.bounds.width != bounds.width
-                        || floating.bounds.height != bounds.height;
-                    floating.bounds.width = bounds.width;
-                    floating.bounds.height = bounds.height;
+                    changed |= floating.bounds.width != size.0 || floating.bounds.height != size.1;
+                    floating.bounds.width = size.0;
+                    floating.bounds.height = size.1;
+                    geometry.set_window(floating.bounds);
                 }
                 DockUpdate {
                     changed,
@@ -735,8 +793,11 @@ impl DockController {
                 if !valid_bounds(bounds) {
                     return DockUpdate::default();
                 }
-                let mut changed = self.surface_bounds.get(&surface) != Some(&bounds);
-                self.surface_bounds.insert(surface, bounds);
+                self.surface_geometry
+                    .entry(surface)
+                    .or_insert(DockSurfaceGeometry::new(bounds))
+                    .set_window(bounds);
+                let mut changed = false;
                 if let Some(floating) = self
                     .layout
                     .floating
@@ -751,11 +812,22 @@ impl DockController {
                     effects: Vec::new(),
                 }
             }
-            DockAction::DragStart(id) => {
+            DockAction::SurfaceLayout { surface, bounds } => {
+                if !valid_bounds(bounds) {
+                    return DockUpdate::default();
+                }
+                self.surface_geometry
+                    .entry(surface)
+                    .or_insert(DockSurfaceGeometry::new(bounds))
+                    .set_layout(bounds);
+                DockUpdate::default()
+            }
+            DockAction::DragStart { surface, id } => {
                 if id == self.center || !self.is_visible(&id) {
                     return DockUpdate::default();
                 }
                 self.active_drag = Some(ActiveDrag {
+                    surface,
                     id,
                     start: None,
                     position: None,
@@ -764,10 +836,15 @@ impl DockController {
                 });
                 DockUpdate::default()
             }
-            DockAction::DragMove(position) => {
+            DockAction::DragMove { surface, position } => {
                 let Some(mut drag) = self.active_drag.take() else {
                     return DockUpdate::default();
                 };
+                if drag.surface != surface {
+                    self.active_drag = Some(drag);
+                    return DockUpdate::default();
+                }
+                let position = self.local_to_global(surface, position);
                 let start = *drag.start.get_or_insert(position);
                 drag.moved |= (position.x - start.x)
                     .abs()
@@ -778,10 +855,14 @@ impl DockController {
                 self.active_drag = Some(drag);
                 DockUpdate::default()
             }
-            DockAction::DragEnd => {
+            DockAction::DragEnd { surface } => {
                 let Some(drag) = self.active_drag.take() else {
                     return DockUpdate::default();
                 };
+                if drag.surface != surface {
+                    self.active_drag = Some(drag);
+                    return DockUpdate::default();
+                }
                 if !drag.moved {
                     return DockUpdate {
                         changed: activate_tab_layout(&mut self.layout, &drag.id),
@@ -840,7 +921,7 @@ impl DockController {
                 self.active_resize = None;
                 self.focused_split = None;
                 self.active_drag = None;
-                self.surface_bounds
+                self.surface_geometry
                     .retain(|surface, _| *surface == DockSurfaceId(0));
                 DockUpdate { changed, effects }
             }
@@ -898,7 +979,8 @@ impl DockController {
         };
         self.next_surface = self.next_surface.saturating_add(1);
         self.layout.floating.push(floating.clone());
-        self.surface_bounds.insert(floating.surface, bounds);
+        self.surface_geometry
+            .insert(floating.surface, DockSurfaceGeometry::new(bounds));
         let mut effects = closed_surface
             .map(DockHostEffect::CloseFloating)
             .into_iter()
@@ -955,7 +1037,7 @@ impl DockController {
             return DockUpdate::default();
         };
         let floating = self.layout.floating.remove(index);
-        self.surface_bounds.remove(&surface);
+        self.surface_geometry.remove(&surface);
         let mut ids = Vec::new();
         floating.root.ids(&mut ids);
         for id in ids {
@@ -1026,11 +1108,7 @@ impl DockController {
         path: &[usize],
     ) -> Option<(DockAxis, f32, f32)> {
         let root = self.surface_root(surface)?;
-        let bounds = self
-            .surface_bounds
-            .get(&surface)
-            .copied()
-            .unwrap_or(DockBounds::new(0.0, 0.0, 1280.0, 800.0));
+        let bounds = self.surface_layout_bounds(surface);
         let bounds = split_bounds_at_path(root, bounds, path)?;
         let (axis, ratio) = split_at_path(root, path)?;
         let extent = match axis {
@@ -1089,9 +1167,7 @@ impl DockController {
             .collect::<Vec<_>>();
         surfaces.push((DockSurfaceId(0), &self.layout.main));
         for (surface, root) in surfaces {
-            let Some(bounds) = self.surface_bounds.get(&surface).copied() else {
-                continue;
-            };
+            let bounds = self.global_layout_bounds(surface);
             if !bounds_contains(bounds, position) {
                 continue;
             }
@@ -1120,6 +1196,57 @@ impl DockController {
             }
         }
         None
+    }
+
+    fn retain_active_surface_geometry(&mut self) {
+        self.surface_geometry.retain(|surface, _| {
+            *surface == DockSurfaceId(0)
+                || self
+                    .layout
+                    .floating
+                    .iter()
+                    .any(|floating| floating.surface == *surface)
+        });
+    }
+
+    fn surface_window_bounds(&self, surface: DockSurfaceId) -> DockBounds {
+        self.surface_geometry
+            .get(&surface)
+            .map(|geometry| geometry.window)
+            .or_else(|| {
+                self.layout
+                    .floating
+                    .iter()
+                    .find(|floating| floating.surface == surface)
+                    .map(|floating| floating.bounds)
+            })
+            .unwrap_or(DockBounds::new(0.0, 0.0, 1280.0, 800.0))
+    }
+
+    fn surface_layout_bounds(&self, surface: DockSurfaceId) -> DockBounds {
+        self.surface_geometry
+            .get(&surface)
+            .copied()
+            .map(DockSurfaceGeometry::layout)
+            .unwrap_or_else(|| {
+                DockSurfaceGeometry::new(self.surface_window_bounds(surface)).layout()
+            })
+    }
+
+    fn global_layout_bounds(&self, surface: DockSurfaceId) -> DockBounds {
+        self.surface_geometry
+            .get(&surface)
+            .copied()
+            .unwrap_or_else(|| DockSurfaceGeometry::new(self.surface_window_bounds(surface)))
+            .global_layout()
+    }
+
+    fn local_to_global(&self, surface: DockSurfaceId, position: Point) -> Point {
+        self.surface_geometry
+            .get(&surface)
+            .copied()
+            .unwrap_or_else(|| DockSurfaceGeometry::new(self.surface_window_bounds(surface)))
+            .local_to_global(position)
     }
 }
 
@@ -1377,11 +1504,7 @@ where
         },
     );
     Element::new(DockSurface::new(content, move |bounds| {
-        on_action(DockAction::SurfaceResized {
-            surface,
-            width: bounds.width,
-            height: bounds.height,
-        })
+        on_action(DockAction::SurfaceLayout { surface, bounds })
     }))
 }
 
@@ -1398,7 +1521,9 @@ where
     Message: Clone + 'a,
 {
     match node {
-        DockNode::Item { id } => dock_item_view(id, false, controller, contents, on_action, tokens),
+        DockNode::Item { id } => {
+            dock_item_view(id, surface, false, controller, contents, on_action, tokens)
+        }
         DockNode::Tabs { tabs, active } => {
             let tab_bar = tabs.iter().fold(
                 row![].height(Length::Fixed(TITLE_BAR_HEIGHT)),
@@ -1438,9 +1563,12 @@ where
                         tabs_row.push(DragHandle::new(
                             tab.height(Length::Fixed(TITLE_BAR_HEIGHT))
                                 .width(Length::Shrink),
-                            on_action(DockAction::DragStart(id.clone())),
-                            move |point| on_action(DockAction::DragMove(point)),
-                            on_action(DockAction::DragEnd),
+                            on_action(DockAction::DragStart {
+                                surface,
+                                id: id.clone(),
+                            }),
+                            move |position| on_action(DockAction::DragMove { surface, position }),
+                            on_action(DockAction::DragEnd { surface }),
                             on_action(DockAction::ActivateTab(id.clone())),
                             move |hovered| on_action(DockAction::Hover(hovered)),
                             iced::mouse::Interaction::Grabbing,
@@ -1459,7 +1587,9 @@ where
                             width: 1.0,
                             radius: 0.0.into(),
                         })),
-                dock_item_view(active, true, controller, contents, on_action, tokens),
+                dock_item_view(
+                    active, surface, true, controller, contents, on_action, tokens
+                ),
             ]
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1576,6 +1706,7 @@ where
 
 fn dock_item_view<'a, Message>(
     id: &'a DockId,
+    surface: DockSurfaceId,
     tabs_own_title: bool,
     controller: &'a DockController,
     contents: &mut DockContents<'a, Message>,
@@ -1600,9 +1731,12 @@ where
     } else {
         DragHandle::new(
             title,
-            on_action(DockAction::DragStart(id.clone())),
-            move |point| on_action(DockAction::DragMove(point)),
-            on_action(DockAction::DragEnd),
+            on_action(DockAction::DragStart {
+                surface,
+                id: id.clone(),
+            }),
+            move |position| on_action(DockAction::DragMove { surface, position }),
+            on_action(DockAction::DragEnd { surface }),
             on_action(DockAction::Focus(id.clone())),
             move |hovered| on_action(DockAction::Hover(hovered)),
             iced::mouse::Interaction::Grabbing,
@@ -2530,11 +2664,24 @@ mod tests {
         };
         controller.update(DockAction::SurfaceGeometry {
             surface: DockSurfaceId(0),
-            bounds: DockBounds::new(0.0, 0.0, 1_000.0, 700.0),
+            bounds: DockBounds::new(0.0, 0.0, 1_000.0, 760.0),
         });
-        controller.update(DockAction::DragStart("sources".into()));
-        controller.update(DockAction::DragMove(Point::new(1_500.0, 80.0)));
-        controller.update(DockAction::DragMove(Point::new(300.0, 120.0)));
+        controller.update(DockAction::SurfaceLayout {
+            surface: DockSurfaceId(0),
+            bounds: DockBounds::new(0.0, 60.0, 1_000.0, 700.0),
+        });
+        controller.update(DockAction::DragStart {
+            surface: floating.surface,
+            id: "sources".into(),
+        });
+        controller.update(DockAction::DragMove {
+            surface: floating.surface,
+            position: Point::new(100.0, 80.0),
+        });
+        controller.update(DockAction::DragMove {
+            surface: floating.surface,
+            position: Point::new(-1_100.0, 180.0),
+        });
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -2543,13 +2690,62 @@ mod tests {
                 zone: DockDropZone::Left,
             })
         );
-        let update = controller.update(DockAction::DragEnd);
+        let update = controller.update(DockAction::DragEnd {
+            surface: floating.surface,
+        });
         assert_eq!(
             update.effects,
             vec![DockHostEffect::CloseFloating(floating.surface)]
         );
         assert!(controller.layout().floating.is_empty());
         assert!(controller.is_visible(&DockId::from("sources")));
+    }
+
+    #[test]
+    fn primary_drop_target_uses_dock_surface_layout_bounds() {
+        let mut controller = controller();
+        let opened = controller.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(1_400.0, 0.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+            panic!("floating surface")
+        };
+        controller.update(DockAction::SurfaceGeometry {
+            surface: DockSurfaceId(0),
+            bounds: DockBounds::new(0.0, 0.0, 1_000.0, 760.0),
+        });
+        controller.update(DockAction::SurfaceLayout {
+            surface: DockSurfaceId(0),
+            bounds: DockBounds::new(0.0, 80.0, 1_000.0, 680.0),
+        });
+        controller.update(DockAction::DragStart {
+            surface: floating.surface,
+            id: "sources".into(),
+        });
+        controller.update(DockAction::DragMove {
+            surface: floating.surface,
+            position: Point::new(100.0, 80.0),
+        });
+        controller.update(DockAction::DragMove {
+            surface: floating.surface,
+            position: Point::new(-1_100.0, 40.0),
+        });
+        assert_eq!(controller.drop_target(), None);
+
+        controller.update(DockAction::DragMove {
+            surface: floating.surface,
+            position: Point::new(-1_100.0, 180.0),
+        });
+        assert_eq!(
+            controller.drop_target(),
+            Some(&DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: "editor".into(),
+                zone: DockDropZone::Left,
+            })
+        );
     }
 
     #[cfg(feature = "hosted")]
