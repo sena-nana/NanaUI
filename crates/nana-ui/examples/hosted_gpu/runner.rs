@@ -85,7 +85,7 @@ impl HostedProgram for DemoProgram {
         }
     }
 
-    fn view(&self, native_material: bool) -> Element<'_, Self::Message> {
+    fn view(&self, native_material: bool) -> Element<'static, Self::Message> {
         self.panel.view(self.scene.texture(), native_material)
     }
 

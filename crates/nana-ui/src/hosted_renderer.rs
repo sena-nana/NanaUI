@@ -16,13 +16,12 @@ pub struct HostedUiFrame<Message> {
     pub submission: wgpu::SubmissionIndex,
 }
 
-pub(crate) struct HostedPreparedFrame<'a, Message> {
-    interface: UserInterface<'a, Message, Theme, Renderer>,
+pub(crate) struct HostedPreparedFrame<Message> {
     state: user_interface::State,
     messages: Vec<Message>,
 }
 
-impl<Message> HostedPreparedFrame<'_, Message> {
+impl<Message> HostedPreparedFrame<Message> {
     pub(crate) fn message_count(&self) -> usize {
         self.messages.len()
     }
@@ -45,17 +44,19 @@ pub struct HostedUiTarget<'a> {
 /// The host remains responsible for the window, surface acquisition,
 /// presentation, and device-loss recovery. This type never creates an adapter
 /// or requests a second device.
-pub struct HostedUiRenderer {
+pub struct HostedUiRenderer<Message> {
     renderer: Renderer,
     viewport: Viewport,
-    cache: user_interface::Cache,
+    interface: Option<UserInterface<'static, Message, Theme, Renderer>>,
     events: Vec<Event>,
     cursor: mouse::Cursor,
     waker: shell::Waker,
     modifiers: ModifiersState,
+    ui_dirty: bool,
+    dynamic_dirty: bool,
 }
 
-impl HostedUiRenderer {
+impl<Message> HostedUiRenderer<Message> {
     pub fn new(
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
@@ -90,20 +91,22 @@ impl HostedUiRenderer {
                 metrics_hinting: true,
             },
         );
-        let viewport = viewport(physical_size, window_scale_factor);
         Self {
             renderer,
-            viewport,
-            cache: user_interface::Cache::new(),
+            viewport: viewport(physical_size, window_scale_factor),
+            interface: None,
             events: Vec::new(),
             cursor: mouse::Cursor::Unavailable,
             waker: shell::Waker::new(request_redraw),
             modifiers: ModifiersState::default(),
+            ui_dirty: true,
+            dynamic_dirty: true,
         }
     }
 
     pub fn resize(&mut self, physical_size: Size<u32>, window_scale_factor: f32) {
         self.viewport = viewport(physical_size, window_scale_factor);
+        self.mark_ui_dirty();
     }
 
     pub fn physical_size(&self) -> Size<u32> {
@@ -154,92 +157,116 @@ impl HostedUiRenderer {
         !self.events.is_empty()
     }
 
+    pub const fn is_ui_dirty(&self) -> bool {
+        self.ui_dirty
+    }
+
+    pub const fn is_dynamic_dirty(&self) -> bool {
+        self.dynamic_dirty
+    }
+
+    pub fn mark_ui_dirty(&mut self) {
+        self.ui_dirty = true;
+        self.dynamic_dirty = true;
+    }
+
+    pub fn mark_dynamic_dirty(&mut self) {
+        self.dynamic_dirty = true;
+    }
+
+    /// Rebuilds the retained Iced tree and its layout.
+    ///
+    /// The application only calls this after a real UI state change. The
+    /// widget state cache is retained, while the tree and layout are kept
+    /// alive for subsequent dynamic-only frames.
+    pub fn rebuild(&mut self, content: Element<'static, Message, Theme, Renderer>) {
+        let cache = match self.interface.take() {
+            Some(interface) => interface.into_cache(),
+            None => user_interface::Cache::new(),
+        };
+        self.interface = Some(UserInterface::build(
+            content,
+            self.viewport.logical_size(),
+            cache,
+            &mut self.renderer,
+        ));
+        self.ui_dirty = false;
+        self.dynamic_dirty = true;
+    }
+
     /// Updates Iced from all queued input before the host renders the latest
     /// application state.
-    pub fn update<Message>(
-        &mut self,
-        content: Element<'_, Message>,
-        window: &winit::window::Window,
-    ) -> Vec<Message> {
+    pub fn update(&mut self, window: &winit::window::Window) -> Vec<Message> {
         if self.events.is_empty() {
             return Vec::new();
         }
 
         let events = std::mem::take(&mut self.events);
-        self.update_events(content, window, &events)
+        let mut messages = Vec::new();
+        let Some(interface) = self.interface.as_mut() else {
+            self.events = events;
+            return messages;
+        };
+        let _ = interface.update(
+            window,
+            &self.waker,
+            &events,
+            self.cursor,
+            &mut self.renderer,
+            &mut messages,
+        );
+        messages
     }
 
-    pub(crate) fn prepare_frame<'a, Message>(
+    pub(crate) fn prepare_frame(
         &mut self,
-        content: Element<'a, Message>,
         window: &winit::window::Window,
         now: Instant,
-    ) -> HostedPreparedFrame<'a, Message> {
+    ) -> HostedPreparedFrame<Message> {
         let mut events = std::mem::take(&mut self.events);
         events.push(Event::Window(window::Event::RedrawRequested(now)));
-        self.prepare_events(content, window, &events)
+        self.prepare_events(window, &events)
     }
 
-    pub(crate) fn prepare_redraw<'a, Message>(
+    pub(crate) fn prepare_redraw(
         &mut self,
-        content: Element<'a, Message>,
         window: &winit::window::Window,
         now: Instant,
-    ) -> HostedPreparedFrame<'a, Message> {
+    ) -> HostedPreparedFrame<Message> {
         self.prepare_events(
-            content,
             window,
             &[Event::Window(window::Event::RedrawRequested(now))],
         )
     }
 
-    pub(crate) fn update_prepared_redraw<Message>(
+    pub(crate) fn update_prepared_redraw(
         &mut self,
-        prepared: &mut HostedPreparedFrame<'_, Message>,
+        prepared: &mut HostedPreparedFrame<Message>,
         window: &winit::window::Window,
         now: Instant,
     ) {
-        let mut messages = Vec::new();
-        let event = Event::Window(window::Event::RedrawRequested(now));
-        let (state, _) = prepared.interface.update(
-            window,
-            &self.waker,
-            &[event],
-            self.cursor,
-            &mut self.renderer,
-            &mut messages,
-        );
-        prepared.state = state;
-        prepared.messages = messages;
+        *prepared = self.prepare_redraw(window, now);
     }
 
-    pub(crate) fn cache_prepared<Message>(
+    pub(crate) fn cache_prepared(
         &mut self,
-        prepared: HostedPreparedFrame<'_, Message>,
+        prepared: HostedPreparedFrame<Message>,
         window: &winit::window::Window,
     ) -> Vec<Message> {
-        let HostedPreparedFrame {
-            interface,
-            state,
-            messages,
-        } = prepared;
-        self.cache = interface.into_cache();
+        let HostedPreparedFrame { state, messages } = prepared;
         apply_cursor_state(window, state);
         messages
     }
 
-    fn update_events<Message>(
+    fn prepare_events(
         &mut self,
-        content: Element<'_, Message>,
         window: &winit::window::Window,
         events: &[Event],
-    ) -> Vec<Message> {
-        let mut interface = UserInterface::build(
-            content,
-            self.viewport.logical_size(),
-            std::mem::take(&mut self.cache),
-            &mut self.renderer,
-        );
+    ) -> HostedPreparedFrame<Message> {
+        let interface = self
+            .interface
+            .as_mut()
+            .expect("hosted UI must be rebuilt before preparing");
         let mut messages = Vec::new();
         let (state, _) = interface.update(
             window,
@@ -249,56 +276,23 @@ impl HostedUiRenderer {
             &mut self.renderer,
             &mut messages,
         );
-        self.cache = interface.into_cache();
-        apply_cursor_state(window, state);
-        messages
-    }
-
-    fn prepare_events<'a, Message>(
-        &mut self,
-        content: Element<'a, Message>,
-        window: &winit::window::Window,
-        events: &[Event],
-    ) -> HostedPreparedFrame<'a, Message> {
-        let mut interface = UserInterface::build(
-            content,
-            self.viewport.logical_size(),
-            std::mem::take(&mut self.cache),
-            &mut self.renderer,
-        );
-        let mut messages = Vec::new();
-        let (state, _) = interface.update(
-            window,
-            &self.waker,
-            events,
-            self.cursor,
-            &mut self.renderer,
-            &mut messages,
-        );
-        HostedPreparedFrame {
-            interface,
-            state,
-            messages,
-        }
+        HostedPreparedFrame { state, messages }
     }
 
     /// Draws the latest UI tree into the host's current surface texture.
     ///
     /// Interactive hosts must call [`Self::update`] and process its messages
     /// before this method so the same frame reflects the latest input state.
-    pub fn render<Message>(
+    pub fn render(
         &mut self,
-        content: Element<'_, Message>,
         theme: &Theme,
         style: renderer::Style,
         target: HostedUiTarget<'_>,
     ) -> HostedUiFrame<Message> {
-        let mut interface = UserInterface::build(
-            content,
-            self.viewport.logical_size(),
-            std::mem::take(&mut self.cache),
-            &mut self.renderer,
-        );
+        let interface = self
+            .interface
+            .as_mut()
+            .expect("hosted UI must be rebuilt before rendering");
         let mut messages = Vec::new();
         let (state, _) = interface.update(
             target.window,
@@ -311,7 +305,7 @@ impl HostedUiRenderer {
             &mut messages,
         );
         interface.draw(&mut self.renderer, theme, &style, self.cursor);
-        self.cache = interface.into_cache();
+        self.dynamic_dirty = false;
         apply_cursor_state(target.window, state);
         let submission = self.renderer.present(
             target.clear_color,
@@ -325,20 +319,20 @@ impl HostedUiRenderer {
         }
     }
 
-    pub(crate) fn present_prepared<Message>(
+    pub(crate) fn present_prepared(
         &mut self,
-        prepared: HostedPreparedFrame<'_, Message>,
+        prepared: HostedPreparedFrame<Message>,
         theme: &Theme,
         style: renderer::Style,
         target: HostedUiTarget<'_>,
     ) -> HostedUiFrame<Message> {
-        let HostedPreparedFrame {
-            mut interface,
-            state,
-            messages,
-        } = prepared;
+        let HostedPreparedFrame { state, messages } = prepared;
+        let interface = self
+            .interface
+            .as_mut()
+            .expect("hosted UI must be rebuilt before presenting");
         interface.draw(&mut self.renderer, theme, &style, self.cursor);
-        self.cache = interface.into_cache();
+        self.dynamic_dirty = false;
         apply_cursor_state(target.window, state);
         let submission = self.renderer.present(
             target.clear_color,

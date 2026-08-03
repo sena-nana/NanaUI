@@ -52,7 +52,7 @@ impl DemoPanel {
         &self,
         texture: HostTexture,
         translucent_window: bool,
-    ) -> Element<'_, Message, iced::Theme, iced_wgpu::Renderer> {
+    ) -> Element<'static, Message, iced::Theme, iced_wgpu::Renderer> {
         let colors = self.colors();
         let title_bar = AppTitleBar::new("实时预览", colors)
             .leading(text("NANA").size(12).color(colors.accent))

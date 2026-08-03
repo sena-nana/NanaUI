@@ -279,6 +279,9 @@ pub enum HostedRedraw {
     Primary,
     Window(HostedWindowId),
     All,
+    DynamicPrimary,
+    DynamicWindow(HostedWindowId),
+    DynamicAll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +322,34 @@ impl HostedProgramUpdate {
         Self {
             window_action: None,
             redraw: HostedRedraw::All,
+            window_commands: Vec::new(),
+            exit: false,
+        }
+    }
+
+    /// Requests a frame for dynamic host content without rebuilding the UI.
+    pub const fn redraw_dynamic() -> Self {
+        Self {
+            window_action: None,
+            redraw: HostedRedraw::DynamicPrimary,
+            window_commands: Vec::new(),
+            exit: false,
+        }
+    }
+
+    pub const fn redraw_dynamic_window(id: HostedWindowId) -> Self {
+        Self {
+            window_action: None,
+            redraw: HostedRedraw::DynamicWindow(id),
+            window_commands: Vec::new(),
+            exit: false,
+        }
+    }
+
+    pub const fn redraw_dynamic_all() -> Self {
+        Self {
+            window_action: None,
+            redraw: HostedRedraw::DynamicAll,
             window_commands: Vec::new(),
             exit: false,
         }
@@ -370,9 +401,13 @@ pub trait HostedProgram: Sized + 'static {
         context: &HostedProgramContext<Self::Message>,
     ) -> HostedProgramUpdate;
 
-    fn view(&self, native_material: bool) -> Element<'_, Self::Message>;
+    fn view(&self, native_material: bool) -> Element<'static, Self::Message>;
 
-    fn view_window(&self, id: HostedWindowId, native_material: bool) -> Element<'_, Self::Message> {
+    fn view_window(
+        &self,
+        id: HostedWindowId,
+        native_material: bool,
+    ) -> Element<'static, Self::Message> {
         let _ = id;
         self.view(native_material)
     }
@@ -473,14 +508,14 @@ enum HostedRunner<Program: HostedProgram> {
     },
 }
 
-struct HostedAuxiliary {
+struct HostedAuxiliary<Message> {
     surface: HostedGpuSurface,
-    ui: HostedUiRenderer,
+    ui: HostedUiRenderer<Message>,
     iced_window_id: iced::window::Id,
     material: MaterialOutcome,
 }
 
-impl Drop for HostedAuxiliary {
+impl<Message> Drop for HostedAuxiliary<Message> {
     fn drop(&mut self) {
         clear_system_material(self.surface.window().as_ref());
     }
@@ -488,13 +523,13 @@ impl Drop for HostedAuxiliary {
 
 struct HostedReady<Program: HostedProgram> {
     graphics: HostedGpuContext,
-    ui: HostedUiRenderer,
+    ui: HostedUiRenderer<Program::Message>,
     program: Program,
     proxy: EventLoopProxy<Program::Message>,
     iced_window_id: iced::window::Id,
     material: MaterialOutcome,
     settings: HostedWindowSettings,
-    auxiliary: HashMap<HostedWindowId, HostedAuxiliary>,
+    auxiliary: HashMap<HostedWindowId, HostedAuxiliary<Program::Message>>,
     window_ids: HashMap<winit::window::WindowId, HostedWindowId>,
     next_gpu_retry: Option<Instant>,
     window_hidden: bool,
@@ -784,6 +819,30 @@ impl<Program: HostedProgram> HostedReady<Program> {
         self.apply_program_update(event_loop, update);
     }
 
+    fn ensure_ui(&mut self, id: HostedWindowId) {
+        if id == HostedWindowId::PRIMARY {
+            if self.ui.is_ui_dirty() {
+                let content = self.program.view_window(id, self.material.is_native());
+                self.ui.rebuild(content);
+            }
+            return;
+        }
+
+        let needs_rebuild = self
+            .auxiliary
+            .get(&id)
+            .is_some_and(|host| host.ui.is_ui_dirty());
+        if !needs_rebuild {
+            return;
+        }
+        let Some(material) = self.auxiliary.get(&id).map(|host| host.material) else {
+            return;
+        };
+        let content = self.program.view_window(id, material.is_native());
+        if let Some(host) = self.auxiliary.get_mut(&id) {
+            host.ui.rebuild(content);
+        }
+    }
     fn process_message(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
         self.process_message_inner(event_loop, message, None);
     }
@@ -964,23 +1023,16 @@ impl<Program: HostedProgram> HostedReady<Program> {
         let mut passes = 0;
         let mut first_pass = true;
         let prepared = 'settle: loop {
+            self.ensure_ui(HostedWindowId::PRIMARY);
             let context = self.program_context();
             self.program
                 .prepare_window_frame(HostedWindowId::PRIMARY, &context);
             let mut prepared = if first_pass {
-                self.ui.prepare_frame(
-                    self.program
-                        .view_window(HostedWindowId::PRIMARY, self.material.is_native()),
-                    self.graphics.window().as_ref(),
-                    Instant::now(),
-                )
+                self.ui
+                    .prepare_frame(self.graphics.window().as_ref(), Instant::now())
             } else {
-                self.ui.prepare_redraw(
-                    self.program
-                        .view_window(HostedWindowId::PRIMARY, self.material.is_native()),
-                    self.graphics.window().as_ref(),
-                    Instant::now(),
-                )
+                self.ui
+                    .prepare_redraw(self.graphics.window().as_ref(), Instant::now())
             };
             first_pass = false;
 
@@ -1088,22 +1140,15 @@ impl<Program: HostedProgram> HostedReady<Program> {
             else {
                 return;
             };
+            self.ensure_ui(id);
             let context = self.program_context();
             self.program.prepare_window_frame(id, &context);
             let mut prepared = {
                 let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
                 if first_pass {
-                    host.ui.prepare_frame(
-                        self.program.view_window(id, material.is_native()),
-                        window.as_ref(),
-                        Instant::now(),
-                    )
+                    host.ui.prepare_frame(window.as_ref(), Instant::now())
                 } else {
-                    host.ui.prepare_redraw(
-                        self.program.view_window(id, material.is_native()),
-                        window.as_ref(),
-                        Instant::now(),
-                    )
+                    host.ui.prepare_redraw(window.as_ref(), Instant::now())
                 }
             };
             first_pass = false;
@@ -1218,9 +1263,11 @@ impl<Program: HostedProgram> HostedReady<Program> {
     fn refresh_materials(&mut self) {
         clear_system_material(self.graphics.window().as_ref());
         self.material = material_for(self.graphics.window().as_ref(), self.program.theme_mode());
+        self.ui.mark_ui_dirty();
         for host in self.auxiliary.values_mut() {
             clear_system_material(host.surface.window().as_ref());
             host.material = material_for(host.surface.window().as_ref(), self.program.theme_mode());
+            host.ui.mark_ui_dirty();
             host.surface.window().request_redraw();
         }
     }
@@ -1303,6 +1350,17 @@ impl<Program: HostedProgram> HostedReady<Program> {
     fn set_hidden(&mut self, id: HostedWindowId, hidden: bool) {
         if id == HostedWindowId::PRIMARY {
             self.window_hidden = hidden;
+            self.ui.mark_ui_dirty();
+            if !hidden {
+                self.ui.mark_dynamic_dirty();
+                self.graphics.window().request_redraw();
+            }
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            host.ui.mark_ui_dirty();
+            if !hidden {
+                host.ui.mark_dynamic_dirty();
+                host.surface.window().request_redraw();
+            }
         }
     }
 
@@ -1339,10 +1397,11 @@ impl<Program: HostedProgram> HostedReady<Program> {
     }
 
     fn request_program_redraw(
-        &self,
+        &mut self,
         redraw: HostedRedraw,
         redraw_satisfied_by: Option<HostedWindowId>,
     ) {
+        self.mark_program_dirty(redraw);
         if should_request_redraw(redraw, HostedWindowId::PRIMARY, redraw_satisfied_by) {
             self.request_redraw(HostedWindowId::PRIMARY);
         }
@@ -1350,6 +1409,44 @@ impl<Program: HostedProgram> HostedReady<Program> {
             if should_request_redraw(redraw, id, redraw_satisfied_by) {
                 self.request_redraw(id);
             }
+        }
+    }
+
+    fn mark_program_dirty(&mut self, redraw: HostedRedraw) {
+        match redraw {
+            HostedRedraw::None => {}
+            HostedRedraw::Primary => self.ui.mark_ui_dirty(),
+            HostedRedraw::DynamicPrimary => self.ui.mark_dynamic_dirty(),
+            HostedRedraw::Window(id) => self.mark_window_ui_dirty(id),
+            HostedRedraw::DynamicWindow(id) => self.mark_window_dynamic_dirty(id),
+            HostedRedraw::All => {
+                self.ui.mark_ui_dirty();
+                for host in self.auxiliary.values_mut() {
+                    host.ui.mark_ui_dirty();
+                }
+            }
+            HostedRedraw::DynamicAll => {
+                self.ui.mark_dynamic_dirty();
+                for host in self.auxiliary.values_mut() {
+                    host.ui.mark_dynamic_dirty();
+                }
+            }
+        }
+    }
+
+    fn mark_window_ui_dirty(&mut self, id: HostedWindowId) {
+        if id == HostedWindowId::PRIMARY {
+            self.ui.mark_ui_dirty();
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            host.ui.mark_ui_dirty();
+        }
+    }
+
+    fn mark_window_dynamic_dirty(&mut self, id: HostedWindowId) {
+        if id == HostedWindowId::PRIMARY {
+            self.ui.mark_dynamic_dirty();
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            host.ui.mark_dynamic_dirty();
         }
     }
 
@@ -1371,9 +1468,9 @@ fn should_request_redraw(
     }
     match redraw {
         HostedRedraw::None => false,
-        HostedRedraw::Primary => target == HostedWindowId::PRIMARY,
-        HostedRedraw::Window(id) => target == id,
-        HostedRedraw::All => true,
+        HostedRedraw::Primary | HostedRedraw::DynamicPrimary => target == HostedWindowId::PRIMARY,
+        HostedRedraw::Window(id) | HostedRedraw::DynamicWindow(id) => target == id,
+        HostedRedraw::All | HostedRedraw::DynamicAll => true,
     }
 }
 
@@ -1400,12 +1497,12 @@ fn program_context<Message: Send + 'static>(
     }
 }
 
-fn hosted_ui_renderer(
+fn hosted_ui_renderer<Message>(
     graphics: &HostedGpuContext,
     window: &Arc<winit::window::Window>,
     format: wgpu::TextureFormat,
     physical_size: Size<u32>,
-) -> HostedUiRenderer {
+) -> HostedUiRenderer<Message> {
     let redraw_window = Arc::downgrade(window);
     HostedUiRenderer::new(
         graphics.adapter(),
@@ -1547,6 +1644,18 @@ mod tests {
             HostedRedraw::Window(HostedWindowId(7))
         );
         assert_eq!(HostedProgramUpdate::redraw_all().redraw, HostedRedraw::All);
+        assert_eq!(
+            HostedProgramUpdate::redraw_dynamic().redraw,
+            HostedRedraw::DynamicPrimary
+        );
+        assert_eq!(
+            HostedProgramUpdate::redraw_dynamic_window(HostedWindowId(7)).redraw,
+            HostedRedraw::DynamicWindow(HostedWindowId(7))
+        );
+        assert_eq!(
+            HostedProgramUpdate::redraw_dynamic_all().redraw,
+            HostedRedraw::DynamicAll
+        );
     }
 
     #[test]
@@ -1567,6 +1676,11 @@ mod tests {
         ));
         assert!(should_request_redraw(
             HostedRedraw::Window(tool),
+            tool,
+            Some(primary)
+        ));
+        assert!(should_request_redraw(
+            HostedRedraw::DynamicWindow(tool),
             tool,
             Some(primary)
         ));
@@ -1593,6 +1707,11 @@ mod tests {
             Some(tool)
         ));
         assert!(!should_request_redraw(HostedRedraw::All, tool, Some(tool)));
+        assert!(should_request_redraw(
+            HostedRedraw::DynamicAll,
+            tool,
+            Some(primary)
+        ));
     }
 
     #[test]

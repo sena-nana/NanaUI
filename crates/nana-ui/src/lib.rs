@@ -86,7 +86,7 @@ pub use dock::{
 pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
-pub use gpu_texture::{GpuTextureView, HostTexture};
+pub use gpu_texture::{GpuTextureView, HostTexture, HostTextureLayer};
 #[cfg(feature = "gpu")]
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
 #[cfg(feature = "hosted")]
