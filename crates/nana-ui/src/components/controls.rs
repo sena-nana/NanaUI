@@ -175,8 +175,8 @@ where
 
 /// A single-line text field using NanaUI's shared validation style.
 pub struct Input<'a, Message> {
-    placeholder: &'a str,
-    value: &'a str,
+    placeholder: Cow<'a, str>,
+    value: Cow<'a, str>,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     size: ControlSize,
     padding: Option<Padding>,
@@ -190,10 +190,10 @@ impl<'a, Message> Input<'a, Message>
 where
     Message: Clone + 'a,
 {
-    pub fn new(placeholder: &'a str, value: &'a str) -> Self {
+    pub fn new(placeholder: impl Into<Cow<'a, str>>, value: impl Into<Cow<'a, str>>) -> Self {
         Self {
-            placeholder,
-            value,
+            placeholder: placeholder.into(),
+            value: value.into(),
             on_input: None,
             size: ControlSize::Medium,
             padding: None,
@@ -249,7 +249,7 @@ where
             ])
         });
         let line_height = self.line_height.unwrap_or_else(|| self.size.line_height());
-        let field = text_input(self.placeholder, self.value)
+        let field = text_input(self.placeholder.as_ref(), self.value.as_ref())
             .secure(self.secure)
             .padding(padding)
             .size(self.size.text_size())
