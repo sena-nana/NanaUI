@@ -11,10 +11,10 @@ use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::{
-    AppTitleBar, DockAction, DockBounds, DockChromeStyle, DockContents, DockController, DockId,
-    DockItemSpec, DockLayout, DockNode, DockSurfaceId, FloatingDock, RegionId, SettingsTabId,
-    ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
-    WorkspaceAction, dock_window_workspace,
+    AppTitleBar, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
+    DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
+    FloatingDock, RegionId, SettingsTabId, ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome,
+    WindowChromeEvent, WindowChromeState, WorkspaceAction, dock_window_workspace, dock_workspace,
 };
 
 use crate::write;
@@ -104,6 +104,102 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             "dock-window-native-leading-light.png",
             ThemeMode::Light,
             WindowChrome::native_leading(78.0),
+        )?,
+        dock_drag_window_snapshot(
+            &mut renderer,
+            &output,
+            "dock-drag-window-dark.png",
+            ThemeMode::Dark,
+            WindowChrome::custom(),
+        )?,
+        dock_drag_window_snapshot(
+            &mut renderer,
+            &output,
+            "dock-drag-window-light.png",
+            ThemeMode::Light,
+            WindowChrome::custom(),
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-left-dark.png",
+            ThemeMode::Dark,
+            DockDropZone::Left,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-right-dark.png",
+            ThemeMode::Dark,
+            DockDropZone::Right,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-top-dark.png",
+            ThemeMode::Dark,
+            DockDropZone::Top,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-bottom-dark.png",
+            ThemeMode::Dark,
+            DockDropZone::Bottom,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-tab-dark.png",
+            ThemeMode::Dark,
+            DockDropZone::Tab,
+        )?,
+        dock_outside_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-outside-dark.png",
+            ThemeMode::Dark,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-left-light.png",
+            ThemeMode::Light,
+            DockDropZone::Left,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-right-light.png",
+            ThemeMode::Light,
+            DockDropZone::Right,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-top-light.png",
+            ThemeMode::Light,
+            DockDropZone::Top,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-bottom-light.png",
+            ThemeMode::Light,
+            DockDropZone::Bottom,
+        )?,
+        dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-tab-light.png",
+            ThemeMode::Light,
+            DockDropZone::Tab,
+        )?,
+        dock_outside_snapshot(
+            &mut renderer,
+            &output,
+            "dock-preview-outside-light.png",
+            ThemeMode::Light,
         )?,
     ];
 
@@ -237,12 +333,15 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         "gallery-workspace-dock-preview-dark.png",
         &workspace_dock_preview,
     )?);
-    workspace_dock_preview.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    let mut workspace_dock_preview_light = GalleryState::new();
+    workspace_dock_preview_light.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+    workspace_dock_preview_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    prepare_dock_preview(&mut workspace_dock_preview_light);
     paths.push(gallery_snapshot(
         &mut renderer,
         &output,
         "gallery-workspace-dock-preview-light.png",
-        &workspace_dock_preview,
+        &workspace_dock_preview_light,
     )?);
 
     let mut sidebar_collapsed = GalleryState::new();
@@ -375,6 +474,167 @@ fn dock_window_snapshot(
     Ok(path)
 }
 
+fn dock_drag_window_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+    chrome: WindowChrome,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let size = Size::new(420, 240);
+    let surface = DockSurfaceId(0);
+    let mut controller = DockController::new(
+        "editor",
+        [
+            DockItemSpec::new("editor", "Editor").closeable(false),
+            DockItemSpec::new("scenes", "场景"),
+        ],
+        DockLayout::new(DockNode::split(
+            nana_ui::DockAxis::Horizontal,
+            0.5,
+            DockNode::item("scenes"),
+            DockNode::item("editor"),
+        )),
+    )?;
+    controller.update(DockAction::SurfaceGeometry {
+        surface,
+        bounds: DockBounds::new(0.0, 0.0, size.width as f32, size.height as f32),
+    });
+    controller.update(DockAction::DragStart {
+        surface,
+        id: DockId::from("scenes"),
+    });
+    controller.update(DockAction::DragMove {
+        surface,
+        position: Point::new(0.0, 0.0),
+    });
+    let opened = controller.update(DockAction::DragMove {
+        surface,
+        position: Point::new(60.0, 120.0),
+    });
+    let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+        return Err("dock drag preview surface was not opened".into());
+    };
+    let window_chrome = WindowChromeState::new(chrome);
+    let colors = theme.colors();
+    let view = dock_window_workspace(
+        &controller,
+        floating.surface,
+        DockContents::new(),
+        &window_chrome,
+        |_| (),
+        |_| (),
+        colors,
+    );
+    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
+    let path = output.join(name);
+    write::png(&path, size, &pixels)?;
+    Ok(path)
+}
+
+fn dock_preview_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+    zone: DockDropZone,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let size = Size::new(420, 240);
+    let position = match zone {
+        DockDropZone::Left => Point::new(20.0, 160.0),
+        DockDropZone::Right => Point::new(400.0, 160.0),
+        DockDropZone::Top => Point::new(200.0, 20.0),
+        DockDropZone::Bottom => Point::new(200.0, 100.0),
+        DockDropZone::Tab => Point::new(200.0, 50.0),
+    };
+    let controller = dock_preview_controller(size, position)?;
+    let colors = theme.colors();
+    let view = dock_workspace(
+        &controller,
+        DockSurfaceId(0),
+        DockContents::new()
+            .insert("source", container(text("Source")).center(Length::Fill))
+            .insert("panel", container(text("Panel")).center(Length::Fill))
+            .insert("editor", container(text("Editor")).center(Length::Fill)),
+        |_| (),
+        colors,
+    );
+    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
+    let path = output.join(name);
+    write::png(&path, size, &pixels)?;
+    Ok(path)
+}
+
+fn dock_outside_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let size = Size::new(420, 240);
+    let controller = dock_preview_controller(size, Point::new(410.0, 80.0))?;
+    let colors = theme.colors();
+    let view = dock_workspace(
+        &controller,
+        DockSurfaceId(0),
+        DockContents::new()
+            .insert("source", container(text("Source")).center(Length::Fill))
+            .insert("panel", container(text("Panel")).center(Length::Fill))
+            .insert("editor", container(text("Editor")).center(Length::Fill)),
+        |_| (),
+        colors,
+    );
+    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
+    let path = output.join(name);
+    write::png(&path, size, &pixels)?;
+    Ok(path)
+}
+
+fn dock_preview_controller(
+    size: Size<u32>,
+    position: Point,
+) -> Result<DockController, Box<dyn std::error::Error>> {
+    let mut controller = DockController::new(
+        "editor",
+        [
+            DockItemSpec::new("editor", "Editor").closeable(false),
+            DockItemSpec::new("source", "Source"),
+            DockItemSpec::new("panel", "Panel"),
+        ],
+        DockLayout::new(DockNode::split(
+            nana_ui::DockAxis::Horizontal,
+            0.5,
+            DockNode::item("source"),
+            DockNode::split(
+                nana_ui::DockAxis::Vertical,
+                0.5,
+                DockNode::item("panel"),
+                DockNode::item("editor"),
+            ),
+        )),
+    )?;
+    controller.set_chrome_style(DockChromeStyle::Card);
+    controller.update(DockAction::SurfaceGeometry {
+        surface: DockSurfaceId(0),
+        bounds: DockBounds::new(0.0, 0.0, size.width as f32, size.height as f32),
+    });
+    controller.update(DockAction::DragStart {
+        surface: DockSurfaceId(0),
+        id: DockId::from("source"),
+    });
+    controller.update(DockAction::DragMove {
+        surface: DockSurfaceId(0),
+        position: Point::new(0.0, 0.0),
+    });
+    controller.update(DockAction::DragMove {
+        surface: DockSurfaceId(0),
+        position,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    controller.update(DockAction::Hover(false));
+    Ok(controller)
+}
+
 fn gallery_snapshot(
     renderer: &mut Renderer,
     output: &Path,
@@ -407,6 +667,8 @@ fn prepare_dock_preview(state: &mut GalleryState) {
         surface,
         position: Point::new(355.0, 250.0),
     }));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    state.update(GalleryMessage::Dock(DockAction::Hover(false)));
 }
 
 fn titlebar_view(

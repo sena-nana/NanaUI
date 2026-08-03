@@ -28,11 +28,22 @@ struct DragHandleState {
 }
 
 impl DragHandleState {
+    #[cfg(test)]
     fn signals(
         &mut self,
         event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
+    ) -> Vec<DragSignal> {
+        self.signals_with_unfocus(event, bounds, cursor, true)
+    }
+
+    fn signals_with_unfocus(
+        &mut self,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+        end_on_unfocused: bool,
     ) -> Vec<DragSignal> {
         let mut signals = Vec::new();
         let position = match event {
@@ -97,7 +108,9 @@ impl DragHandleState {
                 self.source = None;
                 signals.push(DragSignal::End);
             }
-            Event::Window(iced::window::Event::Unfocused) if self.source.is_some() => {
+            Event::Window(iced::window::Event::Unfocused)
+                if self.source.is_some() && end_on_unfocused =>
+            {
                 self.source = None;
                 signals.push(DragSignal::End);
             }
@@ -116,6 +129,7 @@ pub(crate) struct DragHandle<'a, Message> {
     on_reset: Message,
     on_hover: Rc<dyn Fn(bool) -> Message + 'a>,
     interaction: mouse::Interaction,
+    end_on_unfocused: bool,
 }
 
 impl<'a, Message> DragHandle<'a, Message> {
@@ -137,11 +151,17 @@ impl<'a, Message> DragHandle<'a, Message> {
             on_reset,
             on_hover: Rc::new(on_hover),
             interaction,
+            end_on_unfocused: true,
         }
     }
 
     pub(crate) fn translate(mut self, translation: Vector) -> Self {
         self.translation = translation;
+        self
+    }
+
+    pub(crate) fn keep_drag_on_unfocused(mut self) -> Self {
+        self.end_on_unfocused = false;
         self
     }
 }
@@ -190,11 +210,15 @@ where
         viewport: &Rectangle,
     ) {
         let content_layout = layout.children().next().expect("drag handle content");
-        let signals = tree.state.downcast_mut::<DragHandleState>().signals(
-            event,
-            content_layout.bounds(),
-            cursor,
-        );
+        let signals = tree
+            .state
+            .downcast_mut::<DragHandleState>()
+            .signals_with_unfocus(
+                event,
+                content_layout.bounds(),
+                cursor,
+                self.end_on_unfocused,
+            );
         if !signals.is_empty() {
             for signal in signals {
                 shell.publish(match signal {

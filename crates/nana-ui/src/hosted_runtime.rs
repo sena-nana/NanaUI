@@ -269,6 +269,10 @@ pub enum HostedWindowCommand {
         settings: HostedWindowSettings,
     },
     Close(HostedWindowId),
+    Move {
+        id: HostedWindowId,
+        position: Point,
+    },
     Focus(HostedWindowId),
 }
 
@@ -922,6 +926,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 }
             }
             HostedWindowCommand::Close(id) => self.close_window(id),
+            HostedWindowCommand::Move { id, position } => self.move_window(id, position),
             HostedWindowCommand::Focus(id) => self.focus_window(id),
         }
     }
@@ -986,6 +991,15 @@ impl<Program: HostedProgram> HostedReady<Program> {
         } else if let Some(host) = self.auxiliary.get(&id) {
             host.surface.window().focus_window();
         }
+    }
+
+    fn move_window(&self, id: HostedWindowId, position: Point) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
+        window.set_outer_position(winit::dpi::Position::Logical(
+            winit::dpi::LogicalPosition::new(f64::from(position.x), f64::from(position.y)),
+        ));
     }
 
     fn apply_window_action(&mut self, event_loop: &ActiveEventLoop, action: HostedWindowAction) {
