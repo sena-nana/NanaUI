@@ -78,9 +78,9 @@ pub use components::surfaces::{
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
-    DockAction, DockAxis, DockBounds, DockContents, DockController, DockDropTarget, DockDropZone,
-    DockError, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
-    DockUpdate, FloatingDock, dock_workspace,
+    DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,
+    DockDropTarget, DockDropZone, DockError, DockHostEffect, DockId, DockItemSpec, DockLayout,
+    DockNode, DockSurfaceId, DockUpdate, FloatingDock, dock_workspace,
 };
 #[cfg(feature = "hosted")]
 pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};

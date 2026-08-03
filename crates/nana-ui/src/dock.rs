@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::drag_handle::DragHandle;
 use crate::resize_drag::{ResizeAxis, ResizeDrag};
 use crate::theme::{ThemeTokens, ui_font};
-use crate::widgets::{ButtonKind, button_style};
+use crate::widgets::{ButtonKind, CardKind, button_style, card_style};
 #[cfg(feature = "hosted")]
 use crate::{
     HostedProgramUpdate, HostedTitleBarMode, HostedWindowCommand, HostedWindowEvent,
@@ -179,6 +179,15 @@ impl DockItemSpec {
         self.floatable = floatable;
         self
     }
+}
+
+/// Visual treatment for Dock chrome around application-owned content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DockChromeStyle {
+    #[default]
+    Segmented,
+    Borderless,
+    Card,
 }
 
 /// Logical floating-window bounds saved independently of a physical monitor scale.
@@ -451,6 +460,7 @@ pub struct DockController {
     active_resize: Option<ActiveResize>,
     focused_split: Option<(DockSurfaceId, Vec<usize>, DockAxis)>,
     active_drag: Option<ActiveDrag>,
+    chrome_style: DockChromeStyle,
 }
 
 impl DockController {
@@ -493,11 +503,16 @@ impl DockController {
             active_resize: None,
             focused_split: None,
             active_drag: None,
+            chrome_style: DockChromeStyle::default(),
         })
     }
 
     pub fn layout(&self) -> &DockLayout {
         &self.layout
+    }
+
+    pub fn set_chrome_style(&mut self, chrome_style: DockChromeStyle) {
+        self.chrome_style = chrome_style;
     }
 
     pub fn item(&self, id: &DockId) -> Option<&DockItemSpec> {
@@ -1547,6 +1562,7 @@ where
             dock_item_view(id, surface, false, controller, contents, on_action, tokens)
         }
         DockNode::Tabs { tabs, active } => {
+            let chrome_style = controller.chrome_style;
             let tab_bar = tabs.iter().fold(
                 row![].height(Length::Fixed(TITLE_BAR_HEIGHT)),
                 |tabs_row, id| {
@@ -1561,17 +1577,16 @@ where
                     .center_y(Length::Fill)
                     .padding([0.0, 10.0])
                     .style(move |_theme| {
+                        let background = if id == active {
+                            tokens.colors.active
+                        } else if chrome_style == DockChromeStyle::Card {
+                            iced::Color::TRANSPARENT
+                        } else {
+                            tokens.colors.surface
+                        };
                         iced::widget::container::Style::default()
-                            .background(if id == active {
-                                tokens.colors.active
-                            } else {
-                                tokens.colors.surface
-                            })
-                            .border(iced::Border {
-                                color: tokens.colors.border,
-                                width: 1.0,
-                                radius: 0.0.into(),
-                            })
+                            .background(background)
+                            .border(dock_tab_border(tokens, chrome_style))
                     });
                     if controller.layout.locked {
                         tabs_row.push(
@@ -1598,24 +1613,26 @@ where
                     }
                 },
             );
-            column![
-                container(tab_bar)
+            let active_item = dock_item_view(
+                active, surface, true, controller, contents, on_action, tokens,
+            );
+            if chrome_style == DockChromeStyle::Card {
+                let tab_bar = dock_card_title_bar(tab_bar, tokens);
+                dock_card_shell(column![tab_bar, active_item].height(Length::Fill), tokens)
+            } else {
+                let tab_bar = container(tab_bar)
                     .width(Length::Fill)
                     .height(Length::Fixed(TITLE_BAR_HEIGHT))
-                    .style(move |_theme| iced::widget::container::Style::default()
-                        .background(tokens.colors.surface)
-                        .border(iced::Border {
-                            color: tokens.colors.border,
-                            width: 1.0,
-                            radius: 0.0.into(),
-                        })),
-                dock_item_view(
-                    active, surface, true, controller, contents, on_action, tokens
-                ),
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+                    .style(move |_theme| {
+                        iced::widget::container::Style::default()
+                            .background(tokens.colors.surface)
+                            .border(dock_chrome_border(tokens, chrome_style))
+                    });
+                column![tab_bar, active_item]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            }
         }
         DockNode::Split {
             axis,
@@ -1640,6 +1657,7 @@ where
                 tokens,
             );
             let divider_path = path;
+            let divider_color = dock_chrome_color(tokens, controller.chrome_style);
             let indicator = container(space())
                 .width(if *axis == DockAxis::Horizontal {
                     Length::Fixed(1.0)
@@ -1652,7 +1670,7 @@ where
                     Length::Fixed(1.0)
                 })
                 .style(move |_theme| {
-                    iced::widget::container::Style::default().background(tokens.colors.border)
+                    iced::widget::container::Style::default().background(divider_color)
                 });
             let divider = container(indicator)
                 .width(if *axis == DockAxis::Horizontal {
@@ -1738,6 +1756,7 @@ fn dock_item_view<'a, Message>(
 where
     Message: Clone + 'a,
 {
+    let chrome_style = controller.chrome_style;
     let spec = controller.item(id);
     let title = spec.map_or_else(|| id.as_str(), |spec| spec.title.as_str());
     let title = container(
@@ -1792,24 +1811,13 @@ where
             );
         }
     }
-    let content = contents
-        .items
-        .remove(id)
-        .unwrap_or_else(|| container(space()).into());
-    let content: Element<'a, Message> = container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .clip(true)
-        .style(move |_theme| {
-            iced::widget::container::Style::default()
-                .background(tokens.colors.surface)
-                .border(iced::Border {
-                    color: tokens.colors.border,
-                    width: 1.0,
-                    radius: 0.0.into(),
-                })
-        })
-        .into();
+    let content_chrome_style = if chrome_style == DockChromeStyle::Card && id == &controller.center
+    {
+        DockChromeStyle::Borderless
+    } else {
+        chrome_style
+    };
+    let content = dock_item_body(id, contents, tokens, content_chrome_style);
     let content = if let Some(target) = controller.drop_target().filter(|target| target.id == *id) {
         let accent = iced::Color {
             a: 0.22,
@@ -1864,6 +1872,11 @@ where
     };
     if tabs_own_title || id == &controller.center {
         content
+    } else if chrome_style == DockChromeStyle::Card {
+        dock_card_shell(
+            column![dock_card_title_bar(title_bar, tokens), content].height(Length::Fill),
+            tokens,
+        )
     } else {
         column![
             container(title_bar)
@@ -1872,16 +1885,112 @@ where
                 .padding([0.0, 6.0])
                 .style(move |_theme| iced::widget::container::Style::default()
                     .background(tokens.colors.surface)
-                    .border(iced::Border {
-                        color: tokens.colors.border,
-                        width: 1.0,
-                        radius: 0.0.into(),
-                    })),
+                    .border(dock_chrome_border(tokens, chrome_style))),
             content,
         ]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+    }
+}
+
+fn dock_item_body<'a, Message>(
+    id: &'a DockId,
+    contents: &mut DockContents<'a, Message>,
+    tokens: ThemeTokens,
+    chrome_style: DockChromeStyle,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    let content = contents
+        .items
+        .remove(id)
+        .unwrap_or_else(|| container(space()).into());
+    match chrome_style {
+        DockChromeStyle::Card => container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding([6.0, 8.0])
+            .clip(true)
+            .style(move |_theme| {
+                iced::widget::container::Style::default()
+                    .background(tokens.colors.surface)
+                    .color(tokens.colors.text)
+            })
+            .into(),
+        DockChromeStyle::Segmented | DockChromeStyle::Borderless => container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true)
+            .style(move |_theme| {
+                iced::widget::container::Style::default()
+                    .background(tokens.colors.surface)
+                    .color(tokens.colors.text)
+                    .border(dock_chrome_border(tokens, chrome_style))
+            })
+            .into(),
+    }
+}
+
+fn dock_card_shell<'a, Message>(
+    content: impl Into<Element<'a, Message>>,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .clip(true)
+        .style(card_style(tokens, CardKind::Outlined))
+        .into()
+}
+
+fn dock_card_title_bar<'a, Message>(
+    title_bar: impl Into<Element<'a, Message>>,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    container(title_bar)
+        .width(Length::Fill)
+        .height(Length::Fixed(TITLE_BAR_HEIGHT))
+        .padding([0.0, 8.0])
+        .style(move |_theme| {
+            iced::widget::container::Style::default()
+                .background(tokens.colors.surface)
+                .color(tokens.colors.text)
+        })
+        .into()
+}
+
+fn dock_tab_border(tokens: ThemeTokens, chrome_style: DockChromeStyle) -> iced::Border {
+    match chrome_style {
+        DockChromeStyle::Card => iced::Border::default().rounded(tokens.metrics.radius_sm),
+        DockChromeStyle::Segmented | DockChromeStyle::Borderless => {
+            dock_chrome_border(tokens, chrome_style)
+        }
+    }
+}
+
+fn dock_chrome_border(tokens: ThemeTokens, chrome_style: DockChromeStyle) -> iced::Border {
+    match chrome_style {
+        DockChromeStyle::Segmented => iced::Border {
+            color: tokens.colors.border,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        DockChromeStyle::Borderless | DockChromeStyle::Card => iced::Border::default(),
+    }
+}
+
+fn dock_chrome_color(tokens: ThemeTokens, chrome_style: DockChromeStyle) -> iced::Color {
+    match chrome_style {
+        DockChromeStyle::Segmented => tokens.colors.border,
+        DockChromeStyle::Borderless | DockChromeStyle::Card => iced::Color::TRANSPARENT,
     }
 }
 
