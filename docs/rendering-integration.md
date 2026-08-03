@@ -33,12 +33,13 @@ NanaUI hosted runtime 负责主窗口与工具窗口的生命周期、各自 Sur
 
 `hosted-gpu-demo` 只调用一次 `Adapter::request_device`。直接 WGPU 场景使用宿主持有的 Device/Queue 创建管线、更新 uniform，并渲染到同时具有 `RENDER_ATTACHMENT` 与 `TEXTURE_BINDING` 用途的纹理；`GpuTextureView` 直接采样宿主 `TextureView`，`iced_wgpu::Engine` 接收同一 Device/Queue 的克隆句柄并合成到相同 Surface。Hosted UI 的 Canvas 几何使用 MSAA x4 中间纹理并解析到宿主的单采样目标，不改变 Surface 或 GPU 所有权。场景刷新由 NanaUI 按钮消息驱动，事件循环使用 `ControlFlow::Wait`，没有第二套 Device、CPU 回读、图片编码或持续帧订阅。
 
-交互式宿主通过 `HostedUiRenderer::push_window_event` 入队原生窗口事件并请求重绘；在
-`RedrawRequested` 中先调用 `update`、处理产生的消息，再用最新应用状态调用 `render`
-和 present。输入消息返回的当前窗口 redraw 已由紧随其后的这一帧满足，不会再排队
-一次重复 present；针对其他窗口的 redraw、异步消息以及帧提交后请求的下一帧仍正常
-调度。连续且相邻的鼠标移动只保留最新位置，但不会跨越按下、释放、触摸、键盘或
-窗口事件合并。Surface 仍由宿主配置；低延迟交互窗口推荐将
+交互式宿主通过 `HostedUiRenderer::push_window_event` 入队原生窗口事件并请求重绘。
+`run_hosted` 在 `RedrawRequested` 内构建当前窗口的 UI，消费 pending input 与 redraw
+event；若产生业务消息，同帧先提交对应 cache、更新业务状态并重新构建，直到消息与
+layout 收敛后直接绘制这棵已更新的 `UserInterface`。输入消息返回的当前窗口 redraw 已由
+这一帧满足，不会再排队一次重复 present；针对其他窗口的 redraw、异步消息以及帧提交
+后请求的下一帧仍正常调度。连续且相邻的鼠标移动只保留最新位置，但不会跨越按下、
+释放、触摸、键盘或窗口事件合并。Surface 仍由宿主配置；低延迟交互窗口推荐将
 `desired_maximum_frame_latency` 设为 `1`。
 
 `HostTexture` 以稳定 ID 和 generation 包装引用计数的 WGPU `TextureView`。宿主替换或 resize 纹理时递增 generation，NanaUI 只重建对应 bind group；未出现的纹理实例在帧末从 pipeline cache 清除。当前合同接收可过滤的二维 float 纹理，并使用预乘 Alpha 合成。`GpuTextureView::contain` 在布局区域内保持传入宽高比，业务无需重复实现响应式 contain 计算。
