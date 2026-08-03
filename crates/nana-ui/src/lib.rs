@@ -77,13 +77,13 @@ pub use components::surfaces::{
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-#[cfg(feature = "hosted")]
-pub use dock::hosted_dock_update;
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockContents, DockController, DockDropTarget, DockDropZone,
     DockError, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
     DockUpdate, FloatingDock, dock_workspace,
 };
+#[cfg(feature = "hosted")]
+pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{GpuTextureView, HostTexture};
@@ -98,8 +98,9 @@ pub use hosted_renderer::{HostedUiFrame, HostedUiRenderer, HostedUiTarget};
 #[cfg(feature = "hosted")]
 pub use hosted_runtime::{
     HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError,
-    HostedRuntimeEvent, HostedWindowAction, HostedWindowCommand, HostedWindowEvent,
-    HostedWindowGeometry, HostedWindowId, HostedWindowRole, HostedWindowSettings, run_hosted,
+    HostedRuntimeEvent, HostedTitleBarMode, HostedWindowAction, HostedWindowCommand,
+    HostedWindowEvent, HostedWindowGeometry, HostedWindowId, HostedWindowRole,
+    HostedWindowSettings, run_hosted,
 };
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{

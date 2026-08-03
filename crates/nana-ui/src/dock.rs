@@ -13,8 +13,8 @@ use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{ButtonKind, button_style};
 #[cfg(feature = "hosted")]
 use crate::{
-    HostedProgramUpdate, HostedWindowCommand, HostedWindowEvent, HostedWindowId,
-    HostedWindowSettings,
+    HostedProgramUpdate, HostedTitleBarMode, HostedWindowCommand, HostedWindowEvent,
+    HostedWindowId, HostedWindowSettings,
 };
 
 const DOCK_LAYOUT_VERSION: u8 = 1;
@@ -611,7 +611,17 @@ impl DockController {
     /// Reopens every floating surface already present in a restored layout.
     #[cfg(feature = "hosted")]
     pub fn open_hosted_windows(&self, title: impl Into<String>) -> HostedProgramUpdate {
-        hosted_dock_update(
+        self.open_hosted_windows_with_title_bar(title, HostedTitleBarMode::Native)
+    }
+
+    /// Reopens every floating surface with an explicit host title bar mode.
+    #[cfg(feature = "hosted")]
+    pub fn open_hosted_windows_with_title_bar(
+        &self,
+        title: impl Into<String>,
+        title_bar_mode: HostedTitleBarMode,
+    ) -> HostedProgramUpdate {
+        hosted_dock_update_with_title_bar(
             DockUpdate {
                 changed: false,
                 effects: self
@@ -623,6 +633,7 @@ impl DockController {
                     .collect(),
             },
             title,
+            title_bar_mode,
         )
     }
 
@@ -1253,12 +1264,23 @@ impl DockController {
 /// Converts Dock window effects into commands understood by [`crate::run_hosted`].
 #[cfg(feature = "hosted")]
 pub fn hosted_dock_update(update: DockUpdate, title: impl Into<String>) -> HostedProgramUpdate {
+    hosted_dock_update_with_title_bar(update, title, HostedTitleBarMode::Native)
+}
+
+/// Converts Dock window effects with an explicit host title bar mode.
+#[cfg(feature = "hosted")]
+pub fn hosted_dock_update_with_title_bar(
+    update: DockUpdate,
+    title: impl Into<String>,
+    title_bar_mode: HostedTitleBarMode,
+) -> HostedProgramUpdate {
     let title = title.into();
     let commands = update.effects.into_iter().map(|effect| match effect {
         DockHostEffect::OpenFloating(floating) => HostedWindowCommand::Open {
             id: HostedWindowId::from(floating.surface),
             settings: HostedWindowSettings::new(title.clone())
                 .tool_window()
+                .title_bar_mode(title_bar_mode)
                 .initial_position(f64::from(floating.bounds.x), f64::from(floating.bounds.y))
                 .initial_size(
                     f64::from(floating.bounds.width),
@@ -2758,15 +2780,36 @@ mod tests {
             monitor: None,
         });
         let surface = controller.layout().floating[0].surface;
-        let hosted = hosted_dock_update(dock_update, "NanaUI Dock");
+        let hosted = hosted_dock_update(dock_update.clone(), "NanaUI Dock");
         let HostedWindowCommand::Open { id, settings } = &hosted.window_commands[0] else {
             panic!("hosted open command")
         };
         assert_eq!(*id, HostedWindowId::from(surface));
+        assert_eq!(settings.title_bar_mode, crate::HostedTitleBarMode::Native);
         assert_eq!(settings.initial_position, Some((40.0, 50.0)));
         assert_eq!(settings.initial_size, Size::new(360.0, 280.0));
         let restored = controller.open_hosted_windows("NanaUI Dock");
         assert_eq!(restored.window_commands.len(), 1);
+        let HostedWindowCommand::Open { settings, .. } = &restored.window_commands[0] else {
+            panic!("restored hosted open command")
+        };
+        assert_eq!(settings.title_bar_mode, crate::HostedTitleBarMode::Native);
+        let custom = hosted_dock_update_with_title_bar(
+            dock_update,
+            "NanaUI Dock",
+            crate::HostedTitleBarMode::Custom,
+        );
+        let HostedWindowCommand::Open { id, settings } = &custom.window_commands[0] else {
+            panic!("custom hosted open command")
+        };
+        assert_eq!(*id, HostedWindowId::from(surface));
+        assert_eq!(settings.title_bar_mode, crate::HostedTitleBarMode::Custom);
+        let restored_custom = controller
+            .open_hosted_windows_with_title_bar("NanaUI Dock", crate::HostedTitleBarMode::Custom);
+        let HostedWindowCommand::Open { settings, .. } = &restored_custom.window_commands[0] else {
+            panic!("custom restored hosted open command")
+        };
+        assert_eq!(settings.title_bar_mode, crate::HostedTitleBarMode::Custom);
 
         let geometry = HostedWindowGeometry {
             physical_position: Some((120, 160)),

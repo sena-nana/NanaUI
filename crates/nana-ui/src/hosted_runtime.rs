@@ -39,6 +39,12 @@ pub enum HostedWindowRole {
     Tool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedTitleBarMode {
+    Custom,
+    Native,
+}
+
 /// Native window configuration for [`run_hosted`] and auxiliary windows.
 #[derive(Debug, Clone)]
 pub struct HostedWindowSettings {
@@ -50,6 +56,7 @@ pub struct HostedWindowSettings {
     pub maximized: bool,
     pub transparent: bool,
     pub role: HostedWindowRole,
+    pub title_bar_mode: HostedTitleBarMode,
     pub gpu_retry_interval: Duration,
 }
 
@@ -64,6 +71,7 @@ impl HostedWindowSettings {
             maximized: false,
             transparent: !cfg!(target_os = "macos"),
             role: HostedWindowRole::Main,
+            title_bar_mode: HostedTitleBarMode::Custom,
             gpu_retry_interval: Duration::from_secs(2),
         }
     }
@@ -107,6 +115,22 @@ impl HostedWindowSettings {
 
     pub fn tool_window(mut self) -> Self {
         self.role = HostedWindowRole::Tool;
+        self.title_bar_mode = HostedTitleBarMode::Native;
+        self
+    }
+
+    pub fn title_bar_mode(mut self, mode: HostedTitleBarMode) -> Self {
+        self.title_bar_mode = mode;
+        self
+    }
+
+    pub fn custom_title_bar(mut self) -> Self {
+        self.title_bar_mode = HostedTitleBarMode::Custom;
+        self
+    }
+
+    pub fn native_title_bar(mut self) -> Self {
+        self.title_bar_mode = HostedTitleBarMode::Native;
         self
     }
 }
@@ -564,7 +588,7 @@ fn initialize<Program: HostedProgram>(
             .create_window(window_attributes(&settings))
             .map_err(|error| format!("failed to create hosted window: {error}"))?,
     );
-    if settings.role == HostedWindowRole::Main {
+    if settings.title_bar_mode == HostedTitleBarMode::Custom {
         let _ = prepare_custom_title_bar(window.as_ref());
     }
     let graphics = executor::block_on(HostedGpuContext::new(Arc::clone(&window)))
@@ -872,7 +896,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 .create_window(window_attributes(&settings))
                 .map_err(|error| error.to_string())?,
         );
-        if settings.role == HostedWindowRole::Main {
+        if settings.title_bar_mode == HostedTitleBarMode::Custom {
             let _ = prepare_custom_title_bar(window.as_ref());
         }
         let surface = self
@@ -1343,7 +1367,7 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
     {
         use winit::platform::macos::WindowAttributesExtMacOS;
 
-        if settings.role == HostedWindowRole::Tool {
+        if settings.title_bar_mode == HostedTitleBarMode::Native {
             attributes.with_decorations(true)
         } else {
             attributes
@@ -1356,7 +1380,7 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
 
     #[cfg(not(target_os = "macos"))]
     {
-        attributes.with_decorations(matches!(settings.role, HostedWindowRole::Tool))
+        attributes.with_decorations(settings.title_bar_mode == HostedTitleBarMode::Native)
     }
 }
 
@@ -1380,8 +1404,8 @@ impl std::error::Error for HostedRunError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        HostedProgramUpdate, HostedRedraw, HostedWindowId, HostedWindowSettings,
-        should_request_redraw,
+        HostedProgramUpdate, HostedRedraw, HostedTitleBarMode, HostedWindowId, HostedWindowRole,
+        HostedWindowSettings, should_request_redraw, window_attributes,
     };
 
     #[test]
@@ -1451,5 +1475,35 @@ mod tests {
             settings.initial_physical_geometry,
             Some((20, 40, 1280, 960))
         );
+    }
+
+    #[test]
+    fn title_bar_mode_controls_host_window_decorations() {
+        let main = HostedWindowSettings::new("test");
+        assert_eq!(main.role, HostedWindowRole::Main);
+        assert_eq!(main.title_bar_mode, HostedTitleBarMode::Custom);
+
+        let tool = HostedWindowSettings::new("tool").tool_window();
+        assert_eq!(tool.role, HostedWindowRole::Tool);
+        assert_eq!(tool.title_bar_mode, HostedTitleBarMode::Native);
+        assert!(window_attributes(&tool).decorations);
+
+        let custom_tool = HostedWindowSettings::new("tool")
+            .tool_window()
+            .custom_title_bar();
+        assert_eq!(custom_tool.role, HostedWindowRole::Tool);
+        assert_eq!(custom_tool.title_bar_mode, HostedTitleBarMode::Custom);
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(window_attributes(&main).decorations);
+            assert!(window_attributes(&custom_tool).decorations);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(!window_attributes(&main).decorations);
+            assert!(!window_attributes(&custom_tool).decorations);
+        }
     }
 }
