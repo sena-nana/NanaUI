@@ -16,6 +16,7 @@ pub struct Card<'a, Message> {
     loading: bool,
     loading_phase: u8,
     padding: Padding,
+    height: Length,
 }
 
 impl<'a, Message> Card<'a, Message>
@@ -30,6 +31,7 @@ where
             loading: false,
             loading_phase: 0,
             padding: Padding::from([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x]),
+            height: Length::Shrink,
         }
     }
 
@@ -51,6 +53,11 @@ where
 
     pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
         self.padding = padding.into();
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<Length>) -> Self {
+        self.height = height.into();
         self
     }
 
@@ -76,6 +83,7 @@ where
         content = content.push(self.content);
         container(content)
             .width(Length::Fill)
+            .height(self.height)
             .padding(self.padding)
             .style(card_style(tokens, self.kind))
             .into()

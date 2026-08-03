@@ -44,9 +44,9 @@ use nana_ui::widgets::{
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
-    AppTitleBar, DesktopShell, DockAction, DockAxis, DockContents, DockController, DockHostEffect,
-    DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, PopupShell, PopupTitleBarFrame,
-    SplitAxis, SplitPaneAction, SplitPaneController, dock_workspace,
+    AppTitleBar, DesktopShell, DockAction, DockAxis, DockChromeStyle, DockContents, DockController,
+    DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, PopupShell,
+    PopupTitleBarFrame, SplitAxis, SplitPaneAction, SplitPaneController, dock_workspace,
 };
 
 #[path = "views/controls.rs"]
@@ -621,8 +621,10 @@ fn gallery_dock() -> DockController {
         DockItemSpec::new("gallery.cue", "Cue").limits(140.0, 120.0),
         DockItemSpec::new("gallery.controls", "Controls").limits(140.0, 120.0),
     ];
-    DockController::new("gallery.editor", specs, DockLayout::new(main))
-        .expect("gallery dock definition is valid")
+    let mut dock = DockController::new("gallery.editor", specs, DockLayout::new(main))
+        .expect("gallery dock definition is valid");
+    dock.set_chrome_style(DockChromeStyle::Card);
+    dock
 }
 
 fn section_heading<'a, Message>(
