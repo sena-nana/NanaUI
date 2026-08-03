@@ -1577,7 +1577,7 @@ where
 
 /// Renders one dock surface. Floating surfaces use the same controller and a different root.
 pub fn dock_workspace<'a, Message>(
-    controller: &'a DockController,
+    controller: &DockController,
     surface: DockSurfaceId,
     mut contents: DockContents<'a, Message>,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
@@ -1625,7 +1625,7 @@ where
 /// Renders one single-item floating Dock surface whose card title is also the
 /// custom window title bar.
 pub fn dock_window_workspace<'a, Message>(
-    controller: &'a DockController,
+    controller: &DockController,
     surface: DockSurfaceId,
     mut contents: DockContents<'a, Message>,
     window_chrome: &WindowChromeState,
@@ -1671,8 +1671,8 @@ where
 }
 
 fn dock_window_item_view<'a, Message>(
-    floating: &'a FloatingDock,
-    controller: &'a DockController,
+    floating: &FloatingDock,
+    controller: &DockController,
     contents: &mut DockContents<'a, Message>,
     window_chrome: &WindowChromeState,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
@@ -1686,9 +1686,7 @@ where
         return container(space()).into();
     };
     let surface = floating.surface;
-    let title = controller
-        .item(id)
-        .map_or_else(|| id.as_str(), |spec| spec.title.as_str());
+    let title = dock_item_title(controller, id);
     let title = container(
         text(title)
             .size(11)
@@ -1761,7 +1759,7 @@ fn dock_node_view<'a, Message>(
     node: &DockViewNode,
     surface: DockSurfaceId,
     path: Vec<usize>,
-    controller: &'a DockController,
+    controller: &DockController,
     contents: &mut DockContents<'a, Message>,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
     tokens: ThemeTokens,
@@ -1967,7 +1965,7 @@ fn dock_view_item_view<'a, Message>(
     item: &DockViewItem,
     surface: DockSurfaceId,
     tabs_own_title: bool,
-    controller: &'a DockController,
+    controller: &DockController,
     contents: &mut DockContents<'a, Message>,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
     tokens: ThemeTokens,
@@ -1995,7 +1993,7 @@ fn dock_item_view<'a, Message>(
     id: &DockId,
     surface: DockSurfaceId,
     tabs_own_title: bool,
-    controller: &'a DockController,
+    controller: &DockController,
     contents: &mut DockContents<'a, Message>,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
     tokens: ThemeTokens,
