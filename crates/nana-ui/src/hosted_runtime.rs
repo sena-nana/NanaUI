@@ -58,6 +58,7 @@ pub struct HostedWindowSettings {
     pub role: HostedWindowRole,
     pub title_bar_mode: HostedTitleBarMode,
     pub gpu_retry_interval: Duration,
+    pub required_gpu_features: wgpu::Features,
 }
 
 impl HostedWindowSettings {
@@ -73,6 +74,7 @@ impl HostedWindowSettings {
             role: HostedWindowRole::Main,
             title_bar_mode: HostedTitleBarMode::Custom,
             gpu_retry_interval: Duration::from_secs(2),
+            required_gpu_features: wgpu::Features::empty(),
         }
     }
 
@@ -105,6 +107,11 @@ impl HostedWindowSettings {
 
     pub fn transparent(mut self, transparent: bool) -> Self {
         self.transparent = transparent;
+        self
+    }
+
+    pub fn required_gpu_features(mut self, features: wgpu::Features) -> Self {
+        self.required_gpu_features = features;
         self
     }
 
@@ -591,8 +598,11 @@ fn initialize<Program: HostedProgram>(
     if settings.title_bar_mode == HostedTitleBarMode::Custom {
         let _ = prepare_custom_title_bar(window.as_ref());
     }
-    let graphics = executor::block_on(HostedGpuContext::new(Arc::clone(&window)))
-        .map_err(|error| error.to_string())?;
+    let graphics = executor::block_on(HostedGpuContext::new(
+        Arc::clone(&window),
+        settings.required_gpu_features,
+    ))
+    .map_err(|error| error.to_string())?;
     let iced_window_id = iced::window::Id::unique();
     let context = program_context(&graphics, &proxy, iced_window_id, false);
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
@@ -1100,7 +1110,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
 
     fn recover_device(&mut self, event_loop: &ActiveEventLoop) {
         let primary_window = Arc::clone(self.graphics.window());
-        match executor::block_on(HostedGpuContext::new(primary_window)) {
+        match executor::block_on(HostedGpuContext::new(
+            primary_window,
+            self.settings.required_gpu_features,
+        )) {
             Ok(graphics) => {
                 let ui = hosted_ui_renderer(
                     &graphics,
