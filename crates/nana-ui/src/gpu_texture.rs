@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use iced::wgpu;
 use iced::widget::{container, responsive, shader};
@@ -13,6 +15,13 @@ var source: texture_2d<f32>;
 
 @group(0) @binding(1)
 var source_sampler: sampler;
+
+struct LayerUniform {
+    opacity: vec4<f32>,
+}
+
+@group(0) @binding(2)
+var<uniform> layer: LayerUniform;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -35,15 +44,30 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(source, source_sampler, input.uv);
+    return textureSample(source, source_sampler, input.uv) * layer.opacity.x;
 }
 "#;
 
-/// A ref-counted view of a host-owned, filterable 2D WGPU texture.
+/// A stable handle to a host-owned, filterable 2D WGPU texture.
 ///
-/// `generation` must change whenever the host replaces the underlying view.
+/// The handle remains valid while the host updates the content in place or
+/// replaces the underlying view. `generation` changes only when the view is
+/// replaced, while `version` changes for every content invalidation.
 #[derive(Debug, Clone)]
 pub struct HostTexture {
+    state: Arc<HostTextureState>,
+}
+
+#[derive(Debug)]
+struct HostTextureState {
+    id: u64,
+    generation: AtomicU64,
+    version: AtomicU64,
+    view: RwLock<wgpu::TextureView>,
+}
+
+#[derive(Debug)]
+struct HostTextureSnapshot {
     id: u64,
     generation: u64,
     view: wgpu::TextureView,
@@ -52,30 +76,128 @@ pub struct HostTexture {
 impl HostTexture {
     pub fn from_wgpu(id: u64, generation: u64, view: wgpu::TextureView) -> Self {
         Self {
-            id,
-            generation,
-            view,
+            state: Arc::new(HostTextureState {
+                id,
+                generation: AtomicU64::new(generation),
+                version: AtomicU64::new(generation),
+                view: RwLock::new(view),
+            }),
         }
     }
 
-    pub const fn id(&self) -> u64 {
-        self.id
+    pub fn id(&self) -> u64 {
+        self.state.id
     }
 
-    pub const fn generation(&self) -> u64 {
-        self.generation
+    pub fn generation(&self) -> u64 {
+        self.state.generation.load(Ordering::Acquire)
+    }
+
+    /// Returns the monotonically increasing content version.
+    pub fn version(&self) -> u64 {
+        self.state.version.load(Ordering::Acquire)
+    }
+
+    /// Marks the current view as containing new host-rendered content.
+    pub fn invalidate(&self) -> u64 {
+        self.state.version.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Replaces the sampled view and invalidates the content in one operation.
+    ///
+    /// The stable handle is intentionally retained so an existing Iced tree
+    /// observes the replacement without rebuilding its widgets or layout.
+    pub fn replace_view(&self, view: wgpu::TextureView) -> u64 {
+        *self.state.view.write().expect("host texture view lock") = view;
+        self.state.generation.fetch_add(1, Ordering::AcqRel);
+        self.invalidate()
+    }
+
+    fn snapshot(&self) -> HostTextureSnapshot {
+        HostTextureSnapshot {
+            id: self.id(),
+            generation: self.generation(),
+            view: self
+                .state
+                .view
+                .read()
+                .expect("host texture view lock")
+                .clone(),
+        }
+    }
+}
+
+/// Presentation properties for one host texture layer.
+///
+/// Layer order follows the order of the surrounding Iced elements (for
+/// example, the order of a `stack!`), so composition remains owned by the UI
+/// tree rather than by a second renderer.
+#[derive(Debug, Clone)]
+pub struct HostTextureLayer {
+    texture: HostTexture,
+    opacity: f32,
+    clip: Option<LogicalRect>,
+}
+
+impl HostTextureLayer {
+    pub const fn new(texture: HostTexture) -> Self {
+        Self {
+            texture,
+            opacity: 1.0,
+            clip: None,
+        }
+    }
+
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = finite_opacity(opacity);
+        self
+    }
+
+    pub fn with_clip(mut self, clip: LogicalRect) -> Self {
+        // Clip rectangles use the same window-logical coordinate space as the
+        // Iced layout bounds and are intersected with the parent clip at draw.
+        self.clip = Some(clip);
+        self
+    }
+
+    pub const fn texture(&self) -> &HostTexture {
+        &self.texture
+    }
+
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    pub const fn clip(&self) -> Option<LogicalRect> {
+        self.clip
     }
 }
 
 /// Displays a host texture directly inside an Iced layout region.
 #[derive(Debug, Clone)]
 pub struct GpuTextureView {
-    texture: HostTexture,
+    layer: HostTextureLayer,
 }
 
 impl GpuTextureView {
     pub const fn new(texture: HostTexture) -> Self {
-        Self { texture }
+        Self {
+            layer: HostTextureLayer::new(texture),
+        }
+    }
+
+    pub fn from_layer(layer: HostTextureLayer) -> Self {
+        Self { layer }
+    }
+
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.layer.opacity = finite_opacity(opacity);
+        self
+    }
+
+    pub fn with_clip(mut self, clip: LogicalRect) -> Self {
+        self.layer.clip = Some(clip);
+        self
     }
 
     /// Fits the texture inside the available region while preserving its aspect ratio.
@@ -126,7 +248,7 @@ impl<Message> shader::Program<Message> for GpuTextureView {
         bounds: Rectangle,
     ) -> Self::Primitive {
         GpuTexturePrimitive {
-            texture: self.texture.clone(),
+            layer: self.layer.clone(),
             logical_bounds: LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
         }
     }
@@ -135,7 +257,7 @@ impl<Message> shader::Program<Message> for GpuTextureView {
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct GpuTexturePrimitive {
-    texture: HostTexture,
+    layer: HostTextureLayer,
     logical_bounds: LogicalRect,
 }
 
@@ -146,46 +268,68 @@ impl shader::Primitive for GpuTexturePrimitive {
         &self,
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         _bounds: &Rectangle,
         viewport: &shader::Viewport,
     ) {
-        let slot = RenderSlot::new(
-            self.texture.id,
-            self.logical_bounds,
-            viewport.scale_factor(),
-        );
+        let texture = self.layer.texture.snapshot();
+        let key = TextureKey::new(&self.layer);
+        let slot = RenderSlot::new(texture.id, self.logical_bounds, viewport.scale_factor());
+        let clip = self
+            .layer
+            .clip
+            .map(|clip| RenderSlot::new(texture.id, clip, viewport.scale_factor()).physical);
         let needs_rebind = pipeline
             .textures
-            .get(&self.texture.id)
-            .is_none_or(|prepared| prepared.generation != self.texture.generation);
+            .get(&key)
+            .is_none_or(|prepared| prepared.generation != texture.generation);
 
         if needs_rebind {
+            let layer_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui host texture layer uniform"),
+                size: std::mem::size_of::<LayerUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(
+                &layer_uniform,
+                0,
+                bytemuck::bytes_of(&LayerUniform {
+                    opacity: [self.layer.opacity, 0.0, 0.0, 0.0],
+                }),
+            );
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nana-ui host texture bind group"),
                 layout: &pipeline.bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.texture.view),
+                        resource: wgpu::BindingResource::TextureView(&texture.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: layer_uniform.as_entire_binding(),
+                    },
                 ],
             });
             pipeline.textures.insert(
-                self.texture.id,
+                key,
                 PreparedTexture {
-                    generation: self.texture.generation,
+                    generation: texture.generation,
                     bind_group,
                     slot,
+                    clip,
+                    _layer_uniform: layer_uniform,
                     used: true,
                 },
             );
-        } else if let Some(prepared) = pipeline.textures.get_mut(&self.texture.id) {
+        } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
             prepared.slot = slot;
+            prepared.clip = clip;
             prepared.used = true;
         }
     }
@@ -201,10 +345,20 @@ impl shader::Primitive for GpuTexturePrimitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        let Some(texture) = pipeline.textures.get(&self.texture.id) else {
+        let key = TextureKey::new(&self.layer);
+        let Some(texture) = pipeline.textures.get(&key) else {
             return;
         };
-        let bounds = intersect_physical(texture.slot.physical, *clip_bounds);
+        let clip_bounds = crate::geometry::PhysicalRect {
+            x: clip_bounds.x,
+            y: clip_bounds.y,
+            width: clip_bounds.width,
+            height: clip_bounds.height,
+        };
+        let layer_bounds = texture.clip.map_or(texture.slot.physical, |clip| {
+            intersect_physical(texture.slot.physical, clip)
+        });
+        let bounds = intersect_physical(layer_bounds, clip_bounds);
         if bounds.width == 0 || bounds.height == 0 {
             return;
         }
@@ -225,10 +379,10 @@ impl shader::Primitive for GpuTexturePrimitive {
             multiview_mask: None,
         });
         render_pass.set_viewport(
-            bounds.x as f32,
-            bounds.y as f32,
-            bounds.width as f32,
-            bounds.height as f32,
+            texture.slot.physical.x as f32,
+            texture.slot.physical.y as f32,
+            texture.slot.physical.width as f32,
+            texture.slot.physical.height as f32,
             0.0,
             1.0,
         );
@@ -244,7 +398,7 @@ pub struct GpuTexturePipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    textures: HashMap<u64, PreparedTexture>,
+    textures: HashMap<TextureKey, PreparedTexture>,
 }
 
 impl shader::Pipeline for GpuTexturePipeline {
@@ -270,6 +424,16 @@ impl shader::Pipeline for GpuTexturePipeline {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -334,13 +498,53 @@ struct PreparedTexture {
     generation: u64,
     bind_group: wgpu::BindGroup,
     slot: RenderSlot,
+    clip: Option<crate::geometry::PhysicalRect>,
+    _layer_uniform: wgpu::Buffer,
     used: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TextureKey {
+    id: u64,
+    opacity: u32,
+    clip: Option<[u32; 4]>,
+}
+
+impl TextureKey {
+    fn new(layer: &HostTextureLayer) -> Self {
+        Self {
+            id: layer.texture.id(),
+            opacity: layer.opacity.to_bits(),
+            clip: layer.clip.map(|clip| {
+                [
+                    clip.x.to_bits(),
+                    clip.y.to_bits(),
+                    clip.width.to_bits(),
+                    clip.height.to_bits(),
+                ]
+            }),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LayerUniform {
+    opacity: [f32; 4],
+}
+
+fn finite_opacity(opacity: f32) -> f32 {
+    if opacity.is_finite() {
+        opacity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 fn intersect_physical(
     bounds: crate::geometry::PhysicalRect,
-    clip: Rectangle<u32>,
-) -> Rectangle<u32> {
+    clip: crate::geometry::PhysicalRect,
+) -> crate::geometry::PhysicalRect {
     let left = bounds.x.max(clip.x);
     let top = bounds.y.max(clip.y);
     let right = bounds
@@ -351,7 +555,7 @@ fn intersect_physical(
         .y
         .saturating_add(bounds.height)
         .min(clip.y.saturating_add(clip.height));
-    Rectangle {
+    crate::geometry::PhysicalRect {
         x: left,
         y: top,
         width: right.saturating_sub(left),
