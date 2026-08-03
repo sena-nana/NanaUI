@@ -1,12 +1,15 @@
 //! Iced rendering hosted by an application-owned WGPU context.
 
 use iced::{Color, Element, Pixels, Size, Theme, mouse};
-use iced_wgpu::graphics::core::{Event, renderer, shell, time::Instant, window};
+use iced_wgpu::graphics::core::{
+    Event, InputMethod, Rectangle, input_method, renderer, shell, time::Instant, window,
+};
 use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::conversion;
 use iced_winit::runtime::user_interface::{self, UserInterface};
 use iced_winit::winit;
+use iced_winit::winit::dpi::{LogicalPosition, LogicalSize};
 use iced_winit::winit::event::WindowEvent;
 use iced_winit::winit::keyboard::ModifiersState;
 
@@ -52,6 +55,7 @@ pub struct HostedUiRenderer<Message> {
     cursor: mouse::Cursor,
     waker: shell::Waker,
     modifiers: ModifiersState,
+    ime_state: Option<(Rectangle, input_method::Purpose)>,
     ui_dirty: bool,
     dynamic_dirty: bool,
 }
@@ -99,6 +103,7 @@ impl<Message> HostedUiRenderer<Message> {
             cursor: mouse::Cursor::Unavailable,
             waker: shell::Waker::new(request_redraw),
             modifiers: ModifiersState::default(),
+            ime_state: None,
             ui_dirty: true,
             dynamic_dirty: true,
         }
@@ -254,7 +259,7 @@ impl<Message> HostedUiRenderer<Message> {
         window: &winit::window::Window,
     ) -> Vec<Message> {
         let HostedPreparedFrame { state, messages } = prepared;
-        apply_cursor_state(window, state);
+        self.apply_window_state(window, state);
         messages
     }
 
@@ -306,7 +311,7 @@ impl<Message> HostedUiRenderer<Message> {
         );
         interface.draw(&mut self.renderer, theme, &style, self.cursor);
         self.dynamic_dirty = false;
-        apply_cursor_state(target.window, state);
+        self.apply_window_state(target.window, state);
         let submission = self.renderer.present(
             target.clear_color,
             target.format,
@@ -333,7 +338,7 @@ impl<Message> HostedUiRenderer<Message> {
             .expect("hosted UI must be rebuilt before presenting");
         interface.draw(&mut self.renderer, theme, &style, self.cursor);
         self.dynamic_dirty = false;
-        apply_cursor_state(target.window, state);
+        self.apply_window_state(target.window, state);
         let submission = self.renderer.present(
             target.clear_color,
             target.format,
@@ -345,6 +350,50 @@ impl<Message> HostedUiRenderer<Message> {
             submission,
         }
     }
+
+    fn apply_window_state(&mut self, window: &winit::window::Window, state: user_interface::State) {
+        let user_interface::State::Updated {
+            mouse_interaction,
+            input_method,
+            ..
+        } = state
+        else {
+            return;
+        };
+
+        if let Some(icon) = conversion::mouse_interaction(mouse_interaction) {
+            window.set_cursor(icon);
+            window.set_cursor_visible(true);
+        } else {
+            window.set_cursor_visible(false);
+        }
+
+        let ime_state = match input_method {
+            InputMethod::Disabled => {
+                if self.ime_state.is_some() {
+                    window.set_ime_allowed(false);
+                }
+                None
+            }
+            InputMethod::Enabled {
+                cursor, purpose, ..
+            } => {
+                let next = Some((cursor, purpose));
+                if self.ime_state.is_none() {
+                    window.set_ime_allowed(true);
+                }
+                if self.ime_state != next {
+                    window.set_ime_cursor_area(
+                        LogicalPosition::new(cursor.x, cursor.y),
+                        LogicalSize::new(cursor.width, cursor.height),
+                    );
+                    window.set_ime_purpose(conversion::ime_purpose(purpose));
+                }
+                next
+            }
+        };
+        self.ime_state = ime_state;
+    }
 }
 
 fn queue_event(events: &mut Vec<Event>, event: Event) {
@@ -354,22 +403,6 @@ fn queue_event(events: &mut Vec<Event>, event: Event) {
         *last = event;
     } else {
         events.push(event);
-    }
-}
-
-fn apply_cursor_state(window: &winit::window::Window, state: user_interface::State) {
-    let user_interface::State::Updated {
-        mouse_interaction, ..
-    } = state
-    else {
-        return;
-    };
-
-    if let Some(icon) = conversion::mouse_interaction(mouse_interaction) {
-        window.set_cursor(icon);
-        window.set_cursor_visible(true);
-    } else {
-        window.set_cursor_visible(false);
     }
 }
 
