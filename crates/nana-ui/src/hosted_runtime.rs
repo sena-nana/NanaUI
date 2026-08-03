@@ -24,6 +24,8 @@ use crate::{
     HostedUiRenderer, HostedUiTarget, ThemeMode, WindowChromeAction,
 };
 
+const HOSTED_REDRAW_SETTLE_PASSES: usize = 3;
+
 /// Stable application-owned identity for one hosted window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HostedWindowId(pub u64);
@@ -675,7 +677,6 @@ impl<Program: HostedProgram> HostedReady<Program> {
     ) {
         match event {
             WindowEvent::RedrawRequested => {
-                self.update_interface(event_loop, id);
                 self.redraw(event_loop, id);
             }
             WindowEvent::CloseRequested => self.notify_close_requested(event_loop, id),
@@ -781,35 +782,6 @@ impl<Program: HostedProgram> HostedReady<Program> {
             &context,
         );
         self.apply_program_update(event_loop, update);
-    }
-
-    fn update_interface(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
-        if id == HostedWindowId::PRIMARY {
-            if !self.ui.has_pending_events() {
-                return;
-            }
-            let messages = self.ui.update(
-                self.program.view_window(id, self.material.is_native()),
-                self.graphics.window().as_ref(),
-            );
-            for message in messages {
-                self.process_input_message(event_loop, id, message);
-            }
-            return;
-        }
-        let Some(host) = self.auxiliary.get_mut(&id) else {
-            return;
-        };
-        if !host.ui.has_pending_events() {
-            return;
-        }
-        let messages = host.ui.update(
-            self.program.view_window(id, host.material.is_native()),
-            host.surface.window().as_ref(),
-        );
-        for message in messages {
-            self.process_input_message(event_loop, id, message);
-        }
     }
 
     fn process_message(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
@@ -989,29 +961,97 @@ impl<Program: HostedProgram> HostedReady<Program> {
     }
 
     fn redraw_primary(&mut self, event_loop: &ActiveEventLoop) {
+        let mut passes = 0;
+        let mut first_pass = true;
+        let prepared = 'settle: loop {
+            let context = self.program_context();
+            self.program
+                .prepare_window_frame(HostedWindowId::PRIMARY, &context);
+            let mut prepared = if first_pass {
+                self.ui.prepare_frame(
+                    self.program
+                        .view_window(HostedWindowId::PRIMARY, self.material.is_native()),
+                    self.graphics.window().as_ref(),
+                    Instant::now(),
+                )
+            } else {
+                self.ui.prepare_redraw(
+                    self.program
+                        .view_window(HostedWindowId::PRIMARY, self.material.is_native()),
+                    self.graphics.window().as_ref(),
+                    Instant::now(),
+                )
+            };
+            first_pass = false;
+
+            loop {
+                passes += 1;
+                let message_count = prepared.message_count();
+                let has_layout_changed = prepared.has_layout_changed();
+                if message_count > 0 {
+                    if passes >= HOSTED_REDRAW_SETTLE_PASSES {
+                        break 'settle prepared;
+                    }
+                    let messages = self
+                        .ui
+                        .cache_prepared(prepared, self.graphics.window().as_ref());
+                    for message in messages {
+                        self.process_input_message(event_loop, HostedWindowId::PRIMARY, message);
+                    }
+                    continue 'settle;
+                }
+                if !has_layout_changed {
+                    break 'settle prepared;
+                }
+                if passes >= HOSTED_REDRAW_SETTLE_PASSES {
+                    break 'settle prepared;
+                }
+                self.ui.update_prepared_redraw(
+                    &mut prepared,
+                    self.graphics.window().as_ref(),
+                    Instant::now(),
+                );
+            }
+        };
         let frame = match self.graphics.acquire_frame() {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
             Ok(HostedSurfaceFrame::Retry) => {
+                let messages = self
+                    .ui
+                    .cache_prepared(prepared, self.graphics.window().as_ref());
+                for message in messages {
+                    let _ = self.proxy.send_event(message);
+                }
                 self.graphics.window().request_redraw();
                 return;
             }
-            Ok(HostedSurfaceFrame::Skipped) => return,
+            Ok(HostedSurfaceFrame::Skipped) => {
+                let messages = self
+                    .ui
+                    .cache_prepared(prepared, self.graphics.window().as_ref());
+                for message in messages {
+                    let _ = self.proxy.send_event(message);
+                }
+                return;
+            }
             Err(error) => {
+                let messages = self
+                    .ui
+                    .cache_prepared(prepared, self.graphics.window().as_ref());
+                for message in messages {
+                    let _ = self.proxy.send_event(message);
+                }
                 self.suspend_rendering(event_loop, error);
                 return;
             }
         };
-        let context = self.program_context();
-        self.program
-            .prepare_window_frame(HostedWindowId::PRIMARY, &context);
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let theme_mode = self.program.theme_mode();
         let colors = theme_mode.colors();
-        let ui_frame = self.ui.render(
-            self.program
-                .view_window(HostedWindowId::PRIMARY, self.material.is_native()),
+        let ui_frame = self.ui.present_prepared(
+            prepared,
             &theme_mode.iced_theme(),
             renderer::Style {
                 text_color: colors.text,
@@ -1038,8 +1078,66 @@ impl<Program: HostedProgram> HostedReady<Program> {
     }
 
     fn redraw_auxiliary(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
-        let context = self.program_context();
-        self.program.prepare_window_frame(id, &context);
+        let mut passes = 0;
+        let mut first_pass = true;
+        let (prepared, material) = 'settle: loop {
+            let Some((window, material)) = self
+                .auxiliary
+                .get(&id)
+                .map(|host| (Arc::clone(host.surface.window()), host.material))
+            else {
+                return;
+            };
+            let context = self.program_context();
+            self.program.prepare_window_frame(id, &context);
+            let mut prepared = {
+                let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
+                if first_pass {
+                    host.ui.prepare_frame(
+                        self.program.view_window(id, material.is_native()),
+                        window.as_ref(),
+                        Instant::now(),
+                    )
+                } else {
+                    host.ui.prepare_redraw(
+                        self.program.view_window(id, material.is_native()),
+                        window.as_ref(),
+                        Instant::now(),
+                    )
+                }
+            };
+            first_pass = false;
+
+            loop {
+                passes += 1;
+                let message_count = prepared.message_count();
+                let has_layout_changed = prepared.has_layout_changed();
+                if message_count > 0 {
+                    if passes >= HOSTED_REDRAW_SETTLE_PASSES {
+                        break 'settle (prepared, material);
+                    }
+                    let messages = {
+                        let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
+                        host.ui.cache_prepared(prepared, window.as_ref())
+                    };
+                    for message in messages {
+                        self.process_input_message(event_loop, id, message);
+                    }
+                    continue 'settle;
+                }
+                if !has_layout_changed {
+                    break 'settle (prepared, material);
+                }
+                if passes >= HOSTED_REDRAW_SETTLE_PASSES {
+                    break 'settle (prepared, material);
+                }
+                {
+                    let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
+                    host.ui
+                        .update_prepared_redraw(&mut prepared, window.as_ref(), Instant::now());
+                }
+            }
+        };
         let frame = {
             let Some(host) = self.auxiliary.get_mut(&id) else {
                 return;
@@ -1047,11 +1145,31 @@ impl<Program: HostedProgram> HostedReady<Program> {
             match self.graphics.acquire_surface_frame(&mut host.surface) {
                 Ok(HostedSurfaceFrame::Ready(frame)) => frame,
                 Ok(HostedSurfaceFrame::Retry) => {
+                    let messages = host
+                        .ui
+                        .cache_prepared(prepared, host.surface.window().as_ref());
+                    for message in messages {
+                        let _ = self.proxy.send_event(message);
+                    }
                     host.surface.window().request_redraw();
                     return;
                 }
-                Ok(HostedSurfaceFrame::Skipped) => return,
+                Ok(HostedSurfaceFrame::Skipped) => {
+                    let messages = host
+                        .ui
+                        .cache_prepared(prepared, host.surface.window().as_ref());
+                    for message in messages {
+                        let _ = self.proxy.send_event(message);
+                    }
+                    return;
+                }
                 Err(error) => {
+                    let messages = host
+                        .ui
+                        .cache_prepared(prepared, host.surface.window().as_ref());
+                    for message in messages {
+                        let _ = self.proxy.send_event(message);
+                    }
                     self.suspend_rendering(event_loop, error);
                     return;
                 }
@@ -1062,11 +1180,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let theme_mode = self.program.theme_mode();
         let colors = theme_mode.colors();
-        let material = self.auxiliary[&id].material;
         let ui_frame = {
             let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
-            host.ui.render(
-                self.program.view_window(id, material.is_native()),
+            host.ui.present_prepared(
+                prepared,
                 &theme_mode.iced_theme(),
                 renderer::Style {
                     text_color: colors.text,

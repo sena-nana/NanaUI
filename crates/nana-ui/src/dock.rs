@@ -1971,7 +1971,7 @@ where
                 .height(Length::Fill)
                 .padding(16),
         };
-        stack![content, overlay]
+        stack([content, overlay.into()])
             .width(Length::Fill)
             .height(Length::Fill)
             .into()

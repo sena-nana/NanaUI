@@ -16,6 +16,22 @@ pub struct HostedUiFrame<Message> {
     pub submission: wgpu::SubmissionIndex,
 }
 
+pub(crate) struct HostedPreparedFrame<'a, Message> {
+    interface: UserInterface<'a, Message, Theme, Renderer>,
+    state: user_interface::State,
+    messages: Vec<Message>,
+}
+
+impl<Message> HostedPreparedFrame<'_, Message> {
+    pub(crate) fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub(crate) fn has_layout_changed(&self) -> bool {
+        self.state.has_layout_changed()
+    }
+}
+
 /// Host-owned surface target for one NanaUI frame.
 pub struct HostedUiTarget<'a> {
     pub window: &'a winit::window::Window,
@@ -149,6 +165,75 @@ impl HostedUiRenderer {
             return Vec::new();
         }
 
+        let events = std::mem::take(&mut self.events);
+        self.update_events(content, window, &events)
+    }
+
+    pub(crate) fn prepare_frame<'a, Message>(
+        &mut self,
+        content: Element<'a, Message>,
+        window: &winit::window::Window,
+        now: Instant,
+    ) -> HostedPreparedFrame<'a, Message> {
+        let mut events = std::mem::take(&mut self.events);
+        events.push(Event::Window(window::Event::RedrawRequested(now)));
+        self.prepare_events(content, window, &events)
+    }
+
+    pub(crate) fn prepare_redraw<'a, Message>(
+        &mut self,
+        content: Element<'a, Message>,
+        window: &winit::window::Window,
+        now: Instant,
+    ) -> HostedPreparedFrame<'a, Message> {
+        self.prepare_events(
+            content,
+            window,
+            &[Event::Window(window::Event::RedrawRequested(now))],
+        )
+    }
+
+    pub(crate) fn update_prepared_redraw<Message>(
+        &mut self,
+        prepared: &mut HostedPreparedFrame<'_, Message>,
+        window: &winit::window::Window,
+        now: Instant,
+    ) {
+        let mut messages = Vec::new();
+        let event = Event::Window(window::Event::RedrawRequested(now));
+        let (state, _) = prepared.interface.update(
+            window,
+            &self.waker,
+            &[event],
+            self.cursor,
+            &mut self.renderer,
+            &mut messages,
+        );
+        prepared.state = state;
+        prepared.messages = messages;
+    }
+
+    pub(crate) fn cache_prepared<Message>(
+        &mut self,
+        prepared: HostedPreparedFrame<'_, Message>,
+        window: &winit::window::Window,
+    ) -> Vec<Message> {
+        let HostedPreparedFrame {
+            interface,
+            state,
+            messages,
+        } = prepared;
+        self.cache = interface.into_cache();
+        apply_cursor_state(window, state);
+        messages
+    }
+
+    fn update_events<Message>(
+        &mut self,
+        content: Element<'_, Message>,
+        window: &winit::window::Window,
+        events: &[Event],
+    ) -> Vec<Message> {
         let mut interface = UserInterface::build(
             content,
             self.viewport.logical_size(),
@@ -156,17 +241,45 @@ impl HostedUiRenderer {
             &mut self.renderer,
         );
         let mut messages = Vec::new();
-        let _ = interface.update(
+        let (state, _) = interface.update(
             window,
             &self.waker,
-            &self.events,
+            events,
             self.cursor,
             &mut self.renderer,
             &mut messages,
         );
-        self.events.clear();
         self.cache = interface.into_cache();
+        apply_cursor_state(window, state);
         messages
+    }
+
+    fn prepare_events<'a, Message>(
+        &mut self,
+        content: Element<'a, Message>,
+        window: &winit::window::Window,
+        events: &[Event],
+    ) -> HostedPreparedFrame<'a, Message> {
+        let mut interface = UserInterface::build(
+            content,
+            self.viewport.logical_size(),
+            std::mem::take(&mut self.cache),
+            &mut self.renderer,
+        );
+        let mut messages = Vec::new();
+        let (state, _) = interface.update(
+            window,
+            &self.waker,
+            events,
+            self.cursor,
+            &mut self.renderer,
+            &mut messages,
+        );
+        HostedPreparedFrame {
+            interface,
+            state,
+            messages,
+        }
     }
 
     /// Draws the latest UI tree into the host's current surface texture.
@@ -197,6 +310,33 @@ impl HostedUiRenderer {
             &mut self.renderer,
             &mut messages,
         );
+        interface.draw(&mut self.renderer, theme, &style, self.cursor);
+        self.cache = interface.into_cache();
+        apply_cursor_state(target.window, state);
+        let submission = self.renderer.present(
+            target.clear_color,
+            target.format,
+            target.view,
+            &self.viewport,
+        );
+        HostedUiFrame {
+            messages,
+            submission,
+        }
+    }
+
+    pub(crate) fn present_prepared<Message>(
+        &mut self,
+        prepared: HostedPreparedFrame<'_, Message>,
+        theme: &Theme,
+        style: renderer::Style,
+        target: HostedUiTarget<'_>,
+    ) -> HostedUiFrame<Message> {
+        let HostedPreparedFrame {
+            mut interface,
+            state,
+            messages,
+        } = prepared;
         interface.draw(&mut self.renderer, theme, &style, self.cursor);
         self.cache = interface.into_cache();
         apply_cursor_state(target.window, state);
