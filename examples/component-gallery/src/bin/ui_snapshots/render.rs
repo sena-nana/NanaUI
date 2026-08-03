@@ -105,103 +105,38 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             ThemeMode::Light,
             WindowChrome::native_leading(78.0),
         )?,
-        dock_drag_window_snapshot(
-            &mut renderer,
-            &output,
-            "dock-drag-window-dark.png",
-            ThemeMode::Dark,
-            WindowChrome::custom(),
-        )?,
-        dock_drag_window_snapshot(
-            &mut renderer,
-            &output,
-            "dock-drag-window-light.png",
-            ThemeMode::Light,
-            WindowChrome::custom(),
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-left-dark.png",
-            ThemeMode::Dark,
-            DockDropZone::Left,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-right-dark.png",
-            ThemeMode::Dark,
-            DockDropZone::Right,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-top-dark.png",
-            ThemeMode::Dark,
-            DockDropZone::Top,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-bottom-dark.png",
-            ThemeMode::Dark,
-            DockDropZone::Bottom,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-tab-dark.png",
-            ThemeMode::Dark,
-            DockDropZone::Tab,
-        )?,
-        dock_outside_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-outside-dark.png",
-            ThemeMode::Dark,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-left-light.png",
-            ThemeMode::Light,
-            DockDropZone::Left,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-right-light.png",
-            ThemeMode::Light,
-            DockDropZone::Right,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-top-light.png",
-            ThemeMode::Light,
-            DockDropZone::Top,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-bottom-light.png",
-            ThemeMode::Light,
-            DockDropZone::Bottom,
-        )?,
-        dock_preview_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-tab-light.png",
-            ThemeMode::Light,
-            DockDropZone::Tab,
-        )?,
-        dock_outside_snapshot(
-            &mut renderer,
-            &output,
-            "dock-preview-outside-light.png",
-            ThemeMode::Light,
-        )?,
     ];
+
+    for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
+        paths.push(dock_drag_window_snapshot(
+            &mut renderer,
+            &output,
+            &format!("dock-drag-window-{suffix}.png"),
+            theme,
+            WindowChrome::custom(),
+        )?);
+        for (name, zone) in [
+            ("left", DockDropZone::Left),
+            ("right", DockDropZone::Right),
+            ("top", DockDropZone::Top),
+            ("bottom", DockDropZone::Bottom),
+            ("tab", DockDropZone::Tab),
+        ] {
+            paths.push(dock_preview_snapshot(
+                &mut renderer,
+                &output,
+                &format!("dock-preview-{name}-{suffix}.png"),
+                theme,
+                zone,
+            )?);
+        }
+        paths.push(dock_outside_snapshot(
+            &mut renderer,
+            &output,
+            &format!("dock-preview-outside-{suffix}.png"),
+            theme,
+        )?);
+    }
 
     let controls = GalleryState::new();
     paths.push(gallery_snapshot(
@@ -552,10 +487,7 @@ fn dock_preview_snapshot(
     let view = dock_workspace(
         &controller,
         DockSurfaceId(0),
-        DockContents::new()
-            .insert("source", container(text("Source")).center(Length::Fill))
-            .insert("panel", container(text("Panel")).center(Length::Fill))
-            .insert("editor", container(text("Editor")).center(Length::Fill)),
+        dock_preview_contents(),
         |_| (),
         colors,
     );
@@ -577,10 +509,7 @@ fn dock_outside_snapshot(
     let view = dock_workspace(
         &controller,
         DockSurfaceId(0),
-        DockContents::new()
-            .insert("source", container(text("Source")).center(Length::Fill))
-            .insert("panel", container(text("Panel")).center(Length::Fill))
-            .insert("editor", container(text("Editor")).center(Length::Fill)),
+        dock_preview_contents(),
         |_| (),
         colors,
     );
@@ -633,6 +562,13 @@ fn dock_preview_controller(
     std::thread::sleep(std::time::Duration::from_millis(100));
     controller.update(DockAction::Hover(false));
     Ok(controller)
+}
+
+fn dock_preview_contents() -> DockContents<'static, ()> {
+    DockContents::new()
+        .insert("source", container(text("Source")).center(Length::Fill))
+        .insert("panel", container(text("Panel")).center(Length::Fill))
+        .insert("editor", container(text("Editor")).center(Length::Fill))
 }
 
 fn gallery_snapshot(

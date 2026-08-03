@@ -1312,6 +1312,15 @@ impl DockController {
         }
     }
 
+    fn drag_card_bounds(position: Point) -> DockBounds {
+        DockBounds::new(
+            position.x + DRAG_CARD_OFFSET,
+            position.y + DRAG_CARD_OFFSET,
+            DRAG_CARD_WIDTH,
+            DRAG_CARD_HEIGHT,
+        )
+    }
+
     fn begin_transient_drag(
         &mut self,
         drag: &mut ActiveDrag,
@@ -1323,12 +1332,7 @@ impl DockController {
         if drag.surface == DockSurfaceId(0) {
             let surface = DockSurfaceId(self.next_surface);
             self.next_surface = self.next_surface.saturating_add(1);
-            let bounds = DockBounds::new(
-                position.x + DRAG_CARD_OFFSET,
-                position.y + DRAG_CARD_OFFSET,
-                DRAG_CARD_WIDTH,
-                DRAG_CARD_HEIGHT,
-            );
+            let bounds = Self::drag_card_bounds(position);
             drag.transient_surface = Some(surface);
             drag.transient_ready = false;
             drag.bounds = Some(bounds);
@@ -1376,28 +1380,10 @@ impl DockController {
         let position = drag.position;
         let Some(surface) = drag.transient_surface else {
             return position.map_or_else(DockUpdate::default, |position| {
-                self.float(
-                    drag.id,
-                    DockBounds::new(
-                        position.x + DRAG_CARD_OFFSET,
-                        position.y + DRAG_CARD_OFFSET,
-                        DRAG_CARD_WIDTH,
-                        DRAG_CARD_HEIGHT,
-                    ),
-                    None,
-                )
+                self.float(drag.id, Self::drag_card_bounds(position), None)
             });
         };
-        let bounds = drag.bounds.or_else(|| {
-            position.map(|position| {
-                DockBounds::new(
-                    position.x + DRAG_CARD_OFFSET,
-                    position.y + DRAG_CARD_OFFSET,
-                    DRAG_CARD_WIDTH,
-                    DRAG_CARD_HEIGHT,
-                )
-            })
-        });
+        let bounds = drag.bounds.or_else(|| position.map(Self::drag_card_bounds));
         let Some(bounds) = bounds.filter(|bounds| valid_bounds(*bounds)) else {
             return DockUpdate::default();
         };
@@ -2045,6 +2031,31 @@ where
     }))
 }
 
+fn dock_surface_view<'a, Message>(
+    controller: &DockController,
+    surface: DockSurfaceId,
+    content: impl Into<Element<'a, Message>>,
+    on_action: impl Fn(DockAction) -> Message + Copy + 'a,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let surface_id = surface;
+    let surface = DockSurface::new(content, move |bounds| {
+        on_action(DockAction::SurfaceLayout {
+            surface: surface_id,
+            bounds,
+        })
+    });
+    let surface =
+        if let Some(pointer) = dock_surface_pointer_handler(controller, surface_id, on_action) {
+            surface.with_pointer(move |event| pointer(event))
+        } else {
+            surface
+        };
+    Element::new(surface)
+}
+
 /// Renders one dock surface. Floating surfaces use the same controller and a different root.
 pub fn dock_workspace<'a, Message>(
     controller: &DockController,
@@ -2093,20 +2104,7 @@ where
     } else {
         content
     };
-    let surface_id = surface;
-    let surface = DockSurface::new(content, move |bounds| {
-        on_action(DockAction::SurfaceLayout {
-            surface: surface_id,
-            bounds,
-        })
-    });
-    let surface =
-        if let Some(pointer) = dock_surface_pointer_handler(controller, surface_id, on_action) {
-            surface.with_pointer(move |event| pointer(event))
-        } else {
-            surface
-        };
-    Element::new(surface)
+    dock_surface_view(controller, surface, content, on_action)
 }
 
 /// Renders one single-item floating Dock surface whose card title is also the
@@ -2159,20 +2157,7 @@ where
                 .background(tokens.colors.background)
                 .color(tokens.colors.text)
         });
-    let surface_id = surface;
-    let surface = DockSurface::new(content, move |bounds| {
-        on_action(DockAction::SurfaceLayout {
-            surface: surface_id,
-            bounds,
-        })
-    });
-    let surface =
-        if let Some(pointer) = dock_surface_pointer_handler(controller, surface_id, on_action) {
-            surface.with_pointer(move |event| pointer(event))
-        } else {
-            surface
-        };
-    Element::new(surface)
+    dock_surface_view(controller, surface, content, on_action)
 }
 
 fn dock_fallback_drag_card<'a, Message>(
