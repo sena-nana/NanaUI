@@ -133,35 +133,13 @@ where
         if let Some(content) = self.trailing {
             trailing = trailing.push(content);
         }
-        if self.chrome.uses_custom_controls()
-            && let Some(on_event) = self.on_window_event.as_ref()
-        {
-            trailing = trailing
-                .push(window_control_button(
-                    Icon::Minimize,
-                    WindowChromeAction::Minimize,
-                    false,
-                    self.tokens,
-                    on_event,
-                ))
-                .push(window_control_button(
-                    if self.maximized {
-                        Icon::Restore
-                    } else {
-                        Icon::Maximize
-                    },
-                    WindowChromeAction::ToggleMaximize,
-                    false,
-                    self.tokens,
-                    on_event,
-                ))
-                .push(window_control_button(
-                    Icon::Close,
-                    WindowChromeAction::Close,
-                    true,
-                    self.tokens,
-                    on_event,
-                ));
+        if let Some(on_event) = self.on_window_event.as_ref() {
+            trailing = trailing.push(window_chrome_controls(
+                self.chrome,
+                self.maximized,
+                self.tokens,
+                on_event,
+            ));
         }
         let leading = container(leading)
             .width(Length::Fill)
@@ -207,14 +185,78 @@ where
         let Some(on_event) = self.on_window_event else {
             return bar.into();
         };
-        let on_move = on_event.clone();
-        mouse_area(bar)
-            .on_move(move |position| on_move(WindowChromeEvent::PointerMoved(position)))
-            .on_press(on_event(WindowChromeEvent::PointerPressed))
-            .on_release(on_event(WindowChromeEvent::PointerReleased))
-            .on_exit(on_event(WindowChromeEvent::PointerCancelled))
-            .into()
+        let bar = window_chrome_drag_start_area(bar, &on_event);
+        window_chrome_drag_tracker(bar, on_event)
     }
+}
+
+pub(crate) fn window_chrome_controls<'a, Message>(
+    chrome: WindowChrome,
+    maximized: bool,
+    tokens: ThemeTokens,
+    on_event: &Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let controls = row![].spacing(2).align_y(Alignment::Center);
+    if !chrome.uses_custom_controls() {
+        return controls.into();
+    }
+    controls
+        .push(window_control_button(
+            Icon::Minimize,
+            WindowChromeAction::Minimize,
+            false,
+            tokens,
+            on_event,
+        ))
+        .push(window_control_button(
+            if maximized {
+                Icon::Restore
+            } else {
+                Icon::Maximize
+            },
+            WindowChromeAction::ToggleMaximize,
+            false,
+            tokens,
+            on_event,
+        ))
+        .push(window_control_button(
+            Icon::Close,
+            WindowChromeAction::Close,
+            true,
+            tokens,
+            on_event,
+        ))
+        .into()
+}
+
+pub(crate) fn window_chrome_drag_start_area<'a, Message>(
+    content: impl Into<Element<'a, Message>>,
+    on_event: &Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    mouse_area(content)
+        .on_press(on_event(WindowChromeEvent::PointerPressed))
+        .into()
+}
+
+pub(crate) fn window_chrome_drag_tracker<'a, Message>(
+    content: impl Into<Element<'a, Message>>,
+    on_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let on_move = on_event.clone();
+    mouse_area(content)
+        .on_move(move |position| on_move(WindowChromeEvent::PointerMoved(position)))
+        .on_release(on_event(WindowChromeEvent::PointerReleased))
+        .on_exit(on_event(WindowChromeEvent::PointerCancelled))
+        .into()
 }
 
 fn window_control_button<'a, Message>(

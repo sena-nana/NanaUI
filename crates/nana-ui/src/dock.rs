@@ -4,13 +4,18 @@ use std::rc::Rc;
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
 use iced::widget::{button, column, container, row, space, stack, text};
-use iced::{Alignment, Element, Event, Length, Point, Rectangle, Size, Subscription};
+use iced::{Alignment, Element, Event, Length, Padding, Point, Rectangle, Size, Subscription};
 use serde::{Deserialize, Serialize};
 
 use crate::drag_handle::DragHandle;
+use crate::geometry::TITLE_BAR_HEIGHT as WINDOW_TITLE_BAR_HEIGHT;
 use crate::resize_drag::{ResizeAxis, ResizeDrag};
+use crate::shell::{
+    window_chrome_controls, window_chrome_drag_start_area, window_chrome_drag_tracker,
+};
 use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{ButtonKind, CardKind, button_style, card_style};
+use crate::window_chrome::{WindowChromeEvent, WindowChromeState};
 #[cfg(feature = "hosted")]
 use crate::{
     HostedProgramUpdate, HostedTitleBarMode, HostedWindowCommand, HostedWindowEvent,
@@ -369,6 +374,7 @@ pub enum DockError {
     DuplicateDock(DockId),
     MissingCenter(DockId),
     InvalidCenter(DockId),
+    InvalidFloatingSurface(DockSurfaceId),
     InvalidTabs,
     InvalidSplit,
     UnknownDock(DockId),
@@ -1019,7 +1025,11 @@ impl DockController {
     }
 
     fn dock(&mut self, id: DockId, target: DockDropTarget) -> DockUpdate {
-        if id == self.center || id == target.id || !self.specs.contains_key(&id) {
+        if target.surface != DockSurfaceId(0)
+            || id == self.center
+            || id == target.id
+            || !self.specs.contains_key(&id)
+        {
             return DockUpdate::default();
         }
         let (removed, closed_surface) = remove_from_layout(&mut self.layout, &id);
@@ -1028,19 +1038,11 @@ impl DockController {
         }
         self.layout.hidden.retain(|hidden| hidden != &id);
         let node = DockNode::item(id);
-        let target_root = if target.surface == DockSurfaceId(0) {
-            Some(&mut self.layout.main)
-        } else {
-            self.layout
-                .floating
-                .iter_mut()
-                .find(|floating| floating.surface == target.surface)
-                .map(|floating| &mut floating.root)
-        };
-        let inserted = target_root.is_some_and(|root| match target.zone {
+        let root = &mut self.layout.main;
+        let inserted = match target.zone {
             DockDropZone::Tab => insert_tab(root, &target.id, node.clone()),
             zone => insert_split(root, &target.id, node.clone(), zone),
-        });
+        };
         if !inserted {
             insert_tab(&mut self.layout.main, &self.center, node);
         }
@@ -1184,44 +1186,32 @@ impl DockController {
     }
 
     fn drop_target_at(&self, dragged: &DockId, position: Point) -> Option<DockDropTarget> {
-        let mut surfaces = self
-            .layout
-            .floating
-            .iter()
-            .rev()
-            .map(|floating| (floating.surface, &floating.root))
-            .collect::<Vec<_>>();
-        surfaces.push((DockSurfaceId(0), &self.layout.main));
-        for (surface, root) in surfaces {
-            let bounds = self.global_layout_bounds(surface);
-            if !bounds_contains(bounds, position) {
-                continue;
-            }
-            let mut targets = Vec::new();
-            collect_drop_targets(root, bounds, &mut targets);
-            if let Some((id, bounds)) = targets
-                .into_iter()
-                .find(|(id, bounds)| id != dragged && bounds_contains(*bounds, position))
-            {
-                let local_x = (position.x - bounds.x) / bounds.width.max(1.0);
-                let local_y = (position.y - bounds.y) / bounds.height.max(1.0);
-                let zone = if local_x <= 0.25 {
-                    DockDropZone::Left
-                } else if local_x >= 0.75 {
-                    DockDropZone::Right
-                } else if local_y <= 0.25 {
-                    DockDropZone::Top
-                } else if local_y >= 0.75 {
-                    DockDropZone::Bottom
-                } else if id == self.center {
-                    continue;
-                } else {
-                    DockDropZone::Tab
-                };
-                return Some(DockDropTarget { surface, id, zone });
-            }
+        let surface = DockSurfaceId(0);
+        let bounds = self.global_layout_bounds(surface);
+        if !bounds_contains(bounds, position) {
+            return None;
         }
-        None
+        let mut targets = Vec::new();
+        collect_drop_targets(&self.layout.main, bounds, &mut targets);
+        let (id, bounds) = targets
+            .into_iter()
+            .find(|(id, bounds)| id != dragged && bounds_contains(*bounds, position))?;
+        let local_x = (position.x - bounds.x) / bounds.width.max(1.0);
+        let local_y = (position.y - bounds.y) / bounds.height.max(1.0);
+        let zone = if local_x <= 0.25 {
+            DockDropZone::Left
+        } else if local_x >= 0.75 {
+            DockDropZone::Right
+        } else if local_y <= 0.25 {
+            DockDropZone::Top
+        } else if local_y >= 0.75 {
+            DockDropZone::Bottom
+        } else if id == self.center {
+            return None;
+        } else {
+            DockDropZone::Tab
+        };
+        Some(DockDropTarget { surface, id, zone })
     }
 
     fn retain_active_surface_geometry(&mut self) {
@@ -1545,6 +1535,141 @@ where
     }))
 }
 
+/// Renders one single-item floating Dock surface whose card title is also the
+/// custom window title bar.
+pub fn dock_window_workspace<'a, Message>(
+    controller: &'a DockController,
+    surface: DockSurfaceId,
+    mut contents: DockContents<'a, Message>,
+    window_chrome: &WindowChromeState,
+    on_action: impl Fn(DockAction) -> Message + Copy + 'a,
+    on_window_event: impl Fn(WindowChromeEvent) -> Message + 'a,
+    theme: impl Into<ThemeTokens>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let tokens = theme.into();
+    let floating = controller
+        .layout
+        .floating
+        .iter()
+        .find(|floating| surface != DockSurfaceId(0) && floating.surface == surface);
+    let content = match floating {
+        Some(floating) => dock_window_item_view(
+            floating,
+            controller,
+            &mut contents,
+            window_chrome,
+            on_action,
+            Rc::new(on_window_event),
+            tokens,
+        ),
+        _ => container(space())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+    };
+    let content = container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_theme| {
+            iced::widget::container::Style::default()
+                .background(tokens.colors.background)
+                .color(tokens.colors.text)
+        });
+    Element::new(DockSurface::new(content, move |bounds| {
+        on_action(DockAction::SurfaceLayout { surface, bounds })
+    }))
+}
+
+fn dock_window_item_view<'a, Message>(
+    floating: &'a FloatingDock,
+    controller: &'a DockController,
+    contents: &mut DockContents<'a, Message>,
+    window_chrome: &WindowChromeState,
+    on_action: impl Fn(DockAction) -> Message + Copy + 'a,
+    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let DockNode::Item { id } = &floating.root else {
+        return container(space()).into();
+    };
+    let surface = floating.surface;
+    let title = controller
+        .item(id)
+        .map_or_else(|| id.as_str(), |spec| spec.title.as_str());
+    let title = container(
+        text(title)
+            .size(11)
+            .font(ui_font(iced::font::Weight::Semibold)),
+    )
+    .height(Length::Fill)
+    .padding(Padding {
+        top: 0.0,
+        right: 8.0,
+        bottom: 0.0,
+        left: 0.0,
+    })
+    .center_y(Length::Fill);
+    let title: Element<'a, Message> = if controller.layout.locked {
+        window_chrome_drag_start_area(title, &on_window_event)
+    } else {
+        dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
+    };
+    let chrome = window_chrome.chrome();
+    let controls = window_chrome_controls(
+        chrome,
+        window_chrome.is_maximized(),
+        tokens,
+        &on_window_event,
+    );
+    let controls = container(controls)
+        .height(Length::Fill)
+        .align_y(iced::alignment::Vertical::Center)
+        .padding(Padding {
+            top: 0.0,
+            right: 6.0 + chrome.trailing_inset,
+            bottom: 0.0,
+            left: 6.0,
+        });
+    let window_drag = window_chrome_drag_start_area(
+        space().width(Length::Fill).height(Length::Fill),
+        &on_window_event,
+    );
+    let title_bar = container(
+        row![
+            space().width(Length::Fixed(6.0 + chrome.leading_inset)),
+            title,
+            window_drag,
+            controls,
+        ]
+        .height(Length::Fill)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(WINDOW_TITLE_BAR_HEIGHT))
+    .clip(true)
+    .style(move |_theme| {
+        iced::widget::container::Style::default()
+            .background(tokens.colors.surface)
+            .color(tokens.colors.text)
+    });
+    let title_bar = window_chrome_drag_tracker(title_bar, on_window_event);
+    let body = dock_item_body(id, contents, tokens, controller.chrome_style);
+    let window = column![title_bar, body]
+        .width(Length::Fill)
+        .height(Length::Fill);
+    if controller.chrome_style == DockChromeStyle::Card {
+        dock_card_shell(window, tokens)
+    } else {
+        window.into()
+    }
+}
+
 fn dock_node_view<'a, Message>(
     node: &'a DockNode,
     surface: DockSurfaceId,
@@ -1597,18 +1722,13 @@ where
                                 .style(button_style(tokens, ButtonKind::Text)),
                         )
                     } else {
-                        tabs_row.push(DragHandle::new(
+                        tabs_row.push(dock_drag_handle(
                             tab.height(Length::Fixed(TITLE_BAR_HEIGHT))
                                 .width(Length::Shrink),
-                            on_action(DockAction::DragStart {
-                                surface,
-                                id: id.clone(),
-                            }),
-                            move |position| on_action(DockAction::DragMove { surface, position }),
-                            on_action(DockAction::DragEnd { surface }),
-                            on_action(DockAction::ActivateTab(id.clone())),
-                            move |hovered| on_action(DockAction::Hover(hovered)),
-                            iced::mouse::Interaction::Grabbing,
+                            id,
+                            surface,
+                            on_action,
+                            DockAction::ActivateTab(id.clone()),
                         ))
                     }
                 },
@@ -1770,19 +1890,7 @@ where
     let title: Element<'a, Message> = if controller.layout.locked || id == &controller.center {
         title.into()
     } else {
-        DragHandle::new(
-            title,
-            on_action(DockAction::DragStart {
-                surface,
-                id: id.clone(),
-            }),
-            move |position| on_action(DockAction::DragMove { surface, position }),
-            on_action(DockAction::DragEnd { surface }),
-            on_action(DockAction::Focus(id.clone())),
-            move |hovered| on_action(DockAction::Hover(hovered)),
-            iced::mouse::Interaction::Grabbing,
-        )
-        .into()
+        dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
     };
     let mut title_bar = row![title].spacing(4).align_y(Alignment::Center);
     if !controller.layout.locked && id != &controller.center {
@@ -1892,6 +2000,31 @@ where
         .height(Length::Fill)
         .into()
     }
+}
+
+fn dock_drag_handle<'a, Message>(
+    content: impl Into<Element<'a, Message>>,
+    id: &DockId,
+    surface: DockSurfaceId,
+    on_action: impl Fn(DockAction) -> Message + Copy + 'a,
+    reset: DockAction,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    DragHandle::new(
+        content,
+        on_action(DockAction::DragStart {
+            surface,
+            id: id.clone(),
+        }),
+        move |position| on_action(DockAction::DragMove { surface, position }),
+        on_action(DockAction::DragEnd { surface }),
+        on_action(reset),
+        move |hovered| on_action(DockAction::Hover(hovered)),
+        iced::mouse::Interaction::Grabbing,
+    )
+    .into()
 }
 
 fn dock_item_body<'a, Message>(
@@ -2005,6 +2138,9 @@ fn validate_layout(
     let mut ids = Vec::new();
     validate_node(&layout.main, &mut ids)?;
     for floating in &layout.floating {
+        if !matches!(floating.root, DockNode::Item { .. }) {
+            return Err(DockError::InvalidFloatingSurface(floating.surface));
+        }
         validate_node(&floating.root, &mut ids)?;
         if floating.root.contains(center) {
             return Err(DockError::InvalidCenter(center.clone()));
@@ -2661,6 +2797,110 @@ mod tests {
         });
         assert_eq!(update.effects, vec![DockHostEffect::CloseFloating(surface)]);
         assert!(controller.is_visible(&DockId::from("sources")));
+    }
+
+    #[test]
+    fn floating_surfaces_accept_only_one_item() {
+        let mut controller = controller();
+        let opened = controller.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(1_400.0, 40.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+            panic!("floating window open effect")
+        };
+        let before = controller.layout().clone();
+        let update = controller.update(DockAction::Dock {
+            id: "controls".into(),
+            target: DockDropTarget {
+                surface: floating.surface,
+                id: "sources".into(),
+                zone: DockDropZone::Tab,
+            },
+        });
+        assert_eq!(update, DockUpdate::default());
+        assert_eq!(controller.layout(), &before);
+
+        controller.update(DockAction::DragStart {
+            surface: DockSurfaceId(0),
+            id: "controls".into(),
+        });
+        controller.update(DockAction::DragMove {
+            surface: DockSurfaceId(0),
+            position: Point::new(100.0, 100.0),
+        });
+        controller.update(DockAction::DragMove {
+            surface: DockSurfaceId(0),
+            position: Point::new(1_500.0, 120.0),
+        });
+        assert_eq!(controller.drop_target(), None);
+    }
+
+    #[test]
+    fn single_item_floating_layout_round_trips() {
+        let mut state = controller();
+        state.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: Some("display-2".into()),
+        });
+        let encoded = state.layout_json().expect("dock layout serializes");
+        let mut restored = controller();
+        restored
+            .restore_layout_json(&encoded)
+            .expect("single floating Dock restores");
+        assert!(matches!(
+            restored.layout().floating.as_slice(),
+            [FloatingDock {
+                root: DockNode::Item { id },
+                ..
+            }] if *id == DockId::from("sources")
+        ));
+    }
+
+    #[test]
+    fn restoring_grouped_floating_items_is_rejected() {
+        let mut state = controller();
+        let opened = state.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+            panic!("floating window open effect")
+        };
+        assert!(remove_from_layout(&mut state.layout, &DockId::from("mixer")).0);
+        state.layout.floating[0].root =
+            DockNode::tabs([DockId::from("sources"), DockId::from("mixer")], "sources");
+        let encoded = state.layout_json().expect("dock layout serializes");
+        let mut restored = controller();
+        assert!(matches!(
+            restored.restore_layout_json(&encoded),
+            Err(DockError::InvalidFloatingSurface(surface)) if surface == floating.surface
+        ));
+    }
+
+    #[test]
+    fn closing_floating_surface_hides_only_its_item() {
+        let mut controller = controller();
+        let opened = controller.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+            panic!("floating window open effect")
+        };
+        let update = controller.update(DockAction::CloseSurface(floating.surface));
+        assert_eq!(
+            update.effects,
+            vec![DockHostEffect::CloseFloating(floating.surface)]
+        );
+        assert!(!controller.is_visible(&DockId::from("sources")));
+        assert!(controller.is_visible(&DockId::from("scenes")));
+        assert!(controller.is_visible(&DockId::from("mixer")));
+        assert!(controller.is_visible(&DockId::from("controls")));
     }
 
     #[test]
