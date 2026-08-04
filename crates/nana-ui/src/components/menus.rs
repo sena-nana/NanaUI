@@ -2,13 +2,25 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use iced::widget::text::LineHeight;
-use iced::widget::{Stack, button, column, container, mouse_area, pin, row, text, text_input};
+use iced::widget::{
+    Stack, button, column, container, mouse_area, pin, row, scrollable, text, text_input,
+};
 use iced::{Alignment, Element, Length, Pixels, Point, Size};
 
 use crate::components::ControlSize;
 use crate::icons::{Icon, icon};
 use crate::theme::{ThemeTokens, ui_font};
-use crate::widgets::{menu_item_style, menu_surface_style, text_input_style};
+use crate::widgets::{
+    menu_item_style, menu_surface_style, scrollable_style, text_input_style, vertical_scrollbar,
+};
+
+const MENU_PANEL_WIDTH: f32 = 192.0;
+const MENU_PANEL_SPACING: f32 = 4.0;
+const MENU_ITEM_SPACING: f32 = 1.0;
+const MENU_CONTENT_SPACING: f32 = 4.0;
+const MENU_SURFACE_PADDING: f32 = 4.0;
+const MENU_MIN_WIDTH: f32 = 120.0;
+const MENU_MIN_HEIGHT: f32 = 32.0;
 
 /// A selectable row shared by anchored action menus and context menus.
 pub struct ActionMenuItem<'a, Message> {
@@ -207,7 +219,7 @@ where
     }
 
     pub fn menu_size(mut self, width: f32, height: f32) -> Self {
-        self.menu_size = Size::new(width.max(120.0), height.max(32.0));
+        self.menu_size = Size::new(width.max(MENU_MIN_WIDTH), height.max(MENU_MIN_HEIGHT));
         self
     }
 
@@ -218,7 +230,7 @@ where
             container(self.content)
                 .width(Length::Fixed(self.menu_size.width))
                 .height(Length::Fixed(self.menu_size.height))
-                .padding(4)
+                .padding(MENU_SURFACE_PADDING)
                 .style(menu_surface_style(tokens)),
         )
         .on_press(self.on_interaction);
@@ -392,13 +404,16 @@ where
 
     pub fn view(self) -> Element<'a, Message> {
         let mut panels: Vec<Element<'a, Message>> = Vec::new();
+        let mut panel_item_counts = Vec::new();
         if self.searchable && !self.query.trim().is_empty() {
             let matches = collect_matches(self.items, self.query);
+            panel_item_counts.push(matches.len());
             panels.push(self.panel(
                 matches.into_iter().map(|(_, item)| (Vec::new(), item)),
                 true,
             ));
         } else {
+            panel_item_counts.push(self.items.len());
             panels.push(
                 self.panel(
                     self.items
@@ -419,6 +434,7 @@ where
                 }
                 path.push(index);
                 let parent = path.clone();
+                panel_item_counts.push(item.children.len());
                 panels.push(self.panel(
                     item.children.iter().enumerate().map(move |(child, item)| {
                         let mut item_path = parent.clone();
@@ -431,14 +447,14 @@ where
             }
         }
 
-        let panel_count = panels.len() as f32;
         let search_size = ControlSize::Small;
-        let search_height = if self.searchable {
-            search_size.height_in(self.tokens.metrics) + 10.0
-        } else {
-            0.0
-        };
-        let mut content = column![].spacing(4);
+        let menu_size = context_menu_size(
+            &panel_item_counts,
+            self.searchable,
+            self.tokens,
+            self.viewport,
+        );
+        let mut content = column![].spacing(MENU_CONTENT_SPACING);
         if self.searchable {
             content = content.push(
                 text_input("搜索操作", self.query)
@@ -457,7 +473,12 @@ where
                     .style(text_input_style(self.tokens, false)),
             );
         }
-        content = content.push(row(panels).spacing(4));
+        content = content.push(
+            scrollable(row(panels).spacing(MENU_PANEL_SPACING))
+                .direction(vertical_scrollbar())
+                .style(scrollable_style(self.tokens.colors))
+                .height(Length::Fill),
+        );
         let on_dismiss = (self.on_event)(ContextMenuEvent::Dismiss);
         let on_interaction = (self.on_event)(ContextMenuEvent::Interaction);
         AnchoredActionMenu::new(
@@ -467,7 +488,7 @@ where
             on_dismiss,
             on_interaction,
         )
-        .menu_size(200.0 * panel_count, 244.0 + search_height)
+        .menu_size(menu_size.width, menu_size.height)
         .view(self.tokens)
     }
 
@@ -476,7 +497,9 @@ where
         items: impl IntoIterator<Item = (Vec<usize>, &'a ContextMenuItem<'a, T>)>,
         flattened: bool,
     ) -> Element<'a, Message> {
-        let mut panel = column![].spacing(1).width(Length::Fixed(192.0));
+        let mut panel = column![]
+            .spacing(MENU_ITEM_SPACING)
+            .width(Length::Fixed(MENU_PANEL_WIDTH));
         for (path, item) in items {
             let pending = self.pending == Some(&item.value);
             let label = if pending {
@@ -508,6 +531,37 @@ where
         }
         container(panel).height(Length::Fill).into()
     }
+}
+
+fn context_menu_size(
+    panel_item_counts: &[usize],
+    searchable: bool,
+    tokens: ThemeTokens,
+    viewport: Size,
+) -> Size {
+    let panel_count = panel_item_counts.len().max(1) as f32;
+    let width = MENU_SURFACE_PADDING * 2.0
+        + panel_count * MENU_PANEL_WIDTH
+        + (panel_count - 1.0) * MENU_PANEL_SPACING;
+    let item_height = ControlSize::Small.height_in(tokens.metrics);
+    let panel_height = panel_item_counts
+        .iter()
+        .copied()
+        .map(|item_count| {
+            item_count as f32 * item_height
+                + item_count.saturating_sub(1) as f32 * MENU_ITEM_SPACING
+        })
+        .fold(0.0, f32::max);
+    let search_height = if searchable { item_height } else { 0.0 };
+    let content_spacing = if searchable {
+        MENU_CONTENT_SPACING
+    } else {
+        0.0
+    };
+    let intrinsic_height =
+        MENU_SURFACE_PADDING * 2.0 + search_height + content_spacing + panel_height;
+    let max_height = viewport.height.max(MENU_MIN_HEIGHT);
+    Size::new(width, intrinsic_height.min(max_height).max(MENU_MIN_HEIGHT))
 }
 
 fn collect_matches<'a, T>(
@@ -547,7 +601,7 @@ fn collect_matches<'a, T>(
 mod tests {
     use super::{
         ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuItem, ControlSize,
-        collect_matches,
+        collect_matches, context_menu_size,
     };
     use iced::{Point, Size};
 
@@ -574,5 +628,41 @@ mod tests {
     #[test]
     fn action_menu_items_default_to_the_small_density_tier() {
         assert_eq!(ActionMenuItem::<()>::new("操作").size, ControlSize::Small);
+    }
+
+    #[test]
+    fn context_menu_size_matches_visible_panel_content() {
+        let tokens = crate::theme::ThemeMode::Dark.colors().into();
+        let size = context_menu_size(&[1], false, tokens, Size::new(800.0, 600.0));
+        let item_height = ControlSize::Small.height_in(tokens.metrics);
+
+        assert_eq!(size.width, 200.0);
+        assert_eq!(size.height, item_height + 8.0);
+    }
+
+    #[test]
+    fn context_menu_size_accounts_for_multiple_panels_and_search() {
+        let tokens = crate::theme::ThemeMode::Dark.colors().into();
+        let size = context_menu_size(&[3, 1], true, tokens, Size::new(800.0, 600.0));
+        let item_height = ControlSize::Small.height_in(tokens.metrics);
+
+        assert_eq!(size.width, 396.0);
+        assert_eq!(
+            size.height,
+            8.0 + item_height + 4.0 + item_height * 3.0 + 2.0
+        );
+    }
+
+    #[test]
+    fn context_menu_size_caps_long_panels_to_the_viewport() {
+        let tokens = crate::theme::ThemeMode::Dark.colors().into();
+        let viewport = Size::new(320.0, 180.0);
+        let size = context_menu_size(&[100], true, tokens, viewport);
+
+        assert_eq!(size.height, viewport.height);
+        let position = AnchoredMenuPosition::new(Point::new(310.0, 170.0))
+            .placement(AnchoredMenuPlacement::BottomEnd)
+            .resolve(size, viewport);
+        assert_eq!(position, Point::new(110.0, 0.0));
     }
 }
