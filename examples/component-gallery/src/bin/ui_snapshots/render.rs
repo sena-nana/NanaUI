@@ -128,14 +128,16 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
                 &format!("dock-preview-{name}-{suffix}.png"),
                 theme,
                 zone,
+                true,
             )?);
         }
-        paths.push(dock_candidate_snapshot(
+        paths.push(dock_preview_snapshot(
             &mut renderer,
             &output,
             &format!("dock-hover-left-{suffix}.png"),
             theme,
             DockDropZone::Left,
+            false,
         )?);
         paths.push(dock_outside_snapshot(
             &mut renderer,
@@ -475,26 +477,6 @@ fn dock_drag_window_snapshot(
 }
 
 fn dock_preview_snapshot(
-    renderer: &mut Renderer,
-    output: &Path,
-    name: &str,
-    theme: ThemeMode,
-    zone: DockDropZone,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    dock_preview_snapshot_at(renderer, output, name, theme, zone, true)
-}
-
-fn dock_candidate_snapshot(
-    renderer: &mut Renderer,
-    output: &Path,
-    name: &str,
-    theme: ThemeMode,
-    zone: DockDropZone,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    dock_preview_snapshot_at(renderer, output, name, theme, zone, false)
-}
-
-fn dock_preview_snapshot_at(
     renderer: &mut Renderer,
     output: &Path,
     name: &str,

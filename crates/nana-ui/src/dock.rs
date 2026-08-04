@@ -420,8 +420,7 @@ struct ActiveDrag {
     start: Option<Point>,
     position: Option<Point>,
     moved: bool,
-    candidate_target: Option<DockDropTarget>,
-    target_ready_at: Option<iced::time::Instant>,
+    pending_target: Option<(DockDropTarget, iced::time::Instant)>,
     target: Option<DockDropTarget>,
     preview_target: Option<DockDropTarget>,
     preview: Animation<bool>,
@@ -432,16 +431,14 @@ struct ActiveDrag {
 }
 
 fn settle_drag_target(drag: &mut ActiveDrag, now: iced::time::Instant) {
-    let Some(ready_at) = drag.target_ready_at else {
+    let Some((candidate, ready_at)) = drag.pending_target.as_ref() else {
         return;
     };
-    if now < ready_at {
+    if now < *ready_at {
         return;
     }
-    drag.target_ready_at = None;
-    let Some(candidate) = drag.candidate_target.clone() else {
-        return;
-    };
+    let candidate = candidate.clone();
+    drag.pending_target = None;
     drag.target = Some(candidate.clone());
     drag.preview_target = Some(candidate);
     drag.preview.go_mut(true, now);
@@ -657,9 +654,12 @@ impl DockController {
     }
 
     fn drop_highlight_target(&self) -> Option<&DockDropTarget> {
-        self.active_drag
-            .as_ref()
-            .and_then(|drag| drag.candidate_target.as_ref())
+        self.active_drag.as_ref().and_then(|drag| {
+            drag.pending_target
+                .as_ref()
+                .map(|(target, _)| target)
+                .or(drag.target.as_ref())
+        })
     }
 
     pub fn is_drag_animation_active(&self) -> bool {
@@ -670,7 +670,7 @@ impl DockController {
 
     fn drag_needs_frame(&self) -> bool {
         self.active_drag.as_ref().is_some_and(|drag| {
-            drag.target_ready_at.is_some() || drag.preview.is_animating(iced::time::Instant::now())
+            drag.pending_target.is_some() || drag.preview.is_animating(iced::time::Instant::now())
         })
     }
 
@@ -1076,8 +1076,7 @@ impl DockController {
                     start: None,
                     position: None,
                     moved: false,
-                    candidate_target: None,
-                    target_ready_at: None,
+                    pending_target: None,
                     target: None,
                     preview_target: None,
                     preview: drag_preview_animation(false),
@@ -1107,10 +1106,15 @@ impl DockController {
                     .moved
                     .then(|| self.drop_target_at(&drag.id, position, drag.surface, true))
                     .flatten();
-                if next_candidate != drag.candidate_target {
-                    drag.candidate_target = next_candidate.clone();
+                let current_candidate = drag
+                    .pending_target
+                    .as_ref()
+                    .map(|(target, _)| target)
+                    .or(drag.target.as_ref());
+                if next_candidate.as_ref() != current_candidate {
+                    drag.pending_target =
+                        next_candidate.map(|target| (target, now + DRAG_INSERT_HOVER_DELAY));
                     drag.target = None;
-                    drag.target_ready_at = next_candidate.map(|_| now + DRAG_INSERT_HOVER_DELAY);
                     drag.preview.go_mut(false, now);
                 }
                 settle_drag_target(&mut drag, now);
@@ -3723,21 +3727,7 @@ mod tests {
     }
 
     fn preview_controller(zone: DockDropZone) -> DockController {
-        let layout = DockLayout::new(DockNode::split(
-            DockAxis::Horizontal,
-            0.5,
-            DockNode::item("source"),
-            DockNode::item("editor"),
-        ));
-        let mut controller = DockController::new(
-            "editor",
-            [
-                DockItemSpec::new("editor", "Editor").closeable(false),
-                DockItemSpec::new("source", "Source"),
-            ],
-            layout,
-        )
-        .expect("valid preview dock layout");
+        let mut controller = simple_drag_controller();
         let target = DockDropTarget {
             surface: DockSurfaceId(0),
             id: DockId::from("editor"),
@@ -3749,8 +3739,7 @@ mod tests {
             start: None,
             position: None,
             moved: true,
-            candidate_target: Some(target.clone()),
-            target_ready_at: None,
+            pending_target: None,
             target: Some(target.clone()),
             preview_target: Some(target),
             preview: drag_preview_animation(true),
