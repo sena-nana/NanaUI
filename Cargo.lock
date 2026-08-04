@@ -1050,7 +1050,7 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 [[package]]
 name = "iced"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "iced_core",
  "iced_debug",
@@ -1065,7 +1065,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
@@ -1083,7 +1083,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "iced_core",
  "iced_futures",
@@ -1093,7 +1093,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "futures",
  "iced_core",
@@ -1107,7 +1107,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
@@ -1126,7 +1126,7 @@ dependencies = [
 [[package]]
 name = "iced_program"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "iced_graphics",
  "iced_runtime",
@@ -1135,7 +1135,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -1147,7 +1147,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "bytes",
  "iced_core",
@@ -1158,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1174,7 +1174,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
@@ -1192,7 +1192,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "iced_renderer",
  "iced_runtime",
@@ -1206,7 +1206,7 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.15.0-dev"
-source = "git+https://github.com/sena-nana/iced.git?rev=31bde4e4bac6de08f5ba581a8ea9c55ad0031e67#31bde4e4bac6de08f5ba581a8ea9c55ad0031e67"
+source = "git+https://github.com/sena-nana/iced.git?rev=a3bdc6f5f09ff9aec50c57273fc7eb21fd370603#a3bdc6f5f09ff9aec50c57273fc7eb21fd370603"
 dependencies = [
  "arboard",
  "iced_debug",
