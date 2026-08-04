@@ -4,8 +4,7 @@ use iced::wgpu;
 use iced::widget::{container, responsive, shader};
 use iced::{Element, Length, Rectangle};
 
-use crate::geometry::LogicalRect;
-use crate::gpu_view::RenderSlot;
+use crate::gpu_view::{RenderSlot, slot_for_bounds};
 
 const SOURCE: &str = r#"
 @group(0) @binding(0)
@@ -123,11 +122,10 @@ impl<Message> shader::Program<Message> for GpuTextureView {
         &self,
         _state: &Self::State,
         _cursor: iced::mouse::Cursor,
-        bounds: Rectangle,
+        _bounds: Rectangle,
     ) -> Self::Primitive {
         GpuTexturePrimitive {
             texture: self.texture.clone(),
-            logical_bounds: LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
         }
     }
 }
@@ -136,7 +134,6 @@ impl<Message> shader::Program<Message> for GpuTextureView {
 #[derive(Debug, Clone)]
 pub struct GpuTexturePrimitive {
     texture: HostTexture,
-    logical_bounds: LogicalRect,
 }
 
 impl shader::Primitive for GpuTexturePrimitive {
@@ -147,14 +144,11 @@ impl shader::Primitive for GpuTexturePrimitive {
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
-        _bounds: &Rectangle,
+        bounds: &Rectangle,
         viewport: &shader::Viewport,
     ) {
-        let slot = RenderSlot::new(
-            self.texture.id,
-            self.logical_bounds,
-            viewport.scale_factor(),
-        );
+        let (slot, viewport_rect) =
+            slot_for_bounds(self.texture.id, bounds, viewport.scale_factor());
         let needs_rebind = pipeline
             .textures
             .get(&self.texture.id)
@@ -181,11 +175,13 @@ impl shader::Primitive for GpuTexturePrimitive {
                     generation: self.texture.generation,
                     bind_group,
                     slot,
+                    viewport: viewport_rect,
                     used: true,
                 },
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&self.texture.id) {
             prepared.slot = slot;
+            prepared.viewport = viewport_rect;
             prepared.used = true;
         }
     }
@@ -224,14 +220,8 @@ impl shader::Primitive for GpuTexturePrimitive {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        render_pass.set_viewport(
-            bounds.x as f32,
-            bounds.y as f32,
-            bounds.width as f32,
-            bounds.height as f32,
-            0.0,
-            1.0,
-        );
+        let viewport = texture.viewport;
+        render_pass.set_viewport(viewport[0], viewport[1], viewport[2], viewport[3], 0.0, 1.0);
         render_pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_bind_group(0, &texture.bind_group, &[]);
@@ -334,6 +324,7 @@ struct PreparedTexture {
     generation: u64,
     bind_group: wgpu::BindGroup,
     slot: RenderSlot,
+    viewport: [f32; 4],
     used: bool,
 }
 
