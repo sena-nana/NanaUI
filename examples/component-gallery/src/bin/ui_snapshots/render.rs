@@ -130,6 +130,13 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
                 zone,
             )?);
         }
+        paths.push(dock_candidate_snapshot(
+            &mut renderer,
+            &output,
+            &format!("dock-hover-left-{suffix}.png"),
+            theme,
+            DockDropZone::Left,
+        )?);
         paths.push(dock_outside_snapshot(
             &mut renderer,
             &output,
@@ -474,6 +481,27 @@ fn dock_preview_snapshot(
     theme: ThemeMode,
     zone: DockDropZone,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    dock_preview_snapshot_at(renderer, output, name, theme, zone, true)
+}
+
+fn dock_candidate_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+    zone: DockDropZone,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    dock_preview_snapshot_at(renderer, output, name, theme, zone, false)
+}
+
+fn dock_preview_snapshot_at(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+    zone: DockDropZone,
+    settle: bool,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
     let position = match zone {
         DockDropZone::Left => Point::new(20.0, 160.0),
@@ -482,7 +510,7 @@ fn dock_preview_snapshot(
         DockDropZone::Bottom => Point::new(200.0, 100.0),
         DockDropZone::Tab => Point::new(200.0, 50.0),
     };
-    let controller = dock_preview_controller(size, position)?;
+    let controller = dock_preview_controller(size, position, settle)?;
     let colors = theme.colors();
     let view = dock_workspace(
         &controller,
@@ -504,7 +532,7 @@ fn dock_outside_snapshot(
     theme: ThemeMode,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
-    let controller = dock_preview_controller(size, Point::new(410.0, 80.0))?;
+    let controller = dock_preview_controller(size, Point::new(410.0, 80.0), false)?;
     let colors = theme.colors();
     let view = dock_workspace(
         &controller,
@@ -522,6 +550,7 @@ fn dock_outside_snapshot(
 fn dock_preview_controller(
     size: Size<u32>,
     position: Point,
+    settle: bool,
 ) -> Result<DockController, Box<dyn std::error::Error>> {
     let mut controller = DockController::new(
         "editor",
@@ -559,8 +588,12 @@ fn dock_preview_controller(
         surface: DockSurfaceId(0),
         position,
     });
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    controller.update(DockAction::Hover(false));
+    if settle {
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        controller.update(DockAction::Hover(false));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        controller.update(DockAction::Hover(false));
+    }
     Ok(controller)
 }
 
@@ -603,6 +636,8 @@ fn prepare_dock_preview(state: &mut GalleryState) {
         surface,
         position: Point::new(355.0, 250.0),
     }));
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    state.update(GalleryMessage::Dock(DockAction::Hover(false)));
     std::thread::sleep(std::time::Duration::from_millis(100));
     state.update(GalleryMessage::Dock(DockAction::Hover(false)));
 }
