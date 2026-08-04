@@ -157,12 +157,11 @@ impl<Message> shader::Program<Message> for GpuView {
         &self,
         _state: &Self::State,
         _cursor: iced::mouse::Cursor,
-        bounds: Rectangle,
+        _bounds: Rectangle,
     ) -> Self::Primitive {
         GpuViewPrimitive {
             id: self.id,
             mode: self.mode,
-            logical_bounds: LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
             uniform: ViewUniform {
                 color_a: color_array(self.palette.background),
                 color_b: color_array(self.palette.accent),
@@ -185,7 +184,6 @@ struct ViewUniform {
 pub struct GpuViewPrimitive {
     id: u64,
     mode: GpuViewMode,
-    logical_bounds: LogicalRect,
     uniform: ViewUniform,
 }
 
@@ -197,10 +195,10 @@ impl shader::Primitive for GpuViewPrimitive {
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _bounds: &Rectangle,
+        bounds: &Rectangle,
         viewport: &shader::Viewport,
     ) {
-        let slot = RenderSlot::new(self.id, self.logical_bounds, viewport.scale_factor());
+        let (slot, viewport_rect) = slot_for_bounds(self.id, bounds, viewport.scale_factor());
         let entry = pipeline.slots.entry(self.id).or_insert_with(|| {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui gpu view uniform"),
@@ -220,10 +218,12 @@ impl shader::Primitive for GpuViewPrimitive {
                 buffer,
                 bind_group,
                 slot,
+                viewport: viewport_rect,
                 used: true,
             }
         });
         entry.slot = slot;
+        entry.viewport = viewport_rect;
         entry.used = true;
         queue.write_buffer(&entry.buffer, 0, bytemuck::bytes_of(&self.uniform));
     }
@@ -277,14 +277,8 @@ impl shader::Primitive for GpuViewPrimitive {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        render_pass.set_viewport(
-            bounds.x as f32,
-            bounds.y as f32,
-            bounds.width as f32,
-            bounds.height as f32,
-            0.0,
-            1.0,
-        );
+        let viewport = slot.viewport;
+        render_pass.set_viewport(viewport[0], viewport[1], viewport[2], viewport[3], 0.0, 1.0);
         render_pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_bind_group(0, &slot.bind_group, &[]);
@@ -369,6 +363,7 @@ struct PreparedSlot {
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     slot: RenderSlot,
+    viewport: [f32; 4],
     used: bool,
 }
 
@@ -378,6 +373,30 @@ fn color_array(color: Color) -> [f32; 4] {
 
 fn saturating_u32(value: f32) -> u32 {
     value.clamp(0.0, u32::MAX as f32) as u32
+}
+
+pub(crate) fn slot_for_bounds(
+    id: u64,
+    bounds: &Rectangle,
+    scale_factor: f32,
+) -> (RenderSlot, [f32; 4]) {
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let logical = LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height);
+    let slot = RenderSlot::new(id, logical, scale_factor);
+
+    (
+        slot,
+        [
+            logical.x * scale_factor,
+            logical.y * scale_factor,
+            logical.width * scale_factor,
+            logical.height * scale_factor,
+        ],
+    )
 }
 
 fn intersect_physical(slot: PhysicalRect, clip: Rectangle<u32>) -> PhysicalRect {
@@ -402,7 +421,9 @@ fn intersect_physical(slot: PhysicalRect, clip: Rectangle<u32>) -> PhysicalRect 
 
 #[cfg(test)]
 mod tests {
-    use super::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot, intersect_physical};
+    use super::{
+        GpuView, GpuViewMode, GpuViewPalette, RenderSlot, intersect_physical, slot_for_bounds,
+    };
     use crate::geometry::{LogicalRect, PhysicalRect};
     use iced::{Color, Rectangle};
 
@@ -495,6 +516,39 @@ mod tests {
                 width: 0,
                 height: 0,
             }
+        );
+    }
+
+    #[test]
+    fn transformed_bounds_keep_size_when_moved_and_clipped() {
+        let original = Rectangle {
+            x: 20.0,
+            y: 30.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        let (_, original_viewport) = slot_for_bounds(7, &original, 1.5);
+        let mut moved = original;
+        moved.x = 120.0;
+        let (_, moved_viewport) = slot_for_bounds(7, &moved, 1.5);
+        moved.x = -40.0;
+        let (clipped_slot, clipped_viewport) = slot_for_bounds(7, &moved, 1.5);
+
+        assert_eq!(original_viewport, [30.0, 45.0, 150.0, 120.0]);
+        assert_eq!(moved_viewport, [180.0, 45.0, 150.0, 120.0]);
+        assert_eq!(clipped_viewport, [-60.0, 45.0, 150.0, 120.0]);
+        assert_eq!(
+            intersect_physical(
+                clipped_slot.physical,
+                Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 90,
+                    height: 240,
+                },
+            )
+            .width,
+            90
         );
     }
 }
