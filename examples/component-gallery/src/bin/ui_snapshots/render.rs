@@ -26,6 +26,7 @@ enum DockPreviewPhase {
     Candidate,
     Transition,
     Settled,
+    Retarget,
 }
 
 pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
@@ -173,6 +174,14 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             theme,
             DockDropZone::Tab,
             DockPreviewPhase::Transition,
+        )?);
+        paths.push(dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            &format!("dock-preview-retarget-tab-{suffix}.png"),
+            theme,
+            DockDropZone::Left,
+            DockPreviewPhase::Retarget,
         )?);
         paths.push(dock_preview_snapshot(
             &mut renderer,
@@ -708,6 +717,18 @@ fn dock_preview_controller(
             controller.update(DockAction::Hover(false));
             std::thread::sleep(std::time::Duration::from_millis(100));
             controller.update(DockAction::Hover(false));
+        }
+        DockPreviewPhase::Retarget => {
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            controller.update(DockAction::Hover(false));
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            controller.update(DockAction::DragMove {
+                surface: DockSurfaceId(0),
+                position: Point::new(200.0, 180.0),
+            });
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            controller.update(DockAction::Hover(false));
+            std::thread::sleep(std::time::Duration::from_millis(60));
         }
     }
     Ok(controller)
