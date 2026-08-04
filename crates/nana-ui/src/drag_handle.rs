@@ -396,6 +396,35 @@ mod tests {
     }
 
     #[test]
+    fn split_handle_hit_bounds_are_limited_on_each_axis() {
+        for (bounds, inside, outside) in [
+            (
+                Rectangle::new(Point::new(100.0, 40.0), Size::new(8.0, 200.0)),
+                Point::new(104.0, 90.0),
+                Point::new(109.0, 90.0),
+            ),
+            (
+                Rectangle::new(Point::new(40.0, 100.0), Size::new(200.0, 8.0)),
+                Point::new(140.0, 104.0),
+                Point::new(140.0, 109.0),
+            ),
+        ] {
+            let starts_drag = |position| {
+                let mut state = DragHandleState::default();
+                state
+                    .signals(
+                        &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                        bounds,
+                        mouse::Cursor::Available(position),
+                    )
+                    .contains(&DragSignal::Start)
+            };
+            assert!(starts_drag(inside));
+            assert!(!starts_drag(outside));
+        }
+    }
+
+    #[test]
     fn queued_press_uses_the_preceding_cursor_event_instead_of_the_batch_cursor() {
         let bounds = Rectangle::new(Point::new(100.0, 40.0), Size::new(8.0, 200.0));
         let mut state = DragHandleState::default();
