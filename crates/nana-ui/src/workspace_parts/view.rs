@@ -3,7 +3,7 @@ use iced::Vector;
 use iced::widget::column;
 
 struct RegionView<'a, Message> {
-    state: &'a RegionState,
+    state: RegionState,
     content: Element<'a, Message>,
     edges: RegionEdges,
 }
@@ -17,7 +17,7 @@ pub(super) struct RegionEdges {
 /// Composes registered application content using the same start/primary/end,
 /// workspace/primary top, and workspace/primary bottom model as LiliaUI.
 pub fn workspace_view<'a, Message>(
-    controller: &'a WorkspaceController,
+    controller: &WorkspaceController,
     regions: impl Into<WorkspaceRegions<'a, Message>>,
     theme: impl Into<ThemeTokens>,
     on_action: impl Fn(WorkspaceAction) -> Message + Copy + 'a,
@@ -61,16 +61,19 @@ where
         if !controller.region_visible(state) {
             continue;
         }
+        let overlay = controller.region_overlay(state);
+        let placement = state.placement_value();
+        let scope = state.scope_value();
         let view = RegionView {
-            state,
+            state: state.clone(),
             content,
             edges: RegionEdges::default(),
         };
-        if controller.region_overlay(state) {
+        if overlay {
             overlays.push(view);
             continue;
         }
-        match (state.placement_value(), state.scope_value()) {
+        match (placement, scope) {
             (RegionPlacement::Start, _) => starts.push(view),
             (RegionPlacement::Primary, _) => primaries.push(view),
             (RegionPlacement::End, _) => ends.push(view),
@@ -172,7 +175,7 @@ pub(super) fn primary_edges(
 }
 
 fn render_region<'a, Message>(
-    controller: &'a WorkspaceController,
+    controller: &WorkspaceController,
     region: RegionView<'a, Message>,
     tokens: ThemeTokens,
     on_action: impl Fn(WorkspaceAction) -> Message + Copy + 'a,
@@ -186,8 +189,8 @@ where
         state.placement_value(),
         RegionPlacement::Start | RegionPlacement::Primary | RegionPlacement::End
     );
-    let (width, height) = track_lengths(controller, state);
-    let surface = region_surface(region.content, state, region.edges, width, height, tokens);
+    let (width, height) = track_lengths(controller, &state);
+    let surface = region_surface(region.content, &state, region.edges, width, height, tokens);
     if !state.resizable_value()
         || state.disabled_value()
         || state.fill_priority_value() > 0
@@ -196,7 +199,7 @@ where
         return surface;
     }
 
-    let handle = resize_handle(controller, state, colors, on_action);
+    let handle = resize_handle(controller, &state, colors, on_action);
     let handle = match state.placement_value() {
         RegionPlacement::Start | RegionPlacement::Primary => container(handle)
             .width(Length::Fill)
@@ -222,7 +225,7 @@ where
 }
 
 fn render_overlay<'a, Message>(
-    controller: &'a WorkspaceController,
+    controller: &WorkspaceController,
     region: RegionView<'a, Message>,
     tokens: ThemeTokens,
     on_action: impl Fn(WorkspaceAction) -> Message + Copy + 'a,
