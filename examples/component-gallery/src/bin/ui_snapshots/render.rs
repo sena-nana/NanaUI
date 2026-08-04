@@ -708,27 +708,27 @@ fn dock_preview_controller(
     match phase {
         DockPreviewPhase::Candidate => {}
         DockPreviewPhase::Transition => {
-            std::thread::sleep(std::time::Duration::from_millis(350));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             controller.update(DockAction::Hover(false));
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
         DockPreviewPhase::Settled => {
-            std::thread::sleep(std::time::Duration::from_millis(350));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             controller.update(DockAction::Hover(false));
             std::thread::sleep(std::time::Duration::from_millis(100));
             controller.update(DockAction::Hover(false));
         }
         DockPreviewPhase::Retarget => {
-            std::thread::sleep(std::time::Duration::from_millis(350));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             controller.update(DockAction::Hover(false));
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            std::thread::sleep(std::time::Duration::from_millis(25));
             controller.update(DockAction::DragMove {
                 surface: DockSurfaceId(0),
                 position: Point::new(200.0, 180.0),
             });
-            std::thread::sleep(std::time::Duration::from_millis(350));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             controller.update(DockAction::Hover(false));
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
     Ok(controller)
@@ -773,7 +773,7 @@ fn prepare_dock_preview(state: &mut GalleryState) {
         surface,
         position: Point::new(355.0, 250.0),
     }));
-    std::thread::sleep(std::time::Duration::from_millis(350));
+    std::thread::sleep(std::time::Duration::from_millis(100));
     state.update(GalleryMessage::Dock(DockAction::Hover(false)));
     std::thread::sleep(std::time::Duration::from_millis(100));
     state.update(GalleryMessage::Dock(DockAction::Hover(false)));

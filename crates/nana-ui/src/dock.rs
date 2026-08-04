@@ -29,8 +29,8 @@ const DIVIDER_HIT_SIZE: f32 = 8.0;
 const TITLE_BAR_HEIGHT: f32 = 28.0;
 const MIN_SPLIT_RATIO: f32 = 0.05;
 const MAX_SPLIT_RATIO: f32 = 0.95;
-const DRAG_PREVIEW_DURATION: iced::time::Duration = iced::time::Duration::from_millis(200);
-const DRAG_INSERT_HOVER_DELAY: iced::time::Duration = iced::time::Duration::from_millis(300);
+const DRAG_PREVIEW_DURATION: iced::time::Duration = iced::time::Duration::from_millis(80);
+const DRAG_INSERT_HOVER_DELAY: iced::time::Duration = iced::time::Duration::from_millis(80);
 const DRAG_PREVIEW_HANDOFF_NEUTRAL_WINDOW: f32 = 0.02;
 const DRAG_CARD_WIDTH: f32 = 280.0;
 const DRAG_CARD_HEIGHT: f32 = 180.0;
@@ -4160,7 +4160,7 @@ mod tests {
             );
         }
 
-        let preview = preview_at(&controller, now + iced::time::Duration::from_millis(51));
+        let preview = preview_at(&controller, now + DRAG_PREVIEW_DURATION / 2);
         let DockViewNode::Tabs {
             active,
             merge_preview: Some(merge_preview),
@@ -4176,7 +4176,8 @@ mod tests {
         );
         assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
 
-        let settled = preview_at(&controller, now + iced::time::Duration::from_millis(251));
+        let settled_at = after_preview_animation(now);
+        let settled = preview_at(&controller, settled_at);
         let DockViewNode::Tabs {
             merge_preview: Some(merge_preview),
             ..
@@ -4186,17 +4187,14 @@ mod tests {
         };
         assert_eq!(merge_preview.progress, 1.0);
 
-        let reverse_start = now + iced::time::Duration::from_millis(251);
+        let reverse_start = settled_at;
         controller
             .active_drag
             .as_mut()
             .expect("active drag")
             .preview
             .transition_to_hidden(reverse_start);
-        let reversing = preview_at(
-            &controller,
-            reverse_start + iced::time::Duration::from_millis(51),
-        );
+        let reversing = preview_at(&controller, reverse_start + DRAG_PREVIEW_DURATION / 2);
         let DockViewNode::Tabs {
             merge_preview: Some(merge_preview),
             ..
@@ -4210,10 +4208,7 @@ mod tests {
         );
         assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
 
-        let finished = preview_at(
-            &controller,
-            reverse_start + iced::time::Duration::from_millis(251),
-        );
+        let finished = preview_at(&controller, after_preview_animation(reverse_start));
         assert!(!contains_placeholder(&finished));
     }
 
@@ -4245,14 +4240,12 @@ mod tests {
         move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
         assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(2)));
 
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(302),
-        );
+        let preview_ready_at = after_drag_dwell(now);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert!(controller.drop_target().is_some());
-        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(302)));
-        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(400)));
-        assert!(!controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(503)));
+        assert!(controller.drag_needs_frame_at(preview_ready_at));
+        assert!(controller.drag_needs_frame_at(preview_ready_at + DRAG_PREVIEW_DURATION / 2));
+        assert!(!controller.drag_needs_frame_at(after_preview_animation(preview_ready_at)));
     }
 
     #[test]
@@ -4268,7 +4261,7 @@ mod tests {
             .preview
             .transition_to_hidden(now);
         assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(1)));
-        assert!(!controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(201)));
+        assert!(!controller.drag_needs_frame_at(after_preview_animation(now)));
     }
 
     #[test]
@@ -4435,6 +4428,16 @@ mod tests {
         controller.preview_root_at(at, drag).expect("drag preview")
     }
 
+    const DRAG_TEST_TICK: iced::time::Duration = iced::time::Duration::from_millis(1);
+
+    fn after_drag_dwell(at: iced::time::Instant) -> iced::time::Instant {
+        at + DRAG_INSERT_HOVER_DELAY + DRAG_TEST_TICK
+    }
+
+    fn after_preview_animation(at: iced::time::Instant) -> iced::time::Instant {
+        at + DRAG_PREVIEW_DURATION + DRAG_TEST_TICK
+    }
+
     #[test]
     fn real_tab_drop_commits_the_preview_layout() {
         let mut controller = tab_drag_controller();
@@ -4447,7 +4450,7 @@ mod tests {
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            now + iced::time::Duration::from_millis(302),
+            after_drag_dwell(now),
         );
         assert!(update.changed);
         assert_eq!(
@@ -4471,10 +4474,7 @@ mod tests {
         let mut controller = tab_drag_controller();
         let now = iced::time::Instant::now();
         move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(302),
-        );
+        controller.update_at(DockAction::Hover(false), after_drag_dwell(now));
         assert_eq!(
             controller.drop_target().map(|target| target.zone),
             Some(DockDropZone::Left)
@@ -4485,22 +4485,23 @@ mod tests {
                 surface: DockSurfaceId(0),
                 position: Point::new(300.0, 400.0),
             },
-            now + iced::time::Duration::from_millis(303),
+            after_drag_dwell(now) + DRAG_TEST_TICK,
         );
         assert!(controller.drop_target().is_none());
-        let reversing = preview_at(&controller, now + iced::time::Duration::from_millis(353));
+        let retargeted_at = after_drag_dwell(now) + DRAG_TEST_TICK;
+        let reversing = preview_at(&controller, retargeted_at + DRAG_PREVIEW_DURATION / 2);
         assert!(contains_placeholder(&reversing));
         assert!(matches!(reversing, DockViewNode::Split { .. }));
 
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(604),
-        );
+        controller.update_at(DockAction::Hover(false), after_drag_dwell(retargeted_at));
         assert_eq!(
             controller.drop_target().map(|target| target.zone),
             Some(DockDropZone::Tab)
         );
-        let tab_preview = preview_at(&controller, now + iced::time::Duration::from_millis(654));
+        let tab_preview = preview_at(
+            &controller,
+            retargeted_at + DRAG_INSERT_HOVER_DELAY + DRAG_PREVIEW_DURATION / 2,
+        );
         let DockViewNode::Split { first, .. } = tab_preview else {
             panic!("target split should remain in the preview root")
         };
@@ -4534,12 +4535,12 @@ mod tests {
             preview_at(&controller, now),
             DockViewNode::Split { .. }
         ));
-        let neutral = (0..=200)
+        let neutral = (0..=DRAG_PREVIEW_DURATION.as_millis() as u64)
             .map(|millis| preview_at(&controller, now + iced::time::Duration::from_millis(millis)))
             .find(|root| !contains_placeholder(root));
         assert!(neutral.is_some(), "handoff should expose a neutral frame");
 
-        let settled = preview_at(&controller, now + iced::time::Duration::from_millis(250));
+        let settled = preview_at(&controller, after_preview_animation(now));
         assert!(matches!(settled, DockViewNode::Tabs { .. }));
     }
 
@@ -4617,10 +4618,7 @@ mod tests {
             opened.effects.first(),
             Some(DockHostEffect::OpenFloating(_))
         ));
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(302),
-        );
+        controller.update_at(DockAction::Hover(false), after_drag_dwell(now));
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -4630,19 +4628,20 @@ mod tests {
             })
         );
 
+        let retargeted_at = after_drag_dwell(now) + DRAG_TEST_TICK;
         controller.update_at(
             DockAction::DragMove {
                 surface: DockSurfaceId(0),
                 position: Point::new(300.0, 400.0),
             },
-            now + iced::time::Duration::from_millis(303),
+            retargeted_at,
         );
         controller.update_at(
             DockAction::DragMove {
                 surface: DockSurfaceId(0),
                 position: Point::new(630.0, 400.0),
             },
-            now + iced::time::Duration::from_millis(304),
+            retargeted_at + DRAG_TEST_TICK,
         );
         assert!(controller.drop_target().is_none());
         assert_eq!(
@@ -4654,10 +4653,8 @@ mod tests {
             })
         );
 
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(605),
-        );
+        let preview_ready_at = after_drag_dwell(retargeted_at + DRAG_TEST_TICK);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -4669,11 +4666,9 @@ mod tests {
         assert_eq!(controller.layout(), &before);
         assert_eq!(controller.layout_json().expect("layout json"), before_json);
 
+        let preview_sample_at = preview_ready_at + DRAG_PREVIEW_DURATION / 2;
         let drag = controller.active_drag.as_ref().expect("active drag");
-        let Some((visible, progress)) = drag
-            .preview
-            .frame_at(now + iced::time::Duration::from_millis(655))
-        else {
+        let Some((visible, progress)) = drag.preview.frame_at(preview_sample_at) else {
             panic!("latest target preview should be visible")
         };
         assert_eq!(
@@ -4690,7 +4685,7 @@ mod tests {
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            now + iced::time::Duration::from_millis(656),
+            preview_sample_at + iced::time::Duration::from_millis(1),
         );
         assert!(update.changed);
         assert!(controller.layout().main.contains(&DockId::from("source")));
@@ -4722,10 +4717,7 @@ mod tests {
             },
             now + iced::time::Duration::from_millis(1),
         );
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(302),
-        );
+        controller.update_at(DockAction::Hover(false), after_drag_dwell(now));
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -4735,24 +4727,24 @@ mod tests {
             })
         );
 
+        let retargeted_at = after_drag_dwell(now) + DRAG_TEST_TICK;
         controller.update_at(
             DockAction::DragMove {
                 surface: DockSurfaceId(0),
                 position: Point::new(300.0, 400.0),
             },
-            now + iced::time::Duration::from_millis(303),
+            retargeted_at,
         );
+        let latest_target_at = retargeted_at + DRAG_TEST_TICK;
         controller.update_at(
             DockAction::DragMove {
                 surface: target,
                 position: Point::new(180.0, 140.0),
             },
-            now + iced::time::Duration::from_millis(304),
+            latest_target_at,
         );
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(605),
-        );
+        let preview_ready_at = after_drag_dwell(latest_target_at);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -4763,14 +4755,15 @@ mod tests {
         );
         assert_eq!(controller.layout_json().expect("layout json"), before_json);
 
+        let preview_sample_at = preview_ready_at + DRAG_PREVIEW_DURATION / 2;
         let drag = controller.active_drag.as_ref().expect("active drag");
         assert!(
             controller
-                .preview_root_for_at(source, now + iced::time::Duration::from_millis(655), drag)
+                .preview_root_for_at(source, preview_sample_at, drag)
                 .is_none()
         );
         let target_surface = controller
-            .preview_root_for_at(target, now + iced::time::Duration::from_millis(655), drag)
+            .preview_root_for_at(target, preview_sample_at, drag)
             .expect("target surface preview");
         assert!(contains_placeholder(&target_surface));
     }
@@ -4797,17 +4790,16 @@ mod tests {
             now + iced::time::Duration::from_millis(150),
         )));
 
+        let reentered_at = now + iced::time::Duration::from_millis(151);
         controller.update_at(
             DockAction::DragMove {
                 surface: DockSurfaceId(0),
                 position: Point::new(100.0, 400.0),
             },
-            now + iced::time::Duration::from_millis(151),
+            reentered_at,
         );
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(452),
-        );
+        let reentered_ready_at = reentered_at + DRAG_INSERT_HOVER_DELAY;
+        controller.update_at(DockAction::Hover(false), reentered_ready_at);
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -4821,7 +4813,7 @@ mod tests {
     }
 
     #[test]
-    fn dock_insert_target_requires_a_300ms_dwell_after_drag_threshold() {
+    fn dock_insert_target_requires_an_80ms_dwell_after_drag_threshold() {
         let mut controller = simple_drag_controller();
         let now = iced::time::Instant::now();
         controller.update_at(
@@ -4867,12 +4859,12 @@ mod tests {
 
         controller.update_at(
             DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(301),
+            now + DRAG_INSERT_HOVER_DELAY + iced::time::Duration::from_millis(1),
         );
         assert!(controller.drop_target().is_none());
         controller.update_at(
             DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(302),
+            now + DRAG_INSERT_HOVER_DELAY + iced::time::Duration::from_millis(2),
         );
         assert!(controller.drop_target().is_some());
     }
@@ -4885,12 +4877,13 @@ mod tests {
         move_source_to_position(&mut controller, now, Point::new(100.0, 400.0));
         assert!(controller.drop_target().is_none());
 
+        let changed_at = now + DRAG_INSERT_HOVER_DELAY;
         controller.update_at(
             DockAction::DragMove {
                 surface: DockSurfaceId(0),
                 position: Point::new(1200.0, 400.0),
             },
-            now + iced::time::Duration::from_millis(299),
+            changed_at,
         );
         assert_eq!(
             controller.drop_highlight_target().map(|target| target.zone),
@@ -4898,30 +4891,29 @@ mod tests {
         );
         controller.update_at(
             DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(599),
+            changed_at + DRAG_INSERT_HOVER_DELAY,
         );
         assert!(controller.drop_target().is_some());
 
+        let left_at = now + iced::time::Duration::from_millis(600);
         controller.update_at(
             DockAction::DragMove {
                 surface: DockSurfaceId(0),
                 position: Point::new(700.0, 400.0),
             },
-            now + iced::time::Duration::from_millis(600),
+            left_at,
         );
         assert!(controller.drop_highlight_target().is_none());
         assert!(controller.drop_target().is_none());
         assert!(contains_placeholder(&preview_at(
             &controller,
-            now + iced::time::Duration::from_millis(650),
+            left_at + DRAG_PREVIEW_DURATION / 2,
         )));
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(802),
-        );
+        let preview_gone_at = after_preview_animation(left_at);
+        controller.update_at(DockAction::Hover(false), preview_gone_at);
         assert!(!contains_placeholder(&preview_at(
             &controller,
-            now + iced::time::Duration::from_millis(803),
+            preview_gone_at + iced::time::Duration::from_millis(1),
         )));
         assert_eq!(controller.layout(), &before);
     }
@@ -4939,7 +4931,7 @@ mod tests {
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            now + iced::time::Duration::from_millis(299),
+            now + DRAG_INSERT_HOVER_DELAY,
         );
         assert_eq!(before_deadline.layout().floating.len(), 1);
         assert_eq!(
@@ -4956,7 +4948,7 @@ mod tests {
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            now + iced::time::Duration::from_millis(302),
+            after_drag_dwell(now),
         );
         assert!(update.changed);
         assert_eq!(
@@ -4993,10 +4985,8 @@ mod tests {
             now + iced::time::Duration::from_millis(1),
         );
         assert!(controller.drop_target().is_none());
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(301),
-        );
+        let preview_ready_at = after_drag_dwell(now + DRAG_TEST_TICK);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -5012,7 +5002,7 @@ mod tests {
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            now + iced::time::Duration::from_millis(302),
+            preview_ready_at + iced::time::Duration::from_millis(1),
         );
         assert!(update.changed);
         assert_eq!(
@@ -5131,15 +5121,13 @@ mod tests {
             },
             now + iced::time::Duration::from_millis(1),
         );
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(301),
-        );
+        let preview_ready_at = after_drag_dwell(now + DRAG_TEST_TICK);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         let update = controller.update_at(
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            now + iced::time::Duration::from_millis(302),
+            preview_ready_at + iced::time::Duration::from_millis(1),
         );
         assert!(update.changed);
         assert_eq!(update.effects, vec![DockHostEffect::CloseFloating(surface)]);
@@ -5182,10 +5170,8 @@ mod tests {
             },
             now + iced::time::Duration::from_millis(1),
         );
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(301),
-        );
+        let preview_ready_at = after_drag_dwell(now + DRAG_TEST_TICK);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -5196,7 +5182,7 @@ mod tests {
         );
         let update = controller.update_at(
             DockAction::DragEnd { surface: target },
-            now + iced::time::Duration::from_millis(302),
+            preview_ready_at + iced::time::Duration::from_millis(1),
         );
 
         assert!(update.changed);
@@ -5242,17 +5228,15 @@ mod tests {
                 },
                 now + iced::time::Duration::from_millis(1),
             );
-            controller.update_at(
-                DockAction::Hover(false),
-                now + iced::time::Duration::from_millis(301),
-            );
+            let preview_ready_at = after_drag_dwell(now + DRAG_TEST_TICK);
+            controller.update_at(DockAction::Hover(false), preview_ready_at);
             assert_eq!(
                 controller.drop_target().map(|target| target.zone),
                 Some(zone)
             );
             let update = controller.update_at(
                 DockAction::DragEnd { surface: target },
-                now + iced::time::Duration::from_millis(302),
+                preview_ready_at + iced::time::Duration::from_millis(1),
             );
             assert_eq!(update.effects, vec![DockHostEffect::CloseFloating(source)]);
 
@@ -5321,13 +5305,11 @@ mod tests {
             )
         );
 
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(301),
-        );
+        let preview_ready_at = after_drag_dwell(now + DRAG_TEST_TICK);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         let update = controller.update_at(
             DockAction::DragEnd { surface: target },
-            now + iced::time::Duration::from_millis(302),
+            preview_ready_at + iced::time::Duration::from_millis(1),
         );
         assert_eq!(
             update.effects,
@@ -5483,11 +5465,9 @@ mod tests {
                 controller.active_drag.as_ref().expect("drag"),
             )
             .expect("early preview");
+        let settled_at = after_preview_animation(now);
         let settled = controller
-            .preview_root_at(
-                now + iced::time::Duration::from_millis(250),
-                controller.active_drag.as_ref().expect("drag"),
-            )
+            .preview_root_at(settled_at, controller.active_drag.as_ref().expect("drag"))
             .expect("settled preview");
         let preview_ratio = |root: DockViewNode| match root {
             DockViewNode::Split { ratio, .. } => ratio,
@@ -5500,18 +5480,17 @@ mod tests {
 
         let drag = controller.active_drag.as_mut().expect("drag");
         drag.target = None;
-        drag.preview
-            .transition_to_hidden(now + iced::time::Duration::from_millis(250));
+        drag.preview.transition_to_hidden(settled_at);
         let collapsed = controller
             .preview_root_at(
-                now + iced::time::Duration::from_millis(300),
+                settled_at + DRAG_PREVIEW_DURATION / 2,
                 controller.active_drag.as_ref().expect("drag"),
             )
             .expect("collapsing preview");
         assert!(preview_ratio(collapsed) < 0.5);
         let gone = controller
             .preview_root_at(
-                now + iced::time::Duration::from_millis(500),
+                after_preview_animation(settled_at),
                 controller.active_drag.as_ref().expect("drag"),
             )
             .expect("collapsed preview");
@@ -5902,10 +5881,8 @@ mod tests {
             },
             now + iced::time::Duration::from_millis(1),
         );
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(301),
-        );
+        let preview_ready_at = after_drag_dwell(now + DRAG_TEST_TICK);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {
@@ -5918,7 +5895,7 @@ mod tests {
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            now + iced::time::Duration::from_millis(302),
+            preview_ready_at + iced::time::Duration::from_millis(1),
         );
         assert_eq!(
             update.effects,
@@ -5978,10 +5955,8 @@ mod tests {
             },
             now + iced::time::Duration::from_millis(2),
         );
-        controller.update_at(
-            DockAction::Hover(false),
-            now + iced::time::Duration::from_millis(302),
-        );
+        let preview_ready_at = after_drag_dwell(now + DRAG_TEST_TICK + DRAG_TEST_TICK);
+        controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert_eq!(
             controller.drop_target(),
             Some(&DockDropTarget {

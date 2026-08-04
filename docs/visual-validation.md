@@ -38,7 +38,7 @@
 - Feedback 覆盖进度、Tooltip、Context Menu 的危险确认和 Dialog 关闭策略；
 - 工作区分类真实启用 Toolbar、Inspector 与 Bottom，支持折叠、resize、双击复位，
   离开分类后隐藏辅助 Region，重新进入时保留尺寸和折叠状态；
-- Dock 拖拽预览沿用真实布局树：超过拖动阈值后候选目标立即使用低强度 `accent_soft` 边缘/背景提示，停留 300ms 后才显示 200ms ease-out 结构空位；源面板从原位置消失，Tab 插入显示待插入标签并激活空位，深浅主题均不使用饱和遮罩；
+- Dock 拖拽预览沿用真实布局树：超过拖动阈值后候选目标立即使用低强度 `accent_soft` 边缘/背景提示，停留 80ms 后显示 80ms ease-out 结构空位；源面板从原位置消失，Tab 插入显示待插入标签并激活空位，深浅主题均不使用饱和遮罩；
 - 设置使用独立 WorkspaceController，主题、标准圆角、主区域圆角和尺寸复位均即时
   更新真实状态；
 - 侧栏折叠后主区域贴边圆角正确，dark/light 的文字、语义色和边框均可辨；
