@@ -404,16 +404,16 @@ where
 
     pub fn view(self) -> Element<'a, Message> {
         let mut panels: Vec<Element<'a, Message>> = Vec::new();
-        let mut panel_item_counts = Vec::new();
+        let mut panel_count = 1;
+        let mut max_panel_items = self.items.len();
         if self.searchable && !self.query.trim().is_empty() {
             let matches = collect_matches(self.items, self.query);
-            panel_item_counts.push(matches.len());
+            max_panel_items = matches.len();
             panels.push(self.panel(
                 matches.into_iter().map(|(_, item)| (Vec::new(), item)),
                 true,
             ));
         } else {
-            panel_item_counts.push(self.items.len());
             panels.push(
                 self.panel(
                     self.items
@@ -434,7 +434,8 @@ where
                 }
                 path.push(index);
                 let parent = path.clone();
-                panel_item_counts.push(item.children.len());
+                panel_count += 1;
+                max_panel_items = max_panel_items.max(item.children.len());
                 panels.push(self.panel(
                     item.children.iter().enumerate().map(move |(child, item)| {
                         let mut item_path = parent.clone();
@@ -449,7 +450,8 @@ where
 
         let search_size = ControlSize::Small;
         let menu_size = context_menu_size(
-            &panel_item_counts,
+            panel_count,
+            max_panel_items,
             self.searchable,
             self.tokens,
             self.viewport,
@@ -534,24 +536,19 @@ where
 }
 
 fn context_menu_size(
-    panel_item_counts: &[usize],
+    panel_count: usize,
+    max_panel_items: usize,
     searchable: bool,
     tokens: ThemeTokens,
     viewport: Size,
 ) -> Size {
-    let panel_count = panel_item_counts.len().max(1) as f32;
+    let panel_count = panel_count.max(1);
     let width = MENU_SURFACE_PADDING * 2.0
-        + panel_count * MENU_PANEL_WIDTH
-        + (panel_count - 1.0) * MENU_PANEL_SPACING;
+        + panel_count as f32 * MENU_PANEL_WIDTH
+        + panel_count.saturating_sub(1) as f32 * MENU_PANEL_SPACING;
     let item_height = ControlSize::Small.height_in(tokens.metrics);
-    let panel_height = panel_item_counts
-        .iter()
-        .copied()
-        .map(|item_count| {
-            item_count as f32 * item_height
-                + item_count.saturating_sub(1) as f32 * MENU_ITEM_SPACING
-        })
-        .fold(0.0, f32::max);
+    let panel_height = max_panel_items as f32 * item_height
+        + max_panel_items.saturating_sub(1) as f32 * MENU_ITEM_SPACING;
     let search_height = if searchable { item_height } else { 0.0 };
     let content_spacing = if searchable {
         MENU_CONTENT_SPACING
@@ -633,7 +630,7 @@ mod tests {
     #[test]
     fn context_menu_size_matches_visible_panel_content() {
         let tokens = crate::theme::ThemeMode::Dark.colors().into();
-        let size = context_menu_size(&[1], false, tokens, Size::new(800.0, 600.0));
+        let size = context_menu_size(1, 1, false, tokens, Size::new(800.0, 600.0));
         let item_height = ControlSize::Small.height_in(tokens.metrics);
 
         assert_eq!(size.width, 200.0);
@@ -643,7 +640,7 @@ mod tests {
     #[test]
     fn context_menu_size_accounts_for_multiple_panels_and_search() {
         let tokens = crate::theme::ThemeMode::Dark.colors().into();
-        let size = context_menu_size(&[3, 1], true, tokens, Size::new(800.0, 600.0));
+        let size = context_menu_size(2, 3, true, tokens, Size::new(800.0, 600.0));
         let item_height = ControlSize::Small.height_in(tokens.metrics);
 
         assert_eq!(size.width, 396.0);
@@ -657,7 +654,7 @@ mod tests {
     fn context_menu_size_caps_long_panels_to_the_viewport() {
         let tokens = crate::theme::ThemeMode::Dark.colors().into();
         let viewport = Size::new(320.0, 180.0);
-        let size = context_menu_size(&[100], true, tokens, viewport);
+        let size = context_menu_size(1, 100, true, tokens, viewport);
 
         assert_eq!(size.height, viewport.height);
         let position = AnchoredMenuPosition::new(Point::new(310.0, 170.0))
