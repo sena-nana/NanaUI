@@ -780,10 +780,19 @@ impl DockController {
             .is_some_and(|drag| drag.preview.is_animating(iced::time::Instant::now()))
     }
 
-    fn drag_needs_frame(&self) -> bool {
-        self.active_drag.as_ref().is_some_and(|drag| {
-            drag.pending_target.is_some() || drag.preview.is_animating(iced::time::Instant::now())
-        })
+    /// Returns whether the host must keep requesting frames for the drag preview.
+    ///
+    /// A stationary drag still needs frames while a candidate is waiting for the
+    /// insertion dwell or while the preview transition is animating. Once both
+    /// states are settled, pointer events remain responsible for redraws.
+    pub fn is_drag_frame_needed(&self) -> bool {
+        self.drag_needs_frame_at(iced::time::Instant::now())
+    }
+
+    fn drag_needs_frame_at(&self, at: iced::time::Instant) -> bool {
+        self.active_drag
+            .as_ref()
+            .is_some_and(|drag| drag.pending_target.is_some() || drag.preview.is_animating(at))
     }
 
     #[cfg(test)]
@@ -889,7 +898,7 @@ impl DockController {
             }
             None => {}
         }
-        if self.drag_needs_frame() {
+        if self.is_drag_frame_needed() {
             subscriptions.push(iced::window::frames().map(|_| DockAction::Hover(false)));
         }
         Subscription::batch(subscriptions)
@@ -4216,6 +4225,50 @@ mod tests {
         controller.update(DockAction::CancelDrag);
         assert!(controller.preview_root().is_none());
         assert_eq!(controller.layout(), &before);
+    }
+
+    #[test]
+    fn drag_frame_is_needed_for_stationary_candidate_and_preview_only() {
+        let mut controller = tab_drag_controller();
+        let now = iced::time::Instant::now();
+        assert!(!controller.drag_needs_frame_at(now));
+
+        controller.update_at(
+            DockAction::DragStart {
+                surface: DockSurfaceId(0),
+                id: DockId::from("source"),
+            },
+            now,
+        );
+        assert!(!controller.drag_needs_frame_at(now));
+
+        move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
+        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(2)));
+
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(302),
+        );
+        assert!(controller.drop_target().is_some());
+        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(302)));
+        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(400)));
+        assert!(!controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(503)));
+    }
+
+    #[test]
+    fn drag_frame_is_needed_during_reverse_preview_until_settled() {
+        let mut controller = preview_controller(DockDropZone::Left);
+        let now = iced::time::Instant::now();
+        assert!(!controller.drag_needs_frame_at(now));
+
+        controller
+            .active_drag
+            .as_mut()
+            .expect("active drag")
+            .preview
+            .transition_to_hidden(now);
+        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(1)));
+        assert!(!controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(201)));
     }
 
     #[test]
