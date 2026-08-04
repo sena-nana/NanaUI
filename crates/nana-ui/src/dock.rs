@@ -2288,10 +2288,19 @@ where
         left: 0.0,
     })
     .center_y(Length::Fill);
-    let title: Element<'a, Message> = if controller.layout.locked {
-        window_chrome_drag_start_area(title, &on_window_event)
+    let drag_region = row![title, space().width(Length::Fill).height(Length::Fill)]
+        .height(Length::Fill)
+        .align_y(Alignment::Center);
+    let drag_region: Element<'a, Message> = if controller.layout.locked {
+        window_chrome_drag_start_area(drag_region, &on_window_event)
     } else {
-        dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
+        dock_drag_handle(
+            drag_region,
+            id,
+            surface,
+            on_action,
+            DockAction::Focus(id.clone()),
+        )
     };
     let chrome = window_chrome.chrome();
     let controls = window_chrome_controls(
@@ -2309,15 +2318,10 @@ where
             bottom: 0.0,
             left: 6.0,
         });
-    let window_drag = window_chrome_drag_start_area(
-        space().width(Length::Fill).height(Length::Fill),
-        &on_window_event,
-    );
     let title_bar = container(
         row![
             space().width(Length::Fixed(6.0 + chrome.leading_inset)),
-            title,
-            window_drag,
+            drag_region,
             controls,
         ]
         .height(Length::Fill)
@@ -2331,7 +2335,11 @@ where
             .background(tokens.colors.surface)
             .color(tokens.colors.text)
     });
-    let title_bar = window_chrome_drag_tracker(title_bar, on_window_event);
+    let title_bar: Element<'a, Message> = if controller.layout.locked {
+        window_chrome_drag_tracker(title_bar, on_window_event)
+    } else {
+        title_bar.into()
+    };
     let body = dock_item_body(id, contents, tokens, controller.chrome_style);
     let window = column![title_bar, body]
         .width(Length::Fill)
@@ -2371,14 +2379,14 @@ where
                     let id = item.id();
                     let title = dock_item_title(controller, id);
                     let placeholder = item.is_placeholder();
-                    let preview_progress = placeholder
-                        .then(|| {
-                            merge_preview
-                                .as_ref()
-                                .map_or(1.0, |preview| preview.progress)
-                        })
-                        .unwrap_or(1.0)
-                        .clamp(0.0, 1.0);
+                    let preview_progress = if placeholder {
+                        merge_preview
+                            .as_ref()
+                            .map_or(1.0, |preview| preview.progress)
+                    } else {
+                        1.0
+                    }
+                    .clamp(0.0, 1.0);
                     let active_tab = item == active;
                     let label = text(title)
                         .size(11)
@@ -4380,6 +4388,106 @@ mod tests {
             }]
         );
         assert!(!controller.is_dragging());
+    }
+
+    #[test]
+    fn floating_drag_can_dock_into_main_and_close_the_source_surface() {
+        let mut controller = controller();
+        let opened = controller.update(DockAction::Float {
+            id: DockId::from("sources"),
+            bounds: DockBounds::new(1_400.0, 100.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+            panic!("floating surface")
+        };
+        let surface = floating.surface;
+        controller.update(DockAction::SurfaceGeometry {
+            surface: DockSurfaceId(0),
+            bounds: DockBounds::new(100.0, 50.0, 1_280.0, 800.0),
+        });
+
+        let now = iced::time::Instant::now();
+        controller.update_at(
+            DockAction::DragStart {
+                surface,
+                id: DockId::from("sources"),
+            },
+            now,
+        );
+        controller.update_at(
+            DockAction::DragMove {
+                surface,
+                position: Point::new(10.0, 10.0),
+            },
+            now,
+        );
+        controller.update_at(
+            DockAction::DragMove {
+                surface,
+                position: Point::new(-1_150.0, 200.0),
+            },
+            now + iced::time::Duration::from_millis(1),
+        );
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(301),
+        );
+        let update = controller.update_at(
+            DockAction::DragEnd { surface },
+            now + iced::time::Duration::from_millis(302),
+        );
+
+        assert!(update.changed);
+        assert_eq!(update.effects, vec![DockHostEffect::CloseFloating(surface)]);
+        assert!(controller.layout().floating.is_empty());
+        assert!(!controller.is_dragging());
+        let DockNode::Split { first, .. } = &controller.layout().main else {
+            panic!("main layout")
+        };
+        assert_eq!(
+            first.as_ref(),
+            &DockNode::Tabs {
+                tabs: vec![DockId::from("scenes"), DockId::from("sources")],
+                active: DockId::from("sources"),
+            }
+        );
+    }
+
+    #[test]
+    fn main_surface_pointer_routes_back_to_a_floating_drag_source() {
+        let mut controller = controller();
+        let opened = controller.update(DockAction::Float {
+            id: DockId::from("sources"),
+            bounds: DockBounds::new(1_400.0, 100.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+            panic!("floating surface")
+        };
+        let surface = floating.surface;
+        controller.update(DockAction::SurfaceGeometry {
+            surface: DockSurfaceId(0),
+            bounds: DockBounds::new(100.0, 50.0, 1_280.0, 800.0),
+        });
+        controller.update(DockAction::DragStart {
+            surface,
+            id: DockId::from("sources"),
+        });
+
+        let pointer = dock_surface_pointer_handler(&controller, DockSurfaceId(0), |action| action)
+            .expect("main surface pointer handler");
+        assert_eq!(
+            pointer(DockSurfacePointer::Move(Point::new(150.0, 200.0))),
+            Some(DockAction::DragMove {
+                surface,
+                position: Point::new(-1_150.0, 150.0),
+            })
+        );
+        assert_eq!(
+            pointer(DockSurfacePointer::End),
+            Some(DockAction::DragEnd { surface })
+        );
     }
 
     #[test]
