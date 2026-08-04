@@ -21,6 +21,13 @@ use crate::write;
 
 const GALLERY_SIZE: Size<u32> = Size::new(1280, 800);
 
+#[derive(Clone, Copy)]
+enum DockPreviewPhase {
+    Candidate,
+    Transition,
+    Settled,
+}
+
 pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
@@ -128,16 +135,24 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
                 &format!("dock-preview-{name}-{suffix}.png"),
                 theme,
                 zone,
-                true,
+                DockPreviewPhase::Settled,
             )?);
         }
+        paths.push(dock_preview_snapshot(
+            &mut renderer,
+            &output,
+            &format!("dock-preview-tab-transition-{suffix}.png"),
+            theme,
+            DockDropZone::Tab,
+            DockPreviewPhase::Transition,
+        )?);
         paths.push(dock_preview_snapshot(
             &mut renderer,
             &output,
             &format!("dock-hover-left-{suffix}.png"),
             theme,
             DockDropZone::Left,
-            false,
+            DockPreviewPhase::Candidate,
         )?);
         paths.push(dock_outside_snapshot(
             &mut renderer,
@@ -482,7 +497,7 @@ fn dock_preview_snapshot(
     name: &str,
     theme: ThemeMode,
     zone: DockDropZone,
-    settle: bool,
+    phase: DockPreviewPhase,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
     let position = match zone {
@@ -492,7 +507,7 @@ fn dock_preview_snapshot(
         DockDropZone::Bottom => Point::new(200.0, 100.0),
         DockDropZone::Tab => Point::new(200.0, 50.0),
     };
-    let controller = dock_preview_controller(size, position, settle)?;
+    let controller = dock_preview_controller(size, position, phase)?;
     let colors = theme.colors();
     let view = dock_workspace(
         &controller,
@@ -514,7 +529,8 @@ fn dock_outside_snapshot(
     theme: ThemeMode,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
-    let controller = dock_preview_controller(size, Point::new(410.0, 80.0), false)?;
+    let controller =
+        dock_preview_controller(size, Point::new(410.0, 80.0), DockPreviewPhase::Candidate)?;
     let colors = theme.colors();
     let view = dock_workspace(
         &controller,
@@ -532,7 +548,7 @@ fn dock_outside_snapshot(
 fn dock_preview_controller(
     size: Size<u32>,
     position: Point,
-    settle: bool,
+    phase: DockPreviewPhase,
 ) -> Result<DockController, Box<dyn std::error::Error>> {
     let mut controller = DockController::new(
         "editor",
@@ -570,11 +586,19 @@ fn dock_preview_controller(
         surface: DockSurfaceId(0),
         position,
     });
-    if settle {
-        std::thread::sleep(std::time::Duration::from_millis(350));
-        controller.update(DockAction::Hover(false));
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        controller.update(DockAction::Hover(false));
+    match phase {
+        DockPreviewPhase::Candidate => {}
+        DockPreviewPhase::Transition => {
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            controller.update(DockAction::Hover(false));
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+        DockPreviewPhase::Settled => {
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            controller.update(DockAction::Hover(false));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            controller.update(DockAction::Hover(false));
+        }
     }
     Ok(controller)
 }

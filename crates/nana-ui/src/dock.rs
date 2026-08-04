@@ -463,6 +463,12 @@ impl DockViewItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct DockMergePreview {
+    base: DockViewItem,
+    progress: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum DockViewNode {
     Item {
         item: DockViewItem,
@@ -470,6 +476,7 @@ enum DockViewNode {
     Tabs {
         tabs: Vec<DockViewItem>,
         active: DockViewItem,
+        merge_preview: Option<DockMergePreview>,
     },
     Split {
         axis: DockAxis,
@@ -488,6 +495,7 @@ impl From<&DockNode> for DockViewNode {
             DockNode::Tabs { tabs, active } => Self::Tabs {
                 tabs: tabs.iter().cloned().map(DockViewItem::Existing).collect(),
                 active: DockViewItem::Existing(active.clone()),
+                merge_preview: None,
             },
             DockNode::Split {
                 axis,
@@ -653,6 +661,7 @@ impl DockController {
             .and_then(|drag| drag.target.as_ref())
     }
 
+    #[cfg(test)]
     fn drop_highlight_target(&self) -> Option<&DockDropTarget> {
         self.active_drag.as_ref().and_then(|drag| {
             drag.pending_target
@@ -2346,14 +2355,15 @@ fn dock_node_view<'a, Message>(
 where
     Message: Clone + 'a,
 {
-    let highlight = (surface == DockSurfaceId(0))
-        .then(|| controller.drop_highlight_target())
-        .flatten();
     match node {
         DockViewNode::Item { item } => dock_view_item_view(
             item, surface, false, controller, contents, on_action, tokens,
         ),
-        DockViewNode::Tabs { tabs, active } => {
+        DockViewNode::Tabs {
+            tabs,
+            active,
+            merge_preview,
+        } => {
             let chrome_style = controller.chrome_style;
             let tab_bar = tabs.iter().fold(
                 row![].height(Length::Fixed(TITLE_BAR_HEIGHT)),
@@ -2361,33 +2371,44 @@ where
                     let id = item.id();
                     let title = dock_item_title(controller, id);
                     let placeholder = item.is_placeholder();
+                    let preview_progress = placeholder
+                        .then(|| {
+                            merge_preview
+                                .as_ref()
+                                .map_or(1.0, |preview| preview.progress)
+                        })
+                        .unwrap_or(1.0)
+                        .clamp(0.0, 1.0);
                     let active_tab = item == active;
-                    let highlighted = is_drop_highlighted(highlight, id);
-                    let tab = container(
-                        text(title)
-                            .size(11)
-                            .font(ui_font(iced::font::Weight::Medium)),
-                    )
-                    .center_y(Length::Fill)
-                    .padding([0.0, 10.0])
-                    .style(move |_theme| {
-                        let background = if placeholder || highlighted {
-                            tokens.colors.accent_soft
-                        } else if active_tab {
-                            tokens.colors.active
-                        } else if chrome_style == DockChromeStyle::Card {
-                            iced::Color::TRANSPARENT
-                        } else {
-                            tokens.colors.surface
-                        };
-                        iced::widget::container::Style::default()
-                            .background(background)
-                            .border(if placeholder || highlighted {
-                                dock_insert_preview_border(tokens)
+                    let label = text(title)
+                        .size(11)
+                        .font(ui_font(iced::font::Weight::Medium));
+                    let label = if placeholder && merge_preview.is_some() {
+                        label.color(tokens.colors.text.scale_alpha(preview_progress))
+                    } else {
+                        label
+                    };
+                    let tab = container(label)
+                        .center_y(Length::Fill)
+                        .padding([0.0, 10.0])
+                        .style(move |_theme| {
+                            let background = if placeholder {
+                                tokens.colors.subtle.scale_alpha(preview_progress)
+                            } else if active_tab {
+                                tokens.colors.active
+                            } else if chrome_style == DockChromeStyle::Card {
+                                iced::Color::TRANSPARENT
                             } else {
-                                dock_tab_border(tokens, chrome_style)
-                            })
-                    });
+                                tokens.colors.surface
+                            };
+                            iced::widget::container::Style::default()
+                                .background(background)
+                                .border(if placeholder {
+                                    dock_placeholder_border_with_progress(tokens, preview_progress)
+                                } else {
+                                    dock_tab_border(tokens, chrome_style)
+                                })
+                        });
                     if placeholder {
                         tabs_row.push(
                             tab.height(Length::Fixed(TITLE_BAR_HEIGHT))
@@ -2413,9 +2434,26 @@ where
                     }
                 },
             );
-            let active_item = dock_view_item_view(
-                active, surface, true, controller, contents, on_action, tokens,
-            );
+            let active_item = if let Some(preview) = merge_preview {
+                let base = match &preview.base {
+                    DockViewItem::Existing(id) => {
+                        dock_item_view(id, surface, true, controller, contents, on_action, tokens)
+                    }
+                    DockViewItem::Placeholder(id) => {
+                        dock_placeholder_view(id, true, controller, tokens)
+                    }
+                };
+                let overlay =
+                    dock_placeholder_body(tokens, controller.chrome_style, preview.progress);
+                stack![base, overlay]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            } else {
+                dock_view_item_view(
+                    active, surface, true, controller, contents, on_action, tokens,
+                )
+            };
             if chrome_style == DockChromeStyle::Card {
                 let tab_bar = dock_card_title_bar(tab_bar, tokens);
                 dock_card_shell(column![tab_bar, active_item].height(Length::Fill), tokens)
@@ -2556,54 +2594,20 @@ fn dock_view_item_view<'a, Message>(
 where
     Message: Clone + 'a,
 {
-    let highlighted = is_drop_highlighted(controller.drop_highlight_target(), item.id());
     match item {
-        DockViewItem::Existing(id) => {
-            let content = dock_item_view(
-                id,
-                surface,
-                tabs_own_title,
-                controller,
-                contents,
-                on_action,
-                tokens,
-            );
-            if highlighted {
-                dock_insert_highlight(content, tokens)
-            } else {
-                content
-            }
-        }
+        DockViewItem::Existing(id) => dock_item_view(
+            id,
+            surface,
+            tabs_own_title,
+            controller,
+            contents,
+            on_action,
+            tokens,
+        ),
         DockViewItem::Placeholder(id) => {
             dock_placeholder_view(id, tabs_own_title, controller, tokens)
         }
     }
-}
-
-fn is_drop_highlighted(highlight: Option<&DockDropTarget>, id: &DockId) -> bool {
-    highlight.is_some_and(|target| target.id.as_str() == id.as_str())
-}
-
-fn dock_insert_highlight<'a, Message>(
-    content: Element<'a, Message>,
-    tokens: ThemeTokens,
-) -> Element<'a, Message>
-where
-    Message: 'a,
-{
-    let overlay = container(space())
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .clip(true)
-        .style(move |_theme| {
-            iced::widget::container::Style::default()
-                .background(tokens.colors.accent_soft)
-                .border(dock_insert_preview_border(tokens))
-        });
-    stack![content, overlay]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
 }
 
 fn dock_item_view<'a, Message>(
@@ -2707,7 +2711,7 @@ fn dock_placeholder_view<'a, Message>(
 where
     Message: 'a,
 {
-    let body = dock_placeholder_body(tokens, controller.chrome_style);
+    let body = dock_placeholder_body(tokens, controller.chrome_style, 1.0);
     if tabs_own_title {
         return body;
     }
@@ -2730,7 +2734,7 @@ where
             .style(move |_theme| {
                 iced::widget::container::Style::default()
                     .background(tokens.colors.surface)
-                    .border(dock_insert_preview_border(tokens))
+                    .border(dock_placeholder_border(tokens))
             })
             .into()
     };
@@ -2792,19 +2796,21 @@ where
 fn dock_placeholder_body<'a, Message>(
     tokens: ThemeTokens,
     chrome_style: DockChromeStyle,
+    progress: f32,
 ) -> Element<'a, Message>
 where
     Message: 'a,
 {
+    let progress = progress.clamp(0.0, 1.0);
     let body = container(space())
         .width(Length::Fill)
         .height(Length::Fill)
         .clip(true)
         .style(move |_theme| {
             iced::widget::container::Style::default()
-                .background(tokens.colors.accent_soft)
-                .color(tokens.colors.text)
-                .border(dock_insert_preview_border(tokens))
+                .background(tokens.colors.subtle.scale_alpha(progress))
+                .color(tokens.colors.text.scale_alpha(progress))
+                .border(dock_placeholder_border_with_progress(tokens, progress))
         });
     if chrome_style == DockChromeStyle::Card {
         container(body)
@@ -2814,8 +2820,8 @@ where
             .clip(true)
             .style(move |_theme| {
                 iced::widget::container::Style::default()
-                    .background(tokens.colors.surface)
-                    .color(tokens.colors.text)
+                    .background(tokens.colors.surface.scale_alpha(progress))
+                    .color(tokens.colors.text.scale_alpha(progress))
             })
             .into()
     } else {
@@ -2824,16 +2830,15 @@ where
 }
 
 fn dock_placeholder_border(tokens: ThemeTokens) -> iced::Border {
-    iced::Border {
-        color: tokens.colors.border_soft,
-        width: 1.0,
-        radius: 0.0.into(),
-    }
+    dock_placeholder_border_with_progress(tokens, 1.0)
 }
 
-fn dock_insert_preview_border(tokens: ThemeTokens) -> iced::Border {
+fn dock_placeholder_border_with_progress(tokens: ThemeTokens, progress: f32) -> iced::Border {
     iced::Border {
-        color: tokens.colors.accent_on_soft,
+        color: tokens
+            .colors
+            .border_soft
+            .scale_alpha(progress.clamp(0.0, 1.0)),
         width: 1.0,
         radius: 0.0.into(),
     }
@@ -3309,11 +3314,16 @@ fn remove_view_node(node: DockViewNode, id: &DockId) -> Option<DockViewNode> {
         DockViewNode::Tabs {
             mut tabs,
             mut active,
+            ..
         } => {
             let before = tabs.len();
             tabs.retain(|item| item.id() != id);
             if tabs.len() == before {
-                return Some(DockViewNode::Tabs { tabs, active });
+                return Some(DockViewNode::Tabs {
+                    tabs,
+                    active,
+                    merge_preview: None,
+                });
             }
             match tabs.len() {
                 0 => None,
@@ -3324,7 +3334,11 @@ fn remove_view_node(node: DockViewNode, id: &DockId) -> Option<DockViewNode> {
                     if active.id() == id {
                         active = tabs[0].clone();
                     }
-                    Some(DockViewNode::Tabs { tabs, active })
+                    Some(DockViewNode::Tabs {
+                        tabs,
+                        active,
+                        merge_preview: None,
+                    })
                 }
             }
         }
@@ -3357,7 +3371,7 @@ fn insert_view_node_with_progress(
         && matches!(root, DockViewNode::Item { .. } | DockViewNode::Tabs { .. })
     {
         if zone == DockDropZone::Tab {
-            return insert_view_tab(root, target, item);
+            return insert_view_tab_with_progress(root, target, item, progress);
         }
         let previous = root.clone();
         let item = DockViewNode::Item { item };
@@ -3389,24 +3403,38 @@ fn insert_view_node_with_progress(
     }
 }
 
-fn insert_view_tab(root: &mut DockViewNode, target: &DockId, item: DockViewItem) -> bool {
+fn insert_view_tab_with_progress(
+    root: &mut DockViewNode,
+    target: &DockId,
+    item: DockViewItem,
+    progress: f32,
+) -> bool {
     match root {
         DockViewNode::Item { item: current } if current.id() == target => {
+            let base = current.clone();
             *root = DockViewNode::Tabs {
                 tabs: vec![current.clone(), item.clone()],
                 active: item,
+                merge_preview: Some(DockMergePreview { base, progress }),
             };
             true
         }
-        DockViewNode::Tabs { tabs, active } if tabs.iter().any(|tab| tab.id() == target) => {
+        DockViewNode::Tabs {
+            tabs,
+            active,
+            merge_preview,
+        } if tabs.iter().any(|tab| tab.id() == target) => {
+            let base = active.clone();
             if !tabs.iter().any(|tab| tab == &item) {
                 tabs.push(item.clone());
             }
             *active = item;
+            *merge_preview = Some(DockMergePreview { base, progress });
             true
         }
         DockViewNode::Split { first, second, .. } => {
-            insert_view_tab(first, target, item.clone()) || insert_view_tab(second, target, item)
+            insert_view_tab_with_progress(first, target, item.clone(), progress)
+                || insert_view_tab_with_progress(second, target, item, progress)
         }
         _ => false,
     }
@@ -3799,16 +3827,97 @@ mod tests {
     fn drag_preview_tabs_make_the_empty_item_active() {
         let controller = preview_controller(DockDropZone::Tab);
         let preview = controller.preview_root().expect("tab preview");
+        let DockViewNode::Tabs {
+            tabs,
+            active,
+            merge_preview,
+        } = preview
+        else {
+            panic!("tab preview expected")
+        };
         assert_eq!(
-            preview,
-            DockViewNode::Tabs {
-                tabs: vec![
-                    DockViewItem::Existing(DockId::from("editor")),
-                    DockViewItem::Placeholder(DockId::from("source")),
-                ],
-                active: DockViewItem::Placeholder(DockId::from("source")),
-            }
+            tabs,
+            vec![
+                DockViewItem::Existing(DockId::from("editor")),
+                DockViewItem::Placeholder(DockId::from("source")),
+            ]
         );
+        assert_eq!(active, DockViewItem::Placeholder(DockId::from("source")));
+        assert_eq!(
+            merge_preview,
+            Some(DockMergePreview {
+                base: DockViewItem::Existing(DockId::from("editor")),
+                progress: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn drag_preview_tab_interpolates_and_keeps_base_during_reverse() {
+        let mut controller = preview_controller(DockDropZone::Tab);
+        let now = iced::time::Instant::now();
+        {
+            let drag = controller.active_drag.as_mut().expect("active drag");
+            drag.preview.go_mut(false, now);
+            drag.preview
+                .go_mut(true, now + iced::time::Duration::from_millis(1));
+        }
+
+        let preview = preview_at(&controller, now + iced::time::Duration::from_millis(51));
+        let DockViewNode::Tabs {
+            active,
+            merge_preview: Some(merge_preview),
+            ..
+        } = preview
+        else {
+            panic!("intermediate tab preview expected")
+        };
+        assert_eq!(active, DockViewItem::Placeholder(DockId::from("source")));
+        assert_eq!(
+            merge_preview.base,
+            DockViewItem::Existing(DockId::from("editor"))
+        );
+        assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
+
+        let settled = preview_at(&controller, now + iced::time::Duration::from_millis(251));
+        let DockViewNode::Tabs {
+            merge_preview: Some(merge_preview),
+            ..
+        } = settled
+        else {
+            panic!("settled tab preview expected")
+        };
+        assert_eq!(merge_preview.progress, 1.0);
+
+        let reverse_start = now + iced::time::Duration::from_millis(251);
+        controller
+            .active_drag
+            .as_mut()
+            .expect("active drag")
+            .preview
+            .go_mut(false, reverse_start);
+        let reversing = preview_at(
+            &controller,
+            reverse_start + iced::time::Duration::from_millis(51),
+        );
+        let DockViewNode::Tabs {
+            merge_preview: Some(merge_preview),
+            ..
+        } = reversing
+        else {
+            panic!("reverse tab preview expected")
+        };
+        assert_eq!(
+            merge_preview.base,
+            DockViewItem::Existing(DockId::from("editor"))
+        );
+        assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
+
+        let finished = preview_at(
+            &controller,
+            reverse_start + iced::time::Duration::from_millis(251),
+        );
+        assert!(!contains_placeholder(&finished));
     }
 
     #[test]
@@ -3865,6 +3974,30 @@ mod tests {
         .expect("valid drag dock layout")
     }
 
+    fn tab_drag_controller() -> DockController {
+        let layout = DockLayout::new(DockNode::split(
+            DockAxis::Horizontal,
+            0.25,
+            DockNode::item("source"),
+            DockNode::split(
+                DockAxis::Horizontal,
+                0.5,
+                DockNode::item("target"),
+                DockNode::item("editor"),
+            ),
+        ));
+        DockController::new(
+            "editor",
+            [
+                DockItemSpec::new("editor", "Editor").closeable(false),
+                DockItemSpec::new("source", "Source"),
+                DockItemSpec::new("target", "Target"),
+            ],
+            layout,
+        )
+        .expect("valid tab drag dock layout")
+    }
+
     fn move_source_to_position(
         controller: &mut DockController,
         now: iced::time::Instant,
@@ -3891,6 +4024,90 @@ mod tests {
             },
             now + iced::time::Duration::from_millis(1),
         )
+    }
+
+    fn preview_at(controller: &DockController, at: iced::time::Instant) -> DockViewNode {
+        let drag = controller.active_drag.as_ref().expect("active drag");
+        controller.preview_root_at(at, drag).expect("drag preview")
+    }
+
+    #[test]
+    fn real_tab_drop_commits_the_preview_layout() {
+        let mut controller = tab_drag_controller();
+        let now = iced::time::Instant::now();
+        let opened = move_source_to_position(&mut controller, now, Point::new(300.0, 400.0));
+        let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
+            panic!("tab drag opens a transient floating surface")
+        };
+        let update = controller.update_at(
+            DockAction::DragEnd {
+                surface: DockSurfaceId(0),
+            },
+            now + iced::time::Duration::from_millis(302),
+        );
+        assert!(update.changed);
+        assert_eq!(
+            update.effects,
+            vec![DockHostEffect::CloseFloating(floating.surface)]
+        );
+
+        let DockNode::Split { first, .. } = &controller.layout().main else {
+            panic!("source removal should preserve the target split")
+        };
+        let DockNode::Tabs { tabs, active } = first.as_ref() else {
+            panic!("tab drop should commit a tabs node")
+        };
+        assert_eq!(tabs, &vec![DockId::from("target"), DockId::from("source")]);
+        assert_eq!(active, &DockId::from("source"));
+        assert!(controller.layout().floating.is_empty());
+    }
+
+    #[test]
+    fn switching_from_split_to_tab_keeps_the_old_preview_until_reverse_finishes() {
+        let mut controller = tab_drag_controller();
+        let now = iced::time::Instant::now();
+        move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(302),
+        );
+        assert_eq!(
+            controller.drop_target().map(|target| target.zone),
+            Some(DockDropZone::Left)
+        );
+
+        controller.update_at(
+            DockAction::DragMove {
+                surface: DockSurfaceId(0),
+                position: Point::new(300.0, 400.0),
+            },
+            now + iced::time::Duration::from_millis(303),
+        );
+        assert!(controller.drop_target().is_none());
+        let reversing = preview_at(&controller, now + iced::time::Duration::from_millis(353));
+        assert!(contains_placeholder(&reversing));
+        assert!(matches!(reversing, DockViewNode::Split { .. }));
+
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(604),
+        );
+        assert_eq!(
+            controller.drop_target().map(|target| target.zone),
+            Some(DockDropZone::Tab)
+        );
+        let tab_preview = preview_at(&controller, now + iced::time::Duration::from_millis(654));
+        let DockViewNode::Split { first, .. } = tab_preview else {
+            panic!("target split should remain in the preview root")
+        };
+        let DockViewNode::Tabs {
+            merge_preview: Some(merge_preview),
+            ..
+        } = first.as_ref()
+        else {
+            panic!("tab target should have an animated merge preview")
+        };
+        assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
     }
 
     #[test]
@@ -3953,6 +4170,7 @@ mod tests {
     #[test]
     fn changing_or_leaving_a_candidate_resets_or_cancels_the_dwell() {
         let mut controller = simple_drag_controller();
+        let before = controller.layout().clone();
         let now = iced::time::Instant::now();
         move_source_to_position(&mut controller, now, Point::new(100.0, 400.0));
         assert!(controller.drop_target().is_none());
@@ -3983,6 +4201,19 @@ mod tests {
         );
         assert!(controller.drop_highlight_target().is_none());
         assert!(controller.drop_target().is_none());
+        assert!(contains_placeholder(&preview_at(
+            &controller,
+            now + iced::time::Duration::from_millis(650),
+        )));
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(802),
+        );
+        assert!(!contains_placeholder(&preview_at(
+            &controller,
+            now + iced::time::Duration::from_millis(803),
+        )));
+        assert_eq!(controller.layout(), &before);
     }
 
     #[test]
@@ -4241,7 +4472,7 @@ mod tests {
     fn contains_placeholder(node: &DockViewNode) -> bool {
         match node {
             DockViewNode::Item { item } => item.is_placeholder(),
-            DockViewNode::Tabs { tabs, active } => {
+            DockViewNode::Tabs { tabs, active, .. } => {
                 tabs.iter().any(DockViewItem::is_placeholder) || active.is_placeholder()
             }
             DockViewNode::Split { first, second, .. } => {
