@@ -7,7 +7,7 @@ use iced::widget::{container, responsive, shader};
 use iced::{Element, Length, Rectangle};
 
 use crate::geometry::LogicalRect;
-use crate::gpu_view::RenderSlot;
+use crate::gpu_view::{RenderSlot, slot_for_bounds};
 
 const SOURCE: &str = r#"
 @group(0) @binding(0)
@@ -245,11 +245,10 @@ impl<Message> shader::Program<Message> for GpuTextureView {
         &self,
         _state: &Self::State,
         _cursor: iced::mouse::Cursor,
-        bounds: Rectangle,
+        _bounds: Rectangle,
     ) -> Self::Primitive {
         GpuTexturePrimitive {
             layer: self.layer.clone(),
-            logical_bounds: LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
         }
     }
 }
@@ -258,7 +257,6 @@ impl<Message> shader::Program<Message> for GpuTextureView {
 #[derive(Debug, Clone)]
 pub struct GpuTexturePrimitive {
     layer: HostTextureLayer,
-    logical_bounds: LogicalRect,
 }
 
 impl shader::Primitive for GpuTexturePrimitive {
@@ -269,12 +267,12 @@ impl shader::Primitive for GpuTexturePrimitive {
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _bounds: &Rectangle,
+        bounds: &Rectangle,
         viewport: &shader::Viewport,
     ) {
         let texture = self.layer.texture.snapshot();
         let key = TextureKey::new(&self.layer);
-        let slot = RenderSlot::new(texture.id, self.logical_bounds, viewport.scale_factor());
+        let (slot, viewport_rect) = slot_for_bounds(texture.id, bounds, viewport.scale_factor());
         let clip = self
             .layer
             .clip
@@ -322,6 +320,7 @@ impl shader::Primitive for GpuTexturePrimitive {
                     generation: texture.generation,
                     bind_group,
                     slot,
+                    viewport: viewport_rect,
                     clip,
                     _layer_uniform: layer_uniform,
                     used: true,
@@ -329,6 +328,7 @@ impl shader::Primitive for GpuTexturePrimitive {
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
             prepared.slot = slot;
+            prepared.viewport = viewport_rect;
             prepared.clip = clip;
             prepared.used = true;
         }
@@ -378,14 +378,8 @@ impl shader::Primitive for GpuTexturePrimitive {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        render_pass.set_viewport(
-            texture.slot.physical.x as f32,
-            texture.slot.physical.y as f32,
-            texture.slot.physical.width as f32,
-            texture.slot.physical.height as f32,
-            0.0,
-            1.0,
-        );
+        let viewport = texture.viewport;
+        render_pass.set_viewport(viewport[0], viewport[1], viewport[2], viewport[3], 0.0, 1.0);
         render_pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_bind_group(0, &texture.bind_group, &[]);
@@ -498,6 +492,7 @@ struct PreparedTexture {
     generation: u64,
     bind_group: wgpu::BindGroup,
     slot: RenderSlot,
+    viewport: [f32; 4],
     clip: Option<crate::geometry::PhysicalRect>,
     _layer_uniform: wgpu::Buffer,
     used: bool,
