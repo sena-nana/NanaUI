@@ -4,9 +4,7 @@ use std::rc::Rc;
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
 use iced::widget::{button, column, container, row, space, stack, text};
-use iced::{
-    Alignment, Animation, Element, Event, Length, Padding, Point, Rectangle, Size, Subscription,
-};
+use iced::{Alignment, Element, Event, Length, Padding, Point, Rectangle, Size, Subscription};
 use serde::{Deserialize, Serialize};
 
 use crate::drag_handle::DragHandle;
@@ -29,24 +27,10 @@ const DIVIDER_HIT_SIZE: f32 = 8.0;
 const TITLE_BAR_HEIGHT: f32 = 28.0;
 const MIN_SPLIT_RATIO: f32 = 0.05;
 const MAX_SPLIT_RATIO: f32 = 0.95;
-const DRAG_PREVIEW_DURATION: iced::time::Duration = iced::time::Duration::from_millis(80);
 const DRAG_INSERT_HOVER_DELAY: iced::time::Duration = iced::time::Duration::from_millis(80);
-const DRAG_PREVIEW_HANDOFF_NEUTRAL_WINDOW: f32 = 0.02;
 const DRAG_CARD_WIDTH: f32 = 280.0;
 const DRAG_CARD_HEIGHT: f32 = 180.0;
 const DRAG_CARD_OFFSET: f32 = 12.0;
-
-fn drag_preview_animation(progress: f32) -> Animation<f32> {
-    Animation::new(progress.clamp(0.0, 1.0))
-        .duration(DRAG_PREVIEW_DURATION)
-        .easing(iced::animation::Easing::EaseOutCubic)
-}
-
-fn drag_preview_progress(animation: &Animation<f32>, at: iced::time::Instant) -> f32 {
-    animation
-        .interpolate_with(|progress| progress, at)
-        .clamp(0.0, 1.0)
-}
 
 /// Stable application-owned identity for a dock item.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -433,7 +417,6 @@ struct ActiveDrag {
     moved: bool,
     pending_target: Option<(DockDropTarget, iced::time::Instant)>,
     target: Option<DockDropTarget>,
-    preview: DockPreviewTransition,
     transient_surface: Option<DockSurfaceId>,
     transient_ready: bool,
     original_bounds: Option<DockBounds>,
@@ -459,119 +442,6 @@ impl DockViewItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct DockMergePreview {
-    base: DockViewItem,
-    progress: f32,
-}
-
-#[derive(Debug, Clone)]
-struct DockPreviewTransition {
-    animation: Animation<f32>,
-    target: Option<DockDropTarget>,
-    handoff: Option<DockPreviewHandoff>,
-}
-
-#[derive(Debug, Clone)]
-struct DockPreviewHandoff {
-    from: DockDropTarget,
-    from_progress: f32,
-    to: DockDropTarget,
-}
-
-impl Default for DockPreviewTransition {
-    fn default() -> Self {
-        Self {
-            animation: drag_preview_animation(0.0),
-            target: None,
-            handoff: None,
-        }
-    }
-}
-
-impl DockPreviewTransition {
-    fn single(target: DockDropTarget, from: f32, to: f32, at: iced::time::Instant) -> Self {
-        let mut animation = drag_preview_animation(from);
-        animation.go_mut(to.clamp(0.0, 1.0), at);
-        Self {
-            animation,
-            target: Some(target),
-            handoff: None,
-        }
-    }
-
-    fn handoff(
-        from: DockDropTarget,
-        from_progress: f32,
-        to: DockDropTarget,
-        at: iced::time::Instant,
-    ) -> Self {
-        let mut animation = drag_preview_animation(0.0);
-        animation.go_mut(1.0, at);
-        Self {
-            animation,
-            target: None,
-            handoff: Some(DockPreviewHandoff {
-                from,
-                from_progress: from_progress.clamp(0.0, 1.0),
-                to,
-            }),
-        }
-    }
-
-    fn frame_at(&self, at: iced::time::Instant) -> Option<(DockDropTarget, f32)> {
-        let progress = drag_preview_progress(&self.animation, at);
-        let frame = if let Some(handoff) = &self.handoff {
-            if (progress - 0.5).abs() <= DRAG_PREVIEW_HANDOFF_NEUTRAL_WINDOW {
-                return None;
-            }
-            if progress < 0.5 {
-                (
-                    handoff.from.clone(),
-                    handoff.from_progress * (1.0 - progress * 2.0),
-                )
-            } else {
-                (handoff.to.clone(), (progress - 0.5) * 2.0)
-            }
-        } else {
-            self.target.clone().map(|target| (target, progress))?
-        };
-        (frame.1 > f32::EPSILON).then_some(frame)
-    }
-
-    fn is_animating(&self, at: iced::time::Instant) -> bool {
-        self.animation.is_animating(at)
-    }
-
-    fn transition_to_visible(
-        &mut self,
-        target: DockDropTarget,
-        compatible: bool,
-        at: iced::time::Instant,
-    ) {
-        *self = match self.frame_at(at) {
-            None => Self::single(target, 0.0, 1.0, at),
-            Some((current, progress)) if compatible || current == target => {
-                Self::single(target, progress, 1.0, at)
-            }
-            Some((current, progress)) => Self::handoff(current, progress, target, at),
-        };
-    }
-
-    fn transition_to_hidden(&mut self, at: iced::time::Instant) {
-        *self = match self.frame_at(at) {
-            Some((target, progress)) => Self::single(target, progress, 0.0, at),
-            None => Self::default(),
-        };
-    }
-
-    fn clear_if_hidden(&mut self, at: iced::time::Instant) {
-        if !self.is_animating(at) && self.frame_at(at).is_none() {
-            *self = Self::default();
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 enum DockViewNode {
     Item {
         item: DockViewItem,
@@ -579,7 +449,6 @@ enum DockViewNode {
     Tabs {
         tabs: Vec<DockViewItem>,
         active: DockViewItem,
-        merge_preview: Option<DockMergePreview>,
     },
     Split {
         axis: DockAxis,
@@ -598,7 +467,6 @@ impl From<&DockNode> for DockViewNode {
             DockNode::Tabs { tabs, active } => Self::Tabs {
                 tabs: tabs.iter().cloned().map(DockViewItem::Existing).collect(),
                 active: DockViewItem::Existing(active.clone()),
-                merge_preview: None,
             },
             DockNode::Split {
                 axis,
@@ -764,7 +632,6 @@ impl DockController {
             .and_then(|drag| drag.target.as_ref())
     }
 
-    #[cfg(test)]
     fn drop_highlight_target(&self) -> Option<&DockDropTarget> {
         self.active_drag.as_ref().and_then(|drag| {
             drag.pending_target
@@ -775,48 +642,27 @@ impl DockController {
     }
 
     pub fn is_drag_animation_active(&self) -> bool {
-        self.active_drag
-            .as_ref()
-            .is_some_and(|drag| drag.preview.is_animating(iced::time::Instant::now()))
+        false
     }
 
     /// Returns whether the host must keep requesting frames for the drag preview.
     ///
-    /// A stationary drag still needs frames while a candidate is waiting for the
-    /// insertion dwell or while the preview transition is animating. Once both
-    /// states are settled, pointer events remain responsible for redraws.
+    /// A stationary drag only needs frames while a candidate is waiting for the
+    /// insertion dwell. Once the target is settled, pointer events remain
+    /// responsible for redraws.
     pub fn is_drag_frame_needed(&self) -> bool {
-        self.drag_needs_frame_at(iced::time::Instant::now())
-    }
-
-    fn drag_needs_frame_at(&self, at: iced::time::Instant) -> bool {
         self.active_drag
             .as_ref()
-            .is_some_and(|drag| drag.pending_target.is_some() || drag.preview.is_animating(at))
+            .is_some_and(|drag| drag.pending_target.is_some())
     }
 
     #[cfg(test)]
     fn preview_root(&self) -> Option<DockViewNode> {
-        let drag = self.active_drag.as_ref()?;
-        self.preview_root_for_at(DockSurfaceId(0), iced::time::Instant::now(), drag)
-    }
-
-    #[cfg(test)]
-    fn preview_root_at(&self, at: iced::time::Instant, drag: &ActiveDrag) -> Option<DockViewNode> {
-        self.preview_root_for_at(DockSurfaceId(0), at, drag)
+        self.preview_root_for(DockSurfaceId(0))
     }
 
     fn preview_root_for(&self, surface: DockSurfaceId) -> Option<DockViewNode> {
         let drag = self.active_drag.as_ref()?;
-        self.preview_root_for_at(surface, iced::time::Instant::now(), drag)
-    }
-
-    fn preview_root_for_at(
-        &self,
-        surface: DockSurfaceId,
-        at: iced::time::Instant,
-        drag: &ActiveDrag,
-    ) -> Option<DockViewNode> {
         let mut root = DockViewNode::from(self.surface_root(surface)?);
         if !drag.moved {
             return Some(root);
@@ -824,47 +670,15 @@ impl DockController {
         if drag.surface == surface && root.contains(&drag.id) {
             root = remove_view_node(root, &drag.id)?;
         }
-        let Some((target, progress)) = drag
-            .preview
-            .frame_at(at)
-            .filter(|(target, _)| target.surface == surface)
-        else {
-            return Some(root);
-        };
-        if progress <= f32::EPSILON {
-            return Some(root);
+        if let Some(target) = drag
+            .target
+            .as_ref()
+            .filter(|target| target.surface == surface)
+        {
+            let placeholder = DockViewItem::Placeholder(drag.id.clone());
+            insert_view_node(&mut root, &target.id, placeholder, target.zone);
         }
-        let placeholder = DockViewItem::Placeholder(drag.id.clone());
-        insert_view_node_with_progress(&mut root, &target.id, placeholder, target.zone, progress)
-            .then_some(root)
-    }
-
-    fn preview_targets_compatible(
-        &self,
-        drag: &ActiveDrag,
-        from: &DockDropTarget,
-        to: &DockDropTarget,
-    ) -> bool {
-        if from.surface != to.surface {
-            return false;
-        }
-        let Some(surface_root) = self.surface_root(from.surface) else {
-            return false;
-        };
-        let mut root = DockViewNode::from(surface_root);
-        if drag.surface == from.surface && root.contains(&drag.id) {
-            let Some(removed) = remove_view_node(root, &drag.id) else {
-                return false;
-            };
-            root = removed;
-        }
-        match (
-            preview_target_signature(&root, from),
-            preview_target_signature(&root, to),
-        ) {
-            (Some(from), Some(to)) => from == to,
-            _ => false,
-        }
+        Some(root)
     }
 
     fn settle_drag_target(&self, drag: &mut ActiveDrag, now: iced::time::Instant) {
@@ -875,15 +689,8 @@ impl DockController {
             return;
         }
         let candidate = candidate.clone();
-        let compatible = drag
-            .preview
-            .frame_at(now)
-            .map(|(visible, _)| self.preview_targets_compatible(drag, &visible, &candidate))
-            .unwrap_or(false);
         drag.pending_target = None;
-        drag.target = Some(candidate.clone());
-        drag.preview
-            .transition_to_visible(candidate, compatible, now);
+        drag.target = Some(candidate);
     }
 
     /// Provides arrow-key adjustment after a divider has been clicked or dragged.
@@ -1258,7 +1065,6 @@ impl DockController {
                     moved: false,
                     pending_target: None,
                     target: None,
-                    preview: DockPreviewTransition::default(),
                     transient_surface: None,
                     transient_ready: false,
                     original_bounds: None,
@@ -1290,7 +1096,6 @@ impl DockController {
                     drag.pending_target =
                         next_candidate.map(|target| (target, now + DRAG_INSERT_HOVER_DELAY));
                     drag.target = None;
-                    drag.preview.transition_to_hidden(now);
                 }
                 self.settle_drag_target(&mut drag, now);
                 let mut effects = Vec::new();
@@ -1352,7 +1157,6 @@ impl DockController {
                     return DockUpdate::default();
                 };
                 self.settle_drag_target(&mut drag, now);
-                drag.preview.clear_if_hidden(now);
                 self.active_drag = Some(drag);
                 DockUpdate::default()
             }
@@ -2637,15 +2441,21 @@ fn dock_node_view<'a, Message>(
 where
     Message: Clone + 'a,
 {
+    let highlight = controller
+        .drop_highlight_target()
+        .filter(|target| target.surface == surface);
     match node {
-        DockViewNode::Item { item } => dock_view_item_view(
-            item, surface, false, controller, contents, on_action, tokens,
-        ),
-        DockViewNode::Tabs {
-            tabs,
-            active,
-            merge_preview,
-        } => {
+        DockViewNode::Item { item } => {
+            let view = dock_view_item_view(
+                item, surface, false, controller, contents, on_action, tokens,
+            );
+            if is_drop_highlighted(highlight, item.id()) {
+                dock_insert_highlight(view, tokens)
+            } else {
+                view
+            }
+        }
+        DockViewNode::Tabs { tabs, active } => {
             let chrome_style = controller.chrome_style;
             let tab_bar = tabs.iter().fold(
                 row![].height(Length::Fixed(TITLE_BAR_HEIGHT)),
@@ -2653,29 +2463,17 @@ where
                     let id = item.id();
                     let title = dock_item_title(controller, id);
                     let placeholder = item.is_placeholder();
-                    let preview_progress = if placeholder {
-                        merge_preview
-                            .as_ref()
-                            .map_or(1.0, |preview| preview.progress)
-                    } else {
-                        1.0
-                    }
-                    .clamp(0.0, 1.0);
+                    let highlighted = is_drop_highlighted(highlight, id);
                     let active_tab = item == active;
                     let label = text(title)
                         .size(11)
                         .font(ui_font(iced::font::Weight::Medium));
-                    let label = if placeholder && merge_preview.is_some() {
-                        label.color(tokens.colors.text.scale_alpha(preview_progress))
-                    } else {
-                        label
-                    };
                     let tab = container(label)
                         .center_y(Length::Fill)
                         .padding([0.0, 10.0])
                         .style(move |_theme| {
-                            let background = if placeholder {
-                                tokens.colors.subtle.scale_alpha(preview_progress)
+                            let background = if placeholder || highlighted {
+                                tokens.colors.accent_soft
                             } else if active_tab {
                                 tokens.colors.active
                             } else if chrome_style == DockChromeStyle::Card {
@@ -2685,8 +2483,8 @@ where
                             };
                             iced::widget::container::Style::default()
                                 .background(background)
-                                .border(if placeholder {
-                                    dock_placeholder_border_with_progress(tokens, preview_progress)
+                                .border(if placeholder || highlighted {
+                                    dock_insert_preview_border(tokens)
                                 } else {
                                     dock_tab_border(tokens, chrome_style)
                                 })
@@ -2716,26 +2514,9 @@ where
                     }
                 },
             );
-            let active_item = if let Some(preview) = merge_preview {
-                let base = match &preview.base {
-                    DockViewItem::Existing(id) => {
-                        dock_item_view(id, surface, true, controller, contents, on_action, tokens)
-                    }
-                    DockViewItem::Placeholder(id) => {
-                        dock_placeholder_view(id, true, controller, tokens)
-                    }
-                };
-                let overlay =
-                    dock_placeholder_body(tokens, controller.chrome_style, preview.progress);
-                stack![base, overlay]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-            } else {
-                dock_view_item_view(
-                    active, surface, true, controller, contents, on_action, tokens,
-                )
-            };
+            let active_item = dock_view_item_view(
+                active, surface, true, controller, contents, on_action, tokens,
+            );
             if chrome_style == DockChromeStyle::Card {
                 let tab_bar = dock_card_title_bar(tab_bar, tokens);
                 dock_card_shell(column![tab_bar, active_item].height(Length::Fill), tokens)
@@ -2984,6 +2765,33 @@ fn dock_item_title(controller: &DockController, id: &DockId) -> String {
         .map_or_else(|| id.as_str().to_owned(), |spec| spec.title.clone())
 }
 
+fn is_drop_highlighted(highlight: Option<&DockDropTarget>, id: &DockId) -> bool {
+    highlight.is_some_and(|target| target.id == *id)
+}
+
+fn dock_insert_highlight<'a, Message>(
+    content: impl Into<Element<'a, Message>>,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    let content: Element<'a, Message> = content.into();
+    let overlay = container(space())
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .clip(true)
+        .style(move |_theme| {
+            iced::widget::container::Style::default()
+                .background(tokens.colors.accent_soft)
+                .border(dock_insert_preview_border(tokens))
+        });
+    stack![content, overlay]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
 fn dock_placeholder_view<'a, Message>(
     id: &DockId,
     tabs_own_title: bool,
@@ -2993,7 +2801,7 @@ fn dock_placeholder_view<'a, Message>(
 where
     Message: 'a,
 {
-    let body = dock_placeholder_body(tokens, controller.chrome_style, 1.0);
+    let body = dock_placeholder_body(tokens, controller.chrome_style);
     if tabs_own_title {
         return body;
     }
@@ -3016,7 +2824,7 @@ where
             .style(move |_theme| {
                 iced::widget::container::Style::default()
                     .background(tokens.colors.surface)
-                    .border(dock_placeholder_border(tokens))
+                    .border(dock_insert_preview_border(tokens))
             })
             .into()
     };
@@ -3078,21 +2886,19 @@ where
 fn dock_placeholder_body<'a, Message>(
     tokens: ThemeTokens,
     chrome_style: DockChromeStyle,
-    progress: f32,
 ) -> Element<'a, Message>
 where
     Message: 'a,
 {
-    let progress = progress.clamp(0.0, 1.0);
     let body = container(space())
         .width(Length::Fill)
         .height(Length::Fill)
         .clip(true)
         .style(move |_theme| {
             iced::widget::container::Style::default()
-                .background(tokens.colors.subtle.scale_alpha(progress))
-                .color(tokens.colors.text.scale_alpha(progress))
-                .border(dock_placeholder_border_with_progress(tokens, progress))
+                .background(tokens.colors.accent_soft)
+                .color(tokens.colors.text)
+                .border(dock_insert_preview_border(tokens))
         });
     if chrome_style == DockChromeStyle::Card {
         container(body)
@@ -3102,8 +2908,8 @@ where
             .clip(true)
             .style(move |_theme| {
                 iced::widget::container::Style::default()
-                    .background(tokens.colors.surface.scale_alpha(progress))
-                    .color(tokens.colors.text.scale_alpha(progress))
+                    .background(tokens.colors.surface)
+                    .color(tokens.colors.text)
             })
             .into()
     } else {
@@ -3112,15 +2918,16 @@ where
 }
 
 fn dock_placeholder_border(tokens: ThemeTokens) -> iced::Border {
-    dock_placeholder_border_with_progress(tokens, 1.0)
+    iced::Border {
+        color: tokens.colors.border_soft,
+        width: 1.0,
+        radius: 0.0.into(),
+    }
 }
 
-fn dock_placeholder_border_with_progress(tokens: ThemeTokens, progress: f32) -> iced::Border {
+fn dock_insert_preview_border(tokens: ThemeTokens) -> iced::Border {
     iced::Border {
-        color: tokens
-            .colors
-            .border_soft
-            .scale_alpha(progress.clamp(0.0, 1.0)),
+        color: tokens.colors.accent_on_soft,
         width: 1.0,
         radius: 0.0.into(),
     }
@@ -3598,11 +3405,7 @@ fn remove_view_node(node: DockViewNode, id: &DockId) -> Option<DockViewNode> {
             let before = tabs.len();
             tabs.retain(|item| item.id() != id);
             if tabs.len() == before {
-                return Some(DockViewNode::Tabs {
-                    tabs,
-                    active,
-                    merge_preview: None,
-                });
+                return Some(DockViewNode::Tabs { tabs, active });
             }
             match tabs.len() {
                 0 => None,
@@ -3613,11 +3416,7 @@ fn remove_view_node(node: DockViewNode, id: &DockId) -> Option<DockViewNode> {
                     if active.id() == id {
                         active = tabs[0].clone();
                     }
-                    Some(DockViewNode::Tabs {
-                        tabs,
-                        active,
-                        merge_preview: None,
-                    })
+                    Some(DockViewNode::Tabs { tabs, active })
                 }
             }
         }
@@ -3639,18 +3438,17 @@ fn remove_view_node(node: DockViewNode, id: &DockId) -> Option<DockViewNode> {
     }
 }
 
-fn insert_view_node_with_progress(
+fn insert_view_node(
     root: &mut DockViewNode,
     target: &DockId,
     item: DockViewItem,
     zone: DockDropZone,
-    progress: f32,
 ) -> bool {
     if root.contains(target)
         && matches!(root, DockViewNode::Item { .. } | DockViewNode::Tabs { .. })
     {
         if zone == DockDropZone::Tab {
-            return insert_view_tab_with_progress(root, target, item, progress);
+            return insert_view_tab(root, target, item);
         }
         let previous = root.clone();
         let item = DockViewNode::Item { item };
@@ -3663,11 +3461,7 @@ fn insert_view_node_with_progress(
         };
         *root = DockViewNode::Split {
             axis,
-            ratio: match zone {
-                DockDropZone::Left | DockDropZone::Top => 0.5 * progress,
-                DockDropZone::Right | DockDropZone::Bottom => 1.0 - 0.5 * progress,
-                DockDropZone::Tab => unreachable!("tab insertion handled above"),
-            },
+            ratio: 0.5,
             first: Box::new(first),
             second: Box::new(second),
         };
@@ -3675,45 +3469,31 @@ fn insert_view_node_with_progress(
     }
     match root {
         DockViewNode::Split { first, second, .. } => {
-            insert_view_node_with_progress(first, target, item.clone(), zone, progress)
-                || insert_view_node_with_progress(second, target, item, zone, progress)
+            insert_view_node(first, target, item.clone(), zone)
+                || insert_view_node(second, target, item, zone)
         }
         _ => false,
     }
 }
 
-fn insert_view_tab_with_progress(
-    root: &mut DockViewNode,
-    target: &DockId,
-    item: DockViewItem,
-    progress: f32,
-) -> bool {
+fn insert_view_tab(root: &mut DockViewNode, target: &DockId, item: DockViewItem) -> bool {
     match root {
         DockViewNode::Item { item: current } if current.id() == target => {
-            let base = current.clone();
             *root = DockViewNode::Tabs {
                 tabs: vec![current.clone(), item.clone()],
                 active: item,
-                merge_preview: Some(DockMergePreview { base, progress }),
             };
             true
         }
-        DockViewNode::Tabs {
-            tabs,
-            active,
-            merge_preview,
-        } if tabs.iter().any(|tab| tab.id() == target) => {
-            let base = active.clone();
+        DockViewNode::Tabs { tabs, active } if tabs.iter().any(|tab| tab.id() == target) => {
             if !tabs.iter().any(|tab| tab == &item) {
                 tabs.push(item.clone());
             }
             *active = item;
-            *merge_preview = Some(DockMergePreview { base, progress });
             true
         }
         DockViewNode::Split { first, second, .. } => {
-            insert_view_tab_with_progress(first, target, item.clone(), progress)
-                || insert_view_tab_with_progress(second, target, item, progress)
+            insert_view_tab(first, target, item.clone()) || insert_view_tab(second, target, item)
         }
         _ => false,
     }
@@ -3751,39 +3531,6 @@ fn collect_view_drop_targets(
             collect_view_drop_targets(second, second_bounds, output);
         }
     }
-}
-
-fn preview_target_signature(
-    node: &DockViewNode,
-    target: &DockDropTarget,
-) -> Option<(Vec<usize>, bool, DockDropZone)> {
-    fn visit(
-        node: &DockViewNode,
-        target: &DockId,
-        zone: DockDropZone,
-        path: &mut Vec<usize>,
-    ) -> Option<(Vec<usize>, bool, DockDropZone)> {
-        match node {
-            DockViewNode::Item { item } if item.id() == target => Some((path.clone(), false, zone)),
-            DockViewNode::Tabs { tabs, .. } if tabs.iter().any(|item| item.id() == target) => {
-                Some((path.clone(), true, zone))
-            }
-            DockViewNode::Split { first, second, .. } => {
-                path.push(0);
-                if let Some(signature) = visit(first, target, zone, path) {
-                    return Some(signature);
-                }
-                path.pop();
-                path.push(1);
-                let signature = visit(second, target, zone, path);
-                path.pop();
-                signature
-            }
-            _ => None,
-        }
-    }
-
-    visit(node, &target.id, target.zone, &mut Vec::new())
 }
 
 fn bounds_contains(bounds: DockBounds, point: Point) -> bool {
@@ -4059,8 +3806,7 @@ mod tests {
             position: None,
             moved: true,
             pending_target: None,
-            target: Some(target.clone()),
-            preview: DockPreviewTransition::single(target, 1.0, 1.0, iced::time::Instant::now()),
+            target: Some(target),
             transient_surface: None,
             transient_ready: false,
             original_bounds: None,
@@ -4117,12 +3863,7 @@ mod tests {
     fn drag_preview_tabs_make_the_empty_item_active() {
         let controller = preview_controller(DockDropZone::Tab);
         let preview = controller.preview_root().expect("tab preview");
-        let DockViewNode::Tabs {
-            tabs,
-            active,
-            merge_preview,
-        } = preview
-        else {
+        let DockViewNode::Tabs { tabs, active } = preview else {
             panic!("tab preview expected")
         };
         assert_eq!(
@@ -4133,83 +3874,6 @@ mod tests {
             ]
         );
         assert_eq!(active, DockViewItem::Placeholder(DockId::from("source")));
-        assert_eq!(
-            merge_preview,
-            Some(DockMergePreview {
-                base: DockViewItem::Existing(DockId::from("editor")),
-                progress: 1.0,
-            })
-        );
-    }
-
-    #[test]
-    fn drag_preview_tab_interpolates_and_keeps_base_during_reverse() {
-        let mut controller = preview_controller(DockDropZone::Tab);
-        let now = iced::time::Instant::now();
-        {
-            let drag = controller.active_drag.as_mut().expect("active drag");
-            drag.preview = DockPreviewTransition::single(
-                DockDropTarget {
-                    surface: DockSurfaceId(0),
-                    id: DockId::from("editor"),
-                    zone: DockDropZone::Tab,
-                },
-                0.0,
-                1.0,
-                now,
-            );
-        }
-
-        let preview = preview_at(&controller, now + DRAG_PREVIEW_DURATION / 2);
-        let DockViewNode::Tabs {
-            active,
-            merge_preview: Some(merge_preview),
-            ..
-        } = preview
-        else {
-            panic!("intermediate tab preview expected")
-        };
-        assert_eq!(active, DockViewItem::Placeholder(DockId::from("source")));
-        assert_eq!(
-            merge_preview.base,
-            DockViewItem::Existing(DockId::from("editor"))
-        );
-        assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
-
-        let settled_at = after_preview_animation(now);
-        let settled = preview_at(&controller, settled_at);
-        let DockViewNode::Tabs {
-            merge_preview: Some(merge_preview),
-            ..
-        } = settled
-        else {
-            panic!("settled tab preview expected")
-        };
-        assert_eq!(merge_preview.progress, 1.0);
-
-        let reverse_start = settled_at;
-        controller
-            .active_drag
-            .as_mut()
-            .expect("active drag")
-            .preview
-            .transition_to_hidden(reverse_start);
-        let reversing = preview_at(&controller, reverse_start + DRAG_PREVIEW_DURATION / 2);
-        let DockViewNode::Tabs {
-            merge_preview: Some(merge_preview),
-            ..
-        } = reversing
-        else {
-            panic!("reverse tab preview expected")
-        };
-        assert_eq!(
-            merge_preview.base,
-            DockViewItem::Existing(DockId::from("editor"))
-        );
-        assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
-
-        let finished = preview_at(&controller, after_preview_animation(reverse_start));
-        assert!(!contains_placeholder(&finished));
     }
 
     #[test]
@@ -4223,10 +3887,10 @@ mod tests {
     }
 
     #[test]
-    fn drag_frame_is_needed_for_stationary_candidate_and_preview_only() {
+    fn drag_frame_is_needed_only_during_candidate_dwell() {
         let mut controller = tab_drag_controller();
         let now = iced::time::Instant::now();
-        assert!(!controller.drag_needs_frame_at(now));
+        assert!(!controller.is_drag_frame_needed());
 
         controller.update_at(
             DockAction::DragStart {
@@ -4235,33 +3899,16 @@ mod tests {
             },
             now,
         );
-        assert!(!controller.drag_needs_frame_at(now));
+        assert!(!controller.is_drag_frame_needed());
 
         move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
-        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(2)));
+        assert!(controller.is_drag_frame_needed());
 
         let preview_ready_at = after_drag_dwell(now);
         controller.update_at(DockAction::Hover(false), preview_ready_at);
         assert!(controller.drop_target().is_some());
-        assert!(controller.drag_needs_frame_at(preview_ready_at));
-        assert!(controller.drag_needs_frame_at(preview_ready_at + DRAG_PREVIEW_DURATION / 2));
-        assert!(!controller.drag_needs_frame_at(after_preview_animation(preview_ready_at)));
-    }
-
-    #[test]
-    fn drag_frame_is_needed_during_reverse_preview_until_settled() {
-        let mut controller = preview_controller(DockDropZone::Left);
-        let now = iced::time::Instant::now();
-        assert!(!controller.drag_needs_frame_at(now));
-
-        controller
-            .active_drag
-            .as_mut()
-            .expect("active drag")
-            .preview
-            .transition_to_hidden(now);
-        assert!(controller.drag_needs_frame_at(now + iced::time::Duration::from_millis(1)));
-        assert!(!controller.drag_needs_frame_at(after_preview_animation(now)));
+        assert!(!controller.is_drag_frame_needed());
+        assert!(!controller.is_drag_animation_active());
     }
 
     #[test]
@@ -4423,19 +4070,10 @@ mod tests {
         )
     }
 
-    fn preview_at(controller: &DockController, at: iced::time::Instant) -> DockViewNode {
-        let drag = controller.active_drag.as_ref().expect("active drag");
-        controller.preview_root_at(at, drag).expect("drag preview")
-    }
-
     const DRAG_TEST_TICK: iced::time::Duration = iced::time::Duration::from_millis(1);
 
     fn after_drag_dwell(at: iced::time::Instant) -> iced::time::Instant {
         at + DRAG_INSERT_HOVER_DELAY + DRAG_TEST_TICK
-    }
-
-    fn after_preview_animation(at: iced::time::Instant) -> iced::time::Instant {
-        at + DRAG_PREVIEW_DURATION + DRAG_TEST_TICK
     }
 
     #[test]
@@ -4470,7 +4108,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_from_split_to_tab_keeps_the_old_preview_until_reverse_finishes() {
+    fn changing_candidate_clears_old_preview_until_new_dwell_finishes() {
         let mut controller = tab_drag_controller();
         let now = iced::time::Instant::now();
         move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
@@ -4489,121 +4127,27 @@ mod tests {
         );
         assert!(controller.drop_target().is_none());
         let retargeted_at = after_drag_dwell(now) + DRAG_TEST_TICK;
-        let reversing = preview_at(&controller, retargeted_at + DRAG_PREVIEW_DURATION / 2);
-        assert!(contains_placeholder(&reversing));
-        assert!(matches!(reversing, DockViewNode::Split { .. }));
+        let cleared = controller.preview_root().expect("drag preview");
+        assert!(!contains_placeholder(&cleared));
+        assert!(!controller.is_drag_animation_active());
 
         controller.update_at(DockAction::Hover(false), after_drag_dwell(retargeted_at));
         assert_eq!(
             controller.drop_target().map(|target| target.zone),
             Some(DockDropZone::Tab)
         );
-        let tab_preview = preview_at(
-            &controller,
-            retargeted_at + DRAG_INSERT_HOVER_DELAY + DRAG_PREVIEW_DURATION / 2,
-        );
+        let tab_preview = controller.preview_root().expect("tab preview");
         let DockViewNode::Split { first, .. } = tab_preview else {
             panic!("target split should remain in the preview root")
         };
-        let DockViewNode::Tabs {
-            merge_preview: Some(merge_preview),
-            ..
-        } = first.as_ref()
-        else {
-            panic!("tab target should have an animated merge preview")
+        let DockViewNode::Tabs { tabs, active } = first.as_ref() else {
+            panic!("tab target should have a direct tab preview")
         };
-        assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
-    }
-
-    #[test]
-    fn incompatible_preview_retarget_uses_a_neutral_frame_before_new_tree() {
-        let mut controller = preview_controller(DockDropZone::Left);
-        let now = iced::time::Instant::now();
-        let tab_target = DockDropTarget {
-            surface: DockSurfaceId(0),
-            id: DockId::from("editor"),
-            zone: DockDropZone::Tab,
-        };
-        controller
-            .active_drag
-            .as_mut()
-            .expect("active drag")
-            .preview
-            .transition_to_visible(tab_target, false, now);
-
-        assert!(matches!(
-            preview_at(&controller, now),
-            DockViewNode::Split { .. }
-        ));
-        let neutral = (0..=DRAG_PREVIEW_DURATION.as_millis() as u64)
-            .map(|millis| preview_at(&controller, now + iced::time::Duration::from_millis(millis)))
-            .find(|root| !contains_placeholder(root));
-        assert!(neutral.is_some(), "handoff should expose a neutral frame");
-
-        let settled = preview_at(&controller, after_preview_animation(now));
-        assert!(matches!(settled, DockViewNode::Tabs { .. }));
-    }
-
-    #[test]
-    fn same_topology_retarget_preserves_the_sampled_progress() {
-        let controller = DockController::new(
-            "editor",
-            [
-                DockItemSpec::new("editor", "Editor").closeable(false),
-                DockItemSpec::new("source", "Source"),
-                DockItemSpec::new("target-a", "Target A"),
-                DockItemSpec::new("target-b", "Target B"),
-            ],
-            DockLayout::new(DockNode::split(
-                DockAxis::Horizontal,
-                0.5,
-                DockNode::item("source"),
-                DockNode::split(
-                    DockAxis::Horizontal,
-                    0.5,
-                    DockNode::tabs(
-                        [DockId::from("target-a"), DockId::from("target-b")],
-                        "target-a",
-                    ),
-                    DockNode::item("editor"),
-                ),
-            )),
-        )
-        .expect("valid dock layout");
-        let now = iced::time::Instant::now();
-        let from = DockDropTarget {
-            surface: DockSurfaceId(0),
-            id: DockId::from("target-a"),
-            zone: DockDropZone::Tab,
-        };
-        let to = DockDropTarget {
-            surface: DockSurfaceId(0),
-            id: DockId::from("target-b"),
-            zone: DockDropZone::Tab,
-        };
-        let drag = ActiveDrag {
-            surface: DockSurfaceId(0),
-            id: DockId::from("source"),
-            start: None,
-            position: None,
-            moved: true,
-            pending_target: None,
-            target: Some(from.clone()),
-            preview: DockPreviewTransition::single(from.clone(), 0.35, 0.35, now),
-            transient_surface: None,
-            transient_ready: false,
-            original_bounds: None,
-            bounds: None,
-        };
-        assert!(controller.preview_targets_compatible(&drag, &from, &to));
-
-        let mut preview = drag.preview;
-        preview.transition_to_visible(to.clone(), true, now);
-        let Some((visible, progress)) = preview.frame_at(now) else {
-            panic!("retargeted preview should remain visible")
-        };
-        assert_eq!(visible, to);
-        assert!((progress - 0.35).abs() < 0.000_1);
+        assert_eq!(
+            tabs.last(),
+            Some(&DockViewItem::Placeholder(DockId::from("source")))
+        );
+        assert_eq!(active, &DockViewItem::Placeholder(DockId::from("source")));
     }
 
     #[test]
@@ -4666,33 +4210,33 @@ mod tests {
         assert_eq!(controller.layout(), &before);
         assert_eq!(controller.layout_json().expect("layout json"), before_json);
 
-        let preview_sample_at = preview_ready_at + DRAG_PREVIEW_DURATION / 2;
-        let drag = controller.active_drag.as_ref().expect("active drag");
-        let Some((visible, progress)) = drag.preview.frame_at(preview_sample_at) else {
-            panic!("latest target preview should be visible")
+        let preview = controller.preview_root().expect("latest target preview");
+        let DockViewNode::Split { first, .. } = preview else {
+            panic!("latest target preview should preserve the target split")
         };
+        let DockViewNode::Split { ratio, second, .. } = first.as_ref() else {
+            panic!("latest target preview should be a nested split")
+        };
+        assert_eq!(*ratio, 0.5);
         assert_eq!(
-            visible,
-            DockDropTarget {
-                surface: DockSurfaceId(0),
-                id: DockId::from("target"),
-                zone: DockDropZone::Right,
+            second.as_ref(),
+            &DockViewNode::Item {
+                item: DockViewItem::Placeholder(DockId::from("source")),
             }
         );
-        assert!(progress > 0.0);
 
         let update = controller.update_at(
             DockAction::DragEnd {
                 surface: DockSurfaceId(0),
             },
-            preview_sample_at + iced::time::Duration::from_millis(1),
+            preview_ready_at + DRAG_TEST_TICK,
         );
         assert!(update.changed);
         assert!(controller.layout().main.contains(&DockId::from("source")));
     }
 
     #[test]
-    fn cross_surface_preview_handoff_does_not_restore_the_old_surface_target() {
+    fn cross_surface_preview_does_not_restore_the_old_surface_target() {
         let (mut controller, source, target) = floating_pair_controller();
         let before_json = controller.layout_json().expect("layout json");
         let now = iced::time::Instant::now();
@@ -4755,15 +4299,9 @@ mod tests {
         );
         assert_eq!(controller.layout_json().expect("layout json"), before_json);
 
-        let preview_sample_at = preview_ready_at + DRAG_PREVIEW_DURATION / 2;
-        let drag = controller.active_drag.as_ref().expect("active drag");
-        assert!(
-            controller
-                .preview_root_for_at(source, preview_sample_at, drag)
-                .is_none()
-        );
+        assert!(controller.preview_root_for(source).is_none());
         let target_surface = controller
-            .preview_root_for_at(target, preview_sample_at, drag)
+            .preview_root_for(target)
             .expect("target surface preview");
         assert!(contains_placeholder(&target_surface));
     }
@@ -4785,10 +4323,9 @@ mod tests {
             now + iced::time::Duration::from_millis(100),
         );
         assert!(controller.drop_highlight_target().is_none());
-        assert!(!contains_placeholder(&preview_at(
-            &controller,
-            now + iced::time::Duration::from_millis(150),
-        )));
+        assert!(!contains_placeholder(
+            &controller.preview_root().expect("drag preview")
+        ));
 
         let reentered_at = now + iced::time::Duration::from_millis(151);
         controller.update_at(
@@ -4905,16 +4442,10 @@ mod tests {
         );
         assert!(controller.drop_highlight_target().is_none());
         assert!(controller.drop_target().is_none());
-        assert!(contains_placeholder(&preview_at(
-            &controller,
-            left_at + DRAG_PREVIEW_DURATION / 2,
-        )));
-        let preview_gone_at = after_preview_animation(left_at);
-        controller.update_at(DockAction::Hover(false), preview_gone_at);
-        assert!(!contains_placeholder(&preview_at(
-            &controller,
-            preview_gone_at + iced::time::Duration::from_millis(1),
-        )));
+        assert!(!contains_placeholder(
+            &controller.preview_root().expect("drag preview")
+        ));
+        assert!(!controller.is_drag_animation_active());
         assert_eq!(controller.layout(), &before);
     }
 
@@ -5445,55 +4976,21 @@ mod tests {
     }
 
     #[test]
-    fn drag_preview_slot_expands_and_collapses_with_ease_out_progress() {
+    fn drag_preview_slot_uses_the_final_ratio_without_animation() {
         let mut controller = preview_controller(DockDropZone::Left);
-        let now = iced::time::Instant::now();
-        let drag = controller.active_drag.as_mut().expect("drag");
-        drag.preview = DockPreviewTransition::single(
-            DockDropTarget {
-                surface: DockSurfaceId(0),
-                id: DockId::from("editor"),
-                zone: DockDropZone::Left,
-            },
-            0.0,
-            1.0,
-            now,
-        );
-        let early = controller
-            .preview_root_at(
-                now + iced::time::Duration::from_millis(50),
-                controller.active_drag.as_ref().expect("drag"),
-            )
-            .expect("early preview");
-        let settled_at = after_preview_animation(now);
-        let settled = controller
-            .preview_root_at(settled_at, controller.active_drag.as_ref().expect("drag"))
-            .expect("settled preview");
         let preview_ratio = |root: DockViewNode| match root {
             DockViewNode::Split { ratio, .. } => ratio,
             _ => panic!("split preview"),
         };
-        let early_ratio = preview_ratio(early);
-        assert!(early_ratio > 0.0);
-        assert!(early_ratio < 0.5);
-        assert_eq!(preview_ratio(settled), 0.5);
+        assert_eq!(
+            preview_ratio(controller.preview_root().expect("preview")),
+            0.5
+        );
+        assert!(!controller.is_drag_animation_active());
 
         let drag = controller.active_drag.as_mut().expect("drag");
         drag.target = None;
-        drag.preview.transition_to_hidden(settled_at);
-        let collapsed = controller
-            .preview_root_at(
-                settled_at + DRAG_PREVIEW_DURATION / 2,
-                controller.active_drag.as_ref().expect("drag"),
-            )
-            .expect("collapsing preview");
-        assert!(preview_ratio(collapsed) < 0.5);
-        let gone = controller
-            .preview_root_at(
-                after_preview_animation(settled_at),
-                controller.active_drag.as_ref().expect("drag"),
-            )
-            .expect("collapsed preview");
+        let gone = controller.preview_root().expect("preview without target");
         assert!(!contains_placeholder(&gone));
     }
 
