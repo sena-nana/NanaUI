@@ -289,6 +289,7 @@ impl editor::Editor for Editor {
 
     fn perform(&mut self, action: Action) {
         let mut font_system = text::font_system().write().expect("Write font system");
+        let is_scroll = matches!(&action, Action::Scroll { .. });
 
         self.with_internal_mut(|internal| {
             let editor = &mut internal.editor;
@@ -493,7 +494,11 @@ impl editor::Editor for Editor {
                 internal.history.push(change);
             }
 
-            shape_until_cursor(editor, &mut font_system.raw);
+            if is_scroll {
+                buffer_mut_from_editor(editor).shape_until_scroll(&mut font_system.raw, false);
+            } else {
+                shape_until_cursor(editor, &mut font_system.raw);
+            }
         });
     }
 
@@ -913,6 +918,40 @@ fn shape_until_cursor(
                     .clamp(0.0, CURSOR_WIDTH),
             ..scroll
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::text::editor::Editor as _;
+
+    #[test]
+    fn scroll_keeps_viewport_without_moving_cursor_or_selection() {
+        let text = (0..32)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut editor = <Editor as editor::Editor>::with_text(&text);
+
+        editor.with_internal_mut(|internal| {
+            let buffer = buffer_mut_from_editor(&mut internal.editor);
+            buffer.set_metrics(cosmic_text::Metrics::new(13.0, 16.0));
+            buffer.set_size(Some(200.0), Some(32.0));
+
+            let mut font_system = text::font_system().write().expect("Write font system");
+            buffer.shape_until_scroll(font_system.raw(), false);
+        });
+
+        editor.perform(Action::Select(Motion::Right));
+        let cursor_before = editor.cursor();
+        let scroll_before = buffer_from_editor(&editor.internal().editor).scroll();
+
+        editor.perform(Action::Scroll { lines: 1 });
+
+        let scroll_after = buffer_from_editor(&editor.internal().editor).scroll();
+        assert_ne!(scroll_after, scroll_before);
+        assert_eq!(editor.cursor(), cursor_before);
     }
 }
 
