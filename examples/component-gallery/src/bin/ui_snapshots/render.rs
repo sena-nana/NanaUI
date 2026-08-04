@@ -115,6 +115,34 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     ];
 
     for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
+        paths.push(dock_window_merged_snapshot(
+            &mut renderer,
+            &output,
+            &format!("dock-window-merged-tabs-{suffix}.png"),
+            theme,
+            WindowChrome::custom(),
+            DockNode::tabs(
+                [
+                    DockId::from("scenes"),
+                    DockId::from("mixer"),
+                    DockId::from("controls"),
+                ],
+                "mixer",
+            ),
+        )?);
+        paths.push(dock_window_merged_snapshot(
+            &mut renderer,
+            &output,
+            &format!("dock-window-merged-split-{suffix}.png"),
+            theme,
+            WindowChrome::custom(),
+            DockNode::split(
+                nana_ui::DockAxis::Horizontal,
+                0.5,
+                DockNode::tabs([DockId::from("scenes"), DockId::from("mixer")], "scenes"),
+                DockNode::item("controls"),
+            ),
+        )?);
         paths.push(dock_drag_window_snapshot(
             &mut renderer,
             &output,
@@ -422,6 +450,88 @@ fn dock_window_snapshot(
             .width(Length::Fill)
             .height(Length::Fill),
         ),
+        &window_chrome,
+        |_| (),
+        |_| (),
+        colors,
+    );
+    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
+    let path = output.join(name);
+    write::png(&path, size, &pixels)?;
+    Ok(path)
+}
+
+fn dock_window_merged_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+    chrome: WindowChrome,
+    root: DockNode,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let size = Size::new(520, 360);
+    let surface = DockSurfaceId(1);
+    let mut layout = DockLayout::new(DockNode::item("editor"));
+    layout.floating.push(FloatingDock {
+        surface,
+        root,
+        bounds: DockBounds::new(120.0, 120.0, size.width as f32, size.height as f32),
+        monitor: None,
+    });
+    let mut controller = DockController::new(
+        "editor",
+        [
+            DockItemSpec::new("editor", "Editor").closeable(false),
+            DockItemSpec::new("scenes", "场景"),
+            DockItemSpec::new("mixer", "混音"),
+            DockItemSpec::new("controls", "控制"),
+        ],
+        layout,
+    )?;
+    controller.set_chrome_style(DockChromeStyle::Card);
+    let window_chrome = WindowChromeState::new(chrome);
+    let colors = theme.colors();
+    let contents = DockContents::new()
+        .insert(
+            "scenes",
+            container(
+                column![
+                    text("Scene A").size(13).color(colors.text),
+                    text("场景列表").size(11).color(colors.muted),
+                ]
+                .spacing(6),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .insert(
+            "mixer",
+            container(
+                column![
+                    text("Program Bus").size(13).color(colors.text),
+                    text("音频与节目输出").size(11).color(colors.muted),
+                ]
+                .spacing(6),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .insert(
+            "controls",
+            container(
+                column![
+                    text("Cue Controls").size(13).color(colors.text),
+                    text("导播控制").size(11).color(colors.muted),
+                ]
+                .spacing(6),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill),
+        );
+    let view = dock_window_workspace(
+        &controller,
+        surface,
+        contents,
         &window_chrome,
         |_| (),
         |_| (),
