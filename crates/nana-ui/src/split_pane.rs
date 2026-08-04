@@ -252,7 +252,8 @@ where
         } else {
             Length::Fixed(HANDLE_SIZE)
         })
-        .center(Length::Fill);
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center);
     let handle = DragHandle::new(
         handle,
         on_action(SplitPaneAction::ResizeStart),
