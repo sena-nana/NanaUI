@@ -31,14 +31,21 @@ const MIN_SPLIT_RATIO: f32 = 0.05;
 const MAX_SPLIT_RATIO: f32 = 0.95;
 const DRAG_PREVIEW_DURATION: iced::time::Duration = iced::time::Duration::from_millis(200);
 const DRAG_INSERT_HOVER_DELAY: iced::time::Duration = iced::time::Duration::from_millis(300);
+const DRAG_PREVIEW_HANDOFF_NEUTRAL_WINDOW: f32 = 0.02;
 const DRAG_CARD_WIDTH: f32 = 280.0;
 const DRAG_CARD_HEIGHT: f32 = 180.0;
 const DRAG_CARD_OFFSET: f32 = 12.0;
 
-fn drag_preview_animation(active: bool) -> Animation<bool> {
-    Animation::new(active)
+fn drag_preview_animation(progress: f32) -> Animation<f32> {
+    Animation::new(progress.clamp(0.0, 1.0))
         .duration(DRAG_PREVIEW_DURATION)
         .easing(iced::animation::Easing::EaseOutCubic)
+}
+
+fn drag_preview_progress(animation: &Animation<f32>, at: iced::time::Instant) -> f32 {
+    animation
+        .interpolate_with(|progress| progress, at)
+        .clamp(0.0, 1.0)
 }
 
 /// Stable application-owned identity for a dock item.
@@ -426,26 +433,11 @@ struct ActiveDrag {
     moved: bool,
     pending_target: Option<(DockDropTarget, iced::time::Instant)>,
     target: Option<DockDropTarget>,
-    preview_target: Option<DockDropTarget>,
-    preview: Animation<bool>,
+    preview: DockPreviewTransition,
     transient_surface: Option<DockSurfaceId>,
     transient_ready: bool,
     original_bounds: Option<DockBounds>,
     bounds: Option<DockBounds>,
-}
-
-fn settle_drag_target(drag: &mut ActiveDrag, now: iced::time::Instant) {
-    let Some((candidate, ready_at)) = drag.pending_target.as_ref() else {
-        return;
-    };
-    if now < *ready_at {
-        return;
-    }
-    let candidate = candidate.clone();
-    drag.pending_target = None;
-    drag.target = Some(candidate.clone());
-    drag.preview_target = Some(candidate);
-    drag.preview.go_mut(true, now);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,6 +462,113 @@ impl DockViewItem {
 struct DockMergePreview {
     base: DockViewItem,
     progress: f32,
+}
+
+#[derive(Debug, Clone)]
+struct DockPreviewTransition {
+    animation: Animation<f32>,
+    target: Option<DockDropTarget>,
+    handoff: Option<DockPreviewHandoff>,
+}
+
+#[derive(Debug, Clone)]
+struct DockPreviewHandoff {
+    from: DockDropTarget,
+    from_progress: f32,
+    to: DockDropTarget,
+}
+
+impl Default for DockPreviewTransition {
+    fn default() -> Self {
+        Self {
+            animation: drag_preview_animation(0.0),
+            target: None,
+            handoff: None,
+        }
+    }
+}
+
+impl DockPreviewTransition {
+    fn single(target: DockDropTarget, from: f32, to: f32, at: iced::time::Instant) -> Self {
+        let mut animation = drag_preview_animation(from);
+        animation.go_mut(to.clamp(0.0, 1.0), at);
+        Self {
+            animation,
+            target: Some(target),
+            handoff: None,
+        }
+    }
+
+    fn handoff(
+        from: DockDropTarget,
+        from_progress: f32,
+        to: DockDropTarget,
+        at: iced::time::Instant,
+    ) -> Self {
+        let mut animation = drag_preview_animation(0.0);
+        animation.go_mut(1.0, at);
+        Self {
+            animation,
+            target: None,
+            handoff: Some(DockPreviewHandoff {
+                from,
+                from_progress: from_progress.clamp(0.0, 1.0),
+                to,
+            }),
+        }
+    }
+
+    fn frame_at(&self, at: iced::time::Instant) -> Option<(DockDropTarget, f32)> {
+        let progress = drag_preview_progress(&self.animation, at);
+        let frame = if let Some(handoff) = &self.handoff {
+            if (progress - 0.5).abs() <= DRAG_PREVIEW_HANDOFF_NEUTRAL_WINDOW {
+                return None;
+            }
+            if progress < 0.5 {
+                (
+                    handoff.from.clone(),
+                    handoff.from_progress * (1.0 - progress * 2.0),
+                )
+            } else {
+                (handoff.to.clone(), (progress - 0.5) * 2.0)
+            }
+        } else {
+            self.target.clone().map(|target| (target, progress))?
+        };
+        (frame.1 > f32::EPSILON).then_some(frame)
+    }
+
+    fn is_animating(&self, at: iced::time::Instant) -> bool {
+        self.animation.is_animating(at)
+    }
+
+    fn transition_to_visible(
+        &mut self,
+        target: DockDropTarget,
+        compatible: bool,
+        at: iced::time::Instant,
+    ) {
+        *self = match self.frame_at(at) {
+            None => Self::single(target, 0.0, 1.0, at),
+            Some((current, progress)) if compatible || current == target => {
+                Self::single(target, progress, 1.0, at)
+            }
+            Some((current, progress)) => Self::handoff(current, progress, target, at),
+        };
+    }
+
+    fn transition_to_hidden(&mut self, at: iced::time::Instant) {
+        *self = match self.frame_at(at) {
+            Some((target, progress)) => Self::single(target, progress, 0.0, at),
+            None => Self::default(),
+        };
+    }
+
+    fn clear_if_hidden(&mut self, at: iced::time::Instant) {
+        if !self.is_animating(at) && self.frame_at(at).is_none() {
+            *self = Self::default();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -716,20 +815,66 @@ impl DockController {
         if drag.surface == surface && root.contains(&drag.id) {
             root = remove_view_node(root, &drag.id)?;
         }
-        let Some(target) = drag
-            .preview_target
-            .as_ref()
-            .filter(|target| target.surface == surface)
+        let Some((target, progress)) = drag
+            .preview
+            .frame_at(at)
+            .filter(|(target, _)| target.surface == surface)
         else {
             return Some(root);
         };
-        let progress = drag.preview.interpolate(0.0, 1.0, at);
         if progress <= f32::EPSILON {
             return Some(root);
         }
         let placeholder = DockViewItem::Placeholder(drag.id.clone());
         insert_view_node_with_progress(&mut root, &target.id, placeholder, target.zone, progress)
             .then_some(root)
+    }
+
+    fn preview_targets_compatible(
+        &self,
+        drag: &ActiveDrag,
+        from: &DockDropTarget,
+        to: &DockDropTarget,
+    ) -> bool {
+        if from.surface != to.surface {
+            return false;
+        }
+        let Some(surface_root) = self.surface_root(from.surface) else {
+            return false;
+        };
+        let mut root = DockViewNode::from(surface_root);
+        if drag.surface == from.surface && root.contains(&drag.id) {
+            let Some(removed) = remove_view_node(root, &drag.id) else {
+                return false;
+            };
+            root = removed;
+        }
+        match (
+            preview_target_signature(&root, from),
+            preview_target_signature(&root, to),
+        ) {
+            (Some(from), Some(to)) => from == to,
+            _ => false,
+        }
+    }
+
+    fn settle_drag_target(&self, drag: &mut ActiveDrag, now: iced::time::Instant) {
+        let Some((candidate, ready_at)) = drag.pending_target.as_ref() else {
+            return;
+        };
+        if now < *ready_at {
+            return;
+        }
+        let candidate = candidate.clone();
+        let compatible = drag
+            .preview
+            .frame_at(now)
+            .map(|(visible, _)| self.preview_targets_compatible(drag, &visible, &candidate))
+            .unwrap_or(false);
+        drag.pending_target = None;
+        drag.target = Some(candidate.clone());
+        drag.preview
+            .transition_to_visible(candidate, compatible, now);
     }
 
     /// Provides arrow-key adjustment after a divider has been clicked or dragged.
@@ -1104,8 +1249,7 @@ impl DockController {
                     moved: false,
                     pending_target: None,
                     target: None,
-                    preview_target: None,
-                    preview: drag_preview_animation(false),
+                    preview: DockPreviewTransition::default(),
                     transient_surface: None,
                     transient_ready: false,
                     original_bounds: None,
@@ -1137,9 +1281,9 @@ impl DockController {
                     drag.pending_target =
                         next_candidate.map(|target| (target, now + DRAG_INSERT_HOVER_DELAY));
                     drag.target = None;
-                    drag.preview.go_mut(false, now);
+                    drag.preview.transition_to_hidden(now);
                 }
-                settle_drag_target(&mut drag, now);
+                self.settle_drag_target(&mut drag, now);
                 let mut effects = Vec::new();
                 if drag.moved
                     && drag.transient_surface.is_none()
@@ -1171,7 +1315,7 @@ impl DockController {
                     return DockUpdate::default();
                 };
                 let mut drag = drag;
-                settle_drag_target(&mut drag, now);
+                self.settle_drag_target(&mut drag, now);
                 if !drag.moved {
                     return DockUpdate {
                         changed: activate_tab_layout(&mut self.layout, &drag.id),
@@ -1195,16 +1339,12 @@ impl DockController {
             }
             DockAction::CancelDrag => self.cancel_drag(),
             DockAction::Hover(_) => {
-                let Some(drag) = self.active_drag.as_mut() else {
+                let Some(mut drag) = self.active_drag.take() else {
                     return DockUpdate::default();
                 };
-                settle_drag_target(drag, now);
-                if !drag.preview.is_animating(now)
-                    && !drag.preview.value()
-                    && drag.preview_target.is_some()
-                {
-                    drag.preview_target = None;
-                }
+                self.settle_drag_target(&mut drag, now);
+                drag.preview.clear_if_hidden(now);
+                self.active_drag = Some(drag);
                 DockUpdate::default()
             }
             DockAction::Hide(id) => self.hide(id),
@@ -3604,6 +3744,39 @@ fn collect_view_drop_targets(
     }
 }
 
+fn preview_target_signature(
+    node: &DockViewNode,
+    target: &DockDropTarget,
+) -> Option<(Vec<usize>, bool, DockDropZone)> {
+    fn visit(
+        node: &DockViewNode,
+        target: &DockId,
+        zone: DockDropZone,
+        path: &mut Vec<usize>,
+    ) -> Option<(Vec<usize>, bool, DockDropZone)> {
+        match node {
+            DockViewNode::Item { item } if item.id() == target => Some((path.clone(), false, zone)),
+            DockViewNode::Tabs { tabs, .. } if tabs.iter().any(|item| item.id() == target) => {
+                Some((path.clone(), true, zone))
+            }
+            DockViewNode::Split { first, second, .. } => {
+                path.push(0);
+                if let Some(signature) = visit(first, target, zone, path) {
+                    return Some(signature);
+                }
+                path.pop();
+                path.push(1);
+                let signature = visit(second, target, zone, path);
+                path.pop();
+                signature
+            }
+            _ => None,
+        }
+    }
+
+    visit(node, &target.id, target.zone, &mut Vec::new())
+}
+
 fn bounds_contains(bounds: DockBounds, point: Point) -> bool {
     point.x >= bounds.x
         && point.y >= bounds.y
@@ -3878,8 +4051,7 @@ mod tests {
             moved: true,
             pending_target: None,
             target: Some(target.clone()),
-            preview_target: Some(target),
-            preview: drag_preview_animation(true),
+            preview: DockPreviewTransition::single(target, 1.0, 1.0, iced::time::Instant::now()),
             transient_surface: None,
             transient_ready: false,
             original_bounds: None,
@@ -3967,9 +4139,16 @@ mod tests {
         let now = iced::time::Instant::now();
         {
             let drag = controller.active_drag.as_mut().expect("active drag");
-            drag.preview.go_mut(false, now);
-            drag.preview
-                .go_mut(true, now + iced::time::Duration::from_millis(1));
+            drag.preview = DockPreviewTransition::single(
+                DockDropTarget {
+                    surface: DockSurfaceId(0),
+                    id: DockId::from("editor"),
+                    zone: DockDropZone::Tab,
+                },
+                0.0,
+                1.0,
+                now,
+            );
         }
 
         let preview = preview_at(&controller, now + iced::time::Duration::from_millis(51));
@@ -4004,7 +4183,7 @@ mod tests {
             .as_mut()
             .expect("active drag")
             .preview
-            .go_mut(false, reverse_start);
+            .transition_to_hidden(reverse_start);
         let reversing = preview_at(
             &controller,
             reverse_start + iced::time::Duration::from_millis(51),
@@ -4280,6 +4459,312 @@ mod tests {
             panic!("tab target should have an animated merge preview")
         };
         assert!(merge_preview.progress > 0.0 && merge_preview.progress < 1.0);
+    }
+
+    #[test]
+    fn incompatible_preview_retarget_uses_a_neutral_frame_before_new_tree() {
+        let mut controller = preview_controller(DockDropZone::Left);
+        let now = iced::time::Instant::now();
+        let tab_target = DockDropTarget {
+            surface: DockSurfaceId(0),
+            id: DockId::from("editor"),
+            zone: DockDropZone::Tab,
+        };
+        controller
+            .active_drag
+            .as_mut()
+            .expect("active drag")
+            .preview
+            .transition_to_visible(tab_target, false, now);
+
+        assert!(matches!(
+            preview_at(&controller, now),
+            DockViewNode::Split { .. }
+        ));
+        let neutral = (0..=200)
+            .map(|millis| preview_at(&controller, now + iced::time::Duration::from_millis(millis)))
+            .find(|root| !contains_placeholder(root));
+        assert!(neutral.is_some(), "handoff should expose a neutral frame");
+
+        let settled = preview_at(&controller, now + iced::time::Duration::from_millis(250));
+        assert!(matches!(settled, DockViewNode::Tabs { .. }));
+    }
+
+    #[test]
+    fn same_topology_retarget_preserves_the_sampled_progress() {
+        let controller = DockController::new(
+            "editor",
+            [
+                DockItemSpec::new("editor", "Editor").closeable(false),
+                DockItemSpec::new("source", "Source"),
+                DockItemSpec::new("target-a", "Target A"),
+                DockItemSpec::new("target-b", "Target B"),
+            ],
+            DockLayout::new(DockNode::split(
+                DockAxis::Horizontal,
+                0.5,
+                DockNode::item("source"),
+                DockNode::split(
+                    DockAxis::Horizontal,
+                    0.5,
+                    DockNode::tabs(
+                        [DockId::from("target-a"), DockId::from("target-b")],
+                        "target-a",
+                    ),
+                    DockNode::item("editor"),
+                ),
+            )),
+        )
+        .expect("valid dock layout");
+        let now = iced::time::Instant::now();
+        let from = DockDropTarget {
+            surface: DockSurfaceId(0),
+            id: DockId::from("target-a"),
+            zone: DockDropZone::Tab,
+        };
+        let to = DockDropTarget {
+            surface: DockSurfaceId(0),
+            id: DockId::from("target-b"),
+            zone: DockDropZone::Tab,
+        };
+        let drag = ActiveDrag {
+            surface: DockSurfaceId(0),
+            id: DockId::from("source"),
+            start: None,
+            position: None,
+            moved: true,
+            pending_target: None,
+            target: Some(from.clone()),
+            preview: DockPreviewTransition::single(from.clone(), 0.35, 0.35, now),
+            transient_surface: None,
+            transient_ready: false,
+            original_bounds: None,
+            bounds: None,
+        };
+        assert!(controller.preview_targets_compatible(&drag, &from, &to));
+
+        let mut preview = drag.preview;
+        preview.transition_to_visible(to.clone(), true, now);
+        let Some((visible, progress)) = preview.frame_at(now) else {
+            panic!("retargeted preview should remain visible")
+        };
+        assert_eq!(visible, to);
+        assert!((progress - 0.35).abs() < 0.000_1);
+    }
+
+    #[test]
+    fn rapid_candidate_changes_commit_only_the_latest_preview_target() {
+        let mut controller = tab_drag_controller();
+        let before = controller.layout().clone();
+        let before_json = controller.layout_json().expect("layout json");
+        let now = iced::time::Instant::now();
+
+        let opened = move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
+        assert!(matches!(
+            opened.effects.first(),
+            Some(DockHostEffect::OpenFloating(_))
+        ));
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(302),
+        );
+        assert_eq!(
+            controller.drop_target(),
+            Some(&DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: DockId::from("target"),
+                zone: DockDropZone::Left,
+            })
+        );
+
+        controller.update_at(
+            DockAction::DragMove {
+                surface: DockSurfaceId(0),
+                position: Point::new(300.0, 400.0),
+            },
+            now + iced::time::Duration::from_millis(303),
+        );
+        controller.update_at(
+            DockAction::DragMove {
+                surface: DockSurfaceId(0),
+                position: Point::new(630.0, 400.0),
+            },
+            now + iced::time::Duration::from_millis(304),
+        );
+        assert!(controller.drop_target().is_none());
+        assert_eq!(
+            controller.drop_highlight_target(),
+            Some(&DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: DockId::from("target"),
+                zone: DockDropZone::Right,
+            })
+        );
+
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(605),
+        );
+        assert_eq!(
+            controller.drop_target(),
+            Some(&DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: DockId::from("target"),
+                zone: DockDropZone::Right,
+            })
+        );
+        assert_eq!(controller.layout(), &before);
+        assert_eq!(controller.layout_json().expect("layout json"), before_json);
+
+        let drag = controller.active_drag.as_ref().expect("active drag");
+        let Some((visible, progress)) = drag
+            .preview
+            .frame_at(now + iced::time::Duration::from_millis(655))
+        else {
+            panic!("latest target preview should be visible")
+        };
+        assert_eq!(
+            visible,
+            DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: DockId::from("target"),
+                zone: DockDropZone::Right,
+            }
+        );
+        assert!(progress > 0.0);
+
+        let update = controller.update_at(
+            DockAction::DragEnd {
+                surface: DockSurfaceId(0),
+            },
+            now + iced::time::Duration::from_millis(656),
+        );
+        assert!(update.changed);
+        assert!(controller.layout().main.contains(&DockId::from("source")));
+    }
+
+    #[test]
+    fn cross_surface_preview_handoff_does_not_restore_the_old_surface_target() {
+        let (mut controller, source, target) = floating_pair_controller();
+        let before_json = controller.layout_json().expect("layout json");
+        let now = iced::time::Instant::now();
+        controller.update_at(
+            DockAction::DragStart {
+                surface: source,
+                id: DockId::from("sources"),
+            },
+            now,
+        );
+        controller.update_at(
+            DockAction::DragMove {
+                surface: source,
+                position: Point::new(100.0, 100.0),
+            },
+            now,
+        );
+        controller.update_at(
+            DockAction::DragMove {
+                surface: target,
+                position: Point::new(180.0, 140.0),
+            },
+            now + iced::time::Duration::from_millis(1),
+        );
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(302),
+        );
+        assert_eq!(
+            controller.drop_target(),
+            Some(&DockDropTarget {
+                surface: target,
+                id: DockId::from("mixer"),
+                zone: DockDropZone::Tab,
+            })
+        );
+
+        controller.update_at(
+            DockAction::DragMove {
+                surface: DockSurfaceId(0),
+                position: Point::new(300.0, 400.0),
+            },
+            now + iced::time::Duration::from_millis(303),
+        );
+        controller.update_at(
+            DockAction::DragMove {
+                surface: target,
+                position: Point::new(180.0, 140.0),
+            },
+            now + iced::time::Duration::from_millis(304),
+        );
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(605),
+        );
+        assert_eq!(
+            controller.drop_target(),
+            Some(&DockDropTarget {
+                surface: target,
+                id: DockId::from("mixer"),
+                zone: DockDropZone::Tab,
+            })
+        );
+        assert_eq!(controller.layout_json().expect("layout json"), before_json);
+
+        let drag = controller.active_drag.as_ref().expect("active drag");
+        assert!(
+            controller
+                .preview_root_for_at(source, now + iced::time::Duration::from_millis(655), drag)
+                .is_none()
+        );
+        let target_surface = controller
+            .preview_root_for_at(target, now + iced::time::Duration::from_millis(655), drag)
+            .expect("target surface preview");
+        assert!(contains_placeholder(&target_surface));
+    }
+
+    #[test]
+    fn leaving_and_reentering_before_dwell_only_settles_the_reentered_target() {
+        let mut controller = simple_drag_controller();
+        let before = controller.layout().clone();
+        let before_json = controller.layout_json().expect("layout json");
+        let now = iced::time::Instant::now();
+        move_source_to_position(&mut controller, now, Point::new(100.0, 400.0));
+        assert!(controller.drop_target().is_none());
+
+        controller.update_at(
+            DockAction::DragMove {
+                surface: DockSurfaceId(0),
+                position: Point::new(700.0, 400.0),
+            },
+            now + iced::time::Duration::from_millis(100),
+        );
+        assert!(controller.drop_highlight_target().is_none());
+        assert!(!contains_placeholder(&preview_at(
+            &controller,
+            now + iced::time::Duration::from_millis(150),
+        )));
+
+        controller.update_at(
+            DockAction::DragMove {
+                surface: DockSurfaceId(0),
+                position: Point::new(100.0, 400.0),
+            },
+            now + iced::time::Duration::from_millis(151),
+        );
+        controller.update_at(
+            DockAction::Hover(false),
+            now + iced::time::Duration::from_millis(452),
+        );
+        assert_eq!(
+            controller.drop_target(),
+            Some(&DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: DockId::from("editor"),
+                zone: DockDropZone::Left,
+            })
+        );
+        assert_eq!(controller.layout(), &before);
+        assert_eq!(controller.layout_json().expect("layout json"), before_json);
     }
 
     #[test]
@@ -4929,8 +5414,16 @@ mod tests {
         let mut controller = preview_controller(DockDropZone::Left);
         let now = iced::time::Instant::now();
         let drag = controller.active_drag.as_mut().expect("drag");
-        drag.preview = drag_preview_animation(false);
-        drag.preview.go_mut(true, now);
+        drag.preview = DockPreviewTransition::single(
+            DockDropTarget {
+                surface: DockSurfaceId(0),
+                id: DockId::from("editor"),
+                zone: DockDropZone::Left,
+            },
+            0.0,
+            1.0,
+            now,
+        );
         let early = controller
             .preview_root_at(
                 now + iced::time::Duration::from_millis(50),
@@ -4955,7 +5448,7 @@ mod tests {
         let drag = controller.active_drag.as_mut().expect("drag");
         drag.target = None;
         drag.preview
-            .go_mut(false, now + iced::time::Duration::from_millis(250));
+            .transition_to_hidden(now + iced::time::Duration::from_millis(250));
         let collapsed = controller
             .preview_root_at(
                 now + iced::time::Duration::from_millis(300),

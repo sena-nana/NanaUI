@@ -19,6 +19,7 @@
 - `gallery-workspace-dark.png`、`gallery-workspace-dock-preview-dark.png`、
   `gallery-workspace-dock-preview-light.png`、`gallery-sidebar-collapsed-dark.png`；
 - `dock-preview-tab-transition-dark.png`、`dock-preview-tab-transition-light.png`；
+- `dock-preview-retarget-tab-dark.png`、`dock-preview-retarget-tab-light.png`；
 - `dock-hover-left-dark.png`、`dock-hover-left-light.png`；
 - `gallery-settings-appearance-dark.png`、`gallery-settings-appearance-light.png`；
 - `gallery-settings-workspace-dark.png`。
