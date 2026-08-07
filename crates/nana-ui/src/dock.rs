@@ -2336,13 +2336,18 @@ where
             item: DockViewItem::Placeholder(id),
         } => dock_drag_preview_view(id, controller, tokens),
         DockViewNode::Tabs { tabs, active } => {
-            let title_bar = dock_window_tabs_title_bar(
-                controller,
-                surface,
-                tabs,
-                active,
+            let title_bar = dock_window_chrome_bar(
+                dock_tab_row(
+                    controller,
+                    surface,
+                    tabs,
+                    active,
+                    WINDOW_TITLE_BAR_HEIGHT,
+                    on_action,
+                    tokens,
+                )
+                .into(),
                 window_chrome,
-                on_action,
                 on_window_event,
                 tokens,
             );
@@ -2398,6 +2403,57 @@ fn dock_view_active_id(node: &DockViewNode) -> Option<&DockId> {
     }
 }
 
+fn dock_window_chrome_bar<'a, Message>(
+    leading: Element<'a, Message>,
+    window_chrome: &WindowChromeState,
+    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let filler = window_chrome_drag_start_area(
+        space().width(Length::Fill).height(Length::Fill),
+        &on_window_event,
+    );
+    let drag_region = row![leading, filler]
+        .height(Length::Fill)
+        .align_y(Alignment::Center);
+    let chrome = window_chrome.chrome();
+    let controls = container(window_chrome_controls(
+        chrome,
+        window_chrome.is_maximized(),
+        tokens,
+        &on_window_event,
+    ))
+    .height(Length::Fill)
+    .align_y(iced::alignment::Vertical::Center)
+    .padding(Padding {
+        top: 0.0,
+        right: 6.0 + chrome.trailing_inset,
+        bottom: 0.0,
+        left: 6.0,
+    });
+    let title_bar = container(
+        row![
+            space().width(Length::Fixed(6.0 + chrome.leading_inset)),
+            drag_region,
+            controls,
+        ]
+        .height(Length::Fill)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(WINDOW_TITLE_BAR_HEIGHT))
+    .clip(true)
+    .style(move |_theme| {
+        iced::widget::container::Style::default()
+            .background(tokens.colors.surface)
+            .color(tokens.colors.text)
+    });
+    window_chrome_drag_tracker(title_bar, on_window_event)
+}
+
 fn dock_window_title_bar<'a, Message>(
     controller: &DockController,
     surface: DockSurfaceId,
@@ -2423,163 +2479,75 @@ where
         left: 0.0,
     })
     .center_y(Length::Fill);
-    let title: Element<'a, Message> = if controller.layout.locked {
-        window_chrome_drag_start_area(title, &on_window_event)
-    } else if let Some(id) = title_id {
-        dock_drag_handle(
+    let title: Element<'a, Message> = match (controller.layout.locked, title_id) {
+        (false, Some(id)) => dock_drag_handle(
             title,
             id,
             surface,
             on_action,
             DockAction::Focus(id.clone()),
-        )
-    } else {
-        window_chrome_drag_start_area(title, &on_window_event)
+        ),
+        _ => window_chrome_drag_start_area(title, &on_window_event),
     };
-    let filler = window_chrome_drag_start_area(
-        space().width(Length::Fill).height(Length::Fill),
-        &on_window_event,
-    );
-    let drag_region = row![title, filler]
-        .height(Length::Fill)
-        .align_y(Alignment::Center);
-    let chrome = window_chrome.chrome();
-    let controls = window_chrome_controls(
-        chrome,
-        window_chrome.is_maximized(),
-        tokens,
-        &on_window_event,
-    );
-    let controls = container(controls)
-        .height(Length::Fill)
-        .align_y(iced::alignment::Vertical::Center)
-        .padding(Padding {
-            top: 0.0,
-            right: 6.0 + chrome.trailing_inset,
-            bottom: 0.0,
-            left: 6.0,
-        });
-    let title_bar = container(
-        row![
-            space().width(Length::Fixed(6.0 + chrome.leading_inset)),
-            drag_region,
-            controls,
-        ]
-        .height(Length::Fill)
-        .align_y(Alignment::Center),
-    )
-    .width(Length::Fill)
-    .height(Length::Fixed(WINDOW_TITLE_BAR_HEIGHT))
-    .clip(true)
-    .style(move |_theme| {
-        iced::widget::container::Style::default()
-            .background(tokens.colors.surface)
-            .color(tokens.colors.text)
-    });
-    window_chrome_drag_tracker(title_bar, on_window_event)
+    dock_window_chrome_bar(title, window_chrome, on_window_event, tokens)
 }
 
-fn dock_window_tabs_title_bar<'a, Message>(
+fn dock_tab_row<'a, Message>(
     controller: &DockController,
     surface: DockSurfaceId,
     tabs: &[DockViewItem],
     active: &DockViewItem,
-    window_chrome: &WindowChromeState,
+    height: f32,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
-    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
     tokens: ThemeTokens,
-) -> Element<'a, Message>
+) -> iced::widget::Row<'a, Message>
 where
     Message: Clone + 'a,
 {
     let chrome_style = controller.chrome_style;
-    let tab_bar = tabs.iter().fold(
-        row![].height(Length::Fill),
-        |tabs_row, item| {
-            let id = item.id();
-            let title = dock_item_title(controller, id);
-            let placeholder = item.is_placeholder();
-            let active_tab = item == active;
-            let label = text(title)
-                .size(11)
-                .font(ui_font(iced::font::Weight::Medium));
-            let tab = container(label)
-                .center_y(Length::Fill)
-                .padding([0.0, 10.0])
-                .style(move |_theme| {
-                    let background = if active_tab {
-                        tokens.colors.active
-                    } else if chrome_style == DockChromeStyle::Card {
-                        iced::Color::TRANSPARENT
-                    } else {
-                        tokens.colors.surface
-                    };
-                    iced::widget::container::Style::default()
-                        .background(background)
-                        .border(dock_tab_border(tokens, chrome_style))
-                });
-            if placeholder {
-                tabs_row.push(tab.height(Length::Fill).width(Length::Shrink))
-            } else if controller.layout.locked {
-                tabs_row.push(
-                    button(tab)
-                        .height(Length::Fill)
-                        .padding(0)
-                        .on_press(on_action(DockAction::ActivateTab(id.clone())))
-                        .style(button_style(tokens, ButtonKind::Text)),
-                )
-            } else {
-                tabs_row.push(dock_drag_handle(
-                    tab.height(Length::Fill).width(Length::Shrink),
-                    id,
-                    surface,
-                    on_action,
-                    DockAction::ActivateTab(id.clone()),
-                ))
-            }
-        },
-    );
-    let filler = window_chrome_drag_start_area(
-        space().width(Length::Fill).height(Length::Fill),
-        &on_window_event,
-    );
-    let drag_region = row![tab_bar, filler]
-        .height(Length::Fill)
-        .align_y(Alignment::Center);
-    let chrome = window_chrome.chrome();
-    let controls = window_chrome_controls(
-        chrome,
-        window_chrome.is_maximized(),
-        tokens,
-        &on_window_event,
-    );
-    let controls = container(controls)
-        .height(Length::Fill)
-        .align_y(iced::alignment::Vertical::Center)
-        .padding(Padding {
-            top: 0.0,
-            right: 6.0 + chrome.trailing_inset,
-            bottom: 0.0,
-            left: 6.0,
-        });
-    let title_bar = container(
-        row![
-            space().width(Length::Fixed(6.0 + chrome.leading_inset)),
-            drag_region,
-            controls,
-        ]
-        .height(Length::Fill)
-        .align_y(Alignment::Center),
-    )
-    .width(Length::Fill)
-    .height(Length::Fixed(WINDOW_TITLE_BAR_HEIGHT))
-    .clip(true)
-    .style(move |_theme| {
-        iced::widget::container::Style::default()
-            .background(tokens.colors.surface)
-            .color(tokens.colors.text)
-    });
-    window_chrome_drag_tracker(title_bar, on_window_event)
+    tabs.iter().fold(row![].height(Length::Fixed(height)), |tabs_row, item| {
+        let id = item.id();
+        let title = dock_item_title(controller, id);
+        let placeholder = item.is_placeholder();
+        let active_tab = item == active;
+        let label = text(title)
+            .size(11)
+            .font(ui_font(iced::font::Weight::Medium));
+        let tab = container(label)
+            .center_y(Length::Fill)
+            .padding([0.0, 10.0])
+            .style(move |_theme| {
+                let background = if active_tab {
+                    tokens.colors.active
+                } else if chrome_style == DockChromeStyle::Card {
+                    iced::Color::TRANSPARENT
+                } else {
+                    tokens.colors.surface
+                };
+                iced::widget::container::Style::default()
+                    .background(background)
+                    .border(dock_tab_border(tokens, chrome_style))
+            });
+        if placeholder {
+            tabs_row.push(tab.height(Length::Fixed(height)).width(Length::Shrink))
+        } else if controller.layout.locked {
+            tabs_row.push(
+                button(tab)
+                    .height(Length::Fixed(height))
+                    .padding(0)
+                    .on_press(on_action(DockAction::ActivateTab(id.clone())))
+                    .style(button_style(tokens, ButtonKind::Text)),
+            )
+        } else {
+            tabs_row.push(dock_drag_handle(
+                tab.height(Length::Fixed(height)).width(Length::Shrink),
+                id,
+                surface,
+                on_action,
+                DockAction::ActivateTab(id.clone()),
+            ))
+        }
+    })
 }
 
 fn dock_window_item_view<'a, Message>(
@@ -2640,55 +2608,14 @@ where
         }
         DockViewNode::Tabs { tabs, active } => {
             let chrome_style = controller.chrome_style;
-            let tab_bar = tabs.iter().fold(
-                row![].height(Length::Fixed(TITLE_BAR_HEIGHT)),
-                |tabs_row, item| {
-                    let id = item.id();
-                    let title = dock_item_title(controller, id);
-                    let placeholder = item.is_placeholder();
-                    let active_tab = item == active;
-                    let label = text(title)
-                        .size(11)
-                        .font(ui_font(iced::font::Weight::Medium));
-                    let tab = container(label)
-                        .center_y(Length::Fill)
-                        .padding([0.0, 10.0])
-                        .style(move |_theme| {
-                            let background = if active_tab {
-                                tokens.colors.active
-                            } else if chrome_style == DockChromeStyle::Card {
-                                iced::Color::TRANSPARENT
-                            } else {
-                                tokens.colors.surface
-                            };
-                            iced::widget::container::Style::default()
-                                .background(background)
-                                .border(dock_tab_border(tokens, chrome_style))
-                        });
-                    if placeholder {
-                        tabs_row.push(
-                            tab.height(Length::Fixed(TITLE_BAR_HEIGHT))
-                                .width(Length::Shrink),
-                        )
-                    } else if controller.layout.locked {
-                        tabs_row.push(
-                            button(tab)
-                                .height(Length::Fixed(TITLE_BAR_HEIGHT))
-                                .padding(0)
-                                .on_press(on_action(DockAction::ActivateTab(id.clone())))
-                                .style(button_style(tokens, ButtonKind::Text)),
-                        )
-                    } else {
-                        tabs_row.push(dock_drag_handle(
-                            tab.height(Length::Fixed(TITLE_BAR_HEIGHT))
-                                .width(Length::Shrink),
-                            id,
-                            surface,
-                            on_action,
-                            DockAction::ActivateTab(id.clone()),
-                        ))
-                    }
-                },
+            let tab_bar = dock_tab_row(
+                controller,
+                surface,
+                tabs,
+                active,
+                TITLE_BAR_HEIGHT,
+                on_action,
+                tokens,
             );
             let active_item = dock_view_item_view(
                 active, surface, true, controller, contents, on_action, tokens,
