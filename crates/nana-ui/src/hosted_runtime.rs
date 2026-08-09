@@ -14,7 +14,9 @@ use iced_winit::winit;
 use nana_window::MaterialFallback;
 #[cfg(not(target_os = "macos"))]
 use nana_window::{Appearance, FallbackColor, apply_system_material};
-use nana_window::{MaterialOutcome, clear_system_material, prepare_custom_title_bar};
+use nana_window::{
+    MaterialEffect, MaterialOutcome, clear_system_material, prepare_custom_title_bar,
+};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -57,6 +59,9 @@ pub struct HostedWindowSettings {
     pub initial_physical_geometry: Option<(i32, i32, u32, u32)>,
     pub maximized: bool,
     pub transparent: bool,
+    pub transparent_background: bool,
+    pub always_on_top: bool,
+    pub resizable: bool,
     pub role: HostedWindowRole,
     pub title_bar_mode: HostedTitleBarMode,
     pub gpu_retry_interval: Duration,
@@ -73,6 +78,9 @@ impl HostedWindowSettings {
             initial_physical_geometry: None,
             maximized: false,
             transparent: !cfg!(target_os = "macos"),
+            transparent_background: false,
+            always_on_top: false,
+            resizable: true,
             role: HostedWindowRole::Main,
             title_bar_mode: HostedTitleBarMode::Custom,
             gpu_retry_interval: Duration::from_secs(2),
@@ -109,6 +117,25 @@ impl HostedWindowSettings {
 
     pub fn transparent(mut self, transparent: bool) -> Self {
         self.transparent = transparent;
+        self
+    }
+
+    /// Uses a fully transparent surface clear and disables native backdrop materials.
+    pub fn transparent_background(mut self, transparent_background: bool) -> Self {
+        self.transparent_background = transparent_background;
+        if transparent_background {
+            self.transparent = true;
+        }
+        self
+    }
+
+    pub fn always_on_top(mut self, always_on_top: bool) -> Self {
+        self.always_on_top = always_on_top;
+        self
+    }
+
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
         self
     }
 
@@ -517,6 +544,7 @@ struct HostedAuxiliary<Message> {
     ui: HostedUiRenderer<Message>,
     iced_window_id: iced::window::Id,
     material: MaterialOutcome,
+    settings: HostedWindowSettings,
 }
 
 impl<Message> Drop for HostedAuxiliary<Message> {
@@ -647,7 +675,11 @@ fn initialize<Program: HostedProgram>(
     let iced_window_id = iced::window::Id::unique();
     let context = program_context(&graphics, &proxy, iced_window_id, false);
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
-    let material = material_for(window.as_ref(), program.theme_mode());
+    let material = material_for(
+        window.as_ref(),
+        program.theme_mode(),
+        settings.transparent_background,
+    );
     let ui = hosted_ui_renderer(
         &graphics,
         graphics.window(),
@@ -956,7 +988,11 @@ impl<Program: HostedProgram> HostedReady<Program> {
             surface.physical_size(),
         );
         let iced_window_id = iced::window::Id::unique();
-        let material = material_for(window.as_ref(), self.program.theme_mode());
+        let material = material_for(
+            window.as_ref(),
+            self.program.theme_mode(),
+            settings.transparent_background,
+        );
         let geometry = window_geometry(&window);
         self.window_ids.insert(window.id(), id);
         self.auxiliary.insert(
@@ -966,6 +1002,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 ui,
                 iced_window_id,
                 material,
+                settings,
             },
         );
         window.request_redraw();
@@ -1124,10 +1161,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
             },
             HostedUiTarget {
                 window: self.graphics.window().as_ref(),
-                clear_color: Some(window_background(
-                    colors.background,
-                    self.material.is_native(),
-                )),
+                clear_color: Some(window_background(colors.background, self.material)),
                 format: frame.texture.format(),
                 view: &target,
             },
@@ -1249,7 +1283,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 },
                 HostedUiTarget {
                     window: host.surface.window().as_ref(),
-                    clear_color: Some(window_background(colors.background, material.is_native())),
+                    clear_color: Some(window_background(colors.background, material)),
                     format: frame.texture.format(),
                     view: &target,
                 },
@@ -1276,11 +1310,19 @@ impl<Program: HostedProgram> HostedReady<Program> {
 
     fn refresh_materials(&mut self) {
         clear_system_material(self.graphics.window().as_ref());
-        self.material = material_for(self.graphics.window().as_ref(), self.program.theme_mode());
+        self.material = material_for(
+            self.graphics.window().as_ref(),
+            self.program.theme_mode(),
+            self.settings.transparent_background,
+        );
         self.ui.mark_ui_dirty();
         for host in self.auxiliary.values_mut() {
             clear_system_material(host.surface.window().as_ref());
-            host.material = material_for(host.surface.window().as_ref(), self.program.theme_mode());
+            host.material = material_for(
+                host.surface.window().as_ref(),
+                self.program.theme_mode(),
+                host.settings.transparent_background,
+            );
             host.ui.mark_ui_dirty();
             host.surface.window().request_redraw();
         }
@@ -1319,6 +1361,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                                     ui,
                                     iced_window_id: host.iced_window_id,
                                     material: host.material,
+                                    settings: host.settings.clone(),
                                 },
                             );
                         }
@@ -1561,23 +1604,38 @@ fn normalized_scale_factor(scale_factor: f32) -> f32 {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn material_for(window: &winit::window::Window, _theme: ThemeMode) -> MaterialOutcome {
-    clear_system_material(window);
-    MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
+fn material_for(
+    window: &winit::window::Window,
+    theme: ThemeMode,
+    transparent_background: bool,
+) -> MaterialOutcome {
+    if transparent_background {
+        clear_system_material(window);
+        return MaterialOutcome::transparent();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = theme;
+        clear_system_material(window);
+        MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (appearance, fallback) = match theme {
+            ThemeMode::Dark => (Appearance::Dark, FallbackColor::rgba(24, 24, 24, 220)),
+            ThemeMode::Light => (Appearance::Light, FallbackColor::rgba(255, 255, 255, 232)),
+        };
+        apply_system_material(window, appearance, fallback)
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn material_for(window: &winit::window::Window, theme: ThemeMode) -> MaterialOutcome {
-    let (appearance, fallback) = match theme {
-        ThemeMode::Dark => (Appearance::Dark, FallbackColor::rgba(24, 24, 24, 220)),
-        ThemeMode::Light => (Appearance::Light, FallbackColor::rgba(255, 255, 255, 232)),
-    };
-    apply_system_material(window, appearance, fallback)
-}
-
-fn window_background(mut color: iced::Color, native_material: bool) -> iced::Color {
-    if native_material {
+fn window_background(mut color: iced::Color, material: MaterialOutcome) -> iced::Color {
+    if material.effect == MaterialEffect::Transparent {
+        return iced::Color::TRANSPARENT;
+    }
+    if material.is_native() {
         color.a = 0.78;
     }
     color
@@ -1586,7 +1644,13 @@ fn window_background(mut color: iced::Color, native_material: bool) -> iced::Col
 fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAttributes {
     let mut attributes = winit::window::WindowAttributes::default()
         .with_title(settings.title.clone())
-        .with_transparent(settings.transparent)
+        .with_transparent(settings.transparent || settings.transparent_background)
+        .with_resizable(settings.resizable)
+        .with_window_level(if settings.always_on_top {
+            winit::window::WindowLevel::AlwaysOnTop
+        } else {
+            winit::window::WindowLevel::Normal
+        })
         .with_inner_size(winit::dpi::LogicalSize::new(
             settings.initial_size.width,
             settings.initial_size.height,
@@ -1646,8 +1710,10 @@ impl std::error::Error for HostedRunError {}
 mod tests {
     use super::{
         HostedProgramUpdate, HostedRedraw, HostedTitleBarMode, HostedWindowId, HostedWindowRole,
-        HostedWindowSettings, should_request_redraw, window_attributes,
+        HostedWindowSettings, should_request_redraw, window_attributes, window_background,
     };
+    use iced_winit::winit;
+    use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome};
 
     #[test]
     fn redraw_targets_are_explicit() {
@@ -1768,5 +1834,44 @@ mod tests {
             assert!(!window_attributes(&main).decorations);
             assert!(!window_attributes(&custom_tool).decorations);
         }
+    }
+
+    #[test]
+    fn desktop_pet_window_policy_is_explicit() {
+        let settings = HostedWindowSettings::new("pet")
+            .transparent_background(true)
+            .always_on_top(true)
+            .resizable(false);
+        let attributes = window_attributes(&settings);
+
+        assert!(settings.transparent);
+        assert!(settings.transparent_background);
+        assert_eq!(
+            attributes.window_level,
+            winit::window::WindowLevel::AlwaysOnTop
+        );
+        assert!(!attributes.resizable);
+        assert!(attributes.transparent);
+    }
+
+    #[test]
+    fn transparent_material_clears_the_surface_without_becoming_native() {
+        let color = iced::Color::from_rgba(0.2, 0.3, 0.4, 1.0);
+
+        assert_eq!(
+            window_background(color, MaterialOutcome::transparent()),
+            iced::Color::TRANSPARENT
+        );
+        assert_eq!(
+            window_background(
+                color,
+                MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
+            ),
+            color
+        );
+        assert_eq!(
+            window_background(color, MaterialOutcome::native(MaterialEffect::Acrylic)).a,
+            0.78
+        );
     }
 }

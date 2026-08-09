@@ -35,6 +35,7 @@ impl FallbackColor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterialEffect {
     Solid,
+    Transparent,
     Vibrancy,
     Mica,
     Acrylic,
@@ -67,8 +68,18 @@ impl MaterialOutcome {
         }
     }
 
+    pub const fn transparent() -> Self {
+        Self {
+            effect: MaterialEffect::Transparent,
+            fallback: None,
+        }
+    }
+
     pub const fn is_native(self) -> bool {
-        !matches!(self.effect, MaterialEffect::Solid)
+        matches!(
+            self.effect,
+            MaterialEffect::Vibrancy | MaterialEffect::Mica | MaterialEffect::Acrylic
+        )
     }
 }
 
@@ -104,4 +115,24 @@ pub fn apply_hosted_system_material<W: HasWindowHandle + ?Sized>(
 
 pub fn clear_system_material<W: HasWindowHandle + ?Sized>(window: &W) {
     platform::clear(window);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MaterialEffect, MaterialFallback, MaterialOutcome};
+
+    #[test]
+    fn transparent_is_an_explicit_non_native_outcome() {
+        let outcome = MaterialOutcome::transparent();
+
+        assert_eq!(outcome.effect, MaterialEffect::Transparent);
+        assert_eq!(outcome.fallback, None);
+        assert!(!outcome.is_native());
+    }
+
+    #[test]
+    fn only_platform_materials_are_native() {
+        assert!(!MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable).is_native());
+        assert!(MaterialOutcome::native(MaterialEffect::Acrylic).is_native());
+    }
 }
