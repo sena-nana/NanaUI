@@ -1923,6 +1923,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-ui-devtools"
+version = "0.1.0"
+dependencies = [
+ "nana-ui-core",
+]
+
+[[package]]
 name = "nana-ui-platform"
 version = "0.1.0"
 dependencies = [
