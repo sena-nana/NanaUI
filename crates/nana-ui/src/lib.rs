@@ -9,6 +9,7 @@
 //! [`WorkspaceController`], [`WorkspaceSlots`], and [`workspace_view`] provide
 //! the reusable workspace contract.
 
+pub mod absolute;
 pub mod components;
 pub mod dialog;
 pub mod dock;
@@ -40,6 +41,7 @@ pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
 
+pub use absolute::Absolute;
 pub use components::actions::{Button, ControlSize, IconButton};
 #[cfg(feature = "calendar")]
 pub use components::calendar::{
