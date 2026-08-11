@@ -1,0 +1,18 @@
+{
+  "name": "vue-runtime-probe",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild src/probe.js --bundle --format=iife --platform=neutral --target=es2020 --outfile=dist/vue-runtime-probe.iife.js",
+    "build:phase3": "esbuild src/phase3-apps.js --bundle --format=iife --platform=neutral --target=es2020 --outfile=dist/vue-phase3.iife.js --alias:@vue/runtime-core=./node_modules/@vue/runtime-core/dist/runtime-core.esm-bundler.js --alias:@vue/reactivity=./node_modules/@vue/reactivity/dist/reactivity.esm-bundler.js --alias:@vue/shared=./node_modules/@vue/shared/dist/shared.esm-bundler.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@vue/runtime-core": "3.5.13",
+    "esbuild": "0.25.0"
+  }
+}
