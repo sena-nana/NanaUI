@@ -45,7 +45,7 @@
 | `SearchDropdown` | `SearchDropdown` | Iced combo-box 的过滤、键盘导航、hint 与受控选择状态 |
 | `UiDialog` | `Dialog` | 标题、描述、正文、Footer、尺寸、关闭/外部点击/内部交互消息 |
 | `ConfirmDialog` | `ConfirmDialog` | 复用 Dialog，支持 danger 与真实确认/取消消息 |
-| `UiDrawer` | `Drawer` | 左右方向、正文、Footer、关闭与内部交互消息 |
+| `UiDrawer` | `Drawer` | 左右方向、正文、Footer、关闭与内部交互消息；L2 `nana-drawer` / `side` 已映射 |
 | `Tooltip` | `Tooltip` | 统一 placement、delay、viewport padding 与视觉样式 |
 | `UiPopover` | `Popover` | 自定义 Iced overlay、受控打开、四向锚定、Escape/外部点击关闭与嵌套交互 |
 | `ActionMenuItem` | `ActionMenuItem` | 三档行高、leading/hint/active/danger/disabled 与真实消息 |
