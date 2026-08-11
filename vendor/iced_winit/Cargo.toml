@@ -1,0 +1,41 @@
+[package]
+name = "iced_winit"
+description = "A runtime for iced on top of winit (NanaUI Android-capable vendor)"
+version = "0.15.0-dev"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[features]
+default = ["x11", "wayland"]
+debug = ["iced_debug/enable"]
+sysinfo = ["dep:sysinfo"]
+unconditional-rendering = []
+linux-theme-detection = ["dep:mundy", "mundy/async-io", "mundy/color-scheme"]
+image = ["iced_runtime/image", "arboard/image-data"]
+x11 = ["winit/x11"]
+wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita", "arboard/wayland-data-control"]
+
+[dependencies]
+iced_debug = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
+iced_program = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
+iced_runtime = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
+log = "0.4"
+rustc-hash = "2"
+thiserror = "2"
+tracing = "0.1"
+winit = { git = "https://github.com/iced-rs/winit.git", rev = "05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed", default-features = false, features = ["rwh_06"] }
+sysinfo = { version = "0.33", optional = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+arboard = { version = "3.6", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Document", "Window", "HtmlCanvasElement"] }
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mundy = { version = "0.2", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.5", features = ["relax-sign-encoding"] }

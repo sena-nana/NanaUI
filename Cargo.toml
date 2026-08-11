@@ -7,7 +7,7 @@ iced = {
     git = "https://github.com/sena-nana/iced.git",
     rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
     default-features = false,
-    features = ["wgpu", "canvas", "advanced", "smol", "thread-pool", "x11", "wayland"],
+    features = ["wgpu", "canvas", "svg", "advanced", "smol", "thread-pool", "x11", "wayland"],
 }
 iced_wgpu = {
     git = "https://github.com/sena-nana/iced.git",
@@ -17,3 +17,14 @@ iced_winit = {
     git = "https://github.com/sena-nana/iced.git",
     rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
 }
+
+# iced_winit → arboard has no Android backend; vendor adds a stub platform so
+# `nana-ui` can cross-compile to aarch64-linux-android. Desktop backends unchanged.
+[patch.crates-io]
+arboard = { path = "vendor/arboard" }
+
+# iced_winit: Android lacks winit `modifier_supplement`; stub clipboard like wasm.
+# iced_wgpu: a3bdc6f unit-struct `image::Batch` init breaks when `svg` enables Vec Batch.
+[patch."https://github.com/sena-nana/iced.git"]
+iced_winit = { path = "vendor/iced_winit" }
+iced_wgpu = { path = "vendor/iced_wgpu" }
