@@ -17,10 +17,16 @@ undecorated window 都由宿主创建窗口时设置，材质应用、清理和�
 | Windows 10 1809+ | Acrylic | 完全不透明的主题背景 |
 | Linux / 其他 | 由合成器决定，不调用未支持的原生 API | 完全不透明的主题背景 |
 
-`MaterialOutcome` 明确返回实际应用的效果和回退原因。宿主只有在获得原生效果时才使用半透明 UI 背景；不支持或调用失败时改用完全不透明背景，保证内容可读。主题深浅切换会先清除旧效果，再重新应用材质。
+`MaterialOutcome` 明确返回实际应用的效果和回退原因。宿主只有在获得原生效果时才使用半透明 UI 背景；不支持或调用失败时改用完全不透明背景，保证内容可读。主题深浅切换与 Appearance 中的「窗口材质」切换都会先清除旧效果，再按偏好重新应用材质。Appearance 设置段暴露实色/透明、透明区域、标题栏跟随与材质不透明度；控件只消费公开 outcome，不接触窗口句柄。
 
-`run_hosted` 会为主窗口和每个工具窗口分别应用、刷新与清理材质；业务只返回窗口
-命令和视图，不接触原生句柄。设备恢复会保留现有窗口，并在重建其 Surface 与 Iced
+材质不透明度默认值为 `AppearanceSettings::DEFAULT_BACKDROP_OPACITY = 0.64`，与 Lilia /
+`nanavue-components` 的 `BACKDROP_OPACITY_DEFAULT` 及 `--lilia-backdrop-opacity`
+一致。侧边栏透明时，`titlebar_follows_sidebar` 决定标题栏是否共用该 alpha：关闭后
+标题栏保持不透明，侧栏仍可半透明。`BackdropTarget` 在侧栏与主内容区之间切换透明区域。
+
+`run_hosted` 会为主窗口和每个工具窗口分别应用、刷新与清理材质；业务通过
+`HostedProgram::window_material_mode` / `backdrop_target` /
+`titlebar_follows_sidebar` / `backdrop_opacity` 声明偏好，不接触原生句柄。macOS Hosted GPU 路径在 CAMetalLayer 与 Vibrancy 冲突时返回 `NativeMaterialUnavailable` 实色回退，不崩溃。设备恢复会保留现有窗口，并在重建其 Surface 与 Iced
 renderer 后重新应用材质。窗口标题栏由 `HostedWindowSettings::title_bar_mode`
 显式选择：主窗口默认使用 NanaUI 自绘标题栏；`tool_window()` 默认保留系统装饰和
 原生拖动区域；需要与主窗口一致的浮动面板可显式请求 custom titlebar。

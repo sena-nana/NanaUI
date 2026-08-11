@@ -1,0 +1,60 @@
+{
+  "title": "Phase 2 dual JS engine Vue runtime-core probe",
+  "date": "2026-08-06",
+  "platform": {
+    "os": "macOS 26.5.2 (25F84)",
+    "arch": "arm64",
+    "rustc": "1.97.0"
+  },
+  "artifact": {
+    "path": "crates/nana-js-engine/fixtures/vue-runtime-probe/dist/vue-runtime-probe.iife.js",
+    "bytes": 198480,
+    "notes": "esbuild IIFE of @vue/runtime-core 3.5.13 + stub host renderer ops"
+  },
+  "dependencies": {
+    "rquickjs": "0.12.2",
+    "v8": "150.4.0"
+  },
+  "method": {
+    "profile": "release",
+    "iterations": 11,
+    "metric": "median of independent cold initialize + single invoke",
+    "commands": [
+      "cargo run --release -p vue-quickjs -- 11",
+      "cargo run --release -p vue-v8 -- 11"
+    ]
+  },
+  "results": [
+    {
+      "engine": "quickjs",
+      "ok": true,
+      "count": 2,
+      "host": {
+        "createElement": 3,
+        "insert": 3,
+        "increment": 1,
+        "lastCount": 2
+      },
+      "cold_start_ms_median": 6.781,
+      "invoke_ms_median": 0.177
+    },
+    {
+      "engine": "v8",
+      "ok": true,
+      "count": 2,
+      "host": {
+        "createElement": 3,
+        "insert": 3,
+        "increment": 1,
+        "lastCount": 2
+      },
+      "cold_start_ms_median": 6.180,
+      "invoke_ms_median": 3.937
+    }
+  ],
+  "notes": [
+    "Host callback results are identical across engines.",
+    "No Blitz paint / full Custom Renderer in this phase.",
+    "Do not extrapolate invoke timings to large Vue trees."
+  ]
+}

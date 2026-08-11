@@ -7,6 +7,28 @@
 系统窗口材质与必须依赖原生句柄的 macOS 标题区交互桥接属于 `nana-window`；
 Gallery 页面、状态、快照与基准属于 Demo crate。
 
+**产品 UI 前端默认且唯一为 NanaUI（Iced）。** 可选的 Vue/JS 引擎只做状态与命令桥
+（`nana-ui-vue` + QuickJS XOR V8）；不引入 WebView、Blitz DOM/CSS 或第二套 wgpu。
+Blitz 移除说明见
+[`docs/performance/2026-08-06-blitz-removed-nana-frontend.md`](performance/2026-08-06-blitz-removed-nana-frontend.md)。
+
+**三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
+
+三层都写入同一 **Style Model = Tokens + Semantics + Layout**（见
+`nana_ui_core::style_model`），再由 `nana-ui` widgets **唯一绘制**。  
+L1 不是「CSS→仅 ThemeTokens」：布局进 Layout，已知 class 进 Semantics，主题档位进
+Tokens；任意业务 CSS 色值不得污染正式 token。
+
+| 层 | 含义 | 住在哪 |
+|----|------|--------|
+| L1 | 完整 Tauri Vue：兼容接口 + CSS 子集→Style Model（兼容目标，非公共 CSSOM） | `nana-tauri-demo` / `nana-ui-vue` / `nanavue-runtime` / `nana-ui-web-api` |
+| L2 | Vue 直接使用 Nana 组件接口（语义 props→同一 Model，可跳过 CSS） | `nanavue-components` + MessageBridge |
+| L3 | Rust 原生入口 + 唯一绘制实现 | `nana-ui` / `nana-ui-core` / Gallery |
+
+设计上支持混合显示，尤其是 **L1+L2 同树**。权威细则见
+[`vue-nana-renderer-system.md`](vue-nana-renderer-system.md) §0。  
+兼容性阶段目标与 Todo：[`compatibility-roadmap.md`](compatibility-roadmap.md)。
+
 ```text
 应用状态 / 应用消息
         │
@@ -26,6 +48,7 @@ Gallery 页面、状态、快照与基准属于 Demo crate。
                 │      └── viewport geometry
                 ├── theme / widgets
                 └── application-owned region content
+                     （可嵌 L3 控件，或 L1/L2 语义快照）
 ```
 
 框架与 Demo 的边界是明确的：
