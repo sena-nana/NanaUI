@@ -160,6 +160,7 @@ impl GalleryState {
                             GalleryMessage::SelectSearchResult,
                         )
                         .placeholder("搜索选项")
+                        .on_input(GalleryMessage::SearchDropdownInput)
                         .view(tokens),
                     )
                     .width(Length::Fixed(116.0)),

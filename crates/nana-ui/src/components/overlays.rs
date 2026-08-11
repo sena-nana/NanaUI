@@ -240,12 +240,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum DrawerSide {
-    Left,
-    #[default]
-    Right,
-}
+pub use nana_ui_core::DrawerSide;
 
 /// A modal side drawer using the same dismissal and surface contracts as Dialog.
 pub struct Drawer<'a, Message> {

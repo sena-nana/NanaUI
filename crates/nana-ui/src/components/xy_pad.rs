@@ -7,23 +7,7 @@ use iced::{
 use super::ControlSize;
 use crate::theme::ThemeTokens;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct XYPadValue {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl XYPadValue {
-    pub const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum XYPadEvent {
-    Input(XYPadValue),
-    Change(XYPadValue),
-}
+pub use nana_ui_core::{XYPadEvent, XYPadValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxisLock {
@@ -498,7 +482,7 @@ fn with_alpha(color: Color, multiplier: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::{XYPad, XYPadEvent, XYPadValue};
-    use crate::ThemeMode;
+    use crate::theme::{ThemeMode, ThemeModeExt};
     use iced::{Point, Size, keyboard::key::Named};
 
     fn pad(value: XYPadValue) -> XYPad<'static, XYPadEvent> {

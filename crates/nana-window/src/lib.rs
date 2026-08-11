@@ -9,5 +9,6 @@ pub use chrome::drag_custom_title_bar;
 pub use chrome::prepare_custom_title_bar;
 pub use material::{
     Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome,
-    apply_hosted_system_material, apply_system_material, clear_system_material,
+    PlatformMaterialSupport, apply_hosted_system_material, apply_system_material,
+    clear_system_material, platform_material_support,
 };

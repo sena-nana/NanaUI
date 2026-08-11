@@ -1,9 +1,10 @@
 use iced::widget::{button, column, container, row, shader, text};
 use iced::{Element, Length};
+use nana_ui::ThemeModeExt;
 use nana_ui::widgets::{button_style, card_style};
 use nana_ui::{
-    AppTitleBar, ButtonKind, CardKind, Colors, GpuTextureView, HostTexture, ThemeMode, UI_METRICS,
-    WindowChromeAction, WindowChromeEvent, WindowChromeState,
+    AppTitleBar, AppearanceSettings, ButtonKind, CardKind, Colors, GpuTextureView, HostTexture,
+    ThemeMode, UI_METRICS, WindowChromeAction, WindowChromeEvent, WindowChromeState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -134,7 +135,12 @@ impl DemoPanel {
 
 pub fn window_background(color: iced::Color, translucent: bool) -> iced::Color {
     if translucent {
-        iced::Color::from_rgba(color.r, color.g, color.b, 0.78)
+        iced::Color::from_rgba(
+            color.r,
+            color.g,
+            color.b,
+            AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
+        )
     } else {
         iced::Color::from_rgb(color.r, color.g, color.b)
     }

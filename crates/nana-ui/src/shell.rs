@@ -1,5 +1,6 @@
 use iced::widget::{button, column, container, mouse_area, row, space, text};
 use iced::{Alignment, Element, Length, Padding, font};
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use crate::components::ControlSize;
@@ -67,8 +68,11 @@ where
 }
 
 /// Builder for NanaUI's Lilia-style application title bar.
+///
+/// `title` is a [`Cow`] so Hosted `Element<'static>` callers can pass an owned
+/// [`String`] without `Box::leak`.
 pub struct AppTitleBar<'a, Message> {
-    title: &'a str,
+    title: Cow<'a, str>,
     tokens: ThemeTokens,
     leading: Option<Element<'a, Message>>,
     center: Option<Element<'a, Message>>,
@@ -82,9 +86,9 @@ impl<'a, Message> AppTitleBar<'a, Message>
 where
     Message: Clone + 'a,
 {
-    pub fn new(title: &'a str, theme: impl Into<ThemeTokens>) -> Self {
+    pub fn new(title: impl Into<Cow<'a, str>>, theme: impl Into<ThemeTokens>) -> Self {
         Self {
-            title,
+            title: title.into(),
             tokens: theme.into(),
             leading: None,
             center: None,
@@ -123,11 +127,19 @@ where
 
     pub fn view(self) -> Element<'a, Message> {
         let colors = self.tokens.colors;
+        let titlebar = self.tokens.titlebar;
         let leading = self
             .leading
             .unwrap_or_else(|| space().width(Length::Shrink).into());
         let center = self.center.unwrap_or_else(|| {
-            tracked_label(self.title, 13.0, font::Weight::Semibold, 0.2, colors.text).into()
+            tracked_label(
+                self.title.as_ref(),
+                13.0,
+                font::Weight::Semibold,
+                0.2,
+                colors.text,
+            )
+            .into()
         });
         let mut trailing = row![].spacing(2).align_y(Alignment::Center);
         if let Some(content) = self.trailing {
@@ -178,7 +190,7 @@ where
         .height(Length::Fixed(TITLE_BAR_HEIGHT))
         .style(move |_theme| {
             iced::widget::container::Style::default()
-                .background(colors.surface)
+                .background(titlebar)
                 .color(colors.text)
         });
 
@@ -305,10 +317,17 @@ where
 }
 
 /// A convenience composition for the common title bar + navigation +
-/// workspace shape. Region state remains owned by [`WorkspaceController`].
+/// workspace shape.
+///
+/// Takes an **owned** [`WorkspaceController`] snapshot so the resulting
+/// `Element` does not borrow the live controller. That keeps Hosted
+/// `Element<'static>` / retained `UserInterface` viable without
+/// self-referential UI storage. Callers typically pass
+/// `controller.clone()`; region mutations still go through
+/// [`WorkspaceAction`] on the live controller.
 pub struct DesktopShell<'a, Message, OnAction> {
     title_bar: Element<'a, Message>,
-    controller: &'a WorkspaceController,
+    controller: WorkspaceController,
     primary: Element<'a, Message>,
     navigation: Option<Element<'a, Message>>,
     navigation_footer: Option<Element<'a, Message>>,
@@ -327,7 +346,7 @@ where
 {
     pub fn new(
         title_bar: impl Into<Element<'a, Message>>,
-        controller: &'a WorkspaceController,
+        controller: WorkspaceController,
         primary: impl Into<Element<'a, Message>>,
         on_action: OnAction,
         theme: impl Into<ThemeTokens>,
@@ -395,7 +414,7 @@ where
         for (id, content) in self.extra_regions {
             regions = regions.with_region(id, content);
         }
-        let workspace = workspace_view(self.controller, regions, self.tokens, self.on_action);
+        let workspace = workspace_view(&self.controller, regions, self.tokens, self.on_action);
         let base = app_shell(self.title_bar, workspace, self.tokens.colors);
         let mut host = crate::components::OverlayHost::new(base);
         for overlay in self.overlays {
@@ -501,6 +520,7 @@ where
 
     pub fn view(self) -> Element<'a, Message> {
         let colors = self.tokens.colors;
+        let titlebar = self.tokens.titlebar;
         let focus = popup_title_bar_button(Icon::ArrowLeft, self.on_focus_main, false, self.tokens);
         let new_item = popup_title_bar_button(Icon::Add, self.on_new_item, false, self.tokens);
         let minimize = popup_title_bar_button(
@@ -536,7 +556,7 @@ where
         .height(Length::Fixed(TITLE_BAR_HEIGHT))
         .style(move |_theme| {
             iced::widget::container::Style::default()
-                .background(colors.surface)
+                .background(titlebar)
                 .color(colors.text)
         });
         let on_move = self.on_window_event.clone();

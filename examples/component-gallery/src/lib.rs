@@ -29,13 +29,13 @@ use nana_ui::menu::{MenuConfirmation, MenuSelection};
 use nana_ui::overlay::ExclusiveOverlay;
 use nana_ui::selection::{SelectionMove, SingleSelection};
 use nana_ui::settings::{
-    AppearanceSettings, SettingsModel, SettingsState, SettingsTab, SettingsTabId, settings_page,
-    settings_sidebar as settings_sidebar_view,
+    AppearanceSettings, BackdropTarget, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
+    WindowMaterialMode, settings_page, settings_sidebar as settings_sidebar_view,
 };
 use nana_ui::sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarSection,
 };
-use nana_ui::theme::{Colors, ThemeMode, ThemeTokens, UI_METRICS, ui_font};
+use nana_ui::theme::{Colors, ThemeMode, ThemeModeExt, ThemeTokens, UI_METRICS, ui_font};
 use nana_ui::tooltip::TooltipConfig;
 use nana_ui::widgets::{
     ButtonKind, CardKind, button_style, canvas_style, panel_style, scrollable_style, slider_style,
@@ -45,8 +45,10 @@ use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
     AppTitleBar, DesktopShell, DockAction, DockAxis, DockChromeStyle, DockContents, DockController,
-    DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, PopupShell,
-    PopupTitleBarFrame, SplitAxis, SplitPaneAction, SplitPaneController, dock_workspace,
+    DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, FallbackColor,
+    MaterialOutcome, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
+    SplitPaneController, WindowAppearance, apply_system_material, clear_system_material,
+    dock_workspace,
 };
 
 #[path = "views/controls.rs"]
@@ -102,6 +104,10 @@ pub enum GalleryMessage {
     SetTheme(ThemeMode),
     SetStandardRadius(u8),
     SetWorkspaceCorners(bool),
+    SetWindowMaterial(WindowMaterialMode),
+    SetBackdropTarget(BackdropTarget),
+    SetBackdropOpacity(f32),
+    SetTitlebarFollowsSidebar(bool),
     ResetAppearance,
     SelectSection(GallerySection),
     OpenSettings,
@@ -119,6 +125,7 @@ pub enum GalleryMessage {
     SetXYPad(XYPadEvent),
     SetDropdown(DropdownEvent<u8>),
     SelectSearchResult(u8),
+    SearchDropdownInput(String),
     CalendarHeatmap(CalendarHeatmapEvent),
     SelectListItem(usize),
     SelectSurfaceCard(usize),
@@ -137,6 +144,8 @@ pub enum GalleryMessage {
     ClosePopover,
     ContextMenu(ContextMenuEvent<ContextAction>),
     WindowChrome(WindowChromeEvent),
+    /// Host-applied [`MaterialOutcome`] from `nana-window`.
+    MaterialApplied(MaterialOutcome),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +222,7 @@ pub struct GalleryState {
     xy_pad: XYPadValue,
     dropdown_values: Vec<u8>,
     search_dropdown: SearchDropdownState<u8>,
+    search_dropdown_query: String,
     search_selection: Option<u8>,
     calendar_model: OnceCell<CalendarHeatmapModel>,
     calendar_active: Option<CalendarHeatmapActiveCell>,
@@ -231,6 +241,8 @@ pub struct GalleryState {
     editor: text_editor::Content,
     primary_clicks: u32,
     window_chrome: WindowChromeState,
+    /// Latest material application outcome from the iced host path.
+    material_outcome: MaterialOutcome,
 }
 
 impl Default for GalleryState {
@@ -269,6 +281,7 @@ impl GalleryState {
                 SearchDropdownOption::new(2, "第二个选项").hint("Beta"),
                 SearchDropdownOption::new(3, "第三个选项").hint("Gamma"),
             ]),
+            search_dropdown_query: String::new(),
             search_selection: Some(2),
             calendar_model: OnceCell::new(),
             calendar_active: None,
@@ -287,6 +300,7 @@ impl GalleryState {
             editor: text_editor::Content::with_text("示例说明\n用于展示多行文本编辑"),
             primary_clicks: 0,
             window_chrome: WindowChromeState::default(),
+            material_outcome: MaterialOutcome::chosen_solid(),
         }
     }
 
@@ -294,9 +308,31 @@ impl GalleryState {
         self.theme
     }
 
+    pub fn material_outcome(&self) -> MaterialOutcome {
+        self.material_outcome
+    }
+
     fn theme_tokens(&self) -> ThemeTokens {
         ThemeTokens::new(self.theme.colors(), self.appearance.metrics())
             .with_workspace_corners(self.appearance.workspace_corners_enabled())
+            .with_backdrop(
+                self.material_outcome.is_native(),
+                self.appearance.backdrop_target(),
+                self.appearance.backdrop_opacity(),
+                self.appearance.titlebar_follows_sidebar(),
+            )
+    }
+
+    /// Token alphas driven by Appearance backdrop target (test + diagnostics).
+    ///
+    /// Returns `(surface, background, titlebar)`.
+    pub fn backdrop_region_alphas(&self) -> (f32, f32, f32) {
+        let tokens = self.theme_tokens();
+        (
+            tokens.colors.surface.a,
+            tokens.colors.background.a,
+            tokens.titlebar.a,
+        )
     }
 
     fn editor_enabled(&self) -> bool {
@@ -342,20 +378,57 @@ impl GalleryState {
     }
 
     pub fn update_windowed(&mut self, message: GalleryMessage) -> Task<GalleryMessage> {
+        if let GalleryMessage::MaterialApplied(outcome) = message {
+            self.material_outcome = outcome;
+            return Task::none();
+        }
+
         if let GalleryMessage::WindowChrome(event) = message {
-            return self
+            let reapply = matches!(event, WindowChromeEvent::PrepareWindow(_));
+            let chrome = self
                 .window_chrome
                 .update_iced(event)
                 .map(GalleryMessage::WindowChrome);
+            if reapply {
+                return Task::batch([chrome, self.apply_window_material_task()]);
+            }
+            return chrome;
         }
+
+        let refresh_material = matches!(
+            message,
+            GalleryMessage::SetWindowMaterial(_)
+                | GalleryMessage::ResetAppearance
+                | GalleryMessage::SetTheme(_)
+                | GalleryMessage::ToggleTheme
+        );
         self.update(message);
-        Task::none()
+        if refresh_material {
+            self.apply_window_material_task()
+        } else {
+            Task::none()
+        }
+    }
+
+    fn apply_window_material_task(&self) -> Task<GalleryMessage> {
+        let Some(window_id) = self.window_chrome.window_id() else {
+            return Task::none();
+        };
+        let theme = self.theme;
+        let mode = self.appearance.window_material();
+        iced::window::run(window_id, move |window| {
+            apply_gallery_window_material(window, theme, mode)
+        })
+        .map(GalleryMessage::MaterialApplied)
     }
 
     pub fn update(&mut self, message: GalleryMessage) {
         match message {
             GalleryMessage::WindowChrome(event) => {
                 self.window_chrome.update(event);
+            }
+            GalleryMessage::MaterialApplied(outcome) => {
+                self.material_outcome = outcome;
             }
             GalleryMessage::Workspace(action) => {
                 let synchronize_viewport = matches!(
@@ -390,8 +463,23 @@ impl GalleryState {
             GalleryMessage::SetWorkspaceCorners(enabled) => {
                 self.appearance.set_workspace_corners_enabled(enabled);
             }
+            GalleryMessage::SetWindowMaterial(mode) => {
+                self.appearance.set_window_material(mode);
+            }
+            GalleryMessage::SetBackdropTarget(target) => {
+                self.appearance.set_backdrop_target(target);
+            }
+            GalleryMessage::SetBackdropOpacity(opacity) => {
+                self.appearance.set_backdrop_opacity(opacity);
+            }
+            GalleryMessage::SetTitlebarFollowsSidebar(enabled) => {
+                self.appearance.set_titlebar_follows_sidebar(enabled);
+            }
             GalleryMessage::ResetAppearance => {
+                // Match Lilia `resetAppearanceDefaults` / AppearanceEvent::Reset:
+                // appearance fields + ThemeMode::Light (not ThemeMode::default).
                 self.appearance.reset();
+                self.theme = AppearanceSettings::RESET_THEME;
             }
             GalleryMessage::SelectSection(section) => {
                 self.section = section;
@@ -468,6 +556,7 @@ impl GalleryState {
                 DropdownEvent::Opened | DropdownEvent::Closed => {}
             },
             GalleryMessage::SelectSearchResult(value) => self.search_selection = Some(value),
+            GalleryMessage::SearchDropdownInput(query) => self.search_dropdown_query = query,
             GalleryMessage::CalendarHeatmap(event) => match event {
                 CalendarHeatmapEvent::CellEnter(cell) | CalendarHeatmapEvent::CellMove(cell) => {
                     self.calendar_active = Some(cell)
@@ -754,7 +843,36 @@ fn appearance_message(event: AppearanceEvent) -> GalleryMessage {
         AppearanceEvent::Theme(theme) => GalleryMessage::SetTheme(theme),
         AppearanceEvent::StandardRadius(radius) => GalleryMessage::SetStandardRadius(radius),
         AppearanceEvent::WorkspaceCorners(enabled) => GalleryMessage::SetWorkspaceCorners(enabled),
+        AppearanceEvent::WindowMaterial(mode) => GalleryMessage::SetWindowMaterial(mode),
+        AppearanceEvent::BackdropTarget(target) => GalleryMessage::SetBackdropTarget(target),
+        AppearanceEvent::BackdropOpacity(opacity) => GalleryMessage::SetBackdropOpacity(opacity),
+        AppearanceEvent::TitlebarFollowsSidebar(enabled) => {
+            GalleryMessage::SetTitlebarFollowsSidebar(enabled)
+        }
         AppearanceEvent::Reset => GalleryMessage::ResetAppearance,
+    }
+}
+
+fn apply_gallery_window_material(
+    window: &dyn iced::Window,
+    theme: ThemeMode,
+    mode: WindowMaterialMode,
+) -> MaterialOutcome {
+    match mode {
+        WindowMaterialMode::Solid => {
+            clear_system_material(window);
+            MaterialOutcome::chosen_solid()
+        }
+        WindowMaterialMode::Translucent => {
+            let (appearance, fallback) = match theme {
+                ThemeMode::Dark => (WindowAppearance::Dark, FallbackColor::rgba(24, 24, 24, 220)),
+                ThemeMode::Light => (
+                    WindowAppearance::Light,
+                    FallbackColor::rgba(255, 255, 255, 232),
+                ),
+            };
+            apply_system_material(window, appearance, fallback)
+        }
     }
 }
 

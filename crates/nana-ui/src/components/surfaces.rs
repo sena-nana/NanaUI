@@ -31,7 +31,7 @@ where
             loading: false,
             loading_phase: 0,
             padding: Padding::from([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x]),
-            height: Length::Shrink,
+            height: Length::Fit,
         }
     }
 
@@ -81,6 +81,13 @@ where
             content = content.push(heading);
         }
         content = content.push(self.content);
+        // Container may be Fill/Fixed while this column defaults to Fit.
+        // Matching Fill avoids iced Shrink compression on Fixed children.
+        // height:auto descendants must stay Fit so they do not enclose/steal
+        // the main axis (see pin_flex_* in nana-ui-vue iced_app).
+        if !matches!(self.height, Length::Fit | Length::Shrink) {
+            content = content.height(Length::Fill);
+        }
         container(content)
             .width(Length::Fill)
             .height(self.height)
@@ -144,6 +151,8 @@ pub struct ListItem<'a, Message> {
     trailing: Option<Element<'a, Message>>,
     on_select: Option<Message>,
     size: ControlSize,
+    /// CSS `gap` between leading and content (default 8).
+    gap: f32,
     selected: bool,
     disabled: bool,
 }
@@ -159,6 +168,7 @@ where
             trailing: None,
             on_select: None,
             size: ControlSize::Small,
+            gap: 8.0,
             selected: false,
             disabled: false,
         }
@@ -179,6 +189,11 @@ where
 
     pub fn trailing(mut self, trailing: impl Into<Element<'a, Message>>) -> Self {
         self.trailing = Some(trailing.into());
+        self
+    }
+
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap.max(0.0);
         self
     }
 
@@ -204,7 +219,7 @@ where
 
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
-        let mut content = row![].spacing(8).align_y(Alignment::Center);
+        let mut content = row![].spacing(self.gap).align_y(Alignment::Center);
         if let Some(leading) = self.leading {
             content = content.push(leading);
         }
@@ -393,7 +408,7 @@ where
         Self {
             content: content.into(),
             padding: Padding::ZERO,
-            height: Length::Shrink,
+            height: Length::Fit,
         }
     }
 

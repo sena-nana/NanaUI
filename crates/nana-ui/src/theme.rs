@@ -1,15 +1,22 @@
+//! Iced **adapter** for the Nana Style Model (Tokens slice).
+//!
+//! [`ThemeMetrics`] / [`ThemeMode`] / [`SemanticPalette`] live in `nana-ui-core`.
+//! This module maps them to Iced [`Color`] / [`Theme`] for the sole paint path
+//! (`nana-ui` widgets). It is **not** a CSS / ThemeTokens factory for arbitrary
+//! L1 paint values — see `nana_ui_core::style_model`.
+
 use iced::widget::{Row, row, text};
 use iced::{Alignment, Color, Font, Theme, font};
-use serde::{Deserialize, Serialize};
+use nana_ui_core::{AppearanceSettings, BackdropTarget};
 
-/// NanaUI's standard body and medium-control text size.
-pub const UI_BASE_TEXT_SIZE: f32 = 13.0;
+pub use nana_ui_core::{
+    SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS,
+};
 
-/// Semantic colors shared by the NanaUI shell and its widgets.
+/// Semantic colors shared by the NanaUI shell and its widgets (Iced `Color`).
 ///
-/// The values follow the same hierarchy as LiliaUI's dark/light tokens. They
-/// are kept as semantic fields so future renderers can consume the palette
-/// without reaching into individual widget implementations.
+/// Adapter view of [`SemanticPalette`]. Prefer constructing via
+/// [`Colors::from_palette`] / [`ThemeModeExt::colors`] so values stay single-sourced.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Colors {
     pub background: Color,
@@ -36,95 +43,104 @@ pub struct Colors {
     pub danger: Color,
 }
 
-/// Non-color design tokens shared by layout and interaction primitives.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ThemeMetrics {
-    pub density: f32,
-    pub radius_xs: f32,
-    pub radius_sm: f32,
-    pub radius_md: f32,
-    pub radius_lg: f32,
-    pub compact_control_height: f32,
-    pub control_height: f32,
-    pub compact_control_padding_x: f32,
-    pub control_padding_x: f32,
-    pub selection_padding_x: f32,
-    pub navigation_row_height: f32,
-    pub selection_height: f32,
-    pub icon_button_size: f32,
-    pub sidebar_footer_button_size: f32,
-    pub panel_padding_x: f32,
-    pub panel_padding_y: f32,
-    pub field_padding_x: f32,
-    pub field_padding_y: f32,
-    pub list_item_padding_x: f32,
-    pub list_item_padding_y: f32,
-    pub motion_fast_ms: u16,
-    pub motion_standard_ms: u16,
-}
+impl Colors {
+    pub fn from_palette(palette: SemanticPalette) -> Self {
+        Self {
+            background: color_from_semantic(palette.background),
+            surface: color_from_semantic(palette.surface),
+            subtle: color_from_semantic(palette.subtle),
+            hover: color_from_semantic(palette.hover),
+            active: color_from_semantic(palette.active),
+            selected: color_from_semantic(palette.selected),
+            selected_hover: color_from_semantic(palette.selected_hover),
+            selected_pressed: color_from_semantic(palette.selected_pressed),
+            border: color_from_semantic(palette.border),
+            border_soft: color_from_semantic(palette.border_soft),
+            border_strong: color_from_semantic(palette.border_strong),
+            text: color_from_semantic(palette.text),
+            muted: color_from_semantic(palette.muted),
+            faint: color_from_semantic(palette.faint),
+            accent: color_from_semantic(palette.accent),
+            accent_strong: color_from_semantic(palette.accent_strong),
+            accent_soft: color_from_semantic(palette.accent_soft),
+            accent_on_soft: color_from_semantic(palette.accent_on_soft),
+            accent_text: color_from_semantic(palette.accent_text),
+            success: color_from_semantic(palette.success),
+            warning: color_from_semantic(palette.warning),
+            danger: color_from_semantic(palette.danger),
+        }
+    }
 
-/// Shared Lilia-style geometry used by every NanaUI component family.
-pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
-    density: 1.0,
-    radius_xs: 2.0,
-    radius_sm: 6.0,
-    radius_md: 10.0,
-    radius_lg: 14.0,
-    compact_control_height: 28.0,
-    control_height: 32.0,
-    compact_control_padding_x: 7.0,
-    control_padding_x: 10.0,
-    selection_padding_x: 12.0,
-    navigation_row_height: 28.0,
-    selection_height: 36.0,
-    icon_button_size: 28.0,
-    sidebar_footer_button_size: 28.0,
-    panel_padding_x: 16.0,
-    panel_padding_y: 14.0,
-    field_padding_x: 9.0,
-    field_padding_y: 6.0,
-    list_item_padding_x: 9.0,
-    list_item_padding_y: 6.0,
-    motion_fast_ms: 120,
-    motion_standard_ms: 240,
-};
-
-impl Default for ThemeMetrics {
-    fn default() -> Self {
-        UI_METRICS
+    pub fn to_palette(self) -> SemanticPalette {
+        SemanticPalette {
+            background: semantic_from_color(self.background),
+            surface: semantic_from_color(self.surface),
+            subtle: semantic_from_color(self.subtle),
+            hover: semantic_from_color(self.hover),
+            active: semantic_from_color(self.active),
+            selected: semantic_from_color(self.selected),
+            selected_hover: semantic_from_color(self.selected_hover),
+            selected_pressed: semantic_from_color(self.selected_pressed),
+            border: semantic_from_color(self.border),
+            border_soft: semantic_from_color(self.border_soft),
+            border_strong: semantic_from_color(self.border_strong),
+            text: semantic_from_color(self.text),
+            muted: semantic_from_color(self.muted),
+            faint: semantic_from_color(self.faint),
+            accent: semantic_from_color(self.accent),
+            accent_strong: semantic_from_color(self.accent_strong),
+            accent_soft: semantic_from_color(self.accent_soft),
+            accent_on_soft: semantic_from_color(self.accent_on_soft),
+            accent_text: semantic_from_color(self.accent_text),
+            success: semantic_from_color(self.success),
+            warning: semantic_from_color(self.warning),
+            danger: semantic_from_color(self.danger),
+        }
     }
 }
 
-impl ThemeMetrics {
-    /// Small single-line control height.
-    pub const fn small_control_height(self) -> f32 {
-        self.compact_control_height
-    }
-
-    /// Medium single-line control height.
-    pub const fn medium_control_height(self) -> f32 {
-        self.control_height
-    }
-
-    /// Large single-line control height.
-    ///
-    /// `selection_height` remains the serialized backing field for public
-    /// compatibility, while components consume this semantic accessor.
-    pub const fn large_control_height(self) -> f32 {
-        self.selection_height
+impl From<SemanticPalette> for Colors {
+    fn from(palette: SemanticPalette) -> Self {
+        Self::from_palette(palette)
     }
 }
 
+impl From<Colors> for SemanticPalette {
+    fn from(colors: Colors) -> Self {
+        colors.to_palette()
+    }
+}
+
+fn color_from_semantic(c: SemanticColor) -> Color {
+    Color::from_rgba(c.r, c.g, c.b, c.a)
+}
+
+fn semantic_from_color(c: Color) -> SemanticColor {
+    SemanticColor::rgba(c.r, c.g, c.b, c.a)
+}
+
+/// Runtime token bundle for L3 widgets: semantic [`Colors`] + [`ThemeMetrics`].
+///
+/// This is the Style Model Tokens view on the Iced draw path — not a dump of
+/// arbitrary CSS. L1 maps known theme tiers here; unknown business colors must
+/// not invent formal token fields.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeTokens {
     pub colors: Colors,
     pub metrics: ThemeMetrics,
     pub workspace_corners_enabled: bool,
+    /// Title-bar / chrome strip background.
+    ///
+    /// Defaults to [`Colors::surface`], but stays independent so
+    /// `titlebar_follows_sidebar=false` can keep the title bar opaque while the
+    /// sidebar surface remains translucent.
+    pub titlebar: Color,
 }
 
 impl ThemeTokens {
     pub const fn new(colors: Colors, metrics: ThemeMetrics) -> Self {
         Self {
+            titlebar: colors.surface,
             colors,
             metrics,
             workspace_corners_enabled: true,
@@ -135,11 +151,99 @@ impl ThemeTokens {
         self.workspace_corners_enabled = enabled;
         self
     }
+
+    pub const fn with_titlebar(mut self, titlebar: Color) -> Self {
+        self.titlebar = titlebar;
+        self
+    }
+
+    /// Apply Appearance backdrop alphas when a native window material is active.
+    ///
+    /// - [`BackdropTarget::Sidebar`]: translucency on `surface` (sidebar/chrome).
+    ///   Title bar follows only when `titlebar_follows_sidebar` is true.
+    /// - [`BackdropTarget::Main`]: translucency on `background` (primary content).
+    pub fn with_backdrop(
+        mut self,
+        native_material: bool,
+        target: BackdropTarget,
+        opacity: f32,
+        titlebar_follows_sidebar: bool,
+    ) -> Self {
+        if !native_material {
+            return self;
+        }
+        let opacity = normalize_backdrop_opacity(opacity);
+        match target {
+            BackdropTarget::Sidebar => {
+                self.colors.surface.a = opacity;
+                if titlebar_follows_sidebar {
+                    self.titlebar.a = opacity;
+                } else {
+                    self.titlebar.a = 1.0;
+                }
+            }
+            BackdropTarget::Main => {
+                self.colors.background.a = opacity;
+            }
+        }
+        self
+    }
+}
+
+fn normalize_backdrop_opacity(opacity: f32) -> f32 {
+    if opacity.is_finite() {
+        opacity.clamp(
+            AppearanceSettings::MIN_BACKDROP_OPACITY,
+            AppearanceSettings::MAX_BACKDROP_OPACITY,
+        )
+    } else {
+        AppearanceSettings::DEFAULT_BACKDROP_OPACITY
+    }
 }
 
 impl From<Colors> for ThemeTokens {
     fn from(colors: Colors) -> Self {
         Self::new(colors, UI_METRICS)
+    }
+}
+
+/// Iced/backend helpers for [`ThemeMode`] (adapter layer only).
+pub trait ThemeModeExt: Copy {
+    fn colors(self) -> Colors;
+    fn tokens(self) -> ThemeTokens;
+    fn iced_theme(self) -> Theme;
+    fn palette(self) -> SemanticPalette;
+}
+
+impl ThemeModeExt for ThemeMode {
+    fn palette(self) -> SemanticPalette {
+        ThemeMode::palette(self)
+    }
+
+    fn colors(self) -> Colors {
+        Colors::from_palette(self.palette())
+    }
+
+    fn tokens(self) -> ThemeTokens {
+        ThemeTokens::new(self.colors(), self.metrics())
+    }
+
+    fn iced_theme(self) -> Theme {
+        let colors = self.colors();
+        Theme::custom(
+            match self {
+                Self::Dark => "Nana Dark",
+                Self::Light => "Nana Light",
+            },
+            iced::theme::palette::Seed {
+                background: colors.background,
+                text: colors.text,
+                primary: colors.accent,
+                success: colors.success,
+                warning: colors.warning,
+                danger: colors.danger,
+            },
+        )
     }
 }
 
@@ -208,112 +312,44 @@ pub(crate) fn tracked_label<'a, Message: 'a>(
     content
 }
 
-/// The two application themes currently supported by the design system.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ThemeMode {
-    #[default]
-    Dark,
-    Light,
-}
-
-impl ThemeMode {
-    pub fn toggle(self) -> Self {
-        match self {
-            Self::Dark => Self::Light,
-            Self::Light => Self::Dark,
-        }
-    }
-
-    pub fn colors(self) -> Colors {
-        match self {
-            Self::Dark => Colors {
-                background: Color::from_rgb8(24, 24, 24),
-                surface: Color::from_rgb8(32, 32, 32),
-                subtle: Color::from_rgb8(28, 28, 28),
-                hover: Color::from_rgb8(45, 45, 45),
-                active: Color::from_rgb8(53, 53, 53),
-                selected: Color::from_rgb8(53, 53, 53),
-                selected_hover: Color::from_rgb8(60, 60, 60),
-                selected_pressed: Color::from_rgb8(47, 47, 47),
-                border: Color::from_rgb8(42, 42, 42),
-                border_soft: Color::from_rgb8(35, 35, 35),
-                border_strong: Color::from_rgb8(58, 58, 58),
-                text: Color::from_rgb8(221, 221, 221),
-                muted: Color::from_rgb8(163, 163, 163),
-                faint: Color::from_rgb8(90, 90, 90),
-                accent: Color::from_rgb8(123, 185, 240),
-                accent_strong: Color::from_rgb8(73, 145, 215),
-                accent_soft: Color::from_rgba8(123, 185, 240, 0.14),
-                accent_on_soft: Color::from_rgb8(123, 185, 240),
-                accent_text: Color::from_rgb8(13, 22, 34),
-                success: Color::from_rgb8(63, 185, 80),
-                warning: Color::from_rgb8(212, 168, 91),
-                danger: Color::from_rgb8(244, 113, 116),
-            },
-            Self::Light => Colors {
-                background: Color::from_rgb8(255, 255, 255),
-                surface: Color::from_rgb8(243, 244, 246),
-                subtle: Color::from_rgb8(247, 248, 250),
-                hover: Color::from_rgb8(235, 237, 240),
-                active: Color::from_rgb8(223, 226, 231),
-                selected: Color::from_rgb8(226, 226, 226),
-                selected_hover: Color::from_rgb8(232, 232, 232),
-                selected_pressed: Color::from_rgb8(223, 223, 223),
-                border: Color::from_rgb8(227, 229, 232),
-                border_soft: Color::from_rgb8(238, 240, 243),
-                border_strong: Color::from_rgb8(203, 207, 213),
-                text: Color::from_rgb8(26, 26, 31),
-                muted: Color::from_rgb8(90, 97, 110),
-                faint: Color::from_rgb8(156, 163, 175),
-                accent: Color::from_rgb8(73, 145, 215),
-                accent_strong: Color::from_rgb8(44, 126, 214),
-                accent_soft: Color::from_rgba8(73, 145, 215, 0.10),
-                accent_on_soft: Color::from_rgb8(0, 85, 159),
-                accent_text: Color::WHITE,
-                success: Color::from_rgb8(16, 126, 57),
-                warning: Color::from_rgb8(184, 119, 28),
-                danger: Color::from_rgb8(201, 60, 60),
-            },
-        }
-    }
-
-    pub fn metrics(self) -> ThemeMetrics {
-        let _ = self;
-        UI_METRICS
-    }
-
-    pub fn tokens(self) -> ThemeTokens {
-        ThemeTokens::new(self.colors(), self.metrics())
-    }
-
-    /// Converts the semantic palette to Iced's application theme.
-    pub fn iced_theme(self) -> Theme {
-        let colors = self.colors();
-        Theme::custom(
-            match self {
-                Self::Dark => "Nana Dark",
-                Self::Light => "Nana Light",
-            },
-            iced::theme::palette::Seed {
-                background: colors.background,
-                text: colors.text,
-                primary: colors.accent,
-                success: colors.success,
-                warning: colors.warning,
-                danger: colors.danger,
-            },
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::ThemeMode;
+    use super::{Colors, ThemeMode, ThemeModeExt, ThemeTokens};
+    use nana_ui_core::{BackdropTarget, SemanticPalette};
 
     #[test]
-    fn theme_mode_round_trips_for_host_persistence() {
-        let encoded = serde_json::to_string(&ThemeMode::Light).expect("theme serializes");
-        let restored: ThemeMode = serde_json::from_str(&encoded).expect("theme restores");
-        assert_eq!(restored, ThemeMode::Light);
+    fn colors_round_trip_palette() {
+        let palette = SemanticPalette::light();
+        let colors = Colors::from_palette(palette);
+        let back = colors.to_palette();
+        assert_eq!(back.accent.r, palette.accent.r);
+        assert_eq!(
+            ThemeMode::Dark.colors().background,
+            Colors::from_palette(SemanticPalette::dark()).background
+        );
+    }
+
+    #[test]
+    fn titlebar_follows_sidebar_controls_titlebar_alpha() {
+        let base = ThemeMode::Light.tokens();
+        let follows = base.with_backdrop(true, BackdropTarget::Sidebar, 0.5, true);
+        assert!((follows.colors.surface.a - 0.5).abs() < f32::EPSILON);
+        assert!((follows.titlebar.a - 0.5).abs() < f32::EPSILON);
+        assert!((follows.colors.background.a - 1.0).abs() < f32::EPSILON);
+
+        let independent = ThemeTokens::new(ThemeMode::Light.colors(), ThemeMode::Light.metrics())
+            .with_backdrop(true, BackdropTarget::Sidebar, 0.5, false);
+        assert!((independent.colors.surface.a - 0.5).abs() < f32::EPSILON);
+        assert!(
+            (independent.titlebar.a - 1.0).abs() < f32::EPSILON,
+            "titlebar must stay opaque when follows=false"
+        );
+
+        let main = ThemeMode::Light
+            .tokens()
+            .with_backdrop(true, BackdropTarget::Main, 0.5, true);
+        assert!((main.colors.background.a - 0.5).abs() < f32::EPSILON);
+        assert!((main.colors.surface.a - 1.0).abs() < f32::EPSILON);
+        assert!((main.titlebar.a - 1.0).abs() < f32::EPSILON);
     }
 }

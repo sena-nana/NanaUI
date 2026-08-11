@@ -2,27 +2,7 @@ use iced::widget::canvas::{Path, Stroke};
 use iced::widget::{canvas, container, space};
 use iced::{Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, mouse};
 
-/// Compact line icons used by NanaUI navigation surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Icon {
-    About,
-    Add,
-    Appearance,
-    ArrowLeft,
-    Close,
-    Eye,
-    File,
-    Folder,
-    Maximize,
-    Minimize,
-    Moon,
-    Nodes,
-    Restore,
-    Search,
-    Settings,
-    Sidebar,
-    Workspace,
-}
+pub use nana_ui_core::Icon;
 
 #[derive(Debug, Clone, Copy)]
 struct LineIcon {
@@ -141,6 +121,11 @@ impl<Message> canvas::Program<Message> for LineIcon {
                 self.line(&mut frame, scale, offset, (20.0, 12.0), (5.0, 12.0));
                 self.line(&mut frame, scale, offset, (11.0, 6.0), (5.0, 12.0));
                 self.line(&mut frame, scale, offset, (5.0, 12.0), (11.0, 18.0));
+            }
+            Icon::ArrowRight => {
+                self.line(&mut frame, scale, offset, (4.0, 12.0), (19.0, 12.0));
+                self.line(&mut frame, scale, offset, (13.0, 6.0), (19.0, 12.0));
+                self.line(&mut frame, scale, offset, (19.0, 12.0), (13.0, 18.0));
             }
             Icon::Close => {
                 let close = Path::new(|builder| {

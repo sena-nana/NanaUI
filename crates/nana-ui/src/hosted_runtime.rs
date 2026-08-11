@@ -21,9 +21,11 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 
+use crate::theme::ThemeModeExt;
 use crate::{
-    HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface, HostedSurfaceFrame,
-    HostedUiRenderer, HostedUiTarget, ThemeMode, WindowChromeAction,
+    AppearanceSettings, BackdropTarget, HostedGpuContext, HostedGpuError, HostedGpuResources,
+    HostedGpuSurface, HostedSurfaceFrame, HostedUiRenderer, HostedUiTarget, ThemeMode,
+    WindowChromeAction, WindowMaterialMode,
 };
 
 const HOSTED_REDRAW_SETTLE_PASSES: usize = 3;
@@ -262,6 +264,12 @@ pub enum HostedWindowEvent {
         window_id: iced::window::Id,
         hidden: bool,
     },
+    /// Native window keyboard focus (winit `Focused`). Distinct from Page Visibility.
+    FocusChanged {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        focused: bool,
+    },
     CloseRequested {
         id: HostedWindowId,
         window_id: iced::window::Id,
@@ -275,6 +283,7 @@ impl HostedWindowEvent {
             | Self::Resized { id, .. }
             | Self::Moved { id, .. }
             | Self::VisibilityChanged { id, .. }
+            | Self::FocusChanged { id, .. }
             | Self::CloseRequested { id, .. } => id,
         }
     }
@@ -432,6 +441,12 @@ pub trait HostedProgram: Sized + 'static {
         context: &HostedProgramContext<Self::Message>,
     ) -> HostedProgramUpdate;
 
+    /// Build the primary window tree.
+    ///
+    /// Returns `Element<'static, …>` because [`crate::HostedUiRenderer`] retains
+    /// an iced `UserInterface<'static>` across frames. Prefer owning snapshots
+    /// (e.g. [`crate::DesktopShell`] with `WorkspaceController::clone`) over
+    /// borrowing live program fields into the element tree.
     fn view(&self, native_material: bool) -> Element<'static, Self::Message>;
 
     fn view_window(
@@ -444,6 +459,39 @@ pub trait HostedProgram: Sized + 'static {
     }
 
     fn theme_mode(&self) -> ThemeMode;
+
+    /// Preferred window material from Appearance settings.
+    ///
+    /// Defaults to [`WindowMaterialMode::Translucent`] so hosted windows that
+    /// keep the platform-transparent default still receive Mica/Acrylic (or the
+    /// documented solid fallback). Hosts that wire [`AppearanceSettings`] should
+    /// return `appearance.window_material()` instead.
+    ///
+    /// Hosts apply this through `nana-window`; widgets never receive handles.
+    fn window_material_mode(&self) -> WindowMaterialMode {
+        WindowMaterialMode::Translucent
+    }
+
+    /// Foreground cover opacity used when a native material is active.
+    fn backdrop_opacity(&self) -> f32 {
+        AppearanceSettings::DEFAULT_BACKDROP_OPACITY
+    }
+
+    /// Which shell region reveals the translucent material.
+    ///
+    /// Defaults to sidebar. Hosts that wire [`AppearanceSettings`] should return
+    /// `appearance.backdrop_target()`.
+    fn backdrop_target(&self) -> BackdropTarget {
+        BackdropTarget::Sidebar
+    }
+
+    /// When the sidebar is translucent, whether the title bar shares that alpha.
+    ///
+    /// Defaults to `true` (Lilia / Appearance default). Hosts should return
+    /// `appearance.titlebar_follows_sidebar()`.
+    fn titlebar_follows_sidebar(&self) -> bool {
+        true
+    }
 
     fn window_event(
         &mut self,
@@ -775,6 +823,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 self.apply_program_update(event_loop, update);
                 self.push_window_event(id, WindowEvent::Occluded(hidden));
             }
+            WindowEvent::Focused(focused) => {
+                self.notify_focus_changed(event_loop, id, focused);
+                self.push_window_event(id, WindowEvent::Focused(focused));
+            }
             event => self.push_window_event(id, event),
         }
     }
@@ -855,6 +907,25 @@ impl<Program: HostedProgram> HostedReady<Program> {
         self.apply_program_update(event_loop, update);
     }
 
+    fn notify_focus_changed(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        focused: bool,
+    ) {
+        let window_id = self.iced_window_id(id);
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::FocusChanged {
+                id,
+                window_id,
+                focused,
+            },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
+    }
+
     fn ensure_ui(&mut self, id: HostedWindowId) {
         if id == HostedWindowId::PRIMARY {
             if self.ui.is_ui_dirty() {
@@ -899,10 +970,26 @@ impl<Program: HostedProgram> HostedReady<Program> {
         redraw_satisfied_by: Option<HostedWindowId>,
     ) {
         let previous_theme = self.program.theme_mode();
+        let previous_material = self.program.window_material_mode();
+        let previous_opacity = self.program.backdrop_opacity();
+        let previous_target = self.program.backdrop_target();
+        let previous_titlebar_follows = self.program.titlebar_follows_sidebar();
         let context = self.program_context();
         let update = self.program.update(message, &context);
-        if self.program.theme_mode() != previous_theme {
+        if self.program.theme_mode() != previous_theme
+            || self.program.window_material_mode() != previous_material
+        {
             self.refresh_materials();
+        } else if (self.program.backdrop_opacity() - previous_opacity).abs() > f32::EPSILON
+            || self.program.backdrop_target() != previous_target
+            || self.program.titlebar_follows_sidebar() != previous_titlebar_follows
+        {
+            self.ui.mark_ui_dirty();
+            for host in self.auxiliary.values_mut() {
+                host.ui.mark_ui_dirty();
+                host.surface.window().request_redraw();
+            }
+            self.graphics.window().request_redraw();
         }
         self.apply_program_update_inner(event_loop, update, redraw_satisfied_by);
     }

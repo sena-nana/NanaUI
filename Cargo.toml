@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/nana-ui", "crates/nana-window", "examples/component-gallery"]
+members = [
+    "crates/nana-ui-core",
+    "crates/nana-ui",
+    "crates/nana-window",
+    "examples/component-gallery",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -17,6 +22,25 @@ iced_winit = {
     git = "https://github.com/sena-nana/iced.git",
     rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
 }
+nana-ui-core = { path = "crates/nana-ui-core" }
+nana-js-engine = { path = "crates/nana-js-engine" }
+nana-js-quickjs = { path = "crates/nana-js-quickjs" }
+nana-js-v8 = { path = "crates/nana-js-v8" }
+nana-ui-web-api = { path = "crates/nana-ui-web-api" }
+nana-ui-vue = { path = "crates/nana-ui-vue" }
+nana-ui-platform = { path = "crates/nana-ui-platform" }
+nana-ui-devtools = { path = "crates/nana-ui-devtools" }
+nana-ui = { path = "crates/nana-ui" }
+nana-window = { path = "crates/nana-window" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Keep wgpu aligned with NanaUI/Iced. Single WGPU major version.
+wgpu = "30.0.0"
+# Phase 2 JS engines — apps link exactly one:
+rquickjs = "0.12.2" # QuickJS-NG 0.15.1
+# crates.io `v8` is the renamed successor of `rusty_v8` (same binding lineage).
+# Do NOT pin the legacy `rusty_v8 = "0.32.1"` crate.
+v8 = "150.4.0"
 
 # iced_winit → arboard has no Android backend; vendor adds a stub platform so
 # `nana-ui` can cross-compile to aarch64-linux-android. Desktop backends unchanged.

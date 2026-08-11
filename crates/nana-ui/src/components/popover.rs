@@ -8,14 +8,7 @@ use iced::{
 use crate::theme::ThemeTokens;
 use crate::widgets::menu_surface_style;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PopoverPlacement {
-    Top,
-    #[default]
-    Bottom,
-    Left,
-    Right,
-}
+pub use nana_ui_core::PopoverPlacement;
 
 /// An interactive anchored overlay with keyboard trigger and dismiss behavior.
 pub struct Popover<'a, Message> {

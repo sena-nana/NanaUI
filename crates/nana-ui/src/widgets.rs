@@ -6,39 +6,53 @@ use iced::{Border, Color, Shadow, Theme, Vector};
 
 use crate::theme::{Colors, ThemeTokens};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ButtonKind {
-    Ghost,
-    Subtle,
-    Selected,
-    Primary,
-    Warning,
-    Danger,
-    Text,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CardKind {
-    Surface,
-    Outlined,
-    Raised,
-    Flat,
-    Selected,
-}
+pub use nana_ui_core::{ButtonKind, CardKind};
 
 const SEGMENTED_CONTROL_BORDER_WIDTH: f32 = 1.0;
 const SEGMENTED_CONTROL_PADDING: f32 = 2.0;
 pub const SEGMENTED_CONTROL_INSET: f32 = SEGMENTED_CONTROL_BORDER_WIDTH + SEGMENTED_CONTROL_PADDING;
 
+/// Optional CSS / layout paint overrides for [`button_style`].
+///
+/// When set, these replace the corresponding `ButtonKind` theme defaults for
+/// the Active (and Disabled-faded) surface. Hover / Pressed still follow kind
+/// interaction colors so Ghost toolbar icons keep hover feedback.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ButtonPaintOverride {
+    pub background: Option<Color>,
+    pub text_color: Option<Color>,
+    pub border_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub border_color: Option<Color>,
+}
+
+impl ButtonPaintOverride {
+    pub fn is_empty(self) -> bool {
+        self.background.is_none()
+            && self.text_color.is_none()
+            && self.border_radius.is_none()
+            && self.border_width.is_none()
+            && self.border_color.is_none()
+    }
+}
+
 pub fn button_style(
     theme: impl Into<ThemeTokens>,
     kind: ButtonKind,
+) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
+    button_style_overridden(theme, kind, ButtonPaintOverride::default())
+}
+
+pub fn button_style_overridden(
+    theme: impl Into<ThemeTokens>,
+    kind: ButtonKind,
+    paint: ButtonPaintOverride,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + 'static {
     let tokens = theme.into();
     let colors = tokens.colors;
     let metrics = tokens.metrics;
     move |_theme, status| {
-        let (base, foreground, border_color) = match kind {
+        let (kind_base, kind_foreground, kind_border_color) = match kind {
             ButtonKind::Ghost => (Color::TRANSPARENT, colors.text, Color::TRANSPARENT),
             ButtonKind::Subtle => (colors.subtle, colors.text, colors.border_soft),
             ButtonKind::Selected => (colors.active, colors.text, Color::TRANSPARENT),
@@ -62,6 +76,17 @@ pub fn button_style(
             ButtonKind::Danger => (Color::TRANSPARENT, colors.danger, Color::TRANSPARENT),
             ButtonKind::Text => (Color::TRANSPARENT, colors.accent, Color::TRANSPARENT),
         };
+        let base = paint.background.unwrap_or(kind_base);
+        let foreground = paint.text_color.unwrap_or(kind_foreground);
+        let border_color = paint.border_color.unwrap_or(kind_border_color);
+        let radius = paint.border_radius.unwrap_or(metrics.radius_sm);
+        let border_width = paint
+            .border_width
+            .unwrap_or(if matches!(kind, ButtonKind::Subtle) {
+                1.0
+            } else {
+                0.0
+            });
 
         let background = match status {
             button::Status::Hovered => match kind {
@@ -92,18 +117,13 @@ pub fn button_style(
         };
         let mut style = button::Style::default().with_background(background);
         style.text_color = text_color;
-        style.border = Border::default()
-            .rounded(metrics.radius_sm)
-            .width(if matches!(kind, ButtonKind::Subtle) {
-                1.0
-            } else {
-                0.0
-            })
-            .color(if status == button::Status::Disabled {
+        style.border = Border::default().rounded(radius).width(border_width).color(
+            if status == button::Status::Disabled {
                 fade(border_color, 0.45)
             } else {
                 border_color
-            });
+            },
+        );
         style.shadow = Shadow::default();
         style.snap = true;
         style
@@ -860,7 +880,7 @@ mod tests {
         pick_list_style, segmented_button_style, segmented_surface_style, text_editor_style,
         text_input_style, toggler_style,
     };
-    use crate::theme::ThemeMode;
+    use crate::theme::{ThemeMode, ThemeModeExt};
 
     #[test]
     fn semantic_control_states_have_distinct_visual_contracts() {

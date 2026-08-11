@@ -1,89 +1,8 @@
 use iced::{Point, Subscription, Task, window};
 
+pub use nana_ui_core::{WindowChrome, WindowChromeAction, WindowControlMode};
+
 const DRAG_THRESHOLD: f32 = 4.0;
-#[cfg(target_os = "macos")]
-const MACOS_TRAFFIC_LIGHT_INSET: f32 = 78.0;
-
-/// Selects whether window controls are supplied by the platform or NanaUI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowControlMode {
-    NativeLeading,
-    NativeTrailing,
-    Custom,
-}
-
-/// Platform presentation contract for a NanaUI application title bar.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WindowChrome {
-    pub controls: WindowControlMode,
-    pub leading_inset: f32,
-    pub trailing_inset: f32,
-}
-
-impl WindowChrome {
-    pub fn new(controls: WindowControlMode, leading_inset: f32, trailing_inset: f32) -> Self {
-        Self {
-            controls,
-            leading_inset: valid_inset(leading_inset),
-            trailing_inset: valid_inset(trailing_inset),
-        }
-    }
-
-    pub const fn custom() -> Self {
-        Self {
-            controls: WindowControlMode::Custom,
-            leading_inset: 0.0,
-            trailing_inset: 0.0,
-        }
-    }
-
-    pub fn native_leading(leading_inset: f32) -> Self {
-        Self {
-            controls: WindowControlMode::NativeLeading,
-            leading_inset: valid_inset(leading_inset),
-            trailing_inset: 0.0,
-        }
-    }
-
-    pub fn native_trailing(trailing_inset: f32) -> Self {
-        Self {
-            controls: WindowControlMode::NativeTrailing,
-            leading_inset: 0.0,
-            trailing_inset: valid_inset(trailing_inset),
-        }
-    }
-
-    pub const fn uses_custom_controls(self) -> bool {
-        matches!(self.controls, WindowControlMode::Custom)
-    }
-
-    pub fn platform_default() -> Self {
-        #[cfg(target_os = "macos")]
-        {
-            Self::native_leading(MACOS_TRAFFIC_LIGHT_INSET)
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            Self::custom()
-        }
-    }
-}
-
-impl Default for WindowChrome {
-    fn default() -> Self {
-        Self::platform_default()
-    }
-}
-
-/// A real operation requested by the custom title bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowChromeAction {
-    Drag,
-    Minimize,
-    ToggleMaximize,
-    Close,
-}
 
 /// Input handled by [`WindowChromeState`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -348,14 +267,6 @@ fn window_event(
         }
         iced::Event::Window(window::Event::Closed) => Some(WindowChromeEvent::WindowClosed(window)),
         _ => None,
-    }
-}
-
-fn valid_inset(value: f32) -> f32 {
-    if value.is_finite() && value >= 0.0 {
-        value
-    } else {
-        0.0
     }
 }
 

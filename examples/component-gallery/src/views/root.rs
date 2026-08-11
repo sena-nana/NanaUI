@@ -7,7 +7,7 @@ impl GalleryState {
         let shell = if self.settings_open {
             DesktopShell::new(
                 self.title_bar(tokens),
-                &self.settings_workspace,
+                self.settings_workspace.clone(),
                 self.settings_content(colors),
                 GalleryMessage::Workspace,
                 tokens,
@@ -16,7 +16,7 @@ impl GalleryState {
         } else {
             let mut shell = DesktopShell::new(
                 self.title_bar(tokens),
-                &self.workspace,
+                self.workspace.clone(),
                 self.gallery_content(colors),
                 GalleryMessage::Workspace,
                 tokens,
