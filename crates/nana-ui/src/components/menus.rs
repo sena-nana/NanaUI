@@ -3,10 +3,11 @@ use std::rc::Rc;
 
 use iced::widget::text::LineHeight;
 use iced::widget::{
-    Stack, button, column, container, mouse_area, pin, row, scrollable, text, text_input,
+    Stack, button, column, container, mouse_area, row, scrollable, text, text_input,
 };
 use iced::{Alignment, Element, Length, Pixels, Point, Size};
 
+use crate::absolute::Absolute;
 use crate::components::ControlSize;
 use crate::icons::{Icon, icon};
 use crate::theme::{ThemeTokens, ui_font};
@@ -227,14 +228,9 @@ where
                 .style(menu_surface_style(tokens)),
         )
         .on_press(self.on_interaction);
-        mouse_area(
-            pin(surface)
-                .position(point)
-                .width(Length::Fill)
-                .height(Length::Fill),
-        )
-        .on_press(self.on_dismiss)
-        .into()
+        mouse_area(Absolute::new(surface, point))
+            .on_press(self.on_dismiss)
+            .into()
     }
 }
 
