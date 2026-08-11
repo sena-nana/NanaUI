@@ -11,7 +11,12 @@ members = [
     "crates/nana-css-parity",
     "crates/nana-ui-platform",
     "crates/nana-ui-devtools",
+    "platform/android",
     "examples/component-gallery",
+    "examples/vue-quickjs",
+    "examples/vue-v8",
+    "examples/vue-counter",
+    "examples/nana-tauri-demo",
 ]
 resolver = "2"
 

@@ -1,0 +1,27 @@
+[package]
+name = "vue-counter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+description = "Vue Counter/Todo JS probe + optional NanaUI Iced window (no Blitz)"
+
+[[bin]]
+name = "vue-counter"
+path = "src/main.rs"
+
+[features]
+default = ["engine-quickjs"]
+engine-quickjs = ["dep:nana-js-quickjs"]
+engine-v8 = ["dep:nana-js-v8", "nana-js-v8/engine"]
+windowed = ["dep:nana-ui", "nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/controls", "dep:iced", "nana-ui-vue/iced-view"]
+
+[dependencies]
+nana-js-engine.workspace = true
+nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
+nana-ui-web-api.workspace = true
+nana-js-quickjs = { workspace = true, optional = true }
+nana-js-v8 = { workspace = true, optional = true }
+nana-ui = { path = "../../crates/nana-ui", optional = true, default-features = false }
+iced = { workspace = true, optional = true }
+serde_json.workspace = true

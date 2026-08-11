@@ -1,0 +1,26 @@
+[package]
+name = "vue-v8"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+description = "Phase 2 V8-only Vue runtime-core probe (mutually exclusive with vue-quickjs)"
+
+[[bin]]
+name = "vue-v8"
+path = "src/main.rs"
+
+[features]
+default = ["engine", "engine-v8"]
+# Links crates.io v8 150.4.0. Do not also depend on nana-js-quickjs in this crate.
+engine = ["nana-js-v8/engine"]
+engine-v8 = ["engine"]
+ui-vue-v8 = ["engine-v8"]
+# Declared only so `refuse_dual_js_engines!` can refuse accidental dual enablement.
+engine-quickjs = []
+
+[dependencies]
+nana-js-engine.workspace = true
+nana-js-v8 = { workspace = true, features = ["engine"] }
+nana-ui-vue.workspace = true
+serde_json.workspace = true
