@@ -1,0 +1,15 @@
+[package]
+name = "nana-js-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Engine-agnostic JavaScript host interface for NanaUI Vue"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_js_engine"
+path = "src/lib.rs"
+
+[dependencies]
+# Pure trait/surface crate. Concrete engines live in nana-js-quickjs / nana-js-v8.
+serde_json.workspace = true

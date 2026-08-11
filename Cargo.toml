@@ -3,6 +3,9 @@ members = [
     "crates/nana-ui-core",
     "crates/nana-ui",
     "crates/nana-window",
+    "crates/nana-js-engine",
+    "crates/nana-js-quickjs",
+    "crates/nana-js-v8",
     "examples/component-gallery",
 ]
 resolver = "2"
