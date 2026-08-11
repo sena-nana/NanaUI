@@ -1,0 +1,20 @@
+{
+  "id": "T-G12",
+  "title": "grid-template-rows minmax 上限钳制",
+  "status": "pass",
+  "viewport": [300, 420],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-rows:minmax(50px, 120px) 1fr;width:300px;height:400px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "width:300px" },
+      { "id": "b", "style": "width:300px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 300, "h": 400 },
+    { "id": "a", "x": 0, "y": 0, "w": 300, "h": 120 },
+    { "id": "b", "x": 0, "y": 120, "w": 300, "h": 280 }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "T-G13",
+  "title": "grid-template-rows 多轨同时 min 冻结",
+  "status": "pass",
+  "viewport": [300, 320],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-rows:minmax(120px, 1fr) minmax(120px, 1fr) 1fr;width:300px;height:300px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "width:300px" },
+      { "id": "b", "style": "width:300px" },
+      { "id": "c", "style": "width:300px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 300, "h": 300 },
+    { "id": "a", "x": 0, "y": 0, "w": 300, "h": 120 },
+    { "id": "b", "x": 0, "y": 120, "w": 300, "h": 120 },
+    { "id": "c", "x": 0, "y": 240, "w": 300, "h": 60 }
+  ]
+}

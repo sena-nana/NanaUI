@@ -1,0 +1,21 @@
+{
+  "id": "T-P11",
+  "title": "absolute 单边混用 % + px（left% / top px / right% / bottom px）",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;width:200px;height:120px",
+    "children": [
+      {
+        "id": "box",
+        "style": "position:absolute;left:10%;top:12px;right:5%;bottom:8px"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "box", "x": 20, "y": 12, "w": 170, "h": 100 }
+  ]
+}

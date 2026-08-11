@@ -1,0 +1,20 @@
+{
+  "id": "T-G16",
+  "title": "columns→none 后 rows-only 纵向轨",
+  "status": "pass",
+  "viewport": [220, 220],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:100px 1fr;grid-template-rows:80px 1fr;grid-template-columns:none;width:200px;height:200px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "width:200px" },
+      { "id": "b", "style": "width:200px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 200, "h": 200 },
+    { "id": "a", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "b", "x": 0, "y": 80, "w": 200, "h": 120 }
+  ]
+}

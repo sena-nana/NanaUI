@@ -1,0 +1,20 @@
+{
+  "id": "T-G05",
+  "title": "grid minmax 非零下限冻结",
+  "status": "pass",
+  "viewport": [600, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:minmax(400px, 1fr) 1fr;width:600px;height:160px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "height:160px" },
+      { "id": "b", "style": "height:160px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 600, "h": 160 },
+    { "id": "a", "x": 0, "y": 0, "w": 400, "h": 160 },
+    { "id": "b", "x": 400, "y": 0, "w": 200, "h": 160 }
+  ]
+}

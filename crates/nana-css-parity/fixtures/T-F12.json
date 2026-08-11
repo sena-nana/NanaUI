@@ -1,0 +1,22 @@
+{
+  "id": "T-F12",
+  "title": "纵排 row-gap / column-gap 长手",
+  "status": "pass",
+  "viewport": [240, 220],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;row-gap:16px;column-gap:40px;width:200px;height:200px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:50px;height:30px" },
+      { "id": "b", "style": "width:50px;height:30px" },
+      { "id": "c", "style": "width:50px;height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 200 },
+    { "id": "a", "x": 0, "y": 0, "w": 50, "h": 30 },
+    { "id": "b", "x": 0, "y": 46, "w": 50, "h": 30 },
+    { "id": "c", "x": 0, "y": 92, "w": 50, "h": 30 }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "id": "T-S11",
+  "title": "嵌套 padding（px + %）父链下的 width%",
+  "status": "pass",
+  "viewport": [400, 220],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:400px;height:200px;padding:20px;align-items:flex-start;gap:0",
+    "children": [
+      {
+        "id": "mid",
+        "style": "display:flex;flex-direction:column;width:100%;padding:10%;align-items:flex-start;gap:0",
+        "children": [
+          { "id": "leaf", "style": "width:50%;height:40px" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 200 },
+    { "id": "mid", "x": 20, "y": 20, "w": 360, "h": 112 },
+    { "id": "leaf", "x": 56, "y": 56, "w": 144, "h": 40 }
+  ]
+}

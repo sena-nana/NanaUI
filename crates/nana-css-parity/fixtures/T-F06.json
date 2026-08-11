@@ -1,0 +1,20 @@
+{
+  "id": "T-F06",
+  "title": "子项 flex:1 行内等分",
+  "status": "pass",
+  "viewport": [400, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;width:400px;height:80px;align-items:stretch",
+    "children": [
+      { "id": "a", "style": "flex:1;height:80px" },
+      { "id": "b", "style": "flex:1;height:80px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "b", "x": 200, "y": 0, "w": 200, "h": 80 }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "T-S08",
+  "title": "width calc(100% - 40px)",
+  "status": "pass",
+  "viewport": [400, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:400px;height:100px;align-items:flex-start;padding:0;gap:0",
+    "children": [
+      { "id": "child", "style": "width:calc(100% - 40px);height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 100 },
+    { "id": "child", "x": 0, "y": 0, "w": 360, "h": 40 }
+  ]
+}

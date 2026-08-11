@@ -1,0 +1,22 @@
+{
+  "id": "T-G04",
+  "title": "grid-template-columns 100px 1fr 2fr 权重分轨",
+  "status": "pass",
+  "viewport": [700, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:100px 1fr 2fr;width:700px;height:160px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "nav", "style": "height:160px" },
+      { "id": "a", "style": "height:160px" },
+      { "id": "b", "style": "height:160px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 700, "h": 160 },
+    { "id": "nav", "x": 0, "y": 0, "w": 100, "h": 160 },
+    { "id": "a", "x": 100, "y": 0, "w": 200, "h": 160 },
+    { "id": "b", "x": 300, "y": 0, "w": 400, "h": 160 }
+  ]
+}

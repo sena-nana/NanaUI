@@ -1,0 +1,22 @@
+{
+  "id": "T-F01",
+  "title": "横排 gap",
+  "status": "pass",
+  "viewport": [400, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;gap:12px;width:400px;height:80px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:50px;height:40px" },
+      { "id": "b", "style": "width:50px;height:40px" },
+      { "id": "c", "style": "width:50px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 50, "h": 40 },
+    { "id": "b", "x": 62, "y": 0, "w": 50, "h": 40 },
+    { "id": "c", "x": 124, "y": 0, "w": 50, "h": 40 }
+  ]
+}

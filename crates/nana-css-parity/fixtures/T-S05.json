@@ -1,0 +1,18 @@
+{
+  "id": "T-S05",
+  "title": "width/height 精确 px",
+  "status": "pass",
+  "viewport": [400, 200],
+  "tolerance_px": 1,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:400px;height:200px;align-items:flex-start",
+    "children": [
+      { "id": "box", "style": "width:200px;height:60px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 200 },
+    { "id": "box", "x": 0, "y": 0, "w": 200, "h": 60 }
+  ]
+}

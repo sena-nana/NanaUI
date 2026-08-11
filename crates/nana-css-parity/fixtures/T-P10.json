@@ -1,0 +1,21 @@
+{
+  "id": "T-P10",
+  "title": "inset 两值混用 % + px",
+  "status": "pass",
+  "viewport": [200, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;width:200px;height:100px",
+    "children": [
+      {
+        "id": "mixed",
+        "style": "position:absolute;inset:10% 8px"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 100 },
+    { "id": "mixed", "x": 8, "y": 10, "w": 184, "h": 80 }
+  ]
+}

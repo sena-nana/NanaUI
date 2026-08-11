@@ -1,0 +1,21 @@
+{
+  "id": "T-L02",
+  "title": "侧栏 220px + 主区 Fill",
+  "status": "pass",
+  "gap_note": "显式 flex 行表达 220px 1fr；grid-template / class 通用化仍属 P0-6",
+  "viewport": [800, 400],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:flex;flex-direction:row;width:800px;height:400px;align-items:stretch",
+    "children": [
+      { "id": "sidebar", "style": "width:220px;height:400px" },
+      { "id": "primary", "style": "flex:1;height:400px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 800, "h": 400 },
+    { "id": "sidebar", "x": 0, "y": 0, "w": 220, "h": 400 },
+    { "id": "primary", "x": 220, "y": 0, "w": 580, "h": 400 }
+  ]
+}

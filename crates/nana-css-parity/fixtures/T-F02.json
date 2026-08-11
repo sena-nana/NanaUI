@@ -1,0 +1,22 @@
+{
+  "id": "T-F02",
+  "title": "纵排 gap",
+  "status": "pass",
+  "viewport": [200, 300],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;gap:8px;width:200px;height:200px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:80px;height:30px" },
+      { "id": "b", "style": "width:80px;height:30px" },
+      { "id": "c", "style": "width:80px;height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 200 },
+    { "id": "a", "x": 0, "y": 0, "w": 80, "h": 30 },
+    { "id": "b", "x": 0, "y": 38, "w": 80, "h": 30 },
+    { "id": "c", "x": 0, "y": 76, "w": 80, "h": 30 }
+  ]
+}

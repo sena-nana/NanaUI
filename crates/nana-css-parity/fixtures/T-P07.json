@@ -1,0 +1,21 @@
+{
+  "id": "T-P07",
+  "title": "absolute 百分比 inset（相对 CB 宽/高）",
+  "status": "pass",
+  "viewport": [200, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;width:200px;height:100px",
+    "children": [
+      {
+        "id": "pct",
+        "style": "position:absolute;left:10%;top:20%;width:40px;height:20px"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 100 },
+    { "id": "pct", "x": 20, "y": 20, "w": 40, "h": 20 }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "T-B08",
+  "title": "box-sizing:content-box 宽+padding",
+  "status": "pass",
+  "viewport": [320, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;align-items:flex-start;width:300px;height:100px;gap:0",
+    "children": [
+      {
+        "id": "a",
+        "style": "width:100px;height:40px;padding:10px;box-sizing:content-box"
+      },
+      { "id": "b", "style": "width:50px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 100 },
+    { "id": "a", "x": 0, "y": 0, "w": 120, "h": 60 },
+    { "id": "b", "x": 120, "y": 0, "w": 50, "h": 40 }
+  ]
+}

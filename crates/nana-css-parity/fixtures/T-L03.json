@@ -1,0 +1,51 @@
+{
+  "id": "T-L03",
+  "title": "Settings row：label 左 / control 右 / gap 14",
+  "status": "pass",
+  "gap_note": "需要 space-between + .nana-settings-row class hints（P0-8）",
+  "viewport": [
+    480,
+    80
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "row",
+    "class": [
+      "nana-settings-row"
+    ],
+    "style": "display:flex;flex-direction:row;justify-content:space-between;align-items:center;gap:14px;width:480px;height:44px;padding:10px 0",
+    "children": [
+      {
+        "id": "label",
+        "style": "width:120px;height:20px"
+      },
+      {
+        "id": "control",
+        "style": "width:60px;height:24px"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "row",
+      "x": 0,
+      "y": 0,
+      "w": 480,
+      "h": 44
+    },
+    {
+      "id": "label",
+      "x": 0,
+      "y": 12,
+      "w": 120,
+      "h": 20
+    },
+    {
+      "id": "control",
+      "x": 420,
+      "y": 10,
+      "w": 60,
+      "h": 24
+    }
+  ]
+}

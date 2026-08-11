@@ -1,0 +1,20 @@
+{
+  "id": "T-G19",
+  "title": "grid 轨间隙 gap%（相对内容宽度）",
+  "status": "pass",
+  "viewport": [320, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:100px 1fr;width:300px;height:80px;align-items:flex-start;gap:10%",
+    "children": [
+      { "id": "a", "style": "height:40px" },
+      { "id": "b", "style": "height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 300, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 40 },
+    { "id": "b", "x": 130, "y": 0, "w": 170, "h": 40 }
+  ]
+}

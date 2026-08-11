@@ -1,0 +1,18 @@
+{
+  "id": "T-S06",
+  "title": "max-width 钳制 Fill 子项",
+  "status": "pass",
+  "viewport": [300, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;align-items:flex-start;width:300px;height:80px",
+    "children": [
+      { "id": "wide", "style": "flex:1;max-width:120px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 80 },
+    { "id": "wide", "x": 0, "y": 0, "w": 120, "h": 40 }
+  ]
+}

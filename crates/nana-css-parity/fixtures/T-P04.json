@@ -1,0 +1,21 @@
+{
+  "id": "T-P04",
+  "title": "position:absolute left+right 定宽（及 top+bottom 定高）",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;width:200px;height:120px",
+    "children": [
+      {
+        "id": "stretch",
+        "style": "position:absolute;left:16px;right:24px;top:8px;bottom:12px"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "stretch", "x": 16, "y": 8, "w": 160, "h": 100 }
+  ]
+}

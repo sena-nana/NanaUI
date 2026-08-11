@@ -1,0 +1,22 @@
+{
+  "id": "T-S10",
+  "title": "calc 轻量扩展：px+% / %+% / px-px",
+  "status": "pass",
+  "viewport": [400, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:400px;height:180px;align-items:flex-start;gap:8px",
+    "children": [
+      { "id": "a", "style": "width:calc(40px + 50%);height:30px" },
+      { "id": "b", "style": "width:calc(25% + 25%);height:30px" },
+      { "id": "c", "style": "width:calc(80px - 20px);height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 180 },
+    { "id": "a", "x": 0, "y": 0, "w": 240, "h": 30 },
+    { "id": "b", "x": 0, "y": 38, "w": 200, "h": 30 },
+    { "id": "c", "x": 0, "y": 76, "w": 60, "h": 30 }
+  ]
+}

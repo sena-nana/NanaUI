@@ -1,0 +1,23 @@
+{
+  "id": "T-F03",
+  "title": "主轴居中 justify-content:center",
+  "status": "pass",
+  "gap_note": "measure 读取 LayoutStyle.justify_content；iced_app 接线仍属 P0-1",
+  "viewport": [400, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;justify-content:center;width:400px;height:100px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:40px;height:40px" },
+      { "id": "b", "style": "width:40px;height:40px" },
+      { "id": "c", "style": "width:40px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 100 },
+    { "id": "a", "x": 140, "y": 0, "w": 40, "h": 40 },
+    { "id": "b", "x": 180, "y": 0, "w": 40, "h": 40 },
+    { "id": "c", "x": 220, "y": 0, "w": 40, "h": 40 }
+  ]
+}

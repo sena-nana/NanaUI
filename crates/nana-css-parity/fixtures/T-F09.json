@@ -1,0 +1,22 @@
+{
+  "id": "T-F09",
+  "title": "justify-content:space-around",
+  "status": "pass",
+  "viewport": [400, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;justify-content:space-around;width:400px;height:100px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:40px;height:40px" },
+      { "id": "b", "style": "width:40px;height:40px" },
+      { "id": "c", "style": "width:40px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 100 },
+    { "id": "a", "x": 46.6667, "y": 0, "w": 40, "h": 40 },
+    { "id": "b", "x": 180, "y": 0, "w": 40, "h": 40 },
+    { "id": "c", "x": 313.3333, "y": 0, "w": 40, "h": 40 }
+  ]
+}

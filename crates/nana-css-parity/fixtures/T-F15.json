@@ -1,0 +1,20 @@
+{
+  "id": "T-F15",
+  "title": "主轴末端 justify-content:flex-end",
+  "status": "pass",
+  "viewport": [400, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;justify-content:flex-end;gap:10px;width:400px;height:80px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:40px;height:40px" },
+      { "id": "b", "style": "width:40px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 80 },
+    { "id": "a", "x": 310, "y": 0, "w": 40, "h": 40 },
+    { "id": "b", "x": 360, "y": 0, "w": 40, "h": 40 }
+  ]
+}

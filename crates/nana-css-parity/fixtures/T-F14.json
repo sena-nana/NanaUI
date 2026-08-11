@@ -1,0 +1,20 @@
+{
+  "id": "T-F14",
+  "title": "纵排 gap %（相对内容高度，缺省回退宽度）",
+  "status": "pass",
+  "viewport": [220, 320],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;gap:10%;width:200px;height:300px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:40px;height:40px" },
+      { "id": "b", "style": "width:40px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 300 },
+    { "id": "a", "x": 0, "y": 0, "w": 40, "h": 40 },
+    { "id": "b", "x": 0, "y": 70, "w": 40, "h": 40 }
+  ]
+}

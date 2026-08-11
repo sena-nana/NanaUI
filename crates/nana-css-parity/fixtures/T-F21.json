@@ -1,0 +1,20 @@
+{
+  "id": "T-F21",
+  "title": "flex-direction:row-reverse 主轴起点对调",
+  "status": "pass",
+  "viewport": [200, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row-reverse;gap:10px;align-items:flex-start;width:200px;height:80px",
+    "children": [
+      { "id": "a", "style": "width:40px;height:40px" },
+      { "id": "b", "style": "width:40px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "a", "x": 160, "y": 0, "w": 40, "h": 40 },
+    { "id": "b", "x": 110, "y": 0, "w": 40, "h": 40 }
+  ]
+}

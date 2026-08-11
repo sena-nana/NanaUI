@@ -1,0 +1,48 @@
+{
+  "id": "T-F07",
+  "title": "子项 flex:1 列内等分",
+  "status": "pass",
+  "gap_note": "flex:1 当前只设 width:Fill，列容器子项不撑 height",
+  "viewport": [
+    200,
+    400
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:200px;height:400px",
+    "children": [
+      {
+        "id": "a",
+        "style": "flex:1;width:200px"
+      },
+      {
+        "id": "b",
+        "style": "flex:1;width:200px"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "w": 200,
+      "h": 400
+    },
+    {
+      "id": "a",
+      "x": 0,
+      "y": 0,
+      "w": 200,
+      "h": 200
+    },
+    {
+      "id": "b",
+      "x": 0,
+      "y": 200,
+      "w": 200,
+      "h": 200
+    }
+  ]
+}

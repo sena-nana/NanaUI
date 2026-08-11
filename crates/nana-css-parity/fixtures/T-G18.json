@@ -1,0 +1,20 @@
+{
+  "id": "T-G18",
+  "title": "rows/columns 皆 none 后回退 Row（非残留 Column）",
+  "status": "pass",
+  "viewport": [400, 180],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-rows:80px 1fr;grid-template-rows:none;width:400px;height:160px;align-items:flex-start;gap:0",
+    "children": [
+      { "id": "a", "style": "width:100px;height:40px" },
+      { "id": "b", "style": "width:100px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 400, "h": 160 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 40 },
+    { "id": "b", "x": 100, "y": 0, "w": 100, "h": 40 }
+  ]
+}

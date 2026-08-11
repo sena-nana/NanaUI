@@ -1,0 +1,23 @@
+{
+  "id": "T-P01",
+  "title": "position:relative + top/left 偏移",
+  "status": "pass",
+  "viewport": [280, 160],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;align-items:flex-start;width:280px;height:160px;gap:0",
+    "children": [
+      { "id": "flow", "style": "width:60px;height:40px" },
+      {
+        "id": "shifted",
+        "style": "position:relative;top:12px;left:20px;width:60px;height:40px"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 280, "h": 160 },
+    { "id": "flow", "x": 0, "y": 0, "w": 60, "h": 40 },
+    { "id": "shifted", "x": 20, "y": 52, "w": 60, "h": 40 }
+  ]
+}

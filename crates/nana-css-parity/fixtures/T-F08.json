@@ -1,0 +1,20 @@
+{
+  "id": "T-F08",
+  "title": "固定宽 + flex:1 填剩余",
+  "status": "pass",
+  "viewport": [400, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;width:400px;height:100px;align-items:stretch",
+    "children": [
+      { "id": "side", "style": "width:220px;height:100px" },
+      { "id": "main", "style": "flex:1;height:100px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 100 },
+    { "id": "side", "x": 0, "y": 0, "w": 220, "h": 100 },
+    { "id": "main", "x": 220, "y": 0, "w": 180, "h": 100 }
+  ]
+}

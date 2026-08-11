@@ -1,0 +1,20 @@
+{
+  "id": "T-F13",
+  "title": "横排 gap %（相对内容宽度）",
+  "status": "pass",
+  "viewport": [220, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;gap:10%;width:200px;height:80px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:40px;height:40px" },
+      { "id": "b", "style": "width:40px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 40, "h": 40 },
+    { "id": "b", "x": 60, "y": 0, "w": 40, "h": 40 }
+  ]
+}

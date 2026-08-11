@@ -1,0 +1,18 @@
+{
+  "id": "T-B11",
+  "title": "logical padding-block/inline → LTR physical（同 T-B01）",
+  "status": "pass",
+  "viewport": [300, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:300px;height:200px;padding-block:1px 3px;padding-inline:4px 2px;align-items:flex-start",
+    "children": [
+      { "id": "inner", "style": "width:50px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 200 },
+    { "id": "inner", "x": 4, "y": 1, "w": 50, "h": 40 }
+  ]
+}

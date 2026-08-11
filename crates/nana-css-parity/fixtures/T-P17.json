@@ -1,0 +1,21 @@
+{
+  "id": "T-P17",
+  "title": "position:fixed left+right / top+bottom 相对视口拉伸",
+  "status": "pass",
+  "viewport": [320, 240],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "width:100px;height:80px",
+    "children": [
+      {
+        "id": "pin",
+        "style": "position:fixed;left:16px;right:24px;top:8px;bottom:12px"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 100, "h": 80 },
+    { "id": "pin", "x": 16, "y": 8, "w": 280, "h": 220 }
+  ]
+}
