@@ -815,7 +815,8 @@ impl DockController {
                 self.update(DockAction::CloseSurface(surface))
             }
             HostedWindowEvent::CloseRequested { .. }
-            | HostedWindowEvent::VisibilityChanged { .. } => DockUpdate::default(),
+            | HostedWindowEvent::VisibilityChanged { .. }
+            | HostedWindowEvent::FocusChanged { .. } => DockUpdate::default(),
         }
     }
 
@@ -2480,13 +2481,9 @@ where
     })
     .center_y(Length::Fill);
     let title: Element<'a, Message> = match (controller.layout.locked, title_id) {
-        (false, Some(id)) => dock_drag_handle(
-            title,
-            id,
-            surface,
-            on_action,
-            DockAction::Focus(id.clone()),
-        ),
+        (false, Some(id)) => {
+            dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
+        }
         _ => window_chrome_drag_start_area(title, &on_window_event),
     };
     dock_window_chrome_bar(title, window_chrome, on_window_event, tokens)
@@ -2505,49 +2502,50 @@ where
     Message: Clone + 'a,
 {
     let chrome_style = controller.chrome_style;
-    tabs.iter().fold(row![].height(Length::Fixed(height)), |tabs_row, item| {
-        let id = item.id();
-        let title = dock_item_title(controller, id);
-        let placeholder = item.is_placeholder();
-        let active_tab = item == active;
-        let label = text(title)
-            .size(11)
-            .font(ui_font(iced::font::Weight::Medium));
-        let tab = container(label)
-            .center_y(Length::Fill)
-            .padding([0.0, 10.0])
-            .style(move |_theme| {
-                let background = if active_tab {
-                    tokens.colors.active
-                } else if chrome_style == DockChromeStyle::Card {
-                    iced::Color::TRANSPARENT
-                } else {
-                    tokens.colors.surface
-                };
-                iced::widget::container::Style::default()
-                    .background(background)
-                    .border(dock_tab_border(tokens, chrome_style))
-            });
-        if placeholder {
-            tabs_row.push(tab.height(Length::Fixed(height)).width(Length::Shrink))
-        } else if controller.layout.locked {
-            tabs_row.push(
-                button(tab)
-                    .height(Length::Fixed(height))
-                    .padding(0)
-                    .on_press(on_action(DockAction::ActivateTab(id.clone())))
-                    .style(button_style(tokens, ButtonKind::Text)),
-            )
-        } else {
-            tabs_row.push(dock_drag_handle(
-                tab.height(Length::Fixed(height)).width(Length::Shrink),
-                id,
-                surface,
-                on_action,
-                DockAction::ActivateTab(id.clone()),
-            ))
-        }
-    })
+    tabs.iter()
+        .fold(row![].height(Length::Fixed(height)), |tabs_row, item| {
+            let id = item.id();
+            let title = dock_item_title(controller, id);
+            let placeholder = item.is_placeholder();
+            let active_tab = item == active;
+            let label = text(title)
+                .size(11)
+                .font(ui_font(iced::font::Weight::Medium));
+            let tab = container(label)
+                .center_y(Length::Fill)
+                .padding([0.0, 10.0])
+                .style(move |_theme| {
+                    let background = if active_tab {
+                        tokens.colors.active
+                    } else if chrome_style == DockChromeStyle::Card {
+                        iced::Color::TRANSPARENT
+                    } else {
+                        tokens.colors.surface
+                    };
+                    iced::widget::container::Style::default()
+                        .background(background)
+                        .border(dock_tab_border(tokens, chrome_style))
+                });
+            if placeholder {
+                tabs_row.push(tab.height(Length::Fixed(height)).width(Length::Shrink))
+            } else if controller.layout.locked {
+                tabs_row.push(
+                    button(tab)
+                        .height(Length::Fixed(height))
+                        .padding(0)
+                        .on_press(on_action(DockAction::ActivateTab(id.clone())))
+                        .style(button_style(tokens, ButtonKind::Text)),
+                )
+            } else {
+                tabs_row.push(dock_drag_handle(
+                    tab.height(Length::Fixed(height)).width(Length::Shrink),
+                    id,
+                    surface,
+                    on_action,
+                    DockAction::ActivateTab(id.clone()),
+                ))
+            }
+        })
 }
 
 fn dock_window_item_view<'a, Message>(

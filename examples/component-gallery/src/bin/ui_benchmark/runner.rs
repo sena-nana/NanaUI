@@ -9,6 +9,7 @@ use iced_winit::core::{Event, mouse, renderer, shell, window};
 use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
+use nana_ui::ThemeModeExt;
 use nana_ui::widgets::{panel_style, scrollable_style, vertical_scrollbar};
 use nana_ui::{
     AnchoredMenuPosition, ContextMenuEvent, ContextMenuHost, ContextMenuItem, Dropdown,

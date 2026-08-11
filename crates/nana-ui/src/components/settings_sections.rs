@@ -101,19 +101,15 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AppearanceEvent {
-    Theme(ThemeMode),
-    StandardRadius(u8),
-    WorkspaceCorners(bool),
-    Reset,
-}
+pub use nana_ui_core::AppearanceEvent;
 
 /// A reusable appearance settings section driven entirely by host-owned state.
 pub struct AppearanceSection<'a, Message> {
     theme: ThemeMode,
     appearance: &'a AppearanceSettings,
     on_event: Rc<dyn Fn(AppearanceEvent) -> Message + 'a>,
+    material_status: Option<Cow<'a, str>>,
+    platform_hint: Option<Cow<'a, str>>,
 }
 
 impl<'a, Message> AppearanceSection<'a, Message>
@@ -129,11 +125,35 @@ where
             theme,
             appearance,
             on_event: Rc::new(on_event),
+            material_status: None,
+            platform_hint: None,
         }
+    }
+
+    /// Shows the latest [`nana_window::MaterialOutcome`] status from the host.
+    pub fn material_status(mut self, status: impl Into<Cow<'a, str>>) -> Self {
+        self.material_status = Some(status.into());
+        self
+    }
+
+    /// Optional platform capability hint (no window handle required).
+    pub fn platform_hint(mut self, hint: impl Into<Cow<'a, str>>) -> Self {
+        self.platform_hint = Some(hint.into());
+        self
     }
 
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
+        let solid_mode = matches!(
+            self.appearance.window_material(),
+            nana_ui_core::WindowMaterialMode::Solid
+        );
+        let titlebar_follow_disabled = solid_mode
+            || !matches!(
+                self.appearance.backdrop_target(),
+                nana_ui_core::BackdropTarget::Sidebar
+            );
+
         let theme_event = self.on_event.clone();
         let theme_control = SegmentedControl::new(
             self.theme,
@@ -144,6 +164,57 @@ where
             move |value| theme_event(AppearanceEvent::Theme(value)),
         )
         .view(tokens);
+
+        let material_event = self.on_event.clone();
+        let material_control = SegmentedControl::new(
+            self.appearance.window_material(),
+            [
+                SelectionOption::new(nana_ui_core::WindowMaterialMode::Solid, "实色"),
+                SelectionOption::new(nana_ui_core::WindowMaterialMode::Translucent, "透明"),
+            ],
+            move |value| material_event(AppearanceEvent::WindowMaterial(value)),
+        )
+        .view(tokens);
+
+        let target_event = self.on_event.clone();
+        let target_control = SegmentedControl::new(
+            self.appearance.backdrop_target(),
+            [
+                SelectionOption::new(nana_ui_core::BackdropTarget::Sidebar, "侧边栏")
+                    .disabled(solid_mode),
+                SelectionOption::new(nana_ui_core::BackdropTarget::Main, "主内容区")
+                    .disabled(solid_mode),
+            ],
+            move |value| target_event(AppearanceEvent::BackdropTarget(value)),
+        )
+        .view(tokens);
+
+        let titlebar_event = self.on_event.clone();
+        let titlebar_switch = Switch::new(self.appearance.titlebar_follows_sidebar(), "")
+            .disabled(titlebar_follow_disabled)
+            .on_toggle(move |enabled| {
+                titlebar_event(AppearanceEvent::TitlebarFollowsSidebar(enabled))
+            })
+            .view(tokens);
+
+        let opacity_event = self.on_event.clone();
+        let opacity_percent = (self.appearance.backdrop_opacity() * 100.0).round();
+        let opacity = if solid_mode {
+            text(format!("{opacity_percent:.0}%"))
+                .size(12)
+                .color(tokens.colors.muted)
+                .into()
+        } else {
+            RangeField::new(
+                (AppearanceSettings::MIN_BACKDROP_OPACITY * 100.0)
+                    ..=(AppearanceSettings::MAX_BACKDROP_OPACITY * 100.0),
+                opacity_percent,
+                move |value| opacity_event(AppearanceEvent::BackdropOpacity(value / 100.0)),
+            )
+            .unit("%")
+            .view(tokens)
+        };
+
         let corner_event = self.on_event.clone();
         let corner_switch = Switch::new(self.appearance.workspace_corners_enabled(), "主区域圆角")
             .on_toggle(move |enabled| corner_event(AppearanceEvent::WorkspaceCorners(enabled)))
@@ -162,26 +233,80 @@ where
             .padding([0.0, UI_METRICS.control_padding_x])
             .on_press((self.on_event)(AppearanceEvent::Reset))
             .style(button_style(tokens, ButtonKind::Subtle));
-        SettingsCard::new(
-            "外观",
-            column![
-                SettingsRow::new("主题", theme_control)
-                    .hint("选择应用配色，立即生效")
-                    .first_in_group()
+
+        let mut rows = column![
+            SettingsRow::new("主题", theme_control)
+                .hint("选择应用配色，立即生效")
+                .first_in_group()
+                .divided(true)
+                .view(tokens),
+            SettingsRow::new("窗口材质", material_control)
+                .hint(
+                    self.platform_hint
+                        .clone()
+                        .unwrap_or_else(|| Cow::Borrowed("选择窗口使用的透明材质或实色背景。")),
+                )
+                .divided(true)
+                .view(tokens),
+        ];
+
+        if let Some(status) = self.material_status {
+            rows = rows.push(
+                SettingsRow::new("材质状态", text(status).size(12).color(tokens.colors.muted))
+                    .hint("由宿主经 nana-window 应用后回报；失败时保持可读实色。")
                     .divided(true)
                     .view(tokens),
-                SettingsRow::new("工作区边缘", corner_switch)
-                    .divided(true)
-                    .view(tokens),
-                SettingsRow::new("组件圆角半径", radius)
-                    .divided(true)
-                    .view(tokens),
-                SettingsRow::new("默认样式", reset)
-                    .last_in_group()
-                    .view(tokens),
-            ],
-        )
-        .view(tokens)
+            );
+        }
+
+        rows = rows.push(
+            SettingsRow::new("透明区域", target_control)
+                .hint(if solid_mode {
+                    "实色模式不显示透明区域；切回透明材质后会恢复当前选择。"
+                } else {
+                    "选择侧边栏或主内容区显示透明材质。"
+                })
+                .divided(true)
+                .view(tokens),
+        );
+        rows = rows.push(
+            SettingsRow::new("标题栏跟随侧边栏透明", titlebar_switch)
+                .hint(if titlebar_follow_disabled {
+                    "仅在侧边栏使用透明材质时生效；当前选择会保留。"
+                } else {
+                    "侧边栏透明时，整个标题栏同步显示透明材质。"
+                })
+                .divided(true)
+                .view(tokens),
+        );
+        rows = rows.push(
+            SettingsRow::new("材质不透明度", opacity)
+                .hint(if solid_mode {
+                    "实色模式不使用透明度；切回透明材质后会恢复当前数值。"
+                } else {
+                    "调节透明区域材质的前景色覆盖程度。"
+                })
+                .divided(true)
+                .view(tokens),
+        );
+        rows = rows.push(
+            SettingsRow::new("工作区边缘", corner_switch)
+                .divided(true)
+                .view(tokens),
+        );
+        rows = rows.push(
+            SettingsRow::new("组件圆角半径", radius)
+                .divided(true)
+                .view(tokens),
+        );
+        rows = rows.push(
+            SettingsRow::new("默认样式", reset)
+                .hint("恢复主题、材质与圆角默认值。")
+                .last_in_group()
+                .view(tokens),
+        );
+
+        SettingsCard::new("外观", rows).view(tokens)
     }
 }
 

@@ -45,19 +45,7 @@ impl<'a, T> DropdownOption<'a, T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DropdownSelection<T> {
-    Single(Option<T>),
-    Multiple(Vec<T>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DropdownEvent<T> {
-    Select(T),
-    Toggle(T),
-    Opened,
-    Closed,
-}
+pub use nana_ui_core::{DropdownEvent, DropdownSelection};
 
 /// A native anchored value menu supporting single and multiple selection.
 ///

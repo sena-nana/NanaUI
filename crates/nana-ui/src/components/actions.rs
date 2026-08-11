@@ -5,84 +5,11 @@ use iced::widget::{button, row, text};
 use iced::{Alignment, Element, Length, Padding, Pixels, font};
 
 use crate::icons::{Icon, icon, spinner_icon};
-use crate::theme::{ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, ui_font};
+use crate::theme::{ThemeTokens, ui_font};
 use crate::tooltip::{TooltipConfig, TooltipPlacement, tooltip_view};
-use crate::widgets::{ButtonKind, button_style};
+use crate::widgets::{ButtonKind, ButtonPaintOverride, button_style_overridden};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ControlSize {
-    Small,
-    #[default]
-    Medium,
-    Large,
-}
-
-impl ControlSize {
-    pub const fn height(self) -> f32 {
-        self.height_in(UI_METRICS)
-    }
-
-    pub const fn height_in(self, metrics: crate::theme::ThemeMetrics) -> f32 {
-        match self {
-            Self::Small => metrics.small_control_height(),
-            Self::Medium => metrics.medium_control_height(),
-            Self::Large => metrics.large_control_height(),
-        }
-    }
-
-    pub const fn line_height(self) -> f32 {
-        match self {
-            Self::Small | Self::Medium => 16.0,
-            Self::Large => 18.0,
-        }
-    }
-
-    pub const fn vertical_padding(self, metrics: crate::theme::ThemeMetrics) -> f32 {
-        let remaining = self.height_in(metrics) - self.line_height();
-        if remaining > 0.0 {
-            remaining / 2.0
-        } else {
-            0.0
-        }
-    }
-
-    pub fn nearest(height: f32) -> Self {
-        if !height.is_finite() {
-            return Self::Medium;
-        }
-        if height <= (Self::Small.height() + Self::Medium.height()) / 2.0 {
-            Self::Small
-        } else if height <= (Self::Medium.height() + Self::Large.height()) / 2.0 {
-            Self::Medium
-        } else {
-            Self::Large
-        }
-    }
-
-    pub const fn padding_x(self) -> f32 {
-        match self {
-            Self::Small => 8.0,
-            Self::Medium => UI_METRICS.control_padding_x,
-            Self::Large => 14.0,
-        }
-    }
-
-    pub const fn text_size(self) -> f32 {
-        match self {
-            Self::Small => UI_BASE_TEXT_SIZE - 1.0,
-            Self::Medium => UI_BASE_TEXT_SIZE,
-            Self::Large => UI_BASE_TEXT_SIZE + 1.0,
-        }
-    }
-
-    pub const fn icon_size(self) -> f32 {
-        match self {
-            Self::Small => 13.0,
-            Self::Medium => 14.0,
-            Self::Large => 16.0,
-        }
-    }
-}
+pub use nana_ui_core::ControlSize;
 
 /// A Lilia-style action button with shared sizing, loading and disabled behavior.
 pub struct Button<'a, Message> {
@@ -91,6 +18,9 @@ pub struct Button<'a, Message> {
     kind: ButtonKind,
     size: ControlSize,
     width: Length,
+    height: Option<f32>,
+    padding: Option<Padding>,
+    paint: ButtonPaintOverride,
     disabled: bool,
     loading: bool,
     loading_phase: u8,
@@ -120,6 +50,9 @@ where
             kind: ButtonKind::Ghost,
             size: ControlSize::Medium,
             width: Length::Shrink,
+            height: None,
+            padding: None,
+            paint: ButtonPaintOverride::default(),
             disabled: false,
             loading: false,
             loading_phase: 0,
@@ -146,6 +79,24 @@ where
         self
     }
 
+    /// Override control height (CSS `height` / fixed chrome). `None` keeps [`ControlSize`].
+    pub fn height(mut self, height: impl Into<Option<f32>>) -> Self {
+        self.height = height.into();
+        self
+    }
+
+    /// Override padding (CSS `padding`). `None` keeps [`ControlSize::padding_x`].
+    pub fn padding(mut self, padding: impl Into<Option<Padding>>) -> Self {
+        self.padding = padding.into();
+        self
+    }
+
+    /// Overlay Layout/CSS surface paint on top of [`ButtonKind`] defaults.
+    pub fn paint(mut self, paint: ButtonPaintOverride) -> Self {
+        self.paint = paint;
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -160,21 +111,22 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
+        let fg = self
+            .paint
+            .text_color
+            .unwrap_or_else(|| button_foreground(colors, self.kind));
         let content: Element<'a, Message> = match self.content {
             ButtonContent::Custom(content) => content,
             ButtonContent::Label(label) => text(label)
                 .size(self.size.text_size())
                 .line_height(LineHeight::Absolute(Pixels(self.size.line_height())))
                 .font(ui_font(font::Weight::Medium))
+                .color(fg)
                 .into(),
         };
         let content: Element<'a, Message> = if self.loading {
             row![
-                spinner_icon(
-                    self.loading_phase,
-                    self.size.icon_size(),
-                    button_foreground(colors, self.kind),
-                ),
+                spinner_icon(self.loading_phase, self.size.icon_size(), fg),
                 content,
             ]
             .spacing(6)
@@ -184,21 +136,27 @@ where
             content
         };
 
+        let height = self
+            .height
+            .filter(|h| h.is_finite() && *h > 0.0)
+            .unwrap_or_else(|| self.size.height_in(tokens.metrics));
+        let padding = self.padding.unwrap_or(Padding {
+            top: 0.0,
+            right: self.size.padding_x(),
+            bottom: 0.0,
+            left: self.size.padding_x(),
+        });
+
         button(content)
             .width(self.width)
-            .height(Length::Fixed(self.size.height_in(tokens.metrics)))
-            .padding(Padding {
-                top: 0.0,
-                right: self.size.padding_x(),
-                bottom: 0.0,
-                left: self.size.padding_x(),
-            })
+            .height(Length::Fixed(height))
+            .padding(padding)
             .on_press_maybe(
                 (!self.disabled && !self.loading)
                     .then_some(self.on_press)
                     .flatten(),
             )
-            .style(button_style(tokens, self.kind))
+            .style(button_style_overridden(tokens, self.kind, self.paint))
             .into()
     }
 }
@@ -210,6 +168,10 @@ pub struct IconButton<'a, Message> {
     on_press: Option<Message>,
     kind: ButtonKind,
     size: ControlSize,
+    width: Option<f32>,
+    height: Option<f32>,
+    padding: Option<Padding>,
+    paint: ButtonPaintOverride,
     disabled: bool,
     selected: bool,
 }
@@ -225,6 +187,10 @@ where
             on_press: None,
             kind: ButtonKind::Ghost,
             size: ControlSize::Medium,
+            width: None,
+            height: None,
+            padding: None,
+            paint: ButtonPaintOverride::default(),
             disabled: false,
             selected: false,
         }
@@ -242,6 +208,26 @@ where
 
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
+        self
+    }
+
+    pub fn width(mut self, width: impl Into<Option<f32>>) -> Self {
+        self.width = width.into();
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<Option<f32>>) -> Self {
+        self.height = height.into();
+        self
+    }
+
+    pub fn padding(mut self, padding: impl Into<Option<Padding>>) -> Self {
+        self.padding = padding.into();
+        self
+    }
+
+    pub fn paint(mut self, paint: ButtonPaintOverride) -> Self {
+        self.paint = paint;
         self
     }
 
@@ -263,17 +249,25 @@ where
         } else {
             self.kind
         };
-        let size = self.size.height_in(tokens.metrics);
-        let action = button(icon(
-            self.icon,
-            self.size.icon_size(),
-            button_foreground(colors, kind),
-        ))
-        .width(Length::Fixed(size))
-        .height(Length::Fixed(size))
-        .padding(0)
-        .on_press_maybe((!self.disabled).then_some(self.on_press).flatten())
-        .style(button_style(tokens, kind));
+        let fallback = self.size.height_in(tokens.metrics);
+        let width = self
+            .width
+            .filter(|w| w.is_finite() && *w > 0.0)
+            .unwrap_or(fallback);
+        let height = self
+            .height
+            .filter(|h| h.is_finite() && *h > 0.0)
+            .unwrap_or(fallback);
+        let fg = self
+            .paint
+            .text_color
+            .unwrap_or_else(|| button_foreground(colors, kind));
+        let action = button(icon(self.icon, self.size.icon_size(), fg))
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(height))
+            .padding(self.padding.unwrap_or(Padding::ZERO))
+            .on_press_maybe((!self.disabled).then_some(self.on_press).flatten())
+            .style(button_style_overridden(tokens, kind, self.paint));
         tooltip_view(
             action,
             text(self.label).size(11),

@@ -10,11 +10,13 @@ use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
+use nana_ui::ContextMenuEvent;
 use nana_ui::{
     AppTitleBar, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
     DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
-    FloatingDock, RegionId, SettingsTabId, ThemeMode, UI_BASE_TEXT_SIZE, WindowChrome,
-    WindowChromeEvent, WindowChromeState, WorkspaceAction, dock_window_workspace, dock_workspace,
+    FloatingDock, RegionId, SettingsTabId, ThemeMode, ThemeModeExt, UI_BASE_TEXT_SIZE,
+    WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction, dock_window_workspace,
+    dock_workspace,
 };
 
 use crate::write;
@@ -280,6 +282,33 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &output,
         "gallery-context-menu-dark.png",
         &context_menu,
+    )?);
+
+    let mut context_menu_search = GalleryState::new();
+    context_menu_search.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    context_menu_search.update(GalleryMessage::ToggleContextMenu);
+    context_menu_search.update(GalleryMessage::ContextMenu(ContextMenuEvent::Search(
+        "重命名".to_owned(),
+    )));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-context-menu-search-dark.png",
+        &context_menu_search,
+    )?);
+
+    let mut context_menu_search_light = GalleryState::new();
+    context_menu_search_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    context_menu_search_light.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    context_menu_search_light.update(GalleryMessage::ToggleContextMenu);
+    context_menu_search_light.update(GalleryMessage::ContextMenu(ContextMenuEvent::Search(
+        "copy".to_owned(),
+    )));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-context-menu-search-light.png",
+        &context_menu_search_light,
     )?);
 
     let mut dialog = GalleryState::new();

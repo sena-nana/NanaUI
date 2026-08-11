@@ -1,4 +1,10 @@
-//! NanaUI's native Lilia-style application framework.
+//! NanaUI's native Lilia-style application framework — **L3** Style Model entry
+//! and the **sole** Iced paint implementation.
+//!
+//! Styling contract: `nana_ui_core::style_model` (Tokens + Semantics + Layout).
+//! This crate adapts that model to widgets; it does **not** parse CSS/DOM/JS.
+//! L1/L2 bridges live outside (`nana-ui-vue`, `nanavue-*`) and map into the same
+//! model.
 //!
 //! [`WorkspaceController`], [`WorkspaceSlots`], and [`workspace_view`] provide
 //! the reusable workspace contract.
@@ -109,12 +115,17 @@ pub use layout::{
 };
 pub use menu::{MenuConfirmation, MenuSelection};
 #[cfg(feature = "hosted")]
-pub use nana_window::MaterialOutcome;
+pub use nana_window::apply_hosted_system_material;
+pub use nana_window::{
+    Appearance as WindowAppearance, FallbackColor, MaterialEffect, MaterialFallback,
+    MaterialOutcome, PlatformMaterialSupport, apply_system_material, clear_system_material,
+    platform_material_support,
+};
 pub use overlay::ExclusiveOverlay;
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
-    AppearanceSettings, SettingsCard, SettingsError, SettingsModel, SettingsRow, SettingsState,
-    SettingsTab, SettingsTabId, settings_page, settings_sidebar,
+    AppearanceSettings, BackdropTarget, SettingsCard, SettingsError, SettingsModel, SettingsRow,
+    SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode, settings_page, settings_sidebar,
 };
 pub use shell::{
     AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame, app_shell, app_title_bar,
@@ -125,13 +136,13 @@ pub use sidebar::{
 };
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController, split_pane};
 pub use theme::{
-    Colors, ThemeMetrics, ThemeMode, ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, ui_font,
-    ui_font_defaults,
+    Colors, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, ThemeModeExt, ThemeTokens,
+    UI_BASE_TEXT_SIZE, UI_METRICS, ui_font, ui_font_defaults,
 };
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};
 pub use tooltip::{TooltipConfig, TooltipPlacement};
-pub use widgets::{ButtonKind, CardKind};
+pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
 pub use window_chrome::{
     WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,
     custom_title_bar_window,

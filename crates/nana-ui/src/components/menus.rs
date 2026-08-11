@@ -127,14 +127,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AnchoredMenuPlacement {
-    TopStart,
-    TopEnd,
-    #[default]
-    BottomStart,
-    BottomEnd,
-}
+pub use nana_ui_core::AnchoredMenuPlacement;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AnchoredMenuPosition {
@@ -600,6 +593,7 @@ mod tests {
         ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuItem, ControlSize,
         collect_matches, context_menu_size,
     };
+    use crate::theme::ThemeModeExt;
     use iced::{Point, Size};
 
     #[test]

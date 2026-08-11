@@ -41,10 +41,77 @@ pub enum MaterialEffect {
     Acrylic,
 }
 
+impl MaterialEffect {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Solid => "实色",
+            Self::Transparent => "透明",
+            Self::Vibrancy => "Vibrancy",
+            Self::Mica => "Mica",
+            Self::Acrylic => "Acrylic",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterialFallback {
     PlatformDoesNotProvideNativeMaterial,
     NativeMaterialUnavailable,
+}
+
+impl MaterialFallback {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PlatformDoesNotProvideNativeMaterial => "当前平台无原生窗口材质",
+            Self::NativeMaterialUnavailable => "原生材质不可用，已回退实色",
+        }
+    }
+}
+
+/// Platform-level native material capability, without requiring a window handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformMaterialSupport {
+    /// macOS: Vibrancy / UnderWindowBackground.
+    Vibrancy,
+    /// Windows: Mica preferred, Acrylic fallback.
+    MicaAcrylic,
+    /// No native material API is invoked.
+    None,
+}
+
+impl PlatformMaterialSupport {
+    pub const fn offers_native(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub const fn preferred_effect(self) -> Option<MaterialEffect> {
+        match self {
+            Self::Vibrancy => Some(MaterialEffect::Vibrancy),
+            Self::MicaAcrylic => Some(MaterialEffect::Mica),
+            Self::None => None,
+        }
+    }
+
+    pub const fn hint(self) -> &'static str {
+        match self {
+            Self::Vibrancy => {
+                "本平台首选 Vibrancy。Hosted GPU 表面若与材质层冲突会回退实色，不崩溃。"
+            }
+            Self::MicaAcrylic => "本平台首选 Mica；失败时尝试 Acrylic，再失败则回退实色。",
+            Self::None => "当前平台无原生窗口材质；选择透明时保持可读的实色背景。",
+        }
+    }
+}
+
+/// Returns the compile-time material capability of the current target OS.
+pub const fn platform_material_support() -> PlatformMaterialSupport {
+    if cfg!(target_os = "macos") {
+        PlatformMaterialSupport::Vibrancy
+    } else if cfg!(target_os = "windows") {
+        PlatformMaterialSupport::MicaAcrylic
+    } else {
+        PlatformMaterialSupport::None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,11 +142,27 @@ impl MaterialOutcome {
         }
     }
 
+    /// User explicitly chose an opaque window background.
+    pub const fn chosen_solid() -> Self {
+        Self {
+            effect: MaterialEffect::Solid,
+            fallback: None,
+        }
+    }
+
     pub const fn is_native(self) -> bool {
         matches!(
             self.effect,
             MaterialEffect::Vibrancy | MaterialEffect::Mica | MaterialEffect::Acrylic
         )
+    }
+
+    pub fn status_label(self) -> String {
+        match self.fallback {
+            Some(reason) => format!("{}（{}）", self.effect.label(), reason.label()),
+            None if self.is_native() => format!("已应用 {}", self.effect.label()),
+            None => "实色背景".to_string(),
+        }
     }
 }
 

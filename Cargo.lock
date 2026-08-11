@@ -1595,14 +1595,24 @@ dependencies = [
 name = "nana-ui"
 version = "0.1.0"
 dependencies = [
+ "android-activity",
  "bytemuck",
  "iced",
  "iced_wgpu",
  "iced_winit",
+ "nana-ui-core",
  "nana-window",
  "serde",
  "serde_json",
  "wgpu",
+]
+
+[[package]]
+name = "nana-ui-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

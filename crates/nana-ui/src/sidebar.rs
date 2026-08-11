@@ -175,6 +175,8 @@ pub struct SidebarRow<'a, Message> {
     trailing: Option<Element<'a, Message>>,
     depth: u16,
     size: ControlSize,
+    /// CSS `gap` between leading icon and label (Lilia `.sb-tree__row` / control = 6).
+    gap: f32,
     state: SidebarRowState,
     tone: SidebarRowTone,
     on_select: Option<Message>,
@@ -192,6 +194,7 @@ where
             trailing: None,
             depth: 0,
             size: ControlSize::Small,
+            gap: 6.0,
             state: SidebarRowState::Idle,
             tone: SidebarRowTone::Default,
             on_select: None,
@@ -206,6 +209,11 @@ where
 
     pub fn trailing(mut self, trailing: impl Into<Element<'a, Message>>) -> Self {
         self.trailing = Some(trailing.into());
+        self
+    }
+
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap.max(0.0);
         self
     }
 
@@ -254,7 +262,7 @@ where
         let has_disclosure = self.disclosure.is_some();
         let mut content = row![]
             .width(Length::Fill)
-            .spacing(6)
+            .spacing(self.gap)
             .align_y(Alignment::Center);
         if has_disclosure {
             content = content.push(space().width(Length::Fixed(14.0)));
@@ -725,7 +733,7 @@ mod tests {
         ControlSize, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSectionState,
         fixed_children_height, section_header_style, sidebar_row_style,
     };
-    use crate::theme::{ThemeMode, UI_METRICS};
+    use crate::theme::{ThemeMode, ThemeModeExt, UI_METRICS};
 
     #[test]
     fn section_state_animates_and_reverses_expansion() {

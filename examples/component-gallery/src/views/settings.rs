@@ -18,6 +18,8 @@ impl GalleryState {
 
     pub(super) fn appearance_settings(&self) -> Element<'_, GalleryMessage> {
         AppearanceSection::new(self.theme, &self.appearance, appearance_message)
+            .platform_hint(nana_ui::platform_material_support().hint())
+            .material_status(self.material_outcome.status_label())
             .view(self.theme_tokens())
     }
 

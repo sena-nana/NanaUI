@@ -173,7 +173,7 @@ impl LevelMeter {
 
     pub fn view<'a, Message: 'a>(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let colors = theme.into().colors;
-        let bar = self.tone.color(colors);
+        let bar = status_tone_color(self.tone, colors);
         progress_bar(0.0..=1.0, self.value.clamp(0.0, 1.0))
             .girth(self.height)
             .style(move |_theme| iced::widget::progress_bar::Style {
@@ -185,25 +185,15 @@ impl LevelMeter {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum StatusTone {
-    #[default]
-    Neutral,
-    Info,
-    Success,
-    Warning,
-    Danger,
-}
+pub use nana_ui_core::StatusTone;
 
-impl StatusTone {
-    fn color(self, colors: Colors) -> Color {
-        match self {
-            Self::Neutral => colors.muted,
-            Self::Info => colors.accent,
-            Self::Success => colors.success,
-            Self::Warning => colors.warning,
-            Self::Danger => colors.danger,
-        }
+fn status_tone_color(tone: StatusTone, colors: Colors) -> Color {
+    match tone {
+        StatusTone::Neutral => colors.muted,
+        StatusTone::Info => colors.accent,
+        StatusTone::Success => colors.success,
+        StatusTone::Warning => colors.warning,
+        StatusTone::Danger => colors.danger,
     }
 }
 
@@ -224,7 +214,7 @@ impl<'a> StatusBadge<'a> {
     pub fn view<Message: 'a>(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
-        let tone = self.tone.color(colors);
+        let tone = status_tone_color(self.tone, colors);
         container(
             row![
                 status_indicator(true, 6.0, tone),
@@ -246,11 +236,7 @@ impl<'a> StatusBadge<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidationIntent {
-    Warning,
-    Danger,
-}
+pub use nana_ui_core::ValidationIntent;
 
 /// Inline validation feedback for form controls.
 pub struct ValidationMessage<'a> {
@@ -282,25 +268,7 @@ impl<'a> ValidationMessage<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ToastTone {
-    #[default]
-    Info,
-    Success,
-    Warning,
-    Danger,
-}
-
-impl ToastTone {
-    fn status(self) -> StatusTone {
-        match self {
-            Self::Info => StatusTone::Info,
-            Self::Success => StatusTone::Success,
-            Self::Warning => StatusTone::Warning,
-            Self::Danger => StatusTone::Danger,
-        }
-    }
-}
+pub use nana_ui_core::ToastTone;
 
 /// An inline or overlay-ready notification with an optional dismiss action.
 pub struct Toast<'a, Message> {
@@ -336,7 +304,7 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
-        let tone = self.tone.status().color(colors);
+        let tone = status_tone_color(self.tone.status(), colors);
         let mut copy = column![
             text(self.title)
                 .size(12)
