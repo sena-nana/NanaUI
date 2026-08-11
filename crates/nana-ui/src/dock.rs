@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
-use iced::widget::{button, column, container, row, space, stack, text};
+use iced::widget::{button, column, container, mouse_area, row, space, stack, text};
 use iced::{Alignment, Element, Event, Length, Padding, Point, Rectangle, Size, Subscription};
 use serde::{Deserialize, Serialize};
 
@@ -344,6 +344,11 @@ pub enum DockAction {
     },
     CancelDrag,
     Hover(bool),
+    /// Pointer entered or left a card-chrome dock item.
+    CardHover {
+        id: DockId,
+        hovered: bool,
+    },
     Hide(DockId),
     Show(DockId),
     Float {
@@ -567,6 +572,7 @@ pub struct DockController {
     focused_split: Option<(DockSurfaceId, Vec<usize>, DockAxis)>,
     active_drag: Option<ActiveDrag>,
     chrome_style: DockChromeStyle,
+    hovered_card: Option<DockId>,
 }
 
 impl DockController {
@@ -610,6 +616,7 @@ impl DockController {
             focused_split: None,
             active_drag: None,
             chrome_style: DockChromeStyle::default(),
+            hovered_card: None,
         })
     }
 
@@ -894,6 +901,7 @@ impl DockController {
                     | DockAction::SurfaceResized { .. }
                     | DockAction::SurfaceGeometry { .. }
                     | DockAction::SurfaceLayout { .. }
+                    | DockAction::CardHover { .. }
             )
         {
             return DockUpdate::default();
@@ -1182,6 +1190,14 @@ impl DockController {
                 };
                 self.settle_drag_target(&mut drag, now);
                 self.active_drag = Some(drag);
+                DockUpdate::default()
+            }
+            DockAction::CardHover { id, hovered } => {
+                if hovered {
+                    self.hovered_card = Some(id);
+                } else if self.hovered_card.as_ref() == Some(&id) {
+                    self.hovered_card = None;
+                }
                 DockUpdate::default()
             }
             DockAction::Hide(id) => self.hide(id),
@@ -2810,7 +2826,12 @@ where
         dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
     };
     let mut title_bar = row![title].spacing(4).align_y(Alignment::Center);
-    if !controller.layout.locked && id != &controller.center && surface == DockSurfaceId(0) {
+    let card_hovered = controller.hovered_card.as_ref() == Some(id);
+    let show_chrome_actions = !controller.layout.locked
+        && id != &controller.center
+        && surface == DockSurfaceId(0)
+        && (chrome_style != DockChromeStyle::Card || card_hovered);
+    if show_chrome_actions {
         if spec.is_some_and(|spec| spec.floatable) {
             title_bar = title_bar.push(
                 button(text("↗").size(11))
@@ -2846,10 +2867,20 @@ where
     if tabs_own_title || id == &controller.center {
         content
     } else if chrome_style == DockChromeStyle::Card {
-        dock_card_shell(
+        let card = dock_card_shell(
             column![dock_card_title_bar(title_bar, tokens), content].height(Length::Fill),
             tokens,
-        )
+        );
+        mouse_area(card)
+            .on_enter(on_action(DockAction::CardHover {
+                id: id.clone(),
+                hovered: true,
+            }))
+            .on_exit(on_action(DockAction::CardHover {
+                id: id.clone(),
+                hovered: false,
+            }))
+            .into()
     } else {
         column![
             container(title_bar)
