@@ -344,11 +344,7 @@ pub enum DockAction {
     },
     CancelDrag,
     Hover(bool),
-    /// Pointer entered or left a card-chrome dock item.
-    CardHover {
-        id: DockId,
-        hovered: bool,
-    },
+    CardHover(DockId, bool),
     Hide(DockId),
     Show(DockId),
     Float {
@@ -901,7 +897,7 @@ impl DockController {
                     | DockAction::SurfaceResized { .. }
                     | DockAction::SurfaceGeometry { .. }
                     | DockAction::SurfaceLayout { .. }
-                    | DockAction::CardHover { .. }
+                    | DockAction::CardHover(..)
             )
         {
             return DockUpdate::default();
@@ -1192,7 +1188,7 @@ impl DockController {
                 self.active_drag = Some(drag);
                 DockUpdate::default()
             }
-            DockAction::CardHover { id, hovered } => {
+            DockAction::CardHover(id, hovered) => {
                 if hovered {
                     self.hovered_card = Some(id);
                 } else if self.hovered_card.as_ref() == Some(&id) {
@@ -2826,11 +2822,11 @@ where
         dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
     };
     let mut title_bar = row![title].spacing(4).align_y(Alignment::Center);
-    let card_hovered = controller.hovered_card.as_ref() == Some(id);
     let show_chrome_actions = !controller.layout.locked
         && id != &controller.center
         && surface == DockSurfaceId(0)
-        && (chrome_style != DockChromeStyle::Card || card_hovered);
+        && (chrome_style != DockChromeStyle::Card
+            || controller.hovered_card.as_ref() == Some(id));
     if show_chrome_actions {
         if spec.is_some_and(|spec| spec.floatable) {
             title_bar = title_bar.push(
@@ -2872,14 +2868,8 @@ where
             tokens,
         );
         mouse_area(card)
-            .on_enter(on_action(DockAction::CardHover {
-                id: id.clone(),
-                hovered: true,
-            }))
-            .on_exit(on_action(DockAction::CardHover {
-                id: id.clone(),
-                hovered: false,
-            }))
+            .on_enter(on_action(DockAction::CardHover(id.clone(), true)))
+            .on_exit(on_action(DockAction::CardHover(id.clone(), false)))
             .into()
     } else {
         column![
