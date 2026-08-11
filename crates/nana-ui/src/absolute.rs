@@ -1,29 +1,22 @@
 //! Absolute placement that does **not** shrink available layout space the way
 //! iced's [`pin`](iced::widget::pin) does (`available = parent − position`).
 
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::renderer;
 use iced::advanced::widget::{self, Tree, Widget};
-use iced::advanced::{Layout, mouse, overlay, renderer};
-use iced::widget::container;
-use iced::{Element, Event, Length, Point, Rectangle, Shell, Size};
+use iced::advanced::{Shell, mouse, overlay};
+use iced::{Element, Event, Length, Point, Rectangle, Size};
 
 /// Fills the parent and places `content` at `position` without edge clamping.
 ///
 /// Use this for anchored overlays (menus, toasts, node chrome) when the child
 /// must keep its intrinsic size even near the bottom-right of the viewport.
-pub struct Absolute<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
-where
-    Theme: container::Catalog,
-    Renderer: iced::advanced::Renderer,
-{
+pub struct Absolute<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     position: Point,
 }
 
-impl<'a, Message, Theme, Renderer> Absolute<'a, Message, Theme, Renderer>
-where
-    Theme: container::Catalog,
-    Renderer: iced::advanced::Renderer,
-{
+impl<'a, Message, Theme, Renderer> Absolute<'a, Message, Theme, Renderer> {
     pub fn new(
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
         position: Point,
@@ -38,23 +31,10 @@ where
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Absolute<'a, Message, Theme, Renderer>
 where
-    Theme: container::Catalog,
     Renderer: iced::advanced::Renderer,
 {
-    fn tag(&self) -> widget::tree::Tag {
-        widget::tree::Tag::stateless()
-    }
-
-    fn state(&self) -> widget::tree::State {
-        widget::tree::State::None
-    }
-
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_ref(&self.content));
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(&mut [self.content.as_widget_mut()]);
     }
 
     fn size(&self) -> Size<Length> {
@@ -62,28 +42,28 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
-        limits: &iced::advanced::layout::Limits,
-    ) -> iced::advanced::layout::Node {
+        limits: &layout::Limits,
+    ) -> layout::Node {
         let size = limits.resolve(Length::Fill, Length::Fill, limits.max());
-        let content = self.content.as_widget().layout(
+        let content = self.content.as_widget_mut().layout(
             &mut tree.children[0],
             renderer,
-            &iced::advanced::layout::Limits::new(Size::ZERO, size),
+            &layout::Limits::new(Size::ZERO, size),
         );
-        iced::advanced::layout::Node::with_children(size, vec![content.move_to(self.position)])
+        layout::Node::with_children(size, vec![content.move_to(self.position)])
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        self.content.as_widget().operate(
+        self.content.as_widget_mut().operate(
             &mut tree.children[0],
             layout.children().next().expect("absolute content"),
             renderer,
@@ -98,7 +78,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn iced::advanced::Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
@@ -108,7 +87,6 @@ where
             layout.children().next().expect("absolute content"),
             cursor,
             renderer,
-            clipboard,
             shell,
             viewport,
         );
@@ -177,7 +155,7 @@ impl<'a, Message, Theme, Renderer> From<Absolute<'a, Message, Theme, Renderer>>
     for Element<'a, Message, Theme, Renderer>
 where
     Message: 'a,
-    Theme: container::Catalog + 'a,
+    Theme: 'a,
     Renderer: iced::advanced::Renderer + 'a,
 {
     fn from(widget: Absolute<'a, Message, Theme, Renderer>) -> Self {
