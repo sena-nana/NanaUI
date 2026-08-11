@@ -1,0 +1,15 @@
+[package]
+name = "nana-ui-web-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "window/document/EventTarget compatibility layer stub for NanaUI Vue"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_ui_web_api"
+path = "src/lib.rs"
+
+[dependencies]
+nana-js-engine.workspace = true
+nana-ui-platform.workspace = true
