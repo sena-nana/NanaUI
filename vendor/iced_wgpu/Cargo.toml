@@ -1,0 +1,35 @@
+[package]
+name = "iced_wgpu"
+description = "A renderer for iced on top of wgpu (NanaUI vendor: svg Batch::default fix)"
+version = "0.15.0-dev"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[features]
+default = ["wgpu/default"]
+geometry = ["iced_graphics/geometry", "lyon"]
+image = ["iced_graphics/image", "guillotiere"]
+svg = ["iced_graphics/svg", "resvg", "guillotiere"]
+svg-text = ["svg", "resvg/text", "resvg/system-fonts", "resvg/memmap-fonts"]
+svg-raster-images = ["svg", "resvg/raster-images"]
+web-colors = ["iced_graphics/web-colors"]
+webgl = ["wgpu/webgl"]
+strict-assertions = []
+
+[dependencies]
+iced_debug = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
+iced_graphics = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
+
+bitflags = "2.0"
+bytemuck = { version = "1.0", features = ["derive"] }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b131eda1288d08df89ad5ba56de97713308" }
+log = "0.4"
+rustc-hash = "2.0"
+thiserror = "2"
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
+
+lyon = { version = "1.0", optional = true }
+guillotiere = { version = "0.6", optional = true }
+resvg = { version = "0.45", default-features = false, optional = true }
