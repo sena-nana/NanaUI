@@ -1,0 +1,11 @@
+{
+  "name": "@nanaui/nanavue-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Vue createRenderer host runtime for NanaUI",
+  "type": "module",
+  "main": "src/createNanaRenderer.js",
+  "exports": {
+    ".": "./src/createNanaRenderer.js"
+  }
+}

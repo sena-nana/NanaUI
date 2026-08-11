@@ -1,0 +1,7 @@
+{
+  "name": "@nanaui/vite-plugin-nanavue",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Vite plugin for NanaVue SFC/TS/CSS builds (Phase 6; stub)",
+  "type": "module"
+}
