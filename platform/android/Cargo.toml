@@ -1,0 +1,52 @@
+[package]
+name = "nana-android-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+description = "Minimal Android ARM64 host: NativeActivity + wgpu/Vulkan + QuickJS (no WebView, no Blitz)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_android_host"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["engine-quickjs"]
+# Android MVP default engine — mutually exclusive with engine-v8 at the app boundary.
+engine-quickjs = ["dep:nana-js-quickjs"]
+engine-v8 = []
+
+[dependencies]
+nana-js-engine.workspace = true
+nana-ui-core.workspace = true
+nana-ui-platform.workspace = true
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["controls"] }
+nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
+nana-js-quickjs = { workspace = true, optional = true }
+iced.workspace = true
+wgpu.workspace = true
+log = "0.4"
+pollster = "0.4"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.14"
+ndk = { version = "0.9", features = ["rwh_06"] }
+iced_wgpu.workspace = true
+iced_winit.workspace = true
+
+[package.metadata.android]
+package = "app.nanaui.host"
+apk_name = "nana-android-host"
+# NativeActivity loads libnana_android_host.so and calls android_main.
+app_name = "NanaUI"
+# Keep min SDK aligned with NDK API 24 linker.
+min_sdk_version = 24
+target_sdk_version = 34
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.vulkan.level"
+required = false

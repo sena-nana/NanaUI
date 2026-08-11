@@ -1,0 +1,24 @@
+# Optional NativeActivity shell notes
+#
+# The Rust cdylib exports `android_main` (android-activity). Package with cargo-apk:
+#
+#   cargo install cargo-apk
+#   source scripts/android-env.sh
+#   cargo apk build -p nana-android-host --target aarch64-linux-android
+#
+# Or drop `libnana_android_host.so` into jniLibs/arm64-v8a of a minimal
+# NativeActivity app whose android.app.lib_name is `nana_android_host`.
+#
+# Package without cargo-apk (workspace TOML incompatible with cargo-apk 0.10):
+#   ./scripts/package-android-host-apk.sh
+#   → target-android/apk/nana-android-host-debug.apk
+#
+# KeyEvent typing evidence (2026-08-10): emulator AVD nana_api34_arm64 +
+# adb install + keyevent → logcat `iced slot Input len=`. Soft IME still open.
+# See docs/android-arm64.md「模拟器 KeyEvent 证据」.
+
+minSdk=24
+targetSdk=34
+abi=arm64-v8a
+lib=nana_android_host
+webview=forbidden
