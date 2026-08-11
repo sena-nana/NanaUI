@@ -1,0 +1,24 @@
+{
+  "id": "T-W01",
+  "title": "flex-wrap 横排折行",
+  "status": "pass",
+  "viewport": [200, 160],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;flex-wrap:wrap;gap:8px;width:200px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:80px;height:40px" },
+      { "id": "b", "style": "width:80px;height:40px" },
+      { "id": "c", "style": "width:80px;height:40px" },
+      { "id": "d", "style": "width:80px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 88 },
+    { "id": "a", "x": 0, "y": 0, "w": 80, "h": 40 },
+    { "id": "b", "x": 88, "y": 0, "w": 80, "h": 40 },
+    { "id": "c", "x": 0, "y": 48, "w": 80, "h": 40 },
+    { "id": "d", "x": 88, "y": 48, "w": 80, "h": 40 }
+  ]
+}

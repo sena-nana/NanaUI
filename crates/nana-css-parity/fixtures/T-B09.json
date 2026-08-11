@@ -1,0 +1,27 @@
+{
+  "id": "T-B09",
+  "title": "border-width 计入 border-box",
+  "status": "pass",
+  "viewport": [320, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;align-items:flex-start;width:300px;height:100px;gap:0",
+    "children": [
+      {
+        "id": "a",
+        "style": "display:flex;flex-direction:row;width:100px;height:40px;padding:10px;border-width:5px;box-sizing:border-box",
+        "children": [
+          { "id": "inner", "style": "width:100%;height:100%" }
+        ]
+      },
+      { "id": "b", "style": "width:50px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 100 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 40 },
+    { "id": "inner", "x": 15, "y": 15, "w": 70, "h": 10 },
+    { "id": "b", "x": 100, "y": 0, "w": 50, "h": 40 }
+  ]
+}

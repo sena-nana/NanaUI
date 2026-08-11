@@ -1,0 +1,18 @@
+{
+  "id": "T-S12",
+  "title": "min-width 非零保底（% 宽被抬升）",
+  "status": "pass",
+  "viewport": [320, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;align-items:flex-start;width:300px;height:80px;gap:0",
+    "children": [
+      { "id": "a", "style": "width:10%;min-width:80px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 80, "h": 40 }
+  ]
+}

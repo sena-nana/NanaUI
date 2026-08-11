@@ -1,0 +1,20 @@
+{
+  "id": "T-G17",
+  "title": "rows→none 后 columns-only 横向轨",
+  "status": "pass",
+  "viewport": [400, 180],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-rows:80px 1fr;grid-template-columns:100px 1fr;grid-template-rows:none;width:400px;height:160px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "height:160px" },
+      { "id": "b", "style": "height:160px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 400, "h": 160 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 160 },
+    { "id": "b", "x": 100, "y": 0, "w": 300, "h": 160 }
+  ]
+}

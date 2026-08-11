@@ -1,0 +1,20 @@
+{
+  "id": "T-B02",
+  "title": "margin 四值：子项边距推进下一兄弟",
+  "status": "pass",
+  "viewport": [320, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;align-items:flex-start;width:320px;height:120px;gap:0",
+    "children": [
+      { "id": "a", "style": "width:40px;height:30px;margin:4px 8px 6px 2px" },
+      { "id": "b", "style": "width:40px;height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 320, "h": 120 },
+    { "id": "a", "x": 2, "y": 4, "w": 40, "h": 30 },
+    { "id": "b", "x": 50, "y": 0, "w": 40, "h": 30 }
+  ]
+}

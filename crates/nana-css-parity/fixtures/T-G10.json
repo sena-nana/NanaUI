@@ -1,0 +1,22 @@
+{
+  "id": "T-G10",
+  "title": "grid-template-rows + 双值 gap（row-gap 主轴）",
+  "status": "pass",
+  "viewport": [300, 420],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-rows:100px 1fr 1fr;width:300px;height:400px;align-items:stretch;gap:20px 40px",
+    "children": [
+      { "id": "a", "style": "width:300px" },
+      { "id": "b", "style": "width:300px" },
+      { "id": "c", "style": "width:300px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 300, "h": 400 },
+    { "id": "a", "x": 0, "y": 0, "w": 300, "h": 100 },
+    { "id": "b", "x": 0, "y": 120, "w": 300, "h": 130 },
+    { "id": "c", "x": 0, "y": 270, "w": 300, "h": 130 }
+  ]
+}

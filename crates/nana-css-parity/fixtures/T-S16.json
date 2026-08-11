@@ -1,0 +1,22 @@
+{
+  "id": "T-S16",
+  "title": "em / rem / calc(em ± px) sizes",
+  "status": "pass",
+  "viewport": [320, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;align-items:flex-start;width:320px;height:200px;gap:8px",
+    "children": [
+      { "id": "a", "style": "width:2em;height:1rem" },
+      { "id": "b", "style": "width:calc(2em + 8px);height:20px" },
+      { "id": "c", "style": "width:min(10rem, 50%);height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 320, "h": 200 },
+    { "id": "a", "x": 0, "y": 0, "w": 32, "h": 16 },
+    { "id": "b", "x": 0, "y": 24, "w": 40, "h": 20 },
+    { "id": "c", "x": 0, "y": 52, "w": 160, "h": 20 }
+  ]
+}

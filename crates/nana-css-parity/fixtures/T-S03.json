@@ -1,0 +1,18 @@
+{
+  "id": "T-S03",
+  "title": "min-height 保底",
+  "status": "pass",
+  "viewport": [200, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:200px;min-height:120px;align-items:flex-start",
+    "children": [
+      { "id": "tiny", "style": "width:40px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "tiny", "x": 0, "y": 0, "w": 40, "h": 20 }
+  ]
+}

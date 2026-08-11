@@ -1,0 +1,25 @@
+{
+  "id": "T-S09",
+  "title": "嵌套 width% + 内层 calc(50% - 10px)",
+  "status": "pass",
+  "viewport": [400, 160],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:400px;height:140px;align-items:flex-start;gap:0",
+    "children": [
+      {
+        "id": "mid",
+        "style": "display:flex;flex-direction:column;width:50%;align-items:flex-start;gap:0",
+        "children": [
+          { "id": "leaf", "style": "width:calc(50% - 10px);height:40px" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 140 },
+    { "id": "mid", "x": 0, "y": 0, "w": 200, "h": 40 },
+    { "id": "leaf", "x": 0, "y": 0, "w": 90, "h": 40 }
+  ]
+}

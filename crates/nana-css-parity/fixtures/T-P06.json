@@ -1,0 +1,23 @@
+{
+  "id": "T-P06",
+  "title": "absolute 无 inset 静态落点（CB 原点）",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;padding:10px;width:200px;height:120px",
+    "children": [
+      {
+        "id": "static-abs",
+        "style": "position:absolute;width:40px;height:24px"
+      },
+      { "id": "flow", "style": "width:50px;height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "flow", "x": 10, "y": 10, "w": 50, "h": 30 },
+    { "id": "static-abs", "x": 10, "y": 10, "w": 40, "h": 24 }
+  ]
+}

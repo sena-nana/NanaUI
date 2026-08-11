@@ -1,0 +1,22 @@
+{
+  "id": "T-G20",
+  "title": "repeat(3,1fr) 固定次数展开",
+  "status": "pass",
+  "viewport": [620, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:repeat(3,1fr);width:600px;height:80px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "height:80px" },
+      { "id": "b", "style": "height:80px" },
+      { "id": "c", "style": "height:80px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 600, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "b", "x": 200, "y": 0, "w": 200, "h": 80 },
+    { "id": "c", "x": 400, "y": 0, "w": 200, "h": 80 }
+  ]
+}

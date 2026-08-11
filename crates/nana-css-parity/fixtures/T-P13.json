@@ -1,0 +1,21 @@
+{
+  "id": "T-P13",
+  "title": "inset 四值混用 % + px（top right bottom left）",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;width:200px;height:120px",
+    "children": [
+      {
+        "id": "frame",
+        "style": "position:absolute;inset:5% 10px 8px 15%"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "frame", "x": 30, "y": 6, "w": 160, "h": 106 }
+  ]
+}

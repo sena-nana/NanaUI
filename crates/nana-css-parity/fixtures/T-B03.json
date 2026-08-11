@@ -1,0 +1,20 @@
+{
+  "id": "T-B03",
+  "title": "margin 两值简写：垂直/水平推进兄弟",
+  "status": "pass",
+  "viewport": [280, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;align-items:flex-start;width:280px;height:100px;gap:0",
+    "children": [
+      { "id": "a", "style": "width:40px;height:30px;margin:6px 10px" },
+      { "id": "b", "style": "width:40px;height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 280, "h": 100 },
+    { "id": "a", "x": 10, "y": 6, "w": 40, "h": 30 },
+    { "id": "b", "x": 60, "y": 0, "w": 40, "h": 30 }
+  ]
+}

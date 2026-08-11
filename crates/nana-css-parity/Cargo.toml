@@ -1,0 +1,28 @@
+[package]
+name = "nana-css-parity"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "CSS layout parity fixtures: LayoutStyle measure vs optional WebView reference"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "css-parity"
+path = "src/bin/css_parity.rs"
+
+[features]
+default = []
+# macOS WKWebView / wry reference only — never enable from nana-ui product crates.
+webview-ref = ["dep:wry", "dep:tao"]
+
+[dependencies]
+nana-ui-vue = { path = "../nana-ui-vue" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Optional WebView reference (test-only feature).
+wry = { version = "0.50", optional = true, default-features = true }
+tao = { version = "0.31", optional = true, default-features = true }
+
+[dev-dependencies]
+nana-ui-vue = { path = "../nana-ui-vue" }

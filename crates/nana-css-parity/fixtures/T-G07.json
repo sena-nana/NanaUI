@@ -1,0 +1,22 @@
+{
+  "id": "T-G07",
+  "title": "grid 多轨同时 min 冻结",
+  "status": "pass",
+  "viewport": [600, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:minmax(250px, 1fr) minmax(250px, 1fr) 1fr;width:600px;height:160px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "height:160px" },
+      { "id": "b", "style": "height:160px" },
+      { "id": "c", "style": "height:160px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 600, "h": 160 },
+    { "id": "a", "x": 0, "y": 0, "w": 250, "h": 160 },
+    { "id": "b", "x": 250, "y": 0, "w": 250, "h": 160 },
+    { "id": "c", "x": 500, "y": 0, "w": 100, "h": 160 }
+  ]
+}

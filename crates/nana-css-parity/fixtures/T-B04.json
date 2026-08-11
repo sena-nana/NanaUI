@@ -1,0 +1,18 @@
+{
+  "id": "T-B04",
+  "title": "padding 三值简写：top | horizontal | bottom",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;align-items:flex-start;width:200px;height:120px;padding:4px 10px 16px;gap:0",
+    "children": [
+      { "id": "child", "style": "width:40px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "child", "x": 10, "y": 4, "w": 40, "h": 20 }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "T-G03",
+  "title": "grid-template-columns 三轨 80px 1fr 1fr",
+  "status": "pass",
+  "viewport": [800, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:80px 1fr 1fr;width:800px;height:160px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "nav", "style": "height:160px" },
+      { "id": "a", "style": "height:160px" },
+      { "id": "b", "style": "height:160px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 800, "h": 160 },
+    { "id": "nav", "x": 0, "y": 0, "w": 80, "h": 160 },
+    { "id": "a", "x": 80, "y": 0, "w": 360, "h": 160 },
+    { "id": "b", "x": 440, "y": 0, "w": 360, "h": 160 }
+  ]
+}

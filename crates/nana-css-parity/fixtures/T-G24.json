@@ -1,0 +1,20 @@
+{
+  "id": "T-G24",
+  "title": "repeat(2,minmax(240px,1fr)) Repo 诚实轨",
+  "status": "pass",
+  "viewport": [620, 140],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:repeat(2,minmax(240px,1fr));width:600px;height:100px;align-items:stretch;gap:12px",
+    "children": [
+      { "id": "a", "style": "height:100px" },
+      { "id": "b", "style": "height:100px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 600, "h": 100 },
+    { "id": "a", "x": 0, "y": 0, "w": 294, "h": 100 },
+    { "id": "b", "x": 306, "y": 0, "w": 294, "h": 100 }
+  ]
+}

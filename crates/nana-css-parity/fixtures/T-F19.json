@@ -1,0 +1,20 @@
+{
+  "id": "T-F19",
+  "title": "flex-shrink + min-width 冻结重分配",
+  "status": "pass",
+  "viewport": [240, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;align-items:flex-start;width:200px;height:80px;gap:0",
+    "children": [
+      { "id": "a", "style": "width:150px;flex-shrink:1;min-width:120px;height:40px" },
+      { "id": "b", "style": "width:150px;flex-shrink:1;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 120, "h": 40 },
+    { "id": "b", "x": 120, "y": 0, "w": 80, "h": 40 }
+  ]
+}

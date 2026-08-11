@@ -1,0 +1,20 @@
+{
+  "id": "T-G02",
+  "title": "grid-template-columns var + minmax(0,1fr)",
+  "status": "pass",
+  "viewport": [800, 400],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:var(--sidebar-width, 200px) minmax(0, 1fr);width:800px;height:400px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "sidebar", "style": "height:400px" },
+      { "id": "primary", "style": "height:400px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 800, "h": 400 },
+    { "id": "sidebar", "x": 0, "y": 0, "w": 200, "h": 400 },
+    { "id": "primary", "x": 200, "y": 0, "w": 600, "h": 400 }
+  ]
+}

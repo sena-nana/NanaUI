@@ -1,0 +1,48 @@
+{
+  "id": "T-S04",
+  "title": "min-width:0 允许 flex 收缩",
+  "status": "pass",
+  "gap_note": "几何：min-width:0 + flex:1；文本 ellipsis 由 iced text-overflow 路径兑现",
+  "viewport": [
+    300,
+    80
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;width:300px;height:60px;align-items:center",
+    "children": [
+      {
+        "id": "label",
+        "style": "flex:1;min-width:0;height:24px"
+      },
+      {
+        "id": "action",
+        "style": "width:80px;height:24px"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "w": 300,
+      "h": 60
+    },
+    {
+      "id": "label",
+      "x": 0,
+      "y": 18,
+      "w": 220,
+      "h": 24
+    },
+    {
+      "id": "action",
+      "x": 220,
+      "y": 18,
+      "w": 80,
+      "h": 24
+    }
+  ]
+}

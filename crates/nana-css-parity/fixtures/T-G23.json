@@ -1,0 +1,20 @@
+{
+  "id": "T-G23",
+  "title": "fit-content(120px) 1fr 上限钳制",
+  "status": "pass",
+  "viewport": [420, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:fit-content(120px) 1fr;width:400px;height:80px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "height:80px" },
+      { "id": "b", "style": "height:80px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 400, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 120, "h": 80 },
+    { "id": "b", "x": 120, "y": 0, "w": 280, "h": 80 }
+  ]
+}

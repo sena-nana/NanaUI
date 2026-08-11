@@ -1,0 +1,23 @@
+{
+  "id": "T-P05",
+  "title": "absolute 相对含 padding 的 positioned containing block",
+  "status": "pass",
+  "viewport": [220, 140],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;padding:12px 8px;width:220px;height:140px",
+    "children": [
+      {
+        "id": "badge",
+        "style": "position:absolute;top:4px;left:6px;width:40px;height:20px"
+      },
+      { "id": "flow", "style": "width:50px;height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 220, "h": 140 },
+    { "id": "flow", "x": 8, "y": 12, "w": 50, "h": 30 },
+    { "id": "badge", "x": 14, "y": 16, "w": 40, "h": 20 }
+  ]
+}

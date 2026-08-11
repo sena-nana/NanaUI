@@ -1,0 +1,20 @@
+{
+  "id": "T-G08",
+  "title": "grid minmax(min, maxPx) 上限钳制",
+  "status": "pass",
+  "viewport": [400, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:minmax(50px, 120px) 1fr;width:400px;height:160px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "height:160px" },
+      { "id": "b", "style": "height:160px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 400, "h": 160 },
+    { "id": "a", "x": 0, "y": 0, "w": 120, "h": 160 },
+    { "id": "b", "x": 120, "y": 0, "w": 280, "h": 160 }
+  ]
+}

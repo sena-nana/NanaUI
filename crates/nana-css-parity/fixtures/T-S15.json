@@ -1,0 +1,24 @@
+{
+  "id": "T-S15",
+  "title": "vh + min() + calc(100vh - Npx)",
+  "status": "pass",
+  "viewport": [400, 600],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:400px;height:600px;align-items:flex-start;gap:8px",
+    "children": [
+      { "id": "a", "style": "width:100px;height:50vh" },
+      { "id": "b", "style": "width:min(520px,92vw);height:30px" },
+      { "id": "c", "style": "width:calc(100vw - 32px);height:30px" },
+      { "id": "d", "style": "width:clamp(100px,38vw,200px);height:30px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 600 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 300 },
+    { "id": "b", "x": 0, "y": 308, "w": 368, "h": 30 },
+    { "id": "c", "x": 0, "y": 346, "w": 368, "h": 30 },
+    { "id": "d", "x": 0, "y": 384, "w": 152, "h": 30 }
+  ]
+}

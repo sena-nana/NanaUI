@@ -1,0 +1,25 @@
+{
+  "id": "T-P02",
+  "title": "position:absolute 脱流 + 相对 relative 祖先 top/left",
+  "status": "pass",
+  "viewport": [280, 160],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;display:flex;flex-direction:column;align-items:flex-start;width:280px;height:160px;gap:0",
+    "children": [
+      { "id": "flow", "style": "width:60px;height:40px" },
+      {
+        "id": "badge",
+        "style": "position:absolute;top:8px;left:100px;width:40px;height:24px"
+      },
+      { "id": "after", "style": "width:60px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 280, "h": 160 },
+    { "id": "flow", "x": 0, "y": 0, "w": 60, "h": 40 },
+    { "id": "after", "x": 0, "y": 40, "w": 60, "h": 40 },
+    { "id": "badge", "x": 100, "y": 8, "w": 40, "h": 24 }
+  ]
+}

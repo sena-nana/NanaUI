@@ -1,0 +1,28 @@
+{
+  "id": "T-P08",
+  "title": "嵌套 absolute：子相对父 absolute padding box",
+  "status": "pass",
+  "viewport": [240, 160],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;width:240px;height:160px",
+    "children": [
+      {
+        "id": "outer",
+        "style": "position:absolute;left:20px;top:16px;width:120px;height:80px;padding:8px",
+        "children": [
+          {
+            "id": "inner",
+            "style": "position:absolute;right:4px;bottom:4px;width:30px;height:20px"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 240, "h": 160 },
+    { "id": "outer", "x": 20, "y": 16, "w": 120, "h": 80 },
+    { "id": "inner", "x": 98, "y": 64, "w": 30, "h": 20 }
+  ]
+}

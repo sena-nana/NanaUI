@@ -1,0 +1,20 @@
+{
+  "id": "T-W04",
+  "title": "flex-wrap 折行计入水平 margin",
+  "status": "pass",
+  "viewport": [200, 160],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;flex-wrap:wrap;gap:8px;width:200px;align-items:flex-start",
+    "children": [
+      { "id": "a", "style": "width:80px;height:40px;margin:0 16px" },
+      { "id": "b", "style": "width:80px;height:40px;margin:0 16px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 88 },
+    { "id": "a", "x": 16, "y": 0, "w": 80, "h": 40 },
+    { "id": "b", "x": 16, "y": 48, "w": 80, "h": 40 }
+  ]
+}

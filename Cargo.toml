@@ -7,6 +7,8 @@ members = [
     "crates/nana-js-quickjs",
     "crates/nana-js-v8",
     "crates/nana-ui-web-api",
+    "crates/nana-ui-vue",
+    "crates/nana-css-parity",
     "crates/nana-ui-platform",
     "crates/nana-ui-devtools",
     "examples/component-gallery",

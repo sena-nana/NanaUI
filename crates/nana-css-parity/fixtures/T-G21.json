@@ -1,0 +1,20 @@
+{
+  "id": "T-G21",
+  "title": "轨百分比 25% + 1fr",
+  "status": "pass",
+  "viewport": [420, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "body",
+    "style": "display:grid;grid-template-columns:25% 1fr;width:400px;height:80px;align-items:stretch;gap:0",
+    "children": [
+      { "id": "a", "style": "height:80px" },
+      { "id": "b", "style": "height:80px" }
+    ]
+  },
+  "expected": [
+    { "id": "body", "x": 0, "y": 0, "w": 400, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 80 },
+    { "id": "b", "x": 100, "y": 0, "w": 300, "h": 80 }
+  ]
+}

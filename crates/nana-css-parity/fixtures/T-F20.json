@@ -1,0 +1,20 @@
+{
+  "id": "T-F20",
+  "title": "align-self 覆盖容器 align-items",
+  "status": "pass",
+  "viewport": [300, 100],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;gap:10px;align-items:flex-start;width:300px;height:100px",
+    "children": [
+      { "id": "tall", "style": "width:40px;height:80px" },
+      { "id": "short", "style": "width:40px;height:20px;align-self:flex-end" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 100 },
+    { "id": "tall", "x": 0, "y": 0, "w": 40, "h": 80 },
+    { "id": "short", "x": 50, "y": 80, "w": 40, "h": 20 }
+  ]
+}

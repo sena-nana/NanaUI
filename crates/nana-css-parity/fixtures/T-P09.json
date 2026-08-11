@@ -1,0 +1,21 @@
+{
+  "id": "T-P09",
+  "title": "inset 两值简写：absolute 拉伸（top/bottom + left/right）",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "position:relative;width:200px;height:120px",
+    "children": [
+      {
+        "id": "frame",
+        "style": "position:absolute;inset:8px 24px"
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "frame", "x": 24, "y": 8, "w": 152, "h": 104 }
+  ]
+}
