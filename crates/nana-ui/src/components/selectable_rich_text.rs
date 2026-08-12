@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use iced::advanced::Renderer as _;
 use iced::advanced::text::{Paragraph, Renderer as TextRenderer};
@@ -20,6 +22,8 @@ pub struct SelectableRichText<Message> {
     color: Option<Color>,
     selection_color: Color,
     on_link_click: Option<Box<dyn Fn(String) -> Message>>,
+    selection_group: Option<(TextSelectionGroup, u64, String)>,
+    on_selection_change: Option<Box<dyn Fn(Option<String>) -> Message>>,
 }
 
 impl<Message> SelectableRichText<Message> {
@@ -33,6 +37,8 @@ impl<Message> SelectableRichText<Message> {
             color: None,
             selection_color: Color::from_rgba(0.25, 0.48, 0.9, 0.3),
             on_link_click: None,
+            selection_group: None,
+            on_selection_change: None,
         }
     }
 
@@ -69,6 +75,183 @@ impl<Message> SelectableRichText<Message> {
     pub fn on_link_click(mut self, on_link_click: impl Fn(String) -> Message + 'static) -> Self {
         self.on_link_click = Some(Box::new(on_link_click));
         self
+    }
+
+    /// Joins this text node to a retained document-level selection.
+    ///
+    /// `order` must be stable and unique within the group. `separator_before`
+    /// is inserted before this node when a selection spans a preceding node.
+    pub fn selection_group(
+        mut self,
+        group: TextSelectionGroup,
+        order: u64,
+        separator_before: impl Into<String>,
+    ) -> Self {
+        self.selection_group = Some((group, order, separator_before.into()));
+        self
+    }
+
+    pub fn on_selection_change(
+        mut self,
+        on_selection_change: impl Fn(Option<String>) -> Message + 'static,
+    ) -> Self {
+        self.on_selection_change = Some(Box::new(on_selection_change));
+        self
+    }
+}
+
+/// Shared selection state for a document composed from multiple rich-text nodes.
+///
+/// This keeps selection in the document model instead of in an application-owned
+/// collection of rendered widgets. It enables continuous drag selection, copy,
+/// and selection-driven actions across Markdown paragraphs, lists, quotes, code,
+/// and table cells.
+#[derive(Clone, Debug, Default)]
+pub struct TextSelectionGroup {
+    state: Arc<Mutex<TextSelectionGroupState>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct GroupSelectionPoint {
+    order: u64,
+    index: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TextSelectionNode {
+    graphemes: Vec<String>,
+    separator_before: String,
+    bounds: Rectangle,
+    span_bounds: Vec<Vec<Rectangle>>,
+}
+
+#[derive(Debug, Default)]
+struct TextSelectionGroupState {
+    nodes: BTreeMap<u64, TextSelectionNode>,
+    anchor: Option<GroupSelectionPoint>,
+    focus: Option<GroupSelectionPoint>,
+    dragging_owner: Option<u64>,
+}
+
+impl TextSelectionGroup {
+    pub fn clear(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.anchor = None;
+            state.focus = None;
+            state.dragging_owner = None;
+        }
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| group_selected_text(&state))
+    }
+
+    fn register_text(
+        &self,
+        order: u64,
+        spans: &[Span<'static, String, Font>],
+        separator_before: &str,
+    ) {
+        let graphemes = spans
+            .iter()
+            .map(|span| span.text.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        if let Ok(mut state) = self.state.lock() {
+            let node = state.nodes.entry(order).or_default();
+            node.graphemes = graphemes;
+            node.separator_before.clear();
+            node.separator_before.push_str(separator_before);
+            normalize_group_selection(&mut state);
+        }
+    }
+
+    fn register_geometry(&self, order: u64, bounds: Rectangle, span_bounds: Vec<Vec<Rectangle>>) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(node) = state.nodes.get_mut(&order)
+        {
+            node.bounds = bounds;
+            node.span_bounds = span_bounds;
+        }
+    }
+
+    fn selection_for(&self, order: u64) -> Option<Selection> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| group_selection_for(&state, order))
+    }
+
+    fn begin(&self, order: u64, selection: Selection) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let Some(node) = state.nodes.get(&order) else {
+            return false;
+        };
+        let length = node.graphemes.len();
+        state.anchor = Some(GroupSelectionPoint {
+            order,
+            index: selection.anchor.min(length),
+        });
+        state.focus = Some(GroupSelectionPoint {
+            order,
+            index: selection.focus.min(length),
+        });
+        state.dragging_owner = Some(order);
+        true
+    }
+
+    fn drag(&self, owner: u64, position: Point) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.dragging_owner != Some(owner) {
+            return false;
+        }
+        let Some(point) = group_hit_point(&state, position) else {
+            return false;
+        };
+        if state.focus == Some(point) {
+            return false;
+        }
+        state.focus = Some(point);
+        true
+    }
+
+    fn finish(&self, owner: u64) -> Option<Option<String>> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
+        };
+        if state.dragging_owner != Some(owner) {
+            return None;
+        }
+        state.dragging_owner = None;
+        Some(group_selected_text(&state))
+    }
+
+    fn select_all(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let Some((&first_order, _)) = state.nodes.first_key_value() else {
+            return false;
+        };
+        let Some((&last_order, last)) = state.nodes.last_key_value() else {
+            return false;
+        };
+        let last_length = last.graphemes.len();
+        state.anchor = Some(GroupSelectionPoint {
+            order: first_order,
+            index: 0,
+        });
+        state.focus = Some(GroupSelectionPoint {
+            order: last_order,
+            index: last_length,
+        });
+        true
     }
 }
 
@@ -157,6 +340,9 @@ where
                     }
                 }
             }
+            if let Some((group, order, separator_before)) = &self.selection_group {
+                group.register_text(*order, &state.spans, separator_before);
+            }
             state.paragraph.min_bounds()
         })
     }
@@ -176,8 +362,30 @@ where
         }
         let state = tree.state.downcast_ref::<SelectableRichTextState>();
         let translation = layout.position() - Point::ORIGIN;
+        if let Some((group, order, _)) = &self.selection_group {
+            group.register_geometry(
+                *order,
+                layout.bounds(),
+                (0..state.spans.len())
+                    .map(|index| {
+                        state
+                            .paragraph
+                            .span_bounds(index)
+                            .into_iter()
+                            .map(|bounds| bounds + translation)
+                            .collect()
+                    })
+                    .collect(),
+            );
+        }
 
-        if let Some(selection) = state.selection.filter(|selection| !selection.is_empty()) {
+        let selection = self
+            .selection_group
+            .as_ref()
+            .and_then(|(group, order, _)| group.selection_for(*order))
+            .or(state.selection)
+            .filter(|selection| !selection.is_empty());
+        if let Some(selection) = selection {
             let (start, end) = selection.ordered();
             for index in start..end.min(state.spans.len()) {
                 for bounds in state.paragraph.span_bounds(index) {
@@ -308,7 +516,7 @@ where
                 state.pressed_link = state.hovered_link;
                 let click = mouse::Click::new(position, mouse::Button::Left, state.previous_click);
                 state.previous_click = Some(click);
-                state.selection = Some(match click.kind() {
+                let selection = match click.kind() {
                     mouse::click::Kind::Single => Selection {
                         anchor: index,
                         focus: index,
@@ -318,12 +526,27 @@ where
                         anchor: 0,
                         focus: state.spans.len(),
                     },
-                });
+                };
+                if let Some((group, order, _)) = &self.selection_group {
+                    group.begin(*order, selection);
+                    state.selection = None;
+                } else {
+                    state.selection = Some(selection);
+                }
                 shell.capture_event();
                 shell.request_redraw();
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
-                if let Some(index) = local.and_then(|position| state.paragraph.hit_span(position))
+                if let Some((group, order, _)) = &self.selection_group {
+                    if let Some(position) = cursor.position()
+                        && group.drag(*order, position)
+                    {
+                        state.pressed_link = None;
+                        shell.capture_event();
+                        shell.request_redraw();
+                    }
+                } else if let Some(index) =
+                    local.and_then(|position| state.paragraph.hit_span(position))
                     && let Some(selection) = state.selection.as_mut()
                 {
                     selection.focus = if index >= selection.anchor {
@@ -338,9 +561,21 @@ where
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.dragging => {
                 state.dragging = false;
+                let grouped_selection = self
+                    .selection_group
+                    .as_ref()
+                    .and_then(|(group, order, _)| group.finish(*order));
+                if let Some(selected) = grouped_selection.as_ref()
+                    && let Some(on_selection_change) = &self.on_selection_change
+                {
+                    shell.publish(on_selection_change(selected.clone()));
+                }
                 if let Some(index) = state.pressed_link.take()
                     && state.hovered_link == Some(index)
-                    && state.selection.is_some_and(Selection::is_empty)
+                    && grouped_selection.as_ref().map_or_else(
+                        || state.selection.is_some_and(Selection::is_empty),
+                        Option::is_none,
+                    )
                     && let Some(link) = state.spans.get(index).and_then(|span| span.link.clone())
                     && let Some(on_link_click) = &self.on_link_click
                 {
@@ -353,16 +588,26 @@ where
             {
                 match key.as_ref() {
                     keyboard::Key::Character("c") => {
-                        if let Some(value) = selected_text(state) {
+                        let value = self
+                            .selection_group
+                            .as_ref()
+                            .and_then(|(group, _, _)| group.selected_text())
+                            .or_else(|| selected_text(state));
+                        if let Some(value) = value {
                             shell.write_clipboard(clipboard::Content::Text(value));
                             shell.capture_event();
                         }
                     }
                     keyboard::Key::Character("a") => {
-                        state.selection = Some(Selection {
-                            anchor: 0,
-                            focus: state.spans.len(),
-                        });
+                        if let Some((group, _, _)) = &self.selection_group {
+                            group.select_all();
+                            state.selection = None;
+                        } else {
+                            state.selection = Some(Selection {
+                                anchor: 0,
+                                focus: state.spans.len(),
+                            });
+                        }
                         shell.capture_event();
                         shell.request_redraw();
                     }
@@ -373,7 +618,14 @@ where
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
             }) if state.focused => {
-                state.selection = None;
+                if let Some((group, _, _)) = &self.selection_group {
+                    group.clear();
+                    if let Some(on_selection_change) = &self.on_selection_change {
+                        shell.publish(on_selection_change(None));
+                    }
+                } else {
+                    state.selection = None;
+                }
                 state.focused = false;
                 shell.capture_event();
                 shell.request_redraw();
@@ -462,6 +714,153 @@ fn selected_text(state: &SelectableRichTextState) -> Option<String> {
     )
 }
 
+fn normalize_group_selection(state: &mut TextSelectionGroupState) {
+    let normalize = |point: GroupSelectionPoint| {
+        state
+            .nodes
+            .get(&point.order)
+            .map(|node| GroupSelectionPoint {
+                order: point.order,
+                index: point.index.min(node.graphemes.len()),
+            })
+    };
+    state.anchor = state.anchor.and_then(normalize);
+    state.focus = state.focus.and_then(normalize);
+    if state.anchor.is_none() || state.focus.is_none() {
+        state.anchor = None;
+        state.focus = None;
+        state.dragging_owner = None;
+    }
+}
+
+fn ordered_group_selection(
+    state: &TextSelectionGroupState,
+) -> Option<(GroupSelectionPoint, GroupSelectionPoint)> {
+    let anchor = state.anchor?;
+    let focus = state.focus?;
+    if anchor <= focus {
+        Some((anchor, focus))
+    } else {
+        Some((focus, anchor))
+    }
+}
+
+fn group_selection_for(state: &TextSelectionGroupState, order: u64) -> Option<Selection> {
+    let (start, end) = ordered_group_selection(state)?;
+    if start == end || order < start.order || order > end.order {
+        return None;
+    }
+    let length = state.nodes.get(&order)?.graphemes.len();
+    let local_start = if order == start.order { start.index } else { 0 }.min(length);
+    let local_end = if order == end.order {
+        end.index
+    } else {
+        length
+    }
+    .min(length);
+    (local_start != local_end).then_some(Selection {
+        anchor: local_start,
+        focus: local_end,
+    })
+}
+
+fn group_selected_text(state: &TextSelectionGroupState) -> Option<String> {
+    let (start, end) = ordered_group_selection(state)?;
+    if start == end {
+        return None;
+    }
+    let mut value = String::new();
+    for (&order, node) in state.nodes.range(start.order..=end.order) {
+        let local_start =
+            if order == start.order { start.index } else { 0 }.min(node.graphemes.len());
+        let local_end = if order == end.order {
+            end.index
+        } else {
+            node.graphemes.len()
+        }
+        .min(node.graphemes.len());
+        if local_start >= local_end {
+            continue;
+        }
+        if !value.is_empty() {
+            value.push_str(&node.separator_before);
+        }
+        value.extend(
+            node.graphemes[local_start..local_end]
+                .iter()
+                .map(String::as_str),
+        );
+    }
+    (!value.is_empty()).then_some(value)
+}
+
+fn group_hit_point(
+    state: &TextSelectionGroupState,
+    position: Point,
+) -> Option<GroupSelectionPoint> {
+    let (&order, node) = state.nodes.iter().min_by(|(_, left), (_, right)| {
+        point_rectangle_distance_squared(position, left.bounds)
+            .total_cmp(&point_rectangle_distance_squared(position, right.bounds))
+    })?;
+    let length = node.graphemes.len();
+    let first_top = node
+        .span_bounds
+        .iter()
+        .flatten()
+        .map(|bounds| bounds.y)
+        .min_by(f32::total_cmp);
+    let last_bottom = node
+        .span_bounds
+        .iter()
+        .flatten()
+        .map(|bounds| bounds.y + bounds.height)
+        .max_by(f32::total_cmp);
+    if first_top.is_some_and(|top| position.y < top) {
+        return Some(GroupSelectionPoint { order, index: 0 });
+    }
+    if last_bottom.is_some_and(|bottom| position.y > bottom) {
+        return Some(GroupSelectionPoint {
+            order,
+            index: length,
+        });
+    }
+    let (index, bounds) = node
+        .span_bounds
+        .iter()
+        .enumerate()
+        .flat_map(|(index, bounds)| bounds.iter().map(move |bounds| (index, *bounds)))
+        .min_by(|(_, left), (_, right)| {
+            point_rectangle_distance_squared(position, *left)
+                .total_cmp(&point_rectangle_distance_squared(position, *right))
+        })?;
+    Some(GroupSelectionPoint {
+        order,
+        index: if position.x >= bounds.x + bounds.width / 2.0 {
+            index.saturating_add(1).min(length)
+        } else {
+            index
+        },
+    })
+}
+
+fn point_rectangle_distance_squared(point: Point, bounds: Rectangle) -> f32 {
+    let dx = if point.x < bounds.x {
+        bounds.x - point.x
+    } else if point.x > bounds.x + bounds.width {
+        point.x - (bounds.x + bounds.width)
+    } else {
+        0.0
+    };
+    let dy = if point.y < bounds.y {
+        bounds.y - point.y
+    } else if point.y > bounds.y + bounds.height {
+        point.y - (bounds.y + bounds.height)
+    } else {
+        0.0
+    };
+    dx.mul_add(dx, dy * dy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,5 +894,42 @@ mod tests {
             ..SelectableRichTextState::default()
         };
         assert_eq!(selected_text(&state).as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn selection_group_preserves_document_order_and_block_separators() {
+        let group = TextSelectionGroup::default();
+        group.register_text(10, &split_graphemes(&spans("Alpha")), "");
+        group.register_text(20, &split_graphemes(&spans("Beta")), "\n\n");
+        assert!(group.begin(
+            10,
+            Selection {
+                anchor: 2,
+                focus: 5,
+            },
+        ));
+        {
+            let mut state = group.state.lock().unwrap();
+            state.focus = Some(GroupSelectionPoint {
+                order: 20,
+                index: 2,
+            });
+        }
+
+        assert_eq!(group.selected_text().as_deref(), Some("pha\n\nBe"));
+        assert_eq!(
+            group.selection_for(10),
+            Some(Selection {
+                anchor: 2,
+                focus: 5,
+            })
+        );
+        assert_eq!(
+            group.selection_for(20),
+            Some(Selection {
+                anchor: 0,
+                focus: 2,
+            })
+        );
     }
 }

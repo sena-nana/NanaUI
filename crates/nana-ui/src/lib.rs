@@ -53,8 +53,6 @@ pub use command::{
     ActionPickerState, ActionRegistry, ActionRegistryError, ContextPredicate, KeyBinding,
     KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch, KeymapState,
 };
-#[cfg(feature = "rich-text")]
-pub use components::SelectableRichText;
 pub use components::actions::{Button, ControlSize, IconButton};
 #[cfg(feature = "calendar")]
 pub use components::calendar::{
@@ -122,6 +120,8 @@ pub use components::tree_view::{
 };
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
+#[cfg(feature = "rich-text")]
+pub use components::{SelectableRichText, TextSelectionGroup};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,
