@@ -21,7 +21,7 @@ nana-ui-vue = { path = "../nana-ui-vue" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Optional WebView reference (test-only feature).
-wry = { version = "0.50", optional = true, default-features = true }
+wry = { version = "=0.55.1", optional = true, default-features = true }
 tao = { version = "0.31", optional = true, default-features = true }
 
 [dev-dependencies]

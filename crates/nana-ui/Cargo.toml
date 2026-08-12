@@ -79,7 +79,7 @@ wgpu = { workspace = true, optional = true }
 android-activity = { version = "0.6", features = ["native-activity"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-wry = { version = "=0.50.5", optional = true }
+wry = { version = "=0.55.1", optional = true }
 
 [dev-dependencies]
 iced_wgpu.workspace = true
