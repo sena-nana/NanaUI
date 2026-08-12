@@ -114,6 +114,22 @@ track；拖动按区域位置决定增量方向，双击恢复默认尺寸。折
 渲染、不会响应 resize，并在几何快照中同时释放空间；overlay 区域则显示但
 不占用 primary 空间。
 
+`Tabs::on_reorder` 提供同一 Tab strip 内的可选鼠标/触摸重排合同；回调以“被移动
+值 + 其后值（`None` 表示末尾）”表达结果。`TabDragGroup` 通过带 generation 的短期
+lease 登记各 strip 当次真实绘制矩形；`TabDragSurface` 将各窗口的物理 origin、逻辑
+坐标和 DPI scale 统一到屏幕空间，目标窗口可 relay move/release，并保证一次释放只
+产生一次 source/target/before。旧 view 的析构不会删除新 view 的登记。选择、顺序、
+Pane/窗口语义和持久化继续由应用持有；接收方还可用 `accepts_external_drop(false)`
+保留拖拽源但明确拒绝外部落点。`SelectionOption::draggable(false)` 只排除单个 Tab
+的拖拽源和落点，不影响普通选择。`Dock` 不会隐式接管 Editor Tab 的跨 surface 语义。
+
+`ReorderList` 为纵向导航和资源列表提供相同的 before-value 合同，但不承担跨 strip
+或跨窗口转移。它只处理点击选择、4px 鼠标/触摸拖拽阈值和插入线；顺序、分组约束、
+持久化及业务错误仍由消费应用拥有。列表行必须是被列表统一选择的被动内容，独立按钮
+等需要自身指针语义的操作应放在列表行外。`ReorderItem` 默认同时是拖拽源和落点；
+`.draggable(false).drop_target(true)` 可声明只接收落点的被动目的行，用于应用拥有的
+移动/嵌套面板，但 NanaUI 仍不解释目的值或修改业务资源。
+
 确定性的 `SetRegionCollapsed` 与 `SetRegionSize` action 供设置页和宿主状态同步
 使用；它们与拖拽路径共享相同约束。Demo 的设置页使用独立
 `WorkspaceController`，因此进入设置不会覆盖应用工作区的尺寸和折叠状态；窗口
@@ -142,6 +158,17 @@ Iced WGPU shader primitive；`RenderSlot` 负责逻辑/物理像素换算与裁�
 Iced Engine 接收宿主 `Device`/`Queue`，不会再次请求设备；每个附加工具窗口只新增
 自己的 Window、Surface 和 Iced renderer，并继续共享同一 Adapter/Device/Queue。
 `GpuTextureView` 直接采样 scene 的 `TextureView`，不进行 CPU 回读或图片编码。
+
+## 原生富文本合同
+
+`NativeMarkdown` 只持有 UI 无关的原生块模型。GFM 表格保留列对齐、表头、行和
+单元格内 span，不得降级成插入分隔符的普通文本；视图使用等宽列、原生横向滚动
+和 `SelectableRichText` 呈现，不依赖 WebView。
+
+`SelectableRichText` 负责 Unicode grapheme 命中、单词/整块选择、链接点击和
+Iced clipboard 写入。跨块的完整内容复制由 `NativeMarkdown::plain_text` 提供稳定
+纯文本合同，消费应用再通过自己的 Host/权限边界写入系统剪贴板；NanaUI 不持有
+应用任务、时间线或宿主状态。
 
 ## 与 LiliaUI 的对应关系
 

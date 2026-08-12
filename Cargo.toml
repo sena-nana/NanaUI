@@ -23,17 +23,18 @@ resolver = "2"
 [workspace.dependencies]
 iced = {
     git = "https://github.com/sena-nana/iced.git",
-    rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
+    rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67",
     default-features = false,
-    features = ["wgpu", "canvas", "svg", "advanced", "smol", "thread-pool", "x11", "wayland"],
+    features = ["wgpu", "canvas", "image", "svg", "advanced", "smol", "thread-pool", "x11", "wayland"],
 }
 iced_wgpu = {
     git = "https://github.com/sena-nana/iced.git",
-    rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
+    rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67",
+    features = ["svg-text"],
 }
 iced_winit = {
     git = "https://github.com/sena-nana/iced.git",
-    rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603",
+    rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67",
 }
 nana-ui-core = { path = "crates/nana-ui-core" }
 nana-js-engine = { path = "crates/nana-js-engine" }

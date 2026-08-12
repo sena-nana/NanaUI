@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
-use iced::widget::{button, column, container, row, space, stack, text};
+use iced::widget::{button, column, container, mouse_area, row, space, stack, text};
 use iced::{Alignment, Element, Event, Length, Padding, Point, Rectangle, Size, Subscription};
 use serde::{Deserialize, Serialize};
 
@@ -344,6 +344,7 @@ pub enum DockAction {
     },
     CancelDrag,
     Hover(bool),
+    CardHover(DockId, bool),
     Hide(DockId),
     Show(DockId),
     Float {
@@ -567,6 +568,7 @@ pub struct DockController {
     focused_split: Option<(DockSurfaceId, Vec<usize>, DockAxis)>,
     active_drag: Option<ActiveDrag>,
     chrome_style: DockChromeStyle,
+    hovered_card: Option<DockId>,
 }
 
 impl DockController {
@@ -610,6 +612,7 @@ impl DockController {
             focused_split: None,
             active_drag: None,
             chrome_style: DockChromeStyle::default(),
+            hovered_card: None,
         })
     }
 
@@ -816,7 +819,10 @@ impl DockController {
             }
             HostedWindowEvent::CloseRequested { .. }
             | HostedWindowEvent::VisibilityChanged { .. }
-            | HostedWindowEvent::FocusChanged { .. } => DockUpdate::default(),
+            | HostedWindowEvent::FocusChanged { .. }
+            | HostedWindowEvent::FileHovered { .. }
+            | HostedWindowEvent::FileDropped { .. }
+            | HostedWindowEvent::FileHoverCancelled { .. } => DockUpdate::default(),
         }
     }
 
@@ -895,6 +901,7 @@ impl DockController {
                     | DockAction::SurfaceResized { .. }
                     | DockAction::SurfaceGeometry { .. }
                     | DockAction::SurfaceLayout { .. }
+                    | DockAction::CardHover(..)
             )
         {
             return DockUpdate::default();
@@ -1183,6 +1190,14 @@ impl DockController {
                 };
                 self.settle_drag_target(&mut drag, now);
                 self.active_drag = Some(drag);
+                DockUpdate::default()
+            }
+            DockAction::CardHover(id, hovered) => {
+                if hovered {
+                    self.hovered_card = Some(id);
+                } else if self.hovered_card.as_ref() == Some(&id) {
+                    self.hovered_card = None;
+                }
                 DockUpdate::default()
             }
             DockAction::Hide(id) => self.hide(id),
@@ -2235,15 +2250,18 @@ where
                 .into()
         },
         |root| {
+            let context = DockWindowViewContext {
+                window_chrome,
+                on_window_event,
+                tokens,
+            };
             dock_window_root_view(
                 &root,
                 surface,
                 controller,
                 &mut contents,
-                window_chrome,
                 on_action,
-                on_window_event,
-                tokens,
+                context,
             )
         },
     );
@@ -2300,33 +2318,29 @@ where
         .into()
 }
 
+struct DockWindowViewContext<'a, 'state, Message> {
+    window_chrome: &'state WindowChromeState,
+    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+    tokens: ThemeTokens,
+}
+
 fn dock_window_root_view<'a, Message>(
     node: &DockViewNode,
     surface: DockSurfaceId,
     controller: &DockController,
     contents: &mut DockContents<'a, Message>,
-    window_chrome: &WindowChromeState,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
-    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
-    tokens: ThemeTokens,
+    context: DockWindowViewContext<'a, '_, Message>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
+    let tokens = context.tokens;
     match node {
         DockViewNode::Item {
             item: DockViewItem::Existing(id),
         } => {
-            let view = dock_window_item_view(
-                id,
-                surface,
-                controller,
-                contents,
-                window_chrome,
-                on_action,
-                on_window_event,
-                tokens,
-            );
+            let view = dock_window_item_view(id, surface, controller, contents, on_action, context);
             if node_is_drop_highlighted(controller, surface, node) {
                 dock_insert_highlight(view, tokens, controller.chrome_style)
             } else {
@@ -2348,8 +2362,8 @@ where
                     tokens,
                 )
                 .into(),
-                window_chrome,
-                on_window_event,
+                context.window_chrome,
+                context.on_window_event,
                 tokens,
             );
             let body = dock_view_item_view(
@@ -2374,9 +2388,9 @@ where
                 controller,
                 surface,
                 dock_view_active_id(node),
-                window_chrome,
+                context.window_chrome,
                 on_action,
-                on_window_event,
+                context.on_window_event,
                 tokens,
             );
             let body = dock_node_view(
@@ -2553,10 +2567,8 @@ fn dock_window_item_view<'a, Message>(
     surface: DockSurfaceId,
     controller: &DockController,
     contents: &mut DockContents<'a, Message>,
-    window_chrome: &WindowChromeState,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
-    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
-    tokens: ThemeTokens,
+    context: DockWindowViewContext<'a, '_, Message>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -2565,17 +2577,17 @@ where
         controller,
         surface,
         Some(id),
-        window_chrome,
+        context.window_chrome,
         on_action,
-        on_window_event,
-        tokens,
+        context.on_window_event,
+        context.tokens,
     );
-    let body = dock_item_body(id, contents, tokens, controller.chrome_style);
+    let body = dock_item_body(id, contents, context.tokens, controller.chrome_style);
     let window = column![title_bar, body]
         .width(Length::Fill)
         .height(Length::Fill);
     if controller.chrome_style == DockChromeStyle::Card {
-        dock_card_shell(window, tokens)
+        dock_card_shell(window, context.tokens)
     } else {
         window.into()
     }
@@ -2808,7 +2820,11 @@ where
         dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
     };
     let mut title_bar = row![title].spacing(4).align_y(Alignment::Center);
-    if !controller.layout.locked && id != &controller.center && surface == DockSurfaceId(0) {
+    let show_chrome_actions = !controller.layout.locked
+        && id != &controller.center
+        && surface == DockSurfaceId(0)
+        && (chrome_style != DockChromeStyle::Card || controller.hovered_card.as_ref() == Some(id));
+    if show_chrome_actions {
         if spec.is_some_and(|spec| spec.floatable) {
             title_bar = title_bar.push(
                 button(text("↗").size(11))
@@ -2844,10 +2860,14 @@ where
     if tabs_own_title || id == &controller.center {
         content
     } else if chrome_style == DockChromeStyle::Card {
-        dock_card_shell(
+        let card = dock_card_shell(
             column![dock_card_title_bar(title_bar, tokens), content].height(Length::Fill),
             tokens,
-        )
+        );
+        mouse_area(card)
+            .on_enter(on_action(DockAction::CardHover(id.clone(), true)))
+            .on_exit(on_action(DockAction::CardHover(id.clone(), false)))
+            .into()
     } else {
         column![
             container(title_bar)

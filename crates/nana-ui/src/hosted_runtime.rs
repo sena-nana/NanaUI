@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -242,7 +243,7 @@ impl<Message: 'static> HostedProgramContext<Message> {
 }
 
 /// Window lifecycle information translated into logical and physical geometry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum HostedWindowEvent {
     Ready {
         id: HostedWindowId,
@@ -274,17 +275,36 @@ pub enum HostedWindowEvent {
         id: HostedWindowId,
         window_id: iced::window::Id,
     },
+    FileHovered {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        path: PathBuf,
+        position: Option<Point>,
+    },
+    FileDropped {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        path: PathBuf,
+        position: Option<Point>,
+    },
+    FileHoverCancelled {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+    },
 }
 
 impl HostedWindowEvent {
-    pub const fn id(self) -> HostedWindowId {
+    pub const fn id(&self) -> HostedWindowId {
         match self {
             Self::Ready { id, .. }
             | Self::Resized { id, .. }
             | Self::Moved { id, .. }
             | Self::VisibilityChanged { id, .. }
             | Self::FocusChanged { id, .. }
-            | Self::CloseRequested { id, .. } => id,
+            | Self::CloseRequested { id, .. }
+            | Self::FileHovered { id, .. }
+            | Self::FileDropped { id, .. }
+            | Self::FileHoverCancelled { id, .. } => *id,
         }
     }
 }
@@ -312,6 +332,17 @@ pub enum HostedWindowCommand {
     Focus(HostedWindowId),
 }
 
+/// Commands that operate on retained NanaUI widget state after the next rebuild.
+#[derive(Debug, Clone)]
+pub enum HostedUiCommand {
+    ScrollBy {
+        window_id: HostedWindowId,
+        target: String,
+        x: f32,
+        y: f32,
+    },
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HostedRedraw {
     #[default]
@@ -336,6 +367,7 @@ pub struct HostedProgramUpdate {
     pub window_action: Option<HostedWindowAction>,
     pub redraw: HostedRedraw,
     pub window_commands: Vec<HostedWindowCommand>,
+    pub ui_commands: Vec<HostedUiCommand>,
     pub exit: bool,
 }
 
@@ -345,6 +377,7 @@ impl HostedProgramUpdate {
             window_action: None,
             redraw: HostedRedraw::Primary,
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -354,6 +387,7 @@ impl HostedProgramUpdate {
             window_action: None,
             redraw: HostedRedraw::Window(id),
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -363,6 +397,7 @@ impl HostedProgramUpdate {
             window_action: None,
             redraw: HostedRedraw::All,
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -373,6 +408,7 @@ impl HostedProgramUpdate {
             window_action: None,
             redraw: HostedRedraw::DynamicPrimary,
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -382,6 +418,7 @@ impl HostedProgramUpdate {
             window_action: None,
             redraw: HostedRedraw::DynamicWindow(id),
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -391,6 +428,7 @@ impl HostedProgramUpdate {
             window_action: None,
             redraw: HostedRedraw::DynamicAll,
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -400,6 +438,7 @@ impl HostedProgramUpdate {
             window_action: None,
             redraw: HostedRedraw::None,
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: true,
         }
     }
@@ -413,6 +452,7 @@ impl HostedProgramUpdate {
             window_action: Some(HostedWindowAction { id, action }),
             redraw: HostedRedraw::Window(id),
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -422,6 +462,11 @@ impl HostedProgramUpdate {
         commands: impl IntoIterator<Item = HostedWindowCommand>,
     ) -> Self {
         self.window_commands.extend(commands);
+        self
+    }
+
+    pub fn with_ui_commands(mut self, commands: impl IntoIterator<Item = HostedUiCommand>) -> Self {
+        self.ui_commands.extend(commands);
         self
     }
 }
@@ -611,6 +656,7 @@ struct HostedReady<Program: HostedProgram> {
     settings: HostedWindowSettings,
     auxiliary: HashMap<HostedWindowId, HostedAuxiliary<Program::Message>>,
     window_ids: HashMap<winit::window::WindowId, HostedWindowId>,
+    cursor_positions: HashMap<HostedWindowId, Point>,
     next_gpu_retry: Option<Instant>,
     window_hidden: bool,
     render_suspended: bool,
@@ -746,6 +792,7 @@ fn initialize<Program: HostedProgram>(
         settings,
         auxiliary: HashMap::new(),
         window_ids,
+        cursor_positions: HashMap::new(),
         next_gpu_retry: None,
         window_hidden: false,
         render_suspended: false,
@@ -827,8 +874,94 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 self.notify_focus_changed(event_loop, id, focused);
                 self.push_window_event(id, WindowEvent::Focused(focused));
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(scale_factor) = self.window_scale_factor(id) {
+                    let position = position.to_logical::<f32>(f64::from(scale_factor));
+                    self.cursor_positions
+                        .insert(id, Point::new(position.x, position.y));
+                }
+                self.push_window_event(id, event);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_positions.remove(&id);
+                self.push_window_event(id, event);
+            }
+            WindowEvent::HoveredFile(path) => {
+                self.notify_file_hovered(event_loop, id, path.clone());
+                self.push_window_event(id, WindowEvent::HoveredFile(path));
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.notify_file_dropped(event_loop, id, path.clone());
+                self.push_window_event(id, WindowEvent::DroppedFile(path));
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.notify_file_hover_cancelled(event_loop, id);
+                self.push_window_event(id, WindowEvent::HoveredFileCancelled);
+            }
             event => self.push_window_event(id, event),
         }
+    }
+
+    fn window_scale_factor(&self, id: HostedWindowId) -> Option<f32> {
+        if id == HostedWindowId::PRIMARY {
+            Some(self.graphics.window().scale_factor() as f32)
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| host.surface.window().scale_factor() as f32)
+        }
+    }
+
+    fn notify_file_hovered(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        path: PathBuf,
+    ) {
+        let window_id = self.iced_window_id(id);
+        let position = self.cursor_positions.get(&id).copied();
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::FileHovered {
+                id,
+                window_id,
+                path,
+                position,
+            },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
+    }
+
+    fn notify_file_dropped(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        path: PathBuf,
+    ) {
+        let window_id = self.iced_window_id(id);
+        let position = self.cursor_positions.get(&id).copied();
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::FileDropped {
+                id,
+                window_id,
+                path,
+                position,
+            },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
+    }
+
+    fn notify_file_hover_cancelled(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        let window_id = self.iced_window_id(id);
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::FileHoverCancelled { id, window_id },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
     }
 
     fn push_window_event(&mut self, id: HostedWindowId, event: WindowEvent) {
@@ -1011,6 +1144,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
         for command in update.window_commands {
             self.apply_window_command(event_loop, command);
         }
+        for command in update.ui_commands {
+            self.apply_ui_command(command);
+        }
         if let Some(action) = update.window_action {
             self.apply_window_action(event_loop, action);
         }
@@ -1047,6 +1183,23 @@ impl<Program: HostedProgram> HostedReady<Program> {
             HostedWindowCommand::Close(id) => self.close_window(id),
             HostedWindowCommand::Move { id, position } => self.move_window(id, position),
             HostedWindowCommand::Focus(id) => self.focus_window(id),
+        }
+    }
+
+    fn apply_ui_command(&mut self, command: HostedUiCommand) {
+        match command {
+            HostedUiCommand::ScrollBy {
+                window_id,
+                target,
+                x,
+                y,
+            } => {
+                if window_id == HostedWindowId::PRIMARY {
+                    self.ui.queue_scroll_by(target, x, y);
+                } else if let Some(host) = self.auxiliary.get_mut(&window_id) {
+                    host.ui.queue_scroll_by(target, x, y);
+                }
+            }
         }
     }
 
@@ -1105,14 +1258,17 @@ impl<Program: HostedProgram> HostedReady<Program> {
             return;
         }
         if let Some(host) = self.auxiliary.remove(&id) {
+            self.cursor_positions.remove(&id);
             self.window_ids.remove(&host.surface.window().id());
         }
     }
 
     fn focus_window(&self, id: HostedWindowId) {
         if id == HostedWindowId::PRIMARY {
+            self.graphics.window().set_visible(true);
             self.graphics.window().focus_window();
         } else if let Some(host) = self.auxiliary.get(&id) {
+            host.surface.window().set_visible(true);
             host.surface.window().focus_window();
         }
     }
@@ -1796,11 +1952,33 @@ impl std::error::Error for HostedRunError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        HostedProgramUpdate, HostedRedraw, HostedTitleBarMode, HostedWindowId, HostedWindowRole,
-        HostedWindowSettings, should_request_redraw, window_attributes, window_background,
+        HostedProgramUpdate, HostedRedraw, HostedTitleBarMode, HostedWindowEvent, HostedWindowId,
+        HostedWindowRole, HostedWindowSettings, should_request_redraw, window_attributes,
+        window_background,
     };
+    use iced::Point;
     use iced_winit::winit;
     use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome};
+    use std::path::PathBuf;
+
+    #[test]
+    fn file_drop_event_preserves_window_path_and_cursor_position() {
+        let event = HostedWindowEvent::FileDropped {
+            id: HostedWindowId(7),
+            window_id: iced::window::Id::unique(),
+            path: PathBuf::from("C:/workspace/screenshot.png"),
+            position: Some(Point::new(24.0, 48.0)),
+        };
+
+        assert_eq!(event.id(), HostedWindowId(7));
+        match event {
+            HostedWindowEvent::FileDropped { path, position, .. } => {
+                assert_eq!(path, PathBuf::from("C:/workspace/screenshot.png"));
+                assert_eq!(position, Some(Point::new(24.0, 48.0)));
+            }
+            _ => unreachable!("constructed a file-drop event"),
+        }
+    }
 
     #[test]
     fn redraw_targets_are_explicit() {

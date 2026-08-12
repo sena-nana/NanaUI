@@ -118,11 +118,13 @@ impl GalleryState {
 
     pub(super) fn gallery_sidebar(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
-        let mut section = SidebarSection::new("Gallery").count(4);
+        let mut section = SidebarSection::new("Gallery").count(6);
         for (target, label, row_icon) in [
             (GallerySection::Controls, "控件", Icon::Settings),
             (GallerySection::Surfaces, "表面", Icon::Folder),
             (GallerySection::Feedback, "反馈", Icon::About),
+            (GallerySection::RichText, "富文本", Icon::About),
+            (GallerySection::Graph, "节点图", Icon::Nodes),
             (GallerySection::Workspace, "工作区", Icon::Workspace),
         ] {
             section = section.push(
@@ -154,6 +156,8 @@ impl GalleryState {
             GallerySection::Controls => self.controls(colors),
             GallerySection::Surfaces => self.surfaces(colors),
             GallerySection::Feedback => self.feedback(colors),
+            GallerySection::RichText => self.rich_text_gallery(colors),
+            GallerySection::Graph => self.graph_gallery(colors),
             GallerySection::Workspace => self.workspace_gallery(colors),
         }
     }

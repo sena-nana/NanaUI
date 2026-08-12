@@ -153,6 +153,7 @@ pub struct ListItem<'a, Message> {
     size: ControlSize,
     /// CSS `gap` between leading and content (default 8).
     gap: f32,
+    auto_height: bool,
     selected: bool,
     disabled: bool,
 }
@@ -169,6 +170,7 @@ where
             on_select: None,
             size: ControlSize::Small,
             gap: 8.0,
+            auto_height: false,
             selected: false,
             disabled: false,
         }
@@ -207,6 +209,13 @@ where
         self
     }
 
+    /// Lets multi-line content determine the row height while preserving the
+    /// selected density tier as minimum vertical padding.
+    pub fn auto_height(mut self) -> Self {
+        self.auto_height = true;
+        self
+    }
+
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
@@ -227,10 +236,23 @@ where
         if let Some(trailing) = self.trailing {
             content = content.push(trailing);
         }
+        let height = if self.auto_height {
+            Length::Shrink
+        } else {
+            Length::Fixed(self.size.height_in(tokens.metrics))
+        };
+        let padding = if self.auto_height {
+            [
+                self.size.vertical_padding(tokens.metrics),
+                self.size.padding_x(),
+            ]
+        } else {
+            [0.0, self.size.padding_x()]
+        };
         button(content)
             .width(Length::Fill)
-            .height(Length::Fixed(self.size.height_in(tokens.metrics)))
-            .padding([0.0, self.size.padding_x()])
+            .height(height)
+            .padding(padding)
             .align_x(iced::alignment::Horizontal::Left)
             .on_press_maybe((!self.disabled).then_some(self.on_select).flatten())
             .style(list_item_style(tokens, self.selected))
@@ -495,6 +517,9 @@ mod tests {
 
     #[test]
     fn list_items_default_to_the_small_density_tier() {
-        assert_eq!(ListItem::<()>::label("项目").size, ControlSize::Small);
+        let item = ListItem::<()>::label("项目");
+        assert_eq!(item.size, ControlSize::Small);
+        assert!(!item.auto_height);
+        assert!(ListItem::<()>::label("多行").auto_height().auto_height);
     }
 }

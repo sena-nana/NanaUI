@@ -3,7 +3,7 @@ use std::cell::OnceCell;
 use iced::widget::{
     button, container, row, scrollable, slider, space, stack, text, text_editor, toggler,
 };
-use iced::{Alignment, Element, Length, Point, Size, Subscription, Task, font};
+use iced::{Alignment, Element, Length, Padding, Point, Size, Subscription, Task, font};
 
 use nana_ui::components::{
     AboutMetadata, AboutSection, AnchoredMenuPlacement, AnchoredMenuPosition, AppearanceEvent,
@@ -13,7 +13,7 @@ use nana_ui::components::{
     ConfirmDialog as UiConfirmDialog, ContextMenuEvent, ContextMenuHost, ContextMenuItem,
     ControlSize, Dropdown as UiDropdown, DropdownEvent, DropdownOption, IconButton as UiIconButton,
     ImageViewer as UiImageViewer, ImageViewerSource, Input as UiInput,
-    InteractiveCard as UiInteractiveCard, ListItem as UiListItem, OverlayHost,
+    InteractiveCard as UiInteractiveCard, ListItem as UiListItem, NativeMarkdown, OverlayHost,
     Popover as UiPopover, Progress as UiProgress, RangeField as UiRangeField,
     SearchDropdown as UiSearchDropdown, SearchDropdownOption, SearchDropdownState,
     SegmentedControl as UiSegmentedControl, SelectionOption, SettingsCollapsibleCard,
@@ -46,6 +46,8 @@ use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
     AppTitleBar, DesktopShell, DockAction, DockAxis, DockChromeStyle, DockContents, DockController,
     DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, FallbackColor,
+    GraphCanvas, GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
+    GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
     MaterialOutcome, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
     SplitPaneController, WindowAppearance, apply_system_material, clear_system_material,
     dock_workspace,
@@ -55,6 +57,10 @@ use nana_ui::{
 mod controls_view;
 #[path = "views/feedback.rs"]
 mod feedback_view;
+#[path = "views/graph.rs"]
+mod graph_view;
+#[path = "views/rich_text.rs"]
+mod rich_text_view;
 #[path = "views/root.rs"]
 mod root_view;
 #[path = "views/settings.rs"]
@@ -69,6 +75,8 @@ pub enum GallerySection {
     Controls,
     Surfaces,
     Feedback,
+    RichText,
+    Graph,
     Workspace,
 }
 
@@ -110,6 +118,9 @@ pub enum GalleryMessage {
     SetTitlebarFollowsSidebar(bool),
     ResetAppearance,
     SelectSection(GallerySection),
+    Graph(GraphCanvasEvent),
+    ResetGraphViewport,
+    OpenMarkdownLink(String),
     OpenSettings,
     BackFromSettings,
     SelectSettingsTab(SettingsTabId),
@@ -238,6 +249,11 @@ pub struct GalleryState {
     context_path: Vec<usize>,
     popover_open: bool,
     confirmed_actions: u32,
+    markdown: NativeMarkdown,
+    opened_markdown_link: Option<String>,
+    graph: GraphModel,
+    graph_viewport: GraphViewport,
+    graph_selection: Option<GraphSelection>,
     editor: text_editor::Content,
     primary_clicks: u32,
     window_chrome: WindowChromeState,
@@ -297,6 +313,11 @@ impl GalleryState {
             context_path: Vec::new(),
             popover_open: false,
             confirmed_actions: 0,
+            markdown: NativeMarkdown::parse(MARKDOWN_FIXTURE),
+            opened_markdown_link: None,
+            graph: graph_view::gallery_graph(),
+            graph_viewport: GraphViewport::new(GraphPoint::new(72.0, 96.0), 1.0),
+            graph_selection: None,
             editor: text_editor::Content::with_text("示例说明\n用于展示多行文本编辑"),
             primary_clicks: 0,
             window_chrome: WindowChromeState::default(),
@@ -489,6 +510,27 @@ impl GalleryState {
                 self.menu_confirmation.clear();
                 self.popover_open = false;
             }
+            GalleryMessage::OpenMarkdownLink(link) => {
+                self.opened_markdown_link = Some(link);
+            }
+            GalleryMessage::Graph(GraphCanvasEvent::SelectionChanged(selection)) => {
+                self.graph_selection = selection;
+            }
+            GalleryMessage::Graph(
+                GraphCanvasEvent::ViewportInput(viewport)
+                | GraphCanvasEvent::ViewportChanged(viewport),
+            ) => self.graph_viewport = viewport,
+            GalleryMessage::Graph(
+                GraphCanvasEvent::NodePositionInput { node, position }
+                | GraphCanvasEvent::NodePositionChanged { node, position },
+            ) => {
+                let _ = self.graph.set_node_position(&node, position);
+            }
+            GalleryMessage::Graph(GraphCanvasEvent::ConnectionRequested { source, target }) => {
+                let edge_id = format!("gallery-edge-{}", self.graph.edges().len() + 1);
+                let _ = self.graph.add_edge(GraphEdge::new(edge_id, source, target));
+            }
+            GalleryMessage::ResetGraphViewport => self.reset_graph_viewport(),
             GalleryMessage::OpenSettings => {
                 if let Some(size) = self
                     .workspace
@@ -881,9 +923,42 @@ fn section_label(section: GallerySection) -> &'static str {
         GallerySection::Controls => "控件",
         GallerySection::Surfaces => "表面",
         GallerySection::Feedback => "反馈",
+        GallerySection::RichText => "富文本",
+        GallerySection::Graph => "节点图",
         GallerySection::Workspace => "工作区",
     }
 }
+
+const MARKDOWN_FIXTURE: &str = r#"# 原生 Markdown
+
+NanaUI 使用 **Rust 解析** 与 *WGPU 向量渲染*，支持[链接](https://example.com)、`inline code` 和任务列表。
+
+行内公式 $E = mc^2$ 与正文共享布局流。
+
+- [x] CommonMark / GFM
+- [x] KaTeX 字形布局
+- [x] Mermaid 无浏览器渲染
+
+| 能力 | 路径 | 状态 |
+| :--- | :---: | ---: |
+| 数学公式 | RaTeX | Ready |
+| 图表 | Merman | Ready |
+
+$$\frac{-b \pm \sqrt{b^2-4ac}}{2a}$$
+
+```mermaid
+flowchart LR
+  Markdown --> Parse[Rust AST]
+  Parse --> Math[KaTeX layout]
+  Parse --> Diagram[Mermaid layout]
+  Math --> WGPU
+  Diagram --> WGPU
+```
+
+```rust
+let document = NativeMarkdown::parse(source);
+```
+"#;
 
 #[cfg(test)]
 #[path = "tests.rs"]
