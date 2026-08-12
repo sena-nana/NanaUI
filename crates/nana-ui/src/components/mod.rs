@@ -13,6 +13,7 @@ pub mod feedback;
 pub mod graph_canvas;
 #[cfg(feature = "image-viewer")]
 pub mod image_viewer;
+pub mod key_capture_layer;
 pub mod keymap_layer;
 pub mod menus;
 #[cfg(feature = "overlays")]
@@ -68,6 +69,7 @@ pub use feedback::{
 pub use graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
 #[cfg(feature = "image-viewer")]
 pub use image_viewer::{ImageViewer, ImageViewerSource};
+pub use key_capture_layer::{KeyCaptureEvent, KeyCaptureLayer};
 pub use keymap_layer::KeymapLayer;
 pub use menus::{
     ActionMenuItem, AnchoredActionMenu, AnchoredMenuPlacement, AnchoredMenuPosition,

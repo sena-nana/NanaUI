@@ -83,6 +83,7 @@ pub use components::feedback::{
 pub use components::graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
 #[cfg(feature = "image-viewer")]
 pub use components::image_viewer::{ImageViewer, ImageViewerSource};
+pub use components::key_capture_layer::{KeyCaptureEvent, KeyCaptureLayer};
 pub use components::keymap_layer::KeymapLayer;
 pub use components::menus::{
     ActionMenuItem, AnchoredActionMenu, AnchoredMenuPlacement, AnchoredMenuPosition,

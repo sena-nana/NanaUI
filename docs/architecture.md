@@ -164,6 +164,11 @@ binding 具有覆盖优先级。`ActionPickerState` 只维护查询、选中项�
 `HostedUiCommand::Focus` 可在重建后聚焦指定 widget，因此快捷键打开 palette 时不依赖
 鼠标或第二套输入状态。
 
+`KeyCaptureLayer` 只在应用明确进入录制态时抢先消费下一组完整组合键，并复用
+`KeyStroke` 的规范化与展示合同；单独按修饰键会继续等待，Escape 取消，Delete / Backspace
+清空，Tab 保留焦点遍历。录制态、冲突检查、保存与系统级快捷键注册仍由应用拥有，避免
+公共控件产生第二份 Keymap 或宿主事实。
+
 `TreeView` 将应用提供的稳定节点 ID、展开事实和层级投影为统一的 disclosure row，并把
 选择/展开与方向键导航还原为 typed intent。文件系统枚举、过滤、watcher、选中项和展开项
 持久化仍由应用拥有；TreeView 不读取路径、不缓存业务树，也不推断节点是否真实存在。
