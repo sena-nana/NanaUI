@@ -3,7 +3,7 @@
 Vue `createRenderer` host runtime for NanaUI — **L1**（`createElement` + CSS 子集）与
 **L2**（`createWidget` / `nana-*`）共用同一 `MessageBridge` 森林。
 
-系统文档：[`docs/vue-nana-renderer-system.md`](../../docs/vue-nana-renderer-system.md) §0。
+系统文档：[`docs/vue-nana-renderer-system.md`](../../docs/vue-nana-renderer-system.md)。
 
 Style Model 路径：
 
@@ -22,9 +22,9 @@ CustomContent / CPU 简化 paint 已移除。
 
 Consumed by:
 
-- External Tauri apps loaded via `examples/nana-tauri-demo --project …`
+- Application-owned Vite/SFC entries using `createNanaApp()`
+- `crates/nana-js-engine/fixtures/vue-sfc-compat`（锁定双引擎验收）
 - `examples/vue-counter` (semantic / windowed MessageBridge)
-- Future Vite / SFC publish surface
 
 Cargo-side Phase 3 Counter still uses
 `fixtures/vue-runtime-probe/dist/vue-phase3.iife.js` for the legacy DOM probe path.

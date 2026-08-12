@@ -321,6 +321,8 @@ fn engine_label() -> &'static str {
 
 #[cfg(feature = "windowed")]
 mod windowed {
+    use std::time::Instant;
+
     use std::cell::RefCell;
 
     use iced::widget::column;
@@ -498,6 +500,32 @@ mod windowed {
                     HostedProgramUpdate::redraw()
                 }
                 _ => HostedProgramUpdate::default(),
+            }
+        }
+
+        fn next_wakeup(&self) -> Option<Instant> {
+            self.host.borrow().next_wakeup()
+        }
+
+        fn wake(
+            &mut self,
+            _now: Instant,
+            _context: &HostedProgramContext<Self::Message>,
+        ) -> HostedProgramUpdate {
+            let mut host = self.host.borrow_mut();
+            let mut engine = self.engine.borrow_mut();
+            match host.pump_frame(&mut **engine) {
+                Ok(fired) if fired > 0 => {
+                    host.prepare_editors();
+                    host.prepare_menus();
+                    self.snapshot = host.semantic_snapshot();
+                    HostedProgramUpdate::redraw()
+                }
+                Ok(_) => HostedProgramUpdate::default(),
+                Err(error) => {
+                    eprintln!("web-api pump failed: {error}");
+                    HostedProgramUpdate::default()
+                }
             }
         }
     }

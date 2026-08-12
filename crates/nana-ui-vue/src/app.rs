@@ -2,25 +2,25 @@
 
 use nana_js_engine::{JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui_core::ThemeMode;
+use nana_ui_web_api::SharedFetchHost;
 
 use crate::VueHost;
 use crate::bridge::SemanticSnapshot;
-use crate::capabilities::PermissionPolicy;
 
 /// 系统化 Vue→Nana 宿主（稳定公开名）。
 ///
-/// 当前实现即 [`VueHost`]：拥有树文档、MessageBridge、web-api 与权限策略。
+/// 当前实现即 [`VueHost`]：拥有树文档、MessageBridge 与 web-api 状态。
 pub type NanaVueApp = VueHost;
 
-/// [`mount_vue_as_nana`] 视口与权限选项。
+/// [`mount_vue_as_nana`] 视口选项。
 #[derive(Debug, Clone)]
 pub struct MountOptions {
     pub width: u32,
     pub height: u32,
     pub scale_factor: f32,
     pub theme: ThemeMode,
-    /// 若设置则覆盖默认权限（默认 workspace 只读）。
-    pub permission_policy: Option<PermissionPolicy>,
+    /// Optional application-owned, policy-gated HTTP(S) backend.
+    pub fetch_host: Option<SharedFetchHost>,
 }
 
 impl Default for MountOptions {
@@ -30,7 +30,7 @@ impl Default for MountOptions {
             height: 600,
             scale_factor: 1.0,
             theme: ThemeMode::Light,
-            permission_policy: None,
+            fetch_host: None,
         }
     }
 }
@@ -46,10 +46,15 @@ impl Default for MountOptions {
 /// let snap = app.semantic_snapshot();
 /// ```
 pub fn mount_vue_as_nana(options: MountOptions) -> NanaVueApp {
-    let mut app = NanaVueApp::with_viewport(options.width, options.height, options.scale_factor);
-    if let Some(policy) = options.permission_policy {
-        app.set_permission_policy(policy);
-    }
+    let mut app = match options.fetch_host {
+        Some(fetch_host) => NanaVueApp::with_web_api_state(
+            options.width,
+            options.height,
+            options.scale_factor,
+            nana_ui_web_api::shared_web_api_state_with_fetch(fetch_host),
+        ),
+        None => NanaVueApp::with_viewport(options.width, options.height, options.scale_factor),
+    };
     // Theme is applied fully once an engine is bound; seed bridge/document/web-api here.
     app.theme = options.theme;
     {

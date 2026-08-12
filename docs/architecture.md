@@ -8,9 +8,7 @@
 Gallery 页面、状态、快照与基准属于 Demo crate。
 
 **产品 UI 前端默认且唯一为 NanaUI（Iced）。** 可选的 Vue/JS 引擎只做状态与命令桥
-（`nana-ui-vue` + QuickJS XOR V8）；不引入 WebView、Blitz DOM/CSS 或第二套 wgpu。
-Blitz 移除说明见
-[`docs/performance/2026-08-06-blitz-removed-nana-frontend.md`](performance/2026-08-06-blitz-removed-nana-frontend.md)。
+（`nana-ui-vue` + QuickJS XOR V8）；L1 不引入真实 WebView、Blitz DOM/CSS 或第二套 wgpu。
 
 **三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
 
@@ -27,13 +25,16 @@ L1/L2/L3 是三种输入合同，不是三个运行时模式或三套渲染实�
 
 | 层 | 含义 | 住在哪 |
 |----|------|--------|
-| L1 | 完整 Tauri Vue：兼容接口 + CSS 子集→Style Model（兼容目标，非公共 CSSOM） | `nana-tauri-demo` / `nana-ui-vue` / `nanavue-runtime` / `nana-ui-web-api` |
+| L1 | WebView 中常见 Vue 3 + JS 源码：经 Nana Vite 入口构建，DOM/CSS/Web API 子集→Style Model | `nana-ui-vue` / `nanavue-runtime` / `nana-ui-web-api` |
 | L2 | Vue 直接使用 Nana 组件接口（语义 props→同一 Model，可跳过 CSS） | `nanavue-components` + MessageBridge |
 | L3 | Rust 原生入口 + 唯一绘制实现 | `nana-ui` / `nana-ui-core` / Gallery |
 
 设计上支持混合显示，尤其是 **L1+L2 同树**。权威细则见
-[`vue-nana-renderer-system.md`](vue-nana-renderer-system.md) §0。  
+[`vue-nana-renderer-system.md`](vue-nana-renderer-system.md)。
 兼容性阶段目标与 Todo：[`compatibility-roadmap.md`](compatibility-roadmap.md)。
+
+L1 不创建真实 WebView，不提供 Tauri invoke/插件/窗口/事件/存储协议，也不承诺
+普通 `@vue/runtime-dom` 产物直接运行。
 
 ```text
 应用状态 / 应用消息

@@ -1,11 +1,16 @@
 //! Platform input / IME / clipboard abstraction plus Android MVP flags.
 
 mod clipboard;
+mod fetch;
 mod ime;
 
 pub use clipboard::{
     ClipboardHost, MemoryClipboard, OsClipboard, SharedClipboardHost, UnsupportedClipboard,
     default_shared_clipboard, shared_clipboard,
+};
+pub use fetch::{
+    FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
+    NativeFetchHost, SharedFetchHost, shared_fetch_host,
 };
 pub use ime::{ImeHost, ImeRequest, UnsupportedIme};
 

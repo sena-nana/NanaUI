@@ -27,3 +27,7 @@ serde_json.workspace = true
 # `v8` is the crates.io successor package name for the former `rusty_v8` binding —
 # not a different JS engine. Do NOT depend on legacy rusty_v8 0.32.1.
 v8 = { workspace = true, optional = true }
+
+[dev-dependencies]
+nana-ui-vue = { path = "../nana-ui-vue", default-features = false }
+nana-ui-web-api.workspace = true

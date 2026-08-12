@@ -1,7 +1,0 @@
-{
-  "name": "@nanaui/nanavue-cli",
-  "private": true,
-  "version": "0.0.0",
-  "description": "NanaVue build/dev CLI (Phase 6; stub)",
-  "type": "module"
-}

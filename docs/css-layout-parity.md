@@ -194,7 +194,7 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 | 可见性 | `display:none` / `visibility:hidden` → Nana 均跳过 | T-V01–V02 |
 | Shell hints | Fill 链、侧栏+主区、settings-row | T-L01–L03 |
 | Typography（2026-08-11） | `font-size`/`weight`/`family`、`line-height`、`letter-spacing`（row 近似）、`color` → iced Text | `css_map` + iced-view typography 测；路线图 **A-05** |
-| Button chrome（2026-08-11） | padding / border / radius / bg / color / gap → `Button`/`IconButton` 内层；外层 `consume` 跳过双层 | `ButtonPaintOverride`；路线图 **A-06**；[`2026-08-11-button-css-chrome.md`](performance/2026-08-11-button-css-chrome.md) |
+| Button chrome | padding / border / radius / bg / color / gap → `Button`/`IconButton` 内层；外层 `consume` 跳过双层 | `ButtonPaintOverride` 行为测试 |
 
 ### 明确 defer / skip（勿假实现）
 
@@ -266,12 +266,13 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 ### 盘点备注
 
 - [`capabilities.md`](capabilities.md) 是 **Host 权限 / transport**，不是 CSS 布局矩阵。
-- [`missing-nana-foundations`](performance/2026-08-06-missing-nana-foundations.md) 剩余项转向 **Android 壳、Lucide 全量、产品浮层加深、Markdown 组合** 等，而非新开布局引擎缺口。
+- 后续产品能力应优先落在原生组件、Android 宿主或组合层，而非新开布局引擎缺口。
 
 ### 建议下一阶段（布局线外）
 
 > **2026-08-10**：相对 **home/settings** 的布局 L1 + Android slot/KeyEvent/APK + 浮层加深等**原宣称面已闭合**（见 [`android-arm64.md`](android-arm64.md)）。  
-> **同日扩展合同**（Repo / Overlay 非 fixed / scrollIntoView / clipboard / window 泵送 / Vue host 深度）见 [`performance/2026-08-10-lilia-fidelity-gap.md`](performance/2026-08-10-lilia-fidelity-gap.md)「宣称面扩展合同」；**阶段 Todo 权威表**见 [`compatibility-roadmap.md`](compatibility-roadmap.md)（2026-08-11：X4–X6 已兑现；**A-05 typography / A-06 Button chrome 已闭合**；X1 等见路线图）。
+> Vue 源码、Web API 与宿主边界以 [`compatibility-roadmap.md`](compatibility-roadmap.md)
+> 为准；本文件只维护 CSS/Layout 子集。
 
 1. **Android**：真机可选；完整 DesktopShell / 软 IME **defer**（勿假接）；本扩展**不**抬 Android 布局/IME 宣称
 2. **Lucide**：常用别名已扩；全量路径 / 业务图标集按需加深  
@@ -284,7 +285,7 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 |------|------|------|------|
 | Flex / 盒 / wrap / 定位子集（含 fixed 视口） / 1D grid `repeat(N)` | L1 measure 子集 | **原面闭合** | `cargo run -p nana-css-parity -- compare` |
 | Typography（size/weight/family/lh/tracking/color） | iced Text 子集（A-05） | **闭合（2026-08-11）** | iced-view typography 测；`bolder`/`lighter`/动态字体/原生 tracking **仍 defer** |
-| Button/IconButton CSS chrome | pad/border/radius/bg/color/gap 内层消费（A-06） | **闭合（2026-08-11）** | `button_layout_chrome_*`；见 [`2026-08-11-button-css-chrome.md`](performance/2026-08-11-button-css-chrome.md) |
+| Button/IconButton CSS chrome | pad/border/radius/bg/color/gap 内层消费 | **闭合** | `button_layout_chrome_*` 行为测试 |
 | Repo 页证据 + 同子集轨 | 扩展 **X1/X2** | **闭合（X1/X2）** | Repo QJS↔V8 evidence + css-parity；见 fidelity-gap |
 | `repeat(auto-fit\|fill)` / 2D auto-flow | — | **仍 defer** | Unsupported 非静默；勿升宣称 |
 | `position: fixed` 视口子集 | 脱流 + 视口 CB + inset + z-index | **本轨闭合** | T-P15–P17；非 Overlay 节点绘制 |

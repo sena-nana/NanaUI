@@ -87,6 +87,23 @@ cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
 上下文，宿主纹理通过 `GpuTextureView` 直接进入 UI 合成，没有 CPU 回读、
 图片编码或第二套 Device。
 
+## Vue + JavaScript 源码兼容
+
+`nana-ui-vue` 提供的是 WebView 中常见 Vue 3 源码的 Nana 兼容子集，不是
+WebView 或 Tauri 运行时。消费应用以 Vite 编译 SFC、TypeScript 与 CSS，在自己的
+入口中从 `@nanaui/nanavue-runtime` 调用 `createNanaApp()`；产出的 IIFE 由
+QuickJS 或 V8 执行，语义树最终仍只由 NanaUI/Iced/WGPU 绘制。
+
+框架默认只注册 renderer、DOM 子集与 Web API。应用业务命令和鉴权由消费宿主
+通过 `HostApiRegistry` 提供，名称与框架 API 冲突时初始化直接失败。网络通过
+应用显式配置的 `FetchHost` 执行，`FetchPolicy` 默认拒绝所有 origin；兼容面是
+缓冲式 `fetch`、`Headers`、`Request`、`Response` 与 `AbortSignal`，不包含
+流式 body、cookie、cache、CORS、WebSocket 或 Tauri API。
+
+最小消费入口和锁定构建见
+[`crates/nana-js-engine/fixtures/vue-sfc-compat`](crates/nana-js-engine/fixtures/vue-sfc-compat)。
+该夹具只用于源码兼容验收，不是外部 bundle loader 或 Demo CLI。
+
 ## 当前依赖基线
 
 - Iced：`0.15.0-dev`，固定到 `sena-nana/iced`
@@ -109,6 +126,7 @@ cargo check -p component-gallery --bin component-gallery --locked
 cargo test --workspace --all-targets --all-features --locked
 cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+(cd crates/nana-js-engine/fixtures/vue-sfc-compat && npm ci && npm run build)
 ```
 
 生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：

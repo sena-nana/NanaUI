@@ -354,6 +354,31 @@ impl HostApiRegistry {
         self
     }
 
+    /// Add every handler from `additional` without allowing either registry to
+    /// replace an existing name.
+    ///
+    /// The preflight keeps the operation atomic: on conflict, `self` is left
+    /// unchanged. This is the boundary used by framework-owned and
+    /// application-owned host APIs.
+    pub fn try_extend(&mut self, additional: &Self) -> Result<&mut Self, JsEngineError> {
+        if let Some(name) = additional
+            .handlers
+            .keys()
+            .find(|name| self.handlers.contains_key(*name))
+        {
+            return Err(JsEngineError::new(format!(
+                "duplicate host API name `{name}`"
+            )));
+        }
+        self.handlers.extend(
+            additional
+                .handlers
+                .iter()
+                .map(|(name, handler)| (name.clone(), Arc::clone(handler))),
+        );
+        Ok(self)
+    }
+
     pub fn get(&self, name: &str) -> Option<&HostApiHandler> {
         self.handlers.get(name)
     }
@@ -433,12 +458,22 @@ pub mod probe {
     pub const VUE_PHASE3_JS: &str =
         include_str!("../fixtures/vue-runtime-probe/dist/vue-phase3.iife.js");
 
+    /// Reproducible Vite-built Vue SFC + TypeScript compatibility artifact.
+    pub const VUE_SFC_COMPAT_JS: &str =
+        include_str!("../fixtures/vue-sfc-compat/dist/vue-sfc-compat.iife.js");
+    pub const VUE_SFC_COMPAT_CSS: &str =
+        include_str!("../fixtures/vue-sfc-compat/dist/nanaui-vue-sfc-compat-fixture.css");
+
     pub fn vue_runtime_probe_artifact() -> RuntimeArtifact {
         RuntimeArtifact::from_source("vue-runtime-probe.iife.js", VUE_RUNTIME_PROBE_JS)
     }
 
     pub fn vue_phase3_artifact() -> RuntimeArtifact {
         RuntimeArtifact::from_source("vue-phase3.iife.js", VUE_PHASE3_JS)
+    }
+
+    pub fn vue_sfc_compat_artifact() -> RuntimeArtifact {
+        RuntimeArtifact::from_source("vue-sfc-compat.iife.js", VUE_SFC_COMPAT_JS)
     }
 
     /// Host-side counters recorded by renderer stub ops + probe callbacks.
@@ -597,6 +632,38 @@ mod tests {
             .unwrap();
         assert_eq!(result.as_f64(), Some(3.75));
         assert!(api.call("missing", &[]).is_err());
+    }
+
+    #[test]
+    fn host_api_registry_extend_is_atomic_on_conflict() {
+        let mut framework = HostApiRegistry::new();
+        framework.register("render", |_| Ok(HostValue::string("framework")));
+        let mut application = HostApiRegistry::new();
+        application
+            .register("fetchRepos", |_| Ok(HostValue::Bool(true)))
+            .register("render", |_| Ok(HostValue::string("application")));
+
+        let error = framework.try_extend(&application).unwrap_err();
+        assert_eq!(error.message, "duplicate host API name `render`");
+        assert!(framework.get("fetchRepos").is_none());
+        assert_eq!(
+            framework.call("render", &[]).unwrap().as_str(),
+            Some("framework")
+        );
+    }
+
+    #[test]
+    fn host_api_registry_extends_with_application_handlers() {
+        let mut framework = HostApiRegistry::new();
+        framework.register("render", |_| Ok(HostValue::Null));
+        let mut application = HostApiRegistry::new();
+        application.register("fetchRepos", |_| Ok(HostValue::Bool(true)));
+
+        framework.try_extend(&application).unwrap();
+        assert_eq!(
+            framework.call("fetchRepos", &[]).unwrap().as_bool(),
+            Some(true)
+        );
     }
 
     #[test]

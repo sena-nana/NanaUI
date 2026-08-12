@@ -468,7 +468,10 @@ fn object_array_len<'js>(object: &Object<'js>) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_js_engine::probe::{probe_host_registry, vue_runtime_probe_artifact};
+    use nana_js_engine::probe::{
+        VUE_SFC_COMPAT_CSS, probe_host_registry, vue_runtime_probe_artifact,
+        vue_sfc_compat_artifact,
+    };
     use nana_js_engine::{HostValue, JsEngine, RuntimeArtifactKind};
 
     #[test]
@@ -560,6 +563,121 @@ mod tests {
             }
         }
         panic!("navigator.clipboard promise did not settle");
+    }
+
+    #[test]
+    fn buffered_fetch_classes_enforce_body_and_abort_contracts() {
+        use nana_ui_vue::VueHost;
+
+        let mut host = VueHost::with_viewport(320, 200, 1.0);
+        let mut engine = QuickJsEngine::new();
+        host.initialize_with_web_api(
+            &mut engine,
+            RuntimeArtifact::from_source(
+                "fetch-contract.js",
+                r#"
+                globalThis.__nanaFetchContractResult = null;
+                globalThis.__nanaFetchContract = {
+                  read: () => globalThis.__nanaFetchContractResult,
+                };
+                (async function () {
+                  const headers = new Headers({ "X-Test": " one " });
+                  headers.append("x-test", "two");
+                  const request = new Request("https://example.test/items", {
+                    method: "POST",
+                    headers,
+                    body: new Uint8Array([1, 2, 3]),
+                  });
+                  const requestBytes = new Uint8Array(await request.arrayBuffer());
+                  let requestSecondRead = "";
+                  try { await request.text(); } catch (error) { requestSecondRead = error.name; }
+
+                  const response = new Response('{"ok":true}', {
+                    status: 418,
+                    statusText: "Teapot",
+                    headers: [["content-type", "application/json"]],
+                  });
+                  const copy = response.clone();
+                  const json = await response.json();
+                  const copyText = await copy.text();
+
+                  let unsupported = "";
+                  try { new Request("https://example.test", { cache: "reload" }); }
+                  catch (error) { unsupported = error.name; }
+
+                  const controller = new AbortController();
+                  controller.abort();
+                  let aborted = "";
+                  try { await fetch("https://example.test", { signal: controller.signal }); }
+                  catch (error) { aborted = error.name; }
+
+                  globalThis.__nanaFetchContractResult = {
+                    header: headers.get("X-Test"),
+                    requestBytes: Array.from(requestBytes),
+                    requestBodyUsed: request.bodyUsed,
+                    requestSecondRead,
+                    status: response.status,
+                    ok: response.ok,
+                    responseBodyUsed: response.bodyUsed,
+                    jsonOk: json.ok,
+                    copyText,
+                    unsupported,
+                    aborted,
+                  };
+                })();
+                "#,
+            ),
+        )
+        .unwrap();
+        let read = engine.resolve_function("__nanaFetchContract.read").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let result = loop {
+            engine.run_microtasks().unwrap();
+            let value = engine.invoke(read, &[]).unwrap();
+            if let HostValue::Object(_) = value {
+                break value;
+            }
+            assert!(std::time::Instant::now() < deadline);
+        };
+        let result = result.as_object().unwrap();
+        assert_eq!(
+            result.get("header").and_then(HostValue::as_str),
+            Some("one, two")
+        );
+        assert_eq!(
+            result.get("requestBodyUsed").and_then(HostValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            result.get("requestSecondRead").and_then(HostValue::as_str),
+            Some("TypeError")
+        );
+        assert_eq!(
+            result.get("status").and_then(HostValue::as_f64),
+            Some(418.0)
+        );
+        assert_eq!(result.get("ok").and_then(HostValue::as_bool), Some(false));
+        assert_eq!(
+            result.get("responseBodyUsed").and_then(HostValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            result.get("jsonOk").and_then(HostValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            result.get("copyText").and_then(HostValue::as_str),
+            Some("{\"ok\":true}")
+        );
+        assert_eq!(
+            result.get("unsupported").and_then(HostValue::as_str),
+            Some("TypeError")
+        );
+        assert_eq!(
+            result.get("aborted").and_then(HostValue::as_str),
+            Some("AbortError")
+        );
+        engine.shutdown();
     }
 
     #[test]
@@ -882,74 +1000,166 @@ mod tests {
         engine.shutdown();
     }
 
-    /// Integration: VueHost default policy (workspace.read only) denies
-    /// `workspaceSwitch` / `secretGet` through the JS host bridge.
+    /// Integration: applications may add business APIs, but cannot replace a
+    /// framework renderer API; the compatibility shim does not create Tauri globals.
     #[test]
-    fn vue_host_denies_privileged_ops_without_grant() {
-        use nana_js_engine::RuntimeArtifact;
+    fn vue_host_merges_application_api_without_tauri_globals() {
+        use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
         use nana_ui_vue::VueHost;
 
         let mut host = VueHost::with_viewport(320, 200, 1.0);
-        // Default policy grants workspace.read only — no switch / secret.
+        let mut application_api = HostApiRegistry::new();
+        application_api.register("loadRepositories", |args| {
+            Ok(HostValue::String(
+                args.first()
+                    .and_then(HostValue::as_str)
+                    .unwrap_or("anonymous")
+                    .to_string(),
+            ))
+        });
         let mut engine = QuickJsEngine::new();
-        host.attach_engine(&mut engine).unwrap();
-        engine
-            .initialize(RuntimeArtifact::from_source(
-                "capability-probe.js",
+        host.initialize_with_web_api_and_host_api(
+            &mut engine,
+            RuntimeArtifact::from_source(
+                "application-api-probe.js",
                 r#"
-                  globalThis.__nanaCapProbe = {
-                    trySwitch() {
-                      try {
-                        globalThis.__nanaHost.call("workspaceSwitch", ["ws-other"]);
-                        return { ok: true };
-                      } catch (e) {
-                        return { ok: false, message: String(e && e.message ? e.message : e) };
-                      }
-                    },
-                    trySecret() {
-                      try {
-                        globalThis.__nanaHost.call("secretGet", ["github.token"]);
-                        return { ok: true };
-                      } catch (e) {
-                        return { ok: false, message: String(e && e.message ? e.message : e) };
-                      }
+                  globalThis.__nanaApplicationProbe = {
+                    run() {
+                      return {
+                        value: globalThis.__nanaHost.call("loadRepositories", ["octocat"]),
+                        hasTauri: "__TAURI_INTERNALS__" in globalThis ||
+                          "__TAURI__" in globalThis ||
+                          "__TAURI_INTERNALS__" in globalThis.window ||
+                          "__TAURI__" in globalThis.window,
+                      };
                     }
                   };
                 "#,
-            ))
+            ),
+            &application_api,
+        )
+        .unwrap();
+
+        let run = engine
+            .resolve_function("__nanaApplicationProbe.run")
             .unwrap();
-
-        let try_switch = engine.resolve_function("__nanaCapProbe.trySwitch").unwrap();
-        let switch = engine.invoke(try_switch, &[]).unwrap();
-        let switch_obj = switch.as_object().expect("switch result");
+        let result = engine.invoke(run, &[]).unwrap();
+        let result = result.as_object().expect("application result");
         assert_eq!(
-            switch_obj.get("ok").and_then(HostValue::as_bool),
+            result.get("value").and_then(HostValue::as_str),
+            Some("octocat")
+        );
+        assert_eq!(
+            result.get("hasTauri").and_then(HostValue::as_bool),
             Some(false)
         );
-        let switch_msg = switch_obj
-            .get("message")
-            .and_then(HostValue::as_str)
-            .unwrap_or("");
-        assert!(
-            switch_msg.contains("permission denied"),
-            "workspaceSwitch message={switch_msg}"
-        );
+        engine.shutdown();
 
-        let try_secret = engine.resolve_function("__nanaCapProbe.trySecret").unwrap();
-        let secret = engine.invoke(try_secret, &[]).unwrap();
-        let secret_obj = secret.as_object().expect("secret result");
+        let mut collision = HostApiRegistry::new();
+        collision.register("createElement", |_| Ok(HostValue::Null));
+        let mut engine = QuickJsEngine::new();
+        let error = host
+            .initialize_with_web_api_and_host_api(
+                &mut engine,
+                RuntimeArtifact::from_source("collision.js", ""),
+                &collision,
+            )
+            .unwrap_err();
+        assert_eq!(error.message, "duplicate host API name `createElement`");
+    }
+
+    #[test]
+    fn vue_sfc_fetch_updates_semantic_tree_on_quickjs() {
+        use std::time::{Duration, Instant};
+
+        use nana_ui_vue::{MountOptions, mount_vue_as_nana};
+        use nana_ui_web_api::{
+            FetchError, FetchHost, FetchPolicy, FetchRequest, FetchResponse, shared_fetch_host,
+        };
+
+        #[derive(Debug)]
+        struct FixtureFetch {
+            policy: FetchPolicy,
+        }
+
+        impl FetchHost for FixtureFetch {
+            fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                assert_eq!(request.url, "/fixture");
+                assert!(
+                    request
+                        .headers
+                        .iter()
+                        .any(|(name, value)| name == "x-nana-fixture" && value == "sfc")
+                );
+                let body = br#"{"message":"ready","sequence":7}"#.to_vec();
+                Ok(FetchResponse {
+                    url: request.url,
+                    status: 200,
+                    status_text: "OK".into(),
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body,
+                    redirected: false,
+                })
+            }
+
+            fn policy(&self) -> &FetchPolicy {
+                &self.policy
+            }
+        }
+
+        let mut host = mount_vue_as_nana(MountOptions {
+            width: 480,
+            height: 320,
+            fetch_host: Some(shared_fetch_host(FixtureFetch {
+                policy: FetchPolicy::default(),
+            })),
+            ..MountOptions::default()
+        });
+        host.inject_stylesheet(VUE_SFC_COMPAT_CSS);
+        let mut engine = QuickJsEngine::new();
+        let mut application_api = HostApiRegistry::new();
+        application_api.register("fixtureApplicationApi", |_| {
+            Ok(HostValue::string("quickjs"))
+        });
+        host.initialize_with_web_api_and_host_api(
+            &mut engine,
+            vue_sfc_compat_artifact(),
+            &application_api,
+        )
+        .unwrap();
+        host.bind_event_bridge(&mut engine).unwrap();
+        let probe = engine.resolve_function("__nanaSfcFixture.probe").unwrap();
+        let probe = engine.invoke(probe, &[]).unwrap();
+        let probe = probe.as_object().unwrap();
         assert_eq!(
-            secret_obj.get("ok").and_then(HostValue::as_bool),
+            probe.get("applicationValue").and_then(HostValue::as_str),
+            Some("quickjs")
+        );
+        assert_eq!(
+            probe.get("hasTauri").and_then(HostValue::as_bool),
             Some(false)
         );
-        let secret_msg = secret_obj
-            .get("message")
-            .and_then(HostValue::as_str)
-            .unwrap_or("");
-        assert!(
-            secret_msg.contains("permission denied"),
-            "secretGet message={secret_msg}"
-        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            engine.run_microtasks().unwrap();
+            host.pump_frame(&mut engine).unwrap();
+            let snapshot = host.semantic_snapshot();
+            let labels = snapshot
+                .widgets
+                .iter()
+                .map(|widget| widget.props.label.as_str())
+                .collect::<Vec<_>>();
+            if labels.contains(&"ready:7") {
+                assert!(labels.contains(&"32"));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "SFC fetch did not update: {labels:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         engine.shutdown();
     }
 
@@ -1082,7 +1292,7 @@ mod tests {
     }
 
     /// Host pumps focus/blur/resize/visibilitychange into shim EventTarget
-    /// (Lilia lifecycle focus refresh + Page Visibility listeners).
+    /// (focus refresh + Page Visibility listeners).
     #[test]
     fn vue_host_pumps_window_lifecycle_events() {
         use nana_js_engine::RuntimeArtifact;
