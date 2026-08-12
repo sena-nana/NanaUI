@@ -568,6 +568,7 @@ pub struct DockController {
     focused_split: Option<(DockSurfaceId, Vec<usize>, DockAxis)>,
     active_drag: Option<ActiveDrag>,
     chrome_style: DockChromeStyle,
+    floating_window_title: String,
     hovered_card: Option<DockId>,
 }
 
@@ -612,6 +613,7 @@ impl DockController {
             focused_split: None,
             active_drag: None,
             chrome_style: DockChromeStyle::default(),
+            floating_window_title: String::new(),
             hovered_card: None,
         })
     }
@@ -622,6 +624,12 @@ impl DockController {
 
     pub fn set_chrome_style(&mut self, chrome_style: DockChromeStyle) {
         self.chrome_style = chrome_style;
+    }
+
+    /// Sets the neutral title shown when a floating window contains a split root.
+    /// This presentation setting is not part of the serialized dock layout.
+    pub fn set_floating_window_title(&mut self, title: impl Into<String>) {
+        self.floating_window_title = title.into();
     }
 
     pub fn item(&self, id: &DockId) -> Option<&DockItemSpec> {
@@ -2324,6 +2332,11 @@ struct DockWindowViewContext<'a, 'state, Message> {
     tokens: ThemeTokens,
 }
 
+enum DockWindowTitle<'a> {
+    Item(&'a DockId),
+    Neutral(&'a str),
+}
+
 fn dock_window_root_view<'a, Message>(
     node: &DockViewNode,
     surface: DockSurfaceId,
@@ -2383,11 +2396,11 @@ where
                 view
             }
         }
-        _ => {
+        DockViewNode::Split { .. } => {
             let title_bar = dock_window_title_bar(
                 controller,
                 surface,
-                dock_view_active_id(node),
+                DockWindowTitle::Neutral(&controller.floating_window_title),
                 context.window_chrome,
                 on_action,
                 context.on_window_event,
@@ -2407,14 +2420,6 @@ where
                 .height(Length::Fill)
                 .into()
         }
-    }
-}
-
-fn dock_view_active_id(node: &DockViewNode) -> Option<&DockId> {
-    match node {
-        DockViewNode::Item { item } => Some(item.id()),
-        DockViewNode::Tabs { active, .. } => Some(active.id()),
-        DockViewNode::Split { first, .. } => dock_view_active_id(first),
     }
 }
 
@@ -2472,7 +2477,7 @@ where
 fn dock_window_title_bar<'a, Message>(
     controller: &DockController,
     surface: DockSurfaceId,
-    title_id: Option<&DockId>,
+    title: DockWindowTitle<'_>,
     window_chrome: &WindowChromeState,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
     on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
@@ -2481,8 +2486,12 @@ fn dock_window_title_bar<'a, Message>(
 where
     Message: Clone + 'a,
 {
+    let (label, title_id) = match title {
+        DockWindowTitle::Item(id) => (dock_item_title(controller, id), Some(id)),
+        DockWindowTitle::Neutral(title) => (title.to_owned(), None),
+    };
     let title = container(
-        text(title_id.map_or_else(String::new, |id| dock_item_title(controller, id)))
+        text(label)
             .size(11)
             .font(ui_font(iced::font::Weight::Semibold)),
     )
@@ -2576,7 +2585,7 @@ where
     let title_bar = dock_window_title_bar(
         controller,
         surface,
-        Some(id),
+        DockWindowTitle::Item(id),
         context.window_chrome,
         on_action,
         context.on_window_event,
