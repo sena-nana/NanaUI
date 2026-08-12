@@ -262,6 +262,22 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &feedback,
     )?);
 
+    let mut rich_text = GalleryState::new();
+    rich_text.update(GalleryMessage::SelectSection(GallerySection::RichText));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-rich-text-dark.png",
+        &rich_text,
+    )?);
+    rich_text.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-rich-text-light.png",
+        &rich_text,
+    )?);
+
     let mut popover = GalleryState::new();
     popover.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     popover.update(GalleryMessage::TogglePopover);

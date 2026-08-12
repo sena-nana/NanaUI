@@ -35,6 +35,7 @@ impl StartupProbe {
 const fn material_name(material: MaterialEffect) -> &'static str {
     match material {
         MaterialEffect::Solid => "solid",
+        MaterialEffect::Transparent => "transparent",
         MaterialEffect::Vibrancy => "vibrancy",
         MaterialEffect::Mica => "mica",
         MaterialEffect::Acrylic => "acrylic",

@@ -81,6 +81,7 @@ impl HostedProgram for DemoProgram {
             }),
             redraw: HostedRedraw::Primary,
             window_commands: Vec::new(),
+            ui_commands: Vec::new(),
             exit: false,
         }
     }
@@ -111,9 +112,11 @@ impl HostedProgram for DemoProgram {
                 );
                 HostedProgramUpdate::redraw()
             }
-            HostedWindowEvent::Moved { .. } | HostedWindowEvent::VisibilityChanged { .. } => {
-                HostedProgramUpdate::default()
-            }
+            HostedWindowEvent::Moved { .. }
+            | HostedWindowEvent::VisibilityChanged { .. }
+            | HostedWindowEvent::FileHovered { .. }
+            | HostedWindowEvent::FileDropped { .. }
+            | HostedWindowEvent::FileHoverCancelled { .. } => HostedProgramUpdate::default(),
             HostedWindowEvent::CloseRequested { .. } => HostedProgramUpdate::exit(),
         }
     }

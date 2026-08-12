@@ -13,6 +13,13 @@ use iced_winit::winit::dpi::{LogicalPosition, LogicalSize};
 use iced_winit::winit::event::WindowEvent;
 use iced_winit::winit::keyboard::ModifiersState;
 
+#[derive(Debug)]
+struct PendingScrollBy {
+    target: String,
+    x: f32,
+    y: f32,
+}
+
 /// Result of rendering one native UI frame into a host-provided texture.
 pub struct HostedUiFrame<Message> {
     pub messages: Vec<Message>,
@@ -56,6 +63,7 @@ pub struct HostedUiRenderer<Message> {
     waker: shell::Waker,
     modifiers: ModifiersState,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
+    pending_scroll_by: Vec<PendingScrollBy>,
     ui_dirty: bool,
     dynamic_dirty: bool,
 }
@@ -104,6 +112,7 @@ impl<Message> HostedUiRenderer<Message> {
             waker: shell::Waker::new(request_redraw),
             modifiers: ModifiersState::default(),
             ime_state: None,
+            pending_scroll_by: Vec::new(),
             ui_dirty: true,
             dynamic_dirty: true,
         }
@@ -179,6 +188,12 @@ impl<Message> HostedUiRenderer<Message> {
         self.dynamic_dirty = true;
     }
 
+    pub(crate) fn queue_scroll_by(&mut self, target: String, x: f32, y: f32) {
+        self.pending_scroll_by
+            .push(PendingScrollBy { target, x, y });
+        self.mark_ui_dirty();
+    }
+
     /// Rebuilds the retained Iced tree and its layout.
     ///
     /// The application only calls this after a real UI state change. The
@@ -195,6 +210,18 @@ impl<Message> HostedUiRenderer<Message> {
             cache,
             &mut self.renderer,
         ));
+        if let Some(interface) = self.interface.as_mut() {
+            for pending in self.pending_scroll_by.drain(..) {
+                let mut operation = iced::advanced::widget::operation::scrollable::scroll_by::<()>(
+                    pending.target.into(),
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: pending.x,
+                        y: pending.y,
+                    },
+                );
+                interface.operate(&self.renderer, &mut operation);
+            }
+        }
         self.ui_dirty = false;
         self.dynamic_dirty = true;
     }

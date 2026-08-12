@@ -818,7 +818,10 @@ impl DockController {
                 self.update(DockAction::CloseSurface(surface))
             }
             HostedWindowEvent::CloseRequested { .. }
-            | HostedWindowEvent::VisibilityChanged { .. } => DockUpdate::default(),
+            | HostedWindowEvent::VisibilityChanged { .. }
+            | HostedWindowEvent::FileHovered { .. }
+            | HostedWindowEvent::FileDropped { .. }
+            | HostedWindowEvent::FileHoverCancelled { .. } => DockUpdate::default(),
         }
     }
 
@@ -2246,15 +2249,18 @@ where
                 .into()
         },
         |root| {
+            let context = DockWindowViewContext {
+                window_chrome,
+                on_window_event,
+                tokens,
+            };
             dock_window_root_view(
                 &root,
                 surface,
                 controller,
                 &mut contents,
-                window_chrome,
                 on_action,
-                on_window_event,
-                tokens,
+                context,
             )
         },
     );
@@ -2311,33 +2317,29 @@ where
         .into()
 }
 
+struct DockWindowViewContext<'a, 'state, Message> {
+    window_chrome: &'state WindowChromeState,
+    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+    tokens: ThemeTokens,
+}
+
 fn dock_window_root_view<'a, Message>(
     node: &DockViewNode,
     surface: DockSurfaceId,
     controller: &DockController,
     contents: &mut DockContents<'a, Message>,
-    window_chrome: &WindowChromeState,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
-    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
-    tokens: ThemeTokens,
+    context: DockWindowViewContext<'a, '_, Message>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
+    let tokens = context.tokens;
     match node {
         DockViewNode::Item {
             item: DockViewItem::Existing(id),
         } => {
-            let view = dock_window_item_view(
-                id,
-                surface,
-                controller,
-                contents,
-                window_chrome,
-                on_action,
-                on_window_event,
-                tokens,
-            );
+            let view = dock_window_item_view(id, surface, controller, contents, on_action, context);
             if node_is_drop_highlighted(controller, surface, node) {
                 dock_insert_highlight(view, tokens, controller.chrome_style)
             } else {
@@ -2359,8 +2361,8 @@ where
                     tokens,
                 )
                 .into(),
-                window_chrome,
-                on_window_event,
+                context.window_chrome,
+                context.on_window_event,
                 tokens,
             );
             let body = dock_view_item_view(
@@ -2385,9 +2387,9 @@ where
                 controller,
                 surface,
                 dock_view_active_id(node),
-                window_chrome,
+                context.window_chrome,
                 on_action,
-                on_window_event,
+                context.on_window_event,
                 tokens,
             );
             let body = dock_node_view(
@@ -2492,13 +2494,9 @@ where
     })
     .center_y(Length::Fill);
     let title: Element<'a, Message> = match (controller.layout.locked, title_id) {
-        (false, Some(id)) => dock_drag_handle(
-            title,
-            id,
-            surface,
-            on_action,
-            DockAction::Focus(id.clone()),
-        ),
+        (false, Some(id)) => {
+            dock_drag_handle(title, id, surface, on_action, DockAction::Focus(id.clone()))
+        }
         _ => window_chrome_drag_start_area(title, &on_window_event),
     };
     dock_window_chrome_bar(title, window_chrome, on_window_event, tokens)
@@ -2517,49 +2515,50 @@ where
     Message: Clone + 'a,
 {
     let chrome_style = controller.chrome_style;
-    tabs.iter().fold(row![].height(Length::Fixed(height)), |tabs_row, item| {
-        let id = item.id();
-        let title = dock_item_title(controller, id);
-        let placeholder = item.is_placeholder();
-        let active_tab = item == active;
-        let label = text(title)
-            .size(11)
-            .font(ui_font(iced::font::Weight::Medium));
-        let tab = container(label)
-            .center_y(Length::Fill)
-            .padding([0.0, 10.0])
-            .style(move |_theme| {
-                let background = if active_tab {
-                    tokens.colors.active
-                } else if chrome_style == DockChromeStyle::Card {
-                    iced::Color::TRANSPARENT
-                } else {
-                    tokens.colors.surface
-                };
-                iced::widget::container::Style::default()
-                    .background(background)
-                    .border(dock_tab_border(tokens, chrome_style))
-            });
-        if placeholder {
-            tabs_row.push(tab.height(Length::Fixed(height)).width(Length::Shrink))
-        } else if controller.layout.locked {
-            tabs_row.push(
-                button(tab)
-                    .height(Length::Fixed(height))
-                    .padding(0)
-                    .on_press(on_action(DockAction::ActivateTab(id.clone())))
-                    .style(button_style(tokens, ButtonKind::Text)),
-            )
-        } else {
-            tabs_row.push(dock_drag_handle(
-                tab.height(Length::Fixed(height)).width(Length::Shrink),
-                id,
-                surface,
-                on_action,
-                DockAction::ActivateTab(id.clone()),
-            ))
-        }
-    })
+    tabs.iter()
+        .fold(row![].height(Length::Fixed(height)), |tabs_row, item| {
+            let id = item.id();
+            let title = dock_item_title(controller, id);
+            let placeholder = item.is_placeholder();
+            let active_tab = item == active;
+            let label = text(title)
+                .size(11)
+                .font(ui_font(iced::font::Weight::Medium));
+            let tab = container(label)
+                .center_y(Length::Fill)
+                .padding([0.0, 10.0])
+                .style(move |_theme| {
+                    let background = if active_tab {
+                        tokens.colors.active
+                    } else if chrome_style == DockChromeStyle::Card {
+                        iced::Color::TRANSPARENT
+                    } else {
+                        tokens.colors.surface
+                    };
+                    iced::widget::container::Style::default()
+                        .background(background)
+                        .border(dock_tab_border(tokens, chrome_style))
+                });
+            if placeholder {
+                tabs_row.push(tab.height(Length::Fixed(height)).width(Length::Shrink))
+            } else if controller.layout.locked {
+                tabs_row.push(
+                    button(tab)
+                        .height(Length::Fixed(height))
+                        .padding(0)
+                        .on_press(on_action(DockAction::ActivateTab(id.clone())))
+                        .style(button_style(tokens, ButtonKind::Text)),
+                )
+            } else {
+                tabs_row.push(dock_drag_handle(
+                    tab.height(Length::Fixed(height)).width(Length::Shrink),
+                    id,
+                    surface,
+                    on_action,
+                    DockAction::ActivateTab(id.clone()),
+                ))
+            }
+        })
 }
 
 fn dock_window_item_view<'a, Message>(
@@ -2567,10 +2566,8 @@ fn dock_window_item_view<'a, Message>(
     surface: DockSurfaceId,
     controller: &DockController,
     contents: &mut DockContents<'a, Message>,
-    window_chrome: &WindowChromeState,
     on_action: impl Fn(DockAction) -> Message + Copy + 'a,
-    on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
-    tokens: ThemeTokens,
+    context: DockWindowViewContext<'a, '_, Message>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -2579,17 +2576,17 @@ where
         controller,
         surface,
         Some(id),
-        window_chrome,
+        context.window_chrome,
         on_action,
-        on_window_event,
-        tokens,
+        context.on_window_event,
+        context.tokens,
     );
-    let body = dock_item_body(id, contents, tokens, controller.chrome_style);
+    let body = dock_item_body(id, contents, context.tokens, controller.chrome_style);
     let window = column![title_bar, body]
         .width(Length::Fill)
         .height(Length::Fill);
     if controller.chrome_style == DockChromeStyle::Card {
-        dock_card_shell(window, tokens)
+        dock_card_shell(window, context.tokens)
     } else {
         window.into()
     }
@@ -2825,8 +2822,7 @@ where
     let show_chrome_actions = !controller.layout.locked
         && id != &controller.center
         && surface == DockSurfaceId(0)
-        && (chrome_style != DockChromeStyle::Card
-            || controller.hovered_card.as_ref() == Some(id));
+        && (chrome_style != DockChromeStyle::Card || controller.hovered_card.as_ref() == Some(id));
     if show_chrome_actions {
         if spec.is_some_and(|spec| spec.floatable) {
             title_bar = title_bar.push(
