@@ -46,7 +46,7 @@ use crate::bridge::{
     BridgeEvent, MessageBridge, SemanticSnapshot, SemanticWidget, WidgetId, WidgetKind, WidgetProps,
 };
 use crate::css_map::{
-    AlignSpec, BoxSizing, FlexDirection, FlexWrap, GridTrack, JustifySpec, LengthSpec,
+    AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, GridTrack, JustifySpec, LengthSpec,
     OverflowSpec, ParentBox, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 use crate::editor_store::EditorStore;
@@ -567,8 +567,15 @@ where
         WidgetKind::Text => {
             // Vue nests `#text` under `h*` / `span`. Leaf Text keeps the fast path;
             // parents with only empty labels must paint children or titles vanish.
+            // `display:flex` hosts (e.g. `.card h2`) must keep row axis so
+            // `align-items:center` stays vertical — a forced column would center
+            // the title horizontally and inflate top blank in the card heading.
             if !widget.children.is_empty() && widget.props.display_label().is_empty() {
-                layout_column(snap, widget, tokens, parent_box, editors, menus, map_event)
+                if text_host_column_axis(&widget.props.layout) {
+                    layout_column(snap, widget, tokens, parent_box, editors, menus, map_event)
+                } else {
+                    layout_row(snap, widget, tokens, parent_box, editors, menus, map_event)
+                }
             } else {
                 label_text(
                     widget.props.display_label().to_string(),
@@ -1229,7 +1236,7 @@ where
         WidgetKind::Text => {
             if !children.is_empty() && owned_display(&props).is_empty() {
                 wrap_layout_owned(
-                    true,
+                    text_host_column_axis(&props.layout),
                     &props,
                     children,
                     snap,

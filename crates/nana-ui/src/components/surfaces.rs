@@ -64,7 +64,11 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
-        let mut content = column![].spacing(8);
+        // Only space title↔body when using Card::title. CSS-driven cards
+        // (`.card-heading { margin-bottom }`) already own that gap — an extra
+        // spacing(8) on a single-child column is harmless, but a stray title
+        // slot must not invent 8px above the authored heading.
+        let mut content = column![].spacing(if self.title.is_some() { 8 } else { 0 });
         if let Some(title) = self.title {
             let mut heading = row![tracked_label(
                 &title.to_uppercase(),

@@ -6,7 +6,7 @@
 //! - DesktopShell / `region_views` 投影仍在 bridge（本回合不搬家；见边界文档）。
 
 use crate::bridge::WidgetKind;
-use crate::css_map::{DisplaySpec, FlexDirection, LayoutStyle, LengthSpec};
+use crate::css_map::{DisplaySpec, FlexDirection, LayoutStyle};
 
 /// 布局相关 tag 默认方向与间距。
 pub fn default_layout_for_kind(kind: WidgetKind) -> LayoutStyle {
@@ -24,7 +24,9 @@ pub fn default_layout_for_kind(kind: WidgetKind) -> LayoutStyle {
         }
         WidgetKind::Card => {
             layout.direction = Some(FlexDirection::Column);
-            layout.gap = Some(LengthSpec::Px(8.0));
+            // Gap is not implied by kind — Lilia `.card` uses `.card-heading`
+            // margin-bottom for heading↔body spacing. Inventing gap:8 here
+            // double-counts that 8px on CSS cards (see shell_contract `card`).
             layout.padding = Some(crate::css_map::LengthSpec::Px(12.0));
         }
         _ => {}

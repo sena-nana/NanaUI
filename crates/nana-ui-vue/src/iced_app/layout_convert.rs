@@ -1170,7 +1170,14 @@ fn apply_layout_chrome<'a, Message: 'a>(
         return container(content).clip(true).into();
     }
     let mut c = container(content);
-    c = c.width(width.unwrap_or(Length::Fill));
+    // Do not invent Fill for margin-only chrome: flex row items with
+    // width:auto must stay intrinsic. Block stretch / explicit width still
+    // arrive via `width` or later `apply_flex_child_sizing` cross-Fill.
+    if let Some(w) = width {
+        c = c.width(w);
+    } else if needs_pad || needs_paint || needs_clip || height.is_some() {
+        c = c.width(Length::Fill);
+    }
     if needs_pad {
         c = c.padding(Padding {
             top: pad.top,

@@ -349,7 +349,7 @@ pub fn run(
             let box_ = by_id.get(&w.id).copied();
             let l = &w.props.layout;
             lines.push(format!(
-                "iced#{}:{:?}:cls={:?}:lbl={:?}:w={:?}:h={:?}:minh={:?}:grow={:?}:align={:?}:dir={:?}:box={:?}",
+                "iced#{}:{:?}:cls={:?}:lbl={:?}:w={:?}:h={:?}:minh={:?}:grow={:?}:align={:?}:justify={:?}:gap={:?}:dir={:?}:box={:?}",
                 w.id,
                 w.kind,
                 w.props
@@ -364,6 +364,8 @@ pub fn run(
                 l.min_height,
                 l.flex_grow,
                 l.align_items,
+                l.justify_content,
+                l.gap.or(l.row_gap),
                 l.direction,
                 box_
             ));

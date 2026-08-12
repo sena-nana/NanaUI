@@ -1485,6 +1485,32 @@ mod tests {
     }
 
     #[test]
+    fn text_host_flex_h2_uses_row_axis_not_column() {
+        // `.card h2 { display:flex; align-items:center }` must stay a row so
+        // center is vertical. A forced column centers the title horizontally.
+        let mut flex = LayoutStyle::default();
+        flex.apply_css_text(
+            "display:flex;align-items:center;gap:10px;letter-spacing:0.5px",
+            None,
+            None,
+        );
+        assert!(
+            !text_host_column_axis(&flex),
+            "display:flex text host must use row axis"
+        );
+
+        let mut column = LayoutStyle::default();
+        column.apply_css_text("display:flex;flex-direction:column;align-items:center", None, None);
+        assert!(text_host_column_axis(&column));
+
+        let block = LayoutStyle::default();
+        assert!(
+            text_host_column_axis(&block),
+            "plain text hosts without flex stay column"
+        );
+    }
+
+    #[test]
     fn auto_height_column_stays_shrink_after_space_between_push() {
         // iced Column::push encloses Fill spacers into column height; CSS
         // height:auto must be re-pinned to Shrink or headings eat siblings.
