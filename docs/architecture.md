@@ -226,6 +226,10 @@ Iced clipboard 写入。跨块的完整内容复制由 `NativeMarkdown::plain_te
 纯文本合同，消费应用再通过自己的 Host/权限边界写入系统剪贴板；NanaUI 不持有
 应用任务、时间线或宿主状态。
 
+`ConfirmDialog` 统一确认/取消文案和 busy 生命周期；busy 时确认按钮显示加载态，
+同时禁用确认、取消、关闭与点击遮罩退出。下载、安装等长操作仍由消费应用持有，
+NanaUI 只保证对话框在操作期间不会产生重复提交或意外关闭。
+
 ## 与 LiliaUI 的对应关系
 
 | NanaUI | LiliaUI 语义 |
