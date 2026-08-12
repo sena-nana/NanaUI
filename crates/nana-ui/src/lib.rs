@@ -98,8 +98,8 @@ pub use components::qr_code::{QrCodeCanvas, QrCodeError};
 pub use components::reorder_list::{ReorderItem, ReorderList};
 #[cfg(feature = "rich-text")]
 pub use components::rich_text::{
-    MarkdownBlock, MarkdownBlockKind, MarkdownSpan, MarkdownTable, MarkdownTableAlignment,
-    NativeMarkdown, native_markdown,
+    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
+    MarkdownTableAlignment, NativeMarkdown, native_markdown,
 };
 #[cfg(feature = "selects")]
 pub use components::selects::{
