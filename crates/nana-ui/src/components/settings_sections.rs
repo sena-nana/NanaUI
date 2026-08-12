@@ -106,7 +106,7 @@ pub use nana_ui_core::AppearanceEvent;
 /// A reusable appearance settings section driven entirely by host-owned state.
 pub struct AppearanceSection<'a, Message> {
     theme: ThemeMode,
-    appearance: &'a AppearanceSettings,
+    appearance: AppearanceSettings,
     on_event: Rc<dyn Fn(AppearanceEvent) -> Message + 'a>,
     material_status: Option<Cow<'a, str>>,
     platform_hint: Option<Cow<'a, str>>,
@@ -118,12 +118,12 @@ where
 {
     pub fn new(
         theme: ThemeMode,
-        appearance: &'a AppearanceSettings,
+        appearance: &AppearanceSettings,
         on_event: impl Fn(AppearanceEvent) -> Message + 'a,
     ) -> Self {
         Self {
             theme,
-            appearance,
+            appearance: *appearance,
             on_event: Rc::new(on_event),
             material_status: None,
             platform_hint: None,
@@ -376,5 +376,24 @@ impl<'a> AboutSection<'a> {
             );
         }
         SettingsCard::new("关于", rows).view(tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ThemeModeExt;
+
+    fn hosted_appearance_view(
+        appearance: &AppearanceSettings,
+    ) -> Element<'static, AppearanceEvent> {
+        AppearanceSection::new(ThemeMode::Dark, appearance, |event| event)
+            .view(ThemeMode::Dark.tokens())
+    }
+
+    #[test]
+    fn appearance_section_owns_the_host_snapshot() {
+        let appearance = AppearanceSettings::default();
+        let _view = hosted_appearance_view(&appearance);
     }
 }
