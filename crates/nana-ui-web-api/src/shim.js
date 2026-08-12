@@ -52,14 +52,55 @@
     };
   }
 
-  if (typeof globalThis.console === "undefined") {
+  globalThis.__nanaConsoleErrors = globalThis.__nanaConsoleErrors || [];
+  function captureConsole(level, args) {
+    try {
+      const parts = [];
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a == null) parts.push(String(a));
+        else if (typeof a === "string") parts.push(a);
+        else if (a && typeof a.message === "string") {
+          parts.push(a.message + (a.stack ? "\n" + a.stack : ""));
+        } else {
+          try {
+            parts.push(JSON.stringify(a));
+          } catch (_e) {
+            parts.push(String(a));
+          }
+        }
+      }
+      const line = "[" + level + "] " + parts.join(" ");
+      globalThis.__nanaConsoleErrors.push(line);
+      // Keep a short ring so remount spam stays inspectable.
+      if (globalThis.__nanaConsoleErrors.length > 40) {
+        globalThis.__nanaConsoleErrors.splice(0, globalThis.__nanaConsoleErrors.length - 40);
+      }
+    } catch (_err) {}
+  }
+  globalThis.__nanaDumpConsoleErrors = function __nanaDumpConsoleErrors() {
+    const list = globalThis.__nanaConsoleErrors || [];
+    return list.slice(-20).join("\n---\n");
+  };
+  if (!globalThis.__nanaConsoleCaptureInstalled) {
+    globalThis.__nanaConsoleCaptureInstalled = true;
+    const prev = typeof globalThis.console !== "undefined" ? globalThis.console : null;
+    function bindPrev(name) {
+      return prev && typeof prev[name] === "function" ? prev[name].bind(prev) : function () {};
+    }
     globalThis.console = {
-      log() {},
-      warn() {},
-      error() {},
-      info() {},
-      debug() {},
-      trace() {},
+      log: bindPrev("log"),
+      info: bindPrev("info"),
+      debug: bindPrev("debug"),
+      trace: bindPrev("trace"),
+      warn: function () {
+        captureConsole("warn", arguments);
+        if (prev && typeof prev.warn === "function") prev.warn.apply(prev, arguments);
+      },
+      error: function () {
+        captureConsole("error", arguments);
+        if (prev && typeof prev.error === "function") prev.error.apply(prev, arguments);
+      },
     };
   }
 
@@ -1136,7 +1177,18 @@
       },
       timeOrigin: Date.now(),
     };
-    this.visualViewport = { width: 960, height: 640, offsetLeft: 0, offsetTop: 0, scale: 1 };
+    this.visualViewport = {
+      width: 960,
+      height: 640,
+      offsetLeft: 0,
+      offsetTop: 0,
+      scale: 1,
+      addEventListener: function () {},
+      removeEventListener: function () {},
+      dispatchEvent: function () {
+        return true;
+      },
+    };
     this.matchMedia = function (query) {
       const q = String(query || "");
       const dark = /prefers-color-scheme:\s*dark/i.test(q);
