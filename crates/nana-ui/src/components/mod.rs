@@ -3,6 +3,8 @@ pub mod actions;
 pub mod calendar;
 #[cfg(feature = "charts")]
 pub mod charts;
+#[cfg(feature = "overlays")]
+pub mod command_palette;
 #[cfg(feature = "controls")]
 pub mod controls;
 #[cfg(feature = "feedback")]
@@ -32,6 +34,8 @@ pub mod settings_sections;
 pub mod surfaces;
 #[cfg(feature = "controls")]
 mod tab_drag;
+#[cfg(feature = "surfaces")]
+pub mod tree_view;
 #[cfg(feature = "xy-pad")]
 pub mod xy_pad;
 
@@ -45,6 +49,10 @@ pub use calendar::{
 };
 #[cfg(feature = "charts")]
 pub use charts::TimeSeriesChart;
+#[cfg(feature = "overlays")]
+pub use command_palette::{
+    COMMAND_PALETTE_INPUT_ID, CommandPalette, CommandPaletteEvent, CommandPaletteItem,
+};
 #[cfg(feature = "controls")]
 pub use controls::{
     Checkbox, HostedTextarea, HostedTextareaState, Input, RangeField, SegmentedControl, Select,
@@ -91,5 +99,7 @@ pub use settings_sections::{
 pub use surfaces::{
     Card, DockPanel, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
 };
+#[cfg(feature = "surfaces")]
+pub use tree_view::{TreeNavigation, TreeNode, TreeView, TreeViewEvent, tree_navigation_event};
 #[cfg(feature = "xy-pad")]
 pub use xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};

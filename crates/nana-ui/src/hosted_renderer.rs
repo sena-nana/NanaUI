@@ -20,6 +20,11 @@ struct PendingScrollBy {
     y: f32,
 }
 
+#[derive(Debug)]
+struct PendingFocus {
+    target: String,
+}
+
 /// Result of rendering one native UI frame into a host-provided texture.
 pub struct HostedUiFrame<Message> {
     pub messages: Vec<Message>,
@@ -64,6 +69,7 @@ pub struct HostedUiRenderer<Message> {
     modifiers: ModifiersState,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
     pending_scroll_by: Vec<PendingScrollBy>,
+    pending_focus: Option<PendingFocus>,
     ui_dirty: bool,
     dynamic_dirty: bool,
 }
@@ -113,6 +119,7 @@ impl<Message> HostedUiRenderer<Message> {
             modifiers: ModifiersState::default(),
             ime_state: None,
             pending_scroll_by: Vec::new(),
+            pending_focus: None,
             ui_dirty: true,
             dynamic_dirty: true,
         }
@@ -194,6 +201,11 @@ impl<Message> HostedUiRenderer<Message> {
         self.mark_ui_dirty();
     }
 
+    pub(crate) fn queue_focus(&mut self, target: String) {
+        self.pending_focus = Some(PendingFocus { target });
+        self.mark_ui_dirty();
+    }
+
     /// Rebuilds the retained Iced tree and its layout.
     ///
     /// The application only calls this after a real UI state change. The
@@ -218,6 +230,12 @@ impl<Message> HostedUiRenderer<Message> {
                         x: pending.x,
                         y: pending.y,
                     },
+                );
+                interface.operate(&self.renderer, &mut operation);
+            }
+            if let Some(pending) = self.pending_focus.take() {
+                let mut operation = iced::advanced::widget::operation::focusable::focus::<()>(
+                    pending.target.into(),
                 );
                 interface.operate(&self.renderer, &mut operation);
             }

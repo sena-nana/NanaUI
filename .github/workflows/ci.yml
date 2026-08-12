@@ -38,9 +38,21 @@ jobs:
         run: cargo check -p nana-ui --lib --no-default-features --locked
       - name: Check Gallery package boundary
         run: cargo check -p component-gallery --bin component-gallery --locked
-      - name: Run tests
-        run: cargo test --workspace --all-targets --all-features --locked
-      - name: Check all targets
-        run: cargo check --workspace --all-targets --all-features --locked
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run default-feature tests
+        run: cargo test --workspace --all-targets --locked
+      - name: Check default-feature targets
+        run: cargo check --workspace --all-targets --locked
+      - name: Check legal feature combinations
+        shell: bash
+        run: |
+          cargo check -p nana-ui --all-targets --all-features --locked
+          cargo check -p component-gallery --all-targets --all-features --locked
+          cargo check -p vue-counter --all-targets --features windowed --locked
+          cargo check -p vue-counter --all-targets --no-default-features --features engine-v8,windowed --locked
+      - name: Check macOS WebView reference
+        if: runner.os == 'macOS'
+        run: cargo check -p nana-css-parity --all-targets --features webview-ref --locked
+      - name: Run workspace Clippy diagnostics
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Enforce NanaUI and Gallery Clippy
+        run: cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings

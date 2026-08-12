@@ -5,7 +5,7 @@
  * (`@lilia/theme` hex subset). Fallbacks below match that file so a missing
  * inject still does not invent a second accent (#3867ff banned).
  *
- * Radius policy (documented in docs/performance/2026-08-06-nanavue-lilia-mapping.md):
+ * Radius policy (documented in docs/vue-nana-renderer-system.md):
  *   - Vue / Blitz host → Lilia CSS scale (--radius-sm ≈ 12px)
  *   - Iced Gallery → UI_METRICS (radius_sm = 6, radius_md = 10)
  */

@@ -421,6 +421,21 @@ impl HostedTextareaState {
         self.content.borrow_mut().perform(action);
     }
 
+    pub fn cursor(&self) -> text_editor::Cursor {
+        self.content.borrow().cursor()
+    }
+
+    pub fn move_to(&self, cursor: text_editor::Cursor) {
+        self.content.borrow_mut().move_to(cursor);
+    }
+
+    pub fn line_text(&self, index: usize) -> Option<String> {
+        self.content
+            .borrow()
+            .line(index)
+            .map(|line| line.text.into_owned())
+    }
+
     pub fn set_text(&self, text: &str) {
         *self.content.borrow_mut() = text_editor::Content::with_text(text);
     }
@@ -447,6 +462,8 @@ impl HostedTextareaState {
 pub struct HostedTextarea<Message> {
     state: HostedTextareaState,
     placeholder: String,
+    #[cfg(feature = "syntax-highlighting")]
+    syntax_highlighting: Option<HostedSyntaxHighlighting>,
     on_action: Option<Rc<dyn Fn(text_editor::Action) -> Message>>,
     id: Option<advanced_widget::Id>,
     key_binding: Option<HostedTextareaKeyBinding<Message>>,
@@ -458,6 +475,25 @@ pub struct HostedTextarea<Message> {
 type HostedTextareaKeyBinding<Message> =
     Rc<dyn Fn(text_editor::KeyPress) -> Option<text_editor::Binding<Message>>>;
 
+/// Syntax and palette used by a hosted editor while retaining the same text,
+/// cursor, selection, IME, and undo state as [`HostedTextareaState`].
+#[cfg(feature = "syntax-highlighting")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostedSyntaxHighlighting {
+    pub syntax: String,
+    pub theme: iced::highlighter::Theme,
+}
+
+#[cfg(feature = "syntax-highlighting")]
+impl HostedSyntaxHighlighting {
+    pub fn new(syntax: impl Into<String>, theme: iced::highlighter::Theme) -> Self {
+        Self {
+            syntax: syntax.into(),
+            theme,
+        }
+    }
+}
+
 impl<Message> HostedTextarea<Message>
 where
     Message: Clone + 'static,
@@ -466,6 +502,8 @@ where
         Self {
             state: state.clone(),
             placeholder: String::new(),
+            #[cfg(feature = "syntax-highlighting")]
+            syntax_highlighting: None,
             on_action: None,
             id: None,
             key_binding: None,
@@ -477,6 +515,18 @@ where
 
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Enables incremental syntax highlighting without replacing the editor
+    /// content handle or its interaction history.
+    #[cfg(feature = "syntax-highlighting")]
+    pub fn syntax_highlighting(
+        mut self,
+        syntax: impl Into<String>,
+        theme: iced::highlighter::Theme,
+    ) -> Self {
+        self.syntax_highlighting = Some(HostedSyntaxHighlighting::new(syntax, theme));
         self
     }
 
@@ -534,6 +584,8 @@ where
         Element::new(HostedTextareaWidget {
             state: self.state,
             placeholder: self.placeholder,
+            #[cfg(feature = "syntax-highlighting")]
+            syntax_highlighting: self.syntax_highlighting,
             on_action: if enabled { self.on_action } else { None },
             id: self.id,
             key_binding: self.key_binding,
@@ -552,6 +604,8 @@ where
 struct HostedTextareaWidget<Message> {
     state: HostedTextareaState,
     placeholder: String,
+    #[cfg(feature = "syntax-highlighting")]
+    syntax_highlighting: Option<HostedSyntaxHighlighting>,
     on_action: Option<Rc<dyn Fn(text_editor::Action) -> Message>>,
     id: Option<advanced_widget::Id>,
     key_binding: Option<HostedTextareaKeyBinding<Message>>,
@@ -568,13 +622,32 @@ where
     fn editor<'a>(&'a self, content: &'a text_editor::Content) -> Element<'a, Message> {
         let forced_status = self.status.get();
         let style = text_editor_style(self.theme, self.invalid);
-        let mut editor = text_editor(content)
+        let editor = text_editor(content)
             .placeholder(self.placeholder.as_str())
             .height(Length::Fixed(self.height))
             .padding(self.theme.metrics.field_padding_x)
             .size(13)
             .line_height(iced::widget::text::LineHeight::Relative(1.45))
             .style(move |theme, _status| style(theme, forced_status));
+
+        #[cfg(feature = "syntax-highlighting")]
+        if let Some(highlighting) = self.syntax_highlighting.as_ref() {
+            let mut editor = editor.highlight(highlighting.syntax.as_str(), highlighting.theme);
+            if let Some(id) = self.id.as_ref() {
+                editor = editor.id(id.clone());
+            }
+            if let Some(key_binding) = self.key_binding.as_ref() {
+                let key_binding = Rc::clone(key_binding);
+                editor = editor.key_binding(move |key_press| key_binding(key_press));
+            }
+            if let Some(on_action) = self.on_action.as_ref() {
+                let on_action = Rc::clone(on_action);
+                editor = editor.on_action(move |action| on_action(action));
+            }
+            return editor.into();
+        }
+
+        let mut editor = editor;
         if let Some(id) = self.id.as_ref() {
             editor = editor.id(id.clone());
         }
@@ -598,8 +671,22 @@ where
         if self.on_action.is_none() {
             return text_editor::Status::Disabled;
         }
-        let state = tree.state.downcast_ref::<text_editor::State<PlainText>>();
-        if state.is_focused() {
+        #[cfg(feature = "syntax-highlighting")]
+        let is_focused = if self.syntax_highlighting.is_some() {
+            tree.state
+                .downcast_ref::<text_editor::State<iced::highlighter::Highlighter>>()
+                .is_focused()
+        } else {
+            tree.state
+                .downcast_ref::<text_editor::State<PlainText>>()
+                .is_focused()
+        };
+        #[cfg(not(feature = "syntax-highlighting"))]
+        let is_focused = tree
+            .state
+            .downcast_ref::<text_editor::State<PlainText>>()
+            .is_focused();
+        if is_focused {
             text_editor::Status::Focused {
                 is_hovered: cursor.is_over(layout.bounds()),
             }
@@ -1191,7 +1278,7 @@ mod tests {
         SegmentedControl, Select, SelectionOption, Switch, Tabs, format_number,
         submit_on_enter_binding,
     };
-    use crate::theme::ThemeMode;
+    use crate::theme::{ThemeMode, ThemeModeExt};
     use iced::Element;
     use iced::keyboard::key::{Code, Named, Physical};
     use iced::keyboard::{Key, Modifiers};
@@ -1282,6 +1369,21 @@ mod tests {
         state.clear();
         assert!(shared.is_empty());
         assert_eq!(shared.line_count(), 1);
+    }
+
+    #[test]
+    fn hosted_textarea_cursor_and_selection_are_owned_view_state() {
+        let state = HostedTextareaState::with_text("draft");
+        let selection = text_editor::Cursor {
+            position: text_editor::Position { line: 0, column: 5 },
+            selection: Some(text_editor::Position { line: 0, column: 0 }),
+        };
+
+        state.move_to(selection);
+        assert_eq!(state.cursor(), selection);
+        assert_eq!(state.line_text(0).as_deref(), Some("draft"));
+        state.perform(text_editor::Action::Edit(text_editor::Edit::Insert('X')));
+        assert_eq!(state.text(), "X");
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! the reusable workspace contract.
 
 pub mod absolute;
+pub mod command;
 pub mod components;
 pub mod dialog;
 pub mod dock;
@@ -29,8 +30,10 @@ pub mod hosted_renderer;
 mod hosted_runtime;
 pub mod icons;
 pub mod layout;
+pub mod layout_probe;
 pub mod menu;
 pub mod overlay;
+pub mod pane;
 mod resize_drag;
 pub mod selection;
 pub mod settings;
@@ -45,6 +48,11 @@ pub mod window_chrome;
 pub mod workspace;
 
 pub use absolute::{Absolute, absolute_content_max};
+pub use command::{
+    ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
+    ActionPickerState, ActionRegistry, ActionRegistryError, ContextPredicate, KeyBinding,
+    KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch, KeymapState,
+};
 #[cfg(feature = "rich-text")]
 pub use components::SelectableRichText;
 pub use components::actions::{Button, ControlSize, IconButton};
@@ -57,6 +65,12 @@ pub use components::calendar::{
 };
 #[cfg(feature = "charts")]
 pub use components::charts::TimeSeriesChart;
+#[cfg(feature = "overlays")]
+pub use components::command_palette::{
+    COMMAND_PALETTE_INPUT_ID, CommandPalette, CommandPaletteEvent, CommandPaletteItem,
+};
+#[cfg(feature = "syntax-highlighting")]
+pub use components::controls::HostedSyntaxHighlighting;
 #[cfg(feature = "controls")]
 pub use components::controls::{
     Checkbox, HostedTextarea, HostedTextareaState, Input, RangeField, SegmentedControl, Select,
@@ -101,6 +115,10 @@ pub use components::settings_sections::{
 pub use components::surfaces::{
     Card, DockPanel, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
 };
+#[cfg(feature = "surfaces")]
+pub use components::tree_view::{
+    TreeNavigation, TreeNode, TreeView, TreeViewEvent, tree_navigation_event,
+};
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
@@ -129,6 +147,11 @@ pub use hosted_context::{
 };
 #[cfg(feature = "hosted")]
 pub use hosted_renderer::{HostedUiFrame, HostedUiRenderer, HostedUiTarget};
+#[cfg(feature = "browser")]
+pub use hosted_runtime::{
+    HostedBrowserBounds, HostedBrowserCommand, HostedBrowserCommandKind, HostedBrowserEvent,
+    HostedBrowserId, HostedBrowserLoadState,
+};
 #[cfg(feature = "hosted")]
 pub use hosted_runtime::{
     HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError,
@@ -141,6 +164,7 @@ pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
     WorkspaceLayout, WorkspaceLayoutError,
 };
+pub use layout_probe::{LayoutBounds, LayoutProbe};
 pub use menu::{MenuConfirmation, MenuSelection};
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
@@ -150,6 +174,9 @@ pub use nana_window::{
     platform_material_support,
 };
 pub use overlay::ExclusiveOverlay;
+pub use pane::{
+    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, ratio_pane_split,
+};
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
     AppearanceSettings, BackdropTarget, SettingsCard, SettingsError, SettingsModel, SettingsRow,

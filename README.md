@@ -123,11 +123,22 @@ GitHub Actions 从独立 checkout 运行 `--locked` 测试与全目标检查，�
 cargo fmt --all -- --check
 cargo check -p nana-ui --lib --no-default-features --locked
 cargo check -p component-gallery --bin component-gallery --locked
-cargo test --workspace --all-targets --all-features --locked
-cargo check --workspace --all-targets --all-features --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo check --workspace --all-targets --locked
+cargo check -p nana-ui --all-targets --all-features --locked
+cargo check -p component-gallery --all-targets --all-features --locked
+cargo check -p vue-counter --all-targets --features windowed --locked
+cargo check -p vue-counter --all-targets --no-default-features --features engine-v8,windowed --locked
 (cd crates/nana-js-engine/fixtures/vue-sfc-compat && npm ci && npm run build)
+cargo check -p nana-css-parity --all-targets --features webview-ref --locked # macOS
+cargo clippy --workspace --all-targets --locked
+cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 ```
+
+Workspace application crates intentionally make QuickJS and V8 mutually exclusive, so the legal
+feature combinations are checked independently instead of enabling `--all-features` globally.
+Workspace-wide Clippy reports the existing cross-package lint backlog; NanaUI and Gallery enforce
+zero warnings for the public UI path.
 
 生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
 

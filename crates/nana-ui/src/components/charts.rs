@@ -120,7 +120,7 @@ fn with_alpha(color: Color, alpha: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{ThemeMode, UI_METRICS};
+    use crate::theme::{ThemeMode, ThemeModeExt, UI_METRICS};
 
     #[test]
     fn chart_normalizes_non_finite_and_negative_values() {

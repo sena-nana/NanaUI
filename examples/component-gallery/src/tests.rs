@@ -3,8 +3,10 @@ use super::{
     SurfaceView,
 };
 use nana_ui::{
-    AppearanceSettings, BackdropTarget, DockAction, DockHostEffect, DockId, MaterialOutcome,
-    RegionId, SelectionMove, SplitPaneAction, ThemeMode, WindowMaterialMode, WorkspaceAction,
+    ActionId, ActionPickerNavigation, AppearanceSettings, BackdropTarget, CommandPaletteEvent,
+    DockAction, DockHostEffect, DockId, KeyModifiers, KeyStroke, MaterialOutcome,
+    PaneChromeActionKind, RegionId, SelectionMove, SplitPaneAction, ThemeMode, TreeViewEvent,
+    WindowMaterialMode, WorkspaceAction,
 };
 
 #[test]
@@ -109,6 +111,83 @@ fn context_menu_search_filters_items() {
     )));
     assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
     assert_eq!(state.context_query, "重命名");
+}
+
+#[test]
+fn tree_view_events_update_expansion_and_selection_by_stable_id() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::TreeView(TreeViewEvent::Toggle(
+        "src".to_owned(),
+    )));
+    assert!(!state.tree_expanded);
+    state.update(GalleryMessage::TreeView(TreeViewEvent::Select(
+        "README.md".to_owned(),
+    )));
+    assert_eq!(state.tree_selected, "README.md");
+}
+
+#[test]
+fn pane_chrome_actions_change_the_real_gallery_pane_state() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::PaneChrome(
+        PaneChromeActionKind::SplitHorizontal,
+    ));
+    assert!(state.pane_chrome_split);
+    state.update(GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem));
+    assert!(!state.pane_chrome_item_open);
+    assert!(!state.pane_chrome_split);
+}
+
+#[test]
+fn command_palette_filters_by_context_and_dispatches_real_actions() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::ToggleCommandPalette);
+    assert!(state.overlay.contains(&GalleryOverlay::CommandPalette));
+    assert!(
+        state
+            .palette_items()
+            .iter()
+            .all(|item| item.action.as_str() != "graph.reset_viewport")
+    );
+
+    state.update(GalleryMessage::CommandPalette(CommandPaletteEvent::Select(
+        ActionId::from("appearance.toggle_theme"),
+    )));
+    assert_eq!(state.theme, ThemeMode::Light);
+    assert!(!state.overlay.is_open());
+
+    state.update(GalleryMessage::SelectSection(GallerySection::Graph));
+    state.update(GalleryMessage::ToggleCommandPalette);
+    assert!(
+        state
+            .palette_items()
+            .iter()
+            .any(|item| item.action.as_str() == "graph.reset_viewport")
+    );
+}
+
+#[test]
+fn command_palette_keybinding_opens_and_keyboard_navigation_selects() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::KeyStroke(KeyStroke::new(
+        "p",
+        KeyModifiers::primary().with_shift(),
+    )));
+    assert!(state.overlay.contains(&GalleryOverlay::CommandPalette));
+
+    state.update(GalleryMessage::NavigateCommandPalette(
+        ActionPickerNavigation::Next,
+    ));
+    assert_eq!(state.action_picker.selected(), 1);
+    state.update(GalleryMessage::NavigateCommandPalette(
+        ActionPickerNavigation::Confirm,
+    ));
+    assert_eq!(
+        state.palette_action.as_ref().map(ActionId::as_str),
+        Some("appearance.toggle_theme")
+    );
+    assert_eq!(state.theme, ThemeMode::Light);
+    assert!(!state.overlay.is_open());
 }
 
 #[test]

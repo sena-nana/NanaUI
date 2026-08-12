@@ -113,6 +113,7 @@ impl HostedProgram for DemoProgram {
                 HostedProgramUpdate::redraw()
             }
             HostedWindowEvent::Moved { .. }
+            | HostedWindowEvent::FocusChanged { .. }
             | HostedWindowEvent::VisibilityChanged { .. }
             | HostedWindowEvent::FileHovered { .. }
             | HostedWindowEvent::FileDropped { .. }
