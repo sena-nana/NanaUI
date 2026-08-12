@@ -2377,6 +2377,7 @@ where
                 .into(),
                 context.window_chrome,
                 context.on_window_event,
+                controller.chrome_style,
                 tokens,
             );
             let body = dock_view_item_view(
@@ -2427,6 +2428,7 @@ fn dock_window_chrome_bar<'a, Message>(
     leading: Element<'a, Message>,
     window_chrome: &WindowChromeState,
     on_window_event: Rc<dyn Fn(WindowChromeEvent) -> Message + 'a>,
+    chrome_style: DockChromeStyle,
     tokens: ThemeTokens,
 ) -> Element<'a, Message>
 where
@@ -2467,9 +2469,12 @@ where
     .height(Length::Fixed(WINDOW_TITLE_BAR_HEIGHT))
     .clip(true)
     .style(move |_theme| {
-        iced::widget::container::Style::default()
-            .background(tokens.colors.surface)
-            .color(tokens.colors.text)
+        let style = iced::widget::container::Style::default().color(tokens.colors.text);
+        if chrome_style == DockChromeStyle::Card {
+            style
+        } else {
+            style.background(tokens.colors.surface)
+        }
     });
     window_chrome_drag_tracker(title_bar, on_window_event)
 }
@@ -2509,7 +2514,13 @@ where
         }
         _ => window_chrome_drag_start_area(title, &on_window_event),
     };
-    dock_window_chrome_bar(title, window_chrome, on_window_event, tokens)
+    dock_window_chrome_bar(
+        title,
+        window_chrome,
+        on_window_event,
+        controller.chrome_style,
+        tokens,
+    )
 }
 
 fn dock_tab_row<'a, Message>(
@@ -2640,7 +2651,7 @@ where
                 active, surface, true, controller, contents, on_action, tokens,
             );
             let view = if chrome_style == DockChromeStyle::Card {
-                let tab_bar = dock_card_title_bar(tab_bar, tokens);
+                let tab_bar = dock_card_title_bar(tab_bar);
                 dock_card_shell(column![tab_bar, active_item].height(Length::Fill), tokens)
             } else {
                 let tab_bar = container(tab_bar)
@@ -2880,7 +2891,7 @@ where
         content
     } else if chrome_style == DockChromeStyle::Card {
         let card = dock_card_shell(
-            column![dock_card_title_bar(title_bar, tokens), content].height(Length::Fill),
+            column![dock_card_title_bar(title_bar), content].height(Length::Fill),
             tokens,
         );
         mouse_area(card)
@@ -2991,7 +3002,7 @@ where
     .height(Length::Fixed(TITLE_BAR_HEIGHT))
     .center_y(Length::Fill);
     let title_bar: Element<'a, Message> = if controller.chrome_style == DockChromeStyle::Card {
-        dock_card_title_bar(title, tokens)
+        dock_card_title_bar(title)
     } else {
         container(title)
             .width(Length::Fill)
@@ -3082,11 +3093,6 @@ where
             .height(Length::Fill)
             .padding([6.0, 8.0])
             .clip(true)
-            .style(move |_theme| {
-                iced::widget::container::Style::default()
-                    .background(tokens.colors.surface)
-                    .color(tokens.colors.text)
-            })
             .into()
     } else {
         body.into()
@@ -3159,11 +3165,6 @@ where
             .height(Length::Fill)
             .padding([6.0, 8.0])
             .clip(true)
-            .style(move |_theme| {
-                iced::widget::container::Style::default()
-                    .background(tokens.colors.surface)
-                    .color(tokens.colors.text)
-            })
             .into(),
         DockChromeStyle::Segmented | DockChromeStyle::Borderless => container(content)
             .width(Length::Fill)
@@ -3206,7 +3207,6 @@ where
 
 fn dock_card_title_bar<'a, Message>(
     title_bar: impl Into<Element<'a, Message>>,
-    tokens: ThemeTokens,
 ) -> Element<'a, Message>
 where
     Message: 'a,
@@ -3215,11 +3215,6 @@ where
         .width(Length::Fill)
         .height(Length::Fixed(TITLE_BAR_HEIGHT))
         .padding([0.0, 8.0])
-        .style(move |_theme| {
-            iced::widget::container::Style::default()
-                .background(tokens.colors.surface)
-                .color(tokens.colors.text)
-        })
         .into()
 }
 
