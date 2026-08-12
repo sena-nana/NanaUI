@@ -64,7 +64,7 @@ pub struct CommandPalette<'a, Message> {
     placeholder: Cow<'a, str>,
     empty_label: Cow<'a, str>,
     items: Vec<CommandPaletteItem<'a>>,
-    query: &'a str,
+    query: Cow<'a, str>,
     selected: usize,
     input_id: widget::Id,
     on_event: Rc<dyn Fn(CommandPaletteEvent) -> Message + 'a>,
@@ -78,7 +78,7 @@ where
     pub fn new(
         title: impl Into<Cow<'a, str>>,
         items: impl IntoIterator<Item = CommandPaletteItem<'a>>,
-        query: &'a str,
+        query: impl Into<Cow<'a, str>>,
         selected: usize,
         on_event: impl Fn(CommandPaletteEvent) -> Message + 'a,
         theme: impl Into<ThemeTokens>,
@@ -88,7 +88,7 @@ where
             placeholder: Cow::Borrowed("搜索操作"),
             empty_label: Cow::Borrowed("没有可用操作"),
             items: items.into_iter().collect(),
-            query,
+            query: query.into(),
             selected,
             input_id: widget::Id::new(COMMAND_PALETTE_INPUT_ID),
             on_event: Rc::new(on_event),
@@ -118,7 +118,7 @@ where
             .items
             .get(self.selected)
             .map(|item| item.action.clone());
-        let search = text_input(&self.placeholder, self.query)
+        let search = text_input(&self.placeholder, &self.query)
             .id(self.input_id)
             .on_input({
                 let on_event = Rc::clone(&self.on_event);
