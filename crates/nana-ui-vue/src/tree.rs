@@ -1,21 +1,16 @@
 //! Lightweight Vue host tree — no Blitz / full CSS engine.
 //!
 //! Keeps createElement / insert / patchProp / event flags for the JS custom
-//! renderer and capability bridge. Layout boxes are synthetic (stack order,
-//! optionally sized from inline `style` / class intent) so headless click
-//! probes still work. Visible UI draws via [`crate::MessageBridge`] → iced-view.
+//! renderer and capability bridge. Headless geometry is measured from the same
+//! [`crate::MessageBridge`] Style Model consumed by iced-view.
 //!
 //! After iced paints, [`LayoutBoxStore`] holds authoritative viewport boxes
 //! (written by iced-view `LayoutProbe`); [`get_layout_box`] / `layoutBox` prefer
-//! those over the synthetic / measure cache so menu anchors match drawing.
+//! those over the pre-paint measure cache so menu anchors match drawing.
 //!
-//! ## 诊断轨 / 禁止第二套解析
-//!
-//! [`NanaTreeDocument::resolve_now`] builds **diagnostic / hit-test** placeholders
-//! via [`crate::style::StyleIntent`]. Inline declarations project from
-//! [`crate::css_map::LayoutStyle`] — **do not** add a second CSS parse here.
-//! Product geometry SoT remains iced probe → measure fallback → this synthetic
-//! stack; do not force-merge the three tracks.
+//! There are exactly two geometry phases: Style-Model measurement before paint,
+//! then iced layout writeback after paint. The tree only caches their boxes; it
+//! does not implement another layout algorithm.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -48,7 +43,6 @@ pub enum DomNodeKind {
 /// Sources, in preference order for JS `getBoundingClientRect` / `layoutBox`:
 /// 1. iced paint writeback ([`LayoutBoxStore`])
 /// 2. Style-Model [`crate::measure_layout`] applied via [`NanaTreeDocument::apply_layout_boxes`]
-/// 3. Synthetic stack placeholder from [`NanaTreeDocument::resolve_now`]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutBox {
     pub handle: NodeHandle,
@@ -129,7 +123,7 @@ pub fn shared_layout_box_store() -> Arc<LayoutBoxStore> {
     Arc::clone(STORE.get_or_init(|| Arc::new(LayoutBoxStore::new())))
 }
 
-/// Prefer `store` writeback, else document cache (measure / synthetic).
+/// Prefer `store` writeback, else the document's pre-paint measure cache.
 pub fn get_layout_box_from(
     store: &LayoutBoxStore,
     doc: &NanaTreeDocument,
@@ -138,7 +132,7 @@ pub fn get_layout_box_from(
     store.get(handle).or_else(|| doc.layout_box(handle))
 }
 
-/// Prefer iced writeback, else document cache (measure / synthetic).
+/// Prefer iced writeback, else the document's pre-paint measure cache.
 pub fn get_layout_box(doc: &NanaTreeDocument, handle: NodeHandle) -> Option<LayoutBox> {
     get_layout_box_from(&shared_layout_box_store(), doc, handle)
 }
@@ -149,7 +143,6 @@ pub struct BoxSnapshot {
     pub boxes: Vec<LayoutBox>,
     pub texts: Vec<(NodeHandle, String)>,
     pub tags: Vec<(NodeHandle, String)>,
-    pub backgrounds: Vec<(NodeHandle, [f32; 4])>,
     pub event_targets: HashSet<(u64, String)>,
     pub gpu_slots: Vec<(NodeHandle, String)>,
 }
@@ -215,13 +208,9 @@ pub struct NanaTreeDocument {
     logical_width: f32,
     logical_height: f32,
     scale_factor: f32,
-    /// Synthetic layout cache (filled by [`resolve_now`]).
+    /// Cached Style-Model measurement or iced writeback.
     layout: HashMap<u64, LayoutBox>,
 }
-
-// SAFETY: host ops run on the JS engine thread only (same contract as before).
-unsafe impl Send for NanaTreeDocument {}
-unsafe impl Sync for NanaTreeDocument {}
 
 impl NanaTreeDocument {
     pub fn new(physical_width: u32, physical_height: u32, scale_factor: f32) -> Self {
@@ -281,7 +270,7 @@ impl NanaTreeDocument {
             scale_factor: scale,
             layout: HashMap::new(),
         };
-        doc.resolve_now();
+        doc.reset_layout_roots();
         doc
     }
 
@@ -353,7 +342,7 @@ impl NanaTreeDocument {
         self.scale_factor = scale;
         self.logical_width = physical_width as f32 / scale;
         self.logical_height = physical_height as f32 / scale;
-        self.resolve_now();
+        self.reset_layout_roots();
     }
 
     pub fn create_element(&mut self, tag: &str) -> NodeHandle {
@@ -861,10 +850,9 @@ impl NanaTreeDocument {
                 data: NodeData::Element { tag, attrs, .. },
                 ..
             }) = self.nodes.get(&h.0)
+                && selector_list_matches(sel, tag, attrs)
             {
-                if selector_list_matches(sel, tag, attrs) {
-                    return Some(h);
-                }
+                return Some(h);
             }
             cur = self.parent_node(h);
         }
@@ -910,182 +898,7 @@ impl NanaTreeDocument {
         }
     }
 
-    /// Rebuilds synthetic stack-order layout (not CSS cascade).
-    ///
-    /// Direct children of the mount root are stacked vertically. Deeper
-    /// descendants nest inside their parent's box (padding-aware). Inline
-    /// `style` projects through [`crate::parse_style_intent`] → temporary
-    /// [`crate::css_map::LayoutStyle`]（**禁止**在本路径新增第二套声明解析；
-    /// 非产品 SoT）。Product geometry after paint: iced probe →
-    /// [`LayoutBoxStore`]; pre-paint fallback: [`crate::measure_layout`].
-    pub fn resolve_now(&mut self) {
-        self.layout.clear();
-        let w = self.logical_width.max(1.0);
-        let default_row_h = 40.0;
-
-        // Ensure html/body cover the viewport first.
-        self.layout.insert(
-            self.html_root.0,
-            LayoutBox {
-                handle: self.html_root,
-                x: 0.0,
-                y: 0.0,
-                width: w,
-                height: self.logical_height.max(1.0),
-            },
-        );
-        self.layout.insert(
-            self.mount_root.0,
-            LayoutBox {
-                handle: self.mount_root,
-                x: 0.0,
-                y: 0.0,
-                width: w,
-                height: self.logical_height.max(1.0),
-            },
-        );
-
-        let mut stack_y = 0.0f32;
-        let top_level = self.children_of(self.mount_root);
-        for child in top_level {
-            stack_y = self.layout_subtree(child, 0.0, stack_y, w, default_row_h);
-        }
-    }
-
-    fn layout_subtree(
-        &mut self,
-        handle: NodeHandle,
-        parent_x: f32,
-        y: f32,
-        avail_w: f32,
-        default_row_h: f32,
-    ) -> f32 {
-        let is_element = matches!(
-            self.nodes.get(&handle.0).map(|n| &n.data),
-            Some(NodeData::Element { .. })
-        );
-        if !is_element {
-            return y;
-        }
-        let intent = crate::style::parse_style_intent(self, handle);
-        if intent.hidden {
-            return y;
-        }
-        let mut box_ = LayoutBox {
-            handle,
-            x: parent_x,
-            y: y + intent.margin_top,
-            width: avail_w,
-            height: default_row_h,
-        };
-        crate::style::apply_style_to_box(&mut box_, &intent, avail_w);
-        if intent.height.is_none() {
-            if let Some(text) = self.text_content(handle) {
-                if !text.trim().is_empty() {
-                    box_.height = box_
-                        .height
-                        .max(intent.font_size + intent.padding * 2.0 + 8.0);
-                }
-            }
-        }
-
-        let children = self.children_of(handle);
-        let element_children: Vec<_> = children
-            .iter()
-            .copied()
-            .filter(|c| self.element_tag(*c).is_some())
-            .collect();
-
-        if element_children.is_empty() {
-            self.layout.insert(handle.0, box_);
-            return box_.y + box_.height;
-        }
-
-        let inner_x = box_.x + intent.padding;
-        let inner_w = (box_.width - intent.padding * 2.0).max(0.0);
-        let inner_y = box_.y + intent.padding;
-
-        let content_bottom = if intent.row {
-            self.layout_row_children(
-                &element_children,
-                inner_x,
-                inner_y,
-                inner_w,
-                intent.gap,
-                default_row_h,
-            )
-        } else {
-            let mut cursor_y = inner_y;
-            for child in element_children {
-                cursor_y = self.layout_subtree(child, inner_x, cursor_y, inner_w, default_row_h);
-            }
-            cursor_y
-        } + intent.padding;
-
-        if intent.height.is_none() {
-            box_.height = (content_bottom - box_.y).max(box_.height);
-            if let Some(mh) = intent.min_height {
-                box_.height = box_.height.max(mh);
-            }
-        }
-        self.layout.insert(handle.0, box_);
-        box_.y + box_.height
-    }
-
-    fn layout_row_children(
-        &mut self,
-        children: &[NodeHandle],
-        origin_x: f32,
-        origin_y: f32,
-        avail_w: f32,
-        gap: f32,
-        default_row_h: f32,
-    ) -> f32 {
-        if children.is_empty() {
-            return origin_y;
-        }
-        // Match measure / iced-view: only visible children consume gap and flex.
-        let visible: Vec<(NodeHandle, crate::style::StyleIntent)> = children
-            .iter()
-            .copied()
-            .map(|c| (c, crate::style::parse_style_intent(self, c)))
-            .filter(|(_, intent)| !intent.hidden)
-            .collect();
-        if visible.is_empty() {
-            return origin_y;
-        }
-        let gap_total = gap * (visible.len().saturating_sub(1) as f32);
-        let fixed: f32 = visible.iter().filter_map(|(_, i)| i.width).sum();
-        let flex_n = visible
-            .iter()
-            .filter(|(_, i)| i.width.is_none())
-            .count()
-            .max(1) as f32;
-        let flex_each = ((avail_w - fixed - gap_total) / flex_n).max(48.0);
-
-        let mut cx = origin_x;
-        let mut max_bottom = origin_y;
-        for (child, cint) in &visible {
-            let child_w = cint.width.unwrap_or(flex_each).clamp(0.0, avail_w);
-            let bottom = self.layout_subtree(*child, cx, origin_y, child_w, default_row_h);
-            max_bottom = max_bottom.max(bottom);
-            cx += child_w + gap;
-        }
-        max_bottom
-    }
-
-    pub fn layout_box(&self, node: NodeHandle) -> Option<LayoutBox> {
-        self.layout.get(&node.0).copied()
-    }
-
-    /// Replace layout cache with measured / iced-written boxes.
-    ///
-    /// Prefer calling this with [`LayoutBoxStore::snapshot`] after iced draws;
-    /// Style-Model `measure_layout` is the headless / pre-paint fallback.
-    ///
-    /// Always keeps html/body covering the viewport so hit-tests still have a
-    /// root surface when the forest is sparse.
-    pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
+    fn reset_layout_roots(&mut self) {
         self.layout.clear();
         let w = self.logical_width.max(1.0);
         let h = self.logical_height.max(1.0);
@@ -1109,6 +922,21 @@ impl NanaTreeDocument {
                 height: h,
             },
         );
+    }
+
+    pub fn layout_box(&self, node: NodeHandle) -> Option<LayoutBox> {
+        self.layout.get(&node.0).copied()
+    }
+
+    /// Replace layout cache with measured / iced-written boxes.
+    ///
+    /// Prefer calling this with [`LayoutBoxStore::snapshot`] after iced draws;
+    /// Style-Model `measure_layout` is the headless / pre-paint fallback.
+    ///
+    /// Always keeps html/body covering the viewport so hit-tests still have a
+    /// root surface when the forest is sparse.
+    pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
+        self.reset_layout_roots();
         for &(handle, box_) in boxes {
             if handle.0 == self.html_root.0 || handle.0 == self.mount_root.0 {
                 continue;
@@ -1131,15 +959,6 @@ impl NanaTreeDocument {
         }
         texts.sort_by_key(|(h, _)| h.0);
         tags.sort_by_key(|(h, _)| h.0);
-        let mut backgrounds = Vec::new();
-        for (&id, _) in &self.layout {
-            let handle = NodeHandle(id);
-            let intent = crate::style::parse_style_intent(self, handle);
-            if let Some(bg) = intent.background {
-                backgrounds.push((handle, bg));
-            }
-        }
-        backgrounds.sort_by_key(|(h, _)| h.0);
         let gpu_slots: Vec<_> = self
             .gpu_slots
             .iter()
@@ -1149,7 +968,6 @@ impl NanaTreeDocument {
             boxes,
             texts,
             tags,
-            backgrounds,
             event_targets: self.event_flags.clone(),
             gpu_slots,
         }
@@ -1218,14 +1036,13 @@ impl NanaTreeDocument {
 
     fn detach(&mut self, child: NodeHandle) {
         let parent = self.nodes.get(&child.0).and_then(|n| n.parent);
-        if let Some(pid) = parent {
-            if let Some(Node {
+        if let Some(pid) = parent
+            && let Some(Node {
                 data: NodeData::Element { children, .. },
                 ..
             }) = self.nodes.get_mut(&pid)
-            {
-                children.retain(|&c| c != child.0);
-            }
+        {
+            children.retain(|&c| c != child.0);
         }
         if let Some(node) = self.nodes.get_mut(&child.0) {
             node.parent = None;
@@ -1831,7 +1648,7 @@ mod tests {
         assert_eq!(
             (box_.x, box_.y, box_.width, box_.height),
             (16.0, 16.0, 80.0, 24.0),
-            "menu anchors must follow iced paint, not measure/synthetic"
+            "menu anchors must follow iced paint, not pre-paint measure"
         );
         store.begin_frame();
         let fallback = get_layout_box_from(&store, &doc, child).expect("doc fallback");
@@ -1849,7 +1666,16 @@ mod tests {
         doc.set_element_text(btn, "0");
         doc.set_event_flag(btn, "onClick", true);
         doc.insert(btn, root, None);
-        doc.resolve_now();
+        doc.apply_layout_boxes(&[(
+            btn,
+            LayoutBox {
+                handle: btn,
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 28.0,
+            },
+        )]);
         let snap = doc.snapshot_boxes();
         assert!(snap.texts.iter().any(|(_, t)| t == "0"));
         assert!(snap.event_targets.iter().any(|(_, e)| e == "click"));
@@ -1859,44 +1685,5 @@ mod tests {
             doc.hit_event_target(box_.x + 1.0, box_.y + 1.0, "click"),
             Some(btn)
         );
-    }
-
-    #[test]
-    fn row_layout_gap_and_flex_skip_hidden_children() {
-        let mut doc = NanaTreeDocument::new(400, 80, 1.0);
-        let mount = doc.mount_root();
-        let row = doc.create_element("div");
-        doc.set_attribute(
-            row,
-            "style",
-            "display:flex;flex-direction:row;gap:10px;width:400px;height:80px",
-        );
-        doc.insert(row, mount, None);
-        let a = doc.create_element("div");
-        doc.set_attribute(a, "style", "height:40px");
-        doc.insert(a, row, None);
-        let hidden = doc.create_element("div");
-        doc.set_attribute(hidden, "style", "display:none;width:50px;height:40px");
-        doc.insert(hidden, row, None);
-        let b = doc.create_element("div");
-        doc.set_attribute(b, "style", "height:40px");
-        doc.insert(b, row, None);
-        doc.resolve_now();
-
-        assert!(doc.layout_box(hidden).is_none());
-        let a_box = doc.layout_box(a).expect("a");
-        let b_box = doc.layout_box(b).expect("b");
-        // Two visible flex children: (400 - 10) / 2 = 195 each.
-        assert!(
-            (a_box.width - 195.0).abs() < 0.01,
-            "a width {}",
-            a_box.width
-        );
-        assert!(
-            (b_box.width - 195.0).abs() < 0.01,
-            "b width {}",
-            b_box.width
-        );
-        assert!((b_box.x - (a_box.x + 195.0 + 10.0)).abs() < 0.01);
     }
 }

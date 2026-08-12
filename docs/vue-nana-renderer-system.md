@@ -25,8 +25,8 @@ L3 Rust API ──► 同一套 Model
 | **Layout** | flex / gap / padding / 尺寸 | CSS 子集或布局 tag → `LayoutStyle` / `LengthSpec` / `ParentBox` | **纯数据** `nana-ui-core::box_layout`；L1 **parse** 在 `nana-ui-vue::css_map`（**非** CSSOM） |
 
 **纠正**：L1 不是「CSS 全部直接变成 `ThemeTokens`」。任意业务 CSS 色值不得污染正式 token。  
-L1 色值：已知 token/class → `SemanticColorRole`；未知 `#hex` 可留诊断 `StyleIntent`，**不**写入正式 ThemeTokens（见 `map_css_color_for_tokens`）。
-任意业务色仅允许作为桥接层**受限 paint hint**（诊断盒 / hit-test）；**禁止**据此发明 ThemeTokens 或开辟第二条 paint 路径——唯一绘制仍是 L3 NanaUI widgets。
+L1 色值：已知 token/class → `SemanticColorRole`；未知 `#hex` 只可留作受限 paint hint，**不**写入正式 ThemeTokens（见 `map_css_color_for_tokens`）。
+任意业务色不得据此发明 ThemeTokens 或开辟第二条 paint 路径——唯一绘制仍是 L3 NanaUI widgets。
 
 权威模块索引：[`nana_ui_core::style_model`](../crates/nana-ui-core/src/style_model.rs)、[`nana_ui_core::box_layout`](../crates/nana-ui-core/src/box_layout.rs)。
 
@@ -81,6 +81,7 @@ flowchart TB
     Tree["NanaTreeDocument"]
     Bridge["MessageBridge"]
     CssMap["css_map → LayoutStyle"]
+    Measure["measure → pre-paint LayoutBox"]
     LayoutMap["layout_map → Column/Row/…"]
     WidgetMap["widget_map → WidgetKind"]
     Snapshot["SemanticSnapshot"]
@@ -104,6 +105,8 @@ flowchart TB
   CssMap --> Bridge
   LayoutMap --> Bridge
   WidgetMap --> Bridge
+  Bridge --> Measure
+  Measure --> Tree
   Bridge --> Snapshot
   Snapshot --> IcedApp
   IcedApp --> Widgets
@@ -131,12 +134,12 @@ sequenceDiagram
 |------|------|-------------|
 | `app` | 公开入口：`NanaVueApp`、`mount_vue_as_nana` | L1/L2 宿主 |
 | `renderer` | DOM/语义 hostOps（`createElement` / `createWidget` / `patchProp` …） | L1+L2 同桥 |
-| `tree` | `NanaTreeDocument`：节点森林、合成布局盒、hit-test（非 CSS 引擎） | 诊断布局 |
+| `tree` | `NanaTreeDocument`：DOM 兼容节点森林 + measured/iced 布局盒缓存 + hit-test | 几何缓存，不实现布局 |
 | `bridge` | `MessageBridge` / `SemanticSnapshot` / `BridgeEvent` / `WidgetProps` | Model 载体 |
 | `widget_map` | tag / class / role / type → `WidgetKind` | → **Semantics** |
 | `layout_map` | 布局类标签与方向默认；与 `LayoutStyle` 协同 | → **Layout** |
 | `css_map` | CSS 子集 **parse** → `LayoutStyle`（类型在 core；**不是** ThemeTokens 工厂） | → **Layout** |
-| `style` | 树文档 `StyleIntent`（合成盒）；非正式 token | 诊断 |
+| `style` | L1 paint 色值解析；任意色不进入正式 token | 受限 paint hint |
 | `iced_app` | `SemanticSnapshot` → 真实 `nana_ui` Iced 元素（feature `iced-view`）；子文件 `layout_convert` / `l1_charts` / `overlay` / … | → L3 绘制 |
 | `svg_icon` | L1 SVG/图表几何 → iced `svg`（优选 heatmap 轨；非 Semantics） | L1 paint 例外 |
 | `capabilities` | Permission / workspace host API（与绘制解耦） | — |

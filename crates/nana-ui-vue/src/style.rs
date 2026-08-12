@@ -1,285 +1,24 @@
-//! L1 树文档用：inline `style` / `class` → 合成盒 [`StyleIntent`]（**仅**诊断/hit-test）。
+//! L1 CSS paint parsing at the Vue adapter boundary.
 //!
-//! Used by [`crate::NanaTreeDocument::resolve_now`] to size stack/row boxes.
-//! Product UI layout for Iced goes through [`crate::css_map::LayoutStyle`] on
-//! [`crate::WidgetProps`] → [`crate::iced_app`] (feature `iced-view`) — that is the
-//! Style Model **Layout** path. This module is **not** a paint engine, not a CSS
-//! cascade, and must not invent formal ThemeTokens from arbitrary CSS colors.
-//!
-//! ## SoT / 停扩 / 禁止第二套解析
-//!
-//! | 路径 | 角色 |
-//! |------|------|
-//! | iced `LayoutProbe` → `LayoutBoxStore` | 产品几何权威（paint 后） |
-//! | [`crate::measure_layout`] | 预绘制回退 + css-parity |
-//! | 本模块 + `resolve_now` | 合成 hit-test / 诊断盒 |
-//!
-//! **禁止**在此新增第二套声明解析（length / padding / opacity / class→几何）。
-//! Inline 声明只经 [`LayoutStyleCss::apply_css_text`] → 投影 [`StyleIntent`]。
-//! 产品 class 几何合同在 [`crate::shell_contract`]；勿在本模块镜像 pad/min_h/row。
-//! 几何三轨（iced / measure / 合成）**勿强合**——本路径可随 iced 盒覆盖退役。
-//! 新属性只进 `css_map`。色值 [`parse_css_color`] 仍留本模块（供
-//! [`crate::css_map::resolve_paint_color`] 复用），但不走 ThemeTokens。
+//! Layout declarations go through [`crate::css_map::LayoutStyleCss`]. This
+//! module only resolves paint values used by the Style Model and SVG adapter;
+//! it does not own layout, hit-testing, or a second paint path.
 //!
 //! ## L1 色值策略
 //!
 //! | 来源 | 行为 |
 //! |------|------|
 //! | 已知 token / class（`accent`、`muted`、`var(--nana-*)`） | → [`SemanticColorRole`](nana_ui_core::SemanticColorRole) / 调色板字段 |
-//! | 未知 `#hex` / `rgb()` | **不**写入正式 ThemeTokens；可留在 [`StyleIntent`] 作诊断盒，或忽略 |
+//! | 未知 `#hex` / `rgb()` | **不**写入正式 ThemeTokens；仅可作为 L1 paint hint |
 //!
 //! [`map_css_color_for_tokens`] 是正式 Tokens 路径的唯一入口；[`parse_css_color`]
-//! 仅服务诊断合成盒。
+//! 仅服务 L1 paint 解析。
 
 use nana_ui_core::{SemanticColor, SemanticColorRole, SemanticPalette, ThemeMode};
 
-use crate::css_map::{FlexDirection, LayoutStyle, LayoutStyleCss};
-use crate::tree::{LayoutBox, NanaTreeDocument, NodeHandle};
-
-/// Parsed subset of CSS used for synthetic layout sizing.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StyleIntent {
-    pub background: Option<[f32; 4]>,
-    pub color: Option<[f32; 4]>,
-    pub width: Option<f32>,
-    pub height: Option<f32>,
-    /// Soft minimum — grows with children, unlike fixed [`Self::height`].
-    pub min_height: Option<f32>,
-    pub padding: f32,
-    pub margin_top: f32,
-    pub font_size: f32,
-    pub opacity: f32,
-    pub hidden: bool,
-    /// Lay element children left-to-right instead of stacking.
-    pub row: bool,
-    pub gap: f32,
-    pub class_names: Vec<String>,
-}
-
-impl Default for StyleIntent {
-    fn default() -> Self {
-        Self {
-            background: None,
-            color: None,
-            width: None,
-            height: None,
-            min_height: None,
-            padding: 0.0,
-            margin_top: 0.0,
-            font_size: 14.0,
-            opacity: 1.0,
-            hidden: false,
-            row: false,
-            gap: 0.0,
-            class_names: Vec::new(),
-        }
-    }
-}
-
-/// Parse `style` + `class` (+ `hidden` / region attrs / tag) into a simplified intent.
-pub fn parse_style_intent(doc: &NanaTreeDocument, handle: NodeHandle) -> StyleIntent {
-    let mut intent = StyleIntent::default();
-    let mode = theme_mode_from_doc(doc);
-    if doc.get_attribute(handle, "hidden").is_some() {
-        intent.hidden = true;
-    }
-    if let Some(class) = doc.get_attribute(handle, "class") {
-        intent.class_names = class
-            .split_whitespace()
-            .map(str::to_string)
-            .filter(|s| !s.is_empty())
-            .collect();
-        apply_class_presets(&mut intent, mode);
-    }
-    if let Some(tag) = doc.element_tag(handle) {
-        apply_tag_presets(&mut intent, &tag, mode);
-    }
-    if let Some(style) = doc.get_attribute(handle, "style") {
-        apply_style_declarations(
-            &mut intent,
-            &style,
-            doc.logical_width(),
-            doc.logical_height(),
-        );
-    }
-    intent
-}
-
-fn theme_mode_from_doc(doc: &NanaTreeDocument) -> ThemeMode {
-    if doc.document_theme().eq_ignore_ascii_case("dark") {
-        ThemeMode::Dark
-    } else {
-        ThemeMode::Light
-    }
-}
-
-/// Apply style-driven sizing on top of the default stack layout for one box.
-pub fn apply_style_to_box(box_: &mut LayoutBox, intent: &StyleIntent, viewport_w: f32) {
-    if let Some(w) = intent.width {
-        box_.width = w.clamp(0.0, viewport_w.max(1.0));
-    }
-    if let Some(h) = intent.height {
-        box_.height = h.max(0.0);
-    } else {
-        if let Some(mh) = intent.min_height {
-            box_.height = box_.height.max(mh);
-        } else if intent.font_size > 0.0 && intent.background.is_some() {
-            // Give styled containers a readable default height.
-            box_.height = box_
-                .height
-                .max(intent.font_size + intent.padding * 2.0 + 8.0);
-        }
-        if intent.padding > 0.0 {
-            box_.height = box_.height.max(intent.font_size + intent.padding * 2.0);
-        }
-    }
-}
-
-fn apply_class_presets(intent: &mut StyleIntent, mode: ThemeMode) {
-    // Diagnostic semantic-color aliases only. Shell geometry (`card` / titlebar /
-    // sidebar / `nana-root-paint` pad·min_h·row) lives in `shell_contract` →
-    // `LayoutStyle` — do not mirror here (drift risk; stop expanding).
-    let palette = SemanticPalette::for_mode(mode);
-    let accent = palette.accent.as_rgba_array();
-    let accent_text = palette.accent_text.as_rgba_array();
-    let muted = palette.muted.as_rgba_array();
-
-    for name in intent.class_names.clone() {
-        match name.as_str() {
-            "nana-custom-accent" | "accent" | "primary" => {
-                ensure_bg(intent, accent);
-                ensure_color(intent, accent_text);
-            }
-            "nana-custom-muted" | "muted" | "ghost" => {
-                ensure_color(intent, muted);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn apply_tag_presets(intent: &mut StyleIntent, tag: &str, mode: ThemeMode) {
-    // Diagnostic paint for a few host tags only. Do not invent shell widths /
-    // paddings / row-gap here — product path uses `widget_map` + `shell_contract`.
-    let palette = SemanticPalette::for_mode(mode);
-    let muted = palette.muted.as_rgba_array();
-    let accent = palette.accent.as_rgba_array();
-    let accent_text = palette.accent_text.as_rgba_array();
-
-    match tag.to_ascii_lowercase().as_str() {
-        "button" | "nana-button" => {
-            ensure_bg(intent, accent);
-            ensure_color(intent, accent_text);
-        }
-        "nana-text" | "nana-label" => {
-            ensure_color(intent, muted);
-        }
-        _ => {}
-    }
-}
-
-fn ensure_bg(intent: &mut StyleIntent, color: [f32; 4]) {
-    if intent.background.is_none() {
-        intent.background = Some(color);
-    }
-}
-
-fn ensure_color(intent: &mut StyleIntent, color: [f32; 4]) {
-    if intent.color.is_none() {
-        intent.color = Some(color);
-    }
-}
-
-fn ensure_min_h(intent: &mut StyleIntent, h: f32) {
-    let next = intent.min_height.map(|v| v.max(h)).unwrap_or(h);
-    intent.min_height = Some(next);
-}
-
-/// Project already-parsed [`LayoutStyle`] sizing/paint onto a diagnostic intent.
-///
-/// Shared box resolution uses `nana-ui-core::box_layout` helpers on `LayoutStyle`
-/// (`resolve_px` / `resolved_padding_against` / …) — do not re-parse lengths here.
-fn project_layout_style_onto_intent(
-    intent: &mut StyleIntent,
-    layout: &LayoutStyle,
-    percent_w: f32,
-    percent_h: f32,
-) {
-    if let Some(c) = layout.background {
-        intent.background = Some(c);
-    }
-    if let Some(c) = layout.color {
-        intent.color = Some(c);
-    }
-    if let Some(v) = layout
-        .width
-        .and_then(|spec| resolve_intent_length(spec, Some(percent_w)))
-    {
-        intent.width = Some(v);
-    }
-    if let Some(v) = layout
-        .height
-        .and_then(|spec| resolve_intent_length(spec, Some(percent_h)))
-    {
-        intent.height = Some(v);
-    }
-    if let Some(v) = layout
-        .min_height
-        .and_then(|spec| resolve_intent_length(spec, Some(percent_h)))
-    {
-        ensure_min_h(intent, v);
-    }
-    let pad = layout.resolved_padding_against(Some(percent_w));
-    let pad_uniform = pad.top.max(pad.right).max(pad.bottom).max(pad.left);
-    if pad_uniform > 0.0 {
-        intent.padding = pad_uniform;
-    }
-    let margin = layout.resolved_margin_against(Some(percent_w));
-    if margin.top != 0.0 || layout.margin_top.is_some() || layout.margin.is_some() {
-        intent.margin_top = margin.top;
-    }
-    if let Some(fs) = layout.font_size {
-        intent.font_size = fs.max(8.0);
-    }
-    let gap = layout.resolved_row_gap_against(Some(percent_w));
-    if gap > 0.0 || layout.gap.is_some() || layout.row_gap.is_some() {
-        intent.gap = gap.max(0.0);
-    }
-    if layout.hidden {
-        intent.hidden = true;
-    }
-    if let Some(op) = layout.opacity {
-        intent.opacity = op.clamp(0.0, 1.0);
-    }
-    match layout.direction {
-        Some(FlexDirection::Row) => intent.row = true,
-        Some(FlexDirection::Column) => intent.row = false,
-        None => {}
-    }
-}
-
-fn resolve_intent_length(
-    spec: crate::css_map::LengthSpec,
-    percent_base: Option<f32>,
-) -> Option<f32> {
-    match spec {
-        crate::css_map::LengthSpec::Fill => percent_base,
-        other => other.resolve_px(percent_base),
-    }
-}
-
-/// Inline `style` → [`LayoutStyle`]（中立 parse）→ 投影 [`StyleIntent`]。
-///
-/// 含 `opacity`：经 `LayoutStyle` 一次扫描写入，禁止在此二次扫串。
-fn apply_style_declarations(intent: &mut StyleIntent, style: &str, percent_w: f32, percent_h: f32) {
-    let mut layout = LayoutStyle::default();
-    layout.apply_css_text(style, Some(percent_w), Some(percent_h));
-    project_layout_style_onto_intent(intent, &layout, percent_w, percent_h);
-}
-
 /// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` / a few named colors.
 ///
-/// **Diagnostic only** — feeds [`StyleIntent`], not formal ThemeTokens.
+/// **L1 paint only** — does not create formal ThemeTokens.
 /// Prefer [`map_css_color_for_tokens`] on the Tokens path.
 pub fn parse_css_color(input: &str) -> Option<[f32; 4]> {
     let s = input.trim();
@@ -380,13 +119,11 @@ fn parse_color_mix(input: &str) -> Option<[f32; 4]> {
 fn split_color_and_percent(input: &str) -> Option<(&str, f32)> {
     let s = input.trim();
     // Prefer trailing `N%` after the color.
-    if let Some((color, pct_raw)) = s.rsplit_once(' ') {
-        let pct_raw = pct_raw.trim();
-        if let Some(p) = pct_raw.strip_suffix('%') {
-            if let Ok(pct) = p.parse::<f32>() {
-                return Some((color.trim(), pct));
-            }
-        }
+    if let Some((color, pct_raw)) = s.rsplit_once(' ')
+        && let Some(percent) = pct_raw.trim().strip_suffix('%')
+        && let Ok(percent) = percent.parse::<f32>()
+    {
+        return Some((color.trim(), percent));
     }
     None
 }
@@ -439,7 +176,7 @@ fn parse_oklch_color(lower: &str) -> Option<[f32; 4]> {
         (rest.trim(), 1.0)
     };
     let parts: Vec<&str> = body.split_whitespace().collect();
-    if parts.len() < 1 {
+    if parts.is_empty() {
         return None;
     }
     let l = parse_oklch_lightness(parts[0])?;
@@ -540,8 +277,6 @@ pub fn is_non_token_css_color(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css_map::{LayoutStyle, LayoutStyleCss};
-    use crate::tree::NanaTreeDocument;
 
     #[test]
     fn parses_hex_and_rgb_colors() {
@@ -595,153 +330,5 @@ mod tests {
         assert_eq!(role, SemanticColorRole::Accent);
         assert_eq!(color, SemanticPalette::light().accent);
         assert!(map_css_color_for_tokens("#e74c3c", ThemeMode::Light).is_none());
-    }
-
-    #[test]
-    fn class_presets_use_semantic_palette_accent() {
-        let mut doc = NanaTreeDocument::new(320, 180, 1.0);
-        let root = doc.mount_root();
-        let el = doc.create_element("div");
-        doc.set_attribute(el, "class", "nana-custom-accent");
-        doc.insert(el, root, None);
-        doc.resolve_now();
-        let intent = parse_style_intent(&doc, el);
-        assert_eq!(
-            intent.background,
-            Some(SemanticPalette::light().accent.as_rgba_array())
-        );
-        assert_eq!(
-            intent.color,
-            Some(SemanticPalette::light().accent_text.as_rgba_array())
-        );
-    }
-
-    #[test]
-    fn tag_and_class_presets_follow_document_theme() {
-        let mut doc = NanaTreeDocument::new(320, 180, 1.0);
-        doc.set_document_theme("dark");
-        let root = doc.mount_root();
-        let btn = doc.create_element("button");
-        doc.insert(btn, root, None);
-        let accent = doc.create_element("div");
-        doc.set_attribute(accent, "class", "nana-custom-accent");
-        doc.insert(accent, root, None);
-        doc.resolve_now();
-        let btn_intent = parse_style_intent(&doc, btn);
-        assert_eq!(
-            btn_intent.background,
-            Some(SemanticPalette::dark().accent.as_rgba_array())
-        );
-        assert_eq!(
-            btn_intent.color,
-            Some(SemanticPalette::dark().accent_text.as_rgba_array())
-        );
-        let accent_intent = parse_style_intent(&doc, accent);
-        assert_eq!(
-            accent_intent.background,
-            Some(SemanticPalette::dark().accent.as_rgba_array())
-        );
-    }
-
-    #[test]
-    fn styled_div_gets_layout_box_from_intent() {
-        let mut doc = NanaTreeDocument::new(320, 180, 1.0);
-        let root = doc.mount_root();
-        let card = doc.create_element("div");
-        doc.set_attribute(
-            card,
-            "style",
-            "background-color: #e74c3c; width: 200px; height: 60px; padding: 8px",
-        );
-        doc.insert(card, root, None);
-        doc.resolve_now();
-        let box_ = doc.layout_box(card).expect("layout");
-        assert!((box_.width - 200.0).abs() < 0.5, "width={}", box_.width);
-        assert!((box_.height - 60.0).abs() < 0.5, "height={}", box_.height);
-        let intent = parse_style_intent(&doc, card);
-        // Diagnostic StyleIntent may keep hex; Tokens path must not.
-        assert_eq!(
-            intent.background,
-            Some([231.0 / 255.0, 76.0 / 255.0, 60.0 / 255.0, 1.0])
-        );
-        assert!(is_non_token_css_color("#e74c3c"));
-    }
-
-    #[test]
-    fn vertical_margin_and_padding_percent_use_containing_block_width() {
-        // Viewport 200×50 — height base would wrongly yield margin_top=5, padding=5.
-        let mut doc = NanaTreeDocument::new(200, 50, 1.0);
-        let root = doc.mount_root();
-        let el = doc.create_element("div");
-        doc.set_attribute(el, "style", "margin-top:10%;padding:10%;margin:10%");
-        doc.insert(el, root, None);
-        doc.resolve_now();
-        let intent = parse_style_intent(&doc, el);
-        assert!(
-            (intent.margin_top - 20.0).abs() < 0.01,
-            "margin_top={}",
-            intent.margin_top
-        );
-        assert!(
-            (intent.padding - 20.0).abs() < 0.01,
-            "padding={}",
-            intent.padding
-        );
-    }
-
-    #[test]
-    fn style_intent_resolves_lightweight_calc_width() {
-        let mut doc = NanaTreeDocument::new(400, 120, 1.0);
-        let root = doc.mount_root();
-        let el = doc.create_element("div");
-        doc.set_attribute(el, "style", "width:calc(40px + 50%);height:40px");
-        doc.insert(el, root, None);
-        doc.resolve_now();
-        let intent = parse_style_intent(&doc, el);
-        assert!(
-            (intent.width.unwrap_or(0.0) - 240.0).abs() < 0.01,
-            "width={:?}",
-            intent.width
-        );
-    }
-
-    #[test]
-    fn opacity_projects_from_layout_style_without_second_scan() {
-        let mut doc = NanaTreeDocument::new(200, 100, 1.0);
-        let root = doc.mount_root();
-        let el = doc.create_element("div");
-        doc.set_attribute(el, "style", "opacity:0.4;width:80px;height:20px");
-        doc.insert(el, root, None);
-        doc.resolve_now();
-        let intent = parse_style_intent(&doc, el);
-        assert!((intent.opacity - 0.4).abs() < f32::EPSILON);
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("opacity:0.75", None, None);
-        assert_eq!(layout.opacity, Some(0.75));
-    }
-
-    #[test]
-    fn shell_overlapping_classes_do_not_invent_diagnostic_geometry() {
-        // Product pad/min_h/row for these classes live in shell_contract.
-        // StyleIntent must not re-mirror them (stop-expand / anti-drift).
-        let mut doc = NanaTreeDocument::new(320, 180, 1.0);
-        let root = doc.mount_root();
-        for class in [
-            "card",
-            "nana-card",
-            "titlebar",
-            "nana-sidebar-frame",
-            "nana-root-paint",
-        ] {
-            let el = doc.create_element("div");
-            doc.set_attribute(el, "class", class);
-            doc.insert(el, root, None);
-            let intent = parse_style_intent(&doc, el);
-            assert_eq!(intent.padding, 0.0, "class={class}");
-            assert!(intent.min_height.is_none(), "class={class}");
-            assert!(!intent.row, "class={class}");
-            assert_eq!(intent.gap, 0.0, "class={class}");
-            assert!(intent.background.is_none(), "class={class}");
-        }
     }
 }

@@ -29,9 +29,8 @@
 //! Cascade SoT for `LayoutStyle` is [`MessageBridge`] stylesheet rules.
 //! `NanaTreeDocument::stylesheets` is diagnostics-only (count for host ops).
 //! Product geometry SoT after paint is iced [`LayoutBoxStore`]; `measure` is
-//! pre-paint fallback + `nana-css-parity` harness. Synthetic hit-test boxes
-//! from [`style`] / `resolve_now` project [`LayoutStyle`] and **must not** grow
-//! a second declaration parser. See
+//! the pre-paint fallback + `nana-css-parity` harness. There is no separate
+//! synthetic layout branch. See
 //! [`docs/css-layout-engine-boundary.md`](../../../docs/css-layout-engine-boundary.md).
 //!
 //! This crate is the **L1/L2 adapter** (not the paint core):
@@ -39,7 +38,7 @@
 //! - `shell_contract` → documented `nana-*` / utility class → same `LayoutStyle`
 //! - `css_cascade` → stylesheet match → same `LayoutStyle`
 //! - `measure` → pre-paint / parity boxes (not product paint authority)
-//! - `style` → diagnostic `StyleIntent` only（projects `LayoutStyle`; **禁止新增第二套解析**）
+//! - `style` → L1 paint value parsing only（不拥有 layout / hit-test）
 //! - `widget_map` → Semantics (`WidgetKind` + props)
 //! - `layout_map` → Layout direction / Column·Row defaults
 //! - `iced_app` → L3 NanaUI widgets (feature `iced-view`)
@@ -165,10 +164,7 @@ pub use scroll::{
     is_scroll_container, reapply_scroll_translations, scroll_into_view, scrollable_widget_id,
     set_scroll_offset, shared_scroll_offset_store,
 };
-pub use style::{
-    StyleIntent, apply_style_to_box, is_non_token_css_color, map_css_color_for_tokens,
-    parse_css_color, parse_style_intent,
-};
+pub use style::{is_non_token_css_color, map_css_color_for_tokens, parse_css_color};
 pub use tree::{
     BoxSnapshot, DocumentId, DomNodeKind, ElementNamespace, LayoutBox, LayoutBoxStore,
     NanaTreeDocument, NodeHandle, get_layout_box, get_layout_box_from, shared_layout_box_store,
@@ -409,10 +405,10 @@ impl VueHost {
             let web = web_api.lock().expect("web-api");
             (web.document_dataset().clone(), web.document_style().clone())
         };
-        if let Some(theme) = dataset.get("theme") {
-            if let Ok(mut doc) = document.lock() {
-                doc.set_document_theme(theme);
-            }
+        if let Some(theme) = dataset.get("theme")
+            && let Ok(mut doc) = document.lock()
+        {
+            doc.set_document_theme(theme);
         }
         let mut bridge = bridge.lock().expect("vue bridge");
         bridge.apply_document_appearance(&dataset, &style);
@@ -522,24 +518,19 @@ impl VueHost {
     }
 
     pub fn set_viewport(&mut self, physical_width: u32, physical_height: u32, scale_factor: f32) {
-        self.document.lock().expect("vue doc").set_viewport(
-            physical_width,
-            physical_height,
-            scale_factor,
-        );
+        let mut bridge = self.bridge.lock().expect("vue bridge");
+        let mut doc = self.document.lock().expect("vue doc");
+        doc.set_viewport(physical_width, physical_height, scale_factor);
+        bridge.resolve_document_layout(&mut doc);
     }
 
     pub fn resolve_layout(&mut self) {
-        let (logical_w, logical_h) = {
-            let doc = self.document.lock().expect("vue doc");
-            doc.logical_size()
-        };
         // After iced has painted, writeback is authoritative (chrome/scroll offsets).
         let iced = shared_layout_box_store().snapshot();
         if !iced.is_empty() {
+            let bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
             doc.apply_layout_boxes(&iced);
-            let bridge = self.bridge.lock().expect("vue bridge");
             reapply_scroll_translations(
                 &mut doc,
                 &bridge,
@@ -548,25 +539,9 @@ impl VueHost {
             );
             return;
         }
-        let boxes = {
-            let mut bridge = self.bridge.lock().expect("vue bridge");
-            bridge.reparent_orphans();
-            {
-                let mut doc = self.document.lock().expect("vue doc");
-                bridge.sync_sidebar_footer_into_document(&mut doc);
-            }
-            bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
-            measure_bridge_layout_boxes(&bridge, logical_w, logical_h)
-        };
+        let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
-        if boxes.is_empty() {
-            // No semantic forest yet — keep synthetic stack layout for probes.
-            doc.resolve_now();
-        } else {
-            // Pre-paint fallback: Style-Model measure (css-parity subset).
-            // Once iced draws, LayoutProbe → LayoutBoxStore supersedes this.
-            doc.apply_layout_boxes(&boxes);
-        }
+        bridge.resolve_document_layout(&mut doc);
     }
 
     /// Copy iced paint boxes into the document cache (call after a frame draws).
@@ -578,9 +553,9 @@ impl VueHost {
         if iced.is_empty() {
             return;
         }
+        let bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
         doc.apply_layout_boxes(&iced);
-        let bridge = self.bridge.lock().expect("vue bridge");
         reapply_scroll_translations(
             &mut doc,
             &bridge,
@@ -628,7 +603,7 @@ impl VueHost {
         Ok(())
     }
 
-    /// Drain due rAF/timeouts into JS, then microtasks + synthetic layout.
+    /// Drain due rAF/timeouts into JS, then microtasks + Style-Model layout.
     ///
     /// After layout resolves, invokes optional `__nanaNotifyLayout` so
     /// `ResizeObserver` callbacks see fresh `layoutBox` geometry.
@@ -972,11 +947,10 @@ impl VueHost {
             let doc = self.document.lock().expect("vue doc");
             target.or_else(|| doc.focused())
         };
-        if focused_for_input.is_some()
+        if let Some(handle) = focused_for_input
             && key.chars().count() == 1
             && !key.chars().next().is_some_and(|c| c.is_control())
         {
-            let handle = focused_for_input.unwrap();
             let mut input_detail = BTreeMap::new();
             input_detail.insert("data".into(), HostValue::string(key));
             input_detail.insert("value".into(), HostValue::string(key));
@@ -1028,11 +1002,7 @@ fn measure_bridge_layout_boxes(
         ))
     }
 
-    let snap = bridge.snapshot();
-    if snap.widgets.is_empty() {
-        return Vec::new();
-    }
-    let Some(root_id) = snap.roots.first().copied() else {
+    let Some(root_id) = bridge.root_ids().first().copied() else {
         return Vec::new();
     };
     let Some(root) = to_node(bridge, root_id) else {

@@ -32,8 +32,14 @@ L5 = `iced_app`（另有 SVG/canvas 旁路例外）。
 |------|-----|------|
 | Stylesheet → `LayoutStyle` | `MessageBridge` + `css_cascade` | `NanaTreeDocument::stylesheets` 仅诊断计数 |
 | 产品几何盒 | iced `LayoutProbe` → `LayoutBoxStore` | paint 后权威 |
-| 预绘制 / parity 盒 | `measure_layout` | 无 iced 盒时回退；~105 css-parity fixtures |
-| 合成 hit-test 盒 | `style::StyleIntent` + `resolve_now` | **仅诊断**；**禁止新增第二套解析**；尺寸/`opacity` 投影自 `LayoutStyle`；class 几何合同在 `shell_contract` |
+| 预绘制 / parity / hit-test 盒 | `MessageBridge::resolve_document_layout` → `measure_layout` | 无 iced 盒时回退；与 css-parity 共用算法 |
+
+几何只保留两个阶段：paint 前 Style Model measure，paint 后 iced writeback。
+`NanaTreeDocument` 只缓存两者结果，不再拥有 `StyleIntent + resolve_now` 合成布局。
+
+迁移旧诊断 API 时，调用宿主 `resolveLayout` / `VueHost::resolve_layout` 获取同一
+Style Model 的预绘制盒；`BoxSnapshot` 不再暴露另一套合成背景结果。这样 API
+不会暗示仍存在第三个几何或绘制权威。
 
 ## Neutral 定义
 
@@ -47,7 +53,7 @@ L5 = `iced_app`（另有 SVG/canvas 旁路例外）。
 - `shell_contract::apply_class_layout_hints`（文档化的 Nana 壳 / controls 合同）
 - `widget_map` / `layout_map` / DesktopShell 投影（`region_views` 等）
 - `svg_icon` / iced canvas heatmap（临时 L1 paint 例外）
-- `style` 色值诊断解析（`parse_css_color`；供 `resolve_paint_color` 复用）
+- `style` L1 paint 色值解析（`parse_css_color`；供 `resolve_paint_color` 复用）
 
 ## L1 规范化进度
 
@@ -58,16 +64,15 @@ L5 = `iced_app`（另有 SVG/canvas 旁路例外）。
 | 删除 `view` 别名 / Blitz 空 feature / `map_widget_kind` | ✅ |
 | 模块头标明 cascade SoT、measure 角色、shell 非中立 | ✅ |
 | `apply_class_layout_hints` → `shell_contract.rs`；`css_map` 中立 parse + 薄委托 | ✅ |
-| `style.rs` 停扩：inline 声明经 `LayoutStyle::apply_css_text` 再投影 `StyleIntent`；`opacity` 入 `LayoutStyle`；删与 `shell_contract` 重复的 class/tag 几何预设 | ✅ |
-| measure / resolve / iced SoT 写进 `measure.rs` / `style.rs` / `box_layout` 头 | ✅ |
+| 删除 `StyleIntent` / `resolve_now` 合成几何；host `resolveLayout`、stylesheet、theme、viewport 统一走 `resolve_document_layout` | ✅ |
+| measure / iced 两阶段 SoT 写进 `measure.rs` / `tree.rs` / `box_layout` 头 | ✅ |
 | 共享盒助手留在 `nana-ui-core::box_layout`（content-box / inset / padding·margin·gap） | ✅（标明；未另抽 crate） |
 
 **仍属短期、勿抽 crate：**
 
-1. `style` 诊断色预设可再收窄；合成路径随 iced 盒覆盖率退役（勿强合几何三轨）
-2. 不新增 iced-primitive paint 分支；heatmap 优先 SVG 或 L3 控件（L2 已标 DEFER canvas）
-3. ~~selector 匹配索引 / dirty 子树 cascade~~ → **声明 entries 已缓存**（`StyleRule.declaration_entries`；match 不再重切；document `--*` 从 rules 重建，不刮 raw）；inject 空 sheet 跳过全树；完整 dirty 子树 / 选择器索引仍待
-4. ~~`iced_app` 按文件切分~~ → 见下方 **L2 规范化进度**
+1. 不新增 iced-primitive paint 分支；heatmap 优先 SVG 或 L3 控件（L2 已标 DEFER canvas）
+2. ~~selector 匹配索引 / dirty 子树 cascade~~ → **声明 entries 已缓存**（`StyleRule.declaration_entries`；match 不再重切；document `--*` 从 rules 重建，不刮 raw）；inject 空 sheet 跳过全树；完整 dirty 子树 / 选择器索引仍待
+3. ~~`iced_app` 按文件切分~~ → 见下方 **L2 规范化进度**
 
 ## L2 规范化进度（Vue 适配 / 树→控件→iced）
 
@@ -81,7 +86,7 @@ L5 = `iced_app`（另有 SVG/canvas 旁路例外）。
 | Heatmap 单轨：优先 `svg_icon`（resvg）；canvas path-d 标 **DEFER**，不删除以免破视觉 | ✅ |
 | Semantics 集中：`widget_map` 为 kind 唯一解析入口；`bridge` / `layout_map` / `renderer` 模块头标明 L2 边界 | ✅ |
 | `svg_icon` 标明 L1 几何→iced 适配，禁止扩第二套 path-d 解析 | ✅ |
-| DesktopShell / `region_views` 投影搬家 | ❌ 本回合仅文档化（高风险） |
+| DesktopShell `region_views` 投影 | ✅ 保持 bridge 所有权；一次私有索引统一 reachability / nearest owner / nested seed，祖先清理由全表循环改为父链队列 |
 
 **L2 仍不做：**
 
