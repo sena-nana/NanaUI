@@ -174,6 +174,18 @@ impl NativeMarkdown {
         )
     }
 
+    pub fn view_with_images<Message>(
+        &self,
+        tokens: ThemeTokens,
+        on_link: impl Fn(String) -> Message + Clone + 'static,
+        render_image: impl Fn(MarkdownImage) -> Element<'static, Message> + 'static,
+    ) -> Element<'static, Message>
+    where
+        Message: Clone + 'static,
+    {
+        render_document(self, tokens, on_link, Some(Rc::new(render_image)), None)
+    }
+
     pub fn view_with_media<Message>(
         &self,
         tokens: ThemeTokens,
