@@ -23,6 +23,13 @@ pub struct MarkdownSpan {
     pub code: bool,
     pub inline_math: bool,
     pub link: Option<String>,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownImage {
+    pub source: String,
+    pub alt: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +129,22 @@ impl NativeMarkdown {
         self.selection_group.clear();
     }
 
+    pub fn images(&self) -> Vec<MarkdownImage> {
+        let mut images = Vec::new();
+        for block in &self.blocks {
+            match block {
+                MarkdownBlock::Text { spans, .. } => collect_markdown_images(spans, &mut images),
+                MarkdownBlock::Table(table) => {
+                    for cell in table.header.iter().chain(table.rows.iter().flatten()) {
+                        collect_markdown_images(cell, &mut images);
+                    }
+                }
+                _ => {}
+            }
+        }
+        images
+    }
+
     pub fn view<Message>(
         &self,
         tokens: ThemeTokens,
@@ -142,7 +165,32 @@ impl NativeMarkdown {
     where
         Message: Clone + 'static,
     {
-        render_document(self, tokens, on_link, Some(Rc::new(on_selection_change)))
+        render_document(
+            self,
+            tokens,
+            on_link,
+            None,
+            Some(Rc::new(on_selection_change)),
+        )
+    }
+
+    pub fn view_with_media<Message>(
+        &self,
+        tokens: ThemeTokens,
+        on_link: impl Fn(String) -> Message + Clone + 'static,
+        render_image: impl Fn(MarkdownImage) -> Element<'static, Message> + 'static,
+        on_selection_change: impl Fn(Option<String>) -> Message + 'static,
+    ) -> Element<'static, Message>
+    where
+        Message: Clone + 'static,
+    {
+        render_document(
+            self,
+            tokens,
+            on_link,
+            Some(Rc::new(render_image)),
+            Some(Rc::new(on_selection_change)),
+        )
     }
 }
 
@@ -162,6 +210,7 @@ struct MarkdownParser {
     emphasis_depth: usize,
     strike_depth: usize,
     link: Option<String>,
+    image: Option<String>,
     code_block: Option<(Option<String>, String)>,
     quote_depth: usize,
     lists: Vec<Option<u64>>,
@@ -263,9 +312,10 @@ impl MarkdownParser {
             Tag::Emphasis => self.emphasis_depth += 1,
             Tag::Strong => self.strong_depth += 1,
             Tag::Strikethrough => self.strike_depth += 1,
-            Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
+            Tag::Link { dest_url, .. } => {
                 self.link = Some(dest_url.into_string());
             }
+            Tag::Image { dest_url, .. } => self.image = Some(dest_url.into_string()),
             Tag::Table(alignments) => {
                 self.flush_text();
                 self.table_row.clear();
@@ -306,7 +356,8 @@ impl MarkdownParser {
             TagEnd::Emphasis => self.emphasis_depth = self.emphasis_depth.saturating_sub(1),
             TagEnd::Strong => self.strong_depth = self.strong_depth.saturating_sub(1),
             TagEnd::Strikethrough => self.strike_depth = self.strike_depth.saturating_sub(1),
-            TagEnd::Link | TagEnd::Image => self.link = None,
+            TagEnd::Link => self.link = None,
+            TagEnd::Image => self.image = None,
             TagEnd::TableCell => {
                 self.table_row.push(std::mem::take(&mut self.spans));
                 self.in_table_cell = false;
@@ -347,6 +398,7 @@ impl MarkdownParser {
             code,
             inline_math,
             link: self.link.clone(),
+            image: self.image.clone(),
         };
         if let Some(last) = self.spans.last_mut()
             && last.strong == next.strong
@@ -355,6 +407,7 @@ impl MarkdownParser {
             && last.code == next.code
             && last.inline_math == next.inline_math
             && last.link == next.link
+            && last.image == next.image
         {
             last.text.push_str(&next.text);
         } else {
@@ -501,6 +554,21 @@ fn markdown_spans_plain_text(spans: &[MarkdownSpan]) -> String {
     spans.iter().map(|span| span.text.as_str()).collect()
 }
 
+fn collect_markdown_images(spans: &[MarkdownSpan], images: &mut Vec<MarkdownImage>) {
+    for span in spans {
+        let Some(source) = &span.image else {
+            continue;
+        };
+        let image = MarkdownImage {
+            source: source.clone(),
+            alt: span.text.clone(),
+        };
+        if !images.contains(&image) {
+            images.push(image);
+        }
+    }
+}
+
 pub fn native_markdown<Message>(
     document: &NativeMarkdown,
     tokens: ThemeTokens,
@@ -509,31 +577,44 @@ pub fn native_markdown<Message>(
 where
     Message: Clone + 'static,
 {
-    render_document(document, tokens, on_link, None)
+    render_document(document, tokens, on_link, None, None)
 }
 
 type SelectionCallback<Message> = Option<Rc<dyn Fn(Option<String>) -> Message>>;
+type ImageRenderer<Message> = Option<Rc<dyn Fn(MarkdownImage) -> Element<'static, Message>>>;
+type LinkHandler<Message> = Rc<dyn Fn(String) -> Message>;
+
+#[derive(Clone)]
+struct MarkdownRenderContext<Message> {
+    vector_cache: VectorCache,
+    selection_group: TextSelectionGroup,
+    tokens: ThemeTokens,
+    on_link: LinkHandler<Message>,
+    image_renderer: ImageRenderer<Message>,
+    on_selection_change: SelectionCallback<Message>,
+}
 
 fn render_document<Message>(
     document: &NativeMarkdown,
     tokens: ThemeTokens,
     on_link: impl Fn(String) -> Message + Clone + 'static,
+    image_renderer: ImageRenderer<Message>,
     on_selection_change: SelectionCallback<Message>,
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
 {
+    let context = MarkdownRenderContext {
+        vector_cache: document.vector_cache.clone(),
+        selection_group: document.selection_group.clone(),
+        tokens,
+        on_link: Rc::new(on_link),
+        image_renderer,
+        on_selection_change,
+    };
     let mut content = column![].spacing(9).width(Length::Fill);
     for (block_index, block) in document.blocks.iter().cloned().enumerate() {
-        content = content.push(render_block(
-            block_index,
-            block,
-            document.vector_cache.clone(),
-            document.selection_group.clone(),
-            tokens,
-            on_link.clone(),
-            on_selection_change.clone(),
-        ));
+        content = content.push(render_block(block_index, block, context.clone()));
     }
     content.into()
 }
@@ -541,15 +622,19 @@ where
 fn render_block<Message>(
     block_index: usize,
     block: MarkdownBlock,
-    vector_cache: VectorCache,
-    selection_group: TextSelectionGroup,
-    tokens: ThemeTokens,
-    on_link: impl Fn(String) -> Message + Clone + 'static,
-    on_selection_change: SelectionCallback<Message>,
+    context: MarkdownRenderContext<Message>,
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
 {
+    let MarkdownRenderContext {
+        vector_cache,
+        selection_group,
+        tokens,
+        on_link,
+        image_renderer,
+        on_selection_change,
+    } = context;
     let colors = tokens.colors;
     match block {
         MarkdownBlock::Text { kind, spans } => {
@@ -569,11 +654,45 @@ where
                 ),
                 MarkdownBlockKind::Paragraph => (13.0, font::Weight::Normal, 0.0, colors.text),
             };
-            let has_inline_math = spans.iter().any(|item| item.inline_math);
-            let line: Element<'static, Message> = if has_inline_math {
+            let has_inline_media = spans
+                .iter()
+                .any(|item| item.inline_math || item.image.is_some());
+            let line: Element<'static, Message> = if has_inline_media {
                 let mut fragments = row![].spacing(1).align_y(Alignment::Center);
                 let mut first_text_fragment = true;
                 for (fragment_index, item) in spans.into_iter().enumerate() {
+                    if let Some(source) = item.image.clone() {
+                        let image = MarkdownImage {
+                            source: source.clone(),
+                            alt: item.text.clone(),
+                        };
+                        if let Some(render_image) = &image_renderer {
+                            fragments = fragments.push(render_image(image));
+                        } else {
+                            let value = span(item.text)
+                                .color(colors.accent)
+                                .underline(true)
+                                .link(source);
+                            fragments = fragments.push(
+                                selectable_markdown_text(
+                                    vec![value],
+                                    selection_group.clone(),
+                                    selection_order(block_index, fragment_index),
+                                    if first_text_fragment {
+                                        block_separator(block_index)
+                                    } else {
+                                        ""
+                                    },
+                                    on_selection_change.clone(),
+                                )
+                                .size(size)
+                                .selection_color(selection_color(tokens))
+                                .on_link_click(link_callback(on_link.clone())),
+                            );
+                            first_text_fragment = false;
+                        }
+                        continue;
+                    }
                     if item.inline_math {
                         fragments = fragments.push(render_inline_math(
                             block_index,
@@ -624,7 +743,7 @@ where
                         )
                         .size(size)
                         .selection_color(selection_color(tokens))
-                        .on_link_click(on_link.clone()),
+                        .on_link_click(link_callback(on_link.clone())),
                     );
                     first_text_fragment = false;
                 }
@@ -671,7 +790,7 @@ where
                 )
                 .size(size)
                 .selection_color(selection_color(tokens))
-                .on_link_click(on_link)
+                .on_link_click(link_callback(on_link))
                 .width(Length::Fill)
                 .into()
             };
@@ -701,11 +820,14 @@ where
         MarkdownBlock::Table(table) => render_table(
             block_index,
             table,
-            vector_cache,
-            selection_group,
-            tokens,
-            on_link,
-            on_selection_change,
+            MarkdownRenderContext {
+                vector_cache,
+                selection_group,
+                tokens,
+                on_link,
+                image_renderer,
+                on_selection_change,
+            },
         ),
         MarkdownBlock::Rule => container(text(""))
             .width(Length::Fill)
@@ -781,16 +903,20 @@ where
 fn render_table<Message>(
     block_index: usize,
     table: MarkdownTable,
-    vector_cache: VectorCache,
-    selection_group: TextSelectionGroup,
-    tokens: ThemeTokens,
-    on_link: impl Fn(String) -> Message + Clone + 'static,
-    on_selection_change: SelectionCallback<Message>,
+    context: MarkdownRenderContext<Message>,
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
 {
     const COLUMN_WIDTH: f32 = 148.0;
+    let MarkdownRenderContext {
+        vector_cache,
+        selection_group,
+        tokens,
+        on_link,
+        image_renderer,
+        on_selection_change,
+    } = context;
 
     let column_count = table
         .alignments
@@ -809,6 +935,7 @@ where
         selection_group,
         tokens,
         on_link,
+        image_renderer,
         on_selection_change,
         column_width: COLUMN_WIDTH,
     };
@@ -841,18 +968,19 @@ where
 }
 
 #[derive(Clone)]
-struct TableRenderContext<F, Message> {
+struct TableRenderContext<Message> {
     block_index: usize,
     vector_cache: VectorCache,
     selection_group: TextSelectionGroup,
     tokens: ThemeTokens,
-    on_link: F,
+    on_link: LinkHandler<Message>,
+    image_renderer: ImageRenderer<Message>,
     on_selection_change: SelectionCallback<Message>,
     column_width: f32,
 }
 
-fn render_table_row<Message, F>(
-    context: TableRenderContext<F, Message>,
+fn render_table_row<Message>(
+    context: TableRenderContext<Message>,
     row_index: usize,
     cells: Vec<Vec<MarkdownSpan>>,
     alignments: &[MarkdownTableAlignment],
@@ -860,7 +988,6 @@ fn render_table_row<Message, F>(
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
-    F: Fn(String) -> Message + Clone + 'static,
 {
     let mut rendered = row![].spacing(0).width(Length::Shrink);
     for (column_index, spans) in cells.into_iter().enumerate() {
@@ -876,8 +1003,8 @@ where
     rendered.into()
 }
 
-fn render_table_cell<Message, F>(
-    context: TableRenderContext<F, Message>,
+fn render_table_cell<Message>(
+    context: TableRenderContext<Message>,
     row_index: usize,
     column_index: usize,
     spans: Vec<MarkdownSpan>,
@@ -886,7 +1013,6 @@ fn render_table_cell<Message, F>(
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
-    F: Fn(String) -> Message + Clone + 'static,
 {
     let TableRenderContext {
         block_index,
@@ -894,6 +1020,7 @@ where
         selection_group,
         tokens,
         on_link,
+        image_renderer,
         on_selection_change,
         column_width,
     } = context;
@@ -908,12 +1035,51 @@ where
         MarkdownTableAlignment::Center => Horizontal::Center,
         MarkdownTableAlignment::Right => Horizontal::Right,
     };
-    let has_inline_math = spans.iter().any(|span| span.inline_math);
-    let content: Element<'static, Message> = if has_inline_math {
+    let has_inline_media = spans
+        .iter()
+        .any(|span| span.inline_math || span.image.is_some());
+    let content: Element<'static, Message> = if has_inline_media {
         let mut fragments = row![].spacing(1).align_y(Alignment::Center);
         let mut first_text_fragment = true;
         for (fragment_index, item) in spans.into_iter().enumerate() {
-            if item.inline_math {
+            if let Some(source) = item.image.clone() {
+                let image = MarkdownImage {
+                    source: source.clone(),
+                    alt: item.text.clone(),
+                };
+                if let Some(render_image) = &image_renderer {
+                    fragments = fragments.push(render_image(image));
+                } else {
+                    fragments = fragments.push(
+                        selectable_markdown_text(
+                            vec![
+                                span(item.text)
+                                    .color(colors.accent)
+                                    .underline(true)
+                                    .link(source),
+                            ],
+                            selection_group.clone(),
+                            table_selection_order(
+                                block_index,
+                                row_index,
+                                column_index,
+                                fragment_index,
+                            ),
+                            table_separator(
+                                block_index,
+                                row_index,
+                                column_index,
+                                first_text_fragment,
+                            ),
+                            on_selection_change.clone(),
+                        )
+                        .size(12)
+                        .selection_color(selection_color(tokens))
+                        .on_link_click(link_callback(on_link.clone())),
+                    );
+                    first_text_fragment = false;
+                }
+            } else if item.inline_math {
                 let cache_index = row_index
                     .saturating_mul(10_000)
                     .saturating_add(column_index.saturating_mul(100))
@@ -937,7 +1103,7 @@ where
                     )
                     .size(12)
                     .selection_color(selection_color(tokens))
-                    .on_link_click(on_link.clone()),
+                    .on_link_click(link_callback(on_link.clone())),
                 );
                 first_text_fragment = false;
             }
@@ -962,7 +1128,7 @@ where
         .width(Length::Fill)
         .align_x(horizontal)
         .selection_color(selection_color(tokens))
-        .on_link_click(on_link)
+        .on_link_click(link_callback(on_link))
         .into()
     };
     let background = if header {
@@ -1001,6 +1167,10 @@ where
         value = value.on_selection_change(move |selected| callback(selected));
     }
     value
+}
+
+fn link_callback<Message>(handler: LinkHandler<Message>) -> impl Fn(String) -> Message {
+    move |value| handler(value)
 }
 
 fn selection_order(block_index: usize, fragment_index: usize) -> u64 {
@@ -1395,6 +1565,28 @@ mod tests {
             document.plain_text(),
             "标题\n\n正文 加粗。\n\n名称\t数量\nAlpha\t42\n\nlet value = 1;"
         );
+    }
+
+    #[test]
+    fn parser_preserves_inline_images_for_application_owned_media_resolution() {
+        let document = NativeMarkdown::parse(
+            "Before ![diagram](https://example.com/diagram.png) after\n\n| Media |\n| --- |\n| ![thumb](file:///tmp/thumb.png) |",
+        );
+
+        assert_eq!(
+            document.images(),
+            [
+                MarkdownImage {
+                    source: "https://example.com/diagram.png".to_owned(),
+                    alt: "diagram".to_owned(),
+                },
+                MarkdownImage {
+                    source: "file:///tmp/thumb.png".to_owned(),
+                    alt: "thumb".to_owned(),
+                },
+            ]
+        );
+        assert!(document.plain_text().contains("Before diagram after"));
     }
 
     #[cfg(feature = "math")]

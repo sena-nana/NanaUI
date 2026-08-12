@@ -83,8 +83,8 @@ pub use qr_code::{QrCodeCanvas, QrCodeError};
 pub use reorder_list::{ReorderItem, ReorderList};
 #[cfg(feature = "rich-text")]
 pub use rich_text::{
-    MarkdownBlock, MarkdownBlockKind, MarkdownSpan, MarkdownTable, MarkdownTableAlignment,
-    NativeMarkdown, native_markdown,
+    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
+    MarkdownTableAlignment, NativeMarkdown, native_markdown,
 };
 #[cfg(feature = "rich-text")]
 pub use selectable_rich_text::{SelectableRichText, TextSelectionGroup};
