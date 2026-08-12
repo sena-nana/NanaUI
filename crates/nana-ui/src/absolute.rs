@@ -17,10 +17,7 @@ pub struct Absolute<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 }
 
 impl<'a, Message, Theme, Renderer> Absolute<'a, Message, Theme, Renderer> {
-    pub fn new(
-        content: impl Into<Element<'a, Message, Theme, Renderer>>,
-        position: Point,
-    ) -> Self {
+    pub fn new(content: impl Into<Element<'a, Message, Theme, Renderer>>, position: Point) -> Self {
         Self {
             content: content.into(),
             position,
@@ -38,6 +35,7 @@ pub fn absolute_content_max(parent: Size, _position: Point) -> Size {
 }
 
 /// What iced `pin` would offer at the same anchor — kept for regression tests.
+#[cfg(test)]
 fn pin_content_max(parent: Size, position: Point) -> Size {
     Size::new(
         (parent.width - position.x).max(0.0),

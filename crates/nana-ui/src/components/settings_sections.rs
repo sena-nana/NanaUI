@@ -244,7 +244,7 @@ where
                 .hint(
                     self.platform_hint
                         .clone()
-                        .unwrap_or_else(|| Cow::Borrowed("选择窗口使用的透明材质或实色背景。")),
+                        .unwrap_or(Cow::Borrowed("选择窗口使用的透明材质或实色背景。")),
                 )
                 .divided(true)
                 .view(tokens),

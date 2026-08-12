@@ -8,7 +8,9 @@
 Gallery 页面、状态、快照与基准属于 Demo crate。
 
 **产品 UI 前端默认且唯一为 NanaUI（Iced）。** 可选的 Vue/JS 引擎只做状态与命令桥
-（`nana-ui-vue` + QuickJS XOR V8）；L1 不引入真实 WebView、Blitz DOM/CSS 或第二套 wgpu。
+（`nana-ui-vue` + QuickJS XOR V8），不以 WebView、Blitz DOM/CSS 或第二套 wgpu
+绘制产品 UI。可选 `browser` feature 仅承载应用明确请求的外部网页内容，不参与
+NanaUI 组件、布局或业务状态渲染。
 
 **三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
 
@@ -34,7 +36,8 @@ L1/L2/L3 是三种输入合同，不是三个运行时模式或三套渲染实�
 兼容性阶段目标与 Todo：[`compatibility-roadmap.md`](compatibility-roadmap.md)。
 
 L1 不创建真实 WebView，不提供 Tauri invoke/插件/窗口/事件/存储协议，也不承诺
-普通 `@vue/runtime-dom` 产物直接运行。
+普通 `@vue/runtime-dom` 产物直接运行。可选 Hosted Browser 是外部网页内容能力，
+与 Vue L1 互不复用。
 
 ```text
 应用状态 / 应用消息
@@ -97,6 +100,22 @@ macOS 使用 transparent titlebar 与 full-size content view，把 36px NanaUI �
 会先消费事件。拖拽阈值由 AppKit 负责，其他平台由公共状态机的 4px 阈值负责。
 材质与标题栏状态、布局和动作语义仍是彼此独立的宿主合同。
 
+## Hosted Browser 合同
+
+可选 `browser` feature 在 Windows 与 macOS 将 Wry child WebView 绑定到既有
+`HostedWindowId`。应用以独立 `HostedBrowserId` 发出 attach、navigate、bounds、
+visibility、focus 与 detach 命令；bounds 使用相对父窗口的逻辑像素，因此应用可以将
+网页作为 Inspector/Sidebar 内容，而不是用整窗 WebView 替代 NanaUI Shell。
+应用应以 `LayoutProbe` 包裹 NanaUI 中对应的占位内容，并仅在 typed bounds 变化消息后
+发送 attach 或 `SetBounds`；这样窗口缩放、DPI 与 Pane/Dock 尺寸变化都沿用真实 Iced
+布局，不需要在应用中复制坐标公式。
+
+NanaUI 只拥有原生 WebView 生命周期、父窗口销毁顺序和 page-load/title 回传。
+允许的 URL、登录态、任务/会话归属、页面标题的业务解释、截图或附件提交仍由应用
+拥有。Linux 在启用 feature 时返回类型化 unsupported failure；Windows 使用 WebView2，
+macOS 使用 WKWebView。跨平台编译不等于目标机验收，IME、DPI、多屏、登录会话与运行时
+恢复必须由消费应用在真实平台门禁中验证。
+
 ## 工作区合同
 
 `WorkspaceLayout` 按注册顺序持有 `RegionState`。区域合同包含：
@@ -136,6 +155,31 @@ Pane/窗口语义和持久化继续由应用持有；接收方还可用 `accepts
 等需要自身指针语义的操作应放在列表行外。`ReorderItem` 默认同时是拖拽源和落点；
 `.draggable(false).drop_target(true)` 可声明只接收落点的被动目的行，用于应用拥有的
 移动/嵌套面板，但 NanaUI 仍不解释目的值或修改业务资源。
+
+`ActionRegistry` 注册稳定 Action ID、可搜索元数据、enabled 状态和基于标签的
+`KeyContext` 条件；`Keymap` 将单键或 chord 解析为当前上下文内可用的 Action，后注册的
+binding 具有覆盖优先级。`ActionPickerState` 只维护查询、选中项和打开前焦点标识，
+`CommandPalette` 只呈现应用提供的可用 Action 与快捷键提示。实际 dispatch、业务错误、
+窗口/Pane 焦点事实和用户 keymap 持久化始终由应用拥有。Hosted runtime 的
+`HostedUiCommand::Focus` 可在重建后聚焦指定 widget，因此快捷键打开 palette 时不依赖
+鼠标或第二套输入状态。
+
+`TreeView` 将应用提供的稳定节点 ID、展开事实和层级投影为统一的 disclosure row，并把
+选择/展开与方向键导航还原为 typed intent。文件系统枚举、过滤、watcher、选中项和展开项
+持久化仍由应用拥有；TreeView 不读取路径、不缓存业务树，也不推断节点是否真实存在。
+
+`PaneTree` 拥有一次渲染使用的轻量 `PaneTreeNode` 投影，只递归组合应用提供的 leaf renderer 与 split
+renderer；应用可以在每次 view 时从权威 Workspace topology 派生该投影，而不受借用生命周期限制。
+`PaneChrome` 只呈现 tabs、body 和应用按 capability 提供的 typed action。Pane ID、Item ID、
+active/focus/dirty 事实、split controller、跨窗口移动和 topology 持久化继续由应用拥有。这样主窗口与
+辅助窗口可共享组合算法，而不把 Workspace Entity 或业务内容 renderer 塞进 NanaUI。
+
+`HostedTextareaState` 可读取并以 O(1) 恢复 Iced cursor/selection，也可按行读取当前文本，用于消费者将
+搜索、诊断或重启恢复结果映射到真实编辑状态。它仍只拥有视图侧文本编辑模型；Buffer revision、dirty、
+冲突、撤销历史和持久化均由应用或后续 CodeEditor/Document owner 持有，NanaUI 不据此创建第二份文档事实。
+可选 `syntax-highlighting` feature 在同一 hosted editor 上启用 Iced 增量 highlighter；切换 syntax/theme 不复制
+content handle，也不改变 cursor、selection、IME 与当前编辑历史。语言识别、文档 revision、诊断来源和诊断
+装饰仍由消费应用拥有，不能把语法着色误作完整 CodeEditor 或 LSP 集成。
 
 确定性的 `SetRegionCollapsed` 与 `SetRegionSize` action 供设置页和宿主状态同步
 使用；它们与拖拽路径共享相同约束。Demo 的设置页使用独立

@@ -10,14 +10,14 @@ use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
-use nana_ui::ContextMenuEvent;
 use nana_ui::{
     AppTitleBar, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
     DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
-    FloatingDock, RegionId, SettingsTabId, ThemeMode, ThemeModeExt, UI_BASE_TEXT_SIZE,
-    WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction, dock_window_workspace,
-    dock_workspace,
+    FloatingDock, PaneChromeActionKind, RegionId, SettingsTabId, ThemeMode, ThemeModeExt,
+    UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
+    dock_window_workspace, dock_workspace,
 };
+use nana_ui::{CommandPaletteEvent, ContextMenuEvent};
 
 use crate::write;
 
@@ -237,6 +237,26 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &surfaces_light,
     )?);
 
+    surfaces.update(GalleryMessage::PaneChrome(
+        PaneChromeActionKind::SplitHorizontal,
+    ));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-surfaces-split-dark.png",
+        &surfaces,
+    )?);
+
+    surfaces_light.update(GalleryMessage::PaneChrome(
+        PaneChromeActionKind::SplitHorizontal,
+    ));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-surfaces-split-light.png",
+        &surfaces_light,
+    )?);
+
     let mut cards = GalleryState::new();
     cards.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
     cards.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
@@ -337,6 +357,28 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &output,
         "gallery-context-menu-search-light.png",
         &context_menu_search_light,
+    )?);
+
+    let mut command_palette = GalleryState::new();
+    command_palette.update(GalleryMessage::ToggleCommandPalette);
+    command_palette.update(GalleryMessage::CommandPalette(CommandPaletteEvent::Search(
+        "工作区".to_owned(),
+    )));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-command-palette-dark.png",
+        &command_palette,
+    )?);
+
+    let mut command_palette_light = GalleryState::new();
+    command_palette_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    command_palette_light.update(GalleryMessage::ToggleCommandPalette);
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-command-palette-light.png",
+        &command_palette_light,
     )?);
 
     let mut dialog = GalleryState::new();

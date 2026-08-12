@@ -37,7 +37,12 @@ impl GalleryState {
         };
         let base = shell.view();
 
-        if self.overlay.contains(&GalleryOverlay::Dialog) {
+        if self.overlay.contains(&GalleryOverlay::CommandPalette) {
+            stack![base, self.command_palette(tokens)]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else if self.overlay.contains(&GalleryOverlay::Dialog) {
             stack![base, self.dialog(colors)]
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -58,6 +63,19 @@ impl GalleryState {
         } else {
             &self.workspace
         }
+    }
+
+    fn command_palette(&self, tokens: ThemeTokens) -> Element<'_, GalleryMessage> {
+        UiCommandPalette::new(
+            "命令",
+            self.palette_items(),
+            self.action_picker.query(),
+            self.action_picker.selected(),
+            GalleryMessage::CommandPalette,
+            tokens,
+        )
+        .placeholder("搜索命令")
+        .view()
     }
 
     pub(super) fn set_workspace_showcase_visible(&mut self, visible: bool) {
@@ -105,6 +123,12 @@ impl GalleryState {
         };
         let trailing = row![
             text(context).size(11).color(colors.muted),
+            button(icon(Icon::Search, 14.0, colors.muted))
+                .on_press(GalleryMessage::ToggleCommandPalette)
+                .width(Length::Fixed(compact_height))
+                .height(Length::Fixed(compact_height))
+                .padding(0)
+                .style(button_style(tokens, ButtonKind::Text)),
             button(icon(theme_icon, 14.0, colors.accent))
                 .on_press(GalleryMessage::ToggleTheme)
                 .width(Length::Fixed(compact_height))

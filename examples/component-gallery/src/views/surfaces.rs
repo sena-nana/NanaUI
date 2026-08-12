@@ -64,6 +64,95 @@ impl GalleryState {
             GalleryMessage::SelectSurfaceView,
         )
         .view(colors);
+        let tree = UiTreeView::new(
+            [
+                TreeNode::branch(
+                    "src".to_owned(),
+                    "src",
+                    self.tree_expanded,
+                    [
+                        TreeNode::leaf("src/lib.rs".to_owned(), "lib.rs")
+                            .icon(Icon::File)
+                            .selected(self.tree_selected == "src/lib.rs"),
+                        TreeNode::leaf("src/main.rs".to_owned(), "main.rs")
+                            .icon(Icon::File)
+                            .selected(self.tree_selected == "src/main.rs"),
+                    ],
+                )
+                .icon(Icon::Folder)
+                .selected(self.tree_selected == "src"),
+                TreeNode::leaf("README.md".to_owned(), "README.md")
+                    .icon(Icon::File)
+                    .selected(self.tree_selected == "README.md"),
+            ],
+            GalleryMessage::TreeView,
+            self.theme_tokens(),
+        )
+        .view();
+        let pane_tabs: Element<'_, GalleryMessage> = text(if self.pane_chrome_item_open {
+            "main.rs"
+        } else {
+            "空窗格"
+        })
+        .size(11)
+        .color(colors.text)
+        .into();
+        let pane_tree = if !self.pane_chrome_item_open {
+            PaneTreeNode::leaf("empty")
+        } else if self.pane_chrome_split {
+            PaneTreeNode::split(
+                "editor-split",
+                SplitAxis::Horizontal,
+                0.5,
+                PaneTreeNode::leaf("left"),
+                PaneTreeNode::leaf("right"),
+            )
+        } else {
+            PaneTreeNode::leaf("editor")
+        };
+        let pane_body = PaneTree::new(
+            pane_tree,
+            move |pane_id| {
+                let (label, color) = match *pane_id {
+                    "empty" => ("Item 已关闭", colors.muted),
+                    "left" => ("左侧编辑器", colors.text),
+                    "right" => ("右侧编辑器", colors.text),
+                    _ => ("编辑器内容", colors.text),
+                };
+                container(text(label).size(11).color(color))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center(Length::Fill)
+                    .into()
+            },
+            |_split_id, axis, ratio, first, second| {
+                ratio_pane_split(axis, ratio, first, second, self.theme_tokens())
+            },
+        )
+        .view();
+        let pane_body: Element<'_, GalleryMessage> = container(pane_body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        let mut pane_actions = Vec::new();
+        if self.pane_chrome_item_open && !self.pane_chrome_split {
+            pane_actions.push(PaneChromeAction::new(
+                PaneChromeActionKind::SplitHorizontal,
+                "左右分栏",
+                GalleryMessage::PaneChrome(PaneChromeActionKind::SplitHorizontal),
+            ));
+        }
+        if self.pane_chrome_item_open {
+            pane_actions.push(
+                PaneChromeAction::new(
+                    PaneChromeActionKind::CloseItem,
+                    "关闭 Item",
+                    GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem),
+                )
+                .icon(Icon::Close),
+            );
+        }
+        let pane = PaneChrome::new(pane_tabs, pane_body, pane_actions, self.theme_tokens()).view();
 
         container(
             column![
@@ -81,6 +170,22 @@ impl GalleryState {
                 .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x,])
                 .style(panel_style(colors)),
                 surface_content,
+                text("层级树").size(14).color(colors.text),
+                text("稳定节点 ID 驱动展开与选择")
+                    .size(11)
+                    .color(colors.muted),
+                container(tree)
+                    .width(Length::Fill)
+                    .padding(8)
+                    .style(panel_style(colors)),
+                text("Pane 组合").size(14).color(colors.text),
+                text("动作只在具备真实 handler 时出现")
+                    .size(11)
+                    .color(colors.muted),
+                container(pane)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(140.0))
+                    .style(panel_style(colors)),
             ]
             .spacing(12),
         )

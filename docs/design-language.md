@@ -90,6 +90,20 @@ Region，不并排叠加导航层。长标签使用末尾省略。设置返回�
 角部遮罩约束宿主内容，不依赖页面内容自行设置相同圆角。“外观 → 圆角”提供
 默认开启的主区域圆角开关；关闭后主区域四角全部归零，重新开启后恢复贴边计算。
 
+命令面板使用 680px `Wide` 对话框宽度、32px 搜索输入和 40px 结果行；当前项沿用
+菜单的 selected 表面，Action 标签、分类和快捷键按主内容、辅助内容、尾部提示三级呈现。
+面板打开后输入框必须真实获得焦点，Up/Down/Home/End 移动选择，Enter 执行当前 Action，
+Escape 关闭并由应用恢复此前焦点。搜索结果只能来自当前 `KeyContext` 可用 Action，不能展示
+无 handler 的占位命令。
+
+层级树复用 Sidebar row 的 14px 深度步进、独立 disclosure 命中区和单行省略规则；
+Up/Down 在当前可见节点间移动，Left 先折叠再返回父级，Right 先展开再进入首个子节点。
+节点选择和展开必须以稳定 ID 回传应用，不以标签或绘制序号作为业务身份。
+
+Pane chrome 固定 34px，高亮仅表达当前 active pane；tabs 占据剩余宽度，focus、split、移动和关闭等动作
+按应用提供的 capability 顺序靠右排列。无真实 handler 的动作不得传给 PaneChrome，关闭 Item 与关闭空
+Pane 必须是两个独立 intent。
+
 应用标题栏固定为 36px 三列结构：左右区域等分、标题保持窗口几何居中，leading /
 trailing 内边距为 6px，窗口按钮为 28px、间距 2px。空白区域移动超过 4px 后
 发起宿主拖拽；按钮等交互子项不会触发拖拽。macOS 为左侧原生交通灯增加 78px

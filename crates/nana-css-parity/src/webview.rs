@@ -28,14 +28,16 @@ fn measure_with_wry(case: &FixtureCase) -> Result<Vec<ExpectedBox>, String> {
 
     use tao::event::{Event, StartCause, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoop};
+    use tao::platform::run_return::EventLoopExtRunReturn;
     use tao::window::WindowBuilder;
     use wry::WebViewBuilder;
 
     let html = crate::fixture_to_html(case);
     let result: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
     let result_set = result.clone();
+    let result_ready = result.clone();
 
-    let event_loop = EventLoop::new().map_err(|e| format!("skip: event_loop: {e}"))?;
+    let mut event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("nana-css-parity")
         .with_inner_size(tao::dpi::LogicalSize::new(
@@ -53,42 +55,39 @@ fn measure_with_wry(case: &FixtureCase) -> Result<Vec<ExpectedBox>, String> {
 
     let mut ticks = 0u32;
     let _ = WEBVIEW_MEASURE_JS;
-    event_loop
-        .run(move |event, elwt| {
-            elwt.set_control_flow(ControlFlow::Poll);
-            match event {
-                Event::NewEvents(StartCause::Init) | Event::AboutToWait => {
-                    ticks = ticks.saturating_add(1);
-                    if ticks == 10 {
-                        let flag = result_set.clone();
-                        if let Err(e) = webview.evaluate_script_with_callback(
-                            WEBVIEW_MEASURE_JS,
-                            move |value| {
-                                *flag.lock().unwrap() = Some(Ok(value));
-                            },
-                        ) {
-                            *result_set.lock().unwrap() = Some(Err(format!("eval: {e}")));
-                        }
-                    }
-                    if ticks >= 10 && result.lock().unwrap().is_some() {
-                        elwt.exit();
-                    }
-                    if ticks > 200 {
-                        let mut g = result.lock().unwrap();
-                        if g.is_none() {
-                            *g = Some(Err("skip: webview measure timeout".into()));
-                        }
-                        elwt.exit();
+    event_loop.run_return(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Poll;
+        match event {
+            Event::NewEvents(StartCause::Init) | Event::MainEventsCleared => {
+                ticks = ticks.saturating_add(1);
+                if ticks == 10 {
+                    let flag = result_set.clone();
+                    if let Err(e) =
+                        webview.evaluate_script_with_callback(WEBVIEW_MEASURE_JS, move |value| {
+                            *flag.lock().unwrap() = Some(Ok(value));
+                        })
+                    {
+                        *result_set.lock().unwrap() = Some(Err(format!("eval: {e}")));
                     }
                 }
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => elwt.exit(),
-                _ => {}
+                if ticks >= 10 && result_ready.lock().unwrap().is_some() {
+                    *control_flow = ControlFlow::Exit;
+                }
+                if ticks > 200 {
+                    let mut g = result_ready.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(Err("skip: webview measure timeout".into()));
+                    }
+                    *control_flow = ControlFlow::Exit;
+                }
             }
-        })
-        .map_err(|e| format!("skip: run: {e}"))?;
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *control_flow = ControlFlow::Exit,
+            _ => {}
+        }
+    });
 
     let json = result
         .lock()

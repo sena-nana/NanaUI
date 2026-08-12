@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use iced::{Element, Point, Size};
@@ -22,6 +24,8 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 
+#[cfg(feature = "browser")]
+use crate::layout_probe::LayoutBounds;
 use crate::theme::ThemeModeExt;
 use crate::{
     AppearanceSettings, BackdropTarget, HostedGpuContext, HostedGpuError, HostedGpuResources,
@@ -37,6 +41,59 @@ pub struct HostedWindowId(pub u64);
 
 impl HostedWindowId {
     pub const PRIMARY: Self = Self(0);
+}
+
+/// Stable application-owned identity for one child browser surface.
+#[cfg(feature = "browser")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostedBrowserId(pub u64);
+
+/// Logical bounds for a child browser, relative to its hosted parent window.
+#[cfg(feature = "browser")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostedBrowserBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[cfg(feature = "browser")]
+impl HostedBrowserBounds {
+    pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn validate(self) -> Result<Self, &'static str> {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !self.width.is_finite()
+            || !self.height.is_finite()
+        {
+            return Err("browser bounds must be finite");
+        }
+        if self.width <= 0.0 || self.height <= 0.0 {
+            return Err("browser bounds must have a positive size");
+        }
+        Ok(self)
+    }
+}
+
+#[cfg(feature = "browser")]
+impl From<LayoutBounds> for HostedBrowserBounds {
+    fn from(bounds: LayoutBounds) -> Self {
+        Self::new(
+            f64::from(bounds.x),
+            f64::from(bounds.y),
+            f64::from(bounds.width),
+            f64::from(bounds.height),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -315,7 +372,101 @@ pub enum HostedRuntimeEvent {
     RenderingSuspended(HostedGpuError),
     DeviceRecovered,
     DeviceRecoveryFailed(HostedGpuError),
-    WindowOpenFailed { id: HostedWindowId, message: String },
+    WindowOpenFailed {
+        id: HostedWindowId,
+        message: String,
+    },
+    #[cfg(feature = "browser")]
+    Browser(HostedBrowserEvent),
+}
+
+#[cfg(feature = "browser")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedBrowserLoadState {
+    Started,
+    Finished,
+}
+
+#[cfg(feature = "browser")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedBrowserCommandKind {
+    Attach,
+    Navigate,
+    SetBounds,
+    SetVisible,
+    Focus,
+    Detach,
+}
+
+/// Browser lifecycle notifications translated out of the platform webview.
+#[cfg(feature = "browser")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostedBrowserEvent {
+    PageLoad {
+        id: HostedBrowserId,
+        state: HostedBrowserLoadState,
+        url: String,
+    },
+    DocumentTitleChanged {
+        id: HostedBrowserId,
+        title: String,
+    },
+    CommandFailed {
+        id: HostedBrowserId,
+        command: HostedBrowserCommandKind,
+        message: String,
+    },
+}
+
+#[cfg(feature = "browser")]
+impl HostedBrowserEvent {
+    pub const fn id(&self) -> HostedBrowserId {
+        match self {
+            Self::PageLoad { id, .. }
+            | Self::DocumentTitleChanged { id, .. }
+            | Self::CommandFailed { id, .. } => *id,
+        }
+    }
+}
+
+/// Commands for an application-owned browser surface inside a hosted window.
+#[cfg(feature = "browser")]
+#[derive(Debug, Clone)]
+pub enum HostedBrowserCommand {
+    Attach {
+        id: HostedBrowserId,
+        window_id: HostedWindowId,
+        url: String,
+        bounds: HostedBrowserBounds,
+    },
+    Navigate {
+        id: HostedBrowserId,
+        url: String,
+    },
+    SetBounds {
+        id: HostedBrowserId,
+        bounds: HostedBrowserBounds,
+    },
+    SetVisible {
+        id: HostedBrowserId,
+        visible: bool,
+    },
+    Focus(HostedBrowserId),
+    Detach(HostedBrowserId),
+}
+
+#[cfg(feature = "browser")]
+impl HostedBrowserCommand {
+    const fn identity(&self) -> (HostedBrowserId, HostedBrowserCommandKind) {
+        match self {
+            Self::Attach { id, .. } => (*id, HostedBrowserCommandKind::Attach),
+            Self::Navigate { id, .. } => (*id, HostedBrowserCommandKind::Navigate),
+            Self::SetBounds { id, .. } => (*id, HostedBrowserCommandKind::SetBounds),
+            Self::SetVisible { id, .. } => (*id, HostedBrowserCommandKind::SetVisible),
+            Self::Focus(id) => (*id, HostedBrowserCommandKind::Focus),
+            Self::Detach(id) => (*id, HostedBrowserCommandKind::Detach),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -330,11 +481,17 @@ pub enum HostedWindowCommand {
         position: Point,
     },
     Focus(HostedWindowId),
+    #[cfg(feature = "browser")]
+    Browser(HostedBrowserCommand),
 }
 
 /// Commands that operate on retained NanaUI widget state after the next rebuild.
 #[derive(Debug, Clone)]
 pub enum HostedUiCommand {
+    Focus {
+        window_id: HostedWindowId,
+        target: String,
+    },
     ScrollBy {
         window_id: HostedWindowId,
         target: String,
@@ -640,6 +797,12 @@ struct HostedAuxiliary<Message> {
     settings: HostedWindowSettings,
 }
 
+#[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+struct HostedBrowserHost {
+    window_id: HostedWindowId,
+    webview: wry::WebView,
+}
+
 impl<Message> Drop for HostedAuxiliary<Message> {
     fn drop(&mut self) {
         clear_system_material(self.surface.window().as_ref());
@@ -647,6 +810,12 @@ impl<Message> Drop for HostedAuxiliary<Message> {
 }
 
 struct HostedReady<Program: HostedProgram> {
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    browsers: HashMap<HostedBrowserId, HostedBrowserHost>,
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    browser_events_tx: Sender<HostedBrowserEvent>,
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    browser_events_rx: Receiver<HostedBrowserEvent>,
     graphics: HostedGpuContext,
     ui: HostedUiRenderer<Program::Message>,
     program: Program,
@@ -726,6 +895,8 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
             return;
         };
         let now = Instant::now();
+        #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+        ready.drain_browser_events(event_loop);
         if ready.graphics.take_device_lost()
             || ready.next_gpu_retry.is_some_and(|deadline| now >= deadline)
         {
@@ -782,7 +953,15 @@ fn initialize<Program: HostedProgram>(
     );
     let mut window_ids = HashMap::new();
     window_ids.insert(window.id(), HostedWindowId::PRIMARY);
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    let (browser_events_tx, browser_events_rx) = mpsc::channel();
     let mut ready = HostedReady {
+        #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+        browsers: HashMap::new(),
+        #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+        browser_events_tx,
+        #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+        browser_events_rx,
         graphics,
         ui,
         program,
@@ -1183,11 +1362,184 @@ impl<Program: HostedProgram> HostedReady<Program> {
             HostedWindowCommand::Close(id) => self.close_window(id),
             HostedWindowCommand::Move { id, position } => self.move_window(id, position),
             HostedWindowCommand::Focus(id) => self.focus_window(id),
+            #[cfg(feature = "browser")]
+            HostedWindowCommand::Browser(command) => {
+                self.apply_browser_command(event_loop, command);
+            }
         }
+    }
+
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    fn apply_browser_command(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        command: HostedBrowserCommand,
+    ) {
+        let (id, kind) = command.identity();
+        let result = match command {
+            HostedBrowserCommand::Attach {
+                id,
+                window_id,
+                url,
+                bounds,
+            } => self.attach_browser(id, window_id, url, bounds),
+            HostedBrowserCommand::Navigate { id, url } => self
+                .browsers
+                .get(&id)
+                .ok_or_else(|| format!("browser {} is not attached", id.0))
+                .and_then(|host| {
+                    host.webview
+                        .load_url(&url)
+                        .map_err(|error| error.to_string())
+                }),
+            HostedBrowserCommand::SetBounds { id, bounds } => {
+                let bounds = bounds.validate().map_err(String::from);
+                bounds.and_then(|bounds| {
+                    self.browsers
+                        .get(&id)
+                        .ok_or_else(|| format!("browser {} is not attached", id.0))?
+                        .webview
+                        .set_bounds(browser_rect(bounds))
+                        .map_err(|error| error.to_string())
+                })
+            }
+            HostedBrowserCommand::SetVisible { id, visible } => self
+                .browsers
+                .get(&id)
+                .ok_or_else(|| format!("browser {} is not attached", id.0))
+                .and_then(|host| {
+                    host.webview
+                        .set_visible(visible)
+                        .map_err(|error| error.to_string())
+                }),
+            HostedBrowserCommand::Focus(id) => self
+                .browsers
+                .get(&id)
+                .ok_or_else(|| format!("browser {} is not attached", id.0))
+                .and_then(|host| host.webview.focus().map_err(|error| error.to_string())),
+            HostedBrowserCommand::Detach(id) => {
+                self.browsers.remove(&id);
+                Ok(())
+            }
+        };
+        if let Err(message) = result {
+            self.emit_browser_event(
+                event_loop,
+                HostedBrowserEvent::CommandFailed {
+                    id,
+                    command: kind,
+                    message,
+                },
+            );
+        }
+    }
+
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    fn attach_browser(
+        &mut self,
+        id: HostedBrowserId,
+        window_id: HostedWindowId,
+        url: String,
+        bounds: HostedBrowserBounds,
+    ) -> Result<(), String> {
+        if self.browsers.contains_key(&id) {
+            return Err(format!("browser {} is already attached", id.0));
+        }
+        let bounds = bounds.validate().map_err(String::from)?;
+        let window = self
+            .window(window_id)
+            .cloned()
+            .ok_or_else(|| format!("hosted window {} does not exist", window_id.0))?;
+        let load_events = self.browser_events_tx.clone();
+        let load_event_window = window.clone();
+        let title_events = self.browser_events_tx.clone();
+        let title_event_window = window.clone();
+        let webview = wry::WebViewBuilder::new()
+            .with_url(url)
+            .with_bounds(browser_rect(bounds))
+            .with_on_page_load_handler(move |state, url| {
+                let state = match state {
+                    wry::PageLoadEvent::Started => HostedBrowserLoadState::Started,
+                    wry::PageLoadEvent::Finished => HostedBrowserLoadState::Finished,
+                };
+                if load_events
+                    .send(HostedBrowserEvent::PageLoad { id, state, url })
+                    .is_ok()
+                {
+                    load_event_window.request_redraw();
+                }
+            })
+            .with_document_title_changed_handler(move |title| {
+                if title_events
+                    .send(HostedBrowserEvent::DocumentTitleChanged { id, title })
+                    .is_ok()
+                {
+                    title_event_window.request_redraw();
+                }
+            })
+            .build_as_child(window.as_ref())
+            .map_err(|error| error.to_string())?;
+        self.browsers
+            .insert(id, HostedBrowserHost { window_id, webview });
+        Ok(())
+    }
+
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    fn drain_browser_events(&mut self, event_loop: &ActiveEventLoop) {
+        let events = self.browser_events_rx.try_iter().collect::<Vec<_>>();
+        for event in events {
+            if self.browsers.contains_key(&event.id()) {
+                self.emit_browser_event(event_loop, event);
+            }
+        }
+    }
+
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    fn emit_browser_event(&mut self, event_loop: &ActiveEventLoop, event: HostedBrowserEvent) {
+        let context = self.program_context();
+        let update = self
+            .program
+            .runtime_event(HostedRuntimeEvent::Browser(event), &context);
+        self.apply_program_update(event_loop, update);
+    }
+
+    #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+    fn detach_browsers_for_window(&mut self, window_id: HostedWindowId) {
+        self.browsers
+            .retain(|_, browser| browser.window_id != window_id);
+    }
+
+    #[cfg(all(
+        feature = "browser",
+        not(any(target_os = "windows", target_os = "macos"))
+    ))]
+    fn apply_browser_command(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        command: HostedBrowserCommand,
+    ) {
+        let (id, kind) = command.identity();
+        let context = self.program_context();
+        let update = self.program.runtime_event(
+            HostedRuntimeEvent::Browser(HostedBrowserEvent::CommandFailed {
+                id,
+                command: kind,
+                message: "hosted browsers are supported on Windows and macOS".to_owned(),
+            }),
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
     }
 
     fn apply_ui_command(&mut self, command: HostedUiCommand) {
         match command {
+            HostedUiCommand::Focus { window_id, target } => {
+                if window_id == HostedWindowId::PRIMARY {
+                    self.ui.queue_focus(target);
+                } else if let Some(host) = self.auxiliary.get_mut(&window_id) {
+                    host.ui.queue_focus(target);
+                }
+            }
             HostedUiCommand::ScrollBy {
                 window_id,
                 target,
@@ -1257,6 +1609,8 @@ impl<Program: HostedProgram> HostedReady<Program> {
         if id == HostedWindowId::PRIMARY {
             return;
         }
+        #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+        self.detach_browsers_for_window(id);
         if let Some(host) = self.auxiliary.remove(&id) {
             self.cursor_positions.remove(&id);
             self.window_ids.remove(&host.surface.window().id());
@@ -1626,6 +1980,11 @@ impl<Program: HostedProgram> HostedReady<Program> {
                     .runtime_event(HostedRuntimeEvent::DeviceRecovered, &context);
                 self.apply_program_update(event_loop, update);
                 for (id, window_id, message) in failures {
+                    #[cfg(all(
+                        feature = "browser",
+                        any(target_os = "windows", target_os = "macos")
+                    ))]
+                    self.detach_browsers_for_window(id);
                     self.window_ids.remove(&window_id);
                     let context = self.program_context();
                     let update = self.program.runtime_event(
@@ -1839,6 +2198,14 @@ fn window_geometry(window: &winit::window::Window) -> HostedWindowGeometry {
     }
 }
 
+#[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
+fn browser_rect(bounds: HostedBrowserBounds) -> wry::Rect {
+    wry::Rect {
+        position: wry::dpi::LogicalPosition::new(bounds.x, bounds.y).into(),
+        size: wry::dpi::LogicalSize::new(bounds.width, bounds.height).into(),
+    }
+}
+
 fn normalized_scale_factor(scale_factor: f32) -> f32 {
     if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -1951,6 +2318,10 @@ impl std::error::Error for HostedRunError {}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "browser")]
+    use super::{
+        HostedBrowserBounds, HostedBrowserCommand, HostedBrowserCommandKind, HostedBrowserId,
+    };
     use super::{
         HostedProgramUpdate, HostedRedraw, HostedTitleBarMode, HostedWindowEvent, HostedWindowId,
         HostedWindowRole, HostedWindowSettings, should_request_redraw, window_attributes,
@@ -1960,6 +2331,44 @@ mod tests {
     use iced_winit::winit;
     use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome};
     use std::path::PathBuf;
+
+    #[cfg(feature = "browser")]
+    #[test]
+    fn browser_commands_keep_application_identity_and_reject_invalid_geometry() {
+        let browser_id = HostedBrowserId(12);
+        let measured = crate::LayoutBounds::new(640.0, 44.0, 480.0, 720.0);
+        let command = HostedBrowserCommand::Attach {
+            id: browser_id,
+            window_id: HostedWindowId::PRIMARY,
+            url: "https://example.com".to_owned(),
+            bounds: measured.into(),
+        };
+
+        assert_eq!(
+            command.identity(),
+            (browser_id, HostedBrowserCommandKind::Attach)
+        );
+        let converted = HostedBrowserBounds::from(measured);
+        assert_eq!(
+            converted,
+            HostedBrowserBounds::new(640.0, 44.0, 480.0, 720.0)
+        );
+        assert!(
+            HostedBrowserBounds::new(-12.0, 44.0, 480.0, 720.0)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            HostedBrowserBounds::new(0.0, 0.0, 0.0, 720.0)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            HostedBrowserBounds::new(0.0, f64::NAN, 480.0, 720.0)
+                .validate()
+                .is_err()
+        );
+    }
 
     #[test]
     fn file_drop_event_preserves_window_path_and_cursor_position() {

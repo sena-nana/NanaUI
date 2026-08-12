@@ -5,11 +5,17 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length, Padding, Point, Size, Subscription, Task, font};
 
+use nana_ui::command::{
+    ActionDescriptor, ActionId, ActionPickerNavigation, ActionPickerState, ActionRegistry,
+    ContextPredicate, KeyBinding, KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch,
+    KeymapState,
+};
 use nana_ui::components::{
     AboutMetadata, AboutSection, AnchoredMenuPlacement, AnchoredMenuPosition, AppearanceEvent,
     AppearanceSection, Button as UiButton, CalendarHeatmap as UiCalendarHeatmap,
     CalendarHeatmapActiveCell, CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel,
     CalendarHeatmapOptions, Card as UiCard, Checkbox as UiCheckbox,
+    CommandPalette as UiCommandPalette, CommandPaletteEvent, CommandPaletteItem,
     ConfirmDialog as UiConfirmDialog, ContextMenuEvent, ContextMenuHost, ContextMenuItem,
     ControlSize, Dropdown as UiDropdown, DropdownEvent, DropdownOption, IconButton as UiIconButton,
     ImageViewer as UiImageViewer, ImageViewerSource, Input as UiInput,
@@ -17,8 +23,8 @@ use nana_ui::components::{
     Popover as UiPopover, Progress as UiProgress, RangeField as UiRangeField,
     SearchDropdown as UiSearchDropdown, SearchDropdownOption, SearchDropdownState,
     SegmentedControl as UiSegmentedControl, SelectionOption, SettingsCollapsibleCard,
-    Switch as UiSwitch, Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip,
-    XYPad as UiXYPad, XYPadEvent, XYPadValue,
+    Switch as UiSwitch, Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip, TreeNode,
+    TreeView as UiTreeView, TreeViewEvent, XYPad as UiXYPad, XYPadEvent, XYPadValue,
 };
 use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 use nana_ui::icons::{Icon, icon, status_indicator};
@@ -48,9 +54,10 @@ use nana_ui::{
     DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, FallbackColor,
     GraphCanvas, GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
     GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    MaterialOutcome, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
-    SplitPaneController, WindowAppearance, apply_system_material, clear_system_material,
-    dock_workspace,
+    MaterialOutcome, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
+    PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction, SplitPaneController,
+    WindowAppearance, apply_system_material, clear_system_material, dock_workspace,
+    ratio_pane_split,
 };
 
 #[path = "views/controls.rs"]
@@ -142,6 +149,8 @@ pub enum GalleryMessage {
     SelectSurfaceCard(usize),
     SelectSurfaceView(SurfaceView),
     NavigateSurfaceView(SelectionMove),
+    TreeView(TreeViewEvent<String>),
+    PaneChrome(PaneChromeActionKind),
     ToggleDialog,
     ConfirmDialog,
     RequestDialogClose(DialogCloseTrigger),
@@ -154,6 +163,10 @@ pub enum GalleryMessage {
     TogglePopover,
     ClosePopover,
     ContextMenu(ContextMenuEvent<ContextAction>),
+    ToggleCommandPalette,
+    CommandPalette(CommandPaletteEvent),
+    NavigateCommandPalette(ActionPickerNavigation),
+    KeyStroke(KeyStroke),
     WindowChrome(WindowChromeEvent),
     /// Host-applied [`MaterialOutcome`] from `nana-window`.
     MaterialApplied(MaterialOutcome),
@@ -168,6 +181,7 @@ pub enum ContextAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GalleryOverlay {
+    CommandPalette,
     ContextMenu,
     Dialog,
     ImageViewer,
@@ -178,15 +192,25 @@ fn overlay_event(
     _status: iced::event::Status,
     _window: iced::window::Id,
 ) -> Option<GalleryMessage> {
-    match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-            ..
-        }) => Some(GalleryMessage::RequestDialogClose(
-            DialogCloseTrigger::Escape,
-        )),
-        _ => None,
+    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    ActionPickerNavigation::from_iced_key(&key).map(GalleryMessage::NavigateCommandPalette)
+}
+
+fn command_shortcut_event(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<GalleryMessage> {
+    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event
+    else {
+        return None;
+    };
+    if !modifiers.command() {
+        return None;
     }
+    KeyStroke::from_iced(&key, modifiers).map(GalleryMessage::KeyStroke)
 }
 
 fn surface_selection_event(
@@ -240,6 +264,10 @@ pub struct GalleryState {
     selected_item: usize,
     selected_surface_card: usize,
     surface_selection: SingleSelection,
+    tree_expanded: bool,
+    tree_selected: String,
+    pane_chrome_split: bool,
+    pane_chrome_item_open: bool,
     overlay: ExclusiveOverlay<GalleryOverlay>,
     dialog_policy: DialogClosePolicy,
     menu_confirmation: MenuConfirmation<ContextAction>,
@@ -247,6 +275,11 @@ pub struct GalleryState {
     context_items: OnceCell<Vec<ContextMenuItem<'static, ContextAction>>>,
     context_query: String,
     context_path: Vec<usize>,
+    action_registry: ActionRegistry,
+    keymap: Keymap,
+    keymap_state: KeymapState,
+    action_picker: ActionPickerState,
+    palette_action: Option<ActionId>,
     popover_open: bool,
     confirmed_actions: u32,
     markdown: NativeMarkdown,
@@ -304,6 +337,10 @@ impl GalleryState {
             selected_item: 0,
             selected_surface_card: 0,
             surface_selection: SingleSelection::new(0),
+            tree_expanded: true,
+            tree_selected: "src/lib.rs".to_owned(),
+            pane_chrome_split: false,
+            pane_chrome_item_open: true,
             overlay: ExclusiveOverlay::new(),
             dialog_policy: DialogClosePolicy::default(),
             menu_confirmation: MenuConfirmation::new(),
@@ -311,6 +348,11 @@ impl GalleryState {
             context_items: OnceCell::new(),
             context_query: String::new(),
             context_path: Vec::new(),
+            action_registry: gallery_action_registry(),
+            keymap: gallery_keymap(),
+            keymap_state: KeymapState::default(),
+            action_picker: ActionPickerState::new(),
+            palette_action: None,
             popover_open: false,
             confirmed_actions: 0,
             markdown: NativeMarkdown::parse(MARKDOWN_FIXTURE),
@@ -385,6 +427,7 @@ impl GalleryState {
             Subscription::none()
         };
         Subscription::batch([
+            iced::event::listen_with(command_shortcut_event),
             interaction,
             loading,
             self.active_workspace()
@@ -416,6 +459,8 @@ impl GalleryState {
             return chrome;
         }
 
+        let focus_palette = !self.action_picker.is_open();
+        let previous_theme = self.theme;
         let refresh_material = matches!(
             message,
             GalleryMessage::SetWindowMaterial(_)
@@ -424,7 +469,9 @@ impl GalleryState {
                 | GalleryMessage::ToggleTheme
         );
         self.update(message);
-        if refresh_material {
+        if focus_palette && self.action_picker.is_open() {
+            iced::widget::operation::focus(nana_ui::COMMAND_PALETTE_INPUT_ID)
+        } else if refresh_material || self.theme != previous_theme {
             self.apply_window_material_task()
         } else {
             Task::none()
@@ -613,6 +660,23 @@ impl GalleryState {
             GalleryMessage::NavigateSurfaceView(movement) => {
                 self.surface_selection.navigate(movement, &[true, true]);
             }
+            GalleryMessage::TreeView(event) => match event {
+                TreeViewEvent::Toggle(id) if id == "src" => {
+                    self.tree_expanded = !self.tree_expanded;
+                }
+                TreeViewEvent::Toggle(_) => {}
+                TreeViewEvent::Select(id) => self.tree_selected = id,
+            },
+            GalleryMessage::PaneChrome(action) => match action {
+                PaneChromeActionKind::SplitHorizontal if self.pane_chrome_item_open => {
+                    self.pane_chrome_split = true;
+                }
+                PaneChromeActionKind::CloseItem => {
+                    self.pane_chrome_item_open = false;
+                    self.pane_chrome_split = false;
+                }
+                _ => {}
+            },
             GalleryMessage::ToggleDialog => {
                 self.menu_confirmation.clear();
                 self.overlay.toggle(GalleryOverlay::Dialog);
@@ -685,6 +749,140 @@ impl GalleryState {
                 }
                 ContextMenuEvent::Interaction => {}
             },
+            GalleryMessage::ToggleCommandPalette => self.toggle_command_palette(),
+            GalleryMessage::CommandPalette(event) => self.update_command_palette(event),
+            GalleryMessage::NavigateCommandPalette(navigation) => {
+                self.navigate_command_palette(navigation);
+            }
+            GalleryMessage::KeyStroke(stroke) => {
+                let context = self.action_context();
+                if let KeymapMatch::Dispatch(action) = self.keymap.resolve(
+                    &mut self.keymap_state,
+                    stroke,
+                    &context,
+                    &self.action_registry,
+                ) {
+                    self.execute_gallery_action(action);
+                }
+            }
+        }
+    }
+
+    fn action_context(&self) -> KeyContext {
+        let mut context = KeyContext::new(["workspace"]);
+        if self.section == GallerySection::Graph && !self.settings_open {
+            context.insert("graph");
+        }
+        context
+    }
+
+    fn palette_items(&self) -> Vec<CommandPaletteItem<'static>> {
+        let context = self.action_context();
+        self.action_registry
+            .search(self.action_picker.query(), &context)
+            .into_iter()
+            .map(|matched| {
+                let mut item = CommandPaletteItem::new(
+                    matched.action.id.clone(),
+                    matched.action.label.clone(),
+                );
+                if let Some(category) = &matched.action.category {
+                    item = item.category(category.clone());
+                }
+                if let Some(shortcut) =
+                    self.keymap
+                        .binding_label(&matched.action.id, &context, &self.action_registry)
+                {
+                    item = item.shortcut(shortcut);
+                }
+                item
+            })
+            .collect()
+    }
+
+    fn toggle_command_palette(&mut self) {
+        if self.overlay.contains(&GalleryOverlay::CommandPalette) {
+            self.action_picker.dismiss();
+            self.overlay.dismiss();
+        } else {
+            self.action_picker.open(None);
+            self.overlay.open(GalleryOverlay::CommandPalette);
+        }
+    }
+
+    fn update_command_palette(&mut self, event: CommandPaletteEvent) {
+        if !self.overlay.contains(&GalleryOverlay::CommandPalette) {
+            return;
+        }
+        match event {
+            CommandPaletteEvent::Search(query) => {
+                self.action_picker.set_query(query);
+                let count = self.palette_items().len();
+                self.action_picker.sync_results(count);
+            }
+            CommandPaletteEvent::Select(action) => self.execute_gallery_action(action),
+            CommandPaletteEvent::Dismiss => {
+                self.action_picker.dismiss();
+                self.overlay.dismiss();
+            }
+            CommandPaletteEvent::Interaction => {}
+        }
+    }
+
+    fn navigate_command_palette(&mut self, navigation: ActionPickerNavigation) {
+        if !self.overlay.contains(&GalleryOverlay::CommandPalette) {
+            if navigation == ActionPickerNavigation::Dismiss {
+                self.update(GalleryMessage::RequestDialogClose(
+                    DialogCloseTrigger::Escape,
+                ));
+            }
+            return;
+        }
+        let items = self.palette_items();
+        match navigation {
+            ActionPickerNavigation::Confirm => {
+                if let Some(item) = items.get(self.action_picker.selected()) {
+                    self.execute_gallery_action(item.action.clone());
+                }
+            }
+            ActionPickerNavigation::Dismiss => {
+                self.action_picker.dismiss();
+                self.overlay.dismiss();
+            }
+            navigation => self.action_picker.navigate(navigation, items.len()),
+        }
+    }
+
+    fn execute_gallery_action(&mut self, action: ActionId) {
+        self.palette_action = Some(action.clone());
+        if action.as_str() == "workspace.command_palette" {
+            self.toggle_command_palette();
+            return;
+        }
+        if self.action_picker.is_open() {
+            self.action_picker.confirm(action.clone());
+            self.overlay.dismiss();
+        }
+        match action.as_str() {
+            "appearance.toggle_theme" => self.theme = self.theme.toggle(),
+            "workspace.toggle_sidebar" => {
+                self.active_workspace_mut()
+                    .update(WorkspaceAction::ToggleRegion(RegionId::Resources));
+            }
+            "workspace.reset_layout" => {
+                self.workspace
+                    .replace_layout(gallery_layout(self.section == GallerySection::Workspace));
+            }
+            "graph.reset_viewport" => self.reset_graph_viewport(),
+            _ => {}
+        }
+    }
+
+    fn active_workspace_mut(&mut self) -> &mut WorkspaceController {
+        if self.settings_open {
+            &mut self.settings_workspace
+        } else {
+            &mut self.workspace
         }
     }
 
@@ -851,6 +1049,46 @@ fn gallery_context_items() -> Vec<ContextMenuItem<'static, ContextAction>> {
             .confirm_label("再次点击确认移除")
             .danger(true),
     ]
+}
+
+fn gallery_action_registry() -> ActionRegistry {
+    let mut registry = ActionRegistry::new();
+    for action in [
+        ActionDescriptor::new("workspace.command_palette", "显示命令面板")
+            .category("工作区")
+            .keywords(["command", "palette"]),
+        ActionDescriptor::new("appearance.toggle_theme", "切换深浅主题")
+            .category("外观")
+            .keywords(["theme", "dark", "light"]),
+        ActionDescriptor::new("workspace.toggle_sidebar", "切换侧栏")
+            .category("工作区")
+            .keywords(["sidebar", "navigation"]),
+        ActionDescriptor::new("workspace.reset_layout", "恢复工作区布局")
+            .category("工作区")
+            .keywords(["layout", "reset"]),
+        ActionDescriptor::new("graph.reset_viewport", "重置节点图视口")
+            .category("节点图")
+            .keywords(["graph", "viewport"])
+            .when(ContextPredicate::always().all_of(["graph"])),
+    ] {
+        registry
+            .register(action)
+            .expect("gallery action ids are unique");
+    }
+    registry
+}
+
+fn gallery_keymap() -> Keymap {
+    Keymap::new([
+        KeyBinding::new(
+            "workspace.command_palette",
+            KeyStroke::new("p", KeyModifiers::primary().with_shift()),
+        ),
+        KeyBinding::new(
+            "appearance.toggle_theme",
+            KeyStroke::new("t", KeyModifiers::primary().with_shift()),
+        ),
+    ])
 }
 
 fn settings_layout() -> WorkspaceLayout {
