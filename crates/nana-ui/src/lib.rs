@@ -35,7 +35,7 @@ pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
 
-pub use absolute::Absolute;
+pub use absolute::{Absolute, absolute_content_max};
 pub use components::actions::{Button, ControlSize, IconButton};
 #[cfg(feature = "calendar")]
 pub use components::calendar::{

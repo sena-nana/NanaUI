@@ -28,6 +28,23 @@ impl<'a, Message, Theme, Renderer> Absolute<'a, Message, Theme, Renderer> {
     }
 }
 
+/// Max size offered to absolutely positioned content.
+///
+/// iced [`pin`](iced::widget::pin) uses `parent − position`, which clamps
+/// `Length::Fixed` children when the anchor is near the bottom-right and makes
+/// menu lists lay out at ~0 height. Absolute always offers the full parent.
+pub fn absolute_content_max(parent: Size, _position: Point) -> Size {
+    parent
+}
+
+/// What iced `pin` would offer at the same anchor — kept for regression tests.
+fn pin_content_max(parent: Size, position: Point) -> Size {
+    Size::new(
+        (parent.width - position.x).max(0.0),
+        (parent.height - position.y).max(0.0),
+    )
+}
+
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Absolute<'a, Message, Theme, Renderer>
 where
@@ -56,10 +73,15 @@ where
         limits: &layout::Limits,
     ) -> layout::Node {
         let size = limits.resolve(Length::Fill, Length::Fill, limits.max());
+        let content_max = absolute_content_max(size, self.position);
         let node = self
             .content
             .as_widget_mut()
-            .layout(tree, renderer, &layout::Limits::new(Size::ZERO, size))
+            .layout(
+                tree,
+                renderer,
+                &layout::Limits::new(Size::ZERO, content_max),
+            )
             .move_to(self.position);
         layout::Node::with_children(size, vec![node])
     }
@@ -168,5 +190,35 @@ where
 {
     fn from(widget: Absolute<'a, Message, Theme, Renderer>) -> Self {
         Element::new(widget)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{absolute_content_max, pin_content_max};
+    use iced::{Point, Size};
+
+    #[test]
+    fn absolute_keeps_full_parent_when_pin_would_clamp_a_corner_menu() {
+        let parent = Size::new(800.0, 600.0);
+        let position = Point::new(760.0, 560.0);
+        let menu = Size::new(200.0, 240.0);
+
+        let pin_max = pin_content_max(parent, position);
+        let absolute_max = absolute_content_max(parent, position);
+
+        assert!(
+            pin_max.height < menu.height,
+            "pin available height must be the regression case"
+        );
+        assert_eq!(absolute_max, parent);
+        assert!(
+            menu.height.min(absolute_max.height) >= menu.height,
+            "Absolute must not clamp Fixed menu height the way pin does"
+        );
+        assert!(
+            menu.height.min(pin_max.height) < menu.height,
+            "pin Fixed clamp is the empty-list failure mode"
+        );
     }
 }
