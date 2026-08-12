@@ -17,9 +17,9 @@ x11 = ["winit/x11"]
 wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita", "arboard/wayland-data-control"]
 
 [dependencies]
-iced_debug = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
-iced_program = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
-iced_runtime = { git = "https://github.com/sena-nana/iced.git", rev = "a3bdc6f5f09ff9aec50c57273fc7eb21fd370603" }
+iced_debug = { git = "https://github.com/sena-nana/iced.git", rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67" }
+iced_program = { git = "https://github.com/sena-nana/iced.git", rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67" }
+iced_runtime = { git = "https://github.com/sena-nana/iced.git", rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67" }
 log = "0.4"
 rustc-hash = "2"
 thiserror = "2"

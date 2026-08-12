@@ -19,6 +19,8 @@ pub mod geometry;
 pub mod gpu_texture;
 #[cfg(feature = "gpu")]
 pub mod gpu_view;
+#[cfg(feature = "graph-canvas")]
+pub mod graph;
 #[cfg(feature = "hosted")]
 mod hosted_context;
 #[cfg(feature = "hosted")]
@@ -37,11 +39,14 @@ pub mod sidebar;
 pub mod split_pane;
 pub mod theme;
 pub mod tooltip;
+pub mod virtual_list;
 pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
 
 pub use absolute::Absolute;
+#[cfg(feature = "rich-text")]
+pub use components::SelectableRichText;
 pub use components::actions::{Button, ControlSize, IconButton};
 #[cfg(feature = "calendar")]
 pub use components::calendar::{
@@ -50,15 +55,20 @@ pub use components::calendar::{
     CalendarHeatmapOptions, CalendarHeatmapState, CalendarLevelResolver, CalendarLevelStrategy,
     CalendarTitleFormatter, build_calendar_heatmap_model,
 };
+#[cfg(feature = "charts")]
+pub use components::charts::TimeSeriesChart;
 #[cfg(feature = "controls")]
 pub use components::controls::{
-    Checkbox, Input, RangeField, SegmentedControl, Select, SelectionOption, Switch, Tabs, Textarea,
+    Checkbox, HostedTextarea, HostedTextareaState, Input, RangeField, SegmentedControl, Select,
+    SelectionOption, Switch, TabDragGroup, TabDragSurface, Tabs, Textarea,
 };
 #[cfg(feature = "feedback")]
 pub use components::feedback::{
     LevelMeter, Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone,
     ValidationIntent, ValidationMessage,
 };
+#[cfg(feature = "graph-canvas")]
+pub use components::graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
 #[cfg(feature = "image-viewer")]
 pub use components::image_viewer::{ImageViewer, ImageViewerSource};
 pub use components::menus::{
@@ -69,6 +79,15 @@ pub use components::menus::{
 pub use components::overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};
 #[cfg(feature = "popover")]
 pub use components::popover::{Popover, PopoverPlacement};
+#[cfg(feature = "qr-code")]
+pub use components::qr_code::{QrCodeCanvas, QrCodeError};
+#[cfg(feature = "controls")]
+pub use components::reorder_list::{ReorderItem, ReorderList};
+#[cfg(feature = "rich-text")]
+pub use components::rich_text::{
+    MarkdownBlock, MarkdownBlockKind, MarkdownSpan, MarkdownTable, MarkdownTableAlignment,
+    NativeMarkdown, native_markdown,
+};
 #[cfg(feature = "selects")]
 pub use components::selects::{
     Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
@@ -97,6 +116,13 @@ pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 pub use gpu_texture::{GpuTextureView, HostTexture, HostTextureLayer};
 #[cfg(feature = "gpu")]
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
+#[cfg(feature = "graph-canvas")]
+pub use graph::{
+    GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId,
+    GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
+    GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
+    GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
+};
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
     HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface, HostedSurfaceFrame,
@@ -106,8 +132,8 @@ pub use hosted_renderer::{HostedUiFrame, HostedUiRenderer, HostedUiTarget};
 #[cfg(feature = "hosted")]
 pub use hosted_runtime::{
     HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError,
-    HostedRuntimeEvent, HostedTitleBarMode, HostedWindowAction, HostedWindowCommand,
-    HostedWindowEvent, HostedWindowGeometry, HostedWindowId, HostedWindowRole,
+    HostedRuntimeEvent, HostedTitleBarMode, HostedUiCommand, HostedWindowAction,
+    HostedWindowCommand, HostedWindowEvent, HostedWindowGeometry, HostedWindowId, HostedWindowRole,
     HostedWindowSettings, run_hosted,
 };
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
@@ -144,6 +170,7 @@ pub use theme::{
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};
 pub use tooltip::{TooltipConfig, TooltipPlacement};
+pub use virtual_list::{VirtualListLayout, VirtualListWindow};
 pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
 pub use window_chrome::{
     WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,

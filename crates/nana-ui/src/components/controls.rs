@@ -1,13 +1,20 @@
 use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::ops::RangeInclusive;
+use std::rc::Rc;
 
+use iced::advanced::text::highlighter::PlainText;
+use iced::advanced::widget::{self as advanced_widget, Widget};
+use iced::advanced::{Layout, Shell, layout, mouse, renderer};
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, slider, text, text_editor, text_input,
     toggler,
 };
-use iced::{Alignment, Element, Length, Padding, Pixels, font};
+use iced::{Alignment, Element, Event, Length, Padding, Pixels, Rectangle, Size, Theme, font};
 
 use crate::components::ControlSize;
+use crate::components::tab_drag::{DraggableTabStrip, TabDragSetup};
+pub use crate::components::tab_drag::{TabDragGroup, TabDragSurface};
 use crate::icons::{Icon, icon};
 use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{
@@ -273,10 +280,15 @@ pub struct Textarea<'a, Message> {
     content: &'a text_editor::Content,
     placeholder: Cow<'a, str>,
     on_action: Option<Box<dyn Fn(text_editor::Action) -> Message + 'a>>,
+    id: Option<advanced_widget::Id>,
+    key_binding: Option<TextareaKeyBinding<'a, Message>>,
     disabled: bool,
     invalid: bool,
     height: f32,
 }
+
+type TextareaKeyBinding<'a, Message> =
+    Box<dyn Fn(text_editor::KeyPress) -> Option<text_editor::Binding<Message>> + 'a>;
 
 impl<'a, Message> Textarea<'a, Message>
 where
@@ -287,6 +299,8 @@ where
             content,
             placeholder: Cow::Borrowed(""),
             on_action: None,
+            id: None,
+            key_binding: None,
             disabled: false,
             invalid: false,
             height: 96.0,
@@ -301,6 +315,29 @@ where
     pub fn on_action(mut self, on_action: impl Fn(text_editor::Action) -> Message + 'a) -> Self {
         self.on_action = Some(Box::new(on_action));
         self
+    }
+
+    /// Sets a stable widget ID for focus and operation targeting.
+    pub fn id(mut self, id: impl Into<advanced_widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Sets a custom key binding while leaving fallback behavior to the caller.
+    ///
+    /// Use [`text_editor::Binding::from_key_press`] to preserve Iced's default
+    /// editing bindings when the custom binding does not handle a key.
+    pub fn key_binding(
+        mut self,
+        key_binding: impl Fn(text_editor::KeyPress) -> Option<text_editor::Binding<Message>> + 'a,
+    ) -> Self {
+        self.key_binding = Some(Box::new(key_binding));
+        self
+    }
+
+    /// Submits on Enter and preserves Shift+Enter as a newline.
+    pub fn submit_on_enter(self, message: Message) -> Self {
+        self.key_binding(move |key_press| submit_on_enter_binding(key_press, &message))
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -320,13 +357,19 @@ where
 
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
-        let editor = text_editor(self.content)
+        let mut editor = text_editor(self.content)
             .placeholder(self.placeholder)
             .height(Length::Fixed(self.height))
             .padding(tokens.metrics.field_padding_x)
             .size(13)
             .line_height(iced::widget::text::LineHeight::Relative(1.45))
             .style(text_editor_style(tokens, self.invalid));
+        if let Some(id) = self.id {
+            editor = editor.id(id);
+        }
+        if let Some(key_binding) = self.key_binding {
+            editor = editor.key_binding(key_binding);
+        }
         if self.disabled {
             editor.into()
         } else if let Some(on_action) = self.on_action {
@@ -334,6 +377,339 @@ where
         } else {
             editor.into()
         }
+    }
+}
+
+fn submit_on_enter_binding<Message: Clone>(
+    key_press: text_editor::KeyPress,
+    message: &Message,
+) -> Option<text_editor::Binding<Message>> {
+    let is_focused = matches!(key_press.status, text_editor::Status::Focused { .. });
+    let is_enter = matches!(
+        key_press.key.as_ref(),
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
+    );
+    if is_focused && is_enter && !key_press.modifiers.shift() {
+        Some(text_editor::Binding::Custom(message.clone()))
+    } else {
+        text_editor::Binding::from_key_press(key_press)
+    }
+}
+
+/// Owned text content that can be shared with a retained hosted UI tree.
+///
+/// Clones refer to the same content. The hosted runtime and application update
+/// this state on the UI thread, so no leaked or self-referential borrow is
+/// required to produce an [`Element<'static, _>`](Element).
+#[derive(Clone, Default)]
+pub struct HostedTextareaState {
+    content: Rc<RefCell<text_editor::Content>>,
+}
+
+impl HostedTextareaState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_text(text: &str) -> Self {
+        Self {
+            content: Rc::new(RefCell::new(text_editor::Content::with_text(text))),
+        }
+    }
+
+    pub fn perform(&self, action: text_editor::Action) {
+        self.content.borrow_mut().perform(action);
+    }
+
+    pub fn set_text(&self, text: &str) {
+        *self.content.borrow_mut() = text_editor::Content::with_text(text);
+    }
+
+    pub fn clear(&self) {
+        self.set_text("");
+    }
+
+    pub fn text(&self) -> String {
+        self.content.borrow().text()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.content.borrow().is_empty()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.content.borrow().line_count()
+    }
+}
+
+/// A multi-line text field that owns a shared content handle and can therefore
+/// be retained by the hosted renderer.
+pub struct HostedTextarea<Message> {
+    state: HostedTextareaState,
+    placeholder: String,
+    on_action: Option<Rc<dyn Fn(text_editor::Action) -> Message>>,
+    id: Option<advanced_widget::Id>,
+    key_binding: Option<HostedTextareaKeyBinding<Message>>,
+    disabled: bool,
+    invalid: bool,
+    height: f32,
+}
+
+type HostedTextareaKeyBinding<Message> =
+    Rc<dyn Fn(text_editor::KeyPress) -> Option<text_editor::Binding<Message>>>;
+
+impl<Message> HostedTextarea<Message>
+where
+    Message: Clone + 'static,
+{
+    pub fn new(state: &HostedTextareaState) -> Self {
+        Self {
+            state: state.clone(),
+            placeholder: String::new(),
+            on_action: None,
+            id: None,
+            key_binding: None,
+            disabled: false,
+            invalid: false,
+            height: 96.0,
+        }
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn on_action(
+        mut self,
+        on_action: impl Fn(text_editor::Action) -> Message + 'static,
+    ) -> Self {
+        self.on_action = Some(Rc::new(on_action));
+        self
+    }
+
+    /// Sets a stable widget ID for focus and operation targeting.
+    pub fn id(mut self, id: impl Into<advanced_widget::Id>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Sets a custom key binding while leaving fallback behavior to the caller.
+    ///
+    /// Use [`text_editor::Binding::from_key_press`] to preserve Iced's default
+    /// editing bindings when the custom binding does not handle a key.
+    pub fn key_binding(
+        mut self,
+        key_binding: impl Fn(text_editor::KeyPress) -> Option<text_editor::Binding<Message>> + 'static,
+    ) -> Self {
+        self.key_binding = Some(Rc::new(key_binding));
+        self
+    }
+
+    /// Submits on Enter and preserves Shift+Enter as a newline.
+    pub fn submit_on_enter(self, message: Message) -> Self
+    where
+        Message: Clone,
+    {
+        self.key_binding(move |key_press| submit_on_enter_binding(key_press, &message))
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = height.max(ControlSize::Medium.height());
+        self
+    }
+
+    pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'static, Message> {
+        let enabled = !self.disabled && self.on_action.is_some();
+        Element::new(HostedTextareaWidget {
+            state: self.state,
+            placeholder: self.placeholder,
+            on_action: if enabled { self.on_action } else { None },
+            id: self.id,
+            key_binding: self.key_binding,
+            invalid: self.invalid,
+            height: self.height,
+            theme: theme.into(),
+            status: Cell::new(if enabled {
+                text_editor::Status::Active
+            } else {
+                text_editor::Status::Disabled
+            }),
+        })
+    }
+}
+
+struct HostedTextareaWidget<Message> {
+    state: HostedTextareaState,
+    placeholder: String,
+    on_action: Option<Rc<dyn Fn(text_editor::Action) -> Message>>,
+    id: Option<advanced_widget::Id>,
+    key_binding: Option<HostedTextareaKeyBinding<Message>>,
+    invalid: bool,
+    height: f32,
+    theme: ThemeTokens,
+    status: Cell<text_editor::Status>,
+}
+
+impl<Message> HostedTextareaWidget<Message>
+where
+    Message: Clone + 'static,
+{
+    fn editor<'a>(&'a self, content: &'a text_editor::Content) -> Element<'a, Message> {
+        let forced_status = self.status.get();
+        let style = text_editor_style(self.theme, self.invalid);
+        let mut editor = text_editor(content)
+            .placeholder(self.placeholder.as_str())
+            .height(Length::Fixed(self.height))
+            .padding(self.theme.metrics.field_padding_x)
+            .size(13)
+            .line_height(iced::widget::text::LineHeight::Relative(1.45))
+            .style(move |theme, _status| style(theme, forced_status));
+        if let Some(id) = self.id.as_ref() {
+            editor = editor.id(id.clone());
+        }
+        if let Some(key_binding) = self.key_binding.as_ref() {
+            let key_binding = Rc::clone(key_binding);
+            editor = editor.key_binding(move |key_press| key_binding(key_press));
+        }
+        if let Some(on_action) = self.on_action.as_ref() {
+            let on_action = Rc::clone(on_action);
+            editor = editor.on_action(move |action| on_action(action));
+        }
+        editor.into()
+    }
+
+    fn current_status(
+        &self,
+        tree: &advanced_widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) -> text_editor::Status {
+        if self.on_action.is_none() {
+            return text_editor::Status::Disabled;
+        }
+        let state = tree.state.downcast_ref::<text_editor::State<PlainText>>();
+        if state.is_focused() {
+            text_editor::Status::Focused {
+                is_hovered: cursor.is_over(layout.bounds()),
+            }
+        } else if cursor.is_over(layout.bounds()) {
+            text_editor::Status::Hovered
+        } else {
+            text_editor::Status::Active
+        }
+    }
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for HostedTextareaWidget<Message>
+where
+    Message: Clone + 'static,
+{
+    fn tag(&self) -> advanced_widget::tree::Tag {
+        let content = self.state.content.borrow();
+        self.editor(&content).as_widget().tag()
+    }
+
+    fn state(&self) -> advanced_widget::tree::State {
+        let content = self.state.content.borrow();
+        self.editor(&content).as_widget().state()
+    }
+
+    fn diff(&mut self, tree: &mut advanced_widget::Tree) {
+        let content = self.state.content.borrow();
+        self.editor(&content).as_widget_mut().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        let content = self.state.content.borrow();
+        self.editor(&content).as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut advanced_widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let content = self.state.content.borrow();
+        self.editor(&content)
+            .as_widget_mut()
+            .layout(tree, renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut advanced_widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        {
+            let content = self.state.content.borrow();
+            self.editor(&content)
+                .as_widget_mut()
+                .update(tree, event, layout, cursor, renderer, shell, viewport);
+        }
+        let status = self.current_status(tree, layout, cursor);
+        if self.status.replace(status) != status {
+            shell.request_redraw();
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &advanced_widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let content = self.state.content.borrow();
+        self.editor(&content)
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut advanced_widget::Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn advanced_widget::Operation,
+    ) {
+        let content = self.state.content.borrow();
+        self.editor(&content)
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &advanced_widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        let content = self.state.content.borrow();
+        self.editor(&content)
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
     }
 }
 
@@ -414,6 +790,7 @@ pub struct SelectionOption<'a, T> {
     pub label: Cow<'a, str>,
     pub icon: Option<Icon>,
     pub disabled: bool,
+    pub draggable: bool,
 }
 
 impl<'a, T> SelectionOption<'a, T> {
@@ -423,6 +800,7 @@ impl<'a, T> SelectionOption<'a, T> {
             label: label.into(),
             icon: None,
             disabled: false,
+            draggable: true,
         }
     }
 
@@ -433,6 +811,13 @@ impl<'a, T> SelectionOption<'a, T> {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// Controls whether this option can participate in a reorderable tab drag.
+    /// It remains selectable when dragging is disabled.
+    pub fn draggable(mut self, draggable: bool) -> Self {
+        self.draggable = draggable;
         self
     }
 }
@@ -482,10 +867,22 @@ where
 }
 
 /// A horizontal tab list sharing selection behavior but not the segmented border.
+type TabReorderHandler<'a, T, Message> = Box<dyn Fn(T, Option<T>) -> Message + 'a>;
+type TabTransferHandler<'a, T, Message> = Box<dyn Fn(String, T, String, Option<T>) -> Message + 'a>;
+type TabDragGroupConfig<'a, T, Message> = (
+    TabDragGroup<T>,
+    TabDragSurface,
+    String,
+    TabTransferHandler<'a, T, Message>,
+);
+
 pub struct Tabs<'a, T, Message> {
     value: T,
     options: Vec<SelectionOption<'a, T>>,
     on_select: Box<dyn Fn(T) -> Message + 'a>,
+    on_reorder: Option<TabReorderHandler<'a, T, Message>>,
+    drag_group: Option<TabDragGroupConfig<'a, T, Message>>,
+    accepts_external_drop: bool,
     size: ControlSize,
     fill: bool,
 }
@@ -600,6 +997,9 @@ where
             value,
             options: options.into_iter().collect(),
             on_select: Box::new(on_select),
+            on_reorder: None,
+            drag_group: None,
+            accepts_external_drop: true,
             size: ControlSize::Small,
             fill: false,
         }
@@ -616,16 +1016,95 @@ where
         self
     }
 
+    /// Enables pointer and touch reordering within this tab strip.
+    ///
+    /// `before` identifies the tab that will follow the moved value. `None`
+    /// appends it to the end. Selection and ordering remain application-owned.
+    pub fn on_reorder(mut self, on_reorder: impl Fn(T, Option<T>) -> Message + 'a) -> Self {
+        self.on_reorder = Some(Box::new(on_reorder));
+        self
+    }
+
+    /// Joins this strip to a shared pointer/touch drag group.
+    ///
+    /// The transfer handler runs only when a tab is released over another
+    /// registered strip. `source_strip` and `target_strip` are application-owned
+    /// stable IDs; `before` follows the same ordering contract as
+    /// [`Tabs::on_reorder`].
+    pub fn drag_group(
+        self,
+        group: TabDragGroup<T>,
+        strip_id: impl Into<String>,
+        on_transfer: impl Fn(String, T, String, Option<T>) -> Message + 'a,
+    ) -> Self {
+        self.drag_group_on_surface(group, TabDragSurface::new("default"), strip_id, on_transfer)
+    }
+
+    /// Joins a drag group using window-local coordinates mapped to physical
+    /// screen space by `surface`.
+    pub fn drag_group_on_surface(
+        mut self,
+        group: TabDragGroup<T>,
+        surface: TabDragSurface,
+        strip_id: impl Into<String>,
+        on_transfer: impl Fn(String, T, String, Option<T>) -> Message + 'a,
+    ) -> Self {
+        self.drag_group = Some((group, surface, strip_id.into(), Box::new(on_transfer)));
+        self
+    }
+
+    /// Controls whether this strip can receive tabs from another strip.
+    /// The strip remains a valid drag source when external drops are disabled.
+    pub fn accepts_external_drop(mut self, accepts: bool) -> Self {
+        self.accepts_external_drop = accepts;
+        self
+    }
+
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
-        selection_view(
+        let tokens = theme.into();
+        let values = self
+            .options
+            .iter()
+            .map(|option| option.value.clone())
+            .collect::<Vec<_>>();
+        let disabled = self
+            .options
+            .iter()
+            .map(|option| option.disabled || !option.draggable)
+            .collect::<Vec<_>>();
+        let on_select: Rc<dyn Fn(T) -> Message + 'a> = Rc::from(self.on_select);
+        let content_on_select = Rc::clone(&on_select);
+        let content = selection_view(
             self.value,
             self.options,
-            self.on_select,
+            Box::new(move |value| content_on_select(value)),
             self.size,
-            theme.into(),
+            tokens,
             false,
             self.fill,
+        );
+        if self.on_reorder.is_none() && self.drag_group.is_none() {
+            return content;
+        }
+        DraggableTabStrip::new(
+            content,
+            values,
+            disabled,
+            on_select,
+            self.on_reorder.map(Rc::from),
+            self.drag_group
+                .map(|(group, surface, strip_id, on_transfer)| {
+                    TabDragSetup::new(
+                        group,
+                        surface,
+                        strip_id,
+                        Rc::from(on_transfer),
+                        self.accepts_external_drop,
+                    )
+                }),
+            tokens.colors.accent,
         )
+        .into()
     }
 }
 
@@ -708,9 +1187,33 @@ fn format_number(value: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Checkbox, ControlSize, Input, RangeField, SegmentedControl, Select, SelectionOption,
-        Switch, Tabs, format_number,
+        Checkbox, ControlSize, HostedTextarea, HostedTextareaState, Input, RangeField,
+        SegmentedControl, Select, SelectionOption, Switch, Tabs, format_number,
+        submit_on_enter_binding,
     };
+    use crate::theme::ThemeMode;
+    use iced::Element;
+    use iced::keyboard::key::{Code, Named, Physical};
+    use iced::keyboard::{Key, Modifiers};
+    use iced::widget::text_editor;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum TestMessage {
+        Edit,
+        Submit,
+    }
+
+    fn enter_key_press(modifiers: Modifiers, status: text_editor::Status) -> text_editor::KeyPress {
+        let key = Key::Named(Named::Enter);
+        text_editor::KeyPress {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: Physical::Code(Code::Enter),
+            modifiers,
+            text: None,
+            status,
+        }
+    }
 
     #[test]
     fn range_readout_keeps_integers_compact_without_losing_fractional_values() {
@@ -738,6 +1241,60 @@ mod tests {
         assert_eq!(
             Tabs::new(false, [SelectionOption::new(false, "标签")], |_| ()).size,
             ControlSize::Small
+        );
+    }
+
+    #[test]
+    fn submit_binding_keeps_shift_enter_as_the_default_newline() {
+        let focused = text_editor::Status::Focused { is_hovered: false };
+
+        assert_eq!(
+            submit_on_enter_binding(
+                enter_key_press(Modifiers::NONE, focused),
+                &TestMessage::Submit,
+            ),
+            Some(text_editor::Binding::Custom(TestMessage::Submit))
+        );
+        assert_eq!(
+            submit_on_enter_binding(
+                enter_key_press(Modifiers::SHIFT, focused),
+                &TestMessage::Submit,
+            ),
+            Some(text_editor::Binding::Enter)
+        );
+        assert_eq!(
+            submit_on_enter_binding(
+                enter_key_press(Modifiers::NONE, text_editor::Status::Active),
+                &TestMessage::Submit,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn hosted_textarea_state_is_shared_without_leaking_content() {
+        let state = HostedTextareaState::with_text("draft");
+        let shared = state.clone();
+
+        shared.perform(text_editor::Action::Edit(text_editor::Edit::Insert('!')));
+        assert_eq!(state.text(), "!draft");
+
+        state.clear();
+        assert!(shared.is_empty());
+        assert_eq!(shared.line_count(), 1);
+    }
+
+    #[test]
+    fn hosted_textarea_builds_a_static_element_with_a_stable_id() {
+        fn assert_static(_: Element<'static, TestMessage>) {}
+
+        let state = HostedTextareaState::new();
+        assert_static(
+            HostedTextarea::new(&state)
+                .id("hosted-textarea-test")
+                .on_action(|_| TestMessage::Edit)
+                .submit_on_enter(TestMessage::Submit)
+                .view(ThemeMode::Dark.tokens()),
         );
     }
 }
