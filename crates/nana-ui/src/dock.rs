@@ -2602,7 +2602,7 @@ where
         context.on_window_event,
         context.tokens,
     );
-    let body = dock_item_body(id, contents, context.tokens, controller.chrome_style);
+    let body = dock_item_body(id, contents, context.tokens, controller.chrome_style, false);
     let window = column![title_bar, body]
         .width(Length::Fill)
         .height(Length::Fill);
@@ -2880,13 +2880,7 @@ where
             );
         }
     }
-    let content_chrome_style = if chrome_style == DockChromeStyle::Card && id == &controller.center
-    {
-        DockChromeStyle::Borderless
-    } else {
-        chrome_style
-    };
-    let content = dock_item_body(id, contents, tokens, content_chrome_style);
+    let content = dock_item_body(id, contents, tokens, chrome_style, id == &controller.center);
     if tabs_own_title || id == &controller.center {
         content
     } else if chrome_style == DockChromeStyle::Card {
@@ -3151,6 +3145,7 @@ fn dock_item_body<'a, Message>(
     contents: &mut DockContents<'a, Message>,
     tokens: ThemeTokens,
     chrome_style: DockChromeStyle,
+    is_center: bool,
 ) -> Element<'a, Message>
 where
     Message: 'a,
@@ -3159,14 +3154,24 @@ where
         .items
         .remove(id)
         .unwrap_or_else(|| container(space()).into());
-    match chrome_style {
-        DockChromeStyle::Card => container(content)
+    match (chrome_style, is_center) {
+        (DockChromeStyle::Card, true) => container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true)
+            .style(move |_theme| {
+                iced::widget::container::Style::default()
+                    .background(tokens.colors.background)
+                    .color(tokens.colors.text)
+            })
+            .into(),
+        (DockChromeStyle::Card, false) => container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .padding([6.0, 8.0])
             .clip(true)
             .into(),
-        DockChromeStyle::Segmented | DockChromeStyle::Borderless => container(content)
+        (DockChromeStyle::Segmented | DockChromeStyle::Borderless, _) => container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .clip(true)
