@@ -77,7 +77,6 @@
 
 mod app;
 mod bridge;
-mod capabilities;
 mod css_cascade;
 mod css_map;
 #[cfg(feature = "iced-view")]
@@ -116,10 +115,6 @@ pub use bridge::{
     BridgeEvent, MessageBridge, SelectOptionProp, SemanticRegionViews, SemanticSnapshot,
     SemanticWidget, WidgetId, WidgetKind, WidgetProps, parse_button_kind, parse_control_size,
     resolve_kind_from_hints, widget_id,
-};
-pub use capabilities::{
-    Capability, PermissionPolicy, SharedPermissionPolicy, WorkspaceBootstrap, WorkspaceRecord,
-    register_capability_host_ops, shared_permission_policy,
 };
 pub use css_cascade::{
     AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,
@@ -190,11 +185,6 @@ pub fn theme_tokens_from_snapshot(
 }
 
 /// Host → JS window/document lifecycle events (shim EventTarget).
-///
-/// Satisfies Lilia `lifecycle.ts` focus refresh (`focus`/`blur`) and
-/// `repoRefreshEvents` / launch controllers (`visibilitychange`), plus
-/// `window.resize` listeners. Not CSS `position:fixed` / Page Visibility polyfill
-/// beyond document.hidden / visibilityState.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowLifecycleEvent {
     Resize { width: f64, height: f64 },
@@ -234,10 +224,9 @@ pub struct VueHost {
     document: Arc<Mutex<NanaTreeDocument>>,
     bridge: Arc<Mutex<MessageBridge>>,
     web_api: SharedWebApiState,
-    permissions: SharedPermissionPolicy,
-    workspace: Arc<Mutex<WorkspaceBootstrap>>,
     fire_event: Option<JsFunctionId>,
     drain_timers: Option<JsFunctionId>,
+    drain_fetch: Option<JsFunctionId>,
     apply_theme: Option<JsFunctionId>,
     /// Optional web-api ResizeObserver flush after layout (`__nanaNotifyLayout`).
     notify_layout: Option<JsFunctionId>,
@@ -262,6 +251,20 @@ impl VueHost {
     }
 
     pub fn with_viewport(physical_width: u32, physical_height: u32, scale_factor: f32) -> Self {
+        Self::with_web_api_state(
+            physical_width,
+            physical_height,
+            scale_factor,
+            shared_web_api_state(),
+        )
+    }
+
+    fn with_web_api_state(
+        physical_width: u32,
+        physical_height: u32,
+        scale_factor: f32,
+        web_api: SharedWebApiState,
+    ) -> Self {
         let theme = ThemeMode::Light;
         let document = NanaTreeDocument::new(physical_width, physical_height, scale_factor);
         let mut bridge = MessageBridge::new();
@@ -273,12 +276,10 @@ impl VueHost {
             theme,
             document: Arc::new(Mutex::new(document)),
             bridge: Arc::new(Mutex::new(bridge)),
-            web_api: shared_web_api_state(),
-            // Default: workspace read for demos; privileged ops stay denied until granted.
-            permissions: shared_permission_policy(PermissionPolicy::with_workspace_read()),
-            workspace: Arc::new(Mutex::new(WorkspaceBootstrap::default())),
+            web_api,
             fire_event: None,
             drain_timers: None,
+            drain_fetch: None,
             apply_theme: None,
             notify_layout: None,
             lifecycle_pump: None,
@@ -286,21 +287,6 @@ impl VueHost {
             editors: EditorStore::new(),
             #[cfg(feature = "iced-view")]
             menus: MenuStore::new(),
-        }
-    }
-
-    pub fn permissions(&self) -> SharedPermissionPolicy {
-        Arc::clone(&self.permissions)
-    }
-
-    pub fn workspace_state(&self) -> Arc<Mutex<WorkspaceBootstrap>> {
-        Arc::clone(&self.workspace)
-    }
-
-    /// Replace the permission policy (e.g. grant `workspace.switch` for an authorized session).
-    pub fn set_permission_policy(&mut self, policy: PermissionPolicy) {
-        if let Ok(mut guard) = self.permissions.lock() {
-            *guard = policy;
         }
     }
 
@@ -448,7 +434,7 @@ impl VueHost {
             .inject_stylesheet(css);
     }
 
-    /// Builds a HostApiRegistry with DOM + bridge + web-api + capability-gated host ops.
+    /// Builds the framework-owned registry with renderer, DOM and Web APIs.
     pub fn host_api_registry(&self) -> HostApiRegistry {
         let mut api = HostApiRegistry::new();
         register_dom_host_ops_with_bridge(
@@ -460,11 +446,6 @@ impl VueHost {
         register_web_api_host_ops(&mut api, Arc::clone(&self.web_api));
         // JS `documentElement.dataset.theme` must not wait for semantic_snapshot.
         self.wrap_document_element_set_for_appearance_sync(&mut api);
-        register_capability_host_ops(
-            &mut api,
-            Arc::clone(&self.permissions),
-            Arc::clone(&self.workspace),
-        );
         api
     }
 
@@ -487,7 +468,19 @@ impl VueHost {
         engine: &mut E,
         artifact: RuntimeArtifact,
     ) -> Result<(), JsEngineError> {
-        self.attach_engine(engine)?;
+        self.initialize_with_web_api_and_host_api(engine, artifact, &HostApiRegistry::new())
+    }
+
+    /// Initialize the runtime with framework defaults and application APIs.
+    pub fn initialize_with_web_api_and_host_api<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        artifact: RuntimeArtifact,
+        application_api: &HostApiRegistry,
+    ) -> Result<(), JsEngineError> {
+        let mut api = self.host_api_registry();
+        api.try_extend(application_api)?;
+        engine.register_host_api(&api)?;
         if artifact.is_binary_release() {
             engine.initialize(artifact)?;
             return Ok(());
@@ -503,7 +496,7 @@ impl VueHost {
         Ok(())
     }
 
-    /// Resolve `__nanaFireEvent` / `__nanaDrainTimers` / optional theme + layout + lifecycle hooks after init.
+    /// Resolve renderer and Web API completion hooks after initialization.
     pub fn bind_event_bridge<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -511,6 +504,7 @@ impl VueHost {
         self.fire_event = Some(engine.resolve_function("__nanaFireEvent")?);
         // Drain helper is optional for Phase 3 Counter (shim may still install it).
         self.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
+        self.drain_fetch = engine.resolve_function("__nanaDrainFetch").ok();
         self.apply_theme = engine.resolve_function("__nanaApplyTheme").ok();
         self.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
         self.lifecycle_pump = engine.resolve_function("__nanaPumpLifecycle").ok();
@@ -603,19 +597,37 @@ impl VueHost {
         Ok(())
     }
 
-    /// Drain due rAF/timeouts into JS, then microtasks + Style-Model layout.
+    /// Settle completed fetches, drain timers, then run microtasks and layout.
     ///
     /// After layout resolves, invokes optional `__nanaNotifyLayout` so
     /// `ResizeObserver` callbacks see fresh `layoutBox` geometry.
     ///
     /// Nested drain: Vue runtime-dom `<Transition>` `nextFrame` is double-rAF
     /// (leave/enter → `whenTransitionEnds` → `@after-leave`). One shot would
-    /// leave LiliaUI Dialog/Drawer/Dropdown overlay presence hung.
+    /// leave Transition-driven overlay presence hung.
     pub fn pump_frame<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
     ) -> Result<usize, JsEngineError> {
         let mut fired = 0usize;
+        let fetch_completions = {
+            let mut guard = self
+                .web_api
+                .lock()
+                .map_err(|_| JsEngineError::new("web-api state poisoned"))?;
+            guard.drain_fetch_completions()
+        };
+        if !fetch_completions.is_empty() {
+            if let Some(drain) = self.drain_fetch {
+                let count = fetch_completions.len();
+                engine.invoke(
+                    drain,
+                    &[HostValue::Array(fetch_completions.into_iter().collect())],
+                )?;
+                fired += count;
+                engine.run_microtasks()?;
+            }
+        }
         // Cap nested callbacks (Transition nextFrame + ResizeObserver rAF).
         const MAX_TIMER_PASSES: usize = 16;
         for _ in 0..MAX_TIMER_PASSES {
@@ -645,6 +657,15 @@ impl VueHost {
             engine.run_microtasks()?;
         }
         Ok(fired)
+    }
+
+    /// Earliest timer/fetch wake requested by the Web API state.
+    /// Returns `None` when the runtime is idle.
+    pub fn next_wakeup(&self) -> Option<Instant> {
+        self.web_api
+            .lock()
+            .ok()
+            .and_then(|guard| guard.next_wakeup(Instant::now()))
     }
 
     /// Pump a host window lifecycle event into the shim EventTarget surface.
@@ -787,8 +808,8 @@ impl VueHost {
 
     /// Hit-test a click in logical CSS pixels and invoke the JS event bridge.
     ///
-    /// Always fans out `pointerdown` (hit or miss) so Lilia `useDismissableLayer` /
-    /// ContextMenu `window` capture listeners can close overlays on outside click.
+    /// Always fans out `pointerdown` (hit or miss) so dismissable layers and
+    /// context-menu capture listeners can close on outside click.
     pub fn pointer_click<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -914,7 +935,7 @@ impl VueHost {
     /// Dispatch a keyboard event to the focused element (or `target` override).
     ///
     /// Falls back to `body` (`mount_root`) so Escape reaches document/window
-    /// fan-out even when nothing is focused (Lilia ContextMenu / dismiss layers).
+    /// fan-out even when nothing is focused (context menus / dismiss layers).
     pub fn dispatch_key<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,

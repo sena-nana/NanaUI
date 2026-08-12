@@ -122,4 +122,4 @@ Lilia `UiDialog` / `.modal`（`aria-modal`）presence → Dialog open；**不**�
 | `NanaSettingsRow` / Card / Page | Settings 行/卡组合 |
 
 圆角尺度：语义控件几何由 Iced `UI_METRICS` 决定。详见
-`docs/performance/2026-08-06-nanavue-lilia-mapping.md`。
+[`docs/vue-nana-renderer-system.md`](../../docs/vue-nana-renderer-system.md)。

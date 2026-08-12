@@ -557,7 +557,10 @@ fn exception_from_try_catch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_js_engine::probe::{probe_host_registry, vue_runtime_probe_artifact};
+    use nana_js_engine::probe::{
+        VUE_SFC_COMPAT_CSS, probe_host_registry, vue_runtime_probe_artifact,
+        vue_sfc_compat_artifact,
+    };
     use std::sync::Mutex;
 
     /// Lib tests share one process; serialize so SnapshotCreator never races peers.
@@ -650,6 +653,100 @@ mod tests {
             assert!(guard.increment >= 1, "{guard:?}");
             assert_eq!(guard.last_count, 2);
             drop(guard);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn vue_sfc_fetch_updates_semantic_tree_on_v8() {
+        with_serial_v8_tests(|| {
+            use std::time::{Duration, Instant};
+
+            use nana_ui_vue::{MountOptions, mount_vue_as_nana};
+            use nana_ui_web_api::{
+                FetchError, FetchHost, FetchPolicy, FetchRequest, FetchResponse, shared_fetch_host,
+            };
+
+            #[derive(Debug)]
+            struct FixtureFetch {
+                policy: FetchPolicy,
+            }
+
+            impl FetchHost for FixtureFetch {
+                fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                    assert_eq!(request.url, "/fixture");
+                    assert!(
+                        request
+                            .headers
+                            .iter()
+                            .any(|(name, value)| name == "x-nana-fixture" && value == "sfc")
+                    );
+                    Ok(FetchResponse {
+                        url: request.url,
+                        status: 200,
+                        status_text: "OK".into(),
+                        headers: vec![("content-type".into(), "application/json".into())],
+                        body: br#"{"message":"ready","sequence":7}"#.to_vec(),
+                        redirected: false,
+                    })
+                }
+
+                fn policy(&self) -> &FetchPolicy {
+                    &self.policy
+                }
+            }
+
+            let mut host = mount_vue_as_nana(MountOptions {
+                width: 480,
+                height: 320,
+                fetch_host: Some(shared_fetch_host(FixtureFetch {
+                    policy: FetchPolicy::default(),
+                })),
+                ..MountOptions::default()
+            });
+            host.inject_stylesheet(VUE_SFC_COMPAT_CSS);
+            let mut engine = V8Engine::new();
+            let mut application_api = HostApiRegistry::new();
+            application_api.register("fixtureApplicationApi", |_| Ok(HostValue::string("v8")));
+            host.initialize_with_web_api_and_host_api(
+                &mut engine,
+                vue_sfc_compat_artifact(),
+                &application_api,
+            )
+            .unwrap();
+            host.bind_event_bridge(&mut engine).unwrap();
+            let probe = engine.resolve_function("__nanaSfcFixture.probe").unwrap();
+            let probe = engine.invoke(probe, &[]).unwrap();
+            let probe = probe.as_object().unwrap();
+            assert_eq!(
+                probe.get("applicationValue").and_then(HostValue::as_str),
+                Some("v8")
+            );
+            assert_eq!(
+                probe.get("hasTauri").and_then(HostValue::as_bool),
+                Some(false)
+            );
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                engine.run_microtasks().unwrap();
+                host.pump_frame(&mut engine).unwrap();
+                let snapshot = host.semantic_snapshot();
+                let labels = snapshot
+                    .widgets
+                    .iter()
+                    .map(|widget| widget.props.label.as_str())
+                    .collect::<Vec<_>>();
+                if labels.contains(&"ready:7") {
+                    assert!(labels.contains(&"32"));
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "SFC fetch did not update: {labels:?}"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
             engine.shutdown();
         });
     }

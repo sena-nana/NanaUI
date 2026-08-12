@@ -16,6 +16,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Install Linux window dependencies
         if: runner.os == 'Linux'
         run: |
@@ -25,6 +28,12 @@ jobs:
             libwayland-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Rebuild Vue SFC compatibility fixture
+        working-directory: crates/nana-js-engine/fixtures/vue-sfc-compat
+        run: |
+          npm ci
+          npm run build
+          git diff --exit-code -- dist
       - name: Check minimal feature set
         run: cargo check -p nana-ui --lib --no-default-features --locked
       - name: Check Gallery package boundary

@@ -3,7 +3,7 @@ name = "nana-ui-web-api"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-description = "window/document/EventTarget compatibility layer stub for NanaUI Vue"
+description = "Buffered Web API compatibility subset for NanaUI Vue"
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -11,5 +11,7 @@ name = "nana_ui_web_api"
 path = "src/lib.rs"
 
 [dependencies]
+base64.workspace = true
+crossbeam-channel.workspace = true
 nana-js-engine.workspace = true
 nana-ui-platform.workspace = true

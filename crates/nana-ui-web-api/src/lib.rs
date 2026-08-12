@@ -1,8 +1,10 @@
-//! **L1** progressive `window` / `document` / EventTarget compatibility for NanaUI Vue.
+//! **L1** progressive `window` / `document` / Web API compatibility for NanaUI Vue.
 //!
-//! Host-backed storage and timers for Tauri-like frontends. **Not** a WebView and
-//! **not** a paint path — JS surface lives in [`shim_source`]; drawing stays in
-//! `nana-ui` after Style Model mapping in `nana-ui-vue`.
+//! This is a buffered WebView-source compatibility subset, not a WebView or a
+//! second paint path. JavaScript runs in the selected Rust-owned engine and all
+//! visible output still maps through NanaUI to Iced/WGPU.
+
+mod fetch;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -10,9 +12,12 @@ use std::time::{Duration, Instant};
 
 use nana_js_engine::{HostApiRegistry, HostValue, JsException, RuntimeArtifact};
 
+use fetch::{FetchCompletion, FetchRuntime};
+
 pub use nana_ui_platform::{
-    ClipboardHost, MemoryClipboard, OsClipboard, SharedClipboardHost, UnsupportedClipboard,
-    default_shared_clipboard, shared_clipboard,
+    ClipboardHost, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
+    MemoryClipboard, NativeFetchHost, OsClipboard, SharedClipboardHost, SharedFetchHost,
+    UnsupportedClipboard, default_shared_clipboard, shared_clipboard, shared_fetch_host,
 };
 
 /// UTF-8 JS that installs window/document/localStorage/rAF/history/… on `globalThis`.
@@ -36,7 +41,7 @@ pub fn compose_runtime_artifact(name: impl Into<String>, app_source: &str) -> Ru
 }
 
 /// In-memory Web API host state shared with JS via `__nanaHost`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WebApiState {
     storage: HashMap<String, BTreeMap<String, String>>,
     pending_raf: BTreeSet<u64>,
@@ -47,13 +52,34 @@ pub struct WebApiState {
     location_path: String,
     location_search: String,
     location_hash: String,
+    fetch: FetchRuntime,
+}
+
+impl Default for WebApiState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WebApiState {
     pub fn new() -> Self {
+        Self::with_fetch_host(shared_fetch_host(NativeFetchHost::new(
+            FetchPolicy::default(),
+        )))
+    }
+
+    pub fn with_fetch_host(fetch_host: SharedFetchHost) -> Self {
         Self {
             location_path: "/".into(),
-            ..Self::default()
+            storage: HashMap::new(),
+            pending_raf: BTreeSet::new(),
+            timeouts: BTreeMap::new(),
+            intervals: BTreeMap::new(),
+            document_dataset: BTreeMap::new(),
+            document_style: BTreeMap::new(),
+            location_search: String::new(),
+            location_hash: String::new(),
+            fetch: FetchRuntime::new(fetch_host),
         }
     }
 
@@ -139,6 +165,38 @@ impl WebApiState {
             intervals,
         }
     }
+
+    pub fn drain_fetch_completions(&mut self) -> Vec<HostValue> {
+        self.fetch
+            .drain_completions()
+            .into_iter()
+            .map(FetchCompletion::into_host_value)
+            .collect()
+    }
+
+    /// Earliest useful host wakeup. There is no polling when idle; an active
+    /// background fetch uses a short bounded wake until its completion arrives.
+    pub fn next_wakeup(&self, now: Instant) -> Option<Instant> {
+        if !self.pending_raf.is_empty() {
+            return Some(now);
+        }
+        let timer = self
+            .timeouts
+            .values()
+            .copied()
+            .chain(self.intervals.values().map(|(at, _)| *at))
+            .min();
+        let fetch = self
+            .fetch
+            .has_pending()
+            .then(|| now + Duration::from_millis(8));
+        match (timer, fetch) {
+            (Some(timer), Some(fetch)) => Some(timer.min(fetch)),
+            (Some(timer), None) => Some(timer),
+            (None, Some(fetch)) => Some(fetch),
+            (None, None) => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -198,6 +256,10 @@ pub fn shared_web_api_state() -> SharedWebApiState {
     Arc::new(Mutex::new(WebApiState::new()))
 }
 
+pub fn shared_web_api_state_with_fetch(fetch_host: SharedFetchHost) -> SharedWebApiState {
+    Arc::new(Mutex::new(WebApiState::with_fetch_host(fetch_host)))
+}
+
 /// Register storage / timer / documentElement / location / clipboard host ops.
 ///
 /// Clipboard defaults to the platform backend ([`default_shared_clipboard`]): OS
@@ -247,6 +309,7 @@ pub fn register_clipboard_host_ops(api: &mut HostApiRegistry, clipboard: SharedC
 }
 
 fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: SharedWebApiState) {
+    fetch::register_fetch_host_ops(api, Arc::clone(&state));
     {
         let state = Arc::clone(&state);
         api.register("storageGet", move |args| {

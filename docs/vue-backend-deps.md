@@ -19,7 +19,7 @@ nana-ui-core
      └─ nana-ui-vue
           ├─ NanaTreeDocument   (JS custom-renderer ops; simplified layout)
           ├─ MessageBridge      (all visible nodes → Nana iced-view)
-          ├─ nana-ui-web-api    (window/document/storage/rAF/history shim)
+          ├─ nana-ui-web-api    (window/document/timer/buffered fetch subset)
           └─ nana-js-engine     (traits only)
                ├─ nana-js-quickjs
                └─ nana-js-v8
@@ -42,7 +42,7 @@ Windowed (default product path):
   → NanaUI Iced draw on host wgpu
 
 Optional JS bridge:
-  esbuild/Vite IIFE
+  Nana Vite entry (Vue SFC/TS/CSS) → reproducible IIFE
   → VueHost::initialize_with_web_api
   → hostOps → NanaTreeDocument + MessageBridge
   → semantic snapshot → Nana iced-view
@@ -50,8 +50,7 @@ Optional JS bridge:
 
 ## Docs
 
-- 三层兼容合同：[vue-nana-renderer-system.md](vue-nana-renderer-system.md) §0（L1 Tauri Vue / L2 nanavue 组件 / L3 Rust；L1+L2 同树混合）
-- Blitz 移除：[performance/2026-08-06-blitz-removed-nana-frontend.md](performance/2026-08-06-blitz-removed-nana-frontend.md)
-- 缺失基础能力：[performance/2026-08-06-missing-nana-foundations.md](performance/2026-08-06-missing-nana-foundations.md)
-- nanavue 映射：[performance/2026-08-06-nanavue-lilia-mapping.md](performance/2026-08-06-nanavue-lilia-mapping.md)
-- Issue #5 验收与三层范围：[performance/2026-08-06-issue5-final-acceptance.md](performance/2026-08-06-issue5-final-acceptance.md)
+- 三层兼容合同：[vue-nana-renderer-system.md](vue-nana-renderer-system.md)
+- Vue 源码兼容范围：[compatibility-roadmap.md](compatibility-roadmap.md)
+- 应用 API 与 Fetch 边界：[capabilities.md](capabilities.md)
+- 构建与发布产物：[release-artifacts.md](release-artifacts.md)
