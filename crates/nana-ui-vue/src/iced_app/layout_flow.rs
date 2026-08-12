@@ -789,6 +789,17 @@ fn effective_justify(layout: &crate::css_map::LayoutStyle) -> JustifySpec {
     }
 }
 
+/// Axis for `WidgetKind::Text` hosts that paint nested children (`h2` + `#text`).
+///
+/// CSS `display:flex` defaults to row; forcing a column would make
+/// `align-items:center` center on the horizontal axis (card title blank).
+fn text_host_column_axis(layout: &crate::css_map::LayoutStyle) -> bool {
+    match layout.direction {
+        Some(FlexDirection::Row) => false,
+        Some(FlexDirection::Column) => true,
+        None => !layout.display.is_some_and(DisplaySpec::is_flex_container),
+    }
+}
 
 /// Resolve `position:fixed` border box against the content viewport (logical px).
 fn resolve_fixed_box(layout: &crate::css_map::LayoutStyle, vw: f32, vh: f32) -> (f32, f32, f32, f32) {

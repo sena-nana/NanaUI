@@ -121,10 +121,10 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
             }
             "nana-settings-card" | "nana-card" | "card" => {
                 // Public nana-controls / card contract (not app page classes).
+                // Do not invent gap: Lilia `.card` + `.card-heading { margin-bottom }`
+                // already owns heading↔body spacing; a default gap:8 double-counts
+                // that 8px and pushes charts down.
                 layout.ensure_direction(FlexDirection::Column);
-                if layout.gap.is_none() {
-                    layout.gap = Some(LengthSpec::Px(8.0));
-                }
                 layout.allow_shrink = true;
                 layout.min_width = Some(layout.min_width.unwrap_or(LengthSpec::Px(0.0)));
                 if layout.padding.is_none()
