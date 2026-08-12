@@ -8,6 +8,62 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
+/// JS installed by each engine's host bridge.
+///
+/// Cycle-safe stringify so `__nanaHost.call` never feeds Vue vnode graphs /
+/// DOM-likes / `on*` handlers into `JSON.stringify`.
+pub const HOST_BRIDGE_INSTALL_JS: &str = r#"
+globalThis.__nanaJsonStringify = function __nanaJsonStringify(value) {
+  const seen = new WeakSet();
+  function walk(v, depth) {
+    if (typeof v === "function" || typeof v === "symbol" || typeof v === "undefined") {
+      return undefined;
+    }
+    if (v === null || typeof v !== "object") return v;
+    if (depth > 6) return undefined;
+    if (seen.has(v)) return undefined;
+    if (typeof v.__nid === "number" || typeof v.nodeType === "number") {
+      return undefined;
+    }
+    seen.add(v);
+    if (Array.isArray(v)) {
+      const out = [];
+      for (let i = 0; i < v.length; i++) {
+        out.push(walk(v[i], depth + 1));
+      }
+      return out;
+    }
+    const out = {};
+    for (const k of Object.keys(v)) {
+      if (k === "key" || k === "ref" || (k.charCodeAt(0) === 111 && k.charCodeAt(1) === 110)) {
+        continue;
+      }
+      const sv = walk(v[k], depth + 1);
+      if (typeof sv !== "undefined") out[k] = sv;
+    }
+    return out;
+  }
+  try {
+    return JSON.stringify(walk(value, 0));
+  } catch (_err) {
+    return "[]";
+  }
+};
+globalThis.__nanaHost = {
+  call(name, args) {
+    const raw = globalThis.__nanaHostRaw(
+      String(name),
+      globalThis.__nanaJsonStringify(args ?? [])
+    );
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && Object.prototype.hasOwnProperty.call(parsed, "__nanaHostError")) {
+      throw new Error(String(parsed.__nanaHostError));
+    }
+    return parsed;
+  }
+};
+"#;
+
 /// Opaque handle for a JS function retained by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct JsFunctionId(pub u64);

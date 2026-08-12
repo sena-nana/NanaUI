@@ -401,21 +401,7 @@ fn install_host_bridge(scope: &mut v8::PinScope) -> Result<(), JsEngineError> {
         .ok_or_else(|| JsEngineError::new("failed to create __nanaHostRaw function"))?;
     global.set(scope, key.into(), func.into());
 
-    eval_script(
-        scope,
-        r#"
-        globalThis.__nanaHost = {
-          call(name, args) {
-            const raw = globalThis.__nanaHostRaw(String(name), JSON.stringify(args ?? []));
-            const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed === "object" && Object.prototype.hasOwnProperty.call(parsed, "__nanaHostError")) {
-              throw new Error(String(parsed.__nanaHostError));
-            }
-            return parsed;
-          }
-        };
-        "#,
-    )?;
+    eval_script(scope, nana_js_engine::HOST_BRIDGE_INSTALL_JS)?;
     Ok(())
 }
 
