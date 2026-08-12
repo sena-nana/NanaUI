@@ -445,6 +445,23 @@ where
             self.tokens,
             self.viewport,
         );
+        let search_height = if self.searchable {
+            search_size.height_in(self.tokens.metrics)
+        } else {
+            0.0
+        };
+        let content_spacing = if self.searchable {
+            MENU_CONTENT_SPACING
+        } else {
+            0.0
+        };
+        // Fixed list height — avoid Length::Fill collapsing when an ancestor
+        // (historically iced::pin) clamps the menu surface near a corner.
+        let list_height = (menu_size.height
+            - MENU_SURFACE_PADDING * 2.0
+            - search_height
+            - content_spacing)
+            .max(0.0);
         let mut content = column![].spacing(MENU_CONTENT_SPACING);
         if self.searchable {
             content = content.push(
@@ -468,7 +485,7 @@ where
             scrollable(row(panels).spacing(MENU_PANEL_SPACING))
                 .direction(vertical_scrollbar())
                 .style(scrollable_style(self.tokens.colors))
-                .height(Length::Fill),
+                .height(Length::Fixed(list_height)),
         );
         let on_dismiss = (self.on_event)(ContextMenuEvent::Dismiss);
         let on_interaction = (self.on_event)(ContextMenuEvent::Interaction);
@@ -520,7 +537,7 @@ where
             }
             panel = panel.push(menu_item.view(self.tokens));
         }
-        container(panel).height(Length::Fill).into()
+        container(panel).into()
     }
 }
 
