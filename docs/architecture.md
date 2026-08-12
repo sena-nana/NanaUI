@@ -100,6 +100,13 @@ macOS 使用 transparent titlebar 与 full-size content view，把 36px NanaUI �
 会先消费事件。拖拽阈值由 AppKit 负责，其他平台由公共状态机的 4px 阈值负责。
 材质与标题栏状态、布局和动作语义仍是彼此独立的宿主合同。
 
+`HostedWindowPlacement` 是窗口恢复边界，不是持久化服务。应用保存 restore bounds、
+创建时的 DPI scale 与 maximized 事实；Hosted runtime 在创建主窗口或辅助窗口前，按当前
+显示器可用区域选择最大相交屏幕。原显示器已断开时改用主屏并居中，DPI 改变时按逻辑尺寸
+重算，超出工作区时约束到可见范围。Windows 使用 `rcWork` 排除任务栏，其他平台在 Winit
+没有 work-area 合同时使用显示器物理边界。存储介质、窗口业务身份、拓扑和写入节流继续由
+应用拥有。
+
 ## Hosted Browser 合同
 
 可选 `browser` feature 在 Windows 与 macOS 将 Wry child WebView 绑定到既有

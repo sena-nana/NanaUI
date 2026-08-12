@@ -156,10 +156,10 @@ pub use hosted_runtime::{
 };
 #[cfg(feature = "hosted")]
 pub use hosted_runtime::{
-    HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError,
-    HostedRuntimeEvent, HostedTitleBarMode, HostedUiCommand, HostedWindowAction,
+    HostedDisplayArea, HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw,
+    HostedRunError, HostedRuntimeEvent, HostedTitleBarMode, HostedUiCommand, HostedWindowAction,
     HostedWindowCaptureId, HostedWindowCommand, HostedWindowEvent, HostedWindowGeometry,
-    HostedWindowId, HostedWindowRole, HostedWindowSettings, run_hosted,
+    HostedWindowId, HostedWindowPlacement, HostedWindowRole, HostedWindowSettings, run_hosted,
 };
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{

@@ -121,6 +121,7 @@ pub struct HostedWindowSettings {
     pub minimum_size: Size<f64>,
     pub initial_position: Option<(f64, f64)>,
     pub initial_physical_geometry: Option<(i32, i32, u32, u32)>,
+    pub initial_placement: Option<HostedWindowPlacement>,
     pub maximized: bool,
     pub transparent: bool,
     pub transparent_background: bool,
@@ -140,6 +141,7 @@ impl HostedWindowSettings {
             minimum_size: Size::new(760.0, 520.0),
             initial_position: None,
             initial_physical_geometry: None,
+            initial_placement: None,
             maximized: false,
             transparent: !cfg!(target_os = "macos"),
             transparent_background: false,
@@ -155,6 +157,7 @@ impl HostedWindowSettings {
     pub fn initial_size(mut self, width: f64, height: f64) -> Self {
         self.initial_size = Size::new(width, height);
         self.initial_physical_geometry = None;
+        self.initial_placement = None;
         self
     }
 
@@ -166,16 +169,29 @@ impl HostedWindowSettings {
     pub fn initial_position(mut self, x: f64, y: f64) -> Self {
         self.initial_position = Some((x, y));
         self.initial_physical_geometry = None;
+        self.initial_placement = None;
         self
     }
 
     pub fn physical_geometry(mut self, x: i32, y: i32, width: u32, height: u32) -> Self {
         self.initial_physical_geometry = Some((x, y, width, height));
+        self.initial_placement = None;
+        self
+    }
+
+    pub fn placement(mut self, placement: HostedWindowPlacement) -> Self {
+        self.initial_position = None;
+        self.initial_physical_geometry = None;
+        self.maximized = placement.maximized;
+        self.initial_placement = Some(placement);
         self
     }
 
     pub fn maximized(mut self, maximized: bool) -> Self {
         self.maximized = maximized;
+        if let Some(placement) = self.initial_placement.as_mut() {
+            placement.maximized = maximized;
+        }
         self
     }
 
@@ -233,6 +249,196 @@ impl HostedWindowSettings {
         self.title_bar_mode = HostedTitleBarMode::Native;
         self
     }
+}
+
+/// Persistable restore bounds for one hosted window.
+///
+/// Applications own serialization. NanaUI owns adapting the physical bounds to the displays and
+/// scale factors available when the window is recreated.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostedWindowPlacement {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f32,
+    pub maximized: bool,
+}
+
+impl HostedWindowPlacement {
+    pub const fn new(
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+        maximized: bool,
+    ) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            scale_factor,
+            maximized,
+        }
+    }
+
+    pub fn normalized_for(
+        self,
+        displays: &[HostedDisplayArea],
+        minimum_logical_size: Size<f64>,
+    ) -> Self {
+        let Some(display) = select_display(self, displays) else {
+            return self;
+        };
+        let source_scale = valid_scale_factor(self.scale_factor);
+        let target_scale = valid_scale_factor(display.scale_factor);
+        let scale_ratio = f64::from(target_scale / source_scale);
+        let overlap = intersection_area(self, *display);
+
+        let mut width = scaled_dimension(self.width, scale_ratio);
+        let mut height = scaled_dimension(self.height, scale_ratio);
+        let minimum_width = scaled_logical_dimension(minimum_logical_size.width, target_scale);
+        let minimum_height = scaled_logical_dimension(minimum_logical_size.height, target_scale);
+        width = width.max(minimum_width).min(display.width.max(1));
+        height = height.max(minimum_height).min(display.height.max(1));
+
+        let (x, y) = if overlap == 0 {
+            (
+                centered_axis(display.x, display.width, width),
+                centered_axis(display.y, display.height, height),
+            )
+        } else {
+            let relative_x = f64::from(self.x.saturating_sub(display.x)) * scale_ratio;
+            let relative_y = f64::from(self.y.saturating_sub(display.y)) * scale_ratio;
+            (
+                clamp_axis(
+                    i64::from(display.x) + relative_x.round() as i64,
+                    display.x,
+                    display.width,
+                    width,
+                ),
+                clamp_axis(
+                    i64::from(display.y) + relative_y.round() as i64,
+                    display.y,
+                    display.height,
+                    height,
+                ),
+            )
+        };
+
+        Self {
+            x,
+            y,
+            width,
+            height,
+            scale_factor: target_scale,
+            maximized: self.maximized,
+        }
+    }
+}
+
+/// Current usable physical bounds of one display. `primary` is used when persisted bounds no
+/// longer intersect any connected display.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostedDisplayArea {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f32,
+    pub primary: bool,
+}
+
+impl HostedDisplayArea {
+    pub const fn new(
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+        primary: bool,
+    ) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            scale_factor,
+            primary,
+        }
+    }
+}
+
+fn valid_scale_factor(scale_factor: f32) -> f32 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    }
+}
+
+fn scaled_dimension(value: u32, scale: f64) -> u32 {
+    (f64::from(value.max(1)) * scale)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
+fn scaled_logical_dimension(value: f64, scale_factor: f32) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        return 1;
+    }
+    (value * f64::from(scale_factor))
+        .ceil()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
+fn intersection_area(placement: HostedWindowPlacement, display: HostedDisplayArea) -> u64 {
+    if display.width == 0 || display.height == 0 {
+        return 0;
+    }
+    let left = i64::from(placement.x).max(i64::from(display.x));
+    let top = i64::from(placement.y).max(i64::from(display.y));
+    let right = (i64::from(placement.x) + i64::from(placement.width))
+        .min(i64::from(display.x) + i64::from(display.width));
+    let bottom = (i64::from(placement.y) + i64::from(placement.height))
+        .min(i64::from(display.y) + i64::from(display.height));
+    u64::try_from((right - left).max(0)).unwrap_or(u64::MAX)
+        * u64::try_from((bottom - top).max(0)).unwrap_or(u64::MAX)
+}
+
+fn select_display(
+    placement: HostedWindowPlacement,
+    displays: &[HostedDisplayArea],
+) -> Option<&HostedDisplayArea> {
+    let intersecting = displays
+        .iter()
+        .filter(|display| display.width > 0 && display.height > 0)
+        .map(|display| (intersection_area(placement, *display), display))
+        .max_by_key(|(area, _)| *area);
+    match intersecting {
+        Some((area, display)) if area > 0 => Some(display),
+        _ => displays
+            .iter()
+            .find(|display| display.primary && display.width > 0 && display.height > 0)
+            .or_else(|| {
+                displays
+                    .iter()
+                    .find(|display| display.width > 0 && display.height > 0)
+            }),
+    }
+}
+
+fn centered_axis(origin: i32, available: u32, extent: u32) -> i32 {
+    let offset = i64::from(available.saturating_sub(extent)) / 2;
+    i32::try_from(i64::from(origin) + offset).unwrap_or(origin)
+}
+
+fn clamp_axis(value: i64, origin: i32, available: u32, extent: u32) -> i32 {
+    let minimum = i64::from(origin);
+    let maximum = minimum + i64::from(available.saturating_sub(extent));
+    i32::try_from(value.clamp(minimum, maximum)).unwrap_or(origin)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -949,7 +1155,7 @@ fn initialize<Program: HostedProgram>(
 ) -> Result<HostedReady<Program>, String> {
     let window = Arc::new(
         event_loop
-            .create_window(window_attributes(&settings))
+            .create_window(window_attributes_for_event_loop(event_loop, &settings))
             .map_err(|error| format!("failed to create hosted window: {error}"))?,
     );
     if settings.title_bar_mode == HostedTitleBarMode::Custom {
@@ -1610,7 +1816,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
     ) -> Result<HostedWindowEvent, String> {
         let window = Arc::new(
             event_loop
-                .create_window(window_attributes(&settings))
+                .create_window(window_attributes_for_event_loop(event_loop, &settings))
                 .map_err(|error| error.to_string())?,
         );
         if settings.title_bar_mode == HostedTitleBarMode::Custom {
@@ -2472,7 +2678,25 @@ fn window_background(mut color: iced::Color, material: MaterialOutcome) -> iced:
     color
 }
 
+fn window_attributes_for_event_loop(
+    event_loop: &ActiveEventLoop,
+    settings: &HostedWindowSettings,
+) -> winit::window::WindowAttributes {
+    let placement = settings.initial_placement.map(|placement| {
+        placement.normalized_for(&available_display_areas(event_loop), settings.minimum_size)
+    });
+    window_attributes_with_placement(settings, placement)
+}
+
+#[cfg(test)]
 fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAttributes {
+    window_attributes_with_placement(settings, settings.initial_placement)
+}
+
+fn window_attributes_with_placement(
+    settings: &HostedWindowSettings,
+    placement: Option<HostedWindowPlacement>,
+) -> winit::window::WindowAttributes {
     let mut attributes = winit::window::WindowAttributes::default()
         .with_title(settings.title.clone())
         .with_transparent(settings.transparent || settings.transparent_background)
@@ -2487,7 +2711,15 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
             settings.minimum_size.height,
         ))
         .with_maximized(settings.maximized);
-    if let Some((x, y, width, height)) = settings.initial_physical_geometry {
+    if let Some(placement) = placement {
+        attributes = attributes
+            .with_position(winit::dpi::PhysicalPosition::new(placement.x, placement.y))
+            .with_inner_size(winit::dpi::PhysicalSize::new(
+                placement.width,
+                placement.height,
+            ))
+            .with_maximized(placement.maximized);
+    } else if let Some((x, y, width, height)) = settings.initial_physical_geometry {
         attributes = attributes
             .with_position(winit::dpi::PhysicalPosition::new(x, y))
             .with_inner_size(winit::dpi::PhysicalSize::new(width, height));
@@ -2513,6 +2745,65 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
     #[cfg(not(target_os = "macos"))]
     {
         attributes.with_decorations(settings.title_bar_mode == HostedTitleBarMode::Native)
+    }
+}
+
+fn available_display_areas(event_loop: &ActiveEventLoop) -> Vec<HostedDisplayArea> {
+    let primary = event_loop.primary_monitor();
+    event_loop
+        .available_monitors()
+        .map(|monitor| {
+            display_area(
+                &monitor,
+                primary.as_ref().is_some_and(|item| item == &monitor),
+            )
+        })
+        .collect()
+}
+
+fn display_area(monitor: &winit::monitor::MonitorHandle, primary: bool) -> HostedDisplayArea {
+    let position = monitor.position();
+    let size = monitor.size();
+    let area = HostedDisplayArea::new(
+        position.x,
+        position.y,
+        size.width,
+        size.height,
+        monitor.scale_factor() as f32,
+        primary,
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        use std::mem::size_of;
+
+        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+        use winit::platform::windows::MonitorHandleExtWindows;
+
+        let mut area = area;
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..MONITORINFO::default()
+        };
+        let handle = HMONITOR(monitor.hmonitor() as *mut c_void);
+        if unsafe { GetMonitorInfoW(handle, &mut info).as_bool() } {
+            let work = info.rcWork;
+            let width = u32::try_from(i64::from(work.right) - i64::from(work.left)).unwrap_or(0);
+            let height = u32::try_from(i64::from(work.bottom) - i64::from(work.top)).unwrap_or(0);
+            if width > 0 && height > 0 {
+                area.x = work.left;
+                area.y = work.top;
+                area.width = width;
+                area.height = height;
+            }
+        }
+        area
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        area
     }
 }
 
@@ -2548,11 +2839,12 @@ mod tests {
         HostedBrowserBounds, HostedBrowserCommand, HostedBrowserCommandKind, HostedBrowserId,
     };
     use super::{
-        HostedProgramUpdate, HostedRedraw, HostedTitleBarMode, HostedWindowEvent, HostedWindowId,
-        HostedWindowRole, HostedWindowSettings, should_request_redraw, window_attributes,
-        window_background, window_level,
+        HostedDisplayArea, HostedProgramUpdate, HostedRedraw, HostedTitleBarMode,
+        HostedWindowEvent, HostedWindowId, HostedWindowPlacement, HostedWindowRole,
+        HostedWindowSettings, should_request_redraw, window_attributes, window_background,
+        window_level,
     };
-    use iced::Point;
+    use iced::{Point, Size};
     use iced_winit::winit;
     use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome};
     use std::path::PathBuf;
@@ -2703,6 +2995,51 @@ mod tests {
             settings.initial_physical_geometry,
             Some((20, 40, 1280, 960))
         );
+    }
+
+    #[test]
+    fn placement_preserves_a_connected_negative_coordinate_display() {
+        let displays = [
+            HostedDisplayArea::new(0, 0, 1920, 1040, 1.0, true),
+            HostedDisplayArea::new(-2560, 0, 2560, 1400, 1.0, false),
+        ];
+        let placement = HostedWindowPlacement::new(-2200, 80, 1200, 900, 1.0, false)
+            .normalized_for(&displays, Size::new(760.0, 520.0));
+
+        assert_eq!(placement.x, -2200);
+        assert_eq!(placement.y, 80);
+        assert_eq!(placement.width, 1200);
+        assert_eq!(placement.height, 900);
+    }
+
+    #[test]
+    fn disconnected_placement_is_scaled_and_centered_on_the_primary_work_area() {
+        let displays = [
+            HostedDisplayArea::new(100, 40, 1600, 900, 1.5, true),
+            HostedDisplayArea::new(-1280, 0, 1280, 720, 1.0, false),
+        ];
+        let placement = HostedWindowPlacement::new(4000, 200, 1000, 600, 1.0, true)
+            .normalized_for(&displays, Size::new(760.0, 520.0));
+
+        assert_eq!(placement.x, 150);
+        assert_eq!(placement.y, 40);
+        assert_eq!(placement.width, 1500);
+        assert_eq!(placement.height, 900);
+        assert_eq!(placement.scale_factor, 1.5);
+        assert!(placement.maximized);
+    }
+
+    #[test]
+    fn placement_rescales_restore_bounds_when_the_display_dpi_changes() {
+        let displays = [HostedDisplayArea::new(-2000, -100, 2000, 1200, 1.0, true)];
+        let placement = HostedWindowPlacement::new(-1800, 100, 1600, 1000, 2.0, false)
+            .normalized_for(&displays, Size::new(640.0, 480.0));
+
+        assert_eq!(placement.x, -1900);
+        assert_eq!(placement.y, 0);
+        assert_eq!(placement.width, 800);
+        assert_eq!(placement.height, 500);
+        assert_eq!(placement.scale_factor, 1.0);
     }
 
     #[test]
