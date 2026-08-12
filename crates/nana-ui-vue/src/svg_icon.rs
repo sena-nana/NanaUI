@@ -227,12 +227,16 @@ pub fn svg_icon_element<'a, Message: 'a>(
 
 /// Chart SVG: author paints, viewBox-aware fit (no currentColor tint).
 ///
-/// Wide charts (heatmap) keep 1:1 CSS pixels and crop from the inline-end when
-/// the layout box is narrower — matching `overflow:hidden` + `flex-end`.
-/// Height always stays at the intrinsic size so all weekday rows remain visible
-/// even when the allocated track is shorter (no vertical viewBox crop).
-/// Near-square charts (pie/donut) use [`ContentFit::Contain`] so the full ring
-/// stays visible inside a shorter card body.
+/// Wide charts (heatmap) keep 1:1 CSS pixels when the layout box is tall enough.
+/// When the allocated height is shorter than the intrinsic viewBox, scale
+/// uniformly so every weekday row stays visible (no vertical crop), then crop
+/// from the inline-end to match `overflow:hidden` + `flex-end`.
+///
+/// Paint must use [`ContentFit::Fill`] into the scaled Fixed box — iced's
+/// [`ContentFit::None`] always draws at the intrinsic viewBox size (and the
+/// overflow is clipped by the short track), which slices weekday rows instead
+/// of shrinking them. Near-square charts (pie/donut) use
+/// [`ContentFit::Contain`] so the full ring stays visible inside a shorter card.
 pub fn svg_chart_element<'a, Message: 'a>(
     doc: String,
     intrinsic_w: f32,
@@ -247,12 +251,16 @@ pub fn svg_chart_element<'a, Message: 'a>(
         let avail_w = size.width.max(1.0);
         let avail_h = size.height.max(1.0);
         if wide {
-            let (crop_w, crop_h) = wide_chart_viewport(intrinsic_w, intrinsic_h, avail_w, avail_h);
+            let (draw_w, draw_h, crop_w, crop_h) =
+                wide_chart_paint_box(intrinsic_w, intrinsic_h, avail_w, avail_h);
+            // Fill (not None): rasterize into draw_* so uniform scale is real
+            // paint. None keeps the viewBox pixel size and lets the short
+            // overflow track clip through the middle of the weekday grid.
             let chart = svg::Svg::new(base_handle.clone())
-                .width(Length::Fixed(intrinsic_w))
-                .height(Length::Fixed(crop_h))
-                .content_fit(iced::ContentFit::None);
-            if (intrinsic_w - crop_w) < 0.5 {
+                .width(Length::Fixed(draw_w))
+                .height(Length::Fixed(draw_h))
+                .content_fit(iced::ContentFit::Fill);
+            if (draw_w - crop_w) < 0.5 {
                 chart.into()
             } else {
                 EndCrop::new(chart.into(), crop_w, crop_h).into()
@@ -267,6 +275,8 @@ pub fn svg_chart_element<'a, Message: 'a>(
     })
     .width(Length::Fill)
     .height(if wide {
+        // Prefer author height; iced clamps Fixed to the parent max so a short
+        // overflow track still reports the real avail_h into the closure above.
         Length::Fixed(intrinsic_h)
     } else {
         Length::Fill
@@ -274,24 +284,35 @@ pub fn svg_chart_element<'a, Message: 'a>(
     .into()
 }
 
-/// Horizontal crop width for wide charts — never shrinks height.
+/// Horizontal crop width for wide charts — never shrinks height alone.
 fn wide_chart_crop_width(intrinsic_w: f32, avail_w: f32) -> f32 {
     avail_w.max(1.0).min(intrinsic_w.max(1.0))
 }
 
-/// Paint viewport for a wide chart: may shrink width, height stays intrinsic.
+/// Paint box for a wide chart: `(draw_w, draw_h, crop_w, crop_h)`.
 ///
-/// `avail_h` is intentionally ignored — short flex tracks must not clip weekday rows.
-fn wide_chart_viewport(
+/// Height is never viewBox-cropped. If `avail_h` is shorter than intrinsic,
+/// scale uniformly so weekday rows fit; width crop still prefers the inline-end.
+fn wide_chart_paint_box(
     intrinsic_w: f32,
     intrinsic_h: f32,
     avail_w: f32,
-    _avail_h: f32,
-) -> (f32, f32) {
-    (
-        wide_chart_crop_width(intrinsic_w, avail_w),
-        intrinsic_h.max(1.0),
-    )
+    avail_h: f32,
+) -> (f32, f32, f32, f32) {
+    let intrinsic_w = intrinsic_w.max(1.0);
+    let intrinsic_h = intrinsic_h.max(1.0);
+    let avail_w = avail_w.max(1.0);
+    let avail_h = avail_h.max(1.0);
+    let scale = if avail_h + 0.5 < intrinsic_h {
+        (avail_h / intrinsic_h).clamp(0.01, 1.0)
+    } else {
+        1.0
+    };
+    let draw_w = intrinsic_w * scale;
+    let draw_h = intrinsic_h * scale;
+    let crop_w = wide_chart_crop_width(draw_w, avail_w);
+    // Crop viewport matches the scaled paint; horizontal EndCrop only.
+    (draw_w, draw_h, crop_w, draw_h.min(avail_h))
 }
 
 /// Clip a wider child to `width`×`height`, aligning content to the inline-end
@@ -1093,7 +1114,9 @@ mod tests {
 
     #[test]
     fn wide_chart_crop_preserves_full_intrinsic_height() {
-        // Short card body must not shrink weekday rows — only horizontal crop.
+        // Short card body must not drop weekday rows — scale uniformly, then
+        // horizontal EndCrop only. Paint uses ContentFit::Fill into draw_* so
+        // the scale is not undone by iced blitting the full viewBox.
         let intrinsic_w = 905.0;
         let intrinsic_h = 125.0;
         let avail_w = 352.0;
@@ -1103,13 +1126,30 @@ mod tests {
             (intrinsic_w / intrinsic_h) > 2.0,
             "fixture must stay on the wide-chart path"
         );
-        let (crop_w, crop_h) = wide_chart_viewport(intrinsic_w, intrinsic_h, avail_w, avail_h);
-        assert!((crop_w - 352.0).abs() < f32::EPSILON);
+        let (draw_w, draw_h, crop_w, crop_h) =
+            wide_chart_paint_box(intrinsic_w, intrinsic_h, avail_w, avail_h);
         assert!(
-            (crop_h - intrinsic_h).abs() < f32::EPSILON,
-            "wide charts must not vertically crop when avail_h={avail_h}, got crop_h={crop_h}"
+            (draw_h - avail_h).abs() < 0.5,
+            "draw_h={draw_h} should fit avail_h={avail_h}"
         );
-        assert!(crop_w < intrinsic_w);
+        assert!(draw_w < intrinsic_w);
+        assert!((crop_h - draw_h).abs() < f32::EPSILON);
+        assert!(
+            (crop_w - avail_w).abs() < 0.5,
+            "wide charts crop width to avail, got crop_w={crop_w}"
+        );
+        assert!(crop_w < draw_w);
+        // Scaled draw must stay inside the short track — never taller than avail.
+        assert!(
+            draw_h <= avail_h + 0.01,
+            "draw_h={draw_h} must not exceed avail_h={avail_h}"
+        );
+
+        // Tall enough track: 1:1 pixels, height stays intrinsic.
+        let (_dw2, _dh2, crop_w2, crop_h2) =
+            wide_chart_paint_box(intrinsic_w, intrinsic_h, avail_w, intrinsic_h + 10.0);
+        assert!((crop_h2 - intrinsic_h).abs() < f32::EPSILON);
+        assert!((crop_w2 - avail_w).abs() < 0.5);
     }
 
     #[test]
