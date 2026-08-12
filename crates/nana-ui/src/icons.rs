@@ -9,6 +9,7 @@ pub enum Icon {
     Add,
     Appearance,
     ArrowLeft,
+    Chart,
     Close,
     Eye,
     File,
@@ -141,6 +142,17 @@ impl<Message> canvas::Program<Message> for LineIcon {
                 self.line(&mut frame, scale, offset, (20.0, 12.0), (5.0, 12.0));
                 self.line(&mut frame, scale, offset, (11.0, 6.0), (5.0, 12.0));
                 self.line(&mut frame, scale, offset, (5.0, 12.0), (11.0, 18.0));
+            }
+            Icon::Chart => {
+                self.line(&mut frame, scale, offset, (4.0, 20.0), (4.0, 4.0));
+                self.line(&mut frame, scale, offset, (4.0, 20.0), (21.0, 20.0));
+                let series = Path::new(|builder| {
+                    builder.move_to(point(scale, offset, 6.0, 16.0));
+                    builder.line_to(point(scale, offset, 10.0, 11.0));
+                    builder.line_to(point(scale, offset, 14.0, 14.0));
+                    builder.line_to(point(scale, offset, 20.0, 6.0));
+                });
+                self.stroke(&mut frame, &series, scale);
             }
             Icon::Close => {
                 let close = Path::new(|builder| {

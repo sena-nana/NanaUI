@@ -16,22 +16,34 @@ full = ["bundled-fonts", "components", "hosted"]
 bundled-fonts = []
 components = [
     "calendar",
+    "charts",
     "controls",
     "feedback",
+    "graph-canvas",
     "image-viewer",
     "overlays",
     "popover",
+    "qr-code",
+    "rich-text",
+    "math",
+    "diagrams",
     "selects",
     "settings-components",
     "surfaces",
     "xy-pad",
 ]
 calendar = []
+charts = []
 controls = []
 feedback = []
+graph-canvas = []
 image-viewer = []
 overlays = []
 popover = []
+qr-code = ["dep:qrcode"]
+rich-text = ["dep:pulldown-cmark", "dep:unicode-segmentation"]
+math = ["rich-text", "dep:ratex-layout", "dep:ratex-parser", "dep:ratex-svg", "dep:ratex-types"]
+diagrams = ["rich-text", "dep:merman"]
 selects = []
 settings-components = ["controls"]
 surfaces = ["feedback"]
@@ -45,6 +57,14 @@ iced.workspace = true
 iced_wgpu = { workspace = true, optional = true }
 iced_winit = { workspace = true, optional = true }
 nana-window = { path = "../nana-window" }
+merman = { version = "=0.7.0-alpha.1", default-features = false, features = ["render", "ratex-math"], optional = true }
+pulldown-cmark = { version = "0.13.4", default-features = false, optional = true }
+qrcode = { version = "0.14.1", default-features = false, optional = true }
+unicode-segmentation = { version = "1.13.0", optional = true }
+ratex-layout = { version = "0.1.14", optional = true }
+ratex-parser = { version = "0.1.14", optional = true }
+ratex-svg = { version = "0.1.14", features = ["embed-fonts"], optional = true }
+ratex-types = { version = "0.1.14", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wgpu = { version = "30.0.0", optional = true }

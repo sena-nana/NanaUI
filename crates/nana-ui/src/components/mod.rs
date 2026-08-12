@@ -1,10 +1,14 @@
 pub mod actions;
 #[cfg(feature = "calendar")]
 pub mod calendar;
+#[cfg(feature = "charts")]
+pub mod charts;
 #[cfg(feature = "controls")]
 pub mod controls;
 #[cfg(feature = "feedback")]
 pub mod feedback;
+#[cfg(feature = "graph-canvas")]
+pub mod graph_canvas;
 #[cfg(feature = "image-viewer")]
 pub mod image_viewer;
 pub mod menus;
@@ -12,12 +16,22 @@ pub mod menus;
 pub mod overlays;
 #[cfg(feature = "popover")]
 pub mod popover;
+#[cfg(feature = "qr-code")]
+pub mod qr_code;
+#[cfg(feature = "controls")]
+pub mod reorder_list;
+#[cfg(feature = "rich-text")]
+pub mod rich_text;
+#[cfg(feature = "rich-text")]
+mod selectable_rich_text;
 #[cfg(feature = "selects")]
 pub mod selects;
 #[cfg(feature = "settings-components")]
 pub mod settings_sections;
 #[cfg(feature = "surfaces")]
 pub mod surfaces;
+#[cfg(feature = "controls")]
+mod tab_drag;
 #[cfg(feature = "xy-pad")]
 pub mod xy_pad;
 
@@ -29,15 +43,20 @@ pub use calendar::{
     CalendarHeatmapOptions, CalendarHeatmapState, CalendarLevelResolver, CalendarLevelStrategy,
     CalendarTitleFormatter, build_calendar_heatmap_model,
 };
+#[cfg(feature = "charts")]
+pub use charts::TimeSeriesChart;
 #[cfg(feature = "controls")]
 pub use controls::{
-    Checkbox, Input, RangeField, SegmentedControl, Select, SelectionOption, Switch, Tabs, Textarea,
+    Checkbox, HostedTextarea, HostedTextareaState, Input, RangeField, SegmentedControl, Select,
+    SelectionOption, Switch, TabDragGroup, TabDragSurface, Tabs, Textarea,
 };
 #[cfg(feature = "feedback")]
 pub use feedback::{
     LevelMeter, Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone,
     ValidationIntent, ValidationMessage,
 };
+#[cfg(feature = "graph-canvas")]
+pub use graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
 #[cfg(feature = "image-viewer")]
 pub use image_viewer::{ImageViewer, ImageViewerSource};
 pub use menus::{
@@ -48,6 +67,17 @@ pub use menus::{
 pub use overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};
 #[cfg(feature = "popover")]
 pub use popover::{Popover, PopoverPlacement};
+#[cfg(feature = "qr-code")]
+pub use qr_code::{QrCodeCanvas, QrCodeError};
+#[cfg(feature = "controls")]
+pub use reorder_list::{ReorderItem, ReorderList};
+#[cfg(feature = "rich-text")]
+pub use rich_text::{
+    MarkdownBlock, MarkdownBlockKind, MarkdownSpan, MarkdownTable, MarkdownTableAlignment,
+    NativeMarkdown, native_markdown,
+};
+#[cfg(feature = "rich-text")]
+pub use selectable_rich_text::SelectableRichText;
 #[cfg(feature = "selects")]
 pub use selects::{
     Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
