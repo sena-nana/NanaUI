@@ -326,6 +326,73 @@ function serializePatchValue(next) {
   return String(next);
 }
 
+/**
+ * Seed props for host createElement / createWidget.
+ * `__nanaHost.call` JSON-encodes args — never pass Vue vnode props / reactive
+ * graphs / wrapNodes or circular style objects through raw.
+ */
+function seedHostProps(vnodeProps) {
+  if (!vnodeProps || typeof vnodeProps !== "object") return null;
+  const out = {};
+  let any = false;
+  for (const [rawKey, value] of Object.entries(vnodeProps)) {
+    if (rawKey === "key" || rawKey === "ref" || isOn(rawKey) || isModelListener(rawKey)) {
+      continue;
+    }
+    let key = rawKey;
+    if (key[0] === "." || key[0] === "^") key = key.slice(1);
+    if (value == null) {
+      out[key] = null;
+      any = true;
+      continue;
+    }
+    const t = typeof value;
+    if (t === "string" || t === "number" || t === "boolean") {
+      out[key] = value;
+      any = true;
+      continue;
+    }
+    if (t !== "object") continue;
+    // Skip host nodes / DOM-likes.
+    if (typeof value.__nid === "number" || typeof value.nodeType === "number") continue;
+    if (Array.isArray(value)) {
+      const items = [];
+      let ok = true;
+      for (const item of value) {
+        const it = typeof item;
+        if (item == null || it === "string" || it === "number" || it === "boolean") {
+          items.push(item);
+        } else {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        out[key] = items;
+        any = true;
+      }
+      continue;
+    }
+    // Shallow plain object (class object / style bag) — primitives only.
+    try {
+      const plain = {};
+      let plainAny = false;
+      for (const [sk, sv] of Object.entries(value)) {
+        const st = typeof sv;
+        if (sv == null || st === "string" || st === "number" || st === "boolean") {
+          plain[sk] = sv;
+          plainAny = true;
+        }
+      }
+      if (plainAny) {
+        out[key] = plain;
+        any = true;
+      }
+    } catch (_err) {}
+  }
+  return any ? out : null;
+}
+
 function syncClassList(el, classValue) {
   if (!el || !el.classList || typeof el.classList.__replace !== "function") return;
   el.classList.__replace(classValue == null ? "" : String(classValue));
@@ -1014,7 +1081,12 @@ export const hostOps = {
       parent && typeof parent === "object" ? parent : parent != null ? wrapNode(parent) : null;
     const a =
       anchor && typeof anchor === "object" ? anchor : anchor != null ? wrapNode(anchor) : null;
-    hostCall("insert", [nodeId(c), nodeId(p), nodeId(a)]);
+    const cid = nodeId(c);
+    const pid = nodeId(p);
+    // Never call host insert with a null parent — Rust used to detach-then-fail
+    // and orphan sidebar footer slots during remount / Teleport.
+    if (cid == null || pid == null) return;
+    hostCall("insert", [cid, pid, nodeId(a)]);
     linkChild(p, c, a);
   },
   remove(child) {
@@ -1039,30 +1111,16 @@ export const hostOps = {
       isCustomizedBuiltIn == null || isCustomizedBuiltIn === false
         ? null
         : String(isCustomizedBuiltIn);
+    const seed = seedHostProps(vnodeProps);
     // Prefer createWidget for nana-* semantic controls so props seed the bridge.
     if (lower.startsWith("nana-") && lower !== "nana-gpu") {
       const kind = lower.slice("nana-".length);
-      const props = {};
-      if (vnodeProps && typeof vnodeProps === "object") {
-        for (const [k, v] of Object.entries(vnodeProps)) {
-          if (k.startsWith("on") || k === "key" || k === "ref") continue;
-          // Strip Vue .prop / ^attr modifiers before seeding widget props.
-          let pk = k;
-          if (pk[0] === "." || pk[0] === "^") pk = pk.slice(1);
-          props[pk] = v;
-        }
-      }
-      const id = hostCall("createWidget", [kind, props]);
+      const id = hostCall("createWidget", [kind, seed || {}]);
       const node = wrapNode(id, "element", tagName);
       node.__isSVG = false;
       return node;
     }
-    const id = hostCall("createElement", [
-      tagName,
-      ns,
-      is,
-      vnodeProps && typeof vnodeProps === "object" ? vnodeProps : null,
-    ]);
+    const id = hostCall("createElement", [tagName, ns, is, seed]);
     const node = wrapNode(id, "element", tagName);
     node.__isSVG = ns === "svg" || SVG_TAGS.has(lower);
     if (ns) node.__namespace = ns;

@@ -160,21 +160,8 @@ impl QuickJsEngine {
         ctx.globals()
             .set("__nanaHostRaw", raw)
             .map_err(map_rquickjs_error)?;
-        ctx.eval::<(), _>(
-            br#"
-            globalThis.__nanaHost = {
-              call(name, args) {
-                const raw = globalThis.__nanaHostRaw(String(name), JSON.stringify(args ?? []));
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === "object" && Object.prototype.hasOwnProperty.call(parsed, "__nanaHostError")) {
-                  throw new Error(String(parsed.__nanaHostError));
-                }
-                return parsed;
-              }
-            };
-            "#,
-        )
-        .map_err(|err| map_eval_error(ctx, err))?;
+        ctx.eval::<(), _>(nana_js_engine::HOST_BRIDGE_INSTALL_JS.as_bytes())
+            .map_err(|err| map_eval_error(ctx, err))?;
         Ok(())
     }
 
