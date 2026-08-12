@@ -1,11 +1,16 @@
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use iced::advanced::widget::{self, Widget};
+use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
 use iced::widget::text::LineHeight;
 use iced::widget::{
     Stack, button, column, container, mouse_area, row, scrollable, text, text_input,
 };
-use iced::{Alignment, Element, Length, Pixels, Point, Size};
+use iced::{
+    Alignment, Element, Event, Length, Pixels, Point, Rectangle, Size, Theme, Vector, keyboard,
+    touch,
+};
 
 use crate::absolute::Absolute;
 use crate::components::ControlSize;
@@ -392,76 +397,23 @@ where
     }
 
     pub fn view(self) -> Element<'a, Message> {
-        let mut panels: Vec<Element<'a, Message>> = Vec::new();
-        let mut panel_count = 1;
-        let mut max_panel_items = self.items.len();
+        let root_panel;
+        let root_item_count;
         if self.searchable && !self.query.trim().is_empty() {
             let matches = collect_matches(self.items, self.query);
-            max_panel_items = matches.len();
-            panels.push(self.panel(
-                matches.into_iter().map(|(_, item)| (Vec::new(), item)),
-                true,
-            ));
+            root_item_count = matches.len();
+            root_panel = self.flat_panel(matches.into_iter().map(|(_, item)| item));
         } else {
-            panels.push(
-                self.panel(
-                    self.items
-                        .iter()
-                        .enumerate()
-                        .map(|(index, item)| (vec![index], item)),
-                    false,
-                ),
-            );
-            let mut items = self.items;
-            let mut path = Vec::new();
-            for &index in self.active_path {
-                let Some(item) = items.get(index) else {
-                    break;
-                };
-                if item.children.is_empty() {
-                    break;
-                }
-                path.push(index);
-                let parent = path.clone();
-                panel_count += 1;
-                max_panel_items = max_panel_items.max(item.children.len());
-                panels.push(self.panel(
-                    item.children.iter().enumerate().map(move |(child, item)| {
-                        let mut item_path = parent.clone();
-                        item_path.push(child);
-                        (item_path, item)
-                    }),
-                    false,
-                ));
-                items = &item.children;
-            }
+            root_item_count = self.items.len();
+            root_panel = self.panel(self.items, &[], self.active_path);
         }
 
         let search_size = ControlSize::Small;
-        let menu_size = context_menu_size(
-            panel_count,
-            max_panel_items,
-            self.searchable,
-            self.tokens,
-            self.viewport,
-        );
-        let search_height = if self.searchable {
-            search_size.height_in(self.tokens.metrics)
-        } else {
-            0.0
-        };
-        let content_spacing = if self.searchable {
-            MENU_CONTENT_SPACING
-        } else {
-            0.0
-        };
+        let menu_size =
+            context_menu_panel_size(root_item_count, self.searchable, self.tokens, self.viewport);
         // Fixed list height — avoid Length::Fill collapsing when an ancestor
         // (historically iced::pin) clamps the menu surface near a corner.
-        let list_height = (menu_size.height
-            - MENU_SURFACE_PADDING * 2.0
-            - search_height
-            - content_spacing)
-            .max(0.0);
+        let list_height = context_menu_list_height(menu_size, self.searchable, self.tokens);
         let mut content = column![].spacing(MENU_CONTENT_SPACING);
         if self.searchable {
             content = content.push(
@@ -482,79 +434,320 @@ where
             );
         }
         content = content.push(
-            scrollable(row(panels).spacing(MENU_PANEL_SPACING))
+            scrollable(root_panel)
                 .direction(vertical_scrollbar())
                 .style(scrollable_style(self.tokens.colors))
                 .height(Length::Fixed(list_height)),
         );
         let on_dismiss = (self.on_event)(ContextMenuEvent::Dismiss);
         let on_interaction = (self.on_event)(ContextMenuEvent::Interaction);
-        AnchoredActionMenu::new(
-            content,
-            self.position,
-            self.viewport,
+        let root = context_menu_surface(content.into(), menu_size, on_interaction, self.tokens);
+        let point = self.position.resolve(menu_size, self.viewport);
+        Element::new(ContextMenuLayer::new(
+            Absolute::new(root, point).into(),
+            Rectangle::new(point, menu_size),
             on_dismiss,
-            on_interaction,
-        )
-        .menu_size(menu_size.width, menu_size.height)
-        .view(self.tokens)
+        ))
     }
 
     fn panel(
         &self,
-        items: impl IntoIterator<Item = (Vec<usize>, &'a ContextMenuItem<'a, T>)>,
-        flattened: bool,
+        items: &'a [ContextMenuItem<'a, T>],
+        parent_path: &[usize],
+        active_path: &[usize],
     ) -> Element<'a, Message> {
         let mut panel = column![]
             .spacing(MENU_ITEM_SPACING)
             .width(Length::Fixed(MENU_PANEL_WIDTH));
-        for (path, item) in items {
-            let pending = self.pending == Some(&item.value);
-            let label = if pending {
-                item.confirm_label
-                    .clone()
-                    .unwrap_or_else(|| item.label.clone())
-            } else {
-                item.label.clone()
-            };
-            let event = if !flattened && !item.children.is_empty() {
-                ContextMenuEvent::OpenSubmenu(path)
+        for (index, item) in items.iter().enumerate() {
+            let mut path = parent_path.to_vec();
+            path.push(index);
+            let event = if !item.children.is_empty() {
+                ContextMenuEvent::OpenSubmenu(path.clone())
             } else {
                 ContextMenuEvent::Select(item.value.clone())
             };
-            let mut menu_item = ActionMenuItem::new(label)
-                .active(pending)
-                .danger(item.danger || pending)
-                .disabled(item.disabled)
-                .on_press((self.on_event)(event));
-            if let Some(icon) = item.icon {
-                menu_item = menu_item.leading(icon);
-            }
-            if !item.children.is_empty() {
-                menu_item = menu_item.hint("›");
-            } else if let Some(hint) = &item.hint {
-                menu_item = menu_item.hint(hint.clone());
-            }
-            panel = panel.push(menu_item.view(self.tokens));
+            let trigger = self.item(item, event);
+            let row = if !item.disabled
+                && !item.children.is_empty()
+                && active_path.first() == Some(&index)
+            {
+                let surface = self.submenu_surface(
+                    &item.children,
+                    &path,
+                    active_path.get(1..).unwrap_or_default(),
+                );
+                Element::new(SubmenuAnchor::new(trigger, surface))
+            } else {
+                trigger
+            };
+            panel = panel.push(row);
         }
         container(panel).into()
     }
+
+    fn flat_panel(
+        &self,
+        items: impl IntoIterator<Item = &'a ContextMenuItem<'a, T>>,
+    ) -> Element<'a, Message> {
+        let mut panel = column![]
+            .spacing(MENU_ITEM_SPACING)
+            .width(Length::Fixed(MENU_PANEL_WIDTH));
+        for item in items {
+            panel = panel.push(self.item(item, ContextMenuEvent::Select(item.value.clone())));
+        }
+        container(panel).into()
+    }
+
+    fn item(
+        &self,
+        item: &'a ContextMenuItem<'a, T>,
+        event: ContextMenuEvent<T>,
+    ) -> Element<'a, Message> {
+        let pending = self.pending == Some(&item.value);
+        let label = if pending {
+            item.confirm_label
+                .clone()
+                .unwrap_or_else(|| item.label.clone())
+        } else {
+            item.label.clone()
+        };
+        let mut menu_item = ActionMenuItem::new(label)
+            .active(pending)
+            .danger(item.danger || pending)
+            .disabled(item.disabled)
+            .on_press((self.on_event)(event));
+        if let Some(icon) = item.icon {
+            menu_item = menu_item.leading(icon);
+        }
+        if !item.children.is_empty() {
+            menu_item = menu_item.hint("›");
+        } else if let Some(hint) = &item.hint {
+            menu_item = menu_item.hint(hint.clone());
+        }
+        menu_item.view(self.tokens)
+    }
+
+    fn submenu_surface(
+        &self,
+        items: &'a [ContextMenuItem<'a, T>],
+        parent_path: &[usize],
+        active_path: &[usize],
+    ) -> Element<'a, Message> {
+        let size = context_menu_panel_size(items.len(), false, self.tokens, self.viewport);
+        let list_height = context_menu_list_height(size, false, self.tokens);
+        let content = scrollable(self.panel(items, parent_path, active_path))
+            .direction(vertical_scrollbar())
+            .style(scrollable_style(self.tokens.colors))
+            .height(Length::Fixed(list_height));
+        context_menu_surface(
+            content.into(),
+            size,
+            (self.on_event)(ContextMenuEvent::Interaction),
+            self.tokens,
+        )
+    }
 }
 
-fn context_menu_size(
-    panel_count: usize,
-    max_panel_items: usize,
+fn context_menu_surface<'a, Message>(
+    content: Element<'a, Message>,
+    size: Size,
+    on_interaction: Message,
+    tokens: ThemeTokens,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    mouse_area(
+        container(content)
+            .width(Length::Fixed(size.width))
+            .height(Length::Fixed(size.height))
+            .padding(MENU_SURFACE_PADDING)
+            .style(menu_surface_style(tokens)),
+    )
+    .on_press(on_interaction)
+    .into()
+}
+
+/// Captures dismissal before the desktop content beneath the menu sees it.
+/// Submenu overlays receive events first; a handled submenu interaction never
+/// reaches this layer, while Escape and presses outside the root are consumed.
+struct ContextMenuLayer<'a, Message> {
+    content: Element<'a, Message>,
+    root_bounds: Rectangle,
+    on_dismiss: Message,
+}
+
+impl<'a, Message> ContextMenuLayer<'a, Message> {
+    fn new(content: Element<'a, Message>, root_bounds: Rectangle, on_dismiss: Message) -> Self {
+        Self {
+            content,
+            root_bounds,
+            on_dismiss,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextMenuInput {
+    Dismiss,
+    Capture,
+    Forward,
+}
+
+fn context_menu_input(
+    event: &Event,
+    cursor: mouse::Cursor,
+    root_bounds: Rectangle,
+) -> ContextMenuInput {
+    if matches!(
+        event,
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        })
+    ) {
+        return ContextMenuInput::Dismiss;
+    }
+    let pointer_press = match event {
+        Event::Mouse(mouse::Event::ButtonPressed(button)) => Some((*button, cursor.position())),
+        Event::Touch(touch::Event::FingerPressed { position, .. }) => {
+            Some((mouse::Button::Left, Some(*position)))
+        }
+        _ => None,
+    };
+    let Some((button, position)) = pointer_press else {
+        return ContextMenuInput::Forward;
+    };
+    if !position.is_some_and(|position| root_bounds.contains(position)) {
+        ContextMenuInput::Dismiss
+    } else if button != mouse::Button::Left {
+        ContextMenuInput::Capture
+    } else {
+        ContextMenuInput::Forward
+    }
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for ContextMenuLayer<'_, Message>
+where
+    Message: Clone,
+{
+    fn tag(&self) -> widget::tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> widget::tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn diff(&mut self, tree: &mut widget::Tree) {
+        self.content.as_widget_mut().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        match context_menu_input(event, cursor, self.root_bounds) {
+            ContextMenuInput::Dismiss => {
+                shell.publish(self.on_dismiss.clone());
+                shell.capture_event();
+                return;
+            }
+            ContextMenuInput::Capture => {
+                shell.capture_event();
+                return;
+            }
+            ContextMenuInput::Forward => {}
+        }
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn overlay<'a>(
+        &'a mut self,
+        tree: &'a mut widget::Tree,
+        layout: Layout<'a>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'a, Message, Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+fn context_menu_panel_size(
+    item_count: usize,
     searchable: bool,
     tokens: ThemeTokens,
     viewport: Size,
 ) -> Size {
-    let panel_count = panel_count.max(1);
-    let width = MENU_SURFACE_PADDING * 2.0
-        + panel_count as f32 * MENU_PANEL_WIDTH
-        + panel_count.saturating_sub(1) as f32 * MENU_PANEL_SPACING;
+    let width = (MENU_SURFACE_PADDING * 2.0 + MENU_PANEL_WIDTH).min(viewport.width.max(0.0));
     let item_height = ControlSize::Small.height_in(tokens.metrics);
-    let panel_height = max_panel_items as f32 * item_height
-        + max_panel_items.saturating_sub(1) as f32 * MENU_ITEM_SPACING;
+    let panel_height =
+        item_count as f32 * item_height + item_count.saturating_sub(1) as f32 * MENU_ITEM_SPACING;
     let search_height = if searchable { item_height } else { 0.0 };
     let content_spacing = if searchable {
         MENU_CONTENT_SPACING
@@ -565,6 +758,290 @@ fn context_menu_size(
         MENU_SURFACE_PADDING * 2.0 + search_height + content_spacing + panel_height;
     let max_height = viewport.height.max(MENU_MIN_HEIGHT);
     Size::new(width, intrinsic_height.min(max_height).max(MENU_MIN_HEIGHT))
+}
+
+fn context_menu_list_height(size: Size, searchable: bool, tokens: ThemeTokens) -> f32 {
+    let search_height = if searchable {
+        ControlSize::Small.height_in(tokens.metrics)
+    } else {
+        0.0
+    };
+    let content_spacing = if searchable {
+        MENU_CONTENT_SPACING
+    } else {
+        0.0
+    };
+    (size.height - MENU_SURFACE_PADDING * 2.0 - search_height - content_spacing).max(0.0)
+}
+
+fn resolve_submenu_position(trigger: Rectangle, surface: Size, viewport: Size) -> Point {
+    let right = trigger.x + trigger.width + MENU_SURFACE_PADDING + MENU_PANEL_SPACING;
+    let left = trigger.x - MENU_SURFACE_PADDING - MENU_PANEL_SPACING - surface.width;
+    let max_x = (viewport.width - surface.width).max(0.0);
+    let x = if right + surface.width <= viewport.width {
+        right
+    } else if left >= 0.0 {
+        left
+    } else {
+        right.clamp(0.0, max_x)
+    };
+    let y =
+        (trigger.y - MENU_SURFACE_PADDING).clamp(0.0, (viewport.height - surface.height).max(0.0));
+    Point::new(x, y)
+}
+
+struct SubmenuAnchor<'a, Message> {
+    trigger: Element<'a, Message>,
+    surface: Element<'a, Message>,
+}
+
+impl<'a, Message> SubmenuAnchor<'a, Message> {
+    fn new(trigger: Element<'a, Message>, surface: Element<'a, Message>) -> Self {
+        Self { trigger, surface }
+    }
+}
+
+#[derive(Debug, Default)]
+struct SubmenuAnchorState;
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for SubmenuAnchor<'_, Message>
+where
+    Message: Clone,
+{
+    fn tag(&self) -> widget::tree::Tag {
+        widget::tree::Tag::of::<SubmenuAnchorState>()
+    }
+
+    fn state(&self) -> widget::tree::State {
+        widget::tree::State::new(SubmenuAnchorState)
+    }
+
+    fn diff(&mut self, tree: &mut widget::Tree) {
+        tree.diff_children(&mut [self.trigger.as_widget_mut(), self.surface.as_widget_mut()]);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.trigger.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.trigger
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.trigger.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            shell,
+            viewport,
+        );
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.trigger.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.trigger.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.trigger
+            .as_widget_mut()
+            .operate(&mut tree.children[0], layout, renderer, operation);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut widget::Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        let mut children = tree.children.iter_mut();
+        let trigger_overlay = self.trigger.as_widget_mut().overlay(
+            children.next().expect("submenu trigger state"),
+            layout,
+            renderer,
+            viewport,
+            translation,
+        );
+        let submenu = overlay::Element::new(Box::new(SubmenuOverlay {
+            trigger_bounds: layout.bounds() + translation,
+            surface: &mut self.surface,
+            tree: children.next().expect("submenu surface state"),
+        }));
+        let overlays: Vec<_> = trigger_overlay.into_iter().chain([submenu]).collect();
+        Some(overlay::Group::with_children(overlays).overlay())
+    }
+}
+
+struct SubmenuOverlay<'a, 'b, Message> {
+    trigger_bounds: Rectangle,
+    surface: &'b mut Element<'a, Message>,
+    tree: &'b mut widget::Tree,
+}
+
+impl<Message> overlay::Overlay<Message, Theme, iced::Renderer> for SubmenuOverlay<'_, '_, Message>
+where
+    Message: Clone,
+{
+    fn layout(&mut self, renderer: &iced::Renderer, bounds: Size) -> layout::Node {
+        let surface = self.surface.as_widget_mut().layout(
+            self.tree,
+            renderer,
+            &layout::Limits::new(Size::ZERO, bounds),
+        );
+        let size = surface.size();
+        let point = resolve_submenu_position(self.trigger_bounds, size, bounds);
+        layout::Node::with_children(size, vec![surface]).move_to(point)
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let non_primary_press = matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(button))
+                if *button != mouse::Button::Left
+        );
+        if non_primary_press && cursor.is_over(layout.bounds()) {
+            shell.capture_event();
+            return;
+        }
+        self.surface.as_widget_mut().update(
+            self.tree,
+            event,
+            layout.children().next().expect("submenu surface layout"),
+            cursor,
+            renderer,
+            shell,
+            &Rectangle::with_size(Size::INFINITE),
+        );
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) {
+        self.surface.as_widget().draw(
+            self.tree,
+            renderer,
+            theme,
+            style,
+            layout.children().next().expect("submenu surface layout"),
+            cursor,
+            &Rectangle::with_size(Size::INFINITE),
+        );
+    }
+
+    fn operate(
+        &mut self,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.surface.as_widget_mut().operate(
+            self.tree,
+            layout.children().next().expect("submenu surface layout"),
+            renderer,
+            operation,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.surface.as_widget().mouse_interaction(
+            self.tree,
+            layout.children().next().expect("submenu surface layout"),
+            cursor,
+            &Rectangle::with_size(Size::INFINITE),
+            renderer,
+        )
+    }
+
+    fn overlay<'c>(
+        &'c mut self,
+        layout: Layout<'c>,
+        renderer: &iced::Renderer,
+    ) -> Option<overlay::Element<'c, Message, Theme, iced::Renderer>> {
+        self.surface.as_widget_mut().overlay(
+            self.tree,
+            layout.children().next().expect("submenu surface layout"),
+            renderer,
+            &Rectangle::with_size(Size::INFINITE),
+            Vector::ZERO,
+        )
+    }
 }
 
 fn collect_matches<'a, T>(
@@ -603,11 +1080,12 @@ fn collect_matches<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuItem, ControlSize,
-        collect_matches, context_menu_size,
+        ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuInput,
+        ContextMenuItem, ControlSize, collect_matches, context_menu_input, context_menu_panel_size,
+        resolve_submenu_position,
     };
     use crate::theme::ThemeModeExt;
-    use iced::{Point, Size};
+    use iced::{Event, Point, Rectangle, Size, keyboard, mouse};
 
     #[test]
     fn anchored_menu_position_stays_inside_the_viewport() {
@@ -637,7 +1115,7 @@ mod tests {
     #[test]
     fn context_menu_size_matches_visible_panel_content() {
         let tokens = crate::theme::ThemeMode::Dark.colors().into();
-        let size = context_menu_size(1, 1, false, tokens, Size::new(800.0, 600.0));
+        let size = context_menu_panel_size(1, false, tokens, Size::new(800.0, 600.0));
         let item_height = ControlSize::Small.height_in(tokens.metrics);
 
         assert_eq!(size.width, 200.0);
@@ -645,12 +1123,12 @@ mod tests {
     }
 
     #[test]
-    fn context_menu_size_accounts_for_multiple_panels_and_search() {
+    fn context_menu_size_accounts_for_search_without_resizing_for_submenus() {
         let tokens = crate::theme::ThemeMode::Dark.colors().into();
-        let size = context_menu_size(2, 3, true, tokens, Size::new(800.0, 600.0));
+        let size = context_menu_panel_size(3, true, tokens, Size::new(800.0, 600.0));
         let item_height = ControlSize::Small.height_in(tokens.metrics);
 
-        assert_eq!(size.width, 396.0);
+        assert_eq!(size.width, 200.0);
         assert_eq!(
             size.height,
             8.0 + item_height + 4.0 + item_height * 3.0 + 2.0
@@ -661,12 +1139,72 @@ mod tests {
     fn context_menu_size_caps_long_panels_to_the_viewport() {
         let tokens = crate::theme::ThemeMode::Dark.colors().into();
         let viewport = Size::new(320.0, 180.0);
-        let size = context_menu_size(1, 100, true, tokens, viewport);
+        let size = context_menu_panel_size(100, true, tokens, viewport);
 
         assert_eq!(size.height, viewport.height);
         let position = AnchoredMenuPosition::new(Point::new(310.0, 170.0))
             .placement(AnchoredMenuPlacement::BottomEnd)
             .resolve(size, viewport);
         assert_eq!(position, Point::new(110.0, 0.0));
+    }
+
+    #[test]
+    fn submenu_flips_left_and_clamps_vertically_without_moving_its_parent() {
+        let trigger = Rectangle::new(Point::new(350.0, 260.0), Size::new(28.0, 28.0));
+        let viewport = Size::new(400.0, 300.0);
+        let surface = Size::new(200.0, 150.0);
+
+        assert_eq!(
+            resolve_submenu_position(trigger, surface, viewport),
+            Point::new(142.0, 150.0)
+        );
+    }
+
+    #[test]
+    fn submenu_prefers_the_right_when_the_window_has_room() {
+        let trigger = Rectangle::new(Point::new(40.0, 80.0), Size::new(192.0, 28.0));
+
+        assert_eq!(
+            resolve_submenu_position(trigger, Size::new(200.0, 120.0), Size::new(800.0, 600.0),),
+            Point::new(240.0, 76.0)
+        );
+    }
+
+    #[test]
+    fn context_menu_dismissal_consumes_escape_and_outside_presses() {
+        let bounds = Rectangle::new(Point::new(40.0, 30.0), Size::new(200.0, 120.0));
+        let escape = Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::default(),
+            text: None,
+            repeat: false,
+        });
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+
+        assert_eq!(
+            context_menu_input(&escape, mouse::Cursor::Unavailable, bounds),
+            ContextMenuInput::Dismiss
+        );
+        assert_eq!(
+            context_menu_input(
+                &press,
+                mouse::Cursor::Available(Point::new(10.0, 10.0)),
+                bounds,
+            ),
+            ContextMenuInput::Dismiss
+        );
+        assert_eq!(
+            context_menu_input(
+                &press,
+                mouse::Cursor::Available(Point::new(60.0, 60.0)),
+                bounds,
+            ),
+            ContextMenuInput::Forward
+        );
     }
 }

@@ -25,6 +25,7 @@ pub struct CaseReport {
     pub layout_diff_ms: Distribution,
     pub event_update_ms: Distribution,
     pub draw_cpu_ms: Distribution,
+    pub cpu_total_ms: Distribution,
     pub gpu_submit_wait_ms: Distribution,
     pub total_ms: Distribution,
 }
@@ -47,12 +48,12 @@ pub struct Sample {
 }
 
 impl Sample {
+    fn cpu_total_ms(self) -> f64 {
+        self.view_construction_ms + self.layout_diff_ms + self.event_update_ms + self.draw_cpu_ms
+    }
+
     fn total_ms(self) -> f64 {
-        self.view_construction_ms
-            + self.layout_diff_ms
-            + self.event_update_ms
-            + self.draw_cpu_ms
-            + self.gpu_submit_wait_ms
+        self.cpu_total_ms() + self.gpu_submit_wait_ms
     }
 }
 
@@ -71,6 +72,7 @@ impl CaseReport {
             layout_diff_ms: summarize(samples.iter().map(|sample| sample.layout_diff_ms)),
             event_update_ms: summarize(samples.iter().map(|sample| sample.event_update_ms)),
             draw_cpu_ms: summarize(samples.iter().map(|sample| sample.draw_cpu_ms)),
+            cpu_total_ms: summarize(samples.iter().copied().map(Sample::cpu_total_ms)),
             gpu_submit_wait_ms: summarize(samples.iter().map(|sample| sample.gpu_submit_wait_ms)),
             total_ms: summarize(samples.iter().copied().map(Sample::total_ms)),
         }
@@ -136,6 +138,8 @@ mod tests {
         assert_eq!(report.item_count, 100);
         assert_eq!(report.view_construction_ms.median, 2.0);
         assert_eq!(report.view_construction_ms.p95, 10.0);
+        assert_eq!(report.cpu_total_ms.median, 14.0);
+        assert_eq!(report.cpu_total_ms.p95, 46.0);
         assert_eq!(report.total_ms.median, 20.0);
         assert_eq!(report.total_ms.p95, 60.0);
     }

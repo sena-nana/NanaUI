@@ -140,13 +140,7 @@ impl GalleryState {
         .height(Length::Fill)
         .style(canvas_style(colors));
 
-        if self.overlay.contains(&GalleryOverlay::ContextMenu) {
-            OverlayHost::new(content)
-                .push(self.context_menu(colors))
-                .view()
-        } else {
-            content.into()
-        }
+        content.into()
     }
 
     pub(super) fn context_menu(&self, colors: Colors) -> Element<'_, GalleryMessage> {
