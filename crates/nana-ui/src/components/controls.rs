@@ -185,6 +185,7 @@ pub struct Input<'a, Message> {
     placeholder: Cow<'a, str>,
     value: Cow<'a, str>,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
+    on_submit: Option<Message>,
     size: ControlSize,
     padding: Option<Padding>,
     line_height: Option<f32>,
@@ -202,6 +203,7 @@ where
             placeholder: placeholder.into(),
             value: value.into(),
             on_input: None,
+            on_submit: None,
             size: ControlSize::Medium,
             padding: None,
             line_height: None,
@@ -213,6 +215,11 @@ where
 
     pub fn on_input(mut self, on_input: impl Fn(String) -> Message + 'a) -> Self {
         self.on_input = Some(Box::new(on_input));
+        self
+    }
+
+    pub fn on_submit(mut self, on_submit: Message) -> Self {
+        self.on_submit = Some(on_submit);
         self
     }
 
@@ -266,9 +273,15 @@ where
             .width(Length::Fill)
             .style(text_input_style(tokens, self.invalid));
         if self.disabled {
-            field.into()
-        } else if let Some(on_input) = self.on_input {
-            field.on_input(on_input).into()
+            return field.into();
+        }
+        let field = if let Some(on_input) = self.on_input {
+            field.on_input(on_input)
+        } else {
+            field
+        };
+        if let Some(on_submit) = self.on_submit {
+            field.on_submit(on_submit).into()
         } else {
             field.into()
         }
