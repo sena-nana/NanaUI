@@ -534,6 +534,7 @@ fn dock_window_merged_snapshot(
         layout,
     )?;
     controller.set_chrome_style(DockChromeStyle::Card);
+    controller.set_floating_window_title("NanaUI Gallery");
     let window_chrome = WindowChromeState::new(chrome);
     let colors = theme.colors();
     let contents = DockContents::new()
