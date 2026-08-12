@@ -1,14 +1,14 @@
 use std::borrow::Cow;
 
 use iced::widget::{button, column, container, mouse_area, row, space, text};
-use iced::{Alignment, Element, Length, Padding, font};
+use iced::{font, Alignment, Element, Length, Padding};
 
 use crate::components::{Button as UiButton, ControlSize};
 use crate::dialog::DialogSize;
-use crate::icons::{Icon, icon};
-use crate::theme::{ThemeTokens, ui_font};
-use crate::tooltip::{TooltipConfig, tooltip_view};
-use crate::widgets::{ButtonKind, dialog_close_style, dialog_scrim_style, dialog_surface_style};
+use crate::icons::{icon, Icon};
+use crate::theme::{ui_font, ThemeTokens};
+use crate::tooltip::{tooltip_view, TooltipConfig};
+use crate::widgets::{dialog_close_style, dialog_scrim_style, dialog_surface_style, ButtonKind};
 
 /// A modal surface with explicit outside, close and inner-interaction messages.
 ///
@@ -82,12 +82,10 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
-        let mut heading = column![
-            text(self.title)
-                .size(14)
-                .font(ui_font(font::Weight::Semibold))
-                .color(colors.text)
-        ]
+        let mut heading = column![text(self.title)
+            .size(14)
+            .font(ui_font(font::Weight::Semibold))
+            .color(colors.text)]
         .spacing(4)
         .width(Length::Fill);
         if let Some(description) = self.description {
@@ -158,6 +156,11 @@ pub struct ConfirmDialog<'a, Message> {
     on_cancel: Message,
     on_outside: Option<Message>,
     on_interaction: Message,
+    confirm_label: Cow<'a, str>,
+    cancel_label: Cow<'a, str>,
+    busy_label: Cow<'a, str>,
+    busy: bool,
+    busy_phase: u8,
     danger: bool,
     size: DialogSize,
 }
@@ -181,6 +184,11 @@ where
             on_cancel,
             on_outside: None,
             on_interaction,
+            confirm_label: Cow::Borrowed("确认"),
+            cancel_label: Cow::Borrowed("取消"),
+            busy_label: Cow::Borrowed("处理中"),
+            busy: false,
+            busy_phase: 0,
             danger: false,
             size: DialogSize::Default,
         }
@@ -193,6 +201,23 @@ where
 
     pub fn danger(mut self, danger: bool) -> Self {
         self.danger = danger;
+        self
+    }
+
+    pub fn confirm_label(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.confirm_label = label.into();
+        self
+    }
+
+    pub fn cancel_label(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.cancel_label = label.into();
+        self
+    }
+
+    pub fn busy(mut self, busy: bool, label: impl Into<Cow<'a, str>>, phase: u8) -> Self {
+        self.busy = busy;
+        self.busy_label = label.into();
+        self.busy_phase = phase;
         self
     }
 
@@ -209,20 +234,31 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
-        let on_outside = self.on_outside.unwrap_or_else(|| self.on_cancel.clone());
+        let on_outside = self
+            .on_outside
+            .clone()
+            .unwrap_or_else(|| self.on_cancel.clone());
+        let confirm_label = if self.busy {
+            self.busy_label
+        } else {
+            self.confirm_label
+        };
         let footer = row![
             space().width(Length::Fill),
-            UiButton::label("取消")
+            UiButton::label(self.cancel_label)
                 .kind(ButtonKind::Ghost)
                 .on_press(self.on_cancel.clone())
+                .disabled(self.busy)
                 .view(tokens),
-            UiButton::label("确认")
+            UiButton::label(confirm_label)
                 .kind(if self.danger {
                     ButtonKind::Danger
                 } else {
                     ButtonKind::Primary
                 })
                 .on_press(self.on_confirm)
+                .disabled(self.busy)
+                .loading(self.busy, self.busy_phase)
                 .view(tokens),
         ]
         .spacing(8)
@@ -230,9 +266,13 @@ where
         let mut dialog = Dialog::new(self.title, text(self.message).size(13).color(colors.text))
             .footer(footer)
             .size(self.size)
-            .on_close(self.on_cancel.clone())
-            .on_outside(on_outside)
+            .close_hidden(self.busy)
             .on_interaction(self.on_interaction);
+        if !self.busy {
+            dialog = dialog
+                .on_close(self.on_cancel.clone())
+                .on_outside(on_outside);
+        }
         if let Some(description) = self.description {
             dialog = dialog.description(description);
         }
