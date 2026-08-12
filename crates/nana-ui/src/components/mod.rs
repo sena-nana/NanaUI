@@ -87,7 +87,7 @@ pub use rich_text::{
     NativeMarkdown, native_markdown,
 };
 #[cfg(feature = "rich-text")]
-pub use selectable_rich_text::SelectableRichText;
+pub use selectable_rich_text::{SelectableRichText, TextSelectionGroup};
 #[cfg(feature = "selects")]
 pub use selects::{
     Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,

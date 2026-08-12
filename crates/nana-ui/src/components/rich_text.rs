@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use iced::alignment::Horizontal;
@@ -9,7 +10,7 @@ use pulldown_cmark::{
     Alignment as CmarkAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
 
-use crate::{SelectableRichText, ThemeTokens, ui_font};
+use crate::{SelectableRichText, TextSelectionGroup, ThemeTokens, ui_font};
 
 type VectorCache = Arc<Mutex<BTreeMap<VectorCacheKey, Option<Vec<u8>>>>>;
 
@@ -67,6 +68,7 @@ pub enum MarkdownBlock {
 pub struct NativeMarkdown {
     blocks: Vec<MarkdownBlock>,
     vector_cache: VectorCache,
+    selection_group: TextSelectionGroup,
 }
 
 impl PartialEq for NativeMarkdown {
@@ -112,6 +114,14 @@ impl NativeMarkdown {
             .join("\n\n")
     }
 
+    pub fn selected_text(&self) -> Option<String> {
+        self.selection_group.selected_text()
+    }
+
+    pub fn clear_selection(&self) {
+        self.selection_group.clear();
+    }
+
     pub fn view<Message>(
         &self,
         tokens: ThemeTokens,
@@ -121,6 +131,18 @@ impl NativeMarkdown {
         Message: Clone + 'static,
     {
         native_markdown(self, tokens, on_link)
+    }
+
+    pub fn view_with_selection<Message>(
+        &self,
+        tokens: ThemeTokens,
+        on_link: impl Fn(String) -> Message + Clone + 'static,
+        on_selection_change: impl Fn(Option<String>) -> Message + 'static,
+    ) -> Element<'static, Message>
+    where
+        Message: Clone + 'static,
+    {
+        render_document(self, tokens, on_link, Some(Rc::new(on_selection_change)))
     }
 }
 
@@ -421,6 +443,7 @@ impl MarkdownParser {
         NativeMarkdown {
             blocks: self.blocks,
             vector_cache: Arc::default(),
+            selection_group: TextSelectionGroup::default(),
         }
     }
 }
@@ -486,14 +509,30 @@ pub fn native_markdown<Message>(
 where
     Message: Clone + 'static,
 {
+    render_document(document, tokens, on_link, None)
+}
+
+type SelectionCallback<Message> = Option<Rc<dyn Fn(Option<String>) -> Message>>;
+
+fn render_document<Message>(
+    document: &NativeMarkdown,
+    tokens: ThemeTokens,
+    on_link: impl Fn(String) -> Message + Clone + 'static,
+    on_selection_change: SelectionCallback<Message>,
+) -> Element<'static, Message>
+where
+    Message: Clone + 'static,
+{
     let mut content = column![].spacing(9).width(Length::Fill);
     for (block_index, block) in document.blocks.iter().cloned().enumerate() {
         content = content.push(render_block(
             block_index,
             block,
             document.vector_cache.clone(),
+            document.selection_group.clone(),
             tokens,
             on_link.clone(),
+            on_selection_change.clone(),
         ));
     }
     content.into()
@@ -503,8 +542,10 @@ fn render_block<Message>(
     block_index: usize,
     block: MarkdownBlock,
     vector_cache: VectorCache,
+    selection_group: TextSelectionGroup,
     tokens: ThemeTokens,
     on_link: impl Fn(String) -> Message + Clone + 'static,
+    on_selection_change: SelectionCallback<Message>,
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
@@ -531,6 +572,7 @@ where
             let has_inline_math = spans.iter().any(|item| item.inline_math);
             let line: Element<'static, Message> = if has_inline_math {
                 let mut fragments = row![].spacing(1).align_y(Alignment::Center);
+                let mut first_text_fragment = true;
                 for (fragment_index, item) in spans.into_iter().enumerate() {
                     if item.inline_math {
                         fragments = fragments.push(render_inline_math(
@@ -569,11 +611,22 @@ where
                         value = value.color(colors.accent).underline(true).link(link);
                     }
                     fragments = fragments.push(
-                        SelectableRichText::new(vec![value])
-                            .size(size)
-                            .selection_color(selection_color(tokens))
-                            .on_link_click(on_link.clone()),
+                        selectable_markdown_text(
+                            vec![value],
+                            selection_group.clone(),
+                            selection_order(block_index, fragment_index),
+                            if first_text_fragment {
+                                block_separator(block_index)
+                            } else {
+                                ""
+                            },
+                            on_selection_change.clone(),
+                        )
+                        .size(size)
+                        .selection_color(selection_color(tokens))
+                        .on_link_click(on_link.clone()),
                     );
+                    first_text_fragment = false;
                 }
                 fragments.wrap().into()
             } else {
@@ -609,12 +662,18 @@ where
                         value
                     })
                     .collect::<Vec<_>>();
-                SelectableRichText::new(spans)
-                    .size(size)
-                    .selection_color(selection_color(tokens))
-                    .on_link_click(on_link)
-                    .width(Length::Fill)
-                    .into()
+                selectable_markdown_text(
+                    spans,
+                    selection_group,
+                    selection_order(block_index, 0),
+                    block_separator(block_index),
+                    on_selection_change,
+                )
+                .size(size)
+                .selection_color(selection_color(tokens))
+                .on_link_click(on_link)
+                .width(Length::Fill)
+                .into()
             };
             let line = container(line)
                 .width(Length::Fill)
@@ -627,14 +686,27 @@ where
                 line.into()
             }
         }
-        MarkdownBlock::Code { language, source } => code_block(language.as_deref(), source, tokens),
+        MarkdownBlock::Code { language, source } => selectable_code_block(
+            language.as_deref(),
+            source,
+            block_index,
+            selection_group,
+            on_selection_change,
+            tokens,
+        ),
         MarkdownBlock::DisplayMath(source) => {
             render_math(block_index, source, vector_cache, tokens)
         }
         MarkdownBlock::Mermaid(source) => render_mermaid(block_index, source, vector_cache, tokens),
-        MarkdownBlock::Table(table) => {
-            render_table(block_index, table, vector_cache, tokens, on_link)
-        }
+        MarkdownBlock::Table(table) => render_table(
+            block_index,
+            table,
+            vector_cache,
+            selection_group,
+            tokens,
+            on_link,
+            on_selection_change,
+        ),
         MarkdownBlock::Rule => container(text(""))
             .width(Length::Fill)
             .height(Length::Fixed(1.0))
@@ -645,9 +717,12 @@ where
     }
 }
 
-fn code_block<Message>(
+fn selectable_code_block<Message>(
     language: Option<&str>,
     source: String,
+    block_index: usize,
+    selection_group: TextSelectionGroup,
+    on_selection_change: SelectionCallback<Message>,
     tokens: ThemeTokens,
 ) -> Element<'static, Message>
 where
@@ -659,10 +734,16 @@ where
         body = body.push(text(language.to_owned()).size(10).color(colors.faint));
     }
     body = body.push(
-        SelectableRichText::new(vec![span(source).font(Font::MONOSPACE).color(colors.text)])
-            .size(12)
-            .width(Length::Fill)
-            .selection_color(selection_color(tokens)),
+        selectable_markdown_text(
+            vec![span(source).font(Font::MONOSPACE).color(colors.text)],
+            selection_group,
+            selection_order(block_index, 0),
+            block_separator(block_index),
+            on_selection_change,
+        )
+        .size(12)
+        .width(Length::Fill)
+        .selection_color(selection_color(tokens)),
     );
     container(body)
         .width(Length::Fill)
@@ -679,12 +760,32 @@ where
         .into()
 }
 
+fn code_block<Message>(
+    language: Option<&str>,
+    source: String,
+    tokens: ThemeTokens,
+) -> Element<'static, Message>
+where
+    Message: 'static,
+{
+    selectable_code_block(
+        language,
+        source,
+        0,
+        TextSelectionGroup::default(),
+        None,
+        tokens,
+    )
+}
+
 fn render_table<Message>(
     block_index: usize,
     table: MarkdownTable,
     vector_cache: VectorCache,
+    selection_group: TextSelectionGroup,
     tokens: ThemeTokens,
     on_link: impl Fn(String) -> Message + Clone + 'static,
+    on_selection_change: SelectionCallback<Message>,
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
@@ -705,8 +806,10 @@ where
     let context = TableRenderContext {
         block_index,
         vector_cache,
+        selection_group,
         tokens,
         on_link,
+        on_selection_change,
         column_width: COLUMN_WIDTH,
     };
     let mut body = column![].spacing(0).width(Length::Shrink);
@@ -738,16 +841,18 @@ where
 }
 
 #[derive(Clone)]
-struct TableRenderContext<F> {
+struct TableRenderContext<F, Message> {
     block_index: usize,
     vector_cache: VectorCache,
+    selection_group: TextSelectionGroup,
     tokens: ThemeTokens,
     on_link: F,
+    on_selection_change: SelectionCallback<Message>,
     column_width: f32,
 }
 
 fn render_table_row<Message, F>(
-    context: TableRenderContext<F>,
+    context: TableRenderContext<F, Message>,
     row_index: usize,
     cells: Vec<Vec<MarkdownSpan>>,
     alignments: &[MarkdownTableAlignment],
@@ -772,7 +877,7 @@ where
 }
 
 fn render_table_cell<Message, F>(
-    context: TableRenderContext<F>,
+    context: TableRenderContext<F, Message>,
     row_index: usize,
     column_index: usize,
     spans: Vec<MarkdownSpan>,
@@ -786,8 +891,10 @@ where
     let TableRenderContext {
         block_index,
         vector_cache,
+        selection_group,
         tokens,
         on_link,
+        on_selection_change,
         column_width,
     } = context;
     let colors = tokens.colors;
@@ -804,6 +911,7 @@ where
     let has_inline_math = spans.iter().any(|span| span.inline_math);
     let content: Element<'static, Message> = if has_inline_math {
         let mut fragments = row![].spacing(1).align_y(Alignment::Center);
+        let mut first_text_fragment = true;
         for (fragment_index, item) in spans.into_iter().enumerate() {
             if item.inline_math {
                 let cache_index = row_index
@@ -820,16 +928,18 @@ where
                 ));
             } else {
                 fragments = fragments.push(
-                    SelectableRichText::new(vec![markdown_text_span(
-                        item,
-                        weight,
-                        colors.text,
-                        colors.accent,
-                    )])
+                    selectable_markdown_text(
+                        vec![markdown_text_span(item, weight, colors.text, colors.accent)],
+                        selection_group.clone(),
+                        table_selection_order(block_index, row_index, column_index, fragment_index),
+                        table_separator(block_index, row_index, column_index, first_text_fragment),
+                        on_selection_change.clone(),
+                    )
                     .size(12)
                     .selection_color(selection_color(tokens))
                     .on_link_click(on_link.clone()),
                 );
+                first_text_fragment = false;
             }
         }
         container(fragments.wrap())
@@ -841,13 +951,19 @@ where
             .into_iter()
             .map(|item| markdown_text_span(item, weight, colors.text, colors.accent))
             .collect();
-        SelectableRichText::new(spans)
-            .size(12)
-            .width(Length::Fill)
-            .align_x(horizontal)
-            .selection_color(selection_color(tokens))
-            .on_link_click(on_link)
-            .into()
+        selectable_markdown_text(
+            spans,
+            selection_group,
+            table_selection_order(block_index, row_index, column_index, 0),
+            table_separator(block_index, row_index, column_index, true),
+            on_selection_change,
+        )
+        .size(12)
+        .width(Length::Fill)
+        .align_x(horizontal)
+        .selection_color(selection_color(tokens))
+        .on_link_click(on_link)
+        .into()
     };
     let background = if header {
         colors.subtle
@@ -867,6 +983,63 @@ where
                 })
         })
         .into()
+}
+
+fn selectable_markdown_text<Message>(
+    spans: Vec<iced::widget::text::Span<'static, String, Font>>,
+    selection_group: TextSelectionGroup,
+    order: u64,
+    separator_before: &str,
+    on_selection_change: SelectionCallback<Message>,
+) -> SelectableRichText<Message>
+where
+    Message: 'static,
+{
+    let mut value =
+        SelectableRichText::new(spans).selection_group(selection_group, order, separator_before);
+    if let Some(callback) = on_selection_change {
+        value = value.on_selection_change(move |selected| callback(selected));
+    }
+    value
+}
+
+fn selection_order(block_index: usize, fragment_index: usize) -> u64 {
+    (block_index as u64)
+        .saturating_mul(1_000_000)
+        .saturating_add(fragment_index as u64)
+}
+
+fn table_selection_order(
+    block_index: usize,
+    row_index: usize,
+    column_index: usize,
+    fragment_index: usize,
+) -> u64 {
+    selection_order(block_index, 100_000)
+        .saturating_add((row_index as u64).saturating_mul(10_000))
+        .saturating_add((column_index as u64).saturating_mul(100))
+        .saturating_add(fragment_index as u64)
+}
+
+fn block_separator(block_index: usize) -> &'static str {
+    if block_index == 0 { "" } else { "\n\n" }
+}
+
+fn table_separator(
+    block_index: usize,
+    row_index: usize,
+    column_index: usize,
+    first_text_fragment: bool,
+) -> &'static str {
+    if !first_text_fragment {
+        ""
+    } else if row_index == 0 && column_index == 0 {
+        block_separator(block_index)
+    } else if column_index == 0 {
+        "\n"
+    } else {
+        "\t"
+    }
 }
 
 fn markdown_text_span(
