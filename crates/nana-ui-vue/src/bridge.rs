@@ -524,10 +524,10 @@ impl WidgetProps {
                     "sidebar-footer" => Some("nana-sidebar-frame__footer"),
                     _ => None,
                 };
-                if let Some(class) = hint {
-                    if !self.class_names.iter().any(|c| c == class) {
-                        self.class_names.push(class.to_string());
-                    }
+                if let Some(class) = hint
+                    && !self.class_names.iter().any(|c| c == class)
+                {
+                    self.class_names.push(class.to_string());
                 }
             }
             "id" | "data-region-id" => {
@@ -552,17 +552,17 @@ impl WidgetProps {
                     self.active = true;
                 }
                 // Seed Lucide glyph name onto Icon props when class arrives after create.
-                if self.value.is_empty() {
-                    if let Some(glyph) = self.class_names.iter().find_map(|c| {
+                if self.value.is_empty()
+                    && let Some(glyph) = self.class_names.iter().find_map(|c| {
                         let raw = c
                             .strip_prefix("lucide-")
                             .unwrap_or(c.as_str())
                             .strip_suffix("-icon")
                             .unwrap_or(c.strip_prefix("lucide-").unwrap_or(c.as_str()));
                         Icon::parse_name(c).map(|_| raw.to_string())
-                    }) {
-                        self.value = glyph;
-                    }
+                    })
+                {
+                    self.value = glyph;
                 }
                 // Layout cascade rebuilt by MessageBridge after patch/register.
             }
@@ -856,16 +856,22 @@ impl SemanticSnapshot {
 
     /// Keep `seeds` and their descendants; re-root at the seeds.
     pub fn subtree_from(&self, seeds: impl IntoIterator<Item = WidgetId>) -> Self {
-        use std::collections::{BTreeSet, VecDeque};
+        use std::collections::{BTreeSet, HashMap, VecDeque};
 
+        let by_id: HashMap<_, _> = self
+            .widgets
+            .iter()
+            .map(|widget| (widget.id, widget))
+            .collect();
         let mut keep = BTreeSet::new();
         let mut queue: VecDeque<WidgetId> = seeds.into_iter().collect();
         let roots: Vec<WidgetId> = queue.iter().copied().collect();
+        let root_ids: BTreeSet<WidgetId> = roots.iter().copied().collect();
         while let Some(id) = queue.pop_front() {
             if !keep.insert(id) {
                 continue;
             }
-            if let Some(widget) = self.get(id) {
+            if let Some(widget) = by_id.get(&id) {
                 for &child in &widget.children {
                     queue.push_back(child);
                 }
@@ -878,9 +884,9 @@ impl SemanticSnapshot {
             .map(|w| {
                 let mut cloned = w.clone();
                 cloned.children.retain(|c| keep.contains(c));
-                if roots.contains(&cloned.id) {
-                    cloned.parent = None;
-                } else if cloned.parent.is_some_and(|p| !keep.contains(&p)) {
+                if root_ids.contains(&cloned.id)
+                    || cloned.parent.is_some_and(|p| !keep.contains(&p))
+                {
                     cloned.parent = None;
                 }
                 cloned
@@ -892,7 +898,7 @@ impl SemanticSnapshot {
             appearance: self.appearance,
             roots: roots
                 .into_iter()
-                .filter(|id| keep.contains(id) && self.get(*id).is_some())
+                .filter(|id| keep.contains(id) && by_id.contains_key(id))
                 .collect(),
             widgets,
         }
@@ -937,22 +943,18 @@ impl SemanticSnapshot {
     pub fn region_views_limited(&self, nav_limit: usize, insp_limit: usize) -> SemanticRegionViews {
         use std::collections::BTreeSet;
 
-        let mut claimed = BTreeSet::new();
-        for w in &self.widgets {
-            if self.nearest_region_owner(w.id).is_some() {
-                claimed.insert(w.id);
-            }
-        }
+        let index = RegionProjectionIndex::new(self);
+        let mut claimed: BTreeSet<_> = index.owners.keys().copied().collect();
         // Nested region tags (e.g. NanaSidebarFrame inside an outer start panel)
         // must not leave a fixed-width empty shell track in Primary. Claim hollow
         // ancestors whose remaining children are only claimed nodes or layout
         // chrome (resize handles / separators). Hollow shells are omitted from
         // Primary; they are not re-projected into Navigation / Inspector.
-        self.claim_hollow_region_ancestors(&mut claimed);
+        self.claim_hollow_region_ancestors(&index, &mut claimed);
         let navigation =
-            self.exclusive_tagged_region_slice(SemanticRegionTag::Navigation, nav_limit);
+            self.exclusive_tagged_region_slice(&index, SemanticRegionTag::Navigation, nav_limit);
         let inspector =
-            self.exclusive_tagged_region_slice(SemanticRegionTag::Inspector, insp_limit);
+            self.exclusive_tagged_region_slice(&index, SemanticRegionTag::Inspector, insp_limit);
         let primary = self.excluding_ids(&claimed);
         SemanticRegionViews {
             primary,
@@ -962,131 +964,96 @@ impl SemanticSnapshot {
     }
 
     /// Expand `claimed` to cover empty outer shells left after nested region lifts.
-    fn claim_hollow_region_ancestors(&self, claimed: &mut std::collections::BTreeSet<WidgetId>) {
+    fn claim_hollow_region_ancestors(
+        &self,
+        index: &RegionProjectionIndex<'_>,
+        claimed: &mut std::collections::BTreeSet<WidgetId>,
+    ) {
+        use std::collections::{HashSet, VecDeque};
+
         if claimed.is_empty() {
             return;
         }
-        loop {
-            let mut grew = false;
-            for w in &self.widgets {
-                if claimed.contains(&w.id) || w.children.is_empty() {
-                    continue;
-                }
-                let mut saw_claimed_content = false;
-                let mut all_claimed_or_chrome = true;
-                for &cid in &w.children {
-                    if claimed.contains(&cid) {
-                        saw_claimed_content = true;
-                        continue;
-                    }
-                    let Some(child) = self.get(cid) else {
-                        all_claimed_or_chrome = false;
-                        break;
-                    };
-                    if widget_is_layout_chrome(child) {
-                        continue;
-                    }
-                    all_claimed_or_chrome = false;
-                    break;
-                }
-                if saw_claimed_content && all_claimed_or_chrome {
-                    claimed.insert(w.id);
-                    for &cid in &w.children {
-                        if let Some(child) = self.get(cid) {
-                            if widget_is_layout_chrome(child) {
-                                claimed.insert(cid);
-                            }
-                        }
-                    }
-                    grew = true;
-                }
+        let mut queue = VecDeque::new();
+        let mut queued = HashSet::new();
+        for id in claimed.iter().copied() {
+            if let Some(parent) = index.get(id).and_then(|widget| widget.parent)
+                && queued.insert(parent)
+            {
+                queue.push_back(parent);
             }
-            if !grew {
-                break;
+        }
+        while let Some(id) = queue.pop_front() {
+            queued.remove(&id);
+            let Some(widget) = index.get(id) else {
+                continue;
+            };
+            if claimed.contains(&id) || widget.children.is_empty() {
+                continue;
+            }
+            let saw_claimed_content = widget.children.iter().any(|child| claimed.contains(child));
+            let all_claimed_or_chrome = widget.children.iter().all(|child| {
+                claimed.contains(child) || index.get(*child).is_some_and(widget_is_layout_chrome)
+            });
+            if !saw_claimed_content || !all_claimed_or_chrome {
+                continue;
+            }
+            claimed.insert(id);
+            claimed.extend(
+                widget
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|child| index.get(*child).is_some_and(widget_is_layout_chrome)),
+            );
+            if let Some(parent) = widget.parent
+                && queued.insert(parent)
+            {
+                queue.push_back(parent);
             }
         }
     }
 
     /// Navigation projection only (region-tagged seeds). Prefer [`Self::region_views`].
     pub fn navigation_slice(&self, limit: usize) -> Self {
-        self.exclusive_tagged_region_slice(SemanticRegionTag::Navigation, limit)
+        self.exclusive_tagged_region_slice(
+            &RegionProjectionIndex::new(self),
+            SemanticRegionTag::Navigation,
+            limit,
+        )
     }
 
     /// Inspector projection only (region-tagged seeds). Prefer [`Self::region_views`].
     ///
     /// Does **not** harvest untagged `Card` / `SettingsCard` — those stay in Primary.
     pub fn inspector_slice(&self, limit: usize) -> Self {
-        self.exclusive_tagged_region_slice(SemanticRegionTag::Inspector, limit)
-    }
-
-    /// Nearest region-tag ancestor ownership (including `id` itself).
-    ///
-    /// Dual-tagged nodes resolve to [`SemanticRegionTag::Inspector`].
-    fn nearest_region_owner(&self, id: WidgetId) -> Option<SemanticRegionTag> {
-        let mut cur = Some(id);
-        while let Some(wid) = cur {
-            let Some(widget) = self.get(wid) else {
-                break;
-            };
-            let insp = widget_is_inspector_region(widget);
-            let nav = widget_is_navigation_region(widget);
-            if insp {
-                // Inspector preferred over Navigation on dual-tag / nested conflict.
-                return Some(SemanticRegionTag::Inspector);
-            }
-            if nav {
-                return Some(SemanticRegionTag::Navigation);
-            }
-            cur = widget.parent;
-        }
-        None
+        self.exclusive_tagged_region_slice(
+            &RegionProjectionIndex::new(self),
+            SemanticRegionTag::Inspector,
+            limit,
+        )
     }
 
     /// Region projection that only keeps widgets owned by `tag` under the
     /// nearest-tag rule, so Navigation and Inspector forests never share ids.
-    fn exclusive_tagged_region_slice(&self, tag: SemanticRegionTag, limit: usize) -> Self {
+    fn exclusive_tagged_region_slice(
+        &self,
+        index: &RegionProjectionIndex<'_>,
+        tag: SemanticRegionTag,
+        limit: usize,
+    ) -> Self {
         use std::collections::{BTreeSet, VecDeque};
 
         if limit == 0 {
             return self.subtree_from(std::iter::empty());
         }
-        // Remount leftovers can linger with `parent=None` while still matching a
-        // region tag. Only project seeds reachable from document roots so
-        // DesktopShell Navigation does not stack orphan SidebarFrames.
-        let mut reachable = BTreeSet::new();
-        {
-            let mut queue: VecDeque<WidgetId> = self.roots.iter().copied().collect();
-            while let Some(id) = queue.pop_front() {
-                if !reachable.insert(id) {
-                    continue;
-                }
-                if let Some(w) = self.get(id) {
-                    queue.extend(w.children.iter().copied());
-                }
-            }
-        }
-        let matched: BTreeSet<WidgetId> = self
-            .widgets
-            .iter()
-            .filter(|w| reachable.contains(&w.id))
-            .filter(|w| widget_matches_region_tag(w, tag))
-            .filter(|w| self.nearest_region_owner(w.id) == Some(tag))
-            .map(|w| w.id)
-            .collect();
         let seeds: Vec<WidgetId> = self
             .widgets
             .iter()
-            .filter(|w| matched.contains(&w.id))
-            .filter(|w| {
-                let mut parent = w.parent;
-                while let Some(pid) = parent {
-                    if matched.contains(&pid) {
-                        return false;
-                    }
-                    parent = self.get(pid).and_then(|p| p.parent);
-                }
-                true
-            })
+            .filter(|widget| index.reachable.contains(&widget.id))
+            .filter(|widget| widget_matches_region_tag(widget, tag))
+            .filter(|widget| index.owner(widget.id) == Some(tag))
+            .filter(|widget| !index.has_same_region_ancestor(widget.id, tag))
             .map(|w| w.id)
             .take(limit)
             .collect();
@@ -1094,14 +1061,15 @@ impl SemanticSnapshot {
         let mut keep = BTreeSet::new();
         let mut queue: VecDeque<WidgetId> = seeds.iter().copied().collect();
         let roots = seeds.clone();
+        let root_ids: BTreeSet<WidgetId> = roots.iter().copied().collect();
         while let Some(id) = queue.pop_front() {
-            if self.nearest_region_owner(id) != Some(tag) {
+            if index.owner(id) != Some(tag) {
                 continue;
             }
             if !keep.insert(id) {
                 continue;
             }
-            if let Some(widget) = self.get(id) {
+            if let Some(widget) = index.get(id) {
                 for &child in &widget.children {
                     queue.push_back(child);
                 }
@@ -1114,9 +1082,9 @@ impl SemanticSnapshot {
             .map(|w| {
                 let mut cloned = w.clone();
                 cloned.children.retain(|c| keep.contains(c));
-                if roots.contains(&cloned.id) {
-                    cloned.parent = None;
-                } else if cloned.parent.is_some_and(|p| !keep.contains(&p)) {
+                if root_ids.contains(&cloned.id)
+                    || cloned.parent.is_some_and(|p| !keep.contains(&p))
+                {
                     cloned.parent = None;
                 }
                 cloned
@@ -1128,7 +1096,7 @@ impl SemanticSnapshot {
             appearance: self.appearance,
             roots: roots
                 .into_iter()
-                .filter(|id| keep.contains(id) && self.get(*id).is_some())
+                .filter(|id| keep.contains(id) && index.get(*id).is_some())
                 .collect(),
             widgets,
         }
@@ -1174,41 +1142,26 @@ impl SemanticSnapshot {
     /// `n` equal `minmax(0,1fr)` tracks (or clear when empty).
     fn collapse_stale_grid_tracks_after_child_removal(&mut self) {
         for w in &mut self.widgets {
-            let n = w.children.len();
-            if let Some(tracks) = w.props.layout.grid_columns.as_ref() {
-                if tracks.len() > n {
-                    w.props.layout.grid_columns = if n == 0 {
-                        None
-                    } else {
-                        Some(
-                            (0..n)
-                                .map(|_| GridTrack::MinMax {
-                                    min_px: 0.0,
-                                    fr: 1.0,
-                                    max_px: None,
-                                })
-                                .collect(),
-                        )
-                    };
-                }
-            }
-            if let Some(tracks) = w.props.layout.grid_rows.as_ref() {
-                if tracks.len() > n {
-                    w.props.layout.grid_rows = if n == 0 {
-                        None
-                    } else {
-                        Some(
-                            (0..n)
-                                .map(|_| GridTrack::MinMax {
-                                    min_px: 0.0,
-                                    fr: 1.0,
-                                    max_px: None,
-                                })
-                                .collect(),
-                        )
-                    };
-                }
-            }
+            let child_count = w.children.len();
+            Self::collapse_stale_grid_tracks(&mut w.props.layout.grid_columns, child_count);
+            Self::collapse_stale_grid_tracks(&mut w.props.layout.grid_rows, child_count);
+        }
+    }
+
+    fn collapse_stale_grid_tracks(tracks: &mut Option<Vec<GridTrack>>, child_count: usize) {
+        if tracks
+            .as_ref()
+            .is_some_and(|tracks| tracks.len() > child_count)
+        {
+            *tracks = (child_count > 0).then(|| {
+                (0..child_count)
+                    .map(|_| GridTrack::MinMax {
+                        min_px: 0.0,
+                        fr: 1.0,
+                        max_px: None,
+                    })
+                    .collect()
+            });
         }
     }
 }
@@ -1249,10 +1202,140 @@ impl SemanticRegionViews {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SemanticRegionTag {
     Navigation,
     Inspector,
+}
+
+/// One-pass index for DesktopShell region projection.
+///
+/// The snapshot remains an ordered `Vec` for stable public output. Projection
+/// builds this private index once so ownership, reachability, and nested-region
+/// checks do not repeatedly scan the full forest.
+struct RegionProjectionIndex<'a> {
+    by_id: std::collections::HashMap<WidgetId, &'a SemanticWidget>,
+    owners: std::collections::HashMap<WidgetId, SemanticRegionTag>,
+    reachable: std::collections::HashSet<WidgetId>,
+    navigation_ancestors: std::collections::HashSet<WidgetId>,
+    inspector_ancestors: std::collections::HashSet<WidgetId>,
+}
+
+impl<'a> RegionProjectionIndex<'a> {
+    fn new(snapshot: &'a SemanticSnapshot) -> Self {
+        use std::collections::{HashMap, HashSet};
+
+        let by_id: HashMap<_, _> = snapshot
+            .widgets
+            .iter()
+            .map(|widget| (widget.id, widget))
+            .collect();
+        let mut index = Self {
+            by_id,
+            owners: HashMap::new(),
+            reachable: HashSet::new(),
+            navigation_ancestors: HashSet::new(),
+            inspector_ancestors: HashSet::new(),
+        };
+        let mut visited = HashSet::new();
+
+        for &root in &snapshot.roots {
+            index.extend_from(root, None, false, false, true, &mut visited);
+        }
+        for widget in &snapshot.widgets {
+            if visited.contains(&widget.id) {
+                continue;
+            }
+            if widget
+                .parent
+                .is_none_or(|parent| !index.by_id.contains_key(&parent))
+            {
+                index.extend_from(widget.id, None, false, false, false, &mut visited);
+            }
+        }
+        // Malformed cycles fail closed as unreachable orphan forests.
+        for widget in &snapshot.widgets {
+            if !visited.contains(&widget.id) {
+                index.extend_from(widget.id, None, false, false, false, &mut visited);
+            }
+        }
+        index
+    }
+
+    fn extend_from(
+        &mut self,
+        root: WidgetId,
+        inherited_owner: Option<SemanticRegionTag>,
+        has_navigation_ancestor: bool,
+        has_inspector_ancestor: bool,
+        reachable: bool,
+        visited: &mut std::collections::HashSet<WidgetId>,
+    ) {
+        let mut stack = vec![(
+            root,
+            inherited_owner,
+            has_navigation_ancestor,
+            has_inspector_ancestor,
+        )];
+        while let Some((id, inherited, nav_ancestor, inspector_ancestor)) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let Some(widget) = self.by_id.get(&id).copied() else {
+                continue;
+            };
+            if reachable {
+                self.reachable.insert(id);
+            }
+            if nav_ancestor {
+                self.navigation_ancestors.insert(id);
+            }
+            if inspector_ancestor {
+                self.inspector_ancestors.insert(id);
+            }
+            let explicit = widget_region_tag(widget);
+            let owner = explicit.or(inherited);
+            if let Some(owner) = owner {
+                self.owners.insert(id, owner);
+            }
+            let child_nav_ancestor =
+                nav_ancestor || explicit == Some(SemanticRegionTag::Navigation);
+            let child_inspector_ancestor =
+                inspector_ancestor || explicit == Some(SemanticRegionTag::Inspector);
+            stack.extend(
+                widget
+                    .children
+                    .iter()
+                    .rev()
+                    .map(|&child| (child, owner, child_nav_ancestor, child_inspector_ancestor)),
+            );
+        }
+    }
+
+    fn get(&self, id: WidgetId) -> Option<&'a SemanticWidget> {
+        self.by_id.get(&id).copied()
+    }
+
+    fn owner(&self, id: WidgetId) -> Option<SemanticRegionTag> {
+        self.owners.get(&id).copied()
+    }
+
+    fn has_same_region_ancestor(&self, id: WidgetId, tag: SemanticRegionTag) -> bool {
+        match tag {
+            SemanticRegionTag::Navigation => self.navigation_ancestors.contains(&id),
+            SemanticRegionTag::Inspector => self.inspector_ancestors.contains(&id),
+        }
+    }
+}
+
+fn widget_region_tag(widget: &SemanticWidget) -> Option<SemanticRegionTag> {
+    if widget_is_inspector_region(widget) {
+        Some(SemanticRegionTag::Inspector)
+    } else if widget_is_navigation_region(widget) {
+        Some(SemanticRegionTag::Navigation)
+    } else {
+        None
+    }
 }
 
 fn widget_matches_region_tag(widget: &SemanticWidget, tag: SemanticRegionTag) -> bool {
@@ -1332,10 +1415,10 @@ fn widget_region_token(widget: &SemanticWidget) -> String {
         return widget.props.region.to_ascii_lowercase();
     }
     for key in ["data-region-role", "data-region", "region"] {
-        if let Some(v) = widget.props.attrs.get(key) {
-            if !v.is_empty() {
-                return v.to_ascii_lowercase();
-            }
+        if let Some(v) = widget.props.attrs.get(key)
+            && !v.is_empty()
+        {
+            return v.to_ascii_lowercase();
         }
     }
     String::new()
@@ -1541,15 +1624,14 @@ impl MessageBridge {
     /// Overlay kinds must not retain companion CSS `fixed`/`sticky`.
     /// L2 floats use Nana Overlay; anonymous CSS fixed stays on non-overlay nodes.
     fn strip_deferred_position_on_overlay(&mut self, id: WidgetId) {
-        if let Some(w) = self.widgets.get_mut(&id) {
-            if w.kind.is_overlay()
-                && matches!(
-                    w.props.layout.position,
-                    crate::css_map::PositionSpec::Fixed | crate::css_map::PositionSpec::Sticky
-                )
-            {
-                w.props.layout.position = crate::css_map::PositionSpec::Static;
-            }
+        if let Some(w) = self.widgets.get_mut(&id)
+            && w.kind.is_overlay()
+            && matches!(
+                w.props.layout.position,
+                crate::css_map::PositionSpec::Fixed | crate::css_map::PositionSpec::Sticky
+            )
+        {
+            w.props.layout.position = crate::css_map::PositionSpec::Static;
         }
     }
 
@@ -1776,10 +1858,10 @@ impl MessageBridge {
             layout.border_width = keep_border_width;
         }
         // CSS typography inherits when the author layers leave fields unset.
-        if let Some(parent_id) = self.widgets.get(&id).and_then(|w| w.parent) {
-            if let Some(parent) = self.widgets.get(&parent_id) {
-                layout.inherit_typography_from(&parent.props.layout);
-            }
+        if let Some(parent_id) = self.widgets.get(&id).and_then(|w| w.parent)
+            && let Some(parent) = self.widgets.get(&parent_id)
+        {
+            layout.inherit_typography_from(&parent.props.layout);
         }
         // Preserve explicit hidden flag from the `hidden` attribute.
         if hidden {
@@ -1789,12 +1871,7 @@ impl MessageBridge {
         if let Some(widget) = self.widgets.get_mut(&id) {
             widget.props.layout = layout;
             pin_svg_chart_min_height(&mut widget.props);
-            let next_kind = apply_display_to_kind(widget.kind, &widget.props.layout);
-            // Only flip layout kinds via display/direction.
-            if widget.kind.is_layout() && next_kind.is_layout() {
-                widget.kind =
-                    crate::layout_map::apply_direction_to_kind(next_kind, &widget.props.layout);
-            }
+            widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
         }
     }
 
@@ -2006,10 +2083,9 @@ impl MessageBridge {
             .or_else(|| style.get("--backdrop-opacity"))
             .or_else(|| style.get("backdrop-opacity"))
             .or_else(|| style.get("nana-backdrop-opacity"))
+            && let Ok(opacity) = raw.parse::<f32>()
         {
-            if let Ok(opacity) = raw.parse::<f32>() {
-                next.set_backdrop_opacity(opacity);
-            }
+            next.set_backdrop_opacity(opacity);
         }
         if let Some(raw) = style
             .get("--app-corner-radius")
@@ -2038,56 +2114,48 @@ impl MessageBridge {
         self.widgets.get_mut(&id)
     }
 
+    pub(crate) fn root_ids(&self) -> &[WidgetId] {
+        &self.roots
+    }
+
     pub fn contains(&self, id: WidgetId) -> bool {
         self.widgets.contains_key(&id)
     }
 
     /// Register html + body so Vue mounts parent under a real semantic root.
     pub fn ensure_document_roots(&mut self, html_id: WidgetId, body_id: WidgetId) {
-        if !self.widgets.contains_key(&html_id) {
+        let theme_label = self.theme_label().to_string();
+        self.widgets.entry(html_id).or_insert_with(|| {
             let mut props = WidgetProps::default();
             props.layout.width = Some(LengthSpec::Fill);
             props.layout.height = Some(LengthSpec::Fill);
             props.layout.direction = Some(FlexDirection::Column);
             props.class_names = vec!["nana-html-root".into()];
             props.element_tag = "html".into();
-            props
-                .attrs
-                .insert("data-theme".into(), self.theme_label().to_string());
-            self.widgets.insert(
-                html_id,
-                SemanticWidget {
-                    id: html_id,
-                    kind: WidgetKind::Column,
-                    props,
-                    children: vec![body_id],
-                    parent: None,
-                },
-            );
-        } else {
-            self.sync_document_theme_attr();
-        }
-        if !self.widgets.contains_key(&body_id) {
+            props.attrs.insert("data-theme".into(), theme_label);
+            SemanticWidget {
+                id: html_id,
+                kind: WidgetKind::Column,
+                props,
+                children: vec![body_id],
+                parent: None,
+            }
+        });
+        self.sync_document_theme_attr();
+        self.widgets.entry(body_id).or_insert_with(|| {
             let mut props = WidgetProps::default();
             props.layout.width = Some(LengthSpec::Fill);
             props.layout.height = Some(LengthSpec::Fill);
             props.layout.direction = Some(FlexDirection::Column);
             props.class_names = vec!["nana-mount-root".into()];
-            self.widgets.insert(
-                body_id,
-                SemanticWidget {
-                    id: body_id,
-                    kind: WidgetKind::Column,
-                    props,
-                    children: Vec::new(),
-                    parent: Some(html_id),
-                },
-            );
-        } else if let Some(html) = self.widgets.get_mut(&html_id) {
-            if !html.children.contains(&body_id) {
-                html.children.push(body_id);
+            SemanticWidget {
+                id: body_id,
+                kind: WidgetKind::Column,
+                props,
+                children: Vec::new(),
+                parent: Some(html_id),
             }
-        }
+        });
         if let Some(body) = self.widgets.get_mut(&body_id) {
             body.parent = Some(html_id);
         }
@@ -2239,20 +2307,20 @@ impl MessageBridge {
     }
 
     pub fn set_kind(&mut self, id: WidgetId, kind: WidgetKind) {
-        if let Some(w) = self.widgets.get_mut(&id) {
-            if w.kind != kind {
-                w.kind = kind;
-                self.bump();
-            }
+        if let Some(w) = self.widgets.get_mut(&id)
+            && w.kind != kind
+        {
+            w.kind = kind;
+            self.bump();
         }
     }
 
     pub fn unregister(&mut self, id: WidgetId) {
         if let Some(widget) = self.widgets.remove(&id) {
-            if let Some(parent) = widget.parent {
-                if let Some(p) = self.widgets.get_mut(&parent) {
-                    p.children.retain(|&c| c != id);
-                }
+            if let Some(parent) = widget.parent
+                && let Some(p) = self.widgets.get_mut(&parent)
+            {
+                p.children.retain(|&c| c != id);
             }
             for child in widget.children {
                 self.unregister(child);
@@ -2263,20 +2331,20 @@ impl MessageBridge {
     }
 
     pub fn insert_child(&mut self, child: WidgetId, parent: WidgetId, anchor: Option<WidgetId>) {
-        if let Some(prev) = self.widgets.get(&child).and_then(|w| w.parent) {
-            if let Some(p) = self.widgets.get_mut(&prev) {
-                p.children.retain(|&c| c != child);
-            }
+        if let Some(prev) = self.widgets.get(&child).and_then(|w| w.parent)
+            && let Some(p) = self.widgets.get_mut(&prev)
+        {
+            p.children.retain(|&c| c != child);
         }
         self.roots.retain(|&r| r != child);
 
         if !self.widgets.contains_key(&parent) {
             // With document scaffold, never promote random orphans to roots —
             // attach under the mount body instead so the forest stays single-rooted.
-            if self.scaffolded {
-                if let Some(body_id) = self.mount_body_id() {
-                    return self.insert_child(child, body_id, None);
-                }
+            if self.scaffolded
+                && let Some(body_id) = self.mount_body_id()
+            {
+                return self.insert_child(child, body_id, None);
             }
             if self.widgets.contains_key(&child) {
                 if let Some(w) = self.widgets.get_mut(&child) {
@@ -2353,6 +2421,19 @@ impl MessageBridge {
         } else if changed {
             self.bump();
         }
+    }
+
+    /// Resolve the pre-paint document geometry from the canonical semantic tree.
+    ///
+    /// This is the only headless layout entry used by Vue host ops. Iced layout
+    /// writeback replaces these boxes after paint.
+    pub(crate) fn resolve_document_layout(&mut self, doc: &mut crate::tree::NanaTreeDocument) {
+        let (logical_w, logical_h) = doc.logical_size();
+        self.reparent_orphans();
+        self.sync_sidebar_footer_into_document(doc);
+        self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
+        doc.apply_layout_boxes(&boxes);
     }
 
     fn write_containing_block(
@@ -2531,10 +2612,11 @@ impl MessageBridge {
             return;
         };
         let has_footer_slot = self.widgets.get(&frame_id).is_some_and(|frame| {
-            frame
-                .children
-                .iter()
-                .any(|cid| self.widgets.get(cid).is_some_and(|c| is_sidebar_footer_slot(&c.props)))
+            frame.children.iter().any(|cid| {
+                self.widgets
+                    .get(cid)
+                    .is_some_and(|c| is_sidebar_footer_slot(&c.props))
+            })
         });
         if !has_footer_slot {
             let footer_orphans: Vec<(WidgetId, usize, u64)> = self
@@ -2801,13 +2883,13 @@ impl MessageBridge {
                         }
                     }
                 }
-                if widget.kind.is_overlay() {
-                    if matches!(
+                if widget.kind.is_overlay()
+                    && matches!(
                         widget.props.layout.position,
                         crate::css_map::PositionSpec::Fixed | crate::css_map::PositionSpec::Sticky
-                    ) {
-                        widget.props.layout.position = crate::css_map::PositionSpec::Static;
-                    }
+                    )
+                {
+                    widget.props.layout.position = crate::css_map::PositionSpec::Static;
                 }
             }
         }
@@ -2856,25 +2938,24 @@ impl MessageBridge {
                     let key_css = key_css.replace("justifycontent", "justify-content");
                     let key_css = key_css.replace("overflowy", "overflow-y");
                     let key_css = key_css.replace("gridtemplatecolumns", "grid-template-columns");
-                    if let Some(decl) = css.split(';').rev().map(str::trim).find(|d| {
-                        d.split_once(':')
-                            .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(&key_css))
-                    }) {
-                        if let Some((_, val)) = decl.split_once(':') {
-                            widget.props.layout.apply_css_property(
-                                key_css.trim(),
-                                val.trim(),
-                                cb_w,
-                                cb_h,
-                            );
-                        }
+                    if let Some((_, val)) = css
+                        .split(';')
+                        .rev()
+                        .map(str::trim)
+                        .filter_map(|decl| decl.split_once(':'))
+                        .find(|(key, _)| key.trim().eq_ignore_ascii_case(&key_css))
+                    {
+                        widget.props.layout.apply_css_property(
+                            key_css.trim(),
+                            val.trim(),
+                            cb_w,
+                            cb_h,
+                        );
                     }
                 }
                 widget.props.layout.apply_class_layout_hints(&classes);
                 pin_svg_chart_min_height(&mut widget.props);
                 widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
-                widget.kind =
-                    crate::layout_map::apply_direction_to_kind(widget.kind, &widget.props.layout);
             }
         } else if let Some(widget) = self.widgets.get_mut(&id) {
             pin_svg_chart_min_height(&mut widget.props);
@@ -3345,35 +3426,26 @@ fn apply_overlay_presence_open(props: &mut WidgetProps) {
 }
 
 fn overlay_presence_implies_open(props: &WidgetProps) -> bool {
-    if props.class_names.iter().any(|c| {
-        let c = c.to_ascii_lowercase();
-        c == "is-open" || c == "is-active"
-    }) {
-        return true;
-    }
-    if let Some(expanded) = props.attrs.get("aria-expanded") {
-        if expanded.eq_ignore_ascii_case("true") {
-            return true;
-        }
-    }
-    if let Some(modal) = props.attrs.get("aria-modal") {
-        // Empty string = boolean true attribute; "true" likewise.
-        if modal.is_empty() || modal.eq_ignore_ascii_case("true") {
-            return true;
-        }
-    }
-    if let Some(open) = props.attrs.get("data-nana-open") {
-        if open.is_empty() || open.eq_ignore_ascii_case("true") {
-            return true;
-        }
-    }
-    if let Some(open) = props.attrs.get("open") {
-        if open.is_empty() || open.eq_ignore_ascii_case("true") || open.eq_ignore_ascii_case("open")
-        {
-            return true;
-        }
-    }
-    false
+    props.class_names.iter().any(|class| {
+        let class = class.to_ascii_lowercase();
+        class == "is-open" || class == "is-active"
+    }) || props
+        .attrs
+        .get("aria-expanded")
+        .is_some_and(|expanded| expanded.eq_ignore_ascii_case("true"))
+        || props.attrs.get("aria-modal").is_some_and(|modal| {
+            // Empty string = boolean true attribute; "true" likewise.
+            modal.is_empty() || modal.eq_ignore_ascii_case("true")
+        })
+        || props
+            .attrs
+            .get("data-nana-open")
+            .is_some_and(|open| open.is_empty() || open.eq_ignore_ascii_case("true"))
+        || props.attrs.get("open").is_some_and(|open| {
+            open.is_empty()
+                || open.eq_ignore_ascii_case("true")
+                || open.eq_ignore_ascii_case("open")
+        })
 }
 
 fn host_f32(value: &nana_js_engine::HostValue, default: f32) -> f32 {
@@ -3552,6 +3624,24 @@ mod tests {
         assert!(
             (b.x - a.x - a.width - 8.0).abs() < 0.5,
             "row gap should separate children"
+        );
+    }
+
+    #[test]
+    fn display_block_remains_column_when_stale_flex_direction_is_row() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(1, WidgetKind::Row, WidgetProps::default());
+
+        bridge.patch_prop(1, "flex-direction", &HostValue::string("row"));
+        bridge.patch_prop(
+            1,
+            "style",
+            &HostValue::string("display:block;flex-direction:row"),
+        );
+
+        assert_eq!(
+            bridge.get(1).map(|widget| widget.kind),
+            Some(WidgetKind::Column)
         );
     }
 
@@ -4349,8 +4439,7 @@ mod tests {
         bridge.insert_child(4, 3, None);
         let mut top = WidgetProps::default();
         top.class_names = vec!["nana-sidebar-frame__top".into()];
-        top.attrs
-            .insert("data-slot".into(), "sidebar-top".into());
+        top.attrs.insert("data-slot".into(), "sidebar-top".into());
         bridge.register(5, WidgetKind::Column, top);
         bridge.insert_child(5, 4, None);
         let mut body_slot = WidgetProps::default();

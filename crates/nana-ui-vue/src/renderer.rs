@@ -58,23 +58,22 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut guard = lock_doc(&host.document)?;
             let handle = guard.create_element_ns(&tag, namespace, is.as_deref());
             // runtime-dom: select[multiple] seeded from vnode props.
-            if tag.eq_ignore_ascii_case("select") {
-                if let Some(HostValue::Object(props)) = args.get(3) {
-                    if let Some(m) = props.get("multiple") {
-                        if !matches!(m, HostValue::Null | HostValue::Undefined) {
-                            let v = host_to_string(m);
-                            guard.set_attribute(handle, "multiple", &v);
-                        }
-                    }
-                }
+            if tag.eq_ignore_ascii_case("select")
+                && let Some(HostValue::Object(props)) = args.get(3)
+                && let Some(multiple) = props.get("multiple")
+                && !matches!(multiple, HostValue::Null | HostValue::Undefined)
+            {
+                guard.set_attribute(handle, "multiple", &host_to_string(multiple));
             }
             drop(guard);
             // Every visible element downlevels onto a Nana foundation kind.
             let kind =
                 resolve_kind_from_hints(&tag, None, None, None).unwrap_or(WidgetKind::Column);
             let mut bridge = lock_bridge(&host.bridge)?;
-            let mut props = WidgetProps::default();
-            props.element_tag = tag.to_ascii_lowercase();
+            let mut props = WidgetProps {
+                element_tag: tag.to_ascii_lowercase(),
+                ..WidgetProps::default()
+            };
             if let Some(is) = is.filter(|s| !s.is_empty()) {
                 props.attrs.insert("is".into(), is);
             }
@@ -435,8 +434,9 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     {
         let host = host.clone();
         api.register("resolveLayout", move |_args| {
-            let mut guard = lock_doc(&host.document)?;
-            guard.resolve_now();
+            let mut bridge = lock_bridge(&host.bridge)?;
+            let mut doc = lock_doc(&host.document)?;
+            bridge.resolve_document_layout(&mut doc);
             Ok(HostValue::Null)
         });
     }
@@ -636,12 +636,11 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("injectStylesheet", move |args| {
             let css = arg_str(args, 0).unwrap_or_default();
-            let mut guard = lock_doc(&host.document)?;
-            guard.inject_stylesheet(&css);
-            guard.resolve_now();
-            drop(guard);
+            lock_doc(&host.document)?.inject_stylesheet(&css);
             let mut bridge = lock_bridge(&host.bridge)?;
             bridge.inject_stylesheet(&css);
+            let mut doc = lock_doc(&host.document)?;
+            bridge.resolve_document_layout(&mut doc);
             Ok(HostValue::Null)
         });
     }
@@ -775,6 +774,8 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             drop(guard);
             let mut bridge = lock_bridge(&host.bridge)?;
             bridge.inject_stylesheet(&css);
+            let mut doc = lock_doc(&host.document)?;
+            bridge.resolve_document_layout(&mut doc);
             Ok(HostValue::Number(handle.0 as f64))
         });
     }
@@ -798,10 +799,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             if let Ok(mut web) = host.web_api.lock() {
                 web.set_document_dataset("theme", &theme);
             }
-            let mut guard = lock_doc(&host.document)?;
-            guard.set_document_theme(&theme);
-            guard.resolve_now();
-            drop(guard);
+            lock_doc(&host.document)?.set_document_theme(&theme);
             let mode = if theme.eq_ignore_ascii_case("dark") {
                 nana_ui_core::ThemeMode::Dark
             } else {
@@ -809,6 +807,8 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             };
             let mut bridge = lock_bridge(&host.bridge)?;
             bridge.set_theme(mode);
+            let mut doc = lock_doc(&host.document)?;
+            bridge.resolve_document_layout(&mut doc);
             Ok(HostValue::Null)
         });
     }
@@ -1053,8 +1053,10 @@ fn seed_bridge_node(doc: &NanaTreeDocument, bridge: &mut MessageBridge, node: No
             let tag = doc.element_tag(node).unwrap_or_else(|| "div".into());
             let kind =
                 resolve_kind_from_hints(&tag, None, None, None).unwrap_or(WidgetKind::Column);
-            let mut props = WidgetProps::default();
-            props.element_tag = tag;
+            let mut props = WidgetProps {
+                element_tag: tag,
+                ..WidgetProps::default()
+            };
             if let Some(ns) = doc.element_namespace(node).and_then(|n| n.as_str()) {
                 props.attrs.insert("data-nana-ns".into(), ns.to_string());
             }
@@ -1256,9 +1258,7 @@ mod tests {
         doc.set_element_text(el, "x");
         doc.insert(el, root, None);
         patch_prop(&mut doc, el, "hidden", HostValue::string("false"));
-        doc.resolve_now();
         assert!(doc.get_attribute(el, "hidden").is_none());
-        assert!(doc.layout_box(el).is_some());
     }
 
     #[test]
@@ -1294,6 +1294,76 @@ mod tests {
         assert_eq!(w.kind, WidgetKind::Button);
         assert_eq!(w.props.label, "Increment");
         assert_eq!(w.props.button_kind, nana_ui_core::ButtonKind::Primary);
+    }
+
+    #[test]
+    fn resolve_layout_uses_cascaded_style_model_geometry() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let grid = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        let first = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        let second = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(grid),
+                HostValue::string("class"),
+                HostValue::string("measured-grid"),
+            ],
+        )
+        .unwrap();
+        for (child, parent) in [(grid, body), (first, grid), (second, grid)] {
+            api.call(
+                "insert",
+                &[
+                    HostValue::Number(child),
+                    HostValue::Number(parent),
+                    HostValue::Null,
+                ],
+            )
+            .unwrap();
+        }
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                ".measured-grid{display:grid;grid-template-columns:100px 1fr;width:300px;height:40px}",
+            )],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        let doc = doc.lock().unwrap();
+        let first = doc
+            .layout_box(NodeHandle(first as u64))
+            .expect("first cell");
+        let second = doc
+            .layout_box(NodeHandle(second as u64))
+            .expect("second cell");
+        assert!((first.width - 100.0).abs() < 0.5, "first={first:?}");
+        assert!(
+            (second.x - (first.x + first.width)).abs() < 0.5,
+            "second={second:?}"
+        );
     }
 
     #[test]

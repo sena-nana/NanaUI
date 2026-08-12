@@ -1,12 +1,12 @@
 //! [`LayoutStyle`] → 可序列化布局盒（测试 / 诊断 / **预绘制回退**，非 CSS 引擎）。
 //!
-//! ## SoT（与 `resolve_now` / iced 对照）
+//! ## SoT（与 iced 对照）
 //!
 //! | 数据 | 权威 | 本模块 |
 //! |------|------|--------|
 //! | 产品几何盒 | iced `LayoutProbe` → [`crate::LayoutBoxStore`] | 否 |
 //! | 预绘制 / css-parity | **本模块** [`measure_layout`] | 是 |
-//! | 合成 hit-test | [`crate::style`] + `resolve_now` | 否（勿在此扩第二套） |
+//! | hit-test 预绘制盒 | **本模块** [`measure_layout`] | 是 |
 //!
 //! `layoutBox` / `getBoundingClientRect` **优先**读 iced 盒；本模块供
 //! `VueHost::resolve_layout` 在尚未 paint 时填充文档缓存，并与 css-parity 对齐。

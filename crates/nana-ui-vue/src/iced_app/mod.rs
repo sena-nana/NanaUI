@@ -277,11 +277,7 @@ where
             .unwrap_or(Size::new(1280.0, 800.0));
         let mut roots = column![].spacing(10).width(Length::Fill);
         if snap.roots.is_empty() {
-            roots = roots.push(
-                EmptyState::new("暂无内容")
-                    .message("语义树为空；Vue 节点应降维到 Nana 布局与基础控件")
-                    .view(tokens),
-            );
+            roots = roots.push(EmptyState::new("暂无内容").view(tokens));
         } else {
             for &root_id in &snap.roots {
                 roots = roots.push(view_widget(
@@ -418,11 +414,7 @@ where
     let root_h = root_viewport_axis(parent.height);
     let mut roots = column![].spacing(0).width(root_w).height(root_h);
     if snap.roots.is_empty() {
-        roots = roots.push(
-            EmptyState::new("暂无内容")
-                .message("语义树为空；Vue 节点应降维到 Nana 布局与基础控件")
-                .view(tokens),
-        );
+        roots = roots.push(EmptyState::new("暂无内容").view(tokens));
     } else {
         for &root_id in &snap.roots {
             roots = roots.push(view_widget_owned(

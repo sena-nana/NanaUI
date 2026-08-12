@@ -19,6 +19,12 @@ Blitz 移除说明见
 L1 不是「CSS→仅 ThemeTokens」：布局进 Layout，已知 class 进 Semantics，主题档位进
 Tokens；任意业务 CSS 色值不得污染正式 token。
 
+L1/L2/L3 是三种输入合同，不是三个运行时模式或三套渲染实现。L1 与 L2 共享一个
+`MessageBridge` 语义森林；paint 前统一由 Style Model `measure_layout` 提供几何，paint
+后仅以 iced `LayoutProbe` 回写为权威。`NanaTreeDocument` 只保存 DOM 兼容状态和几何
+缓存，不再维护独立合成布局。DesktopShell Region 投影为快照级一次索引与父链传播，
+不重复扫描整棵森林。
+
 | 层 | 含义 | 住在哪 |
 |----|------|--------|
 | L1 | 完整 Tauri Vue：兼容接口 + CSS 子集→Style Model（兼容目标，非公共 CSSOM） | `nana-tauri-demo` / `nana-ui-vue` / `nanavue-runtime` / `nana-ui-web-api` |

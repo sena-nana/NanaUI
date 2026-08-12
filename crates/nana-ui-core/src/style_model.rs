@@ -27,7 +27,7 @@
 //!
 //! - Known token / class names → [`SemanticColorRole`] / [`SemanticPalette`] field
 //! - Unknown `#hex` / `rgb()` → **do not** write into formal ThemeTokens; L1 may keep a
-//!   diagnostic paint hint on the bridge (`StyleIntent`) or drop it
+//!   restricted paint hint on the L1 bridge or drop it
 //!
 //! ## Restricted paint hints (no second paint path)
 //!
@@ -36,9 +36,9 @@
 //! - open a parallel paint pipeline beside L3 NanaUI widgets
 //! - enter `nana-ui` public core as CSSOM / free-form color maps
 //!
-//! If a value cannot map to [`SemanticColorRole`], keep it on `StyleIntent` for
-//! hit-test / synthetic boxes, or drop it. Formal appearance always goes through
-//! Tokens + Semantics + Layout → L3.
+//! If a value cannot map to [`SemanticColorRole`], keep it as a restricted L1
+//! paint hint or drop it. Formal appearance always goes through Tokens +
+//! Semantics + Layout → L3.
 //!
 //! ## Non-goals
 //!

@@ -350,10 +350,10 @@ pub fn resolve_grid_track_sizes(
             let share = free * (w / fr_total);
             if share + 1e-3 < min {
                 freeze.push((idx, min));
-            } else if let Some(max) = max {
-                if share > max + 1e-3 {
-                    freeze.push((idx, max));
-                }
+            } else if let Some(max) = max
+                && share > max + 1e-3
+            {
+                freeze.push((idx, max));
             }
         }
 
@@ -409,6 +409,7 @@ impl ViewportAxis {
 ///
 /// - `element_px`：当前元素 `font-size`（`em`）
 /// - `root_px`：根元素 `font-size`（`rem`）
+///
 /// 缺省均为 CSS initial `medium` ≈ 16px（非 Nana `UI_BASE_TEXT_SIZE`）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FontSizeContext {
@@ -859,8 +860,8 @@ pub struct LayoutStyle {
     pub grid_auto_flow: Option<GridAutoFlow>,
     pub hidden: bool,
     /// CSS `opacity` (0..=1). `None` = unset / inherit (treated as 1.0 at paint).
-    /// Parsed with other declarations so diagnostic [`StyleIntent`] projection
-    /// need not re-scan the style string.
+    /// Parsed with other declarations so L1 adapters need not re-scan the style
+    /// string.
     #[serde(default)]
     pub opacity: Option<f32>,
     /// Instance surface paint from L1 style/class (not ThemeTokens).
@@ -1249,10 +1250,10 @@ impl LayoutStyle {
         if self.grows() {
             return Some(LengthSpec::Fill);
         }
-        if let Some(basis) = self.flex_basis {
-            if !matches!(basis, LengthSpec::Auto) {
-                return Some(basis);
-            }
+        if let Some(basis) = self.flex_basis
+            && !matches!(basis, LengthSpec::Auto)
+        {
+            return Some(basis);
         }
         match parent_direction {
             FlexDirection::Row => self.width,
@@ -1287,9 +1288,9 @@ impl LayoutStyle {
             .width
             .and_then(|w| w.resolve_with(parent.width, viewport))
             .or_else(|| {
-                if matches!(self.width, Some(LengthSpec::Fill) | None) && self.grows() {
-                    parent.width
-                } else if matches!(self.width, Some(LengthSpec::Fill)) {
+                if matches!(self.width, Some(LengthSpec::Fill))
+                    || (self.width.is_none() && self.grows())
+                {
                     parent.width
                 } else {
                     None
