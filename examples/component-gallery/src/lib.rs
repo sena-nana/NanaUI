@@ -821,6 +821,9 @@ impl GalleryState {
                 self.action_picker.sync_results(count);
             }
             CommandPaletteEvent::Select(action) => self.execute_gallery_action(action),
+            CommandPaletteEvent::Navigate(navigation) => {
+                self.navigate_command_palette(navigation);
+            }
             CommandPaletteEvent::Dismiss => {
                 self.action_picker.dismiss();
                 self.overlay.dismiss();
