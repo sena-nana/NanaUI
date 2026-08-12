@@ -43,6 +43,10 @@ impl HostedWindowId {
     pub const PRIMARY: Self = Self(0);
 }
 
+/// Application-owned identity for one asynchronous hosted-window capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostedWindowCaptureId(pub u64);
+
 /// Stable application-owned identity for one child browser surface.
 #[cfg(feature = "browser")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -376,6 +380,16 @@ pub enum HostedRuntimeEvent {
         id: HostedWindowId,
         message: String,
     },
+    WindowCaptured {
+        id: HostedWindowId,
+        capture_id: HostedWindowCaptureId,
+        path: PathBuf,
+    },
+    WindowCaptureFailed {
+        id: HostedWindowId,
+        capture_id: HostedWindowCaptureId,
+        message: String,
+    },
     #[cfg(feature = "browser")]
     Browser(HostedBrowserEvent),
 }
@@ -481,6 +495,11 @@ pub enum HostedWindowCommand {
         position: Point,
     },
     Focus(HostedWindowId),
+    CapturePng {
+        id: HostedWindowId,
+        capture_id: HostedWindowCaptureId,
+        path: PathBuf,
+    },
     #[cfg(feature = "browser")]
     Browser(HostedBrowserCommand),
 }
@@ -1362,6 +1381,27 @@ impl<Program: HostedProgram> HostedReady<Program> {
             HostedWindowCommand::Close(id) => self.close_window(id),
             HostedWindowCommand::Move { id, position } => self.move_window(id, position),
             HostedWindowCommand::Focus(id) => self.focus_window(id),
+            HostedWindowCommand::CapturePng {
+                id,
+                capture_id,
+                path,
+            } => {
+                let event = match self.capture_window_png(id, &path) {
+                    Ok(()) => HostedRuntimeEvent::WindowCaptured {
+                        id,
+                        capture_id,
+                        path,
+                    },
+                    Err(message) => HostedRuntimeEvent::WindowCaptureFailed {
+                        id,
+                        capture_id,
+                        message,
+                    },
+                };
+                let context = self.program_context();
+                let update = self.program.runtime_event(event, &context);
+                self.apply_program_update(event_loop, update);
+            }
             #[cfg(feature = "browser")]
             HostedWindowCommand::Browser(command) => {
                 self.apply_browser_command(event_loop, command);
@@ -1634,6 +1674,173 @@ impl<Program: HostedProgram> HostedReady<Program> {
         window.set_outer_position(winit::dpi::Position::Logical(
             winit::dpi::LogicalPosition::new(f64::from(position.x), f64::from(position.y)),
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    fn capture_window_png(&self, id: HostedWindowId, path: &std::path::Path) -> Result<(), String> {
+        use image::{ImageBuffer, Rgba};
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use std::fs;
+        use std::ptr::null_mut;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
+            CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HBITMAP,
+            HDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        struct WindowDc {
+            hwnd: HWND,
+            hdc: HDC,
+        }
+        impl Drop for WindowDc {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = ReleaseDC(Some(self.hwnd), self.hdc);
+                }
+            }
+        }
+
+        struct MemoryDc(HDC);
+        impl Drop for MemoryDc {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = DeleteDC(self.0);
+                }
+            }
+        }
+
+        struct Bitmap(HBITMAP);
+        impl Drop for Bitmap {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = DeleteObject(HGDIOBJ(self.0.0));
+                }
+            }
+        }
+
+        struct SelectedObject {
+            hdc: HDC,
+            previous: HGDIOBJ,
+        }
+        impl Drop for SelectedObject {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = SelectObject(self.hdc, self.previous);
+                }
+            }
+        }
+
+        let window = self
+            .window(id)
+            .ok_or_else(|| format!("hosted window {} does not exist", id.0))?;
+        let handle = window
+            .window_handle()
+            .map_err(|error| format!("failed to read hosted window handle: {error}"))?;
+        let hwnd = match handle.as_raw() {
+            RawWindowHandle::Win32(raw) => HWND(raw.hwnd.get() as *mut _),
+            _ => return Err("hosted window does not expose a Win32 handle".to_owned()),
+        };
+
+        unsafe {
+            let mut rect = Default::default();
+            GetClientRect(hwnd, &mut rect)
+                .map_err(|error| format!("failed to read hosted window bounds: {error}"))?;
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+            if width <= 0 || height <= 0 {
+                return Err("hosted window has no drawable client area".to_owned());
+            }
+
+            let hdc = GetDC(Some(hwnd));
+            if hdc.0 == null_mut() {
+                return Err("failed to acquire hosted window device context".to_owned());
+            }
+            let window_dc = WindowDc { hwnd, hdc };
+            let memory_dc = CreateCompatibleDC(Some(window_dc.hdc));
+            if memory_dc.0 == null_mut() {
+                return Err("failed to create capture device context".to_owned());
+            }
+            let memory_dc = MemoryDc(memory_dc);
+            let bitmap = CreateCompatibleBitmap(window_dc.hdc, width, height);
+            if bitmap.0 == null_mut() {
+                return Err("failed to create capture bitmap".to_owned());
+            }
+            let bitmap = Bitmap(bitmap);
+            let previous = SelectObject(memory_dc.0, HGDIOBJ(bitmap.0.0));
+            if previous.0 == null_mut() {
+                return Err("failed to select capture bitmap".to_owned());
+            }
+            let _selected = SelectedObject {
+                hdc: memory_dc.0,
+                previous,
+            };
+            BitBlt(
+                memory_dc.0,
+                0,
+                0,
+                width,
+                height,
+                Some(window_dc.hdc),
+                0,
+                0,
+                SRCCOPY,
+            )
+            .map_err(|error| format!("failed to copy hosted window pixels: {error}"))?;
+
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bgra = vec![0_u8; (width as usize) * (height as usize) * 4];
+            let rows = GetDIBits(
+                memory_dc.0,
+                bitmap.0,
+                0,
+                height as u32,
+                Some(bgra.as_mut_ptr().cast()),
+                &mut info,
+                DIB_RGB_COLORS,
+            );
+            if rows == 0 {
+                return Err("failed to read captured hosted window pixels".to_owned());
+            }
+            for pixel in bgra.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            let image = ImageBuffer::<Rgba<u8>, _>::from_raw(width as u32, height as u32, bgra)
+                .ok_or_else(|| "failed to assemble hosted window capture".to_owned())?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("failed to create capture directory: {error}"))?;
+            }
+            image
+                .save(path)
+                .map_err(|error| format!("failed to save hosted window capture: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn capture_window_png(
+        &self,
+        id: HostedWindowId,
+        _path: &std::path::Path,
+    ) -> Result<(), String> {
+        if self.window(id).is_none() {
+            return Err(format!("hosted window {} does not exist", id.0));
+        }
+        Err("hosted window PNG capture is currently supported on Windows".to_owned())
     }
 
     fn apply_window_action(&mut self, event_loop: &ActiveEventLoop, action: HostedWindowAction) {

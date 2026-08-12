@@ -50,7 +50,14 @@ settings-components = ["controls"]
 surfaces = ["feedback"]
 xy-pad = []
 gpu = ["dep:bytemuck", "dep:wgpu"]
-hosted = ["gpu", "dep:iced_wgpu", "dep:iced_winit"]
+hosted = [
+    "gpu",
+    "dep:iced_wgpu",
+    "dep:iced_winit",
+    "dep:image",
+    "dep:raw-window-handle",
+    "dep:windows",
+]
 browser = ["hosted", "dep:wry"]
 
 [dependencies]
@@ -80,6 +87,15 @@ android-activity = { version = "0.6", features = ["native-activity"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 wry = { version = "=0.55.1", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
+raw-window-handle = { version = "0.6.2", optional = true }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+], optional = true }
 
 [dev-dependencies]
 iced_wgpu.workspace = true

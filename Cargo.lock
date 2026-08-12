@@ -3818,6 +3818,7 @@ dependencies = [
  "iced",
  "iced_wgpu",
  "iced_winit",
+ "image",
  "merman",
  "nana-ui-core",
  "nana-window",
@@ -3827,11 +3828,13 @@ dependencies = [
  "ratex-parser",
  "ratex-svg",
  "ratex-types",
+ "raw-window-handle",
  "roughr-merman",
  "serde",
  "serde_json",
  "unicode-segmentation",
  "wgpu",
+ "windows 0.62.2",
  "wry",
 ]
 
