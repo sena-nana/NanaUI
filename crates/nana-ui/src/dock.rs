@@ -14,7 +14,7 @@ use crate::shell::{
     window_chrome_controls, window_chrome_drag_start_area, window_chrome_drag_tracker,
 };
 use crate::theme::{ThemeTokens, ui_font};
-use crate::widgets::{ButtonKind, CardKind, button_style, card_style};
+use crate::widgets::{ButtonKind, button_style};
 use crate::window_chrome::{WindowChromeEvent, WindowChromeState};
 #[cfg(feature = "hosted")]
 use crate::{
@@ -2686,6 +2686,7 @@ where
             );
             let divider_path = path;
             let divider_color = dock_chrome_color(tokens, controller.chrome_style);
+            let card_divider = controller.chrome_style == DockChromeStyle::Card;
             let indicator = container(space())
                 .width(if *axis == DockAxis::Horizontal {
                     Length::Fixed(1.0)
@@ -2711,7 +2712,16 @@ where
                 } else {
                     Length::Fixed(DIVIDER_HIT_SIZE)
                 })
-                .center(Length::Fill);
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(move |_theme| {
+                    let style = iced::widget::container::Style::default();
+                    if card_divider {
+                        style.background(tokens.colors.background)
+                    } else {
+                        style
+                    }
+                });
             let divider = DragHandle::new(
                 divider,
                 on_action(DockAction::ResizeStart {
@@ -3179,8 +3189,18 @@ where
     container(content)
         .width(Length::Fill)
         .height(Length::Fill)
+        .padding(1)
         .clip(true)
-        .style(card_style(tokens, CardKind::Outlined))
+        .style(move |_theme| {
+            iced::widget::container::Style::default()
+                .background(tokens.colors.surface)
+                .color(tokens.colors.text)
+                .border(iced::Border {
+                    color: tokens.colors.border_strong,
+                    width: 1.0,
+                    radius: tokens.metrics.radius_md.into(),
+                })
+        })
         .into()
 }
 
