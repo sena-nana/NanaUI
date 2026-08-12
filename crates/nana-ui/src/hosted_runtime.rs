@@ -494,6 +494,10 @@ pub enum HostedWindowCommand {
         id: HostedWindowId,
         position: Point,
     },
+    SetAlwaysOnTop {
+        id: HostedWindowId,
+        always_on_top: bool,
+    },
     Focus(HostedWindowId),
     CapturePng {
         id: HostedWindowId,
@@ -1380,6 +1384,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
             }
             HostedWindowCommand::Close(id) => self.close_window(id),
             HostedWindowCommand::Move { id, position } => self.move_window(id, position),
+            HostedWindowCommand::SetAlwaysOnTop { id, always_on_top } => {
+                self.set_window_always_on_top(id, always_on_top);
+            }
             HostedWindowCommand::Focus(id) => self.focus_window(id),
             HostedWindowCommand::CapturePng {
                 id,
@@ -1674,6 +1681,13 @@ impl<Program: HostedProgram> HostedReady<Program> {
         window.set_outer_position(winit::dpi::Position::Logical(
             winit::dpi::LogicalPosition::new(f64::from(position.x), f64::from(position.y)),
         ));
+    }
+
+    fn set_window_always_on_top(&self, id: HostedWindowId, always_on_top: bool) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
+        window.set_window_level(window_level(always_on_top));
     }
 
     #[cfg(target_os = "windows")]
@@ -2463,11 +2477,7 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
         .with_title(settings.title.clone())
         .with_transparent(settings.transparent || settings.transparent_background)
         .with_resizable(settings.resizable)
-        .with_window_level(if settings.always_on_top {
-            winit::window::WindowLevel::AlwaysOnTop
-        } else {
-            winit::window::WindowLevel::Normal
-        })
+        .with_window_level(window_level(settings.always_on_top))
         .with_inner_size(winit::dpi::LogicalSize::new(
             settings.initial_size.width,
             settings.initial_size.height,
@@ -2506,6 +2516,14 @@ fn window_attributes(settings: &HostedWindowSettings) -> winit::window::WindowAt
     }
 }
 
+fn window_level(always_on_top: bool) -> winit::window::WindowLevel {
+    if always_on_top {
+        winit::window::WindowLevel::AlwaysOnTop
+    } else {
+        winit::window::WindowLevel::Normal
+    }
+}
+
 #[derive(Debug)]
 pub enum HostedRunError {
     EventLoop(winit::error::EventLoopError),
@@ -2532,7 +2550,7 @@ mod tests {
     use super::{
         HostedProgramUpdate, HostedRedraw, HostedTitleBarMode, HostedWindowEvent, HostedWindowId,
         HostedWindowRole, HostedWindowSettings, should_request_redraw, window_attributes,
-        window_background,
+        window_background, window_level,
     };
     use iced::Point;
     use iced_winit::winit;
@@ -2731,6 +2749,7 @@ mod tests {
             attributes.window_level,
             winit::window::WindowLevel::AlwaysOnTop
         );
+        assert_eq!(window_level(false), winit::window::WindowLevel::Normal);
         assert!(!attributes.resizable);
         assert!(attributes.transparent);
     }
