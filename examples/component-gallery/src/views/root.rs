@@ -30,6 +30,11 @@ impl GalleryState {
             }
             shell
         };
+        let shell = if self.overlay.contains(&GalleryOverlay::ContextMenu) {
+            shell.overlay(self.context_menu(colors))
+        } else {
+            shell
+        };
         let base = shell.view();
 
         if self.overlay.contains(&GalleryOverlay::Dialog) {

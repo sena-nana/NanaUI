@@ -169,18 +169,25 @@ pub fn run() -> BenchmarkReport {
     cases.push(benchmark_stateful_case(
         "context-menu-120",
         120,
-        (0..120)
-            .map(|index| {
-                ContextMenuItem::new(index, format!("操作 {}", index + 1))
-                    .hint(format!("⌘{}", index % 10))
-                    .keywords([format!("action-{index}")])
-            })
-            .collect::<Vec<_>>(),
+        (
+            (0..12)
+                .map(|category| {
+                    ContextMenuItem::new(10_000 + category, format!("分组 {}", category + 1))
+                        .children((0..10).map(move |item| {
+                            let index = category * 10 + item;
+                            ContextMenuItem::new(index, format!("操作 {}", index + 1))
+                                .hint(format!("⌘{}", index % 10))
+                                .keywords([format!("action-{index}")])
+                        }))
+                })
+                .collect::<Vec<_>>(),
+            vec![0],
+        ),
         |_, _| {},
-        |items, _| {
+        |(items, active_path), _| {
             ContextMenuHost::new(
                 items,
-                AnchoredMenuPosition::new(Point::new(340.0, 160.0)),
+                AnchoredMenuPosition::new(Point::new(860.0, 160.0)),
                 Size::new(VIEWPORT_WIDTH as f32, VIEWPORT_HEIGHT as f32),
                 |event| match event {
                     ContextMenuEvent::Select(value) => value,
@@ -192,6 +199,7 @@ pub fn run() -> BenchmarkReport {
                 ThemeMode::Dark.colors(),
             )
             .search("", true)
+            .active_path(active_path)
             .view()
         },
         &mut render,

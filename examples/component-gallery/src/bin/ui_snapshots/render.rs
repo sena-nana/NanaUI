@@ -291,6 +291,10 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     )?);
 
     let mut context_menu = GalleryState::new();
+    context_menu.update(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
+        width: GALLERY_SIZE.width as f32,
+        height: GALLERY_SIZE.height as f32,
+    }));
     context_menu.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu.update(GalleryMessage::ToggleContextMenu);
     paths.push(gallery_snapshot(
@@ -301,6 +305,10 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     )?);
 
     let mut context_menu_search = GalleryState::new();
+    context_menu_search.update(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
+        width: GALLERY_SIZE.width as f32,
+        height: GALLERY_SIZE.height as f32,
+    }));
     context_menu_search.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu_search.update(GalleryMessage::ToggleContextMenu);
     context_menu_search.update(GalleryMessage::ContextMenu(ContextMenuEvent::Search(
@@ -314,6 +322,10 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     )?);
 
     let mut context_menu_search_light = GalleryState::new();
+    context_menu_search_light.update(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
+        width: GALLERY_SIZE.width as f32,
+        height: GALLERY_SIZE.height as f32,
+    }));
     context_menu_search_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     context_menu_search_light.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu_search_light.update(GalleryMessage::ToggleContextMenu);
