@@ -638,6 +638,22 @@ impl NanaTreeDocument {
     }
 
     pub fn insert(&mut self, child: NodeHandle, parent: NodeHandle, anchor: Option<NodeHandle>) {
+        // Validate parent *before* detach. Remount / Teleport can still hold
+        // wrapNode ids for disposed nodes; detach-then-fail left sidebars'
+        // footer slots (and other subtrees) orphaned with parent=None.
+        if child.0 == parent.0 {
+            return;
+        }
+        let parent_ok = matches!(
+            self.nodes.get(&parent.0).map(|n| &n.data),
+            Some(NodeData::Element { .. })
+        );
+        if !parent_ok {
+            return;
+        }
+        if !self.nodes.contains_key(&child.0) {
+            return;
+        }
         self.detach(child);
         let Some(Node {
             data: NodeData::Element { children, .. },
@@ -1564,6 +1580,44 @@ mod tests {
         let doc = NanaTreeDocument::new(800, 600, 1.0);
         assert_eq!(doc.query_selector("body"), Some(doc.mount_root()));
         assert_eq!(doc.query_selector("html"), Some(doc.html_root()));
+    }
+
+    #[test]
+    fn insert_into_missing_parent_does_not_orphan_child() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let parent = doc.create_element("nana-sidebar-frame");
+        let footer = doc.create_element("nana-column");
+        doc.insert(parent, doc.mount_root(), None);
+        doc.insert(footer, parent, None);
+        assert_eq!(doc.parent_node(footer), Some(parent));
+        // Stale wrapNode target after remount dispose: insert must not detach.
+        doc.insert(footer, NodeHandle(9_999_999), None);
+        assert_eq!(
+            doc.parent_node(footer),
+            Some(parent),
+            "failed insert must keep existing parent"
+        );
+        assert!(
+            doc.children_of(parent).contains(&footer),
+            "footer must stay under sidebar frame"
+        );
+    }
+
+    #[test]
+    fn insert_into_comment_parent_does_not_orphan_child() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let parent = doc.create_element("div");
+        let child = doc.create_element("span");
+        let comment = doc.create_comment("teleport-anchor");
+        doc.insert(parent, doc.mount_root(), None);
+        doc.insert(child, parent, None);
+        doc.insert(comment, doc.mount_root(), None);
+        doc.insert(child, comment, None);
+        assert_eq!(
+            doc.parent_node(child),
+            Some(parent),
+            "non-element parent must not steal children"
+        );
     }
 
     #[test]

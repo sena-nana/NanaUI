@@ -1730,7 +1730,8 @@ impl MessageBridge {
         } else {
             let mut layout = LayoutStyle::default();
             let defaults = default_layout_for_kind(kind);
-            // Card/SettingsCard keep kind gap/padding only — never direction.
+            // Card/SettingsCard keep kind padding seed only — never direction.
+            // Gap must come from author CSS / `gap-*` hints (not kind default).
             layout.gap = defaults.gap;
             layout.padding = defaults.padding;
             layout
@@ -1787,6 +1788,7 @@ impl MessageBridge {
 
         if let Some(widget) = self.widgets.get_mut(&id) {
             widget.props.layout = layout;
+            pin_svg_chart_min_height(&mut widget.props);
             let next_kind = apply_display_to_kind(widget.kind, &widget.props.layout);
             // Only flip layout kinds via display/direction.
             if widget.kind.is_layout() && next_kind.is_layout() {
@@ -2454,6 +2456,7 @@ impl MessageBridge {
             return;
         }
         let Some(workspace_row) = self.find_sidebar_reparent_host() else {
+            self.reparent_sidebar_footer_slots();
             return;
         };
         let already_has_sidebar = self.widgets.get(&workspace_row).is_some_and(|row| {
@@ -2464,6 +2467,7 @@ impl MessageBridge {
             })
         });
         if already_has_sidebar {
+            self.reparent_sidebar_footer_slots();
             return;
         }
         let mut reachable = std::collections::HashSet::new();
@@ -2483,14 +2487,17 @@ impl MessageBridge {
         // Prefer the densest sidebar shell (real nav over empty remount leftovers).
         orphans.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
         let Some((id, _)) = orphans.into_iter().next() else {
+            self.reparent_sidebar_footer_slots();
             return;
         };
         if id == workspace_row {
+            self.reparent_sidebar_footer_slots();
             return;
         }
         let mut seen = std::collections::HashSet::new();
         self.collect_reachable(id, &mut seen);
         if seen.contains(&workspace_row) {
+            self.reparent_sidebar_footer_slots();
             return;
         }
         // Insert before the first existing child so the sidebar stays left of Primary.
@@ -2505,7 +2512,128 @@ impl MessageBridge {
         if let Some((vw, vh)) = self.layout_viewport {
             self.sync_layout_containing_blocks(ParentBox::from_viewport(vw, vh));
         }
+        self.reparent_sidebar_footer_slots();
         self.bump();
+    }
+
+    /// Reattach orphaned `nana-sidebar-frame__footer` slots (and their content)
+    /// under the live reachable [`WidgetKind::SidebarFrame`].
+    ///
+    /// Remount + stale wrapNode insert targets used to detach footer columns
+    /// from the frame while leaving top/body intact. Heal the slot contract so
+    /// iced paints the fixed footer again.
+    pub fn reparent_sidebar_footer_slots(&mut self) {
+        if !self.scaffolded {
+            return;
+        }
+        let reachable = self.roots_reachable();
+        let Some(frame_id) = self.reachable_sidebar_frame(&reachable) else {
+            return;
+        };
+        let has_footer_slot = self.widgets.get(&frame_id).is_some_and(|frame| {
+            frame
+                .children
+                .iter()
+                .any(|cid| self.widgets.get(cid).is_some_and(|c| is_sidebar_footer_slot(&c.props)))
+        });
+        if !has_footer_slot {
+            let footer_orphans: Vec<(WidgetId, usize, u64)> = self
+                .widgets
+                .iter()
+                .filter_map(|(&id, w)| {
+                    if reachable.contains(&id) || id <= 2 || !is_sidebar_footer_slot(&w.props) {
+                        return None;
+                    }
+                    // Prefer densest / newest leftover from the latest remount.
+                    Some((id, w.children.len(), id))
+                })
+                .collect();
+            if let Some(footer_id) = prefer_dense_newest(footer_orphans) {
+                self.insert_child(footer_id, frame_id, None);
+            }
+        }
+        let Some(footer_id) = self.widgets.get(&frame_id).and_then(|frame| {
+            frame.children.iter().copied().find(|cid| {
+                self.widgets
+                    .get(cid)
+                    .is_some_and(|c| is_sidebar_footer_slot(&c.props))
+            })
+        }) else {
+            return;
+        };
+        if self
+            .widgets
+            .get(&footer_id)
+            .is_some_and(|f| !f.children.is_empty())
+        {
+            return;
+        }
+        // Content often sits on an orphan div that still hosts sidebar.footer.*
+        // actions after the slot column was emptied by a failed re-insert.
+        let content_orphans: Vec<(WidgetId, usize, u64)> = self
+            .widgets
+            .iter()
+            .filter_map(|(&id, w)| {
+                if reachable.contains(&id) || id == footer_id || id <= 2 {
+                    return None;
+                }
+                if w.parent.is_some_and(|p| self.widgets.contains_key(&p)) {
+                    return None;
+                }
+                hosts_sidebar_footer_content(w, &self.widgets).then_some((id, w.children.len(), id))
+            })
+            .collect();
+        if let Some(content_id) = prefer_dense_newest(content_orphans) {
+            self.insert_child(content_id, footer_id, None);
+        }
+    }
+
+    /// Mirror bridge footer parenting into the document tree (shared id space).
+    pub fn sync_sidebar_footer_into_document(&self, doc: &mut crate::tree::NanaTreeDocument) {
+        let reachable = self.roots_reachable();
+        let Some(frame_id) = self.reachable_sidebar_frame(&reachable) else {
+            return;
+        };
+        let Some(frame) = self.widgets.get(&frame_id) else {
+            return;
+        };
+        for &cid in &frame.children {
+            let Some(child) = self.widgets.get(&cid) else {
+                continue;
+            };
+            if !is_sidebar_footer_slot(&child.props) {
+                continue;
+            }
+            doc.insert(
+                crate::tree::NodeHandle(cid),
+                crate::tree::NodeHandle(frame_id),
+                None,
+            );
+            for &gcid in &child.children {
+                doc.insert(
+                    crate::tree::NodeHandle(gcid),
+                    crate::tree::NodeHandle(cid),
+                    None,
+                );
+            }
+        }
+    }
+
+    fn roots_reachable(&self) -> std::collections::HashSet<WidgetId> {
+        let mut reachable = std::collections::HashSet::new();
+        for &root in &self.roots {
+            self.collect_reachable(root, &mut reachable);
+        }
+        reachable
+    }
+
+    fn reachable_sidebar_frame(
+        &self,
+        reachable: &std::collections::HashSet<WidgetId>,
+    ) -> Option<WidgetId> {
+        self.widgets.iter().find_map(|(&id, w)| {
+            (reachable.contains(&id) && matches!(w.kind, WidgetKind::SidebarFrame)).then_some(id)
+        })
     }
 
     fn find_sidebar_reparent_host(&self) -> Option<WidgetId> {
@@ -2743,11 +2871,13 @@ impl MessageBridge {
                     }
                 }
                 widget.props.layout.apply_class_layout_hints(&classes);
+                pin_svg_chart_min_height(&mut widget.props);
                 widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
                 widget.kind =
                     crate::layout_map::apply_direction_to_kind(widget.kind, &widget.props.layout);
             }
         } else if let Some(widget) = self.widgets.get_mut(&id) {
+            pin_svg_chart_min_height(&mut widget.props);
             widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
         }
         // Parent size/padding change updates children's containing-block base.
@@ -2930,6 +3060,77 @@ impl MessageBridge {
     fn bump(&mut self) {
         self.revision = self.revision.saturating_add(1);
     }
+}
+
+/// Structural `<svg viewBox>` with author `height: Npx`: raise `min-height` so
+/// column flex-shrink cannot crush chart geometry (heatmap weekday rows).
+/// Horizontal crop stays with overflow:hidden + EndCrop — do not pin min-width.
+/// `overflow-y: hidden` keeps CSS min-size:auto → 0 (may shrink).
+fn pin_svg_chart_min_height(props: &mut WidgetProps) {
+    if !props.element_tag.eq_ignore_ascii_case("svg") {
+        return;
+    }
+    if props.layout.overflow_y.clips() {
+        return;
+    }
+    let has_view_box = props.attrs.keys().any(|k| {
+        let n: String = k
+            .chars()
+            .filter(|c| *c != '-' && *c != '_')
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        n == "viewbox"
+    });
+    if !has_view_box {
+        return;
+    }
+    let Some(LengthSpec::Px(h)) = props.layout.height else {
+        return;
+    };
+    if !h.is_finite() || h <= 0.0 {
+        return;
+    }
+    let raise = match props.layout.min_height {
+        None => true,
+        Some(LengthSpec::Px(mh)) => mh + 0.5 < h,
+        _ => false,
+    };
+    if raise {
+        props.layout.min_height = Some(LengthSpec::Px(h));
+    }
+}
+
+fn is_sidebar_footer_slot(props: &WidgetProps) -> bool {
+    props
+        .class_names
+        .iter()
+        .any(|c| c == "nana-sidebar-frame__footer")
+        || props
+            .attrs
+            .get("data-slot")
+            .is_some_and(|s| s == "sidebar-footer")
+}
+
+fn hosts_sidebar_footer_content(
+    w: &SemanticWidget,
+    widgets: &std::collections::HashMap<WidgetId, SemanticWidget>,
+) -> bool {
+    w.props.class_names.iter().any(|c| c == "sb-footer")
+        || w.props.agent_id.starts_with("sidebar.footer.")
+        || w.children.iter().any(|cid| {
+            widgets.get(cid).is_some_and(|c| {
+                c.props.agent_id.starts_with("sidebar.footer.")
+                    || c.props
+                        .class_names
+                        .iter()
+                        .any(|cls| cls == "sb-footer" || cls.starts_with("sb-footer__"))
+            })
+        })
+}
+
+fn prefer_dense_newest(mut items: Vec<(WidgetId, usize, u64)>) -> Option<WidgetId> {
+    items.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+    items.into_iter().next().map(|(id, _, _)| id)
 }
 
 /// Convenience: handle as widget id.
@@ -4133,6 +4334,66 @@ mod tests {
     }
 
     #[test]
+    fn reparent_sidebar_footer_slot_under_live_frame() {
+        let mut bridge = MessageBridge::new();
+        bridge.ensure_document_roots(1, 2);
+        let mut body = WidgetProps::default();
+        body.class_names = vec!["nana-workspace-shell__body".into(), "flex-row".into()];
+        bridge.register(3, WidgetKind::Row, body);
+        bridge.insert_child(3, 2, None);
+        let mut frame = WidgetProps::default();
+        frame.element_tag = "nana-sidebar-frame".into();
+        frame.class_names = vec!["nana-sidebar-frame".into()];
+        frame.agent_id = "sidebar".into();
+        bridge.register(4, WidgetKind::SidebarFrame, frame);
+        bridge.insert_child(4, 3, None);
+        let mut top = WidgetProps::default();
+        top.class_names = vec!["nana-sidebar-frame__top".into()];
+        top.attrs
+            .insert("data-slot".into(), "sidebar-top".into());
+        bridge.register(5, WidgetKind::Column, top);
+        bridge.insert_child(5, 4, None);
+        let mut body_slot = WidgetProps::default();
+        body_slot.class_names = vec!["nana-sidebar-frame__body".into()];
+        body_slot
+            .attrs
+            .insert("data-slot".into(), "sidebar-body".into());
+        bridge.register(6, WidgetKind::Column, body_slot);
+        bridge.insert_child(6, 4, None);
+        // Orphan footer slot + content (simulates remount detach-then-fail).
+        let mut footer = WidgetProps::default();
+        footer.class_names = vec!["nana-sidebar-frame__footer".into()];
+        footer
+            .attrs
+            .insert("data-slot".into(), "sidebar-footer".into());
+        bridge.register(7, WidgetKind::Column, footer);
+        let mut content = WidgetProps::default();
+        content.class_names = vec!["sb-footer".into()];
+        bridge.register(8, WidgetKind::Column, content);
+        let mut settings = WidgetProps::default();
+        settings.agent_id = "sidebar.footer.settings".into();
+        settings.class_names = vec!["sb-footer__btn".into()];
+        bridge.register(9, WidgetKind::Row, settings);
+        bridge.insert_child(9, 8, None);
+        assert_eq!(bridge.get(4).unwrap().children.len(), 2);
+        bridge.reparent_orphans();
+        let frame = bridge.get(4).unwrap();
+        assert!(
+            frame.children.contains(&7),
+            "footer slot must reattach under live SidebarFrame: {:?}",
+            frame.children
+        );
+        assert!(
+            bridge.get(7).unwrap().children.contains(&8),
+            "footer content must reattach under footer slot"
+        );
+        assert!(
+            bridge.get(8).unwrap().children.contains(&9),
+            "settings action must stay under footer content"
+        );
+    }
+
+    #[test]
     fn reparent_orphans_prefers_resources_content_host() {
         let mut bridge = MessageBridge::new();
         bridge.ensure_document_roots(1, 2);
@@ -4615,6 +4876,44 @@ mod tests {
         assert_eq!(
             icon.props.attrs.get("xlink:href").map(String::as_str),
             Some("#star")
+        );
+    }
+
+    #[test]
+    fn chart_svg_pins_min_height_to_author_px_height() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.element_tag = "svg".into();
+        bridge.register(9, WidgetKind::Box, props);
+        bridge.patch_prop(9, "viewBox", &HostValue::string("0 0 905 125"));
+        bridge.patch_prop(9, "width", &HostValue::Number(905.0));
+        bridge.patch_prop(9, "height", &HostValue::Number(125.0));
+        let w = bridge.get(9).unwrap();
+        assert_eq!(
+            w.props.layout.height,
+            Some(LengthSpec::Px(125.0)),
+            "height attr must map to layout"
+        );
+        assert_eq!(
+            w.props.layout.min_height,
+            Some(LengthSpec::Px(125.0)),
+            "chart svg must pin min-height so flex cannot crush weekday rows, got {:?}",
+            w.props.layout.min_height
+        );
+
+        // overflow:hidden keeps CSS min-size:auto → 0 (may shrink).
+        let mut clipped = WidgetProps::default();
+        clipped.element_tag = "svg".into();
+        bridge.register(10, WidgetKind::Box, clipped);
+        bridge.patch_prop(10, "viewBox", &HostValue::string("0 0 40 20"));
+        bridge.patch_prop(10, "height", &HostValue::Number(20.0));
+        bridge.patch_prop(10, "style", &HostValue::string("overflow: hidden"));
+        let c = bridge.get(10).unwrap();
+        assert!(
+            c.props.layout.min_height.is_none()
+                || matches!(c.props.layout.min_height, Some(LengthSpec::Px(mh)) if mh < 1.0),
+            "overflow:hidden chart svg must not raise min-height, got {:?}",
+            c.props.layout.min_height
         );
     }
 

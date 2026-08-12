@@ -536,6 +536,80 @@ pub fn headless_report(opts: BootOptions) -> Result<String, String> {
                 )
             })
             .collect();
+    // Footer contract: live SidebarFrame slot + sb-footer actions (settings/tasks/connection).
+    let footer_dump: Vec<String> = {
+        let mut out = Vec::new();
+        let mut reachable = std::collections::HashSet::new();
+        let mut stack: Vec<u64> = semantic.roots.clone();
+        while let Some(id) = stack.pop() {
+            if !reachable.insert(id) {
+                continue;
+            }
+            if let Some(w) = semantic.get(id) {
+                stack.extend(w.children.iter().copied());
+            }
+        }
+        let kid_line = |w: &nana_ui_vue::SemanticWidget, with_agent: bool| -> Vec<String> {
+            w.children
+                .iter()
+                .filter_map(|cid| {
+                    let c = semantic.get(*cid)?;
+                    let cls: Vec<_> = c.props.class_names.iter().take(2).cloned().collect();
+                    Some(if with_agent {
+                        format!("#{}:cls={:?}:agent={:?}", c.id, cls, c.props.agent_id)
+                    } else {
+                        format!("#{}:cls={:?}", c.id, cls)
+                    })
+                })
+                .collect()
+        };
+        if let Some(frame) = semantic.widgets.iter().find(|w| {
+            reachable.contains(&w.id) && matches!(w.kind, nana_ui_vue::WidgetKind::SidebarFrame)
+        }) {
+            let kids = kid_line(frame, false);
+            out.push(format!(
+                "live_frame#{}:kids={} -> {kids:?}",
+                frame.id,
+                frame.children.len()
+            ));
+        }
+        if let Some(footer) = semantic.widgets.iter().find(|w| {
+            reachable.contains(&w.id)
+                && w.props
+                    .class_names
+                    .iter()
+                    .any(|c| c == "nana-sidebar-frame__footer")
+        }) {
+            let kids = kid_line(footer, true);
+            out.push(format!(
+                "live_footer_slot#{}:kids={} -> {kids:?}",
+                footer.id,
+                footer.children.len()
+            ));
+        }
+        if let Some(sb) = semantic.widgets.iter().find(|w| {
+            reachable.contains(&w.id) && w.props.class_names.iter().any(|c| c == "sb-footer")
+        }) {
+            let kids = kid_line(sb, true);
+            out.push(format!(
+                "live_sb_footer#{}:kids={} -> {kids:?}",
+                sb.id,
+                sb.children.len()
+            ));
+        }
+        for agent in [
+            "sidebar.footer.settings",
+            "sidebar.footer.tasks",
+            "sidebar.footer.connection",
+        ] {
+            let present = semantic
+                .widgets
+                .iter()
+                .any(|w| reachable.contains(&w.id) && w.props.agent_id == agent);
+            out.push(format!("agent[{agent}]={present}"));
+        }
+        out
+    };
     let row_count = semantic
         .widgets
         .iter()
@@ -1046,6 +1120,7 @@ pub fn headless_report(opts: BootOptions) -> Result<String, String> {
          bundle={bundle} entry={entry} nodes={nodes} texts={texts} widgets={widgets} events={events} \
          roots={roots} rows={rows} dir_row={dir_row} hidden={hidden} body={body_info} \
          flex_samples={flex_samples:?} row_kids={row_kids:?} sidebar={sidebar_samples:?} \
+         footer_dump={footer_dump:?} \
          root_info={root_info:?} elapsed_ms={elapsed_ms:.1} text_preview={text_preview:?} \
          kind_top={kind_top:?} shell_row_dump={shell_row_dump:?} layout_style_dump={layout_style_dump:?} layout_box_dump={layout_box_dump:?} card_dump={card_dump:?} interesting_texts={interesting_texts:?} typography_dump={typography_dump:?} \
          setup_dump={setup_dump:?} root_kids={root_kids:?} shell_kids={shell_kids:?} titlebar_kids={titlebar_kids:?} home_kids={home_kids:?} gpu_dump={gpu_dump:?} grid_kids={grid_kids:?} card_kids={card_kids:?} \

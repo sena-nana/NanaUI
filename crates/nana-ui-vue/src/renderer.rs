@@ -113,6 +113,16 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             if props.disabled {
                 guard.set_attribute(handle, "disabled", "");
             }
+            // Seed class / data-slot onto the document so slot contracts and
+            // querySelector stay aligned with MessageBridge props (Vue may
+            // skip a later patchProp when the vnode props were already
+            // consumed by createWidget).
+            if !props.class_names.is_empty() {
+                guard.set_attribute(handle, "class", &props.class_names.join(" "));
+            }
+            if let Some(slot) = props.attrs.get("data-slot") {
+                guard.set_attribute(handle, "data-slot", slot);
+            }
             drop(guard);
             let mut bridge = lock_bridge(&host.bridge)?;
             bridge.register(widget_id(handle), kind, props);
