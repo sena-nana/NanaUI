@@ -339,6 +339,10 @@ impl VueHost {
         let (logical_w, logical_h) = self.document.lock().expect("vue doc").logical_size();
         let mut bridge = self.bridge.lock().expect("vue bridge");
         bridge.reparent_orphans();
+        {
+            let mut doc = self.document.lock().expect("vue doc");
+            bridge.sync_sidebar_footer_into_document(&mut doc);
+        }
         bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
         bridge.snapshot()
     }
@@ -547,6 +551,10 @@ impl VueHost {
         let boxes = {
             let mut bridge = self.bridge.lock().expect("vue bridge");
             bridge.reparent_orphans();
+            {
+                let mut doc = self.document.lock().expect("vue doc");
+                bridge.sync_sidebar_footer_into_document(&mut doc);
+            }
             bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
             measure_bridge_layout_boxes(&bridge, logical_w, logical_h)
         };
