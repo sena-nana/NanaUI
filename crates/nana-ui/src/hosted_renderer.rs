@@ -1,9 +1,13 @@
 //! Iced rendering hosted by an application-owned WGPU context.
 
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+
 use iced::advanced::widget::Operation;
 use iced::{Color, Element, Pixels, Size, Theme, mouse};
 use iced_wgpu::graphics::core::{
-    Event, InputMethod, Rectangle, input_method, renderer, shell, time::Instant, window,
+    Clipboard, Event, InputMethod, Rectangle, clipboard, input_method, renderer, shell,
+    time::Instant, window,
 };
 use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
@@ -67,6 +71,9 @@ pub struct HostedUiRenderer<Message> {
     events: Vec<Event>,
     cursor: mouse::Cursor,
     waker: shell::Waker,
+    clipboard: iced_winit::Clipboard,
+    clipboard_events_tx: Sender<Event>,
+    clipboard_events_rx: Receiver<Event>,
     modifiers: ModifiersState,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
     pending_scroll_by: Vec<PendingScrollBy>,
@@ -110,6 +117,7 @@ impl<Message> HostedUiRenderer<Message> {
                 metrics_hinting: true,
             },
         );
+        let (clipboard_events_tx, clipboard_events_rx) = mpsc::channel();
         Self {
             renderer,
             viewport: viewport(physical_size, window_scale_factor),
@@ -117,6 +125,9 @@ impl<Message> HostedUiRenderer<Message> {
             events: Vec::new(),
             cursor: mouse::Cursor::Unavailable,
             waker: shell::Waker::new(request_redraw),
+            clipboard: iced_winit::Clipboard::new(),
+            clipboard_events_tx,
+            clipboard_events_rx,
             modifiers: ModifiersState::default(),
             ime_state: None,
             pending_scroll_by: Vec::new(),
@@ -266,6 +277,7 @@ impl<Message> HostedUiRenderer<Message> {
     /// Updates Iced from all queued input before the host renders the latest
     /// application state.
     pub fn update(&mut self, window: &winit::window::Window) -> Vec<Message> {
+        self.drain_clipboard_events();
         if self.events.is_empty() {
             return Vec::new();
         }
@@ -292,6 +304,7 @@ impl<Message> HostedUiRenderer<Message> {
         window: &winit::window::Window,
         now: Instant,
     ) -> HostedPreparedFrame<Message> {
+        self.drain_clipboard_events();
         let mut events = std::mem::take(&mut self.events);
         events.push(Event::Window(window::Event::RedrawRequested(now)));
         self.prepare_events(window, &events)
@@ -419,11 +432,14 @@ impl<Message> HostedUiRenderer<Message> {
         let user_interface::State::Updated {
             mouse_interaction,
             input_method,
+            clipboard,
             ..
         } = state
         else {
             return;
         };
+
+        self.apply_clipboard_requests(clipboard);
 
         if let Some(icon) = conversion::mouse_interaction(mouse_interaction) {
             window.set_cursor(icon);
@@ -458,6 +474,37 @@ impl<Message> HostedUiRenderer<Message> {
         };
         self.ime_state = ime_state;
     }
+
+    fn apply_clipboard_requests(&mut self, requests: Clipboard) {
+        for kind in requests.reads {
+            let events = self.clipboard_events_tx.clone();
+            let waker = self.waker.clone();
+            self.clipboard.read(kind, move |result| {
+                queue_clipboard_event(
+                    &events,
+                    &waker,
+                    clipboard::Event::Read(result.map(Arc::new)),
+                );
+            });
+        }
+        if let Some(content) = requests.write {
+            let events = self.clipboard_events_tx.clone();
+            let waker = self.waker.clone();
+            self.clipboard.write(content, move |result| {
+                queue_clipboard_event(&events, &waker, clipboard::Event::Written(result));
+            });
+        }
+    }
+
+    fn drain_clipboard_events(&mut self) {
+        self.events.extend(self.clipboard_events_rx.try_iter());
+    }
+}
+
+fn queue_clipboard_event(events: &Sender<Event>, waker: &shell::Waker, event: clipboard::Event) {
+    if events.send(Event::Clipboard(event)).is_ok() {
+        waker.wake();
+    }
 }
 
 fn queue_event(events: &mut Vec<Event>, event: Event) {
@@ -489,6 +536,7 @@ fn viewport(physical_size: Size<u32>, window_scale_factor: f32) -> Viewport {
 mod tests {
     use super::*;
     use iced::Point;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn cursor_moved(x: f32, y: f32) -> Event {
         Event::Mouse(mouse::Event::CursorMoved {
@@ -533,5 +581,23 @@ mod tests {
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
         ));
         assert_eq!(cursor_position(&events[4]), Some(Point::new(110.0, 120.0)));
+    }
+
+    #[test]
+    fn clipboard_result_wakes_the_host_and_reenters_the_ui_event_queue() {
+        let (events, queued) = mpsc::channel();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let observed_wakes = Arc::clone(&wakes);
+        let waker = shell::Waker::new(move || {
+            observed_wakes.fetch_add(1, Ordering::Relaxed);
+        });
+
+        queue_clipboard_event(&events, &waker, clipboard::Event::Written(Ok(())));
+
+        assert!(matches!(
+            queued.try_recv(),
+            Ok(Event::Clipboard(clipboard::Event::Written(Ok(()))))
+        ));
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
     }
 }
