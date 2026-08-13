@@ -1,9 +1,14 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::renderer;
+use iced::advanced::widget::{self, Widget};
+use iced::advanced::{Shell, mouse, overlay};
 use iced::widget::{button, column, container, row, scrollable, space, stack, text, tooltip};
 use iced::{
-    Alignment, Animation, Border, Color, Element, Length, Padding, Shadow, Subscription, Theme,
-    font,
+    Alignment, Animation, Border, Color, Element, Event, Length, Padding, Rectangle, Shadow, Size,
+    Subscription, Theme, font,
 };
 
 use crate::components::ControlSize;
@@ -173,6 +178,7 @@ pub struct SidebarRow<'a, Message> {
     label: Cow<'a, str>,
     leading: Option<Element<'a, Message>>,
     trailing: Option<Element<'a, Message>>,
+    tools: Option<Element<'a, Message>>,
     depth: u16,
     size: ControlSize,
     /// CSS `gap` between leading icon and label (Lilia `.sb-tree__row` / control = 6).
@@ -192,6 +198,7 @@ where
             label: label.into(),
             leading: None,
             trailing: None,
+            tools: None,
             depth: 0,
             size: ControlSize::Small,
             gap: 6.0,
@@ -209,6 +216,15 @@ where
 
     pub fn trailing(mut self, trailing: impl Into<Element<'a, Message>>) -> Self {
         self.trailing = Some(trailing.into());
+        self
+    }
+
+    /// Adds row actions that replace the trailing metadata while the pointer is over the row.
+    ///
+    /// Pointer input inside this slot is isolated from [`SidebarRow::on_select`], including when
+    /// the supplied action is disabled.
+    pub fn tools(mut self, tools: impl Into<Element<'a, Message>>) -> Self {
+        self.tools = Some(tools.into());
         self
     }
 
@@ -334,11 +350,187 @@ where
                     .center_y(Length::Fill),
             );
         }
+        if let Some(tools) = self.tools {
+            let tools_background = if self.state == SidebarRowState::Active {
+                colors.selected_hover
+            } else {
+                colors.hover
+            };
+            let tools = container(
+                container(tools)
+                    .height(Length::Fill)
+                    .padding([0.0, 3.0])
+                    .center_y(Length::Fill)
+                    .style(move |_theme: &Theme| {
+                        iced::widget::container::Style::default().background(tools_background)
+                    }),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding {
+                top: 0.0,
+                right: 5.0,
+                bottom: 0.0,
+                left: 0.0,
+            })
+            .align_right(Length::Fill)
+            .center_y(Length::Fill);
+            layers = layers.push(Element::new(SidebarToolsOverlay {
+                content: tools.into(),
+                hovered: Cell::new(false),
+            }));
+        }
         container(layers)
             .width(Length::Fill)
             .height(Length::Fixed(row_height))
             .into()
     }
+}
+
+struct SidebarToolsOverlay<'a, Message> {
+    content: Element<'a, Message>,
+    hovered: Cell<bool>,
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarToolsOverlay<'_, Message> {
+    fn tag(&self) -> widget::tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> widget::tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn diff(&mut self, tree: &mut widget::Tree) {
+        self.content.as_widget_mut().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let is_hovered = cursor.is_over(layout.bounds());
+        if self.hovered.replace(is_hovered) != is_hovered {
+            shell.request_redraw();
+        }
+        if !is_hovered {
+            return;
+        }
+
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
+        if !shell.is_event_captured() && captures_tools_pointer(event, tools_bounds(layout), cursor)
+        {
+            shell.capture_event();
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let is_hovered = cursor.is_over(layout.bounds());
+        self.hovered.set(is_hovered);
+        if is_hovered {
+            self.content
+                .as_widget()
+                .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        }
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        if self.hovered.get() {
+            self.content
+                .as_widget_mut()
+                .operate(tree, layout, renderer, operation);
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        let is_hovered = cursor.is_over(layout.bounds());
+        self.hovered.set(is_hovered);
+        if is_hovered {
+            self.content
+                .as_widget()
+                .mouse_interaction(tree, layout, cursor, viewport, renderer)
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut widget::Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: iced::Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        if self.hovered.get() {
+            self.content
+                .as_widget_mut()
+                .overlay(tree, layout, renderer, viewport, translation)
+        } else {
+            None
+        }
+    }
+}
+
+fn captures_tools_pointer(event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> bool {
+    cursor.is_over(bounds)
+        && matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                | Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                | Event::Touch(iced::touch::Event::FingerPressed { .. })
+                | Event::Touch(iced::touch::Event::FingerLifted { .. })
+        )
+}
+
+fn tools_bounds(layout: Layout<'_>) -> Rectangle {
+    layout
+        .children()
+        .next()
+        .map_or(layout.bounds(), |tools| tools.bounds())
 }
 
 /// A titled, optionally collapsible sidebar group.
