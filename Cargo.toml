@@ -16,6 +16,7 @@ members = [
     "examples/vue-quickjs",
     "examples/vue-v8",
     "examples/vue-counter",
+    "examples/vue-hosted-acceptance",
     "vendor/iced_wgpu",
 ]
 resolver = "2"
