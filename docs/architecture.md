@@ -226,7 +226,9 @@ Region 折叠目标会立即写入 `WorkspaceLayout`，保证序列化与设置�
 
 ## WGPU 边界
 
-NanaUI 当前使用 Iced `0.15.0-dev` 分叉与 WGPU `30.0.0`。`GpuView` 实现
+NanaUI 当前使用仓内 `engine/iced` compatibility engine（Iced `0.15.0-dev`）与
+WGPU `30.0.0`。Iced 是迁移资产而不是 NanaUI 的长期 public contract；来源、同步规则、
+依赖清单与退出指标见 [`iced-engine.md`](iced-engine.md)。`GpuView` 实现
 Iced WGPU shader primitive；`RenderSlot` 负责逻辑/物理像素换算与裁剪。
 
 `hosted-gpu-demo` 按职责拆分为 context、scene、panel 与 runner：

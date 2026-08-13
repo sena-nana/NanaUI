@@ -229,7 +229,7 @@ impl IcedSlotPainter {
         let events = std::mem::take(&mut self.events);
         if !events.is_empty() {
             let waker = shell::Waker::noop();
-            let mut messages = Vec::new();
+            let mut messages = shell::Bus::new();
             let (_state, _statuses) = ui.update(
                 &window::Headless,
                 &waker,
@@ -238,6 +238,7 @@ impl IcedSlotPainter {
                 &mut self.renderer,
                 &mut messages,
             );
+            let messages = messages.into_iter().collect::<Vec<_>>();
             if self.apply_messages(&messages) {
                 let cache = ui.into_cache();
                 ui = UserInterface::build(

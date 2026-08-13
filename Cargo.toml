@@ -17,25 +17,22 @@ members = [
     "examples/vue-v8",
     "examples/vue-counter",
     "examples/vue-hosted-acceptance",
-    "vendor/iced_wgpu",
 ]
+exclude = ["engine/iced"]
 resolver = "2"
 
 [workspace.dependencies]
 iced = {
-    git = "https://github.com/sena-nana/iced.git",
-    rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67",
+    path = "engine/iced",
     default-features = false,
     features = ["wgpu", "canvas", "image", "svg", "advanced", "smol", "thread-pool", "x11", "wayland"],
 }
 iced_wgpu = {
-    git = "https://github.com/sena-nana/iced.git",
-    rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67",
+    path = "engine/iced/wgpu",
     features = ["svg-text"],
 }
 iced_winit = {
-    git = "https://github.com/sena-nana/iced.git",
-    rev = "31bde4e4bac6de08f5ba581a8ea9c55ad0031e67",
+    path = "engine/iced/winit",
 }
 nana-ui-core = { path = "crates/nana-ui-core" }
 nana-js-engine = { path = "crates/nana-js-engine" }
@@ -69,9 +66,3 @@ fontdue = "0.9"
 # `nana-ui` can cross-compile to aarch64-linux-android. Desktop backends unchanged.
 [patch.crates-io]
 arboard = { path = "vendor/arboard" }
-
-# iced_winit: Android lacks winit `modifier_supplement`; stub clipboard like wasm.
-# iced_wgpu: a3bdc6f unit-struct `image::Batch` init breaks when `svg` enables Vec Batch.
-[patch."https://github.com/sena-nana/iced.git"]
-iced_winit = { path = "vendor/iced_winit" }
-iced_wgpu = { path = "vendor/iced_wgpu" }

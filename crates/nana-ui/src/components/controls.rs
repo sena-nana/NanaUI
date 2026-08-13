@@ -271,7 +271,7 @@ where
             ])
         });
         let line_height = self.line_height.unwrap_or_else(|| self.size.line_height());
-        let field = text_input(self.placeholder.as_ref(), self.value.as_ref())
+        let field = text_input(self.placeholder, self.value)
             .secure(self.secure)
             .padding(padding)
             .size(self.size.text_size())
@@ -410,7 +410,7 @@ fn submit_on_enter_binding<Message: Clone>(
     key_press: text_editor::KeyPress,
     message: &Message,
 ) -> Option<text_editor::Binding<Message>> {
-    let is_focused = matches!(key_press.status, text_editor::Status::Focused { .. });
+    let is_focused = key_press.is_focused;
     let is_enter = matches!(
         key_press.key.as_ref(),
         iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
@@ -699,19 +699,12 @@ where
         }
         #[cfg(feature = "syntax-highlighting")]
         let is_focused = if self.syntax_highlighting.is_some() {
-            tree.state
-                .downcast_ref::<text_editor::State<iced::highlighter::Highlighter>>()
-                .is_focused()
+            text_editor::is_focused::<iced::highlighter::Highlighter>(tree)
         } else {
-            tree.state
-                .downcast_ref::<text_editor::State<PlainText>>()
-                .is_focused()
+            text_editor::is_focused::<PlainText>(tree)
         };
         #[cfg(not(feature = "syntax-highlighting"))]
-        let is_focused = tree
-            .state
-            .downcast_ref::<text_editor::State<PlainText>>()
-            .is_focused();
+        let is_focused = text_editor::is_focused::<PlainText>(tree);
         if is_focused {
             text_editor::Status::Focused {
                 is_hovered: cursor.is_over(layout.bounds()),
@@ -1316,7 +1309,7 @@ mod tests {
         Submit,
     }
 
-    fn enter_key_press(modifiers: Modifiers, status: text_editor::Status) -> text_editor::KeyPress {
+    fn enter_key_press(modifiers: Modifiers, is_focused: bool) -> text_editor::KeyPress {
         let key = Key::Named(Named::Enter);
         text_editor::KeyPress {
             key: key.clone(),
@@ -1324,7 +1317,7 @@ mod tests {
             physical_key: Physical::Code(Code::Enter),
             modifiers,
             text: None,
-            status,
+            is_focused,
         }
     }
 
@@ -1359,25 +1352,20 @@ mod tests {
 
     #[test]
     fn submit_binding_keeps_shift_enter_as_the_default_newline() {
-        let focused = text_editor::Status::Focused { is_hovered: false };
-
         assert_eq!(
-            submit_on_enter_binding(
-                enter_key_press(Modifiers::NONE, focused),
-                &TestMessage::Submit,
-            ),
+            submit_on_enter_binding(enter_key_press(Modifiers::NONE, true), &TestMessage::Submit,),
             Some(text_editor::Binding::Custom(TestMessage::Submit))
         );
         assert_eq!(
             submit_on_enter_binding(
-                enter_key_press(Modifiers::SHIFT, focused),
+                enter_key_press(Modifiers::SHIFT, true),
                 &TestMessage::Submit,
             ),
             Some(text_editor::Binding::Enter)
         );
         assert_eq!(
             submit_on_enter_binding(
-                enter_key_press(Modifiers::NONE, text_editor::Status::Active),
+                enter_key_press(Modifiers::NONE, false),
                 &TestMessage::Submit,
             ),
             None
@@ -1401,8 +1389,8 @@ mod tests {
     fn hosted_textarea_cursor_and_selection_are_owned_view_state() {
         let state = HostedTextareaState::with_text("draft");
         let selection = text_editor::Cursor {
-            position: text_editor::Position { line: 0, column: 5 },
-            selection: Some(text_editor::Position { line: 0, column: 0 }),
+            position: iced::advanced::text::Position { line: 0, index: 5 },
+            selection: Some(iced::advanced::text::Position { line: 0, index: 0 }),
         };
 
         state.move_to(selection);

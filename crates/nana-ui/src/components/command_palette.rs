@@ -118,7 +118,7 @@ where
             .items
             .get(self.selected)
             .map(|item| item.action.clone());
-        let search = text_input(&self.placeholder, &self.query)
+        let search = text_input(self.placeholder, self.query)
             .id(self.input_id)
             .on_input({
                 let on_event = Rc::clone(&self.on_event);

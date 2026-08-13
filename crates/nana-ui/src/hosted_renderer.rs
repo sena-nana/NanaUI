@@ -283,10 +283,10 @@ impl<Message> HostedUiRenderer<Message> {
         }
 
         let events = std::mem::take(&mut self.events);
-        let mut messages = Vec::new();
+        let mut messages = iced::advanced::shell::Bus::new();
         let Some(interface) = self.interface.as_mut() else {
             self.events = events;
-            return messages;
+            return messages.into_iter().collect();
         };
         let _ = interface.update(
             window,
@@ -296,7 +296,7 @@ impl<Message> HostedUiRenderer<Message> {
             &mut self.renderer,
             &mut messages,
         );
-        messages
+        messages.into_iter().collect()
     }
 
     pub(crate) fn prepare_frame(
@@ -349,7 +349,7 @@ impl<Message> HostedUiRenderer<Message> {
             .interface
             .as_mut()
             .expect("hosted UI must be rebuilt before preparing");
-        let mut messages = Vec::new();
+        let mut messages = iced::advanced::shell::Bus::new();
         let (state, _) = interface.update(
             window,
             &self.waker,
@@ -358,7 +358,10 @@ impl<Message> HostedUiRenderer<Message> {
             &mut self.renderer,
             &mut messages,
         );
-        HostedPreparedFrame { state, messages }
+        HostedPreparedFrame {
+            state,
+            messages: messages.into_iter().collect(),
+        }
     }
 
     /// Draws the latest UI tree into the host's current surface texture.
@@ -375,7 +378,7 @@ impl<Message> HostedUiRenderer<Message> {
             .interface
             .as_mut()
             .expect("hosted UI must be rebuilt before rendering");
-        let mut messages = Vec::new();
+        let mut messages = iced::advanced::shell::Bus::new();
         let (state, _) = interface.update(
             target.window,
             &self.waker,
@@ -396,7 +399,7 @@ impl<Message> HostedUiRenderer<Message> {
             &self.viewport,
         );
         HostedUiFrame {
-            messages,
+            messages: messages.into_iter().collect(),
             submission,
         }
     }

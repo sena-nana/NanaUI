@@ -106,15 +106,15 @@ QuickJS 或 V8 执行，语义树最终仍只由 NanaUI/Iced/WGPU 绘制。
 
 ## 当前依赖基线
 
-- Iced：`0.15.0-dev`，固定到 `sena-nana/iced`
-  `f6fddd3ce0bc123ec64ce77c1839d56dc8465ba6`；
+- Iced：`0.15.0-dev` compatibility engine，已合入 `engine/iced`；来源与上游同步规则见
+  [`docs/iced-engine.md`](docs/iced-engine.md)；
 - WGPU：`30.0.0`，依赖图中只有一个 WGPU 主版本；
 - Cryoglyph：随 Iced 分叉同步迁移到 WGPU 30，并固定到
   `sena-nana/cryoglyph` `3fe41b131eda1288d08df89ad5ba56de97713308`；
 - Rust edition：2024，最低 Rust `1.92`。
 
-Iced 与 Cryoglyph 均使用完整 Git revision，`Cargo.lock` 记录解析后的 commit。
-GitHub Actions 从独立 checkout 运行 `--locked` 测试与全目标检查，不依赖相邻
+Iced 源码由当前仓库直接拥有；Cryoglyph 使用完整 Git revision，`Cargo.lock` 记录
+解析后的依赖。GitHub Actions 从独立 checkout 运行 `--locked` 测试与全目标检查，不依赖相邻
 仓库。
 
 ## 验证

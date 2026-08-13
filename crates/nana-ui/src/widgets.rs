@@ -277,7 +277,6 @@ pub fn text_input_style(
                 .rounded(metrics.radius_sm)
                 .width(if focused && invalid { 2.0 } else { 1.0 })
                 .color(border_color),
-            icon: if disabled { colors.faint } else { colors.muted },
             placeholder: colors.faint,
             value: if disabled { colors.faint } else { colors.text },
             selection: colors.accent_soft,
