@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use component_gallery::{GalleryMessage, GallerySection, GalleryState, SurfaceView};
-use iced::widget::{column, container, space, text};
-use iced::{Color, Element, Length, Pixels, Point, Size, Theme, font, mouse};
+use iced::widget::{column, container, row, space, text};
+use iced::{Alignment, Color, Element, Length, Pixels, Point, Size, Theme, font, mouse};
 use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer, wgpu};
 use iced_winit::core::time::Instant;
@@ -208,6 +208,20 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         "gallery-controls-light.png",
         &controls_light,
     )?);
+    paths.push(gallery_snapshot_with_cursor(
+        &mut renderer,
+        &output,
+        "gallery-sidebar-tools-dark.png",
+        &controls,
+        mouse::Cursor::Available(Point::new(180.0, 60.0)),
+    )?);
+    paths.push(gallery_snapshot_with_cursor(
+        &mut renderer,
+        &output,
+        "gallery-sidebar-tools-light.png",
+        &controls_light,
+        mouse::Cursor::Available(Point::new(180.0, 60.0)),
+    )?);
 
     let mut loading = GalleryState::new();
     loading.update(GalleryMessage::ToggleLoading);
@@ -324,6 +338,13 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &mut renderer,
         &output,
         "gallery-context-menu-dark.png",
+        &context_menu,
+    )?);
+    context_menu.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    paths.push(gallery_snapshot(
+        &mut renderer,
+        &output,
+        "gallery-context-menu-light.png",
         &context_menu,
     )?);
 
@@ -844,6 +865,26 @@ fn gallery_snapshot(
     Ok(path)
 }
 
+fn gallery_snapshot_with_cursor(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    state: &GalleryState,
+    cursor: mouse::Cursor,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let pixels = snapshot_with_cursor(
+        renderer,
+        state.view(),
+        &state.theme_mode().iced_theme(),
+        state.theme_mode().colors().background,
+        GALLERY_SIZE,
+        cursor,
+    );
+    let path = output.join(name);
+    write::png(&path, GALLERY_SIZE, &pixels)?;
+    Ok(path)
+}
+
 fn prepare_dock_preview(state: &mut GalleryState) {
     let surface = DockSurfaceId(0);
     state.update(GalleryMessage::Dock(DockAction::DragStart {
@@ -870,6 +911,20 @@ fn titlebar_view(
     let state = WindowChromeState::new(chrome);
     let titlebar = AppTitleBar::new("NanaUI", colors)
         .leading(text("NANA").size(12).color(colors.accent))
+        .center(
+            row![
+                text("LiliaCode").size(12).color(colors.muted),
+                text("›").size(12).color(colors.faint),
+                text("恢复 Native 侧边栏交互与主界面布局")
+                    .size(13)
+                    .width(Length::Fill)
+                    .wrapping(iced::widget::text::Wrapping::None)
+                    .ellipsis(iced::widget::text::Ellipsis::End),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .center_width(420.0)
         .trailing(text("Gallery").size(11).color(colors.muted))
         .window_chrome(&state, |event| event)
         .view();
