@@ -1,0 +1,1027 @@
+{
+  "profile": "release",
+  "adapter": {
+    "name": "Apple M4",
+    "backend": "Metal",
+    "device_type": "IntegratedGpu"
+  },
+  "renderer": {
+    "antialiasing": "MSAAx4",
+    "target_format": "Bgra8UnormSrgb"
+  },
+  "iterations": 60,
+  "warmup_iterations": 10,
+  "viewport": [
+    900,
+    640
+  ],
+  "cases": [
+    {
+      "scenario": "list-100",
+      "item_count": 100,
+      "view_construction_ms": {
+        "median": 0.023,
+        "p95": 0.023,
+        "p99": 0.023,
+        "min": 0.022,
+        "max": 0.025
+      },
+      "layout_diff_ms": {
+        "median": 0.027,
+        "p95": 0.028,
+        "p99": 0.029,
+        "min": 0.026,
+        "max": 0.031
+      },
+      "event_update_ms": {
+        "median": 0.011,
+        "p95": 0.012,
+        "p99": 0.012,
+        "min": 0.01,
+        "max": 0.012
+      },
+      "draw_cpu_ms": {
+        "median": 0.003,
+        "p95": 0.003,
+        "p99": 0.004,
+        "min": 0.003,
+        "max": 0.004
+      },
+      "cpu_total_ms": {
+        "median": 0.064,
+        "p95": 0.065,
+        "p99": 0.068,
+        "min": 0.062,
+        "max": 0.071
+      },
+      "gpu_submit_wait_ms": {
+        "median": 0.692,
+        "p95": 0.97,
+        "p99": 1.007,
+        "min": 0.631,
+        "max": 1.067
+      },
+      "total_ms": {
+        "median": 0.757,
+        "p95": 1.034,
+        "p99": 1.072,
+        "min": 0.696,
+        "max": 1.137
+      }
+    },
+    {
+      "scenario": "list-500",
+      "item_count": 500,
+      "view_construction_ms": {
+        "median": 0.116,
+        "p95": 0.12,
+        "p99": 0.121,
+        "min": 0.112,
+        "max": 0.121
+      },
+      "layout_diff_ms": {
+        "median": 0.137,
+        "p95": 0.141,
+        "p99": 0.142,
+        "min": 0.135,
+        "max": 0.145
+      },
+      "event_update_ms": {
+        "median": 0.052,
+        "p95": 0.054,
+        "p99": 0.054,
+        "min": 0.051,
+        "max": 0.054
+      },
+      "draw_cpu_ms": {
+        "median": 0.004,
+        "p95": 0.004,
+        "p99": 0.004,
+        "min": 0.004,
+        "max": 0.004
+      },
+      "cpu_total_ms": {
+        "median": 0.309,
+        "p95": 0.32,
+        "p99": 0.32,
+        "min": 0.305,
+        "max": 0.324
+      },
+      "gpu_submit_wait_ms": {
+        "median": 0.703,
+        "p95": 0.884,
+        "p99": 0.985,
+        "min": 0.617,
+        "max": 1.004
+      },
+      "total_ms": {
+        "median": 1.017,
+        "p95": 1.192,
+        "p99": 1.3,
+        "min": 0.925,
+        "max": 1.324
+      }
+    },
+    {
+      "scenario": "list-1000",
+      "item_count": 1000,
+      "view_construction_ms": {
+        "median": 0.19,
+        "p95": 0.197,
+        "p99": 0.205,
+        "min": 0.186,
+        "max": 0.208
+      },
+      "layout_diff_ms": {
+        "median": 0.226,
+        "p95": 0.228,
+        "p99": 0.23,
+        "min": 0.222,
+        "max": 0.234
+      },
+      "event_update_ms": {
+        "median": 0.086,
+        "p95": 0.088,
+        "p99": 0.092,
+        "min": 0.084,
+        "max": 0.095
+      },
+      "draw_cpu_ms": {
+        "median": 0.004,
+        "p95": 0.004,
+        "p99": 0.005,
+        "min": 0.004,
+        "max": 0.006
+      },
+      "cpu_total_ms": {
+        "median": 0.505,
+        "p95": 0.516,
+        "p99": 0.523,
+        "min": 0.501,
+        "max": 0.525
+      },
+      "gpu_submit_wait_ms": {
+        "median": 0.669,
+        "p95": 0.749,
+        "p99": 0.79,
+        "min": 0.598,
+        "max": 0.842
+      },
+      "total_ms": {
+        "median": 1.173,
+        "p95": 1.252,
+        "p99": 1.301,
+        "min": 1.107,
+        "max": 1.347
+      }
+    },
+    {
+      "scenario": "gallery-controls",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.012,
+        "p95": 0.015,
+        "p99": 0.017,
+        "min": 0.011,
+        "max": 0.018
+      },
+      "layout_diff_ms": {
+        "median": 0.017,
+        "p95": 0.022,
+        "p99": 0.024,
+        "min": 0.016,
+        "max": 0.03
+      },
+      "event_update_ms": {
+        "median": 0.007,
+        "p95": 0.009,
+        "p99": 0.01,
+        "min": 0.007,
+        "max": 0.013
+      },
+      "draw_cpu_ms": {
+        "median": 0.041,
+        "p95": 0.045,
+        "p99": 0.049,
+        "min": 0.04,
+        "max": 0.055
+      },
+      "cpu_total_ms": {
+        "median": 0.077,
+        "p95": 0.089,
+        "p99": 0.098,
+        "min": 0.074,
+        "max": 0.117
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.314,
+        "p95": 1.787,
+        "p99": 2.001,
+        "min": 1.197,
+        "max": 2.004
+      },
+      "total_ms": {
+        "median": 1.391,
+        "p95": 1.875,
+        "p99": 2.091,
+        "min": 1.273,
+        "max": 2.099
+      }
+    },
+    {
+      "scenario": "gallery-surfaces",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.007,
+        "p95": 0.008,
+        "p99": 0.008,
+        "min": 0.007,
+        "max": 0.01
+      },
+      "layout_diff_ms": {
+        "median": 0.008,
+        "p95": 0.009,
+        "p99": 0.009,
+        "min": 0.008,
+        "max": 0.012
+      },
+      "event_update_ms": {
+        "median": 0.005,
+        "p95": 0.005,
+        "p99": 0.005,
+        "min": 0.004,
+        "max": 0.007
+      },
+      "draw_cpu_ms": {
+        "median": 0.036,
+        "p95": 0.038,
+        "p99": 0.038,
+        "min": 0.035,
+        "max": 0.048
+      },
+      "cpu_total_ms": {
+        "median": 0.056,
+        "p95": 0.059,
+        "p99": 0.06,
+        "min": 0.055,
+        "max": 0.077
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.369,
+        "p95": 1.5,
+        "p99": 1.505,
+        "min": 1.249,
+        "max": 1.513
+      },
+      "total_ms": {
+        "median": 1.427,
+        "p95": 1.555,
+        "p99": 1.563,
+        "min": 1.306,
+        "max": 1.57
+      }
+    },
+    {
+      "scenario": "gallery-feedback",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.007,
+        "p95": 0.009,
+        "p99": 0.01,
+        "min": 0.006,
+        "max": 0.011
+      },
+      "layout_diff_ms": {
+        "median": 0.008,
+        "p95": 0.01,
+        "p99": 0.011,
+        "min": 0.006,
+        "max": 0.012
+      },
+      "event_update_ms": {
+        "median": 0.004,
+        "p95": 0.006,
+        "p99": 0.006,
+        "min": 0.003,
+        "max": 0.006
+      },
+      "draw_cpu_ms": {
+        "median": 0.041,
+        "p95": 0.049,
+        "p99": 0.061,
+        "min": 0.038,
+        "max": 0.062
+      },
+      "cpu_total_ms": {
+        "median": 0.06,
+        "p95": 0.075,
+        "p99": 0.083,
+        "min": 0.053,
+        "max": 0.088
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.07,
+        "p95": 1.203,
+        "p99": 1.365,
+        "min": 0.979,
+        "max": 1.437
+      },
+      "total_ms": {
+        "median": 1.128,
+        "p95": 1.272,
+        "p99": 1.448,
+        "min": 1.046,
+        "max": 1.506
+      }
+    },
+    {
+      "scenario": "gallery-workspace",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.012,
+        "p95": 0.014,
+        "p99": 0.017,
+        "min": 0.012,
+        "max": 0.017
+      },
+      "layout_diff_ms": {
+        "median": 0.011,
+        "p95": 0.013,
+        "p99": 0.015,
+        "min": 0.011,
+        "max": 0.015
+      },
+      "event_update_ms": {
+        "median": 0.007,
+        "p95": 0.008,
+        "p99": 0.01,
+        "min": 0.006,
+        "max": 0.01
+      },
+      "draw_cpu_ms": {
+        "median": 0.035,
+        "p95": 0.037,
+        "p99": 0.039,
+        "min": 0.034,
+        "max": 0.039
+      },
+      "cpu_total_ms": {
+        "median": 0.065,
+        "p95": 0.072,
+        "p99": 0.081,
+        "min": 0.063,
+        "max": 0.081
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.361,
+        "p95": 1.491,
+        "p99": 1.51,
+        "min": 1.327,
+        "max": 1.52
+      },
+      "total_ms": {
+        "median": 1.426,
+        "p95": 1.564,
+        "p99": 1.576,
+        "min": 1.39,
+        "max": 1.583
+      }
+    },
+    {
+      "scenario": "gallery-settings-appearance",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.007,
+        "p95": 0.008,
+        "p99": 0.009,
+        "min": 0.007,
+        "max": 0.01
+      },
+      "layout_diff_ms": {
+        "median": 0.009,
+        "p95": 0.01,
+        "p99": 0.012,
+        "min": 0.009,
+        "max": 0.013
+      },
+      "event_update_ms": {
+        "median": 0.005,
+        "p95": 0.006,
+        "p99": 0.006,
+        "min": 0.005,
+        "max": 0.007
+      },
+      "draw_cpu_ms": {
+        "median": 0.027,
+        "p95": 0.028,
+        "p99": 0.03,
+        "min": 0.026,
+        "max": 0.032
+      },
+      "cpu_total_ms": {
+        "median": 0.048,
+        "p95": 0.051,
+        "p99": 0.057,
+        "min": 0.047,
+        "max": 0.062
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.481,
+        "p95": 1.623,
+        "p99": 1.653,
+        "min": 1.392,
+        "max": 1.664
+      },
+      "total_ms": {
+        "median": 1.53,
+        "p95": 1.672,
+        "p99": 1.701,
+        "min": 1.442,
+        "max": 1.712
+      }
+    },
+    {
+      "scenario": "gallery-settings-workspace",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.004,
+        "p95": 0.005,
+        "p99": 0.005,
+        "min": 0.004,
+        "max": 0.006
+      },
+      "layout_diff_ms": {
+        "median": 0.004,
+        "p95": 0.006,
+        "p99": 0.006,
+        "min": 0.004,
+        "max": 0.006
+      },
+      "event_update_ms": {
+        "median": 0.003,
+        "p95": 0.004,
+        "p99": 0.004,
+        "min": 0.002,
+        "max": 0.004
+      },
+      "draw_cpu_ms": {
+        "median": 0.021,
+        "p95": 0.025,
+        "p99": 0.028,
+        "min": 0.02,
+        "max": 0.029
+      },
+      "cpu_total_ms": {
+        "median": 0.032,
+        "p95": 0.039,
+        "p99": 0.041,
+        "min": 0.031,
+        "max": 0.043
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.039,
+        "p95": 1.158,
+        "p99": 1.214,
+        "min": 0.987,
+        "max": 1.256
+      },
+      "total_ms": {
+        "median": 1.074,
+        "p95": 1.19,
+        "p99": 1.248,
+        "min": 1.021,
+        "max": 1.287
+      }
+    },
+    {
+      "scenario": "gallery-settings-about",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.004,
+        "p95": 0.005,
+        "p99": 0.005,
+        "min": 0.004,
+        "max": 0.006
+      },
+      "layout_diff_ms": {
+        "median": 0.004,
+        "p95": 0.005,
+        "p99": 0.006,
+        "min": 0.004,
+        "max": 0.006
+      },
+      "event_update_ms": {
+        "median": 0.003,
+        "p95": 0.003,
+        "p99": 0.003,
+        "min": 0.003,
+        "max": 0.004
+      },
+      "draw_cpu_ms": {
+        "median": 0.02,
+        "p95": 0.02,
+        "p99": 0.021,
+        "min": 0.02,
+        "max": 0.028
+      },
+      "cpu_total_ms": {
+        "median": 0.031,
+        "p95": 0.033,
+        "p99": 0.035,
+        "min": 0.031,
+        "max": 0.043
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.112,
+        "p95": 1.196,
+        "p99": 1.27,
+        "min": 1.032,
+        "max": 1.275
+      },
+      "total_ms": {
+        "median": 1.143,
+        "p95": 1.227,
+        "p99": 1.301,
+        "min": 1.063,
+        "max": 1.306
+      }
+    },
+    {
+      "scenario": "gallery-dialog",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.006,
+        "p95": 0.007,
+        "p99": 0.007,
+        "min": 0.006,
+        "max": 0.009
+      },
+      "layout_diff_ms": {
+        "median": 0.111,
+        "p95": 0.118,
+        "p99": 0.121,
+        "min": 0.088,
+        "max": 0.137
+      },
+      "event_update_ms": {
+        "median": 0.004,
+        "p95": 0.005,
+        "p99": 0.005,
+        "min": 0.004,
+        "max": 0.006
+      },
+      "draw_cpu_ms": {
+        "median": 0.261,
+        "p95": 0.264,
+        "p99": 0.266,
+        "min": 0.258,
+        "max": 0.269
+      },
+      "cpu_total_ms": {
+        "median": 0.383,
+        "p95": 0.395,
+        "p99": 0.397,
+        "min": 0.356,
+        "max": 0.413
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.439,
+        "p95": 1.701,
+        "p99": 1.715,
+        "min": 1.163,
+        "max": 1.761
+      },
+      "total_ms": {
+        "median": 1.815,
+        "p95": 2.091,
+        "p99": 2.112,
+        "min": 1.519,
+        "max": 2.156
+      }
+    },
+    {
+      "scenario": "gallery-popover",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.006,
+        "p95": 0.006,
+        "p99": 0.006,
+        "min": 0.005,
+        "max": 0.008
+      },
+      "layout_diff_ms": {
+        "median": 0.006,
+        "p95": 0.006,
+        "p99": 0.007,
+        "min": 0.005,
+        "max": 0.008
+      },
+      "event_update_ms": {
+        "median": 0.005,
+        "p95": 0.006,
+        "p99": 0.007,
+        "min": 0.003,
+        "max": 0.007
+      },
+      "draw_cpu_ms": {
+        "median": 0.04,
+        "p95": 0.04,
+        "p99": 0.041,
+        "min": 0.038,
+        "max": 0.043
+      },
+      "cpu_total_ms": {
+        "median": 0.056,
+        "p95": 0.058,
+        "p99": 0.059,
+        "min": 0.052,
+        "max": 0.065
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.179,
+        "p95": 1.283,
+        "p99": 1.314,
+        "min": 1.023,
+        "max": 1.385
+      },
+      "total_ms": {
+        "median": 1.236,
+        "p95": 1.339,
+        "p99": 1.371,
+        "min": 1.076,
+        "max": 1.441
+      }
+    },
+    {
+      "scenario": "gallery-context-menu",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.007,
+        "p95": 0.007,
+        "p99": 0.008,
+        "min": 0.005,
+        "max": 0.008
+      },
+      "layout_diff_ms": {
+        "median": 0.018,
+        "p95": 0.02,
+        "p99": 0.021,
+        "min": 0.007,
+        "max": 0.022
+      },
+      "event_update_ms": {
+        "median": 0.004,
+        "p95": 0.004,
+        "p99": 0.005,
+        "min": 0.003,
+        "max": 0.005
+      },
+      "draw_cpu_ms": {
+        "median": 0.038,
+        "p95": 0.041,
+        "p99": 0.041,
+        "min": 0.038,
+        "max": 0.047
+      },
+      "cpu_total_ms": {
+        "median": 0.066,
+        "p95": 0.071,
+        "p99": 0.073,
+        "min": 0.053,
+        "max": 0.073
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.19,
+        "p95": 1.313,
+        "p99": 1.342,
+        "min": 1.05,
+        "max": 1.413
+      },
+      "total_ms": {
+        "median": 1.257,
+        "p95": 1.367,
+        "p99": 1.408,
+        "min": 1.104,
+        "max": 1.483
+      }
+    },
+    {
+      "scenario": "gallery-image-viewer",
+      "item_count": 0,
+      "view_construction_ms": {
+        "median": 0.006,
+        "p95": 0.007,
+        "p99": 0.007,
+        "min": 0.005,
+        "max": 0.008
+      },
+      "layout_diff_ms": {
+        "median": 0.108,
+        "p95": 0.113,
+        "p99": 0.114,
+        "min": 0.094,
+        "max": 0.116
+      },
+      "event_update_ms": {
+        "median": 0.004,
+        "p95": 0.005,
+        "p99": 0.005,
+        "min": 0.003,
+        "max": 0.005
+      },
+      "draw_cpu_ms": {
+        "median": 0.259,
+        "p95": 0.262,
+        "p99": 0.263,
+        "min": 0.254,
+        "max": 0.264
+      },
+      "cpu_total_ms": {
+        "median": 0.374,
+        "p95": 0.381,
+        "p99": 0.386,
+        "min": 0.363,
+        "max": 0.387
+      },
+      "gpu_submit_wait_ms": {
+        "median": 1.838,
+        "p95": 2.002,
+        "p99": 2.005,
+        "min": 1.191,
+        "max": 2.039
+      },
+      "total_ms": {
+        "median": 2.216,
+        "p95": 2.379,
+        "p99": 2.392,
+        "min": 1.56,
+        "max": 2.416
+      }
+    },
+    {
+      "scenario": "dropdown-500",
+      "item_count": 500,
+      "view_construction_ms": {
+        "median": 0.007,
+        "p95": 0.008,
+        "p99": 0.008,
+        "min": 0.007,
+        "max": 0.01
+      },
+      "layout_diff_ms": {
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "event_update_ms": {
+        "median": 0.001,
+        "p95": 0.001,
+        "p99": 0.002,
+        "min": 0.0,
+        "max": 0.002
+      },
+      "draw_cpu_ms": {
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.001
+      },
+      "cpu_total_ms": {
+        "median": 0.008,
+        "p95": 0.009,
+        "p99": 0.01,
+        "min": 0.007,
+        "max": 0.012
+      },
+      "gpu_submit_wait_ms": {
+        "median": 0.427,
+        "p95": 0.451,
+        "p99": 0.489,
+        "min": 0.402,
+        "max": 0.505
+      },
+      "total_ms": {
+        "median": 0.436,
+        "p95": 0.46,
+        "p99": 0.497,
+        "min": 0.41,
+        "max": 0.515
+      }
+    },
+    {
+      "scenario": "search-dropdown-200",
+      "item_count": 200,
+      "view_construction_ms": {
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "layout_diff_ms": {
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.001,
+        "min": 0.0,
+        "max": 0.001
+      },
+      "event_update_ms": {
+        "median": 0.001,
+        "p95": 0.002,
+        "p99": 0.002,
+        "min": 0.001,
+        "max": 0.003
+      },
+      "draw_cpu_ms": {
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.001
+      },
+      "cpu_total_ms": {
+        "median": 0.002,
+        "p95": 0.003,
+        "p99": 0.004,
+        "min": 0.001,
+        "max": 0.004
+      },
+      "gpu_submit_wait_ms": {
+        "median": 0.433,
+        "p95": 0.444,
+        "p99": 0.541,
+        "min": 0.381,
+        "max": 0.554
+      },
+      "total_ms": {
+        "median": 0.434,
+        "p95": 0.447,
+        "p99": 0.542,
+        "min": 0.383,
+        "max": 0.556
+      }
+    },
+    {
+      "scenario": "context-menu-120",
+      "item_count": 120,
+      "view_construction_ms": {
+        "median": 0.029,
+        "p95": 0.03,
+        "p99": 0.036,
+        "min": 0.025,
+        "max": 0.037
+      },
+      "layout_diff_ms": {
+        "median": 0.006,
+        "p95": 0.007,
+        "p99": 0.009,
+        "min": 0.006,
+        "max": 0.01
+      },
+      "event_update_ms": {
+        "median": 0.005,
+        "p95": 0.006,
+        "p99": 0.006,
+        "min": 0.005,
+        "max": 0.006
+      },
+      "draw_cpu_ms": {
+        "median": 0.001,
+        "p95": 0.001,
+        "p99": 0.001,
+        "min": 0.001,
+        "max": 0.001
+      },
+      "cpu_total_ms": {
+        "median": 0.042,
+        "p95": 0.043,
+        "p99": 0.052,
+        "min": 0.038,
+        "max": 0.053
+      },
+      "gpu_submit_wait_ms": {
+        "median": 0.428,
+        "p95": 0.44,
+        "p99": 0.56,
+        "min": 0.38,
+        "max": 0.566
+      },
+      "total_ms": {
+        "median": 0.468,
+        "p95": 0.488,
+        "p99": 0.601,
+        "min": 0.419,
+        "max": 0.608
+      }
+    },
+    {
+      "scenario": "workspace-20-regions",
+      "item_count": 20,
+      "view_construction_ms": {
+        "median": 0.006,
+        "p95": 0.007,
+        "p99": 0.008,
+        "min": 0.005,
+        "max": 0.008
+      },
+      "layout_diff_ms": {
+        "median": 0.003,
+        "p95": 0.004,
+        "p99": 0.004,
+        "min": 0.003,
+        "max": 0.004
+      },
+      "event_update_ms": {
+        "median": 0.002,
+        "p95": 0.002,
+        "p99": 0.003,
+        "min": 0.002,
+        "max": 0.003
+      },
+      "draw_cpu_ms": {
+        "median": 0.075,
+        "p95": 0.077,
+        "p99": 0.077,
+        "min": 0.074,
+        "max": 0.081
+      },
+      "cpu_total_ms": {
+        "median": 0.086,
+        "p95": 0.09,
+        "p99": 0.091,
+        "min": 0.084,
+        "max": 0.095
+      },
+      "gpu_submit_wait_ms": {
+        "median": 6.147,
+        "p95": 6.292,
+        "p99": 6.347,
+        "min": 5.875,
+        "max": 6.395
+      },
+      "total_ms": {
+        "median": 6.236,
+        "p95": 6.382,
+        "p99": 6.433,
+        "min": 5.963,
+        "max": 6.48
+      }
+    },
+    {
+      "scenario": "workspace-50-regions",
+      "item_count": 50,
+      "view_construction_ms": {
+        "median": 0.017,
+        "p95": 0.019,
+        "p99": 0.019,
+        "min": 0.016,
+        "max": 0.02
+      },
+      "layout_diff_ms": {
+        "median": 0.01,
+        "p95": 0.011,
+        "p99": 0.012,
+        "min": 0.009,
+        "max": 0.013
+      },
+      "event_update_ms": {
+        "median": 0.006,
+        "p95": 0.006,
+        "p99": 0.006,
+        "min": 0.005,
+        "max": 0.006
+      },
+      "draw_cpu_ms": {
+        "median": 0.179,
+        "p95": 0.184,
+        "p99": 0.185,
+        "min": 0.177,
+        "max": 0.186
+      },
+      "cpu_total_ms": {
+        "median": 0.212,
+        "p95": 0.218,
+        "p99": 0.22,
+        "min": 0.208,
+        "max": 0.22
+      },
+      "gpu_submit_wait_ms": {
+        "median": 15.808,
+        "p95": 15.986,
+        "p99": 16.007,
+        "min": 15.23,
+        "max": 16.059
+      },
+      "total_ms": {
+        "median": 16.022,
+        "p95": 16.2,
+        "p99": 16.218,
+        "min": 15.442,
+        "max": 16.27
+      }
+    }
+  ]
+}

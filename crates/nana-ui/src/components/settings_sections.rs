@@ -253,7 +253,7 @@ where
         if let Some(status) = self.material_status {
             rows = rows.push(
                 SettingsRow::new("材质状态", text(status).size(12).color(tokens.colors.muted))
-                    .hint("由宿主经 nana-window 应用后回报；失败时保持可读实色。")
+                    .hint("显示窗口当前使用的外观效果。")
                     .divided(true)
                     .view(tokens),
             );

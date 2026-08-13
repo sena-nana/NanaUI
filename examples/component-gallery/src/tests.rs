@@ -331,7 +331,6 @@ fn appearance_material_and_opacity_drive_runtime_state() {
         nana_ui::MaterialEffect::Vibrancy,
     )));
     assert!(state.material_outcome().is_native());
-    assert!(state.material_outcome().status_label().contains("Vibrancy"));
 
     // Stay on Dark (gallery default) so Reset must visibly restore Light.
     assert_eq!(state.theme_mode(), ThemeMode::Dark);

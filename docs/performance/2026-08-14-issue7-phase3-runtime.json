@@ -1,0 +1,289 @@
+{
+  "schema_version": 4,
+  "profile": "release",
+  "storage": "bevy_ecs 0.19.1 (default features disabled, std only)",
+  "warmup_iterations": 10,
+  "iterations": 60,
+  "cases": [
+    {
+      "nodes": 100,
+      "enqueue_ms": {
+        "p50": 0.004,
+        "p95": 0.006,
+        "p99": 0.006
+      },
+      "initial_commit_ms": {
+        "p50": 0.176,
+        "p95": 0.23,
+        "p99": 0.239
+      },
+      "initial_schedule_ms": {
+        "p50": 0.01,
+        "p95": 0.014,
+        "p99": 0.016
+      },
+      "initial_systems_ms": {
+        "p50": 0.094,
+        "p95": 0.133,
+        "p99": 0.141
+      },
+      "steady_reorder_commit_ms": {
+        "p50": 0.002,
+        "p95": 0.002,
+        "p99": 0.003
+      },
+      "steady_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.001,
+        "p99": 0.001
+      },
+      "steady_systems_ms": {
+        "p50": 0.022,
+        "p95": 0.031,
+        "p99": 0.032
+      },
+      "local_paint_commit_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.002
+      },
+      "local_paint_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_systems_ms": {
+        "p50": 0.002,
+        "p95": 0.002,
+        "p99": 0.003
+      },
+      "local_paint_work_nodes": 1,
+      "idle_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "idle_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "active_animation_sample_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.001
+      },
+      "active_animation_samples": 1
+    },
+    {
+      "nodes": 500,
+      "enqueue_ms": {
+        "p50": 0.008,
+        "p95": 0.01,
+        "p99": 0.01
+      },
+      "initial_commit_ms": {
+        "p50": 0.477,
+        "p95": 0.59,
+        "p99": 0.593
+      },
+      "initial_schedule_ms": {
+        "p50": 0.02,
+        "p95": 0.025,
+        "p99": 0.025
+      },
+      "initial_systems_ms": {
+        "p50": 0.224,
+        "p95": 0.28,
+        "p99": 0.282
+      },
+      "steady_reorder_commit_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.001
+      },
+      "steady_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "steady_systems_ms": {
+        "p50": 0.051,
+        "p95": 0.063,
+        "p99": 0.063
+      },
+      "local_paint_commit_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.001
+      },
+      "local_paint_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_systems_ms": {
+        "p50": 0.001,
+        "p95": 0.002,
+        "p99": 0.002
+      },
+      "local_paint_work_nodes": 1,
+      "idle_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "idle_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "active_animation_sample_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "active_animation_samples": 1
+    },
+    {
+      "nodes": 1000,
+      "enqueue_ms": {
+        "p50": 0.012,
+        "p95": 0.014,
+        "p99": 0.014
+      },
+      "initial_commit_ms": {
+        "p50": 0.843,
+        "p95": 0.855,
+        "p99": 0.856
+      },
+      "initial_schedule_ms": {
+        "p50": 0.034,
+        "p95": 0.034,
+        "p99": 0.035
+      },
+      "initial_systems_ms": {
+        "p50": 0.387,
+        "p95": 0.404,
+        "p99": 0.405
+      },
+      "steady_reorder_commit_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.001
+      },
+      "steady_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "steady_systems_ms": {
+        "p50": 0.088,
+        "p95": 0.092,
+        "p99": 0.093
+      },
+      "local_paint_commit_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_systems_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.001
+      },
+      "local_paint_work_nodes": 1,
+      "idle_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "idle_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "active_animation_sample_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "active_animation_samples": 1
+    },
+    {
+      "nodes": 5000,
+      "enqueue_ms": {
+        "p50": 0.072,
+        "p95": 0.082,
+        "p99": 0.084
+      },
+      "initial_commit_ms": {
+        "p50": 4.83,
+        "p95": 4.94,
+        "p99": 4.95
+      },
+      "initial_schedule_ms": {
+        "p50": 0.183,
+        "p95": 0.194,
+        "p99": 0.197
+      },
+      "initial_systems_ms": {
+        "p50": 2.049,
+        "p95": 2.078,
+        "p99": 2.08
+      },
+      "steady_reorder_commit_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.002
+      },
+      "steady_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "steady_systems_ms": {
+        "p50": 0.447,
+        "p95": 0.457,
+        "p99": 0.459
+      },
+      "local_paint_commit_ms": {
+        "p50": 0.0,
+        "p95": 0.001,
+        "p99": 0.001
+      },
+      "local_paint_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_systems_ms": {
+        "p50": 0.002,
+        "p95": 0.002,
+        "p99": 0.002
+      },
+      "local_paint_work_nodes": 1,
+      "idle_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "idle_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "active_animation_sample_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "active_animation_samples": 1
+    }
+  ]
+}

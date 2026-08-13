@@ -92,7 +92,11 @@ cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
 `nana-ui-vue` 提供的是 WebView 中常见 Vue 3 源码的 Nana 兼容子集，不是
 WebView 或 Tauri 运行时。消费应用以 Vite 编译 SFC、TypeScript 与 CSS，在自己的
 入口中从 `@nanaui/nanavue-runtime` 调用 `createNanaApp()`；产出的 IIFE 由
-QuickJS 或 V8 执行，语义树最终仍只由 NanaUI/Iced/WGPU 绘制。
+QuickJS 或 V8 执行；stable identity、hierarchy、text、focus、layout 与 render
+extraction 进入同一 Nana Runtime/UiScene。迁移期标准控件仍由仓内 Iced/WGPU
+compatibility backend 绘制，custom GPU node 已由同一 Scene frame graph 解析。
+Runtime/Scene 合同与退出门禁见
+[`docs/runtime-scene.md`](docs/runtime-scene.md)。
 
 框架默认只注册 renderer、DOM 子集与 Web API。应用业务命令和鉴权由消费宿主
 通过 `HostApiRegistry` 提供，名称与框架 API 冲突时初始化直接失败。网络通过
