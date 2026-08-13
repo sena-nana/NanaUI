@@ -758,7 +758,7 @@ pub fn menu_surface_style(
             )
             .shadow(Shadow {
                 color: Color::from_rgba(0.0, 0.0, 0.0, if is_light { 0.30 } else { 0.55 }),
-                offset: Vector::new(0.0, 10.0),
+                offset: Vector::ZERO,
                 blur_radius: if is_light { 14.0 } else { 18.0 },
             })
     }
