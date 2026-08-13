@@ -9,6 +9,39 @@ mod tests {
     use nana_ui::ThemeModeExt;
     use nana_ui_core::{ButtonKind, ThemeMode, UI_BASE_TEXT_SIZE};
 
+    #[derive(Default)]
+    struct BoundsOperation {
+        containers: Vec<Rectangle>,
+    }
+
+    impl widget::Operation for BoundsOperation {
+        fn traverse(&mut self, _operate: &mut dyn FnMut(&mut dyn widget::Operation)) {}
+
+        fn container(&mut self, _id: Option<&widget::Id>, bounds: Rectangle) {
+            self.containers.push(bounds);
+        }
+    }
+
+    #[test]
+    fn affine_operation_reports_transformed_accessibility_bounds() {
+        let mut recorded = BoundsOperation::default();
+        let mut operation = AffineOperation {
+            inner: &mut recorded,
+            // Rotate 90 degrees then translate x by 100.
+            matrix: [0.0, 1.0, -1.0, 0.0, 100.0, 0.0],
+        };
+        widget::Operation::container(
+            &mut operation,
+            None,
+            Rectangle::new(Point::new(10.0, 20.0), Size::new(30.0, 40.0)),
+        );
+
+        assert_eq!(
+            recorded.containers,
+            [Rectangle::new(Point::new(40.0, 10.0), Size::new(40.0, 30.0))]
+        );
+    }
+
     #[test]
     fn writeback_iced_layout_boxes_feeds_document_for_menu_anchors() {
         let store = LayoutBoxStore::new();

@@ -7,10 +7,16 @@
 系统窗口材质与必须依赖原生句柄的 macOS 标题区交互桥接属于 `nana-window`；
 Gallery 页面、状态、快照与基准属于 Demo crate。
 
-**产品 UI 前端默认且唯一为 NanaUI（Iced）。** 可选的 Vue/JS 引擎只做状态与命令桥
-（`nana-ui-vue` + QuickJS XOR V8），不以 WebView、Blitz DOM/CSS 或第二套 wgpu
-绘制产品 UI。可选 `browser` feature 仅承载应用明确请求的外部网页内容，不参与
-NanaUI 组件、布局或业务状态渲染。
+**产品 UI 前端采用 Vue-first。** 应用只使用 Vue+JS 与 NanaUI 内置接口即可构建完整
+窗口 UI 和小游戏；Iced/WGPU 仍是统一布局与绘制基座。`VueHostedRuntime` 作为
+`HostedProgram` 接入窗口循环：先分发 Vue/Iced 混合树输入，再按 `preventDefault`
+决定是否交给 Iced 默认路径。Rust 可以控制语义树，也可以注册高性能 Iced 组件，但所有
+供 Vue 使用的原生能力必须以 `nana-*` Vue 组件或稳定 JS 接口暴露，并与普通 Vue 节点
+处于同一布局、事件和合成树。Vue、业务 JS、多窗口文档及这些组件的 JS 桥共享一个 V8
+isolate/context，而非把 Vue 限定为状态与命令桥。
+L1 不引入真实 WebView、Blitz DOM/CSS 或第二套 wgpu。可选 `browser`
+feature 仅承载应用明确请求的外部网页内容，不参与 NanaUI 组件、布局或
+业务状态渲染。
 
 **三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
 

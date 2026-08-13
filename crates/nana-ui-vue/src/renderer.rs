@@ -11,6 +11,8 @@ use nana_js_engine::{HostApiRegistry, HostValue, JsException};
 use nana_ui_web_api::{SharedWebApiState, shared_web_api_state};
 
 use crate::bridge::{MessageBridge, WidgetKind, WidgetProps, resolve_kind_from_hints, widget_id};
+#[cfg(feature = "iced-view")]
+use crate::native_component::{NativeComponentRegistry, normalize_component_name};
 use crate::scroll::{
     ScrollIntoViewOptions, ScrollOffset, scroll_into_view, set_scroll_offset,
     shared_scroll_offset_store,
@@ -25,6 +27,8 @@ pub struct HostDocs {
     pub document: Arc<Mutex<NanaTreeDocument>>,
     pub bridge: Arc<Mutex<MessageBridge>>,
     pub web_api: SharedWebApiState,
+    #[cfg(feature = "iced-view")]
+    pub components: Option<NativeComponentRegistry>,
 }
 
 /// Registers createElement / createWidget / insert / patchProp / … against `api`.
@@ -44,8 +48,29 @@ pub fn register_dom_host_ops_with_bridge(
         document: doc,
         bridge,
         web_api,
+        #[cfg(feature = "iced-view")]
+        components: None,
     };
     register_all(api, host);
+}
+
+#[cfg(feature = "iced-view")]
+pub fn register_dom_host_ops_with_components(
+    api: &mut HostApiRegistry,
+    doc: Arc<Mutex<NanaTreeDocument>>,
+    bridge: Arc<Mutex<MessageBridge>>,
+    web_api: SharedWebApiState,
+    components: NativeComponentRegistry,
+) {
+    register_all(
+        api,
+        HostDocs {
+            document: doc,
+            bridge,
+            web_api,
+            components: Some(components),
+        },
+    );
 }
 
 fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
@@ -88,14 +113,34 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("createWidget", move |args| {
             let kind_raw = arg_str(args, 0).unwrap_or_else(|| "button".into());
+            let native_name = normalize_native_component(&host, &kind_raw);
             let kind = WidgetKind::parse(&kind_raw)
+                .or_else(|| native_name.as_ref().map(|_| WidgetKind::Box))
                 .ok_or_else(|| JsException::new(format!("unknown widget kind: {kind_raw}")))?;
-            let props = match args.get(1) {
-                Some(HostValue::Object(map)) => WidgetProps::from_map(map),
+            let prop_map = match args.get(1) {
+                Some(HostValue::Object(map)) => Some(map),
+                _ => None,
+            };
+            let mut props = match prop_map {
+                Some(map) => WidgetProps::from_map(map),
                 _ => WidgetProps::default(),
             };
+            #[cfg(feature = "iced-view")]
+            if let Some(name) = native_name {
+                let empty = std::collections::BTreeMap::new();
+                props.attach_native_component(name.clone(), prop_map.unwrap_or(&empty));
+                if let Some(registry) = &host.components {
+                    registry.validate_props(&name, &props.native_props)?;
+                }
+            }
             let mut guard = lock_doc(&host.document)?;
-            let handle = guard.create_element(kind.element_tag());
+            let element_tag = props
+                .native_component
+                .as_ref()
+                .map(|name| format!("nana-{name}"))
+                .unwrap_or_else(|| kind.element_tag().to_owned());
+            props.element_tag.clone_from(&element_tag);
+            let handle = guard.create_element(&element_tag);
             if !props.label.is_empty() {
                 guard.set_attribute(handle, "label", &props.label);
                 if matches!(
@@ -193,6 +238,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("remove", move |args| {
             let child = arg_handle(args, 0)?;
+            unmount_native_subtree(&host, widget_id(child))?;
             let mut guard = lock_doc(&host.document)?;
             guard.remove(child);
             drop(guard);
@@ -230,6 +276,9 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut bridge = lock_bridge(&host.bridge)?;
             for child in stale_children {
                 let cid = widget_id(child);
+                drop(bridge);
+                unmount_native_subtree(&host, cid)?;
+                bridge = lock_bridge(&host.bridge)?;
                 if bridge.contains(cid) {
                     bridge.unregister(cid);
                 }
@@ -246,6 +295,17 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let el = arg_handle(args, 0)?;
             let key = arg_str(args, 1).unwrap_or_default();
             let value = args.get(2).cloned().unwrap_or(HostValue::Null);
+            #[cfg(feature = "iced-view")]
+            if let Some(registry) = &host.components {
+                let bridge = lock_bridge(&host.bridge)?;
+                if let Some(widget) = bridge.get(widget_id(el))
+                    && let Some(name) = &widget.props.native_component
+                {
+                    let mut proposed = widget.props.clone();
+                    proposed.apply_prop(&key, &value);
+                    registry.validate_props(name, &proposed.native_props)?;
+                }
+            }
             let mut stale_children = Vec::new();
             {
                 let mut guard = lock_doc(&host.document)?;
@@ -257,6 +317,9 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut bridge = lock_bridge(&host.bridge)?;
             for child in stale_children {
                 let cid = widget_id(child);
+                drop(bridge);
+                unmount_native_subtree(&host, cid)?;
+                bridge = lock_bridge(&host.bridge)?;
                 if bridge.contains(cid) {
                     bridge.unregister(cid);
                 }
@@ -419,13 +482,20 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     {
         let host = host.clone();
         api.register("clearMount", move |_args| {
-            let mut guard = lock_doc(&host.document)?;
+            let guard = lock_doc(&host.document)?;
             let body = guard.mount_root();
             let children = guard.children_of(body);
-            for child in children {
-                guard.remove(child);
-            }
             drop(guard);
+            for child in children {
+                unmount_native_subtree(&host, widget_id(child))?;
+                let mut doc = lock_doc(&host.document)?;
+                doc.remove(child);
+                drop(doc);
+                let mut bridge = lock_bridge(&host.bridge)?;
+                if bridge.contains(widget_id(child)) {
+                    bridge.unregister(widget_id(child));
+                }
+            }
             let mut bridge = lock_bridge(&host.bridge)?;
             bridge.clear_mounted();
             Ok(HostValue::Null)
@@ -786,6 +856,11 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let slot = arg_str(args, 1).unwrap_or_else(|| "default".into());
             let mut guard = lock_doc(&host.document)?;
             guard.set_gpu_slot(el, &slot);
+            drop(guard);
+            // The Iced adapter renders MessageBridge snapshots, not the raw
+            // document side table. Mirror the slot into semantic props so the
+            // real HostTexture can be resolved during composition.
+            lock_bridge(&host.bridge)?.patch_prop(el.0, "data-nana-gpu", &HostValue::String(slot));
             Ok(HostValue::Null)
         });
     }
@@ -836,6 +911,53 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             Ok(HostValue::Null)
         });
     }
+}
+
+#[cfg(feature = "iced-view")]
+fn normalize_native_component(host: &HostDocs, raw: &str) -> Option<String> {
+    let name = normalize_component_name(raw);
+    host.components
+        .as_ref()
+        .filter(|registry| registry.contains(&name))
+        .map(|_| name)
+}
+
+#[cfg(not(feature = "iced-view"))]
+fn normalize_native_component(_host: &HostDocs, _raw: &str) -> Option<String> {
+    None
+}
+
+#[cfg(feature = "iced-view")]
+fn unmount_native_subtree(host: &HostDocs, root: u64) -> Result<(), JsException> {
+    fn collect(bridge: &MessageBridge, id: u64, mounted: &mut Vec<(String, u64)>) {
+        let Some(widget) = bridge.get(id) else {
+            return;
+        };
+        if let Some(name) = &widget.props.native_component {
+            mounted.push((name.clone(), id));
+        }
+        for child in &widget.children {
+            collect(bridge, *child, mounted);
+        }
+    }
+
+    let Some(registry) = &host.components else {
+        return Ok(());
+    };
+    let mut mounted = Vec::new();
+    {
+        let bridge = lock_bridge(&host.bridge)?;
+        collect(&bridge, root, &mut mounted);
+    }
+    for (component, id) in mounted {
+        registry.unmount(&component, id);
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "iced-view"))]
+fn unmount_native_subtree(_host: &HostDocs, _root: u64) -> Result<(), JsException> {
+    Ok(())
 }
 
 fn patch_prop(doc: &mut NanaTreeDocument, el: NodeHandle, key: &str, value: HostValue) {

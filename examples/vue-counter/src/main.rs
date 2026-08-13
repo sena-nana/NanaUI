@@ -323,21 +323,18 @@ fn engine_label() -> &'static str {
 mod windowed {
     use std::time::Instant;
 
-    use std::cell::RefCell;
-
     use iced::widget::column;
     use iced::{Element, Length};
-    use nana_js_engine::{JsEngine, RuntimeArtifact};
+    use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
     use nana_ui::{
-        AppearanceSettings, Button, HostedProgram, HostedProgramContext, HostedProgramUpdate,
-        HostedRunError, HostedWindowEvent, HostedWindowSettings, ThemeMode, ThemeModeExt,
+        AppearanceSettings, Button, HostedInputDisposition, HostedInputEvent, HostedProgram,
+        HostedProgramContext, HostedProgramUpdate, HostedRunError, HostedRuntimeEvent,
+        HostedWindowEvent, HostedWindowId, HostedWindowSettings, ThemeMode, ThemeModeExt,
         ThemeTokens, WindowMaterialMode, run_hosted,
     };
-    use nana_ui_vue::{
-        BridgeEvent, SemanticSnapshot, VueHost, view_semantic_tree_static_with_editors,
-    };
+    use nana_ui_vue::{BridgeEvent, VueHostedRuntime};
 
-    use super::{SEMANTIC_COUNTER_JS, create_engine, engine_label};
+    use super::{SEMANTIC_COUNTER_JS, engine_label};
 
     fn hosted_appearance() -> AppearanceSettings {
         let mut appearance = AppearanceSettings::default();
@@ -352,10 +349,13 @@ mod windowed {
         ToggleTheme,
     }
 
+    #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
+    type CounterEngine = nana_js_quickjs::QuickJsEngine;
+    #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
+    type CounterEngine = nana_js_v8::V8Engine;
+
     struct CounterProgram {
-        host: RefCell<VueHost>,
-        engine: RefCell<Box<dyn JsEngine>>,
-        snapshot: SemanticSnapshot,
+        runtime: VueHostedRuntime<CounterEngine>,
         theme: ThemeMode,
         appearance: AppearanceSettings,
     }
@@ -387,33 +387,31 @@ mod windowed {
         type Error = String;
 
         fn initialize(
-            _context: &HostedProgramContext<Self::Message>,
+            context: &HostedProgramContext<Self::Message>,
         ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-            let mut host = VueHost::with_viewport(480, 360, 1.0);
-            let mut engine = create_engine()?;
-            host.attach_engine(&mut *engine)
-                .map_err(|e| e.to_string())?;
-            engine
-                .initialize(RuntimeArtifact::from_source(
-                    "semantic-counter.js",
-                    SEMANTIC_COUNTER_JS,
-                ))
-                .map_err(|e| e.to_string())?;
-            host.bind_event_bridge(&mut *engine)
+            #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
+            let engine = nana_js_quickjs::QuickJsEngine::new();
+            #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
+            let engine = nana_js_v8::V8Engine::new();
+            let geometry = context.geometry();
+            let mut runtime = VueHostedRuntime::new(
+                engine,
+                RuntimeArtifact::from_source("semantic-counter.js", SEMANTIC_COUNTER_JS),
+                HostApiRegistry::new(),
+                geometry.physical_size.width.max(1),
+                geometry.physical_size.height.max(1),
+                geometry.scale_factor.max(0.01),
+            )
+            .map_err(|e| e.to_string())?;
+            runtime
+                .bind_host_gpu(context.gpu().clone())
                 .map_err(|e| e.to_string())?;
             let theme = ThemeMode::Light;
-            host.inject_theme(&mut *engine, theme)
-                .map_err(|e| e.to_string())?;
-            host.resolve_layout();
-            host.prepare_editors();
-            host.prepare_menus();
-            let snapshot = host.semantic_snapshot();
+            runtime.inject_theme(theme).map_err(|e| e.to_string())?;
 
             Ok((
                 Self {
-                    host: RefCell::new(host),
-                    engine: RefCell::new(engine),
-                    snapshot,
+                    runtime,
                     theme,
                     appearance: hosted_appearance(),
                 },
@@ -428,44 +426,32 @@ mod windowed {
         ) -> HostedProgramUpdate {
             match message {
                 Message::Widget(event) => {
-                    let mut host = self.host.borrow_mut();
-                    let mut engine = self.engine.borrow_mut();
-                    if let Err(err) = host.dispatch_bridge_event(&mut **engine, event) {
+                    if let Err(err) = self
+                        .runtime
+                        .dispatch_bridge_event(HostedWindowId::PRIMARY, event)
+                    {
                         eprintln!("bridge event failed: {err}");
                         return HostedProgramUpdate::default();
                     }
-                    host.prepare_editors();
-                    host.prepare_menus();
-                    self.snapshot = host.semantic_snapshot();
-                    HostedProgramUpdate::redraw()
+                    self.runtime.hosted_wake()
                 }
                 Message::ToggleTheme => {
                     self.theme = self.theme.toggle();
-                    let mut host = self.host.borrow_mut();
-                    let mut engine = self.engine.borrow_mut();
-                    if let Err(err) = host.inject_theme(&mut **engine, self.theme) {
+                    if let Err(err) = self.runtime.inject_theme(self.theme) {
                         eprintln!("theme inject failed: {err}");
                     }
-                    host.prepare_editors();
-                    host.prepare_menus();
-                    self.snapshot = host.semantic_snapshot();
-                    HostedProgramUpdate::redraw()
+                    self.runtime.hosted_wake()
                 }
             }
         }
 
         fn view(&self, native_material: bool) -> Element<'static, Self::Message> {
             let tokens = self.theme_tokens(native_material);
-            let host = self.host.borrow();
             column![
-                view_semantic_tree_static_with_editors(
-                    &self.snapshot,
-                    tokens,
-                    Some((480.0, 360.0)),
-                    Some(host.editors()),
-                    Some(host.menus()),
-                    Message::Widget,
-                ),
+                self.runtime
+                    .view_window(HostedWindowId::PRIMARY, native_material)
+                    .unwrap_or_else(|_| iced::widget::Space::new().into())
+                    .map(Message::Widget),
                 Button::label("Toggle theme")
                     .kind(nana_ui::ButtonKind::Text)
                     .on_press(Message::ToggleTheme)
@@ -494,17 +480,28 @@ mod windowed {
             event: HostedWindowEvent,
             _context: &HostedProgramContext<Self::Message>,
         ) -> HostedProgramUpdate {
-            match event {
-                HostedWindowEvent::CloseRequested { .. } => HostedProgramUpdate::exit(),
-                HostedWindowEvent::Ready { .. } | HostedWindowEvent::Resized { .. } => {
-                    HostedProgramUpdate::redraw()
-                }
-                _ => HostedProgramUpdate::default(),
-            }
+            self.runtime.hosted_window_event(event)
+        }
+
+        fn input_event(
+            &mut self,
+            id: HostedWindowId,
+            event: HostedInputEvent,
+            _context: &HostedProgramContext<Self::Message>,
+        ) -> (HostedInputDisposition, HostedProgramUpdate) {
+            self.runtime.hosted_input(id, event)
+        }
+
+        fn runtime_event(
+            &mut self,
+            event: HostedRuntimeEvent,
+            _context: &HostedProgramContext<Self::Message>,
+        ) -> HostedProgramUpdate {
+            self.runtime.hosted_runtime_event(event)
         }
 
         fn next_wakeup(&self) -> Option<Instant> {
-            self.host.borrow().next_wakeup()
+            self.runtime.next_wakeup()
         }
 
         fn wake(
@@ -512,21 +509,11 @@ mod windowed {
             _now: Instant,
             _context: &HostedProgramContext<Self::Message>,
         ) -> HostedProgramUpdate {
-            let mut host = self.host.borrow_mut();
-            let mut engine = self.engine.borrow_mut();
-            match host.pump_frame(&mut **engine) {
-                Ok(fired) if fired > 0 => {
-                    host.prepare_editors();
-                    host.prepare_menus();
-                    self.snapshot = host.semantic_snapshot();
-                    HostedProgramUpdate::redraw()
-                }
-                Ok(_) => HostedProgramUpdate::default(),
-                Err(error) => {
-                    eprintln!("web-api pump failed: {error}");
-                    HostedProgramUpdate::default()
-                }
-            }
+            self.runtime.hosted_wake()
+        }
+
+        fn rebuild_gpu(&mut self, context: &HostedProgramContext<Self::Message>) {
+            let _ = self.runtime.hosted_rebuild_gpu(context.gpu().clone());
         }
     }
 }

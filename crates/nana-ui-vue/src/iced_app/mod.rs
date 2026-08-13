@@ -20,6 +20,7 @@
 //! `layout_flow`, `button`, `settings`, `layout_convert`, `l1_charts`, `surface`,
 //! `overlay`, `selection`. Do not grow a second paint core here.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use iced::advanced::widget::{self, Tree, Widget};
@@ -33,14 +34,16 @@ use iced::{Alignment, Background, Border, Color, Element, Event, Length, Padding
 use iced::{Point, Rectangle, Renderer, Theme};
 use nana_ui::{
     ActionMenuItem, AnchoredMenuPosition, Button, ButtonKind, ButtonPaintOverride, Card, Checkbox,
-    ConfirmDialog, ControlSize, Dialog, Drawer, DrawerSide, EmptyState, Icon, IconButton, Input,
-    ListItem, Popover, Progress, RangeField, SegmentedControl, Select, SelectionOption,
-    SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Spinner, Switch, Tabs,
-    Textarea, ThemeTokens, Tooltip, TooltipConfig, TooltipPlacement, icon, ui_font,
+    ConfirmDialog, ControlSize, Dialog, Drawer, DrawerSide, EmptyState, HostTextureBinding,
+    HostTextureRegistry, Icon, IconButton, Input, ListItem, Popover, Progress, RangeField,
+    SegmentedControl, Select, SelectionOption, SettingsCard, SettingsRow, SidebarRow,
+    SidebarRowState, SidebarRowTone, Spinner, Switch, Tabs, Textarea, ThemeTokens, Tooltip,
+    TooltipConfig, TooltipPlacement, icon, ui_font,
 };
 use nana_ui::{
     AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
 };
+use nana_ui_web_api::{CanvasBitmap, SharedCanvasRuntime};
 
 use crate::bridge::{
     BridgeEvent, MessageBridge, SemanticSnapshot, SemanticWidget, WidgetId, WidgetKind, WidgetProps,
@@ -51,7 +54,92 @@ use crate::css_map::{
 };
 use crate::editor_store::EditorStore;
 use crate::menu_store::MenuStore;
+use crate::native_component::NativeComponentRegistry;
 use crate::tree::{LayoutBoxStore, NodeHandle, shared_layout_box_store};
+
+thread_local! {
+    /// Build-time texture lookup only. Every produced GPU widget owns a cloned
+    /// `HostTexture`, so no thread-local state leaks into rendering.
+    static ACTIVE_HOST_TEXTURES: RefCell<Option<HostTextureRegistry>> = const { RefCell::new(None) };
+    static ACTIVE_CANVAS_RUNTIME: RefCell<Option<SharedCanvasRuntime>> = const { RefCell::new(None) };
+    static ACTIVE_NATIVE_COMPONENTS: RefCell<Option<NativeComponentRegistry>> = const { RefCell::new(None) };
+    static ACTIVE_PAINT_AFFINE: RefCell<[f32; 6]> = const { RefCell::new([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]) };
+}
+
+fn with_active_native_components<T>(
+    registry: Option<&NativeComponentRegistry>,
+    build: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<NativeComponentRegistry>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTIVE_NATIVE_COMPONENTS.with(|active| {
+                active.replace(self.0.take());
+            });
+        }
+    }
+    ACTIVE_NATIVE_COMPONENTS.with(|active| {
+        let previous = active.replace(registry.cloned());
+        let _reset = Reset(previous);
+        build()
+    })
+}
+
+fn active_native_components() -> Option<NativeComponentRegistry> {
+    ACTIVE_NATIVE_COMPONENTS.with(|active| active.borrow().clone())
+}
+
+fn with_active_host_textures<T>(
+    registry: Option<&HostTextureRegistry>,
+    build: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<HostTextureRegistry>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTIVE_HOST_TEXTURES.with(|active| {
+                active.replace(self.0.take());
+            });
+        }
+    }
+
+    ACTIVE_HOST_TEXTURES.with(|active| {
+        let previous = active.replace(registry.cloned());
+        let _reset = Reset(previous);
+        build()
+    })
+}
+
+fn active_host_texture(slot: &str) -> Option<HostTextureBinding> {
+    ACTIVE_HOST_TEXTURES.with(|active| active.borrow().as_ref()?.get(slot))
+}
+
+fn with_active_canvas<T>(runtime: Option<&SharedCanvasRuntime>, build: impl FnOnce() -> T) -> T {
+    struct Reset(Option<SharedCanvasRuntime>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTIVE_CANVAS_RUNTIME.with(|active| {
+                active.replace(self.0.take());
+            });
+        }
+    }
+    ACTIVE_CANVAS_RUNTIME.with(|active| {
+        let previous = active.replace(runtime.cloned());
+        let _reset = Reset(previous);
+        build()
+    })
+}
+
+fn active_canvas_bitmap(id: u64) -> Option<CanvasBitmap> {
+    ACTIVE_CANVAS_RUNTIME.with(|active| {
+        active
+            .borrow()
+            .as_ref()?
+            .lock()
+            .ok()?
+            .bitmap(nana_ui_web_api::CanvasId(id))
+            .ok()
+    })
+}
 
 /// Iced / host 布局回写：把 viewport 与 Fill 父链写入 bridge `containing_block_*`，
 /// 供后续 `style` 的 margin/padding/gap `%` 使用。`VueHost::semantic_snapshot` 也会调用。
@@ -92,11 +180,22 @@ struct LayoutProbe<'a, Message> {
     id: WidgetId,
     store: Arc<LayoutBoxStore>,
     content: Element<'a, Message>,
+    transform: Option<crate::css_map::PaintTransform>,
 }
 
 impl<'a, Message> LayoutProbe<'a, Message> {
     fn new(id: WidgetId, store: Arc<LayoutBoxStore>, content: Element<'a, Message>) -> Self {
-        Self { id, store, content }
+        Self {
+            id,
+            store,
+            content,
+            transform: None,
+        }
+    }
+
+    fn with_transform(mut self, transform: Option<crate::css_map::PaintTransform>) -> Self {
+        self.transform = transform;
+        self
     }
 }
 
@@ -152,13 +251,34 @@ impl<Message> Widget<Message, Theme, Renderer> for LayoutProbe<'_, Message> {
         viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        self.store.record(
-            NodeHandle(self.id),
-            bounds.x,
-            bounds.y,
-            bounds.width,
-            bounds.height,
-        );
+        let active = ACTIVE_PAINT_AFFINE.with(|value| *value.borrow());
+        let affine = self
+            .transform
+            .map(|transform| {
+                concat_affine(
+                    active,
+                    transform.around_center(bounds.x, bounds.y, bounds.width, bounds.height),
+                )
+            })
+            .unwrap_or(active);
+        if is_identity_affine(affine) {
+            self.store.record(
+                NodeHandle(self.id),
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            );
+        } else {
+            self.store.record_transformed(
+                NodeHandle(self.id),
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+                affine,
+            );
+        }
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -228,6 +348,16 @@ fn probe_layout<'a, Message: 'a>(
     content: Element<'a, Message>,
 ) -> Element<'a, Message> {
     LayoutProbe::new(id, shared_layout_box_store(), content).into()
+}
+
+fn probe_transformed_layout<'a, Message: 'a>(
+    id: WidgetId,
+    content: Element<'a, Message>,
+    transform: Option<crate::css_map::PaintTransform>,
+) -> Element<'a, Message> {
+    LayoutProbe::new(id, shared_layout_box_store(), content)
+        .with_transform(transform)
+        .into()
 }
 
 /// Build an Iced element tree from a semantic snapshot.
@@ -378,10 +508,66 @@ pub fn view_semantic_tree_static_with_editors<Message>(
 where
     Message: Clone + 'static,
 {
+    view_semantic_tree_static_with_resources(
+        snap, tokens, viewport, editors, menus, None, None, map_event,
+    )
+}
+
+/// Static tree with host-owned editor/menu state and real GPU texture slots.
+/// The registry only resolves views while building; the returned elements hold
+/// stable `HostTexture` clones and render through Iced's existing WGPU pass.
+pub fn view_semantic_tree_static_with_resources<Message>(
+    snap: &SemanticSnapshot,
+    tokens: ThemeTokens,
+    viewport: Option<(f32, f32)>,
+    editors: Option<&EditorStore>,
+    menus: Option<&MenuStore>,
+    host_textures: Option<&HostTextureRegistry>,
+    canvas_runtime: Option<&SharedCanvasRuntime>,
+    map_event: impl Fn(BridgeEvent) -> Message + Clone + 'static,
+) -> Element<'static, Message>
+where
+    Message: Clone + 'static,
+{
+    view_semantic_tree_static_with_native_components(
+        snap,
+        tokens,
+        viewport,
+        editors,
+        menus,
+        host_textures,
+        canvas_runtime,
+        None,
+        map_event,
+    )
+}
+
+/// Static semantic tree with application-registered Rust/Iced components.
+#[allow(clippy::too_many_arguments)]
+pub fn view_semantic_tree_static_with_native_components<Message>(
+    snap: &SemanticSnapshot,
+    tokens: ThemeTokens,
+    viewport: Option<(f32, f32)>,
+    editors: Option<&EditorStore>,
+    menus: Option<&MenuStore>,
+    host_textures: Option<&HostTextureRegistry>,
+    canvas_runtime: Option<&SharedCanvasRuntime>,
+    components: Option<&NativeComponentRegistry>,
+    map_event: impl Fn(BridgeEvent) -> Message + Clone + 'static,
+) -> Element<'static, Message>
+where
+    Message: Clone + 'static,
+{
     let build = || {
-        view_semantic_tree_static_with_editors_inner(
-            snap, tokens, viewport, editors, menus, map_event,
-        )
+        with_active_host_textures(host_textures, || {
+            with_active_canvas(canvas_runtime, || {
+                with_active_native_components(components, || {
+                    view_semantic_tree_static_with_editors_inner(
+                        snap, tokens, viewport, editors, menus, map_event,
+                    )
+                })
+            })
+        })
     };
     if let Some((w, h)) = viewport {
         crate::css_map::with_active_viewport(w, h, build)
@@ -773,7 +959,9 @@ where
             consume,
         )
     };
-    probe_layout(widget.id, sized)
+    let faded = apply_opacity(sized, widget.props.layout.opacity);
+    let transformed = apply_paint_transform(faded, widget.props.layout.transform);
+    probe_transformed_layout(widget.id, transformed, widget.props.layout.transform)
 }
 
 fn view_widget_owned<Message>(
@@ -805,6 +993,34 @@ where
         main_override,
         false,
         map_event,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn view_widget_owned_bridge(
+    snap: &SemanticSnapshot,
+    id: WidgetId,
+    tokens: ThemeTokens,
+    parent_box: ParentBox,
+    parent_direction: FlexDirection,
+    parent_align_items: AlignSpec,
+    editors: Option<&EditorStore>,
+    menus: Option<&MenuStore>,
+    viewport: Size,
+    main_override: Option<f32>,
+) -> Element<'static, BridgeEvent> {
+    view_widget_owned(
+        snap,
+        id,
+        tokens,
+        parent_box,
+        parent_direction,
+        parent_align_items,
+        editors,
+        menus,
+        viewport,
+        main_override,
+        std::convert::identity::<BridgeEvent>,
     )
 }
 
@@ -845,17 +1061,56 @@ where
 
     let children = widget.children.clone();
     let wid = widget.id;
-    let is_layout_chrome = matches!(
-        kind,
-        WidgetKind::Column
-            | WidgetKind::Box
-            | WidgetKind::SidebarFrame
-            | WidgetKind::SettingsCard
-            | WidgetKind::Row
-            | WidgetKind::Card
-    );
+    let is_layout_chrome = props.native_component.is_none()
+        && !is_raster_resource_slot(&props)
+        && matches!(
+            kind,
+            WidgetKind::Column
+                | WidgetKind::Box
+                | WidgetKind::SidebarFrame
+                | WidgetKind::SettingsCard
+                | WidgetKind::Row
+                | WidgetKind::Card
+        );
 
     let content = match kind {
+        _ if props.native_component.is_some() => {
+            let name = props.native_component.as_deref().unwrap_or_default();
+            let Some(registry) = active_native_components() else {
+                return space().width(Length::Shrink).height(Length::Shrink).into();
+            };
+            let child_direction = props.layout.direction.unwrap_or(FlexDirection::Column);
+            let child_align = props.layout.align_items;
+            let native_children = children
+                .iter()
+                .copied()
+                .filter(|&child| is_in_flow_layout(snap, child))
+                .map(|child| {
+                    view_widget_owned_bridge(
+                        snap,
+                        child,
+                        tokens,
+                        ParentBox {
+                            width: props.containing_block_width.or(parent_box.width),
+                            height: props.containing_block_height.or(parent_box.height),
+                        },
+                        child_direction,
+                        child_align,
+                        editors,
+                        menus,
+                        viewport,
+                        None,
+                    )
+                })
+                .collect();
+            match registry.view(name, wid, props.clone(), tokens, native_children) {
+                Ok(element) => element.map(map_event.clone()),
+                Err(error) => {
+                    registry.report_error(name, wid, error);
+                    space().width(Length::Shrink).height(Length::Shrink).into()
+                }
+            }
+        }
         WidgetKind::Box | WidgetKind::Column
             if let Some(chart) = crate::svg_icon::try_svg_chart_element(snap, wid) =>
         {
@@ -867,6 +1122,11 @@ where
         {
             // DEFER: legacy canvas path-d leaf (see `l1_charts`).
             heatmap_level_canvas_owned(&props)
+        }
+        WidgetKind::Box | WidgetKind::Column
+            if is_raster_resource_slot(&props) && !is_gpu_preview_slot(&props) =>
+        {
+            raster_resource_view(&props)
         }
         WidgetKind::Column
             if props
@@ -1437,9 +1697,12 @@ where
             consume,
         )
     };
-    probe_layout(wid, sized)
+    let faded = apply_opacity(sized, props.layout.opacity);
+    let transformed = apply_paint_transform(faded, props.layout.transform);
+    probe_transformed_layout(wid, transformed, props.layout.transform)
 }
 
+include!("transform.rs");
 include!("layout_flow.rs");
 include!("button.rs");
 include!("settings.rs");

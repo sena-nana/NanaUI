@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use base64::Engine as _;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use nana_js_engine::{HostApiRegistry, HostValue, JsException};
-use nana_ui_platform::{FetchError, FetchRequest, FetchResponse, SharedFetchHost};
+use nana_ui_platform::{
+    FetchCancellation, FetchError, FetchRequest, FetchResponse, SharedFetchHost,
+};
 
 use crate::SharedWebApiState;
 
@@ -12,6 +13,7 @@ use crate::SharedWebApiState;
 struct FetchJob {
     id: u64,
     request: FetchRequest,
+    cancellation: FetchCancellation,
 }
 
 #[derive(Debug)]
@@ -72,10 +74,7 @@ fn response_to_host_value(response: FetchResponse) -> HostValue {
                         .collect(),
                 ),
             ),
-            (
-                "bodyBase64".into(),
-                HostValue::String(base64::engine::general_purpose::STANDARD.encode(response.body)),
-            ),
+            ("body".into(), HostValue::Bytes(response.body)),
             ("redirected".into(), HostValue::Bool(response.redirected)),
         ]
         .into_iter()
@@ -89,6 +88,7 @@ pub(crate) struct FetchRuntime {
     jobs: Sender<FetchJob>,
     completions: Receiver<FetchCompletion>,
     cancelled: BTreeSet<u64>,
+    cancellations: BTreeMap<u64, FetchCancellation>,
     next_id: u64,
     active: usize,
 }
@@ -119,6 +119,7 @@ impl FetchRuntime {
             jobs: jobs_tx,
             completions: completion_rx,
             cancelled: BTreeSet::new(),
+            cancellations: BTreeMap::new(),
             next_id: 1,
             active: 0,
         }
@@ -127,8 +128,14 @@ impl FetchRuntime {
     pub fn start(&mut self, request: FetchRequest) -> Result<u64, JsException> {
         let id = self.next_id;
         self.next_id += 1;
-        match self.jobs.try_send(FetchJob { id, request }) {
+        let cancellation = FetchCancellation::new();
+        match self.jobs.try_send(FetchJob {
+            id,
+            request,
+            cancellation: cancellation.clone(),
+        }) {
             Ok(()) => {
+                self.cancellations.insert(id, cancellation);
                 self.active += 1;
                 Ok(id)
             }
@@ -142,6 +149,9 @@ impl FetchRuntime {
     }
 
     pub fn cancel(&mut self, id: u64) {
+        if let Some(cancellation) = self.cancellations.get(&id) {
+            cancellation.cancel();
+        }
         self.cancelled.insert(id);
     }
 
@@ -149,6 +159,7 @@ impl FetchRuntime {
         let mut due = Vec::new();
         while let Ok(completion) = self.completions.try_recv() {
             self.active -= 1;
+            self.cancellations.remove(&completion.id);
             let cancelled = self.cancelled.remove(&completion.id);
             if !cancelled {
                 due.push(completion);
@@ -168,7 +179,7 @@ fn fetch_worker(
     completions: Sender<FetchCompletion>,
 ) {
     while let Ok(job) = jobs.recv() {
-        let result = host.fetch(job.request);
+        let result = host.fetch_cancellable(job.request, job.cancellation);
         if completions
             .send(FetchCompletion { id: job.id, result })
             .is_err()
@@ -239,6 +250,7 @@ fn parse_request(value: Option<&HostValue>) -> Result<FetchRequest, JsException>
         _ => return Err(JsException::new("fetch headers must be an array")),
     };
     let body = match object.get("body") {
+        Some(HostValue::Bytes(bytes)) => bytes.clone(),
         Some(HostValue::Array(bytes)) => bytes
             .iter()
             .map(|value| {
@@ -267,9 +279,37 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    use nana_ui_platform::{FetchError, FetchHost, FetchPolicy, shared_fetch_host};
+    use nana_ui_platform::{
+        FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, shared_fetch_host,
+    };
 
     use super::*;
+
+    #[test]
+    fn fetch_bridge_preserves_binary_request_and_response_bodies() {
+        let request = parse_request(Some(&HostValue::Object(BTreeMap::from([
+            (
+                "url".into(),
+                HostValue::String("https://example.test/upload".into()),
+            ),
+            ("method".into(), HostValue::String("POST".into())),
+            ("headers".into(), HostValue::Array(Vec::new())),
+            ("body".into(), HostValue::Bytes(vec![0, 1, 127, 255])),
+        ]))))
+        .unwrap();
+        assert_eq!(request.body, vec![0, 1, 127, 255]);
+
+        let value = response_to_host_value(FetchResponse {
+            url: "https://example.test/upload".into(),
+            status: 200,
+            status_text: "OK".into(),
+            headers: Vec::new(),
+            body: vec![255, 0, 128],
+            redirected: false,
+        });
+        let body = value.as_object().and_then(|response| response.get("body"));
+        assert_eq!(body, Some(&HostValue::Bytes(vec![255, 0, 128])));
+    }
 
     #[derive(Debug)]
     struct BlockingHost {
@@ -294,6 +334,23 @@ mod tests {
 
         fn policy(&self) -> &FetchPolicy {
             &self.policy
+        }
+
+        fn fetch_cancellable(
+            &self,
+            request: FetchRequest,
+            cancellation: FetchCancellation,
+        ) -> Result<FetchResponse, FetchError> {
+            while !self.released.load(Ordering::Acquire) {
+                if cancellation.is_cancelled() {
+                    return Err(FetchError::new(
+                        FetchErrorKind::Cancelled,
+                        "fixture fetch cancelled",
+                    ));
+                }
+                std::thread::yield_now();
+            }
+            self.fetch(request)
         }
     }
 
@@ -336,11 +393,13 @@ mod tests {
             .start(FetchRequest::get("https://example.test"))
             .unwrap();
         runtime.cancel(id);
-        released.store(true, Ordering::Release);
         let deadline = Instant::now() + Duration::from_secs(1);
         while runtime.has_pending() {
             assert!(runtime.drain_completions().is_empty());
-            assert!(Instant::now() < deadline, "cancelled fetch did not finish");
+            assert!(
+                Instant::now() < deadline,
+                "cancelled fetch transport did not stop"
+            );
             std::thread::yield_now();
         }
         assert!(runtime.drain_completions().is_empty());

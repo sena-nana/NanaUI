@@ -9,7 +9,7 @@
  * (getBoundingClientRect, style, classList, dataset, …) do not throw.
  */
 import { createRenderer } from "@vue/runtime-core";
-import { defineLayoutMetrics, hostCall, layoutRect, scrollNodeIntoView } from "./layoutMetrics.js";
+import { defineLayoutMetrics, hostCall, layoutRect, nanaWindowIdFromNode, scrollNodeIntoView, withNanaWindowContext } from "./layoutMetrics.js";
 
 export { hostCall } from "./layoutMetrics.js";
 
@@ -17,6 +17,15 @@ export { hostCall } from "./layoutMetrics.js";
 const listeners = new Map();
 /** Stable host-node identity so parentNode/nextSibling/=== comparisons stay useful. */
 const nodeCache = new Map();
+
+function contextForWindow(windowId) {
+  const id = Number(windowId || 0);
+  if (id && typeof globalThis.__nanaGetWindowContext === "function") {
+    const context = globalThis.__nanaGetWindowContext(id);
+    if (context) return context;
+  }
+  return { window: globalThis.window, document: globalThis.document };
+}
 
 function listenerKey(nid, event) {
   return `${nid}:${String(event).toLowerCase()}`;
@@ -133,11 +142,12 @@ function invokeNanaListenerPhase(nid, type, event, capture) {
     if (event && event._immediateStopped) break;
     try {
       if (event) {
-        event.currentTarget = event.target;
-        event.eventPhase = capture ? 1 : 2;
+        const currentTarget = wrapById(nid) || event.target;
+        event.currentTarget = currentTarget;
+        event.eventPhase = currentTarget === event.target ? 2 : capture ? 1 : 3;
       }
       if (typeof entry.listener === "function") {
-        entry.listener.call(event && event.target, event);
+        entry.listener.call(event && event.currentTarget, event);
       } else {
         entry.listener.handleEvent(event);
       }
@@ -174,19 +184,89 @@ function invokeGlobalPhase(target, type, event, capture) {
   }
 }
 
-function createEventPayload(type, target, detail) {
+function createFileList(files) {
+  const list = Array.isArray(files) ? files.slice() : [];
+  Object.defineProperty(list, "item", {
+    configurable: true,
+    enumerable: false,
+    value(index) {
+      return this[Number(index)] || null;
+    },
+  });
+  return list;
+}
+
+function createDataTransfer(files) {
+  const items = files.map((file) => ({
+    kind: "file",
+    type: String(file && file.type ? file.type : ""),
+    getAsFile() {
+      return file || null;
+    },
+  }));
+  Object.defineProperty(items, "item", {
+    configurable: true,
+    enumerable: false,
+    value(index) {
+      return this[Number(index)] || null;
+    },
+  });
   return {
+    files,
+    items,
+    types: files.length ? ["Files"] : [],
+    dropEffect: "copy",
+    effectAllowed: "copy",
+  };
+}
+
+function createEventPayload(type, target, detail) {
+  const source = detail && typeof detail === "object" ? detail : {};
+  const files = createFileList(source.files);
+  const payload = {
     type,
     target,
     currentTarget: target,
-    key: detail && detail.key,
-    code: detail && detail.code,
-    data: detail && detail.data,
-    value: detail && detail.value,
-    checked: detail && detail.checked,
-    deltaX: detail && detail.deltaX,
-    deltaY: detail && detail.deltaY,
-    bubbles: true,
+    detail: source,
+    key: source.key,
+    code: source.code,
+    data: source.data,
+    value: source.value,
+    checked: source.checked,
+    inputType: source.inputType,
+    isComposing: !!source.isComposing,
+    repeat: !!source.repeat,
+    location: Number(source.location || 0),
+    clientX: Number(source.clientX || 0),
+    clientY: Number(source.clientY || 0),
+    x: Number(source.x ?? source.clientX ?? 0),
+    y: Number(source.y ?? source.clientY ?? 0),
+    offsetX: Number(source.offsetX ?? source.clientX ?? 0),
+    offsetY: Number(source.offsetY ?? source.clientY ?? 0),
+    screenX: Number(source.screenX || 0),
+    screenY: Number(source.screenY || 0),
+    button: Number(source.button ?? 0),
+    buttons: Number(source.buttons ?? 0),
+    pressure: Number(source.pressure || 0),
+    tangentialPressure: Number(source.tangentialPressure || 0),
+    tiltX: Number(source.tiltX || 0),
+    tiltY: Number(source.tiltY || 0),
+    twist: Number(source.twist || 0),
+    pointerId: Number(source.pointerId || 0),
+    pointerType: source.pointerType || "",
+    isPrimary: !!source.isPrimary,
+    relatedTarget:
+      source.relatedTarget == null ? null : wrapById(Number(source.relatedTarget)),
+    altKey: !!source.altKey,
+    ctrlKey: !!source.ctrlKey,
+    metaKey: !!source.metaKey,
+    shiftKey: !!source.shiftKey,
+    deltaX: Number(source.deltaX || 0),
+    deltaY: Number(source.deltaY || 0),
+    deltaMode: Number(source.deltaMode || 0),
+    files,
+    dataTransfer: source.dataTransfer || createDataTransfer(files),
+    bubbles: !/^(pointerenter|pointerleave|mouseenter|mouseleave|focus|blur)$/.test(type),
     cancelable: true,
     defaultPrevented: false,
     eventPhase: 0,
@@ -203,6 +283,12 @@ function createEventPayload(type, target, detail) {
       this._immediateStopped = true;
     },
   };
+  for (const key of Object.keys(source)) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) {
+      payload[key] = source[key];
+    }
+  }
+  return payload;
 }
 
 /** window capture → document capture → target → document bubble → window bubble. */
@@ -315,7 +401,16 @@ function isSvgAttrKey(key) {
 }
 
 function serializePatchValue(next) {
-  if (typeof next === "boolean") return next;
+  const primitiveType = typeof next;
+  // Custom-renderer props are structured values, not HTML attribute text.
+  // Keep numeric/boolean/bigint identity for registered Rust components; the
+  // local Element facade still stringifies values when mirroring attributes.
+  if (
+    primitiveType === "string" ||
+    primitiveType === "number" ||
+    primitiveType === "boolean" ||
+    primitiveType === "bigint"
+  ) return next;
   if (Array.isArray(next)) {
     return next.map((item) =>
       item != null && typeof item === "object" && !Array.isArray(item) ? { ...item } : item,
@@ -436,6 +531,8 @@ export function wrapNode(id, kind, tag) {
     return cached;
   }
   const resolvedKind = kind || "element";
+  const windowId = nanaWindowIdFromNode(nid);
+  const windowContext = contextForWindow(windowId);
   const node = {
     __nid: nid,
     __kind: resolvedKind,
@@ -449,7 +546,7 @@ export function wrapNode(id, kind, tag) {
           : "#node",
     tag: tag || null,
     nodeType: resolvedKind === "text" ? 3 : resolvedKind === "comment" ? 8 : 1,
-    ownerDocument: globalThis.document || null,
+    ownerDocument: windowContext.document || globalThis.document || null,
     style: createStyleProxy(nid),
     dataset: createDatasetProxy(nid),
     attributes: {},
@@ -473,8 +570,17 @@ export function wrapNode(id, kind, tag) {
     },
     blur() {
       try {
-        hostCall("clearFocus", []);
+        withNanaWindowContext(windowId, () => hostCall("clearFocus", []));
       } catch (_err) {}
+    },
+    setPointerCapture(pointerId) {
+      hostCall("setPointerCapture", [nid, Number(pointerId)]);
+    },
+    releasePointerCapture(pointerId) {
+      return !!hostCall("releasePointerCapture", [nid, Number(pointerId)]);
+    },
+    hasPointerCapture(pointerId) {
+      return !!hostCall("hasPointerCapture", [nid, Number(pointerId)]);
     },
     get value() {
       try {
@@ -572,7 +678,9 @@ export function wrapNode(id, kind, tag) {
     },
     querySelector(sel) {
       try {
-        const id = hostCall("querySelector", [String(sel ?? "")]);
+        const id = withNanaWindowContext(windowId, () =>
+          hostCall("querySelector", [String(sel ?? "")]),
+        );
         return id == null ? null : wrapNode(id, "element", null);
       } catch (_err) {
         return null;
@@ -580,7 +688,10 @@ export function wrapNode(id, kind, tag) {
     },
     querySelectorAll(sel) {
       try {
-        const ids = hostCall("querySelectorAll", [String(sel ?? "")]) || [];
+        const ids =
+          withNanaWindowContext(windowId, () =>
+            hostCall("querySelectorAll", [String(sel ?? "")]),
+          ) || [];
         return Array.from(ids, (id) => wrapNode(id, "element", null));
       } catch (_err) {
         const one = this.querySelector(sel);
@@ -695,7 +806,7 @@ export function wrapNode(id, kind, tag) {
     enumerable: true,
     get() {
       try {
-        const html = hostCall("querySelector", ["html"]);
+        const html = withNanaWindowContext(windowId, () => hostCall("querySelector", ["html"]));
         if (html == null) return false;
         return hostCall("contains", [html, nid]) === true;
       } catch (_err) {
@@ -710,6 +821,7 @@ export function wrapNode(id, kind, tag) {
     },
     set(v) {
       const s = v == null ? "" : String(v);
+      for (const child of Array.from(this.childNodes || [])) releaseNodeResources(child);
       this.attributes.innerHTML = s;
       try {
         hostCall("patchProp", [nid, "innerHTML", s]);
@@ -727,6 +839,7 @@ export function wrapNode(id, kind, tag) {
     },
     set(v) {
       const s = v == null ? "" : String(v);
+      for (const child of Array.from(this.childNodes || [])) releaseNodeResources(child);
       this.attributes.textContent = s;
       try {
         if (node.__kind === "text") hostCall("setText", [nid, s]);
@@ -933,6 +1046,125 @@ export function nodeId(node) {
   return null;
 }
 
+function isNanaGpuElement(node) {
+  return String(node && (node.tag || node.tagName || "")).toLowerCase() === "nana-gpu";
+}
+
+/** Resolve a NanaTextureHandle or an explicit slot without serializing it. */
+function gpuSlotFromSource(source, fallback = "default") {
+  if (source == null || source === false) return fallback;
+  if (typeof source === "string" || typeof source === "number" || typeof source === "bigint") {
+    const slot = String(source);
+    return slot.length ? slot : fallback;
+  }
+  if (typeof source === "object") {
+    const explicit = source.slot ?? source["data-slot"] ?? source.dataSlot;
+    if (explicit != null && String(explicit).length) return String(explicit);
+    if (source.id != null) {
+      return `texture:${String(source.id)}:${Number(source.generation || 0)}`;
+    }
+  }
+  return fallback;
+}
+
+function setGpuSource(node, source) {
+  const nid = nodeId(node);
+  if (nid == null) return;
+  const slot = gpuSlotFromSource(source);
+  if (node) {
+    node.__nanaGpuSource = source;
+    node.attributes = node.attributes || {};
+    node.attributes["data-nana-gpu"] = slot;
+  }
+  hostCall("setGpuSlot", [nid, slot]);
+}
+
+function imageResourceId(source) {
+  if (source == null) return null;
+  const resource = source.__nanaResource || source.__nanaCanvasResource || source;
+  return resource && resource.id != null ? resource.id : null;
+}
+
+function bindDecodedImage(el, nid, source) {
+  const id = imageResourceId(source);
+  if (id == null) return false;
+  el.__nanaImageSource = source;
+  el.attributes = el.attributes || {};
+  el.attributes["data-nana-image"] = String(id);
+  hostCall("patchProp", [nid, "data-nana-image", String(id)]);
+  return true;
+}
+
+function releaseWindowNodeHandles(windowId) {
+  const id = Number(windowId || 0);
+  if (!id) return;
+  for (const [nid, node] of [...nodeCache.entries()]) {
+    if (nanaWindowIdFromNode(nid) !== id) continue;
+    releaseNodeResources(node);
+    nodeCache.delete(nid);
+    for (const key of [...listeners.keys()]) {
+      if (key.startsWith(`${nid}:`)) listeners.delete(key);
+    }
+  }
+}
+
+globalThis.__nanaReleaseWindowNodes = releaseWindowNodeHandles;
+
+function releaseNodeResources(node) {
+  if (!node || typeof node !== "object") return;
+  const children = Array.from(node.childNodes || []);
+  for (const child of children) releaseNodeResources(child);
+  if (node.__nanaOwnedImage && typeof node.__nanaOwnedImage.close === "function") {
+    node.__nanaOwnedImage.close();
+    node.__nanaOwnedImage = null;
+  }
+  if (node.__nanaOwnsCanvasResource && node.__nanaCanvasResource) {
+    hostCall("resourceRelease", [node.__nanaCanvasResource.id]);
+    node.__nanaOwnsCanvasResource = false;
+    node.__nanaCanvasResource = null;
+    node.__nanaResource = null;
+  }
+}
+
+function bindImageSource(el, nid, source) {
+  if (el.__nanaOwnedImage && typeof el.__nanaOwnedImage.close === "function") {
+    el.__nanaOwnedImage.close();
+  }
+  el.__nanaOwnedImage = null;
+  el.__nanaImageGeneration = (el.__nanaImageGeneration || 0) + 1;
+  const generation = el.__nanaImageGeneration;
+  if (source && typeof source === "object" && bindDecodedImage(el, nid, source)) {
+    return;
+  }
+  const href = source == null ? "" : String(source);
+  el.attributes = el.attributes || {};
+  el.attributes.src = href;
+  hostCall("patchProp", [nid, "src", href]);
+  if (!href) {
+    hostCall("patchProp", [nid, "data-nana-image", ""]);
+    return;
+  }
+  const ImageCtor = globalThis.Image;
+  if (typeof ImageCtor !== "function") return;
+  const image = new ImageCtor();
+  el.__nanaOwnedImage = image;
+  el.__nanaPendingImage = image;
+  image.onload = function () {
+    if (el.__nanaImageGeneration !== generation) return;
+    bindDecodedImage(el, nid, image);
+    if (typeof el.dispatchEvent === "function") {
+      el.dispatchEvent({ type: "load" });
+    }
+  };
+  image.onerror = function () {
+    if (el.__nanaImageGeneration !== generation) return;
+    if (typeof el.dispatchEvent === "function") {
+      el.dispatchEvent({ type: "error" });
+    }
+  };
+  image.src = href;
+}
+
 /**
  * Create a semantic Nana widget (button / switch / text / …) without DOM paint.
  * Returns a host node whose id is tracked by Rust `MessageBridge`.
@@ -951,6 +1183,18 @@ export const hostOps = {
   patchProp(el, key, prev, next, namespace, _parentComponent) {
     const nid = nodeId(el);
     if (nid == null || typeof key !== "string") return;
+
+    if (
+      isNanaGpuElement(el) &&
+      (key === "source" || key === "data-slot" || key === "dataSlot")
+    ) {
+      setGpuSource(el, next);
+      return;
+    }
+    if (String(el && (el.tag || el.tagName || "")).toLowerCase() === "img" && key === "src") {
+      bindImageSource(el, nid, next);
+      return;
+    }
 
     if (key === "class" || key === "className") {
       const value = next == null ? null : String(next);
@@ -1043,6 +1287,7 @@ export const hostOps = {
     if (asDomProp) {
       if (propKey === "innerHTML" || propKey === "textContent") {
         const text = next == null ? "" : String(next);
+        for (const child of Array.from((el && el.childNodes) || [])) releaseNodeResources(child);
         if (el) el.attributes[propKey] = text;
         hostCall("patchProp", [nid, propKey, text]);
         return;
@@ -1091,6 +1336,7 @@ export const hostOps = {
   },
   remove(child) {
     const nid = nodeId(child);
+    releaseNodeResources(child);
     unlinkChild(child);
     for (const key of [...listeners.keys()]) {
       if (key.startsWith(`${nid}:`)) listeners.delete(key);
@@ -1130,17 +1376,22 @@ export const hostOps = {
       } catch (_err) {}
     }
     if (lower === "nana-gpu") {
-      let slot = "default";
+      let source = "default";
       if (vnodeProps && typeof vnodeProps === "object") {
-        const raw =
+        source =
+          vnodeProps.source ??
           vnodeProps["data-slot"] ??
           vnodeProps.dataSlot ??
-          (vnodeProps.dataset && vnodeProps.dataset.slot);
-        if (raw != null && String(raw).length) {
-          slot = String(raw);
-        }
+          (vnodeProps.dataset && vnodeProps.dataset.slot) ??
+          source;
       }
-      hostCall("setGpuSlot", [id, slot]);
+      setGpuSource(node, source);
+    }
+    if (lower === "canvas" && typeof globalThis.__nanaEnhanceCanvas === "function") {
+      globalThis.__nanaEnhanceCanvas(node);
+    }
+    if (lower === "img" && vnodeProps && typeof vnodeProps === "object" && vnodeProps.src != null) {
+      bindImageSource(node, id, vnodeProps.src);
     }
     return node;
   },
@@ -1214,42 +1465,131 @@ function scheduleJob(job) {
   }
 }
 
-export function createNanaApp() {
-  const { createApp, render } = createRenderer({
-    ...hostOps,
-    scheduleJob,
-  });
-  return { createApp, render, hostOps };
+function ancestorNodeIds(target) {
+  const out = [];
+  const seen = new Set();
+  let current = target && target.parentNode;
+  while (current && Number.isFinite(Number(current.__nid)) && !seen.has(Number(current.__nid))) {
+    const id = Number(current.__nid);
+    seen.add(id);
+    out.push(id);
+    current = current.parentNode;
+  }
+  return out;
 }
 
-export function mountRootHandle() {
-  return wrapNode(hostCall("mountRoot", []), "element", "body");
+function hostOpsForWindow(windowId) {
+  const id = Number(windowId || 0);
+  if (!id) return hostOps;
+  const scoped = {};
+  for (const [name, operation] of Object.entries(hostOps)) {
+    scoped[name] =
+      typeof operation === "function"
+        ? function () {
+            const args = arguments;
+            return withNanaWindowContext(id, () => operation.apply(hostOps, args));
+          }
+        : operation;
+  }
+  return scoped;
+}
+
+export function createNanaApp(windowId = 0) {
+  const scopedHostOps = hostOpsForWindow(windowId);
+  const { createApp, render } = createRenderer({
+    ...scopedHostOps,
+    scheduleJob,
+  });
+  const createAppWithDiagnostics = function () {
+    const app = createApp.apply(null, arguments);
+    if (app && app.config) {
+      const priorWarn = app.config.warnHandler;
+      const priorError = app.config.errorHandler;
+      app.config.warnHandler = function (message, instance, trace) {
+        try {
+          hostCall("diagnosticReport", [{
+            source: "vue.warn",
+            level: "warning",
+            message: String(message || "Vue warning"),
+            stack: trace == null ? null : String(trace),
+          }]);
+        } catch (_error) {}
+        if (typeof priorWarn === "function") priorWarn(message, instance, trace);
+      };
+      app.config.errorHandler = function (error, instance, info) {
+        try {
+          hostCall("diagnosticReport", [{
+            source: "vue.error",
+            level: "error",
+            message: String(error && error.message ? error.message : error || "Vue error"),
+            stack: error && error.stack ? String(error.stack) : String(info || ""),
+          }]);
+        } catch (_error) {}
+        if (typeof priorError === "function") priorError(error, instance, info);
+      };
+    }
+    return app;
+  };
+  return { createApp: createAppWithDiagnostics, render, hostOps: scopedHostOps, windowId: Number(windowId || 0) };
+}
+
+export function mountRootHandle(windowId = 0) {
+  return withNanaWindowContext(windowId, () =>
+    wrapNode(hostCall("mountRoot", []), "element", "body"),
+  );
 }
 
 export function installEventBridge() {
   globalThis.__nanaWrapNode = wrapNode;
 
-  globalThis.__nanaFireEvent = function __nanaFireEvent(nid, event, detail) {
+  function fireWindowEvent(windowId, nid, event, detail) {
     const type = String(event);
-    const target = wrapNode(nid, "element", null);
+    const context = contextForWindow(windowId);
+    const target = withNanaWindowContext(windowId, () => wrapNode(nid, "element", null));
     const payload = createEventPayload(type, target, detail);
-    const win = globalThis.window;
-    const doc = globalThis.document;
+    const win = context.window;
+    const doc = context.document;
+    const ancestors = ancestorNodeIds(target);
 
-    // Capture: window → document → target (+ legacy nid 0)
+    // Capture: window → document → outer ancestors → target.
     invokeGlobalPhase(win, type, payload, true);
     if (!payload._stopped) invokeGlobalPhase(doc, type, payload, true);
+    if (!payload._stopped) {
+      for (let i = ancestors.length - 1; i >= 0; i--) {
+        invokeNanaListenerPhase(ancestors[i], type, payload, true);
+        if (payload._stopped) break;
+      }
+    }
     if (!payload._stopped) {
       invokeNanaListenerPhase(nid, type, payload, true);
       if (!payload._immediateStopped) invokeNanaListenerPhase(nid, type, payload, false);
       invokeNanaListenerPhase(0, type, payload, true);
       if (!payload._immediateStopped) invokeNanaListenerPhase(0, type, payload, false);
     }
-    // Bubble: document → window (Lilia useDismissableLayer / ContextMenu)
-    if (!payload._stopped) invokeGlobalPhase(doc, type, payload, false);
-    if (!payload._stopped) invokeGlobalPhase(win, type, payload, false);
+    // Bubble: inner ancestors → document → window.
+    if (payload.bubbles && !payload._stopped) {
+      for (let i = 0; i < ancestors.length; i++) {
+        invokeNanaListenerPhase(ancestors[i], type, payload, false);
+        if (payload._stopped) break;
+      }
+    }
+    if (payload.bubbles && !payload._stopped) invokeGlobalPhase(doc, type, payload, false);
+    if (payload.bubbles && !payload._stopped) invokeGlobalPhase(win, type, payload, false);
 
     return !payload.defaultPrevented;
+  }
+
+  globalThis.__nanaFireEvent = function __nanaFireEvent(nid, event, detail) {
+    return fireWindowEvent(0, nid, event, detail);
+  };
+
+  globalThis.__nanaFireWindowEvent = function __nanaFireWindowEvent(
+    windowId,
+    nid,
+    event,
+    detail,
+  ) {
+    return fireWindowEvent(Number(windowId || 0), nid, event, detail);
   };
 
   /** Rust → Vue unidirectional theme inject (`VueHost::inject_theme`). */
@@ -1272,6 +1612,286 @@ export function installEventBridge() {
     } catch (_err) {}
     return theme;
   };
+
+  globalThis.__nanaApplyWindowTheme = function __nanaApplyWindowTheme(windowId, mode) {
+    const theme = String(mode || "light").toLowerCase() === "dark" ? "dark" : "light";
+    const context = contextForWindow(windowId);
+    return withNanaWindowContext(windowId, () => {
+      try {
+        hostCall("setDocumentTheme", [theme]);
+      } catch (_err) {}
+      try {
+        const el = context.document && context.document.documentElement;
+        if (el) {
+          if (el.dataset) el.dataset.theme = theme;
+          if (el.setAttribute) el.setAttribute("data-theme", theme);
+        }
+      } catch (_err) {}
+      return theme;
+    });
+  };
 }
 
 installEventBridge();
+
+const nanaWindowHandles = new Map();
+
+function createWindowHandle(descriptor) {
+  const id = Number(descriptor && descriptor.id);
+  if (!Number.isFinite(id) || id < 0) throw new TypeError("invalid Nana window descriptor");
+  const cached = nanaWindowHandles.get(id);
+  if (cached) return cached;
+  const width = Number(descriptor.width) || 800;
+  const height = Number(descriptor.height) || 600;
+  const context =
+    typeof globalThis.__nanaCreateWindowContext === "function"
+      ? globalThis.__nanaCreateWindowContext(id, width, height, 1)
+      : contextForWindow(id);
+  const renderer = createNanaApp(id);
+  const root = mountRootHandle(id);
+  let app = null;
+  let resolveReady;
+  let rejectReady;
+  let resolveClosed;
+  let settled = !!descriptor.ready;
+  let closedSettled = false;
+  const ready = settled
+    ? Promise.resolve()
+    : new Promise((resolve, reject) => {
+        resolveReady = resolve;
+        rejectReady = reject;
+      });
+  const closed = new Promise((resolve) => {
+    resolveClosed = resolve;
+  });
+  const handle = {
+    id,
+    window: context.window,
+    document: context.document,
+    root,
+    ready,
+    closed,
+    __resolveReady() {
+      if (settled) return;
+      settled = true;
+      resolveReady();
+    },
+    __rejectReady(error) {
+      if (settled) return;
+      settled = true;
+      rejectReady(error);
+    },
+    __resolveClosed(detail) {
+      if (closedSettled) return;
+      closedSettled = true;
+      resolveClosed(detail || { reason: "closed" });
+    },
+    mount(component, props) {
+      if (app && typeof app.unmount === "function") app.unmount();
+      app = renderer.createApp(component, props || null);
+      return withNanaWindowContext(id, () => app.mount(root));
+    },
+    render(vnode) {
+      return withNanaWindowContext(id, () => renderer.render(vnode, root));
+    },
+    unmount() {
+      if (app && typeof app.unmount === "function") app.unmount();
+      else withNanaWindowContext(id, () => renderer.render(null, root));
+      app = null;
+    },
+    close() {
+      hostCall("windowClose", [id]);
+    },
+    focus() {
+      hostCall("windowFocus", [id]);
+    },
+    moveTo(x, y) {
+      hostCall("windowMove", [id, Number(x) || 0, Number(y) || 0]);
+    },
+    setTitle(title) {
+      hostCall("windowSetTitle", [id, String(title ?? "")]);
+    },
+    setBounds(x, y, width, height) {
+      hostCall("windowSetBounds", [id, Number(x) || 0, Number(y) || 0, Number(width) || 1, Number(height) || 1]);
+    },
+    setFullscreen(fullscreen) {
+      hostCall("windowSetFullscreen", [id, !!fullscreen]);
+    },
+    setMinimized(minimized) {
+      hostCall("windowSetMinimized", [id, !!minimized]);
+    },
+    setMaximized(maximized) {
+      hostCall("windowSetMaximized", [id, !!maximized]);
+    },
+    setAlwaysOnTop(alwaysOnTop) {
+      hostCall("windowSetAlwaysOnTop", [id, !!alwaysOnTop]);
+    },
+    geometry() {
+      return hostCall("windowGeometry", [id]) || {};
+    },
+    get scaleFactor() {
+      const geometry = hostCall("windowGeometry", [id]) || {};
+      return Number(geometry.scaleFactor) || 1;
+    },
+  };
+  nanaWindowHandles.set(id, handle);
+  return handle;
+}
+
+globalThis.Nana = globalThis.Nana || {};
+globalThis.Nana.resources = {
+  release(resource) {
+    if (resource && typeof resource.close === "function") {
+      resource.close();
+      return true;
+    }
+    const handle = resource && resource.__nanaResource ? resource.__nanaResource : resource;
+    if (!handle || handle.id == null) return false;
+    return Boolean(hostCall("resourceRelease", [handle.id]));
+  },
+};
+
+const nanaNativeComponentErrorListeners = new Set();
+globalThis.Nana.components = {
+  list() {
+    return hostCall("componentList", []);
+  },
+  call(element, command, args) {
+    const id = nodeId(element);
+    if (id == null) {
+      return Promise.reject(new TypeError("Nana.components.call requires a mounted Nana element"));
+    }
+    if (!globalThis.Nana.host || typeof globalThis.Nana.host.invoke !== "function") {
+      return Promise.reject(new Error("Nana.host.invoke is required for native component commands"));
+    }
+    return globalThis.Nana.host.invoke("componentCall", [id, String(command), args ?? null]);
+  },
+  onError(listener) {
+    if (typeof listener !== "function") throw new TypeError("Nana.components.onError requires a function");
+    nanaNativeComponentErrorListeners.add(listener);
+    return () => nanaNativeComponentErrorListeners.delete(listener);
+  },
+};
+
+let nanaDialogProvider = null;
+globalThis.Nana.dialogs = {
+  install(provider) {
+    if (!provider || typeof provider !== "object") {
+      throw new TypeError("Nana.dialogs.install requires a Vue dialog provider");
+    }
+    nanaDialogProvider = provider;
+    return () => {
+      if (nanaDialogProvider === provider) nanaDialogProvider = null;
+    };
+  },
+  alert(message, options) {
+    return invokeDialogProvider("alert", [message, options || {}]);
+  },
+  confirm(message, options) {
+    return invokeDialogProvider("confirm", [message, options || {}]);
+  },
+  prompt(message, defaultValue, options) {
+    return invokeDialogProvider("prompt", [message, defaultValue ?? "", options || {}]);
+  },
+};
+
+function invokeDialogProvider(method, args) {
+  if (!nanaDialogProvider || typeof nanaDialogProvider[method] !== "function") {
+    const error = new Error(`No Vue dialog provider installed for Nana.dialogs.${method}`);
+    error.name = "NotSupportedError";
+    return Promise.reject(error);
+  }
+  try {
+    return Promise.resolve(nanaDialogProvider[method](...args));
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+globalThis.Nana.windows = {
+  async create(options) {
+    if (!globalThis.Nana.host || typeof globalThis.Nana.host.invoke !== "function") {
+      throw new Error("Nana.host.invoke is required for Nana.windows.create");
+    }
+    const descriptor = await globalThis.Nana.host.invoke("windowCreate", [options || {}]);
+    const handle = createWindowHandle(descriptor);
+    await handle.ready;
+    return handle;
+  },
+  get(id) {
+    return nanaWindowHandles.get(Number(id)) || null;
+  },
+  list() {
+    const descriptors = hostCall("windowList", []) || [];
+    return Array.from(descriptors, createWindowHandle);
+  },
+};
+
+if (globalThis.Nana.host && typeof globalThis.Nana.host.on === "function") {
+  globalThis.Nana.host.on("native-component-error", (payload) => {
+    const raw = payload && payload.error && typeof payload.error === "object" ? payload.error : {};
+    const error = new Error(String(raw.message || "Native component rendering failed"));
+    error.name = String(raw.name || "NativeComponentRenderError");
+    if (raw.code != null) error.code = String(raw.code);
+    if (raw.stack != null) error.stack = String(raw.stack);
+    if (raw.details !== undefined) error.details = raw.details;
+    error.component = String((payload && payload.component) || "");
+    error.elementId = Number(payload && payload.id);
+    error.windowId = Number(payload && payload.windowId);
+    if (Number.isFinite(error.elementId) && typeof globalThis.__nanaFireWindowEvent === "function") {
+      globalThis.__nanaFireWindowEvent(error.windowId, error.elementId, "error", {
+        error,
+        component: error.component,
+      });
+    }
+    for (const listener of [...nanaNativeComponentErrorListeners]) listener(error);
+  });
+  globalThis.Nana.host.on("window-ready", (payload) => {
+    const handle = nanaWindowHandles.get(Number(payload && payload.id));
+    if (handle) handle.__resolveReady();
+  });
+  globalThis.Nana.host.on("window-open-failed", (payload) => {
+    const id = Number(payload && payload.id);
+    const handle = nanaWindowHandles.get(id);
+    if (handle) {
+      const error = new Error(String((payload && payload.message) || "native window creation failed"));
+      error.name = "WindowOpenError";
+      handle.__rejectReady(error);
+      handle.unmount();
+      handle.__resolveClosed({ reason: "open-failed", error });
+    }
+    nanaWindowHandles.delete(id);
+    if (typeof globalThis.__nanaReleaseWindowNodes === "function") {
+      globalThis.__nanaReleaseWindowNodes(id);
+    }
+    if (typeof globalThis.__nanaDestroyWindowContext === "function") {
+      globalThis.__nanaDestroyWindowContext(id);
+    }
+  });
+  globalThis.Nana.host.on("window-geometry", (payload) => {
+    const handle = nanaWindowHandles.get(Number(payload && payload.id));
+    if (handle && handle.window) {
+      const scale = Number(payload.scaleFactor || handle.window.devicePixelRatio || 1);
+      handle.window.innerWidth = Number(payload.width) || handle.window.innerWidth;
+      handle.window.innerHeight = Number(payload.height) || handle.window.innerHeight;
+      handle.window.devicePixelRatio = scale;
+    }
+  });
+  globalThis.Nana.host.on("window-closed", (payload) => {
+    const id = Number(payload && payload.id);
+    const handle = nanaWindowHandles.get(id);
+    if (handle) {
+      const error = new Error("window closed before becoming ready");
+      error.name = "AbortError";
+      handle.__rejectReady(error);
+      handle.unmount();
+      handle.__resolveClosed({ reason: "closed" });
+    }
+    nanaWindowHandles.delete(id);
+    if (typeof globalThis.__nanaReleaseWindowNodes === "function") {
+      globalThis.__nanaReleaseWindowNodes(id);
+    }
+    if (typeof globalThis.__nanaDestroyWindowContext === "function") {
+      globalThis.__nanaDestroyWindowContext(id);
+    }
+  });
+}

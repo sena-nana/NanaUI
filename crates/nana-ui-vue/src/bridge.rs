@@ -213,6 +213,12 @@ pub struct SelectOptionProp {
 /// Props mirrored from Vue Nana* wrappers and HTML downlevel attributes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WidgetProps {
+    /// Registered Rust/Iced component name without the `nana-` prefix.
+    /// Built-in widgets leave this empty and continue through [`WidgetKind`].
+    pub native_component: Option<String>,
+    /// Lossless Vue props for registered native components. Layout/class/event
+    /// props still flow through the normal semantic fields as well.
+    pub native_props: BTreeMap<String, nana_js_engine::HostValue>,
     /// Context-menu / popover anchor X (logical px).
     pub anchor_x: f32,
     /// Context-menu / popover anchor Y (logical px).
@@ -268,6 +274,8 @@ pub struct WidgetProps {
 impl Default for WidgetProps {
     fn default() -> Self {
         Self {
+            native_component: None,
+            native_props: BTreeMap::new(),
             anchor_x: 96.0,
             anchor_y: 96.0,
             label: String::new(),
@@ -317,8 +325,39 @@ impl WidgetProps {
         props
     }
 
+    #[cfg(feature = "iced-view")]
+    pub(crate) fn attach_native_component(
+        &mut self,
+        name: String,
+        map: &BTreeMap<String, nana_js_engine::HostValue>,
+    ) {
+        self.native_component = Some(name);
+        self.native_props.clear();
+        for (key, value) in map {
+            let key = normalize_prop_key(key);
+            if !is_framework_native_prop(&key)
+                && !matches!(
+                    value,
+                    nana_js_engine::HostValue::Null | nana_js_engine::HostValue::Undefined
+                )
+            {
+                self.native_props.insert(key, value.clone());
+            }
+        }
+    }
+
     pub fn apply_prop(&mut self, key: &str, value: &nana_js_engine::HostValue) {
         let key = normalize_prop_key(key);
+        if self.native_component.is_some() && !is_framework_native_prop(&key) {
+            if matches!(
+                value,
+                nana_js_engine::HostValue::Null | nana_js_engine::HostValue::Undefined
+            ) {
+                self.native_props.remove(&key);
+            } else {
+                self.native_props.insert(key.clone(), value.clone());
+            }
+        }
         match key.as_str() {
             "label" | "text" | "title" => self.label = host_string(value),
             "aria-label" | "arialabel" => {
@@ -783,6 +822,12 @@ pub enum BridgeEvent {
         id: WidgetId,
         value: f64,
     },
+    /// Event emitted by a Rust/Iced component registered into the Vue tree.
+    Native {
+        id: WidgetId,
+        name: String,
+        payload: nana_js_engine::HostValue,
+    },
     /// Multi-line editor action; host applies to [`crate::EditorStore`] then syncs `value`.
     #[cfg(feature = "iced-view")]
     Editor {
@@ -811,7 +856,8 @@ impl BridgeEvent {
             | Self::Select { id }
             | Self::SelectValue { id, .. }
             | Self::Input { id, .. }
-            | Self::Change { id, .. } => *id,
+            | Self::Change { id, .. }
+            | Self::Native { id, .. } => *id,
             #[cfg(feature = "iced-view")]
             Self::Editor { id, .. } | Self::MenuSearch { id, .. } | Self::MenuPath { id, .. } => {
                 *id
@@ -820,7 +866,7 @@ impl BridgeEvent {
     }
 
     /// JS event name for `__nanaFireEvent`.
-    pub fn js_event_name(&self) -> &'static str {
+    pub fn js_event_name(&self) -> &str {
         match self {
             Self::Press { .. } => "press",
             Self::Toggle { .. } => "change",
@@ -828,6 +874,7 @@ impl BridgeEvent {
             Self::SelectValue { .. } => "select",
             Self::Input { .. } => "input",
             Self::Change { .. } => "change",
+            Self::Native { name, .. } => name,
             #[cfg(feature = "iced-view")]
             Self::Editor { .. } => "input",
             #[cfg(feature = "iced-view")]
@@ -836,6 +883,25 @@ impl BridgeEvent {
             Self::MenuPath { .. } => "press",
         }
     }
+}
+
+fn is_framework_native_prop(key: &str) -> bool {
+    matches!(
+        key,
+        "class"
+            | "classname"
+            | "style"
+            | "id"
+            | "role"
+            | "hidden"
+            | "disabled"
+            | "tabindex"
+            | "ref"
+            | "ref-key"
+            | "ref-for"
+    ) || key.starts_with("aria-")
+        || key.starts_with("data-")
+        || key.starts_with("on")
 }
 
 /// Flat snapshot for Iced `view` (pre-order under each root).

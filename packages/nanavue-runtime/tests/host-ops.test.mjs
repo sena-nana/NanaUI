@@ -66,6 +66,7 @@ function installMockHost() {
         return null;
       }
       if (name === "parentNode") return parents.get(args[0]) ?? null;
+      if (name === "childNodes") return [...(children.get(args[0]) || [])];
       if (name === "nextSibling") {
         const nid = args[0];
         const p = parents.get(nid);
@@ -125,6 +126,7 @@ describe("hostOps Vue RendererOptions contract", () => {
   let hostOps;
   let wrapNode;
   let nodeId;
+  let createNanaApp;
 
   beforeEach(async () => {
     prevHost = globalThis.__nanaHost;
@@ -134,6 +136,7 @@ describe("hostOps Vue RendererOptions contract", () => {
     hostOps = mod.hostOps;
     wrapNode = mod.wrapNode;
     nodeId = mod.nodeId;
+    createNanaApp = mod.createNanaApp;
   });
 
   afterEach(() => {
@@ -176,6 +179,28 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.equal(hostOps.parentNode(a), null);
   });
 
+  test("removing a subtree releases renderer-owned image and Canvas resources", () => {
+    const parent = hostOps.createElement("div");
+    const canvas = hostOps.createElement("canvas");
+    const image = hostOps.createElement("img");
+    let imageClosed = 0;
+    canvas.__nanaOwnsCanvasResource = true;
+    canvas.__nanaCanvasResource = { id: 41n };
+    canvas.__nanaResource = canvas.__nanaCanvasResource;
+    image.__nanaOwnedImage = { close() { imageClosed += 1; } };
+    hostOps.insert(canvas, parent, null);
+    hostOps.insert(image, canvas, null);
+
+    hostOps.remove(canvas);
+
+    assert.equal(imageClosed, 1);
+    assert.deepEqual(
+      calls.filter(([name]) => name === "resourceRelease"),
+      [["resourceRelease", [41n]]],
+    );
+    assert.equal(canvas.__nanaCanvasResource, null);
+  });
+
   test("patchProp class syncs classList", () => {
     const el = hostOps.createElement("div");
     hostOps.patchProp(el, "class", null, "foo bar");
@@ -193,6 +218,40 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.equal(attrs.get(nodeId(el)).style, "color:red");
     hostOps.patchProp(el, "style", "color:red", null);
     assert.equal(attrs.get(nodeId(el)).style, undefined);
+  });
+
+  test("Vue warning and error handlers report structured diagnostics", () => {
+    const app = createNanaApp().createApp({});
+    app.config.warnHandler("bad prop", null, "component trace");
+    app.config.errorHandler(new Error("render failed"), null, "render");
+    const reports = calls.filter(([name]) => name === "diagnosticReport");
+    assert.equal(reports.length, 2);
+    assert.equal(reports[0][1][0].source, "vue.warn");
+    assert.equal(reports[0][1][0].level, "warning");
+    assert.equal(reports[1][1][0].source, "vue.error");
+    assert.match(reports[1][1][0].stack, /render failed/);
+  });
+
+  test("nana-gpu source routes texture handles through a stable slot", () => {
+    const source = {
+      __nanaTexture: true,
+      slot: "live2d:main",
+      id: 9007199254740993n,
+      generation: 4,
+      version: 12,
+      width: 1024,
+      height: 1024,
+      alphaMode: "premultiplied",
+    };
+    const el = hostOps.createElement("nana-gpu", undefined, undefined, { source });
+    assert.deepEqual(
+      calls.findLast(([name]) => name === "setGpuSlot"),
+      ["setGpuSlot", [nodeId(el), "live2d:main"]],
+    );
+    assert.equal(el.__nanaGpuSource, source);
+
+    hostOps.patchProp(el, "source", source, { id: 7n, generation: 2 });
+    assert.deepEqual(calls.at(-1), ["setGpuSlot", [nodeId(el), "texture:7:2"]]);
   });
 
   test("patchProp events skip onUpdate and accept handler arrays", () => {
@@ -237,5 +296,31 @@ describe("hostOps Vue RendererOptions contract", () => {
     const a = wrapNode(42, "element", "div");
     const b = wrapNode(42, "element", "div");
     assert.equal(a, b);
+  });
+
+  test("registered native components use semantic tags and promise commands", async () => {
+    const el = hostOps.createElement("nana-live2d-view", undefined, undefined, {
+      modelId: "m1",
+      paused: false,
+    });
+    assert.deepEqual(calls.find(([name]) => name === "createWidget"), [
+      "createWidget",
+      ["live2d-view", { modelId: "m1", paused: false }],
+    ]);
+
+    const previousHost = globalThis.Nana.host;
+    globalThis.Nana.host = {
+      invoke(name, args) {
+        return Promise.resolve({ name, args });
+      },
+    };
+    try {
+      assert.deepEqual(await globalThis.Nana.components.call(el, "play-motion", { group: "tap" }), {
+        name: "componentCall",
+        args: [nodeId(el), "play-motion", { group: "tap" }],
+      });
+    } finally {
+      globalThis.Nana.host = previousHost;
+    }
   });
 });

@@ -3,12 +3,36 @@
  * Shared by wrapNode (nanavue-runtime) — not a full CSSOM.
  */
 
+const NANA_NODE_DOCUMENT_STRIDE = 4294967296;
+
+export function nanaWindowIdFromNode(value) {
+  const node = Number(value);
+  if (!Number.isSafeInteger(node) || node < NANA_NODE_DOCUMENT_STRIDE) return 0;
+  return Math.floor(node / NANA_NODE_DOCUMENT_STRIDE);
+}
+
+export function withNanaWindowContext(windowId, action) {
+  const previous = Number(globalThis.__nanaActiveWindowId || 0);
+  globalThis.__nanaActiveWindowId = Number(windowId || 0);
+  try {
+    return action();
+  } finally {
+    globalThis.__nanaActiveWindowId = previous;
+  }
+}
+
 export function hostCall(name, args) {
   const host = globalThis.__nanaHost;
   if (!host || typeof host.call !== "function") {
     throw new Error("__nanaHost.call is not registered");
   }
-  return host.call(name, args);
+  const values = Array.isArray(args) ? args : [];
+  let windowId = Number(globalThis.__nanaActiveWindowId || 0);
+  if (!windowId && values.length) windowId = nanaWindowIdFromNode(values[0]);
+  if (windowId && name !== "windowCall") {
+    return host.call("windowCall", [windowId, String(name), values]);
+  }
+  return host.call(name, values);
 }
 
 function emptyRect() {

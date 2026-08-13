@@ -9,7 +9,7 @@ use nana_js_engine::{
     RuntimeArtifact, RuntimeArtifactKind,
 };
 use rquickjs::{
-    Array, Context, Ctx, Function, Module, Object, Runtime, Value, WriteOptions,
+    Array, BigInt, Context, Ctx, Function, Module, Object, Runtime, Value, WriteOptions,
     function::Args as JsArgs,
 };
 
@@ -336,7 +336,13 @@ fn map_eval_error(ctx: &Ctx<'_>, err: rquickjs::Error) -> JsEngineError {
         let stack = caught
             .as_object()
             .and_then(|obj| obj.get::<_, String>("stack").ok());
-        return JsEngineError::from_exception(JsException { message, stack });
+        return JsEngineError::from_exception(JsException {
+            name: "Error".into(),
+            code: None,
+            message,
+            stack,
+            details: None,
+        });
     }
     map_rquickjs_error(err)
 }
@@ -347,9 +353,19 @@ fn host_to_js<'js>(ctx: &Ctx<'js>, value: &HostValue) -> Result<Value<'js>, JsEn
         HostValue::Undefined => Ok(Value::new_undefined(ctx.clone())),
         HostValue::Bool(v) => Ok(Value::new_bool(ctx.clone(), *v)),
         HostValue::Number(v) => Ok(Value::new_number(ctx.clone(), *v)),
+        HostValue::BigInt(v) => BigInt::from_u64(ctx.clone(), *v)
+            .map(Into::into)
+            .map_err(map_rquickjs_error),
         HostValue::String(v) => rquickjs::String::from_str(ctx.clone(), v)
             .map(Value::from)
             .map_err(map_rquickjs_error),
+        HostValue::Bytes(bytes) => {
+            let array = Array::new(ctx.clone()).map_err(map_rquickjs_error)?;
+            for (index, byte) in bytes.iter().enumerate() {
+                array.set(index, *byte).map_err(map_rquickjs_error)?;
+            }
+            Ok(array.into_value())
+        }
         HostValue::Array(items) => {
             let array = Array::new(ctx.clone()).map_err(map_rquickjs_error)?;
             for (index, item) in items.iter().enumerate() {
@@ -364,6 +380,20 @@ fn host_to_js<'js>(ctx: &Ctx<'js>, value: &HostValue) -> Result<Value<'js>, JsEn
                 let js = host_to_js(ctx, item)?;
                 object.set(key.as_str(), js).map_err(map_rquickjs_error)?;
             }
+            Ok(object.into_value())
+        }
+        HostValue::Resource(handle) => {
+            let object = Object::new(ctx.clone()).map_err(map_rquickjs_error)?;
+            object.set("__resource", true).map_err(map_rquickjs_error)?;
+            object
+                .set("id", handle.id.to_string())
+                .map_err(map_rquickjs_error)?;
+            object
+                .set("generation", handle.generation)
+                .map_err(map_rquickjs_error)?;
+            object
+                .set("kind", handle.kind.as_str())
+                .map_err(map_rquickjs_error)?;
             Ok(object.into_value())
         }
         HostValue::Function(id) => Err(JsEngineError::new(format!(
@@ -389,6 +419,18 @@ fn js_value_to_host<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<HostValue,
     }
     if let Some(v) = value.as_number() {
         return Ok(HostValue::Number(v));
+    }
+    if value.is_big_int() {
+        // QuickJS-NG exposes a signed extraction helper. Preserve the common
+        // non-negative resource-id range; V8 remains the production backend.
+        let bigint = value
+            .into_big_int()
+            .ok_or_else(|| JsEngineError::new("invalid QuickJS BigInt"))?;
+        let value = bigint.to_i64().map_err(map_rquickjs_error)?;
+        return value
+            .try_into()
+            .map(HostValue::BigInt)
+            .map_err(|_| JsEngineError::new("negative BigInt cannot cross the host bridge"));
     }
     // Arrays/objects before string: `get::<String>()` ToString-coerces arrays of
     // objects to "[object Object],[object Object]" (Vue reactive Proxies included).

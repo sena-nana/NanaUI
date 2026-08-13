@@ -3,7 +3,7 @@ name = "nana-ui-devtools"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-description = "Node tree / layout / performance diagnostics stub"
+description = "NanaUI JS, resource lifecycle, and frame diagnostics"
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -11,4 +11,5 @@ name = "nana_ui_devtools"
 path = "src/lib.rs"
 
 [dependencies]
+nana-js-engine.workspace = true
 nana-ui-core.workspace = true
