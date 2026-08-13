@@ -341,7 +341,7 @@ pub enum ContextMenuEvent<T> {
     Interaction,
 }
 
-/// A searchable context-menu renderer with click-opened submenus and shared
+/// A searchable context-menu renderer with hover-opened submenus and shared
 /// destructive confirmation presentation.
 pub struct ContextMenuHost<'a, T, Message> {
     items: &'a [ContextMenuItem<'a, T>],
@@ -462,22 +462,28 @@ where
         for (index, item) in items.iter().enumerate() {
             let mut path = parent_path.to_vec();
             path.push(index);
-            let event = if !item.children.is_empty() {
+            let submenu_active =
+                !item.disabled && !item.children.is_empty() && active_path.first() == Some(&index);
+            let press_event = if !item.children.is_empty() {
                 ContextMenuEvent::OpenSubmenu(path.clone())
             } else {
                 ContextMenuEvent::Select(item.value.clone())
             };
-            let trigger = self.item(item, event);
-            let row = if !item.disabled
-                && !item.children.is_empty()
-                && active_path.first() == Some(&index)
-            {
+            let hover_event = ContextMenuEvent::OpenSubmenu(submenu_hover_path(
+                parent_path,
+                index,
+                !item.disabled && !item.children.is_empty(),
+            ));
+            let trigger = mouse_area(self.item(item, press_event, submenu_active))
+                .on_enter((self.on_event)(hover_event))
+                .into();
+            let row = if !item.children.is_empty() {
                 let surface = self.submenu_surface(
                     &item.children,
                     &path,
                     active_path.get(1..).unwrap_or_default(),
                 );
-                Element::new(SubmenuAnchor::new(trigger, surface))
+                Element::new(SubmenuAnchor::new(trigger, surface, submenu_active))
             } else {
                 trigger
             };
@@ -494,7 +500,8 @@ where
             .spacing(MENU_ITEM_SPACING)
             .width(Length::Fixed(MENU_PANEL_WIDTH));
         for item in items {
-            panel = panel.push(self.item(item, ContextMenuEvent::Select(item.value.clone())));
+            panel =
+                panel.push(self.item(item, ContextMenuEvent::Select(item.value.clone()), false));
         }
         container(panel).into()
     }
@@ -502,7 +509,8 @@ where
     fn item(
         &self,
         item: &'a ContextMenuItem<'a, T>,
-        event: ContextMenuEvent<T>,
+        press_event: ContextMenuEvent<T>,
+        active: bool,
     ) -> Element<'a, Message> {
         let pending = self.pending == Some(&item.value);
         let label = if pending {
@@ -513,10 +521,10 @@ where
             item.label.clone()
         };
         let mut menu_item = ActionMenuItem::new(label)
-            .active(pending)
+            .active(pending || active)
             .danger(item.danger || pending)
             .disabled(item.disabled)
-            .on_press((self.on_event)(event));
+            .on_press((self.on_event)(press_event));
         if let Some(icon) = item.icon {
             menu_item = menu_item.leading(icon);
         }
@@ -547,6 +555,14 @@ where
             self.tokens,
         )
     }
+}
+
+fn submenu_hover_path(parent_path: &[usize], index: usize, opens_submenu: bool) -> Vec<usize> {
+    let mut path = parent_path.to_vec();
+    if opens_submenu {
+        path.push(index);
+    }
+    path
 }
 
 fn context_menu_surface<'a, Message>(
@@ -793,11 +809,16 @@ fn resolve_submenu_position(trigger: Rectangle, surface: Size, viewport: Size) -
 struct SubmenuAnchor<'a, Message> {
     trigger: Element<'a, Message>,
     surface: Element<'a, Message>,
+    open: bool,
 }
 
 impl<'a, Message> SubmenuAnchor<'a, Message> {
-    fn new(trigger: Element<'a, Message>, surface: Element<'a, Message>) -> Self {
-        Self { trigger, surface }
+    fn new(trigger: Element<'a, Message>, surface: Element<'a, Message>, open: bool) -> Self {
+        Self {
+            trigger,
+            surface,
+            open,
+        }
     }
 }
 
@@ -922,10 +943,14 @@ where
             viewport,
             translation,
         );
+        let surface_tree = children.next().expect("submenu surface state");
+        if !self.open {
+            return trigger_overlay;
+        }
         let submenu = overlay::Element::new(Box::new(SubmenuOverlay {
             trigger_bounds: layout.bounds() + translation,
             surface: &mut self.surface,
-            tree: children.next().expect("submenu surface state"),
+            tree: surface_tree,
         }));
         let overlays: Vec<_> = trigger_overlay.into_iter().chain([submenu]).collect();
         Some(overlay::Group::with_children(overlays).overlay())
@@ -1081,10 +1106,12 @@ fn collect_matches<'a, T>(
 mod tests {
     use super::{
         ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuInput,
-        ContextMenuItem, ControlSize, collect_matches, context_menu_input, context_menu_panel_size,
-        resolve_submenu_position,
+        ContextMenuItem, ControlSize, SubmenuAnchor, collect_matches, context_menu_input,
+        context_menu_panel_size, resolve_submenu_position, submenu_hover_path,
     };
     use crate::theme::ThemeModeExt;
+    use iced::advanced::widget::{self, Widget};
+    use iced::widget::text;
     use iced::{Event, Point, Rectangle, Size, keyboard, mouse};
 
     #[test]
@@ -1168,6 +1195,30 @@ mod tests {
             resolve_submenu_position(trigger, Size::new(200.0, 120.0), Size::new(800.0, 600.0),),
             Point::new(240.0, 76.0)
         );
+    }
+
+    #[test]
+    fn submenu_hover_opens_branches_and_leaf_hover_returns_to_the_parent_panel() {
+        assert_eq!(submenu_hover_path(&[], 2, true), vec![2]);
+        assert_eq!(submenu_hover_path(&[2], 1, true), vec![2, 1]);
+        assert_eq!(submenu_hover_path(&[2], 3, false), vec![2]);
+        assert!(submenu_hover_path(&[], 3, false).is_empty());
+    }
+
+    #[test]
+    fn submenu_visibility_changes_without_replacing_the_trigger_widget_tree() {
+        let mut closed: SubmenuAnchor<'_, ()> =
+            SubmenuAnchor::new(text("trigger").into(), text("surface").into(), false);
+        let mut tree = widget::Tree::new(&closed as &dyn Widget<(), iced::Theme, iced::Renderer>);
+        closed.diff(&mut tree);
+        assert_eq!(tree.children.len(), 2);
+
+        let mut open: SubmenuAnchor<'_, ()> =
+            SubmenuAnchor::new(text("trigger").into(), text("surface").into(), true);
+        open.diff(&mut tree);
+
+        assert_eq!(tree.children.len(), 2);
+        assert_eq!(closed.tag(), open.tag());
     }
 
     #[test]

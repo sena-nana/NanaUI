@@ -1040,12 +1040,14 @@ fn gallery_calendar_model() -> CalendarHeatmapModel {
 
 fn gallery_context_items() -> Vec<ContextMenuItem<'static, ContextAction>> {
     vec![
-        ContextMenuItem::new(ContextAction::Duplicate, "复制项目")
-            .icon(Icon::Add)
-            .keywords(["copy", "duplicate"]),
-        ContextMenuItem::new(ContextAction::Rename, "重命名项目")
-            .icon(Icon::File)
-            .keywords(["edit", "name"]),
+        ContextMenuItem::new(ContextAction::Duplicate, "项目操作").children([
+            ContextMenuItem::new(ContextAction::Duplicate, "复制项目")
+                .icon(Icon::Add)
+                .keywords(["copy", "duplicate"]),
+            ContextMenuItem::new(ContextAction::Rename, "重命名项目")
+                .icon(Icon::File)
+                .keywords(["edit", "name"]),
+        ]),
         ContextMenuItem::new(ContextAction::Remove, "移除项目")
             .icon(Icon::Close)
             .keywords(["delete", "remove"])
