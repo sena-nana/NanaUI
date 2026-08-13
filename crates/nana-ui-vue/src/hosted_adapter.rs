@@ -12,11 +12,11 @@ use nana_ui::{
     HostedWindowId, ThemeMode, WindowMaterialMode,
 };
 
+use crate::iced_app::view_semantic_tree_static_with_scene;
 use crate::{
     BridgeEvent, FileDragEventKind, HostedInputResult, InputModifiers, KeyboardEventKind,
     KeyboardInput, PointerEventKind, PointerInput, PointerType, VueRuntime, VueWindowId,
     WheelInput, WindowLifecycleEvent, theme_tokens_from_snapshot,
-    view_semantic_tree_static_with_native_components,
 };
 
 /// A single-engine Vue runtime suitable for embedding in `HostedProgram`.
@@ -96,13 +96,13 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         host.prepare_menus();
         host.prepare_canvas_gpu();
         let snapshot = host.semantic_snapshot();
-        let viewport = host
-            .document()
+        let document = host.document();
+        let document = document
             .lock()
-            .map(|document| document.logical_size())
-            .unwrap_or((800.0, 600.0));
+            .map_err(|_| JsEngineError::new("Vue document poisoned"))?;
+        let viewport = document.logical_size();
         let tokens = theme_tokens_from_snapshot(&snapshot, native_material);
-        Ok(view_semantic_tree_static_with_native_components(
+        Ok(view_semantic_tree_static_with_scene(
             &snapshot,
             tokens,
             Some(viewport),
@@ -111,6 +111,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             Some(host.host_textures()),
             Some(host.canvas_runtime_ref()),
             Some(host.components()),
+            Some(document.scene()),
             |event| event,
         ))
     }

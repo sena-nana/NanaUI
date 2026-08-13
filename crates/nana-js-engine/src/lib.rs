@@ -25,6 +25,14 @@ globalThis.__nanaJsonStringify = function __nanaJsonStringify(value) {
     }
     if (v === null || typeof v !== "object") return v;
     if (depth > 6) return undefined;
+    if (typeof ArrayBuffer !== "undefined") {
+      if (v instanceof ArrayBuffer) {
+        return Array.from(new Uint8Array(v));
+      }
+      if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(v)) {
+        return Array.from(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+      }
+    }
     if (seen.has(v)) return undefined;
     if (typeof v.__nid === "number" || typeof v.nodeType === "number") {
       return undefined;

@@ -1,0 +1,28 @@
+[package]
+name = "nana-ui-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Backend-neutral retained runtime for NanaUI"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+benchmark = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+bevy_ecs.workspace = true
+futures-core.workspace = true
+nana-ui-core.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[[bin]]
+name = "nana-runtime-benchmark"
+path = "src/bin/nana-runtime-benchmark.rs"
+required-features = ["benchmark"]
+
+[[bin]]
+name = "nana-framework-benchmark"
+path = "src/bin/nana-framework-benchmark.rs"
+required-features = ["benchmark"]

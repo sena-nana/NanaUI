@@ -45,10 +45,11 @@ mod tests {
     #[test]
     fn writeback_iced_layout_boxes_feeds_document_for_menu_anchors() {
         let store = LayoutBoxStore::new();
-        let btn = NodeHandle(42);
+        let mut doc = crate::tree::NanaTreeDocument::new(400, 300, 1.0);
+        let btn = doc.create_element("button");
+        doc.insert(btn, doc.mount_root(), None);
         // Simulate LayoutProbe draw after scrollable.padding(16) chrome.
         store.record(btn, 16.0, 48.0, 96.0, 28.0);
-        let mut doc = crate::tree::NanaTreeDocument::new(400, 300, 1.0);
         // Stale measure-style box at origin — must be replaced.
         doc.apply_layout_boxes(&[(
             btn,

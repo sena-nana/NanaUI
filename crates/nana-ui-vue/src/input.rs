@@ -295,42 +295,12 @@ impl CompositionInput {
 
 #[derive(Debug, Default)]
 pub(crate) struct InputState {
-    captures: BTreeMap<u64, NodeHandle>,
     pressed: BTreeMap<u64, NodeHandle>,
     hover: BTreeMap<u64, NodeHandle>,
-    composition_active: bool,
-    preedit: String,
     pressed_keys: BTreeSet<String>,
-    capture_changes: Vec<(bool, u64, NodeHandle)>,
 }
 
 impl InputState {
-    pub fn capture(&mut self, pointer_id: u64, node: NodeHandle) {
-        let previous = self.captures.insert(pointer_id, node);
-        if previous == Some(node) {
-            return;
-        }
-        if let Some(previous) = previous {
-            self.capture_changes.push((false, pointer_id, previous));
-        }
-        self.capture_changes.push((true, pointer_id, node));
-    }
-
-    pub fn release_capture(&mut self, pointer_id: u64, node: Option<NodeHandle>) -> bool {
-        if node.is_some() && self.captures.get(&pointer_id).copied() != node {
-            return false;
-        }
-        let Some(released) = self.captures.remove(&pointer_id) else {
-            return false;
-        };
-        self.capture_changes.push((false, pointer_id, released));
-        true
-    }
-
-    pub fn capture_target(&self, pointer_id: u64) -> Option<NodeHandle> {
-        self.captures.get(&pointer_id).copied()
-    }
-
     pub fn set_pressed(&mut self, pointer_id: u64, node: NodeHandle) {
         self.pressed.insert(pointer_id, node);
     }
@@ -351,10 +321,6 @@ impl InputState {
         }
     }
 
-    pub fn take_capture_changes(&mut self) -> Vec<(bool, u64, NodeHandle)> {
-        std::mem::take(&mut self.capture_changes)
-    }
-
     pub fn note_key(&mut self, code: &str, pressed: bool) -> bool {
         if pressed {
             !self.pressed_keys.insert(code.to_string())
@@ -364,38 +330,9 @@ impl InputState {
         }
     }
 
-    pub fn clear(&mut self) -> Vec<(u64, NodeHandle)> {
-        let captures = self
-            .captures
-            .iter()
-            .map(|(&id, &node)| (id, node))
-            .collect();
-        self.captures.clear();
+    pub fn clear(&mut self) {
         self.pressed.clear();
         self.hover.clear();
-        self.composition_active = false;
-        self.preedit.clear();
         self.pressed_keys.clear();
-        self.capture_changes.clear();
-        captures
-    }
-
-    pub fn begin_composition(&mut self) -> bool {
-        let started = !self.composition_active;
-        self.composition_active = true;
-        started
-    }
-
-    pub fn update_preedit(&mut self, text: &str) {
-        self.preedit.clear();
-        self.preedit.push_str(text);
-    }
-
-    pub fn finish_composition(&mut self) -> Option<String> {
-        if !self.composition_active {
-            return None;
-        }
-        self.composition_active = false;
-        Some(std::mem::take(&mut self.preedit))
     }
 }

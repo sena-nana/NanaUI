@@ -17,6 +17,20 @@ COMPATIBILITY_PACKAGES = {
     "nana-ui",
     "nana-ui-vue",
 }
+BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
+GPU_BACKEND_PACKAGES = {
+    "ash",
+    "d3d12",
+    "iced",
+    "iced-wgpu",
+    "iced-winit",
+    "metal",
+    "objc2-metal",
+    "vulkano",
+    "wgpu",
+    "wgpu-core",
+    "wgpu-hal",
+}
 
 
 def metadata(manifest: Path) -> dict[str, object]:
@@ -71,6 +85,15 @@ def main() -> int:
     for package in root_metadata["packages"]:
         for dependency in package["dependencies"]:
             normalized_name = dependency["name"].replace("_", "-")
+            if (
+                package["name"] in BACKEND_NEUTRAL_PACKAGES
+                and normalized_name in GPU_BACKEND_PACKAGES
+                and dependency.get("kind") != "dev"
+            ):
+                failures.append(
+                    f'{package["name"]} has GPU/backend dependency '
+                    f'{dependency["name"]}; Runtime and Scene must stay backend-neutral'
+                )
             if normalized_name not in ICED_PACKAGES:
                 continue
 
@@ -96,7 +119,11 @@ def main() -> int:
         return 1
 
     adapters = ", ".join(sorted(COMPATIBILITY_PACKAGES))
-    print(f"Iced compatibility boundary: OK (adapters: {adapters})")
+    neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
+    print(
+        f"Iced compatibility boundary: OK (adapters: {adapters}; "
+        f"backend-neutral: {neutral})"
+    )
     return 0
 
 

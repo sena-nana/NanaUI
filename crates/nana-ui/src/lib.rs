@@ -10,6 +10,7 @@
 //! the reusable workspace contract.
 
 pub mod absolute;
+mod async_runtime;
 pub mod command;
 pub mod components;
 pub mod dialog;
@@ -50,6 +51,7 @@ mod windows_pen;
 pub mod workspace;
 
 pub use absolute::{Absolute, absolute_content_max};
+pub use async_runtime::{run_subscription, run_task};
 pub use command::{
     ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
     ActionPickerState, ActionRegistry, ActionRegistryError, ContextPredicate, KeyBinding,

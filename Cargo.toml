@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/nana-ui-core",
+    "crates/nana-ui-runtime",
+    "crates/nana-ui-scene",
     "crates/nana-ui",
     "crates/nana-window",
     "crates/nana-js-engine",
@@ -17,6 +19,7 @@ members = [
     "examples/vue-v8",
     "examples/vue-counter",
     "examples/vue-hosted-acceptance",
+    "examples/native-rhi-probe",
 ]
 exclude = ["engine/iced"]
 resolver = "2"
@@ -35,6 +38,8 @@ iced_winit = {
     path = "engine/iced/winit",
 }
 nana-ui-core = { path = "crates/nana-ui-core" }
+nana-ui-runtime = { path = "crates/nana-ui-runtime" }
+nana-ui-scene = { path = "crates/nana-ui-scene" }
 nana-js-engine = { path = "crates/nana-js-engine" }
 nana-js-quickjs = { path = "crates/nana-js-quickjs" }
 nana-js-v8 = { path = "crates/nana-js-v8" }
@@ -46,6 +51,8 @@ nana-ui = { path = "crates/nana-ui" }
 nana-window = { path = "crates/nana-window" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+bevy_ecs = { version = "0.19.1", default-features = false, features = ["std"] }
+futures-core = "0.3.31"
 base64 = "0.22"
 crossbeam-channel = "0.5"
 url = "2.5"

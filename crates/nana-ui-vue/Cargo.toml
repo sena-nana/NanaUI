@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
+benchmark = ["dep:serde", "dep:serde_json"]
 # Draw semantic trees with real NanaUI Iced widgets (layout + base control variants).
 # Blitz-era empty flags (`layout` / `paint-stub` / `paint-vello`) were removed — use iced-view.
 iced-view = [
@@ -29,9 +30,18 @@ hosted = ["iced-view", "nana-ui/hosted"]
 
 [dependencies]
 nana-ui-core.workspace = true
+nana-ui-runtime.workspace = true
+nana-ui-scene.workspace = true
 nana-js-engine.workspace = true
 nana-ui-web-api.workspace = true
 nana-ui-platform.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 iced = { workspace = true, optional = true }
 nana-ui = { path = "../nana-ui", optional = true, default-features = false }
 # Intentionally NOT depending on nana-js-quickjs, nana-js-v8, or nana-ui-blitz.
+
+[[bin]]
+name = "nana-vue-runtime-benchmark"
+path = "src/bin/nana-vue-runtime-benchmark.rs"
+required-features = ["benchmark"]
