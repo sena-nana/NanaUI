@@ -1,6 +1,6 @@
 //! High-level native runtime for applications that host NanaUI in one WGPU context.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use iced_wgpu::graphics::core::renderer;
 use iced_wgpu::wgpu;
 use iced_winit::futures::futures::executor;
 use iced_winit::winit;
+use nana_ui_platform::ImeEvent;
 #[cfg(target_os = "macos")]
 use nana_window::MaterialFallback;
 #[cfg(not(target_os = "macos"))]
@@ -24,6 +25,10 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
+#[cfg(target_os = "windows")]
+use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
+#[cfg(target_os = "windows")]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 #[cfg(feature = "browser")]
 use crate::layout_probe::LayoutBounds;
@@ -119,6 +124,82 @@ impl From<LayoutBounds> for HostedBrowserBounds {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostedInputModifiers {
+    pub alt: bool,
+    pub control: bool,
+    pub meta: bool,
+    pub shift: bool,
+}
+
+impl From<ModifiersState> for HostedInputModifiers {
+    fn from(value: ModifiersState) -> Self {
+        Self {
+            alt: value.alt_key(),
+            control: value.control_key(),
+            meta: value.super_key(),
+            shift: value.shift_key(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostedInputEvent {
+    Pointer {
+        phase: HostedPointerPhase,
+        pointer_id: u64,
+        pointer_type: HostedPointerType,
+        x: f32,
+        y: f32,
+        screen_x: f32,
+        screen_y: f32,
+        button: i16,
+        buttons: u16,
+        pressure: f32,
+        tangential_pressure: f32,
+        tilt_x: i16,
+        tilt_y: i16,
+        twist: u16,
+        is_primary: bool,
+        modifiers: HostedInputModifiers,
+    },
+    Wheel {
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+        line_delta: bool,
+        modifiers: HostedInputModifiers,
+    },
+    Keyboard {
+        pressed: bool,
+        key: String,
+        code: String,
+        repeat: bool,
+        modifiers: HostedInputModifiers,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedPointerPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedPointerType {
+    Mouse,
+    Touch,
+    Pen,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostedInputDisposition {
+    pub prevent_default: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HostedWindowRole {
     #[default]
     Main,
@@ -146,6 +227,9 @@ pub struct HostedWindowSettings {
     pub always_on_top: bool,
     pub resizable: bool,
     pub role: HostedWindowRole,
+    /// Runtime-enforced application modal relationship without exposing raw handles.
+    pub modal: bool,
+    pub parent: Option<HostedWindowId>,
     pub title_bar_mode: HostedTitleBarMode,
     pub gpu_retry_interval: Duration,
     pub required_gpu_features: wgpu::Features,
@@ -166,6 +250,8 @@ impl HostedWindowSettings {
             always_on_top: false,
             resizable: true,
             role: HostedWindowRole::Main,
+            modal: false,
+            parent: None,
             title_bar_mode: HostedTitleBarMode::Custom,
             gpu_retry_interval: Duration::from_secs(2),
             required_gpu_features: wgpu::Features::empty(),
@@ -244,6 +330,13 @@ impl HostedWindowSettings {
 
     pub fn role(mut self, role: HostedWindowRole) -> Self {
         self.role = role;
+        self
+    }
+
+    pub fn modal_for(mut self, parent: HostedWindowId) -> Self {
+        self.modal = true;
+        self.parent = Some(parent);
+        self.role = HostedWindowRole::Tool;
         self
     }
 
@@ -479,6 +572,7 @@ pub struct HostedProgramContext<Message: 'static> {
     window_hidden: bool,
     drawable: bool,
     surface_format: wgpu::TextureFormat,
+    surface_alpha_mode: wgpu::CompositeAlphaMode,
 }
 
 impl<Message: 'static> HostedProgramContext<Message> {
@@ -525,6 +619,11 @@ impl<Message: 'static> HostedProgramContext<Message> {
     pub const fn surface_format(&self) -> wgpu::TextureFormat {
         self.surface_format
     }
+
+    /// Native compositor alpha mode selected for the hosted surface.
+    pub const fn surface_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.surface_alpha_mode
+    }
 }
 
 /// Window lifecycle information translated into logical and physical geometry.
@@ -556,7 +655,19 @@ pub enum HostedWindowEvent {
         window_id: iced::window::Id,
         focused: bool,
     },
+    /// Desktop IME composition forwarded in addition to Iced's native editor path.
+    Ime {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        event: ImeEvent,
+    },
     CloseRequested {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+    },
+    /// Emitted after an auxiliary native window and its surface have actually
+    /// been removed. This is distinct from the cancellable close request.
+    Closed {
         id: HostedWindowId,
         window_id: iced::window::Id,
     },
@@ -566,10 +677,22 @@ pub enum HostedWindowEvent {
         path: PathBuf,
         position: Option<Point>,
     },
+    FilesHovered {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        paths: Vec<PathBuf>,
+        position: Option<Point>,
+    },
     FileDropped {
         id: HostedWindowId,
         window_id: iced::window::Id,
         path: PathBuf,
+        position: Option<Point>,
+    },
+    FilesDropped {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        paths: Vec<PathBuf>,
         position: Option<Point>,
     },
     FileHoverCancelled {
@@ -594,10 +717,14 @@ impl HostedWindowEvent {
             | Self::Moved { id, .. }
             | Self::VisibilityChanged { id, .. }
             | Self::FocusChanged { id, .. }
+            | Self::Ime { id, .. }
             | Self::CloseRequested { id, .. }
+            | Self::Closed { id, .. }
             | Self::FileHovered { id, .. }
+            | Self::FilesHovered { id, .. }
             | Self::FileDropped { id, .. }
             | Self::FileHoverCancelled { id, .. }
+            | Self::FilesDropped { id, .. }
             | Self::KeyPressed { id, .. } => *id,
         }
     }
@@ -607,6 +734,7 @@ impl HostedWindowEvent {
 #[derive(Debug, Clone)]
 pub enum HostedRuntimeEvent {
     RenderingSuspended(HostedGpuError),
+    DeviceLost(crate::HostedDeviceLost),
     DeviceRecovered,
     DeviceRecoveryFailed(HostedGpuError),
     WindowOpenFailed {
@@ -716,6 +844,18 @@ impl HostedBrowserCommand {
     }
 }
 
+/// CPU-side timing boundaries for one successfully presented hosted frame.
+/// GPU timestamp queries remain application-owned because required features and
+/// pass topology vary by renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedFrameMetrics {
+    pub window_id: HostedWindowId,
+    pub prepare: Duration,
+    pub render_submit: Duration,
+    pub present: Duration,
+    pub total: Duration,
+}
+
 #[derive(Debug, Clone)]
 pub enum HostedWindowCommand {
     Open {
@@ -726,6 +866,28 @@ pub enum HostedWindowCommand {
     Move {
         id: HostedWindowId,
         position: Point,
+    },
+    SetTitle {
+        id: HostedWindowId,
+        title: String,
+    },
+    SetBounds {
+        id: HostedWindowId,
+        position: Point,
+        width: f32,
+        height: f32,
+    },
+    SetFullscreen {
+        id: HostedWindowId,
+        fullscreen: bool,
+    },
+    SetMinimized {
+        id: HostedWindowId,
+        minimized: bool,
+    },
+    SetMaximized {
+        id: HostedWindowId,
+        maximized: bool,
     },
     SetAlwaysOnTop {
         id: HostedWindowId,
@@ -974,6 +1136,21 @@ pub trait HostedProgram: Sized + 'static {
         HostedProgramUpdate::default()
     }
 
+    /// Raw, normalized input hook invoked before Iced default handling.
+    /// Returning `prevent_default` keeps the event inside the Vue/native
+    /// component tree and skips the duplicate Iced input path.
+    fn input_event(
+        &mut self,
+        _id: HostedWindowId,
+        _event: HostedInputEvent,
+        _context: &HostedProgramContext<Self::Message>,
+    ) -> (HostedInputDisposition, HostedProgramUpdate) {
+        (
+            HostedInputDisposition::default(),
+            HostedProgramUpdate::default(),
+        )
+    }
+
     fn runtime_event(
         &mut self,
         _event: HostedRuntimeEvent,
@@ -1008,6 +1185,15 @@ pub trait HostedProgram: Sized + 'static {
 
     fn rebuild_gpu(&mut self, _context: &HostedProgramContext<Self::Message>) {}
 
+    /// Development instrumentation hook. Implementations can forward this to
+    /// `nana-ui-devtools::DevtoolsSession::record_frame`.
+    fn frame_diagnostics(
+        &mut self,
+        _metrics: HostedFrameMetrics,
+        _context: &HostedProgramContext<Self::Message>,
+    ) {
+    }
+
     fn frame_presented(
         &mut self,
         _material: MaterialOutcome,
@@ -1033,6 +1219,23 @@ pub trait HostedProgram: Sized + 'static {
 pub fn run_hosted<Program: HostedProgram>(
     settings: HostedWindowSettings,
 ) -> Result<(), HostedRunError> {
+    run_hosted_with::<Program, _>(settings, Program::initialize)
+}
+
+/// Run a hosted program whose state requires caller-owned startup values such
+/// as a V8 engine and compiled Vue artifact. This avoids process globals while
+/// retaining the same host-owned Window/Device/Queue lifecycle.
+pub fn run_hosted_with<Program, Initialize>(
+    settings: HostedWindowSettings,
+    initialize: Initialize,
+) -> Result<(), HostedRunError>
+where
+    Program: HostedProgram,
+    Initialize: FnOnce(
+            &HostedProgramContext<Program::Message>,
+        ) -> Result<(Program, Vec<Program::Message>), Program::Error>
+        + 'static,
+{
     let event_loop = EventLoop::<Program::Message>::with_user_event()
         .build()
         .map_err(HostedRunError::EventLoop)?;
@@ -1041,6 +1244,7 @@ pub fn run_hosted<Program: HostedProgram>(
         proxy: event_loop.create_proxy(),
         settings,
         failure: None,
+        initialize: Some(Box::new(initialize)),
     };
     event_loop
         .run_app(&mut runner)
@@ -1048,11 +1252,21 @@ pub fn run_hosted<Program: HostedProgram>(
     runner.into_result()
 }
 
+type HostedInitializer<Program> = Box<
+    dyn FnOnce(
+        &HostedProgramContext<<Program as HostedProgram>::Message>,
+    ) -> Result<
+        (Program, Vec<<Program as HostedProgram>::Message>),
+        <Program as HostedProgram>::Error,
+    >,
+>;
+
 enum HostedRunner<Program: HostedProgram> {
     Loading {
         proxy: EventLoopProxy<Program::Message>,
         settings: HostedWindowSettings,
         failure: Option<String>,
+        initialize: Option<HostedInitializer<Program>>,
     },
     Ready(Box<HostedReady<Program>>),
     Finished {
@@ -1061,6 +1275,8 @@ enum HostedRunner<Program: HostedProgram> {
 }
 
 struct HostedAuxiliary<Message> {
+    #[cfg(target_os = "windows")]
+    pen_hook: crate::windows_pen::WindowsPenHook,
     surface: HostedGpuSurface,
     ui: HostedUiRenderer<Message>,
     iced_window_id: iced::window::Id,
@@ -1072,6 +1288,12 @@ struct HostedAuxiliary<Message> {
 struct HostedBrowserHost {
     window_id: HostedWindowId,
     webview: wry::WebView,
+}
+
+#[derive(Default)]
+struct PendingFileDropBatch {
+    paths: Vec<PathBuf>,
+    position: Option<Point>,
 }
 
 impl<Message> Drop for HostedAuxiliary<Message> {
@@ -1087,6 +1309,8 @@ struct HostedReady<Program: HostedProgram> {
     browser_events_tx: Sender<HostedBrowserEvent>,
     #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
     browser_events_rx: Receiver<HostedBrowserEvent>,
+    #[cfg(target_os = "windows")]
+    pen_hook: crate::windows_pen::WindowsPenHook,
     graphics: HostedGpuContext,
     ui: HostedUiRenderer<Program::Message>,
     program: Program,
@@ -1097,6 +1321,12 @@ struct HostedReady<Program: HostedProgram> {
     auxiliary: HashMap<HostedWindowId, HostedAuxiliary<Program::Message>>,
     window_ids: HashMap<winit::window::WindowId, HostedWindowId>,
     cursor_positions: HashMap<HostedWindowId, Point>,
+    hovered_files: HashMap<HostedWindowId, Vec<PathBuf>>,
+    pending_file_drops: HashMap<HostedWindowId, PendingFileDropBatch>,
+    pointer_buttons: HashMap<HostedWindowId, u16>,
+    modifiers: HashMap<HostedWindowId, ModifiersState>,
+    active_touches: HashMap<HostedWindowId, HashSet<u64>>,
+    primary_touches: HashMap<HostedWindowId, u64>,
     next_gpu_retry: Option<Instant>,
     window_hidden: bool,
     render_suspended: bool,
@@ -1125,6 +1355,7 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
             proxy,
             settings,
             failure,
+            initialize: pending_initializer,
         } = self
         else {
             return;
@@ -1133,7 +1364,19 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
             event_loop.exit();
             return;
         }
-        match initialize::<Program>(event_loop, proxy.clone(), settings.clone()) {
+        let Some(initialize_program) = pending_initializer.take() else {
+            self.fail(
+                event_loop,
+                "hosted program initializer was already consumed",
+            );
+            return;
+        };
+        match initialize::<Program>(
+            event_loop,
+            proxy.clone(),
+            settings.clone(),
+            initialize_program,
+        ) {
             Ok(ready) => *self = Self::Ready(Box::new(ready)),
             Err(error) => self.fail(event_loop, error),
         }
@@ -1165,12 +1408,19 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
         let Self::Ready(ready) = self else {
             return;
         };
+        ready.flush_file_drops(event_loop);
         let now = Instant::now();
         #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
         ready.drain_browser_events(event_loop);
-        if ready.graphics.take_device_lost()
-            || ready.next_gpu_retry.is_some_and(|deadline| now >= deadline)
-        {
+        let device_lost = ready.graphics.take_device_lost_report();
+        if let Some(report) = device_lost.as_ref() {
+            let context = ready.program_context();
+            let update = ready
+                .program
+                .runtime_event(HostedRuntimeEvent::DeviceLost(report.clone()), &context);
+            ready.apply_program_update(event_loop, update);
+        }
+        if device_lost.is_some() || ready.next_gpu_retry.is_some_and(|deadline| now >= deadline) {
             ready.recover_device(event_loop);
         }
         if ready
@@ -1194,6 +1444,7 @@ fn initialize<Program: HostedProgram>(
     event_loop: &ActiveEventLoop,
     proxy: EventLoopProxy<Program::Message>,
     settings: HostedWindowSettings,
+    initialize_program: HostedInitializer<Program>,
 ) -> Result<HostedReady<Program>, String> {
     let window = Arc::new(
         event_loop
@@ -1210,7 +1461,7 @@ fn initialize<Program: HostedProgram>(
     .map_err(|error| error.to_string())?;
     let iced_window_id = iced::window::Id::unique();
     let context = program_context(&graphics, &proxy, iced_window_id, false);
-    let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
+    let (program, startup) = initialize_program(&context).map_err(|error| error.to_string())?;
     let material = material_for(
         window.as_ref(),
         program.theme_mode(),
@@ -1233,6 +1484,8 @@ fn initialize<Program: HostedProgram>(
         browser_events_tx,
         #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
         browser_events_rx,
+        #[cfg(target_os = "windows")]
+        pen_hook: crate::windows_pen::WindowsPenHook::install(graphics.window())?,
         graphics,
         ui,
         program,
@@ -1243,6 +1496,12 @@ fn initialize<Program: HostedProgram>(
         auxiliary: HashMap::new(),
         window_ids,
         cursor_positions: HashMap::new(),
+        hovered_files: HashMap::new(),
+        pending_file_drops: HashMap::new(),
+        pointer_buttons: HashMap::new(),
+        modifiers: HashMap::new(),
+        active_touches: HashMap::new(),
+        primary_touches: HashMap::new(),
         next_gpu_retry: None,
         window_hidden: false,
         render_suspended: false,
@@ -1291,6 +1550,34 @@ impl<Program: HostedProgram> HostedReady<Program> {
         id: HostedWindowId,
         event: WindowEvent,
     ) {
+        if let Some(modal) = self.active_modal_child(id)
+            && blocks_for_modal(&event)
+        {
+            #[cfg(target_os = "windows")]
+            let _ = self.take_windows_pen_events(id);
+            self.focus_window(modal);
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        self.dispatch_windows_pen_events(event_loop, id);
+        if let WindowEvent::ModifiersChanged(modifiers) = &event {
+            self.modifiers.insert(id, modifiers.state());
+        }
+        if let WindowEvent::CursorMoved { position, .. } = &event
+            && let Some(scale_factor) = self.window_scale_factor(id)
+        {
+            let position = position.to_logical::<f32>(f64::from(scale_factor));
+            self.cursor_positions
+                .insert(id, Point::new(position.x, position.y));
+        }
+        if let Some(input) = self.normalized_input(id, &event) {
+            let context = self.program_context();
+            let (disposition, update) = self.program.input_event(id, input, &context);
+            self.apply_program_update(event_loop, update);
+            if disposition.prevent_default {
+                return;
+            }
+        }
         let key_press = self.key_press(id, &event);
         if let Some((stroke, repeat, focused_widget)) = key_press
             && self.notify_key_pressed(event_loop, id, stroke, repeat, focused_widget)
@@ -1327,14 +1614,26 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 self.push_window_event(id, WindowEvent::Occluded(hidden));
             }
             WindowEvent::Focused(focused) => {
+                if !focused {
+                    self.pointer_buttons.remove(&id);
+                    self.active_touches.remove(&id);
+                    self.primary_touches.remove(&id);
+                }
                 self.notify_focus_changed(event_loop, id, focused);
                 self.push_window_event(id, WindowEvent::Focused(focused));
+            }
+            WindowEvent::Ime(ime) => {
+                self.notify_ime(event_loop, id, ime.clone());
+                self.push_window_event(id, WindowEvent::Ime(ime));
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(scale_factor) = self.window_scale_factor(id) {
                     let position = position.to_logical::<f32>(f64::from(scale_factor));
                     self.cursor_positions
                         .insert(id, Point::new(position.x, position.y));
+                }
+                if let Some(paths) = self.hovered_files.get(&id).cloned() {
+                    self.notify_files_hovered(event_loop, id, paths);
                 }
                 self.push_window_event(id, event);
             }
@@ -1343,14 +1642,21 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 self.push_window_event(id, event);
             }
             WindowEvent::HoveredFile(path) => {
-                self.notify_file_hovered(event_loop, id, path.clone());
+                let paths = self.hovered_files.entry(id).or_default();
+                push_unique_path(paths, path.clone());
+                let paths = paths.clone();
+                self.notify_files_hovered(event_loop, id, paths);
                 self.push_window_event(id, WindowEvent::HoveredFile(path));
             }
             WindowEvent::DroppedFile(path) => {
-                self.notify_file_dropped(event_loop, id, path.clone());
+                let position = self.cursor_positions.get(&id).copied();
+                let batch = self.pending_file_drops.entry(id).or_default();
+                push_unique_path(&mut batch.paths, path.clone());
+                batch.position = position;
                 self.push_window_event(id, WindowEvent::DroppedFile(path));
             }
             WindowEvent::HoveredFileCancelled => {
+                self.hovered_files.remove(&id);
                 self.notify_file_hover_cancelled(event_loop, id);
                 self.push_window_event(id, WindowEvent::HoveredFileCancelled);
             }
@@ -1380,6 +1686,271 @@ impl<Program: HostedProgram> HostedReady<Program> {
             .map(|stroke| (stroke, event.repeat, focused_widget))
     }
 
+    #[cfg(target_os = "windows")]
+    fn take_windows_pen_events(&self, id: HostedWindowId) -> Vec<crate::windows_pen::PenEvent> {
+        if id == HostedWindowId::PRIMARY {
+            self.pen_hook.drain()
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| host.pen_hook.drain())
+                .unwrap_or_default()
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn dispatch_windows_pen_events(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        use crate::windows_pen::PenPhase;
+
+        let events = self.take_windows_pen_events(id);
+        let Some(scale) = self.window_scale_factor(id) else {
+            return;
+        };
+        let scale = scale.max(0.01);
+        for event in events {
+            let x = event.client_x as f32 / scale;
+            let y = event.client_y as f32 / scale;
+            self.cursor_positions.insert(id, Point::new(x, y));
+            let input = HostedInputEvent::Pointer {
+                phase: match event.phase {
+                    PenPhase::Down => HostedPointerPhase::Down,
+                    PenPhase::Move => HostedPointerPhase::Move,
+                    PenPhase::Up => HostedPointerPhase::Up,
+                    PenPhase::Cancel => HostedPointerPhase::Cancel,
+                },
+                pointer_id: event.pointer_id,
+                pointer_type: HostedPointerType::Pen,
+                x,
+                y,
+                screen_x: event.screen_x as f32 / scale,
+                screen_y: event.screen_y as f32 / scale,
+                button: event.button,
+                buttons: event.buttons,
+                pressure: event.pressure,
+                tangential_pressure: 0.0,
+                tilt_x: event.tilt_x,
+                tilt_y: event.tilt_y,
+                twist: event.twist,
+                is_primary: event.is_primary,
+                modifiers: self.modifiers.get(&id).copied().unwrap_or_default().into(),
+            };
+            let context = self.program_context();
+            let (_, update) = self.program.input_event(id, input, &context);
+            self.apply_program_update(event_loop, update);
+        }
+    }
+
+    fn normalized_input(
+        &mut self,
+        id: HostedWindowId,
+        event: &WindowEvent,
+    ) -> Option<HostedInputEvent> {
+        use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase};
+
+        let modifiers = self.modifiers.get(&id).copied().unwrap_or_default().into();
+        let cursor = self.cursor_positions.get(&id).copied().unwrap_or_default();
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = self.window_scale_factor(id)?;
+                let point = position.to_logical::<f32>(f64::from(scale));
+                let screen = self.screen_position(id, Point::new(point.x, point.y));
+                let buttons = self.pointer_buttons.get(&id).copied().unwrap_or_default();
+                Some(HostedInputEvent::Pointer {
+                    phase: HostedPointerPhase::Move,
+                    pointer_id: 1,
+                    pointer_type: HostedPointerType::Mouse,
+                    x: point.x,
+                    y: point.y,
+                    screen_x: screen.x,
+                    screen_y: screen.y,
+                    button: -1,
+                    buttons,
+                    pressure: if buttons == 0 { 0.0 } else { 0.5 },
+                    tangential_pressure: 0.0,
+                    tilt_x: 0,
+                    tilt_y: 0,
+                    twist: 0,
+                    is_primary: true,
+                    modifiers,
+                })
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    MouseButton::Left => 0,
+                    MouseButton::Middle => 1,
+                    MouseButton::Right => 2,
+                    MouseButton::Back => 3,
+                    MouseButton::Forward => 4,
+                    MouseButton::Other(button) => (*button).min(i16::MAX as u16) as i16,
+                };
+                let pressed = *state == ElementState::Pressed;
+                let mask = match button {
+                    0 => 1,
+                    1 => 4,
+                    2 => 2,
+                    3 => 8,
+                    4 => 16,
+                    _ => 0,
+                };
+                let buttons = self.pointer_buttons.entry(id).or_default();
+                if pressed {
+                    *buttons |= mask;
+                } else {
+                    *buttons &= !mask;
+                }
+                let buttons = *buttons;
+                let screen = self.screen_position(id, cursor);
+                Some(HostedInputEvent::Pointer {
+                    phase: if pressed {
+                        HostedPointerPhase::Down
+                    } else {
+                        HostedPointerPhase::Up
+                    },
+                    pointer_id: 1,
+                    pointer_type: HostedPointerType::Mouse,
+                    x: cursor.x,
+                    y: cursor.y,
+                    screen_x: screen.x,
+                    screen_y: screen.y,
+                    button,
+                    buttons,
+                    pressure: if buttons == 0 { 0.0 } else { 0.5 },
+                    tangential_pressure: 0.0,
+                    tilt_x: 0,
+                    tilt_y: 0,
+                    twist: 0,
+                    is_primary: true,
+                    modifiers,
+                })
+            }
+            WindowEvent::CursorLeft { .. } => {
+                let screen = self.screen_position(id, cursor);
+                Some(HostedInputEvent::Pointer {
+                    phase: HostedPointerPhase::Cancel,
+                    pointer_id: 1,
+                    pointer_type: HostedPointerType::Mouse,
+                    x: f32::NEG_INFINITY,
+                    y: f32::NEG_INFINITY,
+                    screen_x: screen.x,
+                    screen_y: screen.y,
+                    button: -1,
+                    buttons: self.pointer_buttons.remove(&id).unwrap_or_default(),
+                    pressure: 0.0,
+                    tangential_pressure: 0.0,
+                    tilt_x: 0,
+                    tilt_y: 0,
+                    twist: 0,
+                    is_primary: true,
+                    modifiers,
+                })
+            }
+            WindowEvent::Touch(touch) => {
+                let scale = self.window_scale_factor(id)?;
+                let point = touch.location.to_logical::<f32>(f64::from(scale));
+                let client = Point::new(point.x, point.y);
+                let screen = self.screen_position(id, client);
+                let phase = match touch.phase {
+                    TouchPhase::Started => HostedPointerPhase::Down,
+                    TouchPhase::Moved => HostedPointerPhase::Move,
+                    TouchPhase::Ended => HostedPointerPhase::Up,
+                    TouchPhase::Cancelled => HostedPointerPhase::Cancel,
+                };
+                let clear_primary = {
+                    let active = self.active_touches.entry(id).or_default();
+                    if matches!(touch.phase, TouchPhase::Started) {
+                        if active.is_empty() {
+                            self.primary_touches.insert(id, touch.id);
+                        }
+                        active.insert(touch.id);
+                    }
+                    if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                        active.remove(&touch.id);
+                    }
+                    active.is_empty()
+                };
+                let is_primary = self.primary_touches.get(&id).copied() == Some(touch.id);
+                if clear_primary {
+                    self.active_touches.remove(&id);
+                    self.primary_touches.remove(&id);
+                }
+                Some(HostedInputEvent::Pointer {
+                    phase,
+                    pointer_id: touch.id.saturating_add(2),
+                    pointer_type: HostedPointerType::Touch,
+                    x: client.x,
+                    y: client.y,
+                    screen_x: screen.x,
+                    screen_y: screen.y,
+                    button: 0,
+                    buttons: if matches!(phase, HostedPointerPhase::Down | HostedPointerPhase::Move)
+                    {
+                        1
+                    } else {
+                        0
+                    },
+                    pressure: if matches!(
+                        phase,
+                        HostedPointerPhase::Down | HostedPointerPhase::Move
+                    ) {
+                        touch
+                            .force
+                            .as_ref()
+                            .map(|force| force.normalized() as f32)
+                            .unwrap_or(0.5)
+                            .clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    },
+                    tangential_pressure: 0.0,
+                    tilt_x: 0,
+                    tilt_y: 0,
+                    twist: 0,
+                    is_primary,
+                    modifiers,
+                })
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (delta_x, delta_y, line_delta) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (*x, *y, true),
+                    MouseScrollDelta::PixelDelta(delta) => {
+                        let scale = f64::from(self.window_scale_factor(id)?);
+                        ((delta.x / scale) as f32, (delta.y / scale) as f32, false)
+                    }
+                };
+                Some(HostedInputEvent::Wheel {
+                    x: cursor.x,
+                    y: cursor.y,
+                    delta_x,
+                    delta_y,
+                    line_delta,
+                    modifiers,
+                })
+            }
+            WindowEvent::KeyboardInput { event, .. } => Some(HostedInputEvent::Keyboard {
+                pressed: event.state == ElementState::Pressed,
+                key: event.logical_key.to_text().unwrap_or_default().to_owned(),
+                code: format!("{:?}", event.physical_key),
+                repeat: event.repeat,
+                modifiers,
+            }),
+            _ => None,
+        }
+    }
+
+    fn screen_position(&self, id: HostedWindowId, client: Point) -> Point {
+        let Some(window) = self.window(id) else {
+            return client;
+        };
+        let scale = window.scale_factor().max(0.01);
+        window
+            .outer_position()
+            .map(|position| {
+                let origin = position.to_logical::<f32>(scale);
+                Point::new(origin.x + client.x, origin.y + client.y)
+            })
+            .unwrap_or(client)
+    }
+
     fn window_scale_factor(&self, id: HostedWindowId) -> Option<f32> {
         if id == HostedWindowId::PRIMARY {
             Some(self.graphics.window().scale_factor() as f32)
@@ -1390,46 +1961,69 @@ impl<Program: HostedProgram> HostedReady<Program> {
         }
     }
 
-    fn notify_file_hovered(
+    fn notify_files_hovered(
         &mut self,
         event_loop: &ActiveEventLoop,
         id: HostedWindowId,
-        path: PathBuf,
+        paths: Vec<PathBuf>,
     ) {
         let window_id = self.iced_window_id(id);
         let position = self.cursor_positions.get(&id).copied();
         let context = self.program_context();
-        let update = self.program.window_event(
+        let event = if paths.len() == 1 {
             HostedWindowEvent::FileHovered {
                 id,
                 window_id,
-                path,
+                path: paths.into_iter().next().expect("single hovered path"),
                 position,
-            },
-            &context,
-        );
+            }
+        } else {
+            HostedWindowEvent::FilesHovered {
+                id,
+                window_id,
+                paths,
+                position,
+            }
+        };
+        let update = self.program.window_event(event, &context);
         self.apply_program_update(event_loop, update);
     }
 
-    fn notify_file_dropped(
+    fn notify_files_dropped(
         &mut self,
         event_loop: &ActiveEventLoop,
         id: HostedWindowId,
-        path: PathBuf,
+        paths: Vec<PathBuf>,
+        position: Option<Point>,
     ) {
         let window_id = self.iced_window_id(id);
-        let position = self.cursor_positions.get(&id).copied();
         let context = self.program_context();
-        let update = self.program.window_event(
+        let event = if paths.len() == 1 {
             HostedWindowEvent::FileDropped {
                 id,
                 window_id,
-                path,
+                path: paths.into_iter().next().expect("single dropped path"),
                 position,
-            },
-            &context,
-        );
+            }
+        } else {
+            HostedWindowEvent::FilesDropped {
+                id,
+                window_id,
+                paths,
+                position,
+            }
+        };
+        let update = self.program.window_event(event, &context);
         self.apply_program_update(event_loop, update);
+    }
+
+    fn flush_file_drops(&mut self, event_loop: &ActiveEventLoop) {
+        for (id, batch) in std::mem::take(&mut self.pending_file_drops) {
+            self.hovered_files.remove(&id);
+            if !batch.paths.is_empty() {
+                self.notify_files_dropped(event_loop, id, batch.paths, batch.position);
+            }
+        }
     }
 
     fn notify_file_hover_cancelled(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
@@ -1562,6 +2156,31 @@ impl<Program: HostedProgram> HostedReady<Program> {
         self.apply_program_update(event_loop, update);
     }
 
+    fn notify_ime(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        ime: winit::event::Ime,
+    ) {
+        let event = match ime {
+            winit::event::Ime::Enabled => ImeEvent::Enabled,
+            winit::event::Ime::Disabled => ImeEvent::Disabled,
+            winit::event::Ime::Preedit(text, selection) => ImeEvent::Preedit { text, selection },
+            winit::event::Ime::Commit(text) => ImeEvent::Commit(text),
+        };
+        let window_id = self.iced_window_id(id);
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::Ime {
+                id,
+                window_id,
+                event,
+            },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
+    }
+
     fn ensure_ui(&mut self, id: HostedWindowId) {
         if id == HostedWindowId::PRIMARY {
             if self.ui.is_ui_dirty() {
@@ -1683,12 +2302,28 @@ impl<Program: HostedProgram> HostedReady<Program> {
                     }
                 }
             }
-            HostedWindowCommand::Close(id) => self.close_window(id),
+            HostedWindowCommand::Close(id) => self.close_window(event_loop, id),
             HostedWindowCommand::Move { id, position } => self.move_window(id, position),
             HostedWindowCommand::SetAlwaysOnTop { id, always_on_top } => {
                 self.set_window_always_on_top(id, always_on_top);
             }
             HostedWindowCommand::Focus(id) => self.focus_window(id),
+            HostedWindowCommand::SetTitle { id, title } => self.set_window_title(id, &title),
+            HostedWindowCommand::SetBounds {
+                id,
+                position,
+                width,
+                height,
+            } => self.set_window_bounds(id, position, width, height),
+            HostedWindowCommand::SetFullscreen { id, fullscreen } => {
+                self.set_window_fullscreen(id, fullscreen)
+            }
+            HostedWindowCommand::SetMinimized { id, minimized } => {
+                self.set_window_minimized(id, minimized)
+            }
+            HostedWindowCommand::SetMaximized { id, maximized } => {
+                self.set_window_maximized(event_loop, id, maximized)
+            }
             HostedWindowCommand::CapturePng {
                 id,
                 capture_id,
@@ -1909,9 +2544,36 @@ impl<Program: HostedProgram> HostedReady<Program> {
         id: HostedWindowId,
         settings: HostedWindowSettings,
     ) -> Result<HostedWindowEvent, String> {
+        if settings.modal {
+            let parent = settings
+                .parent
+                .ok_or_else(|| "modal window requires a parent".to_string())?;
+            if self.window(parent).is_none() {
+                return Err(format!("modal parent window {} does not exist", parent.0));
+            }
+            if self.active_modal_child(parent).is_some() {
+                return Err(format!(
+                    "modal parent window {} is already blocked",
+                    parent.0
+                ));
+            }
+        }
+        let mut attributes = window_attributes_for_event_loop(event_loop, &settings);
+        #[cfg(target_os = "windows")]
+        if settings.modal {
+            let parent = settings.parent.expect("validated modal parent");
+            let parent_window = self.window(parent).expect("validated modal parent window");
+            let handle = parent_window
+                .window_handle()
+                .map_err(|error| format!("failed to acquire modal owner handle: {error}"))?;
+            let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+                return Err("Windows modal owner is not an HWND".into());
+            };
+            attributes = attributes.with_owner_window(handle.hwnd.get());
+        }
         let window = Arc::new(
             event_loop
-                .create_window(window_attributes_for_event_loop(event_loop, &settings))
+                .create_window(attributes)
                 .map_err(|error| error.to_string())?,
         );
         if settings.title_bar_mode == HostedTitleBarMode::Custom {
@@ -1921,6 +2583,8 @@ impl<Program: HostedProgram> HostedReady<Program> {
             .graphics
             .create_surface(window.clone())
             .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "windows")]
+        let pen_hook = crate::windows_pen::WindowsPenHook::install(window.as_ref())?;
         let ui = hosted_ui_renderer(
             &self.graphics,
             surface.window(),
@@ -1934,10 +2598,14 @@ impl<Program: HostedProgram> HostedReady<Program> {
             settings.transparent_background,
         );
         let geometry = window_geometry(&window);
+        #[cfg(target_os = "windows")]
+        let modal_parent = settings.modal.then_some(settings.parent).flatten();
         self.window_ids.insert(window.id(), id);
         self.auxiliary.insert(
             id,
             HostedAuxiliary {
+                #[cfg(target_os = "windows")]
+                pen_hook,
                 surface,
                 ui,
                 iced_window_id,
@@ -1945,6 +2613,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 settings,
             },
         );
+        #[cfg(target_os = "windows")]
+        if let Some(parent) = modal_parent.and_then(|id| self.window(id)) {
+            parent.set_enable(false);
+        }
         window.request_redraw();
         Ok(HostedWindowEvent::Ready {
             id,
@@ -1953,15 +2625,38 @@ impl<Program: HostedProgram> HostedReady<Program> {
         })
     }
 
-    fn close_window(&mut self, id: HostedWindowId) {
+    fn close_window(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
         if id == HostedWindowId::PRIMARY {
             return;
         }
         #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
         self.detach_browsers_for_window(id);
         if let Some(host) = self.auxiliary.remove(&id) {
+            let window_id = host.iced_window_id;
+            #[cfg(target_os = "windows")]
+            if let Some(parent) = host
+                .settings
+                .modal
+                .then_some(host.settings.parent)
+                .flatten()
+                .and_then(|id| self.window(id))
+            {
+                parent.set_enable(true);
+                parent.focus_window();
+            }
             self.cursor_positions.remove(&id);
+            self.hovered_files.remove(&id);
+            self.pending_file_drops.remove(&id);
+            self.modifiers.remove(&id);
+            self.pointer_buttons.remove(&id);
+            self.active_touches.remove(&id);
+            self.primary_touches.remove(&id);
             self.window_ids.remove(&host.surface.window().id());
+            let context = self.program_context();
+            let update = self
+                .program
+                .window_event(HostedWindowEvent::Closed { id, window_id }, &context);
+            self.apply_program_update(event_loop, update);
         }
     }
 
@@ -1975,6 +2670,18 @@ impl<Program: HostedProgram> HostedReady<Program> {
         }
     }
 
+    fn set_window_title(&self, id: HostedWindowId, title: &str) {
+        if let Some(window) = self.window(id) {
+            window.set_title(title);
+        }
+    }
+
+    fn active_modal_child(&self, parent: HostedWindowId) -> Option<HostedWindowId> {
+        self.auxiliary.iter().find_map(|(id, host)| {
+            (host.settings.modal && host.settings.parent == Some(parent)).then_some(*id)
+        })
+    }
+
     fn move_window(&self, id: HostedWindowId, position: Point) {
         let Some(window) = self.window(id) else {
             return;
@@ -1982,6 +2689,46 @@ impl<Program: HostedProgram> HostedReady<Program> {
         window.set_outer_position(winit::dpi::Position::Logical(
             winit::dpi::LogicalPosition::new(f64::from(position.x), f64::from(position.y)),
         ));
+    }
+
+    fn set_window_bounds(&self, id: HostedWindowId, position: Point, width: f32, height: f32) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
+        window.set_outer_position(winit::dpi::Position::Logical(
+            winit::dpi::LogicalPosition::new(f64::from(position.x), f64::from(position.y)),
+        ));
+        let _ = window.request_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
+            f64::from(width.max(1.0)),
+            f64::from(height.max(1.0)),
+        )));
+    }
+
+    fn set_window_fullscreen(&self, id: HostedWindowId, fullscreen: bool) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
+        window.set_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)));
+    }
+
+    fn set_window_minimized(&self, id: HostedWindowId, minimized: bool) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
+        window.set_minimized(minimized);
+    }
+
+    fn set_window_maximized(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        maximized: bool,
+    ) {
+        let Some(window) = self.window(id).cloned() else {
+            return;
+        };
+        window.set_maximized(maximized);
+        self.notify_resized(event_loop, id);
     }
 
     fn set_window_always_on_top(&self, id: HostedWindowId, always_on_top: bool) {
@@ -2190,6 +2937,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
     }
 
     fn redraw_primary(&mut self, event_loop: &ActiveEventLoop) {
+        let frame_started = Instant::now();
         let mut passes = 0;
         let mut first_pass = true;
         let prepared = 'settle: loop {
@@ -2272,6 +3020,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let theme_mode = self.program.theme_mode();
         let colors = theme_mode.colors();
+        let prepared_at = Instant::now();
         let ui_frame = self.ui.present_prepared(
             prepared,
             &theme_mode.iced_theme(),
@@ -2285,11 +3034,23 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 view: &target,
             },
         );
+        let rendered_at = Instant::now();
         self.graphics.present(frame);
+        let presented_at = Instant::now();
         for message in ui_frame.messages {
             let _ = self.proxy.send_event(message);
         }
         let context = self.program_context();
+        self.program.frame_diagnostics(
+            HostedFrameMetrics {
+                window_id: HostedWindowId::PRIMARY,
+                prepare: prepared_at.duration_since(frame_started),
+                render_submit: rendered_at.duration_since(prepared_at),
+                present: presented_at.duration_since(rendered_at),
+                total: presented_at.duration_since(frame_started),
+            },
+            &context,
+        );
         let update =
             self.program
                 .window_frame_presented(HostedWindowId::PRIMARY, self.material, &context);
@@ -2297,6 +3058,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
     }
 
     fn redraw_auxiliary(&mut self, event_loop: &ActiveEventLoop, id: HostedWindowId) {
+        let frame_started = Instant::now();
         let mut passes = 0;
         let mut first_pass = true;
         let (prepared, material) = 'settle: loop {
@@ -2392,6 +3154,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let theme_mode = self.program.theme_mode();
         let colors = theme_mode.colors();
+        let prepared_at = Instant::now();
         let ui_frame = {
             let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
             host.ui.present_prepared(
@@ -2408,11 +3171,23 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 },
             )
         };
+        let rendered_at = Instant::now();
         self.graphics.present(frame);
+        let presented_at = Instant::now();
         for message in ui_frame.messages {
             let _ = self.proxy.send_event(message);
         }
         let context = self.program_context();
+        self.program.frame_diagnostics(
+            HostedFrameMetrics {
+                window_id: id,
+                prepare: prepared_at.duration_since(frame_started),
+                render_submit: rendered_at.duration_since(prepared_at),
+                present: presented_at.duration_since(rendered_at),
+                total: presented_at.duration_since(frame_started),
+            },
+            &context,
+        );
         let update = self.program.window_frame_presented(id, material, &context);
         self.apply_program_update(event_loop, update);
     }
@@ -2463,7 +3238,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 let mut rebuilt = HashMap::new();
                 let previous = std::mem::take(&mut self.auxiliary);
                 let mut failures = Vec::new();
-                for (id, host) in previous {
+                for (id, mut host) in previous {
                     let window = Arc::clone(host.surface.window());
                     match graphics.create_surface(window) {
                         Ok(surface) => {
@@ -2473,16 +3248,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
                                 surface.format(),
                                 surface.physical_size(),
                             );
-                            rebuilt.insert(
-                                id,
-                                HostedAuxiliary {
-                                    surface,
-                                    ui,
-                                    iced_window_id: host.iced_window_id,
-                                    material: host.material,
-                                    settings: host.settings.clone(),
-                                },
-                            );
+                            host.surface = surface;
+                            host.ui = ui;
+                            rebuilt.insert(id, host);
                         }
                         Err(error) => {
                             failures.push((id, host.surface.window().id(), error.to_string()))
@@ -2655,6 +3423,12 @@ fn should_request_redraw(
     }
 }
 
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
+}
+
 impl<Program: HostedProgram> Drop for HostedReady<Program> {
     fn drop(&mut self) {
         clear_system_material(self.graphics.window().as_ref());
@@ -2675,6 +3449,7 @@ fn program_context<Message: Send + 'static>(
         window_hidden,
         drawable: graphics.is_drawable(),
         surface_format: graphics.format(),
+        surface_alpha_mode: graphics.alpha_mode(),
     }
 }
 
@@ -2734,6 +3509,19 @@ fn normalized_scale_factor(scale_factor: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+fn blocks_for_modal(event: &WindowEvent) -> bool {
+    !matches!(
+        event,
+        WindowEvent::RedrawRequested
+            | WindowEvent::Resized(_)
+            | WindowEvent::Moved(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+            | WindowEvent::Occluded(_)
+            | WindowEvent::ThemeChanged(_)
+            | WindowEvent::Destroyed
+    )
 }
 
 fn material_for(
@@ -2936,11 +3724,12 @@ mod tests {
     use super::{
         HostedDisplayArea, HostedProgramUpdate, HostedRedraw, HostedTitleBarMode,
         HostedWindowEvent, HostedWindowId, HostedWindowPlacement, HostedWindowRole,
-        HostedWindowSettings, hosted_key_stroke, should_request_redraw, window_attributes,
-        window_background, window_level,
+        HostedWindowSettings, hosted_key_stroke, push_unique_path, should_request_redraw,
+        window_attributes, window_background, window_level,
     };
     use iced::{Point, Size};
     use iced_winit::winit;
+    use nana_ui_platform::ImeEvent;
     use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome};
     use std::path::PathBuf;
 
@@ -3026,6 +3815,59 @@ mod tests {
             }
             _ => unreachable!("constructed a file-drop event"),
         }
+    }
+
+    #[test]
+    fn file_drop_batch_preserves_order_and_deduplicates_paths() {
+        let first = PathBuf::from("C:/workspace/first.png");
+        let second = PathBuf::from("C:/workspace/second.png");
+        let mut paths = Vec::new();
+        push_unique_path(&mut paths, first.clone());
+        push_unique_path(&mut paths, second.clone());
+        push_unique_path(&mut paths, first.clone());
+        assert_eq!(paths, vec![first, second]);
+
+        let event = HostedWindowEvent::FilesDropped {
+            id: HostedWindowId(9),
+            window_id: iced::window::Id::unique(),
+            paths: paths.clone(),
+            position: Some(Point::new(12.0, 18.0)),
+        };
+        assert_eq!(event.id(), HostedWindowId(9));
+        match event {
+            HostedWindowEvent::FilesDropped {
+                paths: event_paths,
+                position,
+                ..
+            } => {
+                assert_eq!(event_paths, paths);
+                assert_eq!(position, Some(Point::new(12.0, 18.0)));
+            }
+            _ => unreachable!("constructed a file-drop batch event"),
+        }
+    }
+
+    #[test]
+    fn ime_event_preserves_window_and_preedit_selection() {
+        let event = HostedWindowEvent::Ime {
+            id: HostedWindowId(8),
+            window_id: iced::window::Id::unique(),
+            event: ImeEvent::Preedit {
+                text: "かな".into(),
+                selection: Some((3, 6)),
+            },
+        };
+        assert_eq!(event.id(), HostedWindowId(8));
+        let HostedWindowEvent::Ime { event, .. } = event else {
+            panic!("expected IME event");
+        };
+        assert_eq!(
+            event,
+            ImeEvent::Preedit {
+                text: "かな".into(),
+                selection: Some((3, 6)),
+            }
+        );
     }
 
     #[test]

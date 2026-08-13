@@ -826,11 +826,15 @@ impl DockController {
                 self.update(DockAction::CloseSurface(surface))
             }
             HostedWindowEvent::CloseRequested { .. }
+            | HostedWindowEvent::Closed { .. }
             | HostedWindowEvent::VisibilityChanged { .. }
             | HostedWindowEvent::FocusChanged { .. }
+            | HostedWindowEvent::Ime { .. }
             | HostedWindowEvent::FileHovered { .. }
+            | HostedWindowEvent::FilesHovered { .. }
             | HostedWindowEvent::FileDropped { .. }
             | HostedWindowEvent::FileHoverCancelled { .. }
+            | HostedWindowEvent::FilesDropped { .. }
             | HostedWindowEvent::KeyPressed { .. } => DockUpdate::default(),
         }
     }

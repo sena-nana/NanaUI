@@ -1,8 +1,8 @@
 //! Shared WGPU context for NanaUI hosted applications.
 
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use iced::Size;
 use iced_wgpu::wgpu;
@@ -18,6 +18,22 @@ pub struct HostedGpuResources {
 }
 
 impl HostedGpuResources {
+    /// Wrap an application-created adapter/device/queue as NanaUI's single
+    /// hosted GPU context. This does not request or duplicate any resource.
+    pub fn from_existing(
+        adapter: wgpu::Adapter,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+    ) -> Self {
+        let adapter_info = adapter.get_info();
+        Self {
+            adapter,
+            device,
+            queue,
+            adapter_info,
+        }
+    }
+
     pub fn adapter(&self) -> &wgpu::Adapter {
         &self.adapter
     }
@@ -50,6 +66,11 @@ impl HostedGpuSurface {
 
     pub const fn format(&self) -> wgpu::TextureFormat {
         self.format
+    }
+
+    /// Alpha composition mode selected from the native surface capabilities.
+    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.configuration.alpha_mode
     }
 
     pub fn physical_size(&self) -> Size<u32> {
@@ -137,7 +158,14 @@ pub struct HostedGpuContext {
     instance: wgpu::Instance,
     resources: HostedGpuResources,
     device_lost: Arc<AtomicBool>,
+    device_lost_report: Arc<Mutex<Option<HostedDeviceLost>>>,
     primary: HostedGpuSurface,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedDeviceLost {
+    pub reason: String,
+    pub message: String,
 }
 
 impl HostedGpuContext {
@@ -172,8 +200,16 @@ impl HostedGpuContext {
             .map_err(|error| HostedGpuError::Device(error.to_string()))?;
         let device_lost = Arc::new(AtomicBool::new(false));
         let device_lost_callback = Arc::clone(&device_lost);
-        device.set_device_lost_callback(move |_reason, _message| {
+        let device_lost_report = Arc::new(Mutex::new(None));
+        let device_lost_report_callback = Arc::clone(&device_lost_report);
+        device.set_device_lost_callback(move |reason, message| {
             device_lost_callback.store(true, Ordering::Release);
+            if let Ok(mut report) = device_lost_report_callback.lock() {
+                *report = Some(HostedDeviceLost {
+                    reason: format!("{reason:?}"),
+                    message,
+                });
+            }
         });
         let adapter_info = adapter.get_info();
         let resources = HostedGpuResources {
@@ -188,6 +224,7 @@ impl HostedGpuContext {
             instance,
             resources,
             device_lost,
+            device_lost_report,
             primary,
         })
     }
@@ -206,6 +243,11 @@ impl HostedGpuContext {
 
     pub const fn format(&self) -> wgpu::TextureFormat {
         self.primary.format()
+    }
+
+    /// Alpha composition mode used by the primary native surface.
+    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.primary.alpha_mode()
     }
 
     pub fn physical_size(&self) -> Size<u32> {
@@ -231,6 +273,11 @@ impl HostedGpuContext {
 
     pub fn take_device_lost(&self) -> bool {
         self.device_lost.swap(false, Ordering::AcqRel)
+    }
+
+    pub fn take_device_lost_report(&self) -> Option<HostedDeviceLost> {
+        self.device_lost.store(false, Ordering::Release);
+        self.device_lost_report.lock().ok()?.take()
     }
 
     pub fn create_surface(
