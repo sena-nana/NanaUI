@@ -297,7 +297,7 @@ where
         }),
     ];
     let cursor = mouse::Cursor::Available(pointer);
-    let mut messages = Vec::new();
+    let mut messages = shell::Bus::new();
     let window = window::Headless;
     let waker = shell::Waker::noop();
     let started = Instant::now();

@@ -982,7 +982,7 @@ fn snapshot_with_cursor<Message>(
         )],
         cursor,
         renderer,
-        &mut Vec::new(),
+        &mut shell::Bus::new(),
     );
     interface.draw(
         renderer,
