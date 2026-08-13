@@ -134,6 +134,158 @@ where
 
 pub use nana_ui_core::AnchoredMenuPlacement;
 
+/// A logical window-space anchor captured by [`ContextMenuTrigger`].
+///
+/// The position is intentionally opaque so pointer-triggered context menus use
+/// the same capture and placement contract instead of reconstructing cursor
+/// coordinates in consuming applications.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContextMenuAnchor {
+    position: Point,
+}
+
+/// Captures a secondary-button press over `content` and reports its logical
+/// window-space position as a [`ContextMenuAnchor`].
+pub struct ContextMenuTrigger<'a, Message> {
+    content: Element<'a, Message>,
+    on_open: Rc<dyn Fn(ContextMenuAnchor) -> Message + 'a>,
+}
+
+impl<'a, Message> ContextMenuTrigger<'a, Message>
+where
+    Message: 'a,
+{
+    pub fn new(
+        content: impl Into<Element<'a, Message>>,
+        on_open: impl Fn(ContextMenuAnchor) -> Message + 'a,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            on_open: Rc::new(on_open),
+        }
+    }
+
+    pub fn view(self) -> Element<'a, Message> {
+        Element::new(self)
+    }
+}
+
+fn context_menu_anchor(
+    event: &Event,
+    cursor: mouse::Cursor,
+    bounds: Rectangle,
+) -> Option<ContextMenuAnchor> {
+    if !matches!(
+        event,
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+    ) {
+        return None;
+    }
+    cursor
+        .position_over(bounds)
+        .map(|position| ContextMenuAnchor { position })
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for ContextMenuTrigger<'_, Message> {
+    fn tag(&self) -> widget::tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> widget::tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn diff(&mut self, tree: &mut widget::Tree) {
+        self.content.as_widget_mut().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        if let Some(anchor) = context_menu_anchor(event, cursor, layout.bounds()) {
+            shell.publish((self.on_open)(anchor));
+            shell.capture_event();
+            return;
+        }
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn overlay<'a>(
+        &'a mut self,
+        tree: &'a mut widget::Tree,
+        layout: Layout<'a>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'a, Message, Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AnchoredMenuPosition {
     pub anchor: Point,
@@ -377,6 +529,24 @@ where
             on_event: Rc::new(on_event),
             tokens: theme.into(),
         }
+    }
+
+    /// Builds a pointer-triggered context menu at the position captured by
+    /// [`ContextMenuTrigger`].
+    pub fn at_pointer(
+        items: &'a [ContextMenuItem<'a, T>],
+        anchor: ContextMenuAnchor,
+        viewport: Size,
+        on_event: impl Fn(ContextMenuEvent<T>) -> Message + 'a,
+        theme: impl Into<ThemeTokens>,
+    ) -> Self {
+        Self::new(
+            items,
+            AnchoredMenuPosition::new(anchor.position),
+            viewport,
+            on_event,
+            theme,
+        )
     }
 
     pub fn search(mut self, query: &'a str, searchable: bool) -> Self {
@@ -1106,7 +1276,8 @@ mod tests {
     use super::{
         ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuInput,
         ContextMenuItem, ControlSize, MENU_SURFACE_PADDING, SubmenuAnchor, collect_matches,
-        context_menu_input, context_menu_panel_size, resolve_submenu_position, submenu_hover_path,
+        context_menu_anchor, context_menu_input, context_menu_panel_size, resolve_submenu_position,
+        submenu_hover_path,
     };
     use crate::theme::ThemeModeExt;
     use iced::advanced::widget::{self, Widget};
@@ -1119,6 +1290,55 @@ mod tests {
             .placement(AnchoredMenuPlacement::BottomEnd)
             .resolve(Size::new(180.0, 120.0), Size::new(400.0, 300.0));
         assert_eq!(position, Point::new(215.0, 180.0));
+    }
+
+    #[test]
+    fn context_menu_anchor_is_the_secondary_press_position_inside_the_trigger() {
+        let bounds = Rectangle::new(Point::new(20.0, 30.0), Size::new(120.0, 80.0));
+        let secondary = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right));
+        let primary = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+
+        let anchor = context_menu_anchor(
+            &secondary,
+            mouse::Cursor::Available(Point::new(72.0, 64.0)),
+            bounds,
+        );
+        assert_eq!(
+            anchor.map(|anchor| anchor.position),
+            Some(Point::new(72.0, 64.0))
+        );
+        assert_eq!(
+            context_menu_anchor(
+                &secondary,
+                mouse::Cursor::Available(Point::new(12.0, 18.0)),
+                bounds,
+            ),
+            None
+        );
+        assert_eq!(
+            context_menu_anchor(
+                &primary,
+                mouse::Cursor::Available(Point::new(72.0, 64.0)),
+                bounds,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn pointer_anchor_is_the_menu_origin_when_the_viewport_has_room() {
+        let anchor = context_menu_anchor(
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            mouse::Cursor::Available(Point::new(72.0, 64.0)),
+            Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0)),
+        )
+        .expect("secondary press inside trigger");
+
+        assert_eq!(
+            AnchoredMenuPosition::new(anchor.position)
+                .resolve(Size::new(180.0, 120.0), Size::new(400.0, 300.0)),
+            Point::new(72.0, 64.0)
+        );
     }
 
     #[test]

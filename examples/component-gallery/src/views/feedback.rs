@@ -32,12 +32,16 @@ impl GalleryState {
                 .padding([0.0, UI_METRICS.control_padding_x])
                 .on_press(GalleryMessage::ToggleDialog)
                 .style(button_style(colors, ButtonKind::Primary)),
-                button(text("更多操作").size(11))
-                    .width(Length::Fill)
-                    .height(Length::Fixed(control_height))
-                    .padding([0.0, UI_METRICS.control_padding_x])
-                    .on_press(GalleryMessage::ToggleContextMenu)
-                    .style(button_style(colors, ButtonKind::Subtle)),
+                ContextMenuTrigger::new(
+                    container(text("右键打开更多操作").size(11))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(control_height))
+                        .padding([0.0, UI_METRICS.control_padding_x])
+                        .align_y(iced::alignment::Vertical::Center)
+                        .style(panel_style(colors)),
+                    GalleryMessage::OpenContextMenu,
+                )
+                .view(),
                 button(text("查看图片").size(11))
                     .width(Length::Fill)
                     .height(Length::Fixed(control_height))
@@ -145,18 +149,29 @@ impl GalleryState {
 
     pub(super) fn context_menu(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let (width, height) = self.active_workspace().viewport_geometry().logical_size;
-        ContextMenuHost::new(
-            self.context_items(),
-            AnchoredMenuPosition::new(Point::new(width - 24.0, 112.0))
-                .placement(AnchoredMenuPlacement::BottomEnd),
-            Size::new(width, height),
-            GalleryMessage::ContextMenu,
-            colors,
-        )
-        .search(&self.context_query, true)
-        .active_path(&self.context_path)
-        .pending(self.menu_confirmation.pending())
-        .view()
+        let viewport = Size::new(width, height);
+        let menu = if let Some(anchor) = self.context_anchor {
+            ContextMenuHost::at_pointer(
+                self.context_items(),
+                anchor,
+                viewport,
+                GalleryMessage::ContextMenu,
+                colors,
+            )
+        } else {
+            ContextMenuHost::new(
+                self.context_items(),
+                AnchoredMenuPosition::new(Point::new(width - 24.0, 112.0))
+                    .placement(AnchoredMenuPlacement::BottomEnd),
+                viewport,
+                GalleryMessage::ContextMenu,
+                colors,
+            )
+        };
+        menu.search(&self.context_query, true)
+            .active_path(&self.context_path)
+            .pending(self.menu_confirmation.pending())
+            .view()
     }
 
     pub(super) fn dialog(&self, colors: Colors) -> Element<'_, GalleryMessage> {
