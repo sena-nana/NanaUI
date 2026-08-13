@@ -186,6 +186,7 @@ pub struct Input<'a, Message> {
     value: Cow<'a, str>,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Message>,
+    id: Option<advanced_widget::Id>,
     size: ControlSize,
     padding: Option<Padding>,
     line_height: Option<f32>,
@@ -204,6 +205,7 @@ where
             value: value.into(),
             on_input: None,
             on_submit: None,
+            id: None,
             size: ControlSize::Medium,
             padding: None,
             line_height: None,
@@ -220,6 +222,12 @@ where
 
     pub fn on_submit(mut self, on_submit: Message) -> Self {
         self.on_submit = Some(on_submit);
+        self
+    }
+
+    /// Sets a stable widget ID for focus-aware host actions.
+    pub fn id(mut self, id: impl Into<advanced_widget::Id>) -> Self {
+        self.id = Some(id.into());
         self
     }
 
@@ -272,6 +280,11 @@ where
             )))
             .width(Length::Fill)
             .style(text_input_style(tokens, self.invalid));
+        let field = if let Some(id) = self.id {
+            field.id(id)
+        } else {
+            field
+        };
         if self.disabled {
             return field.into();
         }

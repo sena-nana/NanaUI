@@ -582,6 +582,7 @@ pub enum HostedWindowEvent {
         window_id: iced::window::Id,
         stroke: KeyStroke,
         repeat: bool,
+        focused_widget: Option<iced::advanced::widget::Id>,
     },
 }
 
@@ -1335,24 +1336,31 @@ impl<Program: HostedProgram> HostedReady<Program> {
             }
             event => self.push_window_event(id, event),
         }
-        if let Some((stroke, repeat)) = key_press {
-            self.notify_key_pressed(event_loop, id, stroke, repeat);
+        if let Some((stroke, repeat, focused_widget)) = key_press {
+            self.notify_key_pressed(event_loop, id, stroke, repeat, focused_widget);
         }
     }
 
-    fn key_press(&self, id: HostedWindowId, event: &WindowEvent) -> Option<(KeyStroke, bool)> {
+    fn key_press(
+        &mut self,
+        id: HostedWindowId,
+        event: &WindowEvent,
+    ) -> Option<(KeyStroke, bool, Option<iced::advanced::widget::Id>)> {
         let WindowEvent::KeyboardInput { event, .. } = event else {
             return None;
         };
         if event.state != ElementState::Pressed {
             return None;
         }
-        let modifiers = if id == HostedWindowId::PRIMARY {
-            self.ui.modifiers()
+        let ui = if id == HostedWindowId::PRIMARY {
+            &mut self.ui
         } else {
-            self.auxiliary.get(&id)?.ui.modifiers()
+            &mut self.auxiliary.get_mut(&id)?.ui
         };
-        hosted_key_stroke(&event.logical_key, modifiers).map(|stroke| (stroke, event.repeat))
+        let modifiers = ui.modifiers();
+        let focused_widget = ui.focused_widget();
+        hosted_key_stroke(&event.logical_key, modifiers)
+            .map(|stroke| (stroke, event.repeat, focused_widget))
     }
 
     fn window_scale_factor(&self, id: HostedWindowId) -> Option<f32> {
@@ -1423,6 +1431,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
         id: HostedWindowId,
         stroke: KeyStroke,
         repeat: bool,
+        focused_widget: Option<iced::advanced::widget::Id>,
     ) {
         let window_id = self.iced_window_id(id);
         let context = self.program_context();
@@ -1432,6 +1441,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 window_id,
                 stroke,
                 repeat,
+                focused_widget,
             },
             &context,
         );
