@@ -49,8 +49,8 @@
 pub use nana_ui_core::box_layout::{
     AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,
     GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
-    LineHeightSpec, OverflowSpec, PaddingSpec, ParentBox, PositionSpec, ViewportAxis,
-    resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
+    LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
+    ViewportAxis, resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
@@ -932,6 +932,18 @@ impl LayoutStyleCss for LayoutStyle {
                     self.z_index = Some(z);
                 }
             }
+            "transform" => {
+                if val.trim().eq_ignore_ascii_case("none") {
+                    self.transform = None;
+                    self.unsupported_transform = None;
+                } else if let Some(transform) = parse_paint_transform(val) {
+                    self.transform = (!transform.is_identity()).then_some(transform);
+                    self.unsupported_transform = None;
+                } else {
+                    self.transform = None;
+                    self.unsupported_transform = Some(val.trim().to_owned());
+                }
+            }
             "top" => self.offset_top = parse_inset_length(val),
             "right" => self.offset_right = parse_inset_length(val),
             "bottom" => self.offset_bottom = parse_inset_length(val),
@@ -1160,6 +1172,218 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
         }
+    }
+}
+
+/// Parse CSS 2D affine transforms. Function order is preserved, so
+/// `scale(2) translate(4px)` produces an 8px translation.
+fn parse_paint_transform(raw: &str) -> Option<PaintTransform> {
+    let mut rest = raw.trim();
+    let mut result = PaintTransform::default();
+    while !rest.is_empty() {
+        let open = rest.find('(')?;
+        let name = rest[..open].trim().to_ascii_lowercase();
+        let close = rest[open + 1..].find(')')? + open + 1;
+        let args = rest[open + 1..close]
+            .split(|ch: char| ch == ',' || ch.is_whitespace())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        match name.as_str() {
+            "translate" => {
+                if !(1..=2).contains(&args.len()) {
+                    return None;
+                }
+                let x = parse_transform_length(args.first().copied()?)?;
+                let y = match args.get(1).copied() {
+                    Some(value) => parse_transform_length(value)?,
+                    None => 0.0,
+                };
+                result = result.then(translation(x, y));
+            }
+            "translatex" => {
+                if args.len() != 1 {
+                    return None;
+                }
+                result = result.then(translation(
+                    parse_transform_length(args.first().copied()?)?,
+                    0.0,
+                ));
+            }
+            "translatey" => {
+                if args.len() != 1 {
+                    return None;
+                }
+                result = result.then(translation(
+                    0.0,
+                    parse_transform_length(args.first().copied()?)?,
+                ));
+            }
+            "translate3d" if args.len() == 3 => {
+                let z = parse_transform_length(args[2])?;
+                if z != 0.0 {
+                    return None;
+                }
+                result = result.then(translation(
+                    parse_transform_length(args[0])?,
+                    parse_transform_length(args[1])?,
+                ));
+            }
+            "scale" | "scalex" | "scaley" => {
+                let valid_len = if name == "scale" {
+                    (1..=2).contains(&args.len())
+                } else {
+                    args.len() == 1
+                };
+                if !valid_len {
+                    return None;
+                }
+                let x = args.first()?.parse::<f32>().ok()?;
+                let (x, y) = match name.as_str() {
+                    "scalex" => (x, 1.0),
+                    "scaley" => (1.0, x),
+                    _ => (
+                        x,
+                        match args.get(1) {
+                            Some(value) => value.parse::<f32>().ok()?,
+                            None => x,
+                        },
+                    ),
+                };
+                result = result.then(scaling(x, y));
+            }
+            "scale3d" if args.len() == 3 => {
+                let x = args[0].parse::<f32>().ok()?;
+                let y = args[1].parse::<f32>().ok()?;
+                let z = args[2].parse::<f32>().ok()?;
+                if (z - 1.0).abs() > 0.0001 {
+                    return None;
+                }
+                result = result.then(scaling(x, y));
+            }
+            "matrix" if args.len() == 6 => {
+                let values = args
+                    .iter()
+                    .map(|value| value.parse::<f32>().ok())
+                    .collect::<Option<Vec<_>>>()?;
+                result = result.then(PaintTransform {
+                    a: values[0],
+                    b: values[1],
+                    c: values[2],
+                    d: values[3],
+                    e: values[4],
+                    f: values[5],
+                });
+            }
+            "rotate" | "rotatez" => {
+                if args.len() != 1 {
+                    return None;
+                }
+                let angle = parse_transform_angle(args.first().copied()?)?;
+                let (sin, cos) = angle.sin_cos();
+                result = result.then(PaintTransform {
+                    a: cos,
+                    b: sin,
+                    c: -sin,
+                    d: cos,
+                    ..PaintTransform::default()
+                });
+            }
+            "skew" => {
+                if !(1..=2).contains(&args.len()) {
+                    return None;
+                }
+                let x = parse_transform_angle(args.first().copied()?)?.tan();
+                let y = match args.get(1).copied() {
+                    Some(value) => parse_transform_angle(value)?,
+                    None => 0.0,
+                }
+                .tan();
+                result = result.then(PaintTransform {
+                    b: y,
+                    c: x,
+                    ..PaintTransform::default()
+                });
+            }
+            "skewx" => {
+                if args.len() != 1 {
+                    return None;
+                }
+                result = result.then(PaintTransform {
+                    c: parse_transform_angle(args.first().copied()?)?.tan(),
+                    ..PaintTransform::default()
+                });
+            }
+            "skewy" => {
+                if args.len() != 1 {
+                    return None;
+                }
+                result = result.then(PaintTransform {
+                    b: parse_transform_angle(args.first().copied()?)?.tan(),
+                    ..PaintTransform::default()
+                });
+            }
+            _ => return None,
+        }
+        rest = rest[close + 1..].trim_start();
+    }
+    [result.a, result.b, result.c, result.d, result.e, result.f]
+        .into_iter()
+        .all(f32::is_finite)
+        .then_some(result)
+}
+
+fn translation(x: f32, y: f32) -> PaintTransform {
+    PaintTransform {
+        e: x,
+        f: y,
+        ..PaintTransform::default()
+    }
+}
+
+fn scaling(x: f32, y: f32) -> PaintTransform {
+    PaintTransform {
+        a: x,
+        d: y,
+        ..PaintTransform::default()
+    }
+}
+
+fn parse_transform_angle(raw: &str) -> Option<f32> {
+    let raw = raw.trim().to_ascii_lowercase();
+    if let Some(value) = raw.strip_suffix("deg") {
+        value.trim().parse::<f32>().ok().map(f32::to_radians)
+    } else if let Some(value) = raw.strip_suffix("rad") {
+        value.trim().parse().ok()
+    } else if let Some(value) = raw.strip_suffix("turn") {
+        value
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|turns| turns * std::f32::consts::TAU)
+    } else if let Some(value) = raw.strip_suffix("grad") {
+        value
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|grads| grads * std::f32::consts::PI / 200.0)
+    } else if raw == "0" || raw == "+0" || raw == "-0" {
+        Some(0.0)
+    } else {
+        None
+    }
+}
+
+fn parse_transform_length(raw: &str) -> Option<f32> {
+    if raw == "0" || raw == "+0" || raw == "-0" {
+        Some(0.0)
+    } else if let Some(value) = raw
+        .trim()
+        .strip_suffix("px")
+        .or_else(|| raw.trim().strip_suffix("PX"))
+    {
+        value.trim().parse().ok()
+    } else {
+        parse_css_length_px(raw, None)
     }
 }
 
@@ -1733,11 +1957,13 @@ thread_local! {
     /// the parent's max during Shrink measurement and collapse `1fr`.
     /// `Some(true)` = column/block (demote height); `Some(false)` = row/inline
     /// (demote width); `None` = off.
+    #[cfg(feature = "iced-view")]
     static INTRINSIC_AUTO_TRACK_VERTICAL: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
     /// Non-auto grid track item stretch: `height:auto`/`width:auto` items fill
     /// the grid area so nested `height:100%` / `flex:1` see a definite CB.
     /// `Some(true)` = stretch height (row tracks); `Some(false)` = stretch width.
+    #[cfg(feature = "iced-view")]
     static GRID_ITEM_STRETCH_MAIN_VERTICAL: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
     /// Prefer `light-dark()` dark branch when true (document `data-theme=dark`).
@@ -1789,6 +2015,7 @@ pub fn active_viewport() -> Option<(f32, f32)> {
 
 /// Run `f` while nested Fill/% on the auto-track main axis demote to intrinsic.
 /// `vertical = true` demotes height (column tracks); `false` demotes width.
+#[cfg(feature = "iced-view")]
 pub fn with_intrinsic_auto_track<R>(vertical: bool, f: impl FnOnce() -> R) -> R {
     INTRINSIC_AUTO_TRACK_VERTICAL.with(|cell| {
         let previous = cell.replace(Some(vertical));
@@ -1799,12 +2026,14 @@ pub fn with_intrinsic_auto_track<R>(vertical: bool, f: impl FnOnce() -> R) -> R 
 }
 
 /// `Some(true)` demote height Fill; `Some(false)` demote width Fill; `None` off.
+#[cfg(feature = "iced-view")]
 pub fn intrinsic_auto_track_vertical() -> Option<bool> {
     INTRINSIC_AUTO_TRACK_VERTICAL.with(|cell| cell.get())
 }
 
 /// Run `f` while `height:auto` / `width:auto` grid items stretch into their
 /// non-auto track (CSS default `align/justify-items: stretch`).
+#[cfg(feature = "iced-view")]
 pub fn with_grid_item_stretch_main<R>(vertical: bool, f: impl FnOnce() -> R) -> R {
     GRID_ITEM_STRETCH_MAIN_VERTICAL.with(|cell| {
         let previous = cell.replace(Some(vertical));
@@ -1819,6 +2048,7 @@ pub fn with_grid_item_stretch_main<R>(vertical: bool, f: impl FnOnce() -> R) -> 
 /// Stretch applies only to the grid item itself (fill the track). Leaving the
 /// TLS set while recursively building children made nested `height:auto` rows
 /// (card headings) expand to the track height and crush sibling charts.
+#[cfg(feature = "iced-view")]
 pub fn with_grid_item_stretch_cleared<R>(f: impl FnOnce() -> R) -> R {
     GRID_ITEM_STRETCH_MAIN_VERTICAL.with(|cell| {
         let previous = cell.replace(None);
@@ -1829,6 +2059,7 @@ pub fn with_grid_item_stretch_cleared<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// `Some(true)` stretch height; `Some(false)` stretch width; `None` off.
+#[cfg(feature = "iced-view")]
 pub fn grid_item_stretch_main_vertical() -> Option<bool> {
     GRID_ITEM_STRETCH_MAIN_VERTICAL.with(|cell| cell.get())
 }
@@ -2049,6 +2280,7 @@ fn data_theme_constraint(sel: &str) -> Option<String> {
 ///
 /// Prefer [`collect_document_css_custom_properties`] for inheritance bases; this
 /// flat scrape remains for tests / legacy callers.
+#[cfg(test)]
 pub fn collect_css_custom_properties(css: &str) -> std::collections::BTreeMap<String, String> {
     let stripped = strip_css_comments_local(css);
     let mut map = std::collections::BTreeMap::new();
@@ -3452,6 +3684,36 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(content.align_content, JustifySpec::Center);
         assert_eq!(content.justify_content, JustifySpec::Center);
         assert_eq!(content.align_items, AlignSpec::Start);
+    }
+
+    #[test]
+    fn paint_transform_preserves_order_and_supports_common_affine_forms() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("transform: scale(2) translate(4px, -3px)", None, None);
+        assert_eq!(
+            layout.transform,
+            Some(PaintTransform {
+                a: 2.0,
+                b: 0.0,
+                c: 0.0,
+                d: 2.0,
+                e: 8.0,
+                f: -6.0,
+            })
+        );
+        assert_eq!(layout.unsupported_transform, None);
+
+        layout.apply_css_text(
+            "transform: rotate(90deg) scale(2, -3) skewX(10deg)",
+            None,
+            None,
+        );
+        let transform = layout.transform.expect("2D affine transform");
+        assert!(transform.a.abs() < 1e-5);
+        assert!((transform.b - 2.0).abs() < 1e-5);
+        assert!((transform.c - 3.0).abs() < 1e-5);
+        assert!((transform.d - 2.0 * 10_f32.to_radians().tan()).abs() < 1e-5);
+        assert_eq!(layout.unsupported_transform, None);
     }
 
     #[test]

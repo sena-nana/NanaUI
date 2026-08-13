@@ -85,7 +85,9 @@ pub fn resolve_kind_from_hints(
         "progress" => WidgetKind::Progress,
         "li" => WidgetKind::ListItem,
         // Lucide / <i> glyphs stay Icon; structural <svg> charts keep children.
-        "img" | "i" => WidgetKind::Icon,
+        // Raster <img> nodes use the generic surface path; <i> remains an icon.
+        "img" => WidgetKind::Box,
+        "i" => WidgetKind::Icon,
         "svg" | "g" => {
             // Lucide Vue stamps `lucide lucide-<name>` on the root <svg>.
             if class

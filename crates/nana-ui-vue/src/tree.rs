@@ -29,6 +29,26 @@ impl NodeHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentId(pub u64);
 
+/// Number of node ids reserved for each Vue document.
+///
+/// Handles stay exactly representable by JavaScript `Number` while allowing a
+/// single V8 context to route nodes from independent window documents without
+/// an engine-side object wrapper. Document 1 deliberately keeps the historical
+/// `1 = html`, `2 = body` handles; document N uses `(N - 1) * 2^32 + local`.
+pub const NODE_HANDLE_DOCUMENT_STRIDE: u64 = 1 << 32;
+
+impl DocumentId {
+    pub fn node_base(self) -> u64 {
+        self.0
+            .saturating_sub(1)
+            .saturating_mul(NODE_HANDLE_DOCUMENT_STRIDE)
+    }
+
+    pub fn from_node(handle: NodeHandle) -> Self {
+        Self(handle.0 / NODE_HANDLE_DOCUMENT_STRIDE + 1)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomNodeKind {
     Element,
@@ -61,6 +81,7 @@ pub struct LayoutBox {
 #[derive(Debug, Default)]
 pub struct LayoutBoxStore {
     boxes: Mutex<HashMap<u64, LayoutBox>>,
+    transforms: Mutex<HashMap<u64, (LayoutBox, [f32; 6])>>,
 }
 
 impl LayoutBoxStore {
@@ -71,6 +92,9 @@ impl LayoutBoxStore {
     /// Drop prior-frame entries before rebuilding the iced element tree.
     pub fn begin_frame(&self) {
         if let Ok(mut guard) = self.boxes.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.transforms.lock() {
             guard.clear();
         }
     }
@@ -87,6 +111,95 @@ impl LayoutBoxStore {
                     height,
                 },
             );
+        }
+        if let Ok(mut guard) = self.transforms.lock() {
+            guard.remove(&handle.0);
+        }
+    }
+
+    pub fn record_transformed(
+        &self,
+        handle: NodeHandle,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        affine: [f32; 6],
+    ) {
+        let source = LayoutBox {
+            handle,
+            x,
+            y,
+            width,
+            height,
+        };
+        let transformed = transform_layout_box(source, affine);
+        if let Ok(mut guard) = self.boxes.lock() {
+            guard.insert(handle.0, transformed);
+        }
+        if let Ok(mut guard) = self.transforms.lock() {
+            guard.insert(handle.0, (source, affine));
+        }
+    }
+
+    pub fn contains_point(&self, handle: NodeHandle, x: f32, y: f32) -> bool {
+        let transformed = self
+            .transforms
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&handle.0).copied());
+        let Some((source, affine)) = transformed else {
+            return self.get(handle).is_some_and(|box_| {
+                x >= box_.x && y >= box_.y && x < box_.x + box_.width && y < box_.y + box_.height
+            });
+        };
+        inverse_affine_point(x, y, affine).is_some_and(|(local_x, local_y)| {
+            local_x >= source.x
+                && local_y >= source.y
+                && local_x < source.x + source.width
+                && local_y < source.y + source.height
+        })
+    }
+
+    pub fn local_point(&self, handle: NodeHandle, x: f32, y: f32) -> Option<(f32, f32)> {
+        let transformed = self
+            .transforms
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&handle.0).copied());
+        match transformed {
+            Some((source, affine)) => {
+                inverse_affine_point(x, y, affine).map(|(px, py)| (px - source.x, py - source.y))
+            }
+            None => self.get(handle).map(|box_| (x - box_.x, y - box_.y)),
+        }
+    }
+
+    pub fn translate(&self, handle: NodeHandle, dx: f32, dy: f32) -> Option<LayoutBox> {
+        let transformed = self
+            .transforms
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&handle.0).copied());
+        if let Some((mut source, mut affine)) = transformed {
+            source.x += dx;
+            source.y += dy;
+            affine[4] += dx;
+            affine[5] += dy;
+            let box_ = transform_layout_box(source, affine);
+            if let Ok(mut boxes) = self.boxes.lock() {
+                boxes.insert(handle.0, box_);
+            }
+            if let Ok(mut transforms) = self.transforms.lock() {
+                transforms.insert(handle.0, (source, affine));
+            }
+            Some(box_)
+        } else {
+            let mut box_ = self.get(handle)?;
+            box_.x += dx;
+            box_.y += dy;
+            self.record(handle, box_.x, box_.y, box_.width, box_.height);
+            Some(box_)
         }
     }
 
@@ -114,6 +227,47 @@ impl LayoutBoxStore {
             guard.iter().map(|(&id, b)| (NodeHandle(id), *b)).collect();
         out.sort_by_key(|(h, _)| h.0);
         out
+    }
+}
+
+fn inverse_affine_point(x: f32, y: f32, [a, b, c, d, e, f]: [f32; 6]) -> Option<(f32, f32)> {
+    let determinant = a * d - b * c;
+    if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
+        return None;
+    }
+    let px = x - e;
+    let py = y - f;
+    Some((
+        (d * px - c * py) / determinant,
+        (-b * px + a * py) / determinant,
+    ))
+}
+
+fn transform_layout_box(source: LayoutBox, [a, b, c, d, e, f]: [f32; 6]) -> LayoutBox {
+    let corners = [
+        (source.x, source.y),
+        (source.x + source.width, source.y),
+        (source.x, source.y + source.height),
+        (source.x + source.width, source.y + source.height),
+    ];
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for (x, y) in corners {
+        let tx = a * x + c * y + e;
+        let ty = b * x + d * y + f;
+        min_x = min_x.min(tx);
+        min_y = min_y.min(ty);
+        max_x = max_x.max(tx);
+        max_y = max_y.max(ty);
+    }
+    LayoutBox {
+        handle: source.handle,
+        x: min_x,
+        y: min_y,
+        width: (max_x - min_x).max(0.0),
+        height: (max_y - min_y).max(0.0),
     }
 }
 
@@ -227,24 +381,28 @@ impl NanaTreeDocument {
         let logical_width = physical_width as f32 / scale;
         let logical_height = physical_height as f32 / scale;
         let mut nodes = HashMap::new();
-        // 1 = html, 2 = body (mount)
+        let node_base = id.node_base();
+        let html_root = node_base + 1;
+        let mount_root = node_base + 2;
+        // Document 1: 1 = html, 2 = body. Auxiliary documents preserve the
+        // same local ids inside their globally unique 2^32 namespace.
         nodes.insert(
-            1,
+            html_root,
             Node {
                 parent: None,
                 data: NodeData::Element {
                     tag: "html".into(),
                     namespace: ElementNamespace::Html,
                     attrs: HashMap::new(),
-                    children: vec![2],
+                    children: vec![mount_root],
                 },
                 scope_id: None,
             },
         );
         nodes.insert(
-            2,
+            mount_root,
             Node {
-                parent: Some(1),
+                parent: Some(html_root),
                 data: NodeData::Element {
                     tag: "body".into(),
                     namespace: ElementNamespace::Html,
@@ -257,9 +415,9 @@ impl NanaTreeDocument {
         let mut doc = Self {
             id,
             nodes,
-            next_id: 3,
-            html_root: NodeHandle(1),
-            mount_root: NodeHandle(2),
+            next_id: node_base + 3,
+            html_root: NodeHandle(html_root),
+            mount_root: NodeHandle(mount_root),
             event_flags: HashSet::new(),
             gpu_slots: HashMap::new(),
             stylesheets: Vec::new(),
@@ -974,10 +1132,16 @@ impl NanaTreeDocument {
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeHandle> {
-        let iced = shared_layout_box_store().snapshot();
+        let layout_store = shared_layout_box_store();
+        let iced = layout_store.snapshot();
         let mut best: Option<(f32, NodeHandle)> = None;
         let mut consider = |box_: &LayoutBox| {
-            if x >= box_.x && y >= box_.y && x < box_.x + box_.width && y < box_.y + box_.height {
+            let contains = if layout_store.get(box_.handle).is_some() {
+                layout_store.contains_point(box_.handle, x, y)
+            } else {
+                x >= box_.x && y >= box_.y && x < box_.x + box_.width && y < box_.y + box_.height
+            };
+            if contains {
                 // Prefer deepest (highest y among overlaps, then highest id).
                 let score = box_.y + box_.handle.0 as f32 * 0.0001;
                 if best.map(|(s, _)| score >= s).unwrap_or(true) {
@@ -1685,5 +1849,22 @@ mod tests {
             doc.hit_event_target(box_.x + 1.0, box_.y + 1.0, "click"),
             Some(btn)
         );
+    }
+
+    #[test]
+    fn transformed_layout_box_uses_inverse_affine_hit_testing() {
+        let store = LayoutBoxStore::new();
+        let node = NodeHandle(991);
+        let sin = std::f32::consts::FRAC_1_SQRT_2;
+        store.record_transformed(node, 0.0, 0.0, 4.0, 2.0, [sin, sin, -sin, sin, 5.0, 1.0]);
+        let bounds = store.get(node).expect("transformed bounds");
+        assert!(store.contains_point(node, 5.0, 2.0));
+        assert!(
+            !store.contains_point(node, bounds.x + 0.01, bounds.y + 0.01),
+            "rotated AABB corners must not become false-positive pointer targets"
+        );
+        let (local_x, local_y) = store.local_point(node, 5.0, 2.0).unwrap();
+        assert!((local_x - sin).abs() < 1e-5);
+        assert!((local_y - sin).abs() < 1e-5);
     }
 }

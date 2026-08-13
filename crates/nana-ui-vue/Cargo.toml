@@ -22,12 +22,16 @@ iced-view = [
     "nana-ui/feedback",
     "nana-ui/overlays",
     "nana-ui/popover",
+    "nana-ui/gpu",
 ]
+# Direct adapter into nana-ui's existing multi-window hosted runtime.
+hosted = ["iced-view", "nana-ui/hosted"]
 
 [dependencies]
 nana-ui-core.workspace = true
 nana-js-engine.workspace = true
 nana-ui-web-api.workspace = true
+nana-ui-platform.workspace = true
 iced = { workspace = true, optional = true }
 nana-ui = { path = "../nana-ui", optional = true, default-features = false }
 # Intentionally NOT depending on nana-js-quickjs, nana-js-v8, or nana-ui-blitz.

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Vue backend host coordination — L1/L2 bridge into Nana Style Model → Iced.
 //!
 //! ## Three-layer compatibility
@@ -77,16 +79,24 @@
 
 mod app;
 mod bridge;
+#[cfg(feature = "hosted")]
+mod canvas_gpu;
 mod css_cascade;
 mod css_map;
 #[cfg(feature = "iced-view")]
 pub mod editor_store;
+#[cfg(feature = "hosted")]
+mod hosted_adapter;
 #[cfg(feature = "iced-view")]
 pub mod iced_app;
+mod input;
 mod layout_map;
 mod measure;
 #[cfg(feature = "iced-view")]
 pub mod menu_store;
+mod multi_window;
+#[cfg(feature = "iced-view")]
+mod native_component;
 mod renderer;
 mod scroll;
 mod shell_contract;
@@ -94,17 +104,25 @@ mod style;
 #[cfg(feature = "iced-view")]
 mod svg_icon;
 mod tree;
+#[cfg(feature = "hosted")]
+mod webgpu;
 mod widget_map;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use nana_js_engine::{
-    HostApiRegistry, HostValue, JsEngine, JsEngineError, JsFunctionId, RuntimeArtifact,
+    HostApiRegistry, HostCallObserver, HostValue, JsDiagnosticEvent, JsDiagnosticLevel,
+    JsDiagnosticSink, JsEngine, JsEngineError, JsFunctionId, RuntimeArtifact,
 };
+#[cfg(feature = "iced-view")]
+use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
+pub use nana_ui_platform::ImeEvent;
 use nana_ui_web_api::{
-    SharedWebApiState, compose_runtime_artifact, register_web_api_host_ops, shared_web_api_state,
+    SharedCanvasRuntime, SharedWebApiState, compose_runtime_artifact, default_shared_clipboard,
+    register_web_api_host_ops_with_resources, shared_canvas_runtime, shared_web_api_state,
 };
 
 pub use app::{
@@ -134,12 +152,19 @@ pub use css_map::{
 };
 #[cfg(feature = "iced-view")]
 pub use editor_store::EditorStore;
+#[cfg(feature = "hosted")]
+pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime};
 #[cfg(feature = "iced-view")]
 pub use iced_app::{
     view_semantic_tree, view_semantic_tree_static, view_semantic_tree_static_with_editors,
+    view_semantic_tree_static_with_native_components, view_semantic_tree_static_with_resources,
     view_semantic_tree_static_with_viewport, view_semantic_tree_with_editors,
     view_semantic_tree_with_viewport, writeback_containing_blocks, writeback_iced_layout_boxes,
     writeback_iced_layout_boxes_with_scroll,
+};
+pub use input::{
+    CompositionEventKind, CompositionInput, HostedInputResult, InputModifiers, KeyboardEventKind,
+    KeyboardInput, PointerEventKind, PointerInput, PointerType, WheelInput,
 };
 pub use layout_map::{
     apply_direction_to_kind, apply_display_to_kind, default_layout_for_kind, layout_kind_from_tag,
@@ -149,8 +174,19 @@ pub use measure::{
 };
 #[cfg(feature = "iced-view")]
 pub use menu_store::MenuStore;
+pub use multi_window::{
+    VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowOptions, VueWindowRole,
+};
 pub use nana_ui_core::ThemeMode;
 pub use nana_ui_web_api::{compose_runtime_artifact as compose_vue_artifact, shim_artifact};
+#[cfg(feature = "iced-view")]
+pub use native_component::{
+    NativeComponentCommand, NativeComponentContext, NativeComponentDescriptor,
+    NativeComponentFactory, NativeComponentFailure, NativeComponentRegistry, NativePropSchema,
+    NativePropType,
+};
+#[cfg(feature = "iced-view")]
+pub use renderer::register_dom_host_ops_with_components;
 pub use renderer::{HostDocs, register_dom_host_ops, register_dom_host_ops_with_bridge};
 #[cfg(feature = "iced-view")]
 pub use scroll::drain_pending_scroll_tasks;
@@ -162,8 +198,52 @@ pub use scroll::{
 pub use style::{is_non_token_css_color, map_css_color_for_tokens, parse_css_color};
 pub use tree::{
     BoxSnapshot, DocumentId, DomNodeKind, ElementNamespace, LayoutBox, LayoutBoxStore,
-    NanaTreeDocument, NodeHandle, get_layout_box, get_layout_box_from, shared_layout_box_store,
+    NODE_HANDLE_DOCUMENT_STRIDE, NanaTreeDocument, NodeHandle, get_layout_box, get_layout_box_from,
+    shared_layout_box_store,
 };
+#[cfg(feature = "hosted")]
+pub use webgpu::JsWebGpuRuntime;
+
+/// Stable JS-facing descriptor for a host-owned texture. The `slot` is an
+/// internal routing key accepted by `<nana-gpu :source="handle">`; callers do
+/// not need to manufacture it themselves.
+#[cfg(feature = "iced-view")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NanaTextureHandle {
+    pub slot: String,
+    pub id: u64,
+    pub generation: u64,
+    pub version: u64,
+    pub width: u32,
+    pub height: u32,
+    pub alpha_mode: HostTextureAlphaMode,
+}
+
+#[cfg(feature = "iced-view")]
+impl NanaTextureHandle {
+    pub fn to_host_value(&self) -> HostValue {
+        HostValue::Object(
+            [
+                ("__nanaTexture".into(), HostValue::Bool(true)),
+                ("slot".into(), HostValue::String(self.slot.clone())),
+                ("id".into(), HostValue::BigInt(self.id)),
+                (
+                    "generation".into(),
+                    HostValue::Number(self.generation as f64),
+                ),
+                ("version".into(), HostValue::Number(self.version as f64)),
+                ("width".into(), HostValue::Number(self.width as f64)),
+                ("height".into(), HostValue::Number(self.height as f64)),
+                (
+                    "alphaMode".into(),
+                    HostValue::String(self.alpha_mode.as_str().into()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    }
+}
 
 /// Build L3 [`nana_ui::ThemeTokens`] from a semantic snapshot + native material flag.
 ///
@@ -187,10 +267,28 @@ pub fn theme_tokens_from_snapshot(
 /// Host → JS window/document lifecycle events (shim EventTarget).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowLifecycleEvent {
-    Resize { width: f64, height: f64 },
+    Resize {
+        width: f64,
+        height: f64,
+    },
+    ResizeWithScale {
+        width: f64,
+        height: f64,
+        scale_factor: f64,
+    },
     Focus,
     Blur,
-    VisibilityChange { hidden: bool },
+    VisibilityChange {
+        hidden: bool,
+    },
+}
+
+/// Native file drag lifecycle translated to Vue DOM-style drag events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileDragEventKind {
+    Hover,
+    Drop,
+    Cancel,
 }
 
 impl WindowLifecycleEvent {
@@ -201,6 +299,16 @@ impl WindowLifecycleEvent {
                 map.insert("type".into(), HostValue::string("resize"));
                 map.insert("width".into(), HostValue::Number(width));
                 map.insert("height".into(), HostValue::Number(height));
+            }
+            Self::ResizeWithScale {
+                width,
+                height,
+                scale_factor,
+            } => {
+                map.insert("type".into(), HostValue::string("resize"));
+                map.insert("width".into(), HostValue::Number(width));
+                map.insert("height".into(), HostValue::Number(height));
+                map.insert("scaleFactor".into(), HostValue::Number(scale_factor));
             }
             Self::Focus => {
                 map.insert("type".into(), HostValue::string("focus"));
@@ -218,12 +326,29 @@ impl WindowLifecycleEvent {
 }
 
 /// Vue host shell: owns the tree document, message bridge, web-api state, and renderer host ops.
+#[derive(Clone, Default)]
+struct DiagnosticBindings {
+    sink: Option<JsDiagnosticSink>,
+    host_calls: Option<HostCallObserver>,
+}
+
+impl std::fmt::Debug for DiagnosticBindings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiagnosticBindings")
+            .field("sink", &self.sink.is_some())
+            .field("host_calls", &self.host_calls.is_some())
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct VueHost {
     pub theme: ThemeMode,
     document: Arc<Mutex<NanaTreeDocument>>,
     bridge: Arc<Mutex<MessageBridge>>,
     web_api: SharedWebApiState,
+    canvas: SharedCanvasRuntime,
+    diagnostics: DiagnosticBindings,
     fire_event: Option<JsFunctionId>,
     drain_timers: Option<JsFunctionId>,
     drain_fetch: Option<JsFunctionId>,
@@ -232,11 +357,26 @@ pub struct VueHost {
     notify_layout: Option<JsFunctionId>,
     /// Optional window/document lifecycle pump (`__nanaPumpLifecycle`).
     lifecycle_pump: Option<JsFunctionId>,
+    /// Auxiliary-window identity. `None` preserves the original primary-window
+    /// three-argument event bridge.
+    event_window_id: Option<u64>,
+    input: Arc<Mutex<input::InputState>>,
+    file_drag_target: Option<NodeHandle>,
     /// Host-owned multi-line editor buffers (L2 Textarea → text_editor::Content).
     #[cfg(feature = "iced-view")]
     editors: EditorStore,
     #[cfg(feature = "iced-view")]
     menus: MenuStore,
+    #[cfg(feature = "iced-view")]
+    components: NativeComponentRegistry,
+    /// Window-local bindings for host, Canvas, and JS WebGPU textures. Views
+    /// are sampled by Iced on the same renderer Device/Queue.
+    #[cfg(feature = "iced-view")]
+    host_textures: HostTextureRegistry,
+    #[cfg(feature = "hosted")]
+    webgpu: Option<JsWebGpuRuntime>,
+    #[cfg(feature = "hosted")]
+    canvas_gpu: Option<canvas_gpu::CanvasGpuBridge>,
 }
 
 impl Default for VueHost {
@@ -251,11 +391,30 @@ impl VueHost {
     }
 
     pub fn with_viewport(physical_width: u32, physical_height: u32, scale_factor: f32) -> Self {
-        Self::with_web_api_state(
+        Self::with_document_id_and_web_api_state(
+            DocumentId(1),
             physical_width,
             physical_height,
             scale_factor,
             shared_web_api_state(),
+            shared_canvas_runtime(),
+        )
+    }
+
+    /// Creates an independent window document inside the same JS runtime.
+    pub fn with_document_id(
+        id: DocumentId,
+        physical_width: u32,
+        physical_height: u32,
+        scale_factor: f32,
+    ) -> Self {
+        Self::with_document_id_and_web_api_state(
+            id,
+            physical_width,
+            physical_height,
+            scale_factor,
+            shared_web_api_state(),
+            shared_canvas_runtime(),
         )
     }
 
@@ -265,8 +424,45 @@ impl VueHost {
         scale_factor: f32,
         web_api: SharedWebApiState,
     ) -> Self {
+        Self::with_document_id_and_web_api_state(
+            DocumentId(1),
+            physical_width,
+            physical_height,
+            scale_factor,
+            web_api,
+            shared_canvas_runtime(),
+        )
+    }
+
+    pub(crate) fn with_document_id_and_shared_resources(
+        document_id: DocumentId,
+        physical_width: u32,
+        physical_height: u32,
+        scale_factor: f32,
+        canvas: SharedCanvasRuntime,
+        local_storage: nana_ui_web_api::SharedStorage,
+    ) -> Self {
+        Self::with_document_id_and_web_api_state(
+            document_id,
+            physical_width,
+            physical_height,
+            scale_factor,
+            nana_ui_web_api::shared_web_api_state_with_local_storage(local_storage),
+            canvas,
+        )
+    }
+
+    fn with_document_id_and_web_api_state(
+        document_id: DocumentId,
+        physical_width: u32,
+        physical_height: u32,
+        scale_factor: f32,
+        web_api: SharedWebApiState,
+        canvas: SharedCanvasRuntime,
+    ) -> Self {
         let theme = ThemeMode::Light;
-        let document = NanaTreeDocument::new(physical_width, physical_height, scale_factor);
+        let document =
+            NanaTreeDocument::with_id(document_id, physical_width, physical_height, scale_factor);
         let mut bridge = MessageBridge::new();
         bridge.set_theme(theme);
         // body/html must exist in the semantic forest so inserts into mountRoot
@@ -277,16 +473,29 @@ impl VueHost {
             document: Arc::new(Mutex::new(document)),
             bridge: Arc::new(Mutex::new(bridge)),
             web_api,
+            canvas,
+            diagnostics: DiagnosticBindings::default(),
             fire_event: None,
             drain_timers: None,
             drain_fetch: None,
             apply_theme: None,
             notify_layout: None,
             lifecycle_pump: None,
+            event_window_id: None,
+            input: Arc::new(Mutex::new(input::InputState::default())),
+            file_drag_target: None,
             #[cfg(feature = "iced-view")]
             editors: EditorStore::new(),
             #[cfg(feature = "iced-view")]
             menus: MenuStore::new(),
+            #[cfg(feature = "iced-view")]
+            components: NativeComponentRegistry::new(),
+            #[cfg(feature = "iced-view")]
+            host_textures: HostTextureRegistry::new(),
+            #[cfg(feature = "hosted")]
+            webgpu: None,
+            #[cfg(feature = "hosted")]
+            canvas_gpu: None,
         }
     }
 
@@ -304,6 +513,228 @@ impl VueHost {
 
     pub fn web_api(&self) -> SharedWebApiState {
         Arc::clone(&self.web_api)
+    }
+
+    pub fn canvas_runtime(&self) -> SharedCanvasRuntime {
+        Arc::clone(&self.canvas)
+    }
+
+    pub fn canvas_runtime_ref(&self) -> &SharedCanvasRuntime {
+        &self.canvas
+    }
+
+    /// Current compatibility-layer resource counts for development snapshots.
+    pub fn resource_counts(&self) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        counts.insert(
+            "canvas".into(),
+            self.canvas
+                .lock()
+                .map(|runtime| runtime.active_resource_count())
+                .unwrap_or_default(),
+        );
+        #[cfg(feature = "iced-view")]
+        counts.insert("hostTexture".into(), self.host_textures.len());
+        #[cfg(feature = "hosted")]
+        if let Some(webgpu) = &self.webgpu {
+            counts.extend(
+                webgpu
+                    .resource_counts()
+                    .into_iter()
+                    .map(|(kind, count)| (format!("webgpu.{kind}"), count)),
+            );
+        }
+        counts
+    }
+
+    /// Connect development diagnostics. The sink receives Vue warnings/errors;
+    /// the observer receives privacy-preserving Host API timing records.
+    pub fn set_diagnostics(
+        &mut self,
+        sink: Option<JsDiagnosticSink>,
+        host_calls: Option<HostCallObserver>,
+    ) {
+        self.diagnostics = DiagnosticBindings { sink, host_calls };
+    }
+
+    #[cfg(feature = "iced-view")]
+    pub fn host_textures(&self) -> &HostTextureRegistry {
+        &self.host_textures
+    }
+
+    #[cfg(feature = "iced-view")]
+    pub fn register_host_texture(
+        &self,
+        slot: impl Into<String>,
+        texture: HostTexture,
+        width: u32,
+        height: u32,
+        alpha_mode: HostTextureAlphaMode,
+    ) -> NanaTextureHandle {
+        let binding = self
+            .host_textures
+            .register(slot, texture, width, height, alpha_mode);
+        self.report_diagnostic(
+            "nana.resource",
+            JsDiagnosticLevel::Info,
+            format!("host texture registered: {}", binding.slot),
+            None,
+        );
+        NanaTextureHandle {
+            slot: binding.slot,
+            id: binding.texture.id(),
+            generation: binding.texture.generation(),
+            version: binding.texture.version(),
+            width: binding.width,
+            height: binding.height,
+            alpha_mode: binding.alpha_mode,
+        }
+    }
+
+    /// Content update boundary. A true result means callers should request a
+    /// redraw from the hosted runtime.
+    #[cfg(feature = "iced-view")]
+    pub fn invalidate_host_texture(&self, slot: &str) -> bool {
+        self.host_textures.invalidate(slot).is_some()
+    }
+
+    #[cfg(feature = "iced-view")]
+    pub fn remove_host_texture(&self, slot: &str) -> bool {
+        let removed = self.host_textures.remove(slot).is_some();
+        if removed {
+            self.report_diagnostic(
+                "nana.resource",
+                JsDiagnosticLevel::Info,
+                format!("host texture released: {slot}"),
+                None,
+            );
+        }
+        removed
+    }
+
+    /// Device-loss boundary: all prior texture descriptors become invalid.
+    #[cfg(feature = "iced-view")]
+    pub fn invalidate_host_textures(&self) -> usize {
+        self.host_textures.invalidate_all()
+    }
+
+    /// Attach the hosted renderer's existing adapter/device/queue to the JS
+    /// WebGPU facade. Call again after device recovery, then re-register the
+    /// host API on the engine so existing JS wrappers observe the generation.
+    #[cfg(feature = "hosted")]
+    pub fn bind_host_gpu(&mut self, resources: nana_ui::HostedGpuResources) -> u64 {
+        match &self.canvas_gpu {
+            Some(canvas_gpu) => canvas_gpu.replace_device(resources.clone()),
+            None => {
+                self.canvas_gpu = Some(canvas_gpu::CanvasGpuBridge::new(
+                    resources.clone(),
+                    Arc::clone(&self.canvas),
+                    self.host_textures.clone(),
+                ));
+            }
+        }
+        match &self.webgpu {
+            Some(runtime) => runtime.replace_device(resources),
+            None => {
+                let runtime = JsWebGpuRuntime::new(resources, self.host_textures.clone());
+                let generation = runtime.generation();
+                self.webgpu = Some(runtime);
+                generation
+            }
+        }
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn share_canvas_gpu(&mut self, canvas_gpu: canvas_gpu::CanvasGpuBridge) {
+        self.canvas_gpu = Some(canvas_gpu);
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn canvas_gpu(&self) -> Option<&canvas_gpu::CanvasGpuBridge> {
+        self.canvas_gpu.as_ref()
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn prepare_canvas_gpu(&self) {
+        let Some(canvas_gpu) = &self.canvas_gpu else {
+            return;
+        };
+        let ids = self
+            .bridge
+            .lock()
+            .map(|bridge| {
+                bridge
+                    .snapshot()
+                    .widgets
+                    .iter()
+                    .filter_map(|widget| {
+                        widget
+                            .props
+                            .attrs
+                            .get("data-nana-canvas")
+                            .or_else(|| widget.props.attrs.get("data-nana-image"))
+                            .and_then(|id| id.parse::<u64>().ok())
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        for id in ids {
+            if let Err(error) = canvas_gpu.sync(nana_ui_web_api::CanvasId(id)) {
+                self.report_diagnostic("canvas.gpu", JsDiagnosticLevel::Error, error, None);
+            }
+        }
+    }
+
+    /// Rebind the JS WebGPU facade after host device recovery and notify the
+    /// existing JavaScript device before replacing its native resources.
+    #[cfg(feature = "hosted")]
+    pub fn replace_host_gpu<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        resources: nana_ui::HostedGpuResources,
+        message: &str,
+    ) -> Result<u64, JsEngineError> {
+        self.report_diagnostic(
+            "wgpu.device",
+            JsDiagnosticLevel::Error,
+            message.to_owned(),
+            None,
+        );
+        if let Ok(notify) = engine.resolve_function("__nanaWebGpuDeviceLost") {
+            engine.invoke(notify, &[HostValue::String(message.to_owned())])?;
+            engine.run_microtasks()?;
+        }
+        let generation = self.bind_host_gpu(resources);
+        engine.register_host_api(&self.host_api_registry())?;
+        Ok(generation)
+    }
+
+    #[cfg(feature = "iced-view")]
+    fn report_diagnostic(
+        &self,
+        source: &str,
+        level: JsDiagnosticLevel,
+        message: String,
+        stack: Option<String>,
+    ) {
+        if let Some(sink) = &self.diagnostics.sink {
+            sink(JsDiagnosticEvent {
+                source: source.to_owned(),
+                level,
+                message,
+                stack,
+            });
+        }
+    }
+
+    #[cfg(feature = "hosted")]
+    pub fn webgpu_runtime(&self) -> Option<&JsWebGpuRuntime> {
+        self.webgpu.as_ref()
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn share_webgpu_runtime(&mut self, runtime: JsWebGpuRuntime) {
+        self.webgpu = Some(runtime);
     }
 
     pub fn mount_root(&self) -> NodeHandle {
@@ -365,6 +796,43 @@ impl VueHost {
     #[cfg(feature = "iced-view")]
     pub fn menus_mut(&mut self) -> &mut MenuStore {
         &mut self.menus
+    }
+
+    /// Registry shared by the Vue host and its Iced semantic renderer.
+    #[cfg(feature = "iced-view")]
+    pub fn components(&self) -> &NativeComponentRegistry {
+        &self.components
+    }
+
+    #[cfg(feature = "iced-view")]
+    pub(crate) fn share_components(&mut self, components: NativeComponentRegistry) {
+        self.components = components;
+    }
+
+    #[cfg(feature = "iced-view")]
+    pub(crate) fn share_host_textures(&mut self, textures: HostTextureRegistry) {
+        self.host_textures = textures;
+    }
+
+    #[cfg(feature = "iced-view")]
+    fn unmount_all_native_components(&self) {
+        let mounted = self
+            .bridge
+            .lock()
+            .map(|bridge| {
+                bridge
+                    .snapshot()
+                    .widgets
+                    .into_iter()
+                    .filter_map(|widget| {
+                        widget.props.native_component.map(|name| (name, widget.id))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (component, id) in mounted {
+            self.components.unmount(&component, id);
+        }
     }
 
     /// Latest Appearance settings mirrored from L1 document dataset/style.
@@ -437,16 +905,191 @@ impl VueHost {
     /// Builds the framework-owned registry with renderer, DOM and Web APIs.
     pub fn host_api_registry(&self) -> HostApiRegistry {
         let mut api = HostApiRegistry::new();
+        api.set_observer(self.diagnostics.host_calls.clone());
+        #[cfg(feature = "iced-view")]
+        register_dom_host_ops_with_components(
+            &mut api,
+            Arc::clone(&self.document),
+            Arc::clone(&self.bridge),
+            Arc::clone(&self.web_api),
+            self.components.clone(),
+        );
+        #[cfg(not(feature = "iced-view"))]
         register_dom_host_ops_with_bridge(
             &mut api,
             Arc::clone(&self.document),
             Arc::clone(&self.bridge),
             Arc::clone(&self.web_api),
         );
-        register_web_api_host_ops(&mut api, Arc::clone(&self.web_api));
+        #[cfg(feature = "iced-view")]
+        {
+            let components = self.components.clone();
+            api.register("componentList", move |_| {
+                Ok(HostValue::Array(
+                    components
+                        .names()
+                        .into_iter()
+                        .map(HostValue::string)
+                        .collect(),
+                ))
+            });
+        }
+        #[cfg(feature = "iced-view")]
+        {
+            let components = self.components.clone();
+            let bridge = Arc::clone(&self.bridge);
+            api.register_async("componentCall", move |args, context| {
+                let id = args
+                    .first()
+                    .and_then(HostValue::as_f64)
+                    .map(|id| id as WidgetId)
+                    .ok_or_else(|| {
+                        nana_js_engine::JsException::new("native component node is required")
+                            .with_name("NativeComponentCommandError")
+                    })?;
+                let command = args.get(1).and_then(HostValue::as_str).ok_or_else(|| {
+                    nana_js_engine::JsException::new("native component command is required")
+                        .with_name("NativeComponentCommandError")
+                })?;
+                let payload = args.get(2).cloned().unwrap_or(HostValue::Null);
+                let component = bridge
+                    .lock()
+                    .map_err(|_| nana_js_engine::JsException::new("vue bridge poisoned"))?
+                    .get(id)
+                    .and_then(|widget| widget.props.native_component.clone())
+                    .ok_or_else(|| {
+                        nana_js_engine::JsException::new(format!(
+                            "node `{id}` is not a registered native component"
+                        ))
+                        .with_name("NativeComponentCommandError")
+                    })?;
+                let result = components.command(&component, id, command, payload);
+                let (completion, pending) = context.pending();
+                completion.complete(result);
+                Ok(pending)
+            });
+        }
+        register_web_api_host_ops_with_resources(
+            &mut api,
+            Arc::clone(&self.web_api),
+            default_shared_clipboard(),
+            Arc::clone(&self.canvas),
+        );
+        #[cfg(feature = "hosted")]
+        if let Some(webgpu) = &self.webgpu {
+            webgpu.register_host_ops(&mut api);
+        }
+        {
+            let sink = self.diagnostics.sink.clone();
+            api.register("diagnosticReport", move |args| {
+                let Some(event) = args.first().and_then(HostValue::as_object) else {
+                    return Err(nana_js_engine::JsException::new(
+                        "diagnostic report must be an object",
+                    ));
+                };
+                if let Some(sink) = &sink {
+                    let source = event
+                        .get("source")
+                        .and_then(HostValue::as_str)
+                        .unwrap_or("vue.error");
+                    let level = match event.get("level").and_then(HostValue::as_str) {
+                        Some("info") => JsDiagnosticLevel::Info,
+                        Some("warning") | Some("warn") => JsDiagnosticLevel::Warning,
+                        _ => JsDiagnosticLevel::Error,
+                    };
+                    sink(JsDiagnosticEvent {
+                        source: source.to_owned(),
+                        level,
+                        message: event
+                            .get("message")
+                            .and_then(HostValue::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        stack: event
+                            .get("stack")
+                            .and_then(HostValue::as_str)
+                            .map(str::to_owned),
+                    });
+                }
+                Ok(HostValue::Null)
+            });
+        }
+        self.register_input_host_ops(&mut api);
         // JS `documentElement.dataset.theme` must not wait for semantic_snapshot.
         self.wrap_document_element_set_for_appearance_sync(&mut api);
         api
+    }
+
+    fn register_input_host_ops(&self, api: &mut HostApiRegistry) {
+        {
+            let input = Arc::clone(&self.input);
+            let document = Arc::clone(&self.document);
+            api.register("setPointerCapture", move |args| {
+                let node = args
+                    .first()
+                    .and_then(HostValue::as_f64)
+                    .map(|id| NodeHandle(id as u64))
+                    .ok_or_else(|| nana_js_engine::JsException::new("missing pointer node"))?;
+                let pointer_id = args
+                    .get(1)
+                    .and_then(HostValue::as_f64)
+                    .map(|id| id as u64)
+                    .ok_or_else(|| nana_js_engine::JsException::new("missing pointer id"))?;
+                if document
+                    .lock()
+                    .map_err(|_| nana_js_engine::JsException::new("vue doc poisoned"))?
+                    .element_tag(node)
+                    .is_none()
+                {
+                    return Err(nana_js_engine::JsException::new(
+                        "pointer node is not mounted",
+                    ));
+                }
+                input
+                    .lock()
+                    .map_err(|_| nana_js_engine::JsException::new("input state poisoned"))?
+                    .capture(pointer_id, node);
+                Ok(HostValue::Null)
+            });
+        }
+        {
+            let input = Arc::clone(&self.input);
+            api.register("releasePointerCapture", move |args| {
+                let node = args
+                    .first()
+                    .and_then(HostValue::as_f64)
+                    .map(|id| NodeHandle(id as u64));
+                let pointer_id = args
+                    .get(1)
+                    .and_then(HostValue::as_f64)
+                    .map(|id| id as u64)
+                    .ok_or_else(|| nana_js_engine::JsException::new("missing pointer id"))?;
+                let released = input
+                    .lock()
+                    .map_err(|_| nana_js_engine::JsException::new("input state poisoned"))?
+                    .release_capture(pointer_id, node);
+                Ok(HostValue::Bool(released))
+            });
+        }
+        {
+            let input = Arc::clone(&self.input);
+            api.register("hasPointerCapture", move |args| {
+                let node = args
+                    .first()
+                    .and_then(HostValue::as_f64)
+                    .map(|id| NodeHandle(id as u64));
+                let pointer_id = args
+                    .get(1)
+                    .and_then(HostValue::as_f64)
+                    .map(|id| id as u64)
+                    .ok_or_else(|| nana_js_engine::JsException::new("missing pointer id"))?;
+                let captured = input
+                    .lock()
+                    .map_err(|_| nana_js_engine::JsException::new("input state poisoned"))?
+                    .capture_target(pointer_id);
+                Ok(HostValue::Bool(captured == node && node.is_some()))
+            });
+        }
     }
 
     /// Binds an engine-agnostic JS runtime and installs renderer + web-api host ops.
@@ -501,6 +1144,7 @@ impl VueHost {
         &mut self,
         engine: &mut E,
     ) -> Result<(), JsEngineError> {
+        self.event_window_id = None;
         self.fire_event = Some(engine.resolve_function("__nanaFireEvent")?);
         // Drain helper is optional for Phase 3 Counter (shim may still install it).
         self.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
@@ -508,6 +1152,23 @@ impl VueHost {
         self.apply_theme = engine.resolve_function("__nanaApplyTheme").ok();
         self.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
         self.lifecycle_pump = engine.resolve_function("__nanaPumpLifecycle").ok();
+        Ok(())
+    }
+
+    /// Resolve event functions for an auxiliary Vue window while retaining the
+    /// same engine context and function table.
+    pub fn bind_event_bridge_for_window<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        window_id: u64,
+    ) -> Result<(), JsEngineError> {
+        self.event_window_id = Some(window_id);
+        self.fire_event = Some(engine.resolve_function("__nanaFireWindowEvent")?);
+        self.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
+        self.drain_fetch = engine.resolve_function("__nanaDrainFetch").ok();
+        self.apply_theme = engine.resolve_function("__nanaApplyWindowTheme").ok();
+        self.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
+        self.lifecycle_pump = engine.resolve_function("__nanaPumpWindowLifecycle").ok();
         Ok(())
     }
 
@@ -591,7 +1252,14 @@ impl VueHost {
             bridge.set_theme(theme);
         }
         if let Some(apply) = self.apply_theme {
-            engine.invoke(apply, &[HostValue::string(label)])?;
+            let args = match self.event_window_id {
+                Some(window_id) => vec![
+                    HostValue::Number(window_id as f64),
+                    HostValue::string(label),
+                ],
+                None => vec![HostValue::string(label)],
+            };
+            engine.invoke(apply, &args)?;
             engine.run_microtasks()?;
         }
         Ok(())
@@ -610,6 +1278,14 @@ impl VueHost {
         engine: &mut E,
     ) -> Result<usize, JsEngineError> {
         let mut fired = 0usize;
+        #[cfg(feature = "hosted")]
+        if let Some(webgpu) = &self.webgpu {
+            let completions = webgpu.poll();
+            if completions > 0 {
+                fired += completions;
+                engine.run_microtasks()?;
+            }
+        }
         let fetch_completions = {
             let mut guard = self
                 .web_api
@@ -662,10 +1338,16 @@ impl VueHost {
     /// Earliest timer/fetch wake requested by the Web API state.
     /// Returns `None` when the runtime is idle.
     pub fn next_wakeup(&self) -> Option<Instant> {
-        self.web_api
+        let web_wakeup = self
+            .web_api
             .lock()
             .ok()
-            .and_then(|guard| guard.next_wakeup(Instant::now()))
+            .and_then(|guard| guard.next_wakeup(Instant::now()));
+        #[cfg(feature = "hosted")]
+        let gpu_wakeup = self.webgpu.as_ref().and_then(JsWebGpuRuntime::next_wakeup);
+        #[cfg(not(feature = "hosted"))]
+        let gpu_wakeup: Option<Instant> = None;
+        web_wakeup.into_iter().chain(gpu_wakeup).min()
     }
 
     /// Pump a host window lifecycle event into the shim EventTarget surface.
@@ -681,9 +1363,78 @@ impl VueHost {
         let Some(pump) = self.lifecycle_pump else {
             return Ok(false);
         };
-        engine.invoke(pump, &[event.to_host_value()])?;
+        if event == WindowLifecycleEvent::Blur {
+            if let Some(target) = self.file_drag_target.take() {
+                self.fire_dom_event(engine, target, "dragleave", file_drag_detail(&[], None))?;
+            }
+            let focused = {
+                let mut document = self.document.lock().expect("vue doc");
+                let focused = document.focused();
+                document.clear_focus();
+                focused
+            };
+            if let Some(focused) = focused {
+                self.fire_dom_event(engine, focused, "blur", BTreeMap::new())?;
+            }
+            let captures = self.input.lock().expect("input state").clear();
+            for (pointer_id, target) in captures {
+                let mut detail = BTreeMap::new();
+                detail.insert("pointerId".into(), HostValue::Number(pointer_id as f64));
+                self.fire_dom_event(engine, target, "lostpointercapture", detail)?;
+            }
+        }
+        let args = match self.event_window_id {
+            Some(window_id) => vec![HostValue::Number(window_id as f64), event.to_host_value()],
+            None => vec![event.to_host_value()],
+        };
+        engine.invoke(pump, &args)?;
         engine.run_microtasks()?;
         Ok(true)
+    }
+
+    /// Dispatch a native file hover/drop lifecycle through the same Vue event
+    /// tree as pointer input. Dropped files are descriptors with an absolute
+    /// path; reading their contents remains an application Host API decision.
+    pub fn dispatch_file_drag<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        kind: FileDragEventKind,
+        paths: &[PathBuf],
+        position: Option<(f32, f32)>,
+    ) -> Result<bool, JsEngineError> {
+        let target_at_position =
+            position.and_then(|(x, y)| self.document.lock().expect("vue doc").hit_test(x, y));
+        let mount_root = self.document.lock().expect("vue doc").mount_root();
+        let target = target_at_position
+            .or(self.file_drag_target)
+            .unwrap_or(mount_root);
+        let detail = file_drag_detail(paths, position);
+        let mut allowed = true;
+
+        match kind {
+            FileDragEventKind::Hover => {
+                if self.file_drag_target != Some(target) {
+                    if let Some(previous) = self.file_drag_target {
+                        allowed &=
+                            self.fire_dom_event(engine, previous, "dragleave", detail.clone())?;
+                    }
+                    allowed &= self.fire_dom_event(engine, target, "dragenter", detail.clone())?;
+                    self.file_drag_target = Some(target);
+                }
+                allowed &= self.fire_dom_event(engine, target, "dragover", detail)?;
+            }
+            FileDragEventKind::Drop => {
+                allowed &= self.fire_dom_event(engine, target, "drop", detail)?;
+                self.file_drag_target = None;
+            }
+            FileDragEventKind::Cancel => {
+                if let Some(previous) = self.file_drag_target.take() {
+                    allowed &= self.fire_dom_event(engine, previous, "dragleave", detail)?;
+                }
+            }
+        }
+        engine.run_microtasks()?;
+        Ok(allowed)
     }
 
     /// Route an Iced widget action into the bridge queue and JS event listeners.
@@ -733,6 +1484,16 @@ impl VueHost {
         if menu_confirm_armed {
             return Ok(true);
         }
+        if let BridgeEvent::Native { name, payload, .. } = &event {
+            let detail = match payload {
+                HostValue::Object(detail) => detail.clone(),
+                value => BTreeMap::from([("value".into(), value.clone())]),
+            };
+            self.fire_dom_event(engine, NodeHandle(id), name, detail)?;
+            engine.run_microtasks()?;
+            let _ = self.pump_frame(engine)?;
+            return Ok(true);
+        }
         let js_events = {
             let mut bridge = self.bridge.lock().expect("vue bridge");
             match &event {
@@ -744,6 +1505,7 @@ impl VueHost {
                 }
                 BridgeEvent::Input { id, value } => bridge.note_input(*id, value.clone()),
                 BridgeEvent::Change { id, value } => bridge.note_change(*id, *value),
+                BridgeEvent::Native { .. } => Vec::new(),
                 #[cfg(feature = "iced-view")]
                 BridgeEvent::Editor { id, .. } => {
                     let text = editor_text.clone().unwrap_or_default();
@@ -766,9 +1528,6 @@ impl VueHost {
         if js_events.is_empty() {
             return Ok(false);
         }
-        let fire = self.fire_event.ok_or_else(|| {
-            JsEngineError::new("__nanaFireEvent is not bound; call bind_event_bridge")
-        })?;
         for name in js_events {
             let mut detail = BTreeMap::new();
             match &event {
@@ -790,14 +1549,7 @@ impl VueHost {
                 }
                 _ => {}
             }
-            engine.invoke(
-                fire,
-                &[
-                    HostValue::Number(id as f64),
-                    HostValue::string(name),
-                    HostValue::Object(detail),
-                ],
-            )?;
+            self.fire_dom_event(engine, NodeHandle(id), name, detail)?;
         }
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
@@ -806,97 +1558,392 @@ impl VueHost {
         Ok(true)
     }
 
-    /// Hit-test a click in logical CSS pixels and invoke the JS event bridge.
-    ///
-    /// Always fans out `pointerdown` (hit or miss) so dismissable layers and
-    /// context-menu capture listeners can close on outside click.
+    fn fire_dom_event<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+        target: NodeHandle,
+        name: &str,
+        detail: BTreeMap<String, HostValue>,
+    ) -> Result<bool, JsEngineError> {
+        let fire = self.fire_event.ok_or_else(|| {
+            JsEngineError::new("__nanaFireEvent is not bound; call bind_event_bridge")
+        })?;
+        let args = match self.event_window_id {
+            Some(window_id) => vec![
+                HostValue::Number(window_id as f64),
+                HostValue::Number(target.0 as f64),
+                HostValue::string(name),
+                HostValue::Object(detail),
+            ],
+            None => vec![
+                HostValue::Number(target.0 as f64),
+                HostValue::string(name),
+                HostValue::Object(detail),
+            ],
+        };
+        let result = engine.invoke(fire, &args)?;
+        Ok(result.as_bool().unwrap_or(true))
+    }
+
+    fn focus_target_at(&self, x: f32, y: f32) -> (Option<NodeHandle>, Option<NodeHandle>) {
+        let mut doc = self.document.lock().expect("vue doc");
+        let previous = doc.focused();
+        let next = doc.hit_test(x, y).and_then(|hit| {
+            let mut walk = Some(hit);
+            while let Some(node) = walk {
+                let tag = doc.element_tag(node).unwrap_or_default();
+                if is_focusable_tag(&tag) || self.native_component_name(node.0).is_some() {
+                    return Some(node);
+                }
+                walk = doc.parent_node(node);
+            }
+            None
+        });
+        if previous != next {
+            if let Some(next) = next {
+                doc.set_focus(next);
+            } else {
+                doc.clear_focus();
+            }
+        }
+        (previous, next)
+    }
+
+    fn pointer_detail(
+        &self,
+        input: PointerInput,
+        target: NodeHandle,
+    ) -> BTreeMap<String, HostValue> {
+        let mut detail = input.detail();
+        let Some(bounds) = self
+            .document
+            .lock()
+            .ok()
+            .and_then(|doc| get_layout_box(&doc, target))
+        else {
+            return detail;
+        };
+        let (local_x, local_y) = shared_layout_box_store()
+            .local_point(target, input.client_x, input.client_y)
+            .unwrap_or((input.client_x - bounds.x, input.client_y - bounds.y));
+        detail.insert("offsetX".into(), HostValue::Number(local_x as f64));
+        detail.insert("offsetY".into(), HostValue::Number(local_y as f64));
+        detail
+    }
+
+    fn pointer_transition_paths(
+        &self,
+        previous: Option<NodeHandle>,
+        next: Option<NodeHandle>,
+    ) -> (Vec<NodeHandle>, Vec<NodeHandle>) {
+        let doc = self.document.lock().expect("vue doc");
+        let path = |start: Option<NodeHandle>| {
+            let mut nodes = Vec::new();
+            let mut current = start;
+            while let Some(node) = current {
+                nodes.push(node);
+                current = doc.parent_node(node);
+            }
+            nodes
+        };
+        let previous_path = path(previous);
+        let next_path = path(next);
+        let common = previous_path
+            .iter()
+            .find(|node| next_path.contains(node))
+            .copied();
+        let leaving = previous_path
+            .into_iter()
+            .take_while(|node| Some(*node) != common)
+            .collect();
+        let mut entering: Vec<_> = next_path
+            .into_iter()
+            .take_while(|node| Some(*node) != common)
+            .collect();
+        entering.reverse();
+        (leaving, entering)
+    }
+
+    fn flush_pointer_capture_events<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+    ) -> Result<(), JsEngineError> {
+        let changes = self
+            .input
+            .lock()
+            .expect("input state")
+            .take_capture_changes();
+        for (gained, pointer_id, target) in changes {
+            let mut detail = BTreeMap::new();
+            detail.insert("pointerId".into(), HostValue::Number(pointer_id as f64));
+            self.fire_dom_event(
+                engine,
+                target,
+                if gained {
+                    "gotpointercapture"
+                } else {
+                    "lostpointercapture"
+                },
+                detail,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch one browser-style pointer event with hit-testing and capture.
+    pub fn dispatch_pointer_result<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: PointerInput,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        let physical_hit = {
+            let doc = self.document.lock().expect("vue doc");
+            doc.hit_test(input.client_x, input.client_y)
+        };
+        let mut captured = self
+            .input
+            .lock()
+            .expect("input state")
+            .capture_target(input.pointer_id);
+        if captured.is_some_and(|target| {
+            self.document
+                .lock()
+                .expect("vue doc")
+                .element_tag(target)
+                .is_none()
+        }) {
+            self.input
+                .lock()
+                .expect("input state")
+                .release_capture(input.pointer_id, captured);
+            self.flush_pointer_capture_events(engine)?;
+            captured = None;
+        }
+        let target = captured.or_else(|| {
+            if input.kind == PointerEventKind::Cancel {
+                return self
+                    .input
+                    .lock()
+                    .expect("input state")
+                    .hover_target(input.pointer_id);
+            }
+            let doc = self.document.lock().expect("vue doc");
+            doc.hit_event_target(input.client_x, input.client_y, input.kind.pointer_name())
+                .or(physical_hit)
+        });
+        let fallback = self.document.lock().expect("vue doc").mount_root();
+        let event_target = target.unwrap_or(fallback);
+        let detail = self.pointer_detail(input, event_target);
+
+        if matches!(
+            input.kind,
+            PointerEventKind::Move | PointerEventKind::Cancel
+        ) && captured.is_none()
+        {
+            let previous = self
+                .input
+                .lock()
+                .expect("input state")
+                .hover_target(input.pointer_id);
+            if previous != physical_hit {
+                if let Some(previous) = previous {
+                    let mut transition = detail.clone();
+                    transition.insert(
+                        "relatedTarget".into(),
+                        physical_hit
+                            .map(|node| HostValue::Number(node.0 as f64))
+                            .unwrap_or(HostValue::Null),
+                    );
+                    self.fire_dom_event(engine, previous, "pointerout", transition.clone())?;
+                    if input.pointer_type == PointerType::Mouse {
+                        self.fire_dom_event(engine, previous, "mouseout", transition.clone())?;
+                    }
+                }
+                if let Some(next) = physical_hit {
+                    let mut transition = self.pointer_detail(input, next);
+                    transition.insert(
+                        "relatedTarget".into(),
+                        previous
+                            .map(|node| HostValue::Number(node.0 as f64))
+                            .unwrap_or(HostValue::Null),
+                    );
+                    self.fire_dom_event(engine, next, "pointerover", transition.clone())?;
+                    if input.pointer_type == PointerType::Mouse {
+                        self.fire_dom_event(engine, next, "mouseover", transition.clone())?;
+                    }
+                }
+                let (leaving, entering) = self.pointer_transition_paths(previous, physical_hit);
+                for node in leaving {
+                    let mut transition = self.pointer_detail(input, node);
+                    transition.insert(
+                        "relatedTarget".into(),
+                        physical_hit
+                            .map(|n| HostValue::Number(n.0 as f64))
+                            .unwrap_or(HostValue::Null),
+                    );
+                    self.fire_dom_event(engine, node, "pointerleave", transition.clone())?;
+                    if input.pointer_type == PointerType::Mouse {
+                        self.fire_dom_event(engine, node, "mouseleave", transition)?;
+                    }
+                }
+                for node in entering {
+                    let mut transition = self.pointer_detail(input, node);
+                    transition.insert(
+                        "relatedTarget".into(),
+                        previous
+                            .map(|n| HostValue::Number(n.0 as f64))
+                            .unwrap_or(HostValue::Null),
+                    );
+                    self.fire_dom_event(engine, node, "pointerenter", transition.clone())?;
+                    if input.pointer_type == PointerType::Mouse {
+                        self.fire_dom_event(engine, node, "mouseenter", transition)?;
+                    }
+                }
+                self.input
+                    .lock()
+                    .expect("input state")
+                    .set_hover(input.pointer_id, physical_hit);
+            }
+        }
+
+        let mut default_prevented = !self.fire_dom_event(
+            engine,
+            event_target,
+            input.kind.pointer_name(),
+            detail.clone(),
+        )?;
+        self.flush_pointer_capture_events(engine)?;
+        if input.pointer_type == PointerType::Mouse
+            && let Some(mouse_name) = input.kind.mouse_name()
+        {
+            default_prevented |=
+                !self.fire_dom_event(engine, event_target, mouse_name, detail.clone())?;
+        }
+
+        let mut consumed = false;
+        match input.kind {
+            PointerEventKind::Down => {
+                if let Some(target) = target {
+                    self.input
+                        .lock()
+                        .expect("input state")
+                        .set_pressed(input.pointer_id, target);
+                }
+                let (previous, next) = self.focus_target_at(input.client_x, input.client_y);
+                if previous != next {
+                    if let Some(previous) = previous {
+                        self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
+                    }
+                    if let Some(next) = next {
+                        self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
+                    }
+                }
+            }
+            PointerEventKind::Up => {
+                let pressed = self
+                    .input
+                    .lock()
+                    .expect("input state")
+                    .take_pressed(input.pointer_id);
+                if pressed.is_some() && pressed == physical_hit {
+                    let click_target = pressed.expect("checked above");
+                    let is_semantic = self
+                        .bridge
+                        .lock()
+                        .expect("vue bridge")
+                        .contains(click_target.0);
+                    if is_semantic {
+                        self.dispatch_bridge_event(
+                            engine,
+                            BridgeEvent::Press { id: click_target.0 },
+                        )?;
+                    } else {
+                        self.fire_dom_event(engine, click_target, "click", detail.clone())?;
+                    }
+                    consumed = true;
+                }
+            }
+            PointerEventKind::Cancel => {
+                self.input
+                    .lock()
+                    .expect("input state")
+                    .take_pressed(input.pointer_id);
+            }
+            PointerEventKind::Move => {}
+        }
+
+        self.flush_pointer_capture_events(engine)?;
+
+        if matches!(input.kind, PointerEventKind::Up | PointerEventKind::Cancel) {
+            self.input
+                .lock()
+                .expect("input state")
+                .release_capture(input.pointer_id, None);
+            self.flush_pointer_capture_events(engine)?;
+        }
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(HostedInputResult {
+            targeted: target.is_some(),
+            default_prevented,
+            consumed,
+        })
+    }
+
+    pub fn dispatch_pointer<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: PointerInput,
+    ) -> Result<bool, JsEngineError> {
+        self.dispatch_pointer_result(engine, input)
+            .map(|result| result.targeted)
+    }
+
+    /// Compatibility helper for callers that only expose an atomic click.
     pub fn pointer_click<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         x: f32,
         y: f32,
     ) -> Result<bool, JsEngineError> {
-        let (click_target, focus_target, fan_target) = {
-            let mut doc = self.document.lock().expect("vue doc");
-            let hit = doc.hit_test(x, y);
-            let click_target = doc.hit_event_target(x, y, "click");
-            let focus_target = hit.and_then(|h| {
-                let mut walk = Some(h);
-                while let Some(cur) = walk {
-                    let tag = doc.element_tag(cur).unwrap_or_default();
-                    if matches!(
-                        tag.as_str(),
-                        "input"
-                            | "textarea"
-                            | "button"
-                            | "select"
-                            | "a"
-                            | "nana-button"
-                            | "nana-switch"
-                            | "nana-sidebar-row"
-                    ) {
-                        doc.set_focus(cur);
-                        return Some(cur);
-                    }
-                    walk = doc.parent_node(cur);
-                }
-                None
-            });
-            let fan_target = click_target
-                .or(focus_target)
-                .or(hit)
-                .unwrap_or_else(|| doc.mount_root());
-            (click_target, focus_target, fan_target)
-        };
-        let fire = self.fire_event.ok_or_else(|| {
-            JsEngineError::new("__nanaFireEvent is not bound; call bind_event_bridge")
-        })?;
-        // Outside-click / ContextMenu capture path (document+window listeners).
-        engine.invoke(
-            fire,
-            &[
-                HostValue::Number(fan_target.0 as f64),
-                HostValue::string("pointerdown"),
-                HostValue::Object(Default::default()),
-            ],
-        )?;
-        if click_target.is_none() && focus_target.is_none() {
-            engine.run_microtasks()?;
-            let _ = self.pump_frame(engine)?;
-            return Ok(true);
-        }
-        if let Some(handle) = focus_target {
-            engine.invoke(
-                fire,
-                &[
-                    HostValue::Number(handle.0 as f64),
-                    HostValue::string("focus"),
-                    HostValue::Object(Default::default()),
-                ],
-            )?;
-        }
-        if let Some(handle) = click_target {
-            // Prefer semantic press when the target is a registered widget.
-            let is_semantic = self.bridge.lock().expect("vue bridge").contains(handle.0);
-            if is_semantic {
-                let _ = self.dispatch_bridge_event(engine, BridgeEvent::Press { id: handle.0 })?;
-            } else {
-                engine.invoke(
-                    fire,
-                    &[
-                        HostValue::Number(handle.0 as f64),
-                        HostValue::string("click"),
-                        HostValue::Object(Default::default()),
-                    ],
-                )?;
-                engine.run_microtasks()?;
-                let _ = self.pump_frame(engine)?;
-            }
-        }
-        Ok(true)
+        let down =
+            self.dispatch_pointer(engine, PointerInput::mouse(PointerEventKind::Down, x, y))?;
+        let up = self.dispatch_pointer(engine, PointerInput::mouse(PointerEventKind::Up, x, y))?;
+        Ok(down || up)
     }
 
-    /// Hit-test a wheel gesture in logical CSS pixels and fire `wheel` on the target.
+    pub fn dispatch_wheel_result<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: WheelInput,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        let target = {
+            let doc = self.document.lock().expect("vue doc");
+            doc.hit_event_target(input.client_x, input.client_y, "wheel")
+                .or_else(|| doc.hit_test(input.client_x, input.client_y))
+        };
+        let Some(target) = target else {
+            return Ok(HostedInputResult::default());
+        };
+        let allowed = self.fire_dom_event(engine, target, "wheel", input.detail())?;
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(HostedInputResult {
+            targeted: true,
+            default_prevented: !allowed,
+            consumed: !allowed,
+        })
+    }
+
+    pub fn dispatch_wheel<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: WheelInput,
+    ) -> Result<bool, JsEngineError> {
+        self.dispatch_wheel_result(engine, input)
+            .map(|result| result.targeted)
+    }
+
     pub fn pointer_wheel<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -905,37 +1952,235 @@ impl VueHost {
         delta_x: f32,
         delta_y: f32,
     ) -> Result<bool, JsEngineError> {
+        self.dispatch_wheel(engine, WheelInput::pixels(x, y, delta_x, delta_y))
+    }
+
+    pub fn dispatch_keyboard<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: &KeyboardInput,
+        target: Option<NodeHandle>,
+    ) -> Result<bool, JsEngineError> {
         let target = {
             let doc = self.document.lock().expect("vue doc");
-            doc.hit_event_target(x, y, "wheel")
-                .or_else(|| doc.hit_test(x, y))
+            target
+                .or_else(|| doc.focused())
+                .unwrap_or_else(|| doc.mount_root())
         };
-        let Some(handle) = target else {
+        let repeated = self
+            .input
+            .lock()
+            .expect("input state")
+            .note_key(&input.code, input.kind == KeyboardEventKind::Down);
+        let mut detail = input.detail();
+        if repeated {
+            detail.insert("repeat".into(), HostValue::Bool(true));
+        }
+        let allowed = self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
+        if allowed && input.kind == KeyboardEventKind::Down && input.key.eq_ignore_ascii_case("tab")
+        {
+            let (previous, next) = self.advance_tab_focus(input.modifiers.shift);
+            if previous != next {
+                if let Some(previous) = previous {
+                    self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
+                }
+                if let Some(next) = next {
+                    self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
+                }
+            }
+        }
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(allowed)
+    }
+
+    fn advance_tab_focus(&self, reverse: bool) -> (Option<NodeHandle>, Option<NodeHandle>) {
+        let mut document = self.document.lock().expect("vue doc");
+        let previous = document.focused();
+        let root = document.mount_root();
+        let mut order = document
+            .collect_element_preorder(root)
+            .into_iter()
+            .map(NodeHandle)
+            .filter_map(|node| {
+                let tag = document.element_tag(node)?;
+                if document.get_attribute(node, "disabled").is_some() {
+                    return None;
+                }
+                let tabindex = document
+                    .get_attribute(node, "tabindex")
+                    .and_then(|value| value.parse::<i32>().ok());
+                if tabindex.is_some_and(|value| value < 0) {
+                    return None;
+                }
+                let naturally_focusable = is_focusable_tag(&tag)
+                    || self.native_component_name(node.0).is_some()
+                    || document
+                        .get_attribute(node, "contenteditable")
+                        .is_some_and(|value| value != "false");
+                (naturally_focusable || tabindex.is_some()).then_some((tabindex.unwrap_or(0), node))
+            })
+            .collect::<Vec<_>>();
+        order.sort_by_key(|(tabindex, _)| {
+            if *tabindex > 0 {
+                (0, *tabindex)
+            } else {
+                (1, 0)
+            }
+        });
+        if order.is_empty() {
+            document.clear_focus();
+            return (previous, None);
+        }
+        let current = previous.and_then(|focused| {
+            order
+                .iter()
+                .position(|(_, candidate)| *candidate == focused)
+        });
+        let next_index = if reverse {
+            current.map_or(order.len() - 1, |index| {
+                if index == 0 {
+                    order.len() - 1
+                } else {
+                    index - 1
+                }
+            })
+        } else {
+            current.map_or(0, |index| (index + 1) % order.len())
+        };
+        let next = order.get(next_index).map(|(_, node)| *node);
+        if let Some(next) = next {
+            document.set_focus(next);
+        }
+        (previous, next)
+    }
+
+    /// Commit text from a keyboard or IME into the focused Vue control.
+    pub fn commit_text<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        text: &str,
+        input_type: &str,
+    ) -> Result<bool, JsEngineError> {
+        let Some(target) = self.document.lock().expect("vue doc").focused() else {
             return Ok(false);
         };
-        let fire = self.fire_event.ok_or_else(|| {
-            JsEngineError::new("__nanaFireEvent is not bound; call bind_event_bridge")
-        })?;
+        let next = {
+            let doc = self.document.lock().expect("vue doc");
+            let previous = doc.get_attribute(target, "value").unwrap_or_default();
+            format!("{previous}{text}")
+        };
         let mut detail = BTreeMap::new();
-        detail.insert("deltaX".into(), HostValue::Number(delta_x as f64));
-        detail.insert("deltaY".into(), HostValue::Number(delta_y as f64));
-        engine.invoke(
-            fire,
-            &[
-                HostValue::Number(handle.0 as f64),
-                HostValue::string("wheel"),
-                HostValue::Object(detail),
-            ],
-        )?;
+        detail.insert("data".into(), HostValue::string(text));
+        detail.insert("inputType".into(), HostValue::string(input_type));
+        detail.insert("value".into(), HostValue::string(&next));
+        detail.insert("isComposing".into(), HostValue::Bool(false));
+        if !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
+            return Ok(false);
+        }
+        self.document
+            .lock()
+            .expect("vue doc")
+            .set_attribute(target, "value", &next);
+        self.fire_dom_event(engine, target, "input", detail)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(true)
     }
 
-    /// Dispatch a keyboard event to the focused element (or `target` override).
+    pub fn dispatch_composition<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: &CompositionInput,
+    ) -> Result<bool, JsEngineError> {
+        let Some(target) = self.document.lock().expect("vue doc").focused() else {
+            return Ok(false);
+        };
+        let mut detail = BTreeMap::new();
+        detail.insert("data".into(), HostValue::string(&input.data));
+        detail.insert(
+            "isComposing".into(),
+            HostValue::Bool(input.kind != CompositionEventKind::End),
+        );
+        self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
+        engine.run_microtasks()?;
+        if input.kind == CompositionEventKind::End && !input.data.is_empty() {
+            return self.commit_text(engine, &input.data, "insertCompositionText");
+        }
+        let _ = self.pump_frame(engine)?;
+        Ok(true)
+    }
+
+    /// Forwards desktop winit IME lifecycle into Vue composition events.
     ///
-    /// Falls back to `body` (`mount_root`) so Escape reaches document/window
-    /// fan-out even when nothing is focused (context menus / dismiss layers).
+    /// Commit text itself continues through the retained Iced input/editor and
+    /// [`BridgeEvent::Input`], avoiding a duplicate insertion while still giving
+    /// Vue the browser composition lifecycle.
+    pub fn dispatch_native_ime<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        event: &ImeEvent,
+    ) -> Result<bool, JsEngineError> {
+        if self.focused().is_none() {
+            return Ok(false);
+        }
+        match event {
+            ImeEvent::Enabled => Ok(true),
+            ImeEvent::Preedit { text, .. } => {
+                let started = {
+                    let mut input = self.input.lock().expect("input state");
+                    let started = input.begin_composition();
+                    input.update_preedit(text);
+                    started
+                };
+                if started {
+                    self.dispatch_composition(
+                        engine,
+                        &CompositionInput::new(CompositionEventKind::Start, ""),
+                    )?;
+                }
+                self.dispatch_composition(
+                    engine,
+                    &CompositionInput::new(CompositionEventKind::Update, text),
+                )
+            }
+            ImeEvent::Commit(text) => {
+                self.input.lock().expect("input state").finish_composition();
+                // Browser compositionend carries committed text. The Iced
+                // editor's ensuing Input message owns the value mutation.
+                let target = self.document.lock().expect("vue doc").focused();
+                let Some(target) = target else {
+                    return Ok(false);
+                };
+                let mut detail = BTreeMap::new();
+                detail.insert("data".into(), HostValue::string(text));
+                detail.insert("isComposing".into(), HostValue::Bool(false));
+                self.fire_dom_event(engine, target, "compositionend", detail)?;
+                engine.run_microtasks()?;
+                let _ = self.pump_frame(engine)?;
+                Ok(true)
+            }
+            ImeEvent::Disabled => {
+                let data = self.input.lock().expect("input state").finish_composition();
+                let Some(data) = data else {
+                    return Ok(true);
+                };
+                let target = self.document.lock().expect("vue doc").focused();
+                let Some(target) = target else {
+                    return Ok(false);
+                };
+                let mut detail = BTreeMap::new();
+                detail.insert("data".into(), HostValue::string(data));
+                detail.insert("isComposing".into(), HostValue::Bool(false));
+                self.fire_dom_event(engine, target, "compositionend", detail)?;
+                engine.run_microtasks()?;
+                let _ = self.pump_frame(engine)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Legacy keydown helper; printable text is committed separately for compatibility.
     pub fn dispatch_key<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -943,63 +2188,108 @@ impl VueHost {
         code: &str,
         target: Option<NodeHandle>,
     ) -> Result<bool, JsEngineError> {
-        let handle = {
-            let doc = self.document.lock().expect("vue doc");
-            target
-                .or_else(|| doc.focused())
-                .unwrap_or_else(|| doc.mount_root())
-        };
-        let fire = self.fire_event.ok_or_else(|| {
-            JsEngineError::new("__nanaFireEvent is not bound; call bind_event_bridge")
-        })?;
-        let mut detail = BTreeMap::new();
-        detail.insert("key".into(), HostValue::string(key));
-        detail.insert("code".into(), HostValue::string(code));
-        engine.invoke(
-            fire,
-            &[
-                HostValue::Number(handle.0 as f64),
-                HostValue::string("keydown"),
-                HostValue::Object(detail.clone()),
-            ],
-        )?;
-        // Printable input → also fire `input` for v-model (only when a real focus target).
-        let focused_for_input = {
-            let doc = self.document.lock().expect("vue doc");
-            target.or_else(|| doc.focused())
-        };
-        if let Some(handle) = focused_for_input
+        let input = KeyboardInput::key_down(key, code);
+        self.dispatch_keyboard(engine, &input, target)?;
+        if target.or_else(|| self.focused()).is_some()
             && key.chars().count() == 1
-            && !key.chars().next().is_some_and(|c| c.is_control())
+            && !key
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_control())
         {
-            let mut input_detail = BTreeMap::new();
-            input_detail.insert("data".into(), HostValue::string(key));
-            input_detail.insert("value".into(), HostValue::string(key));
-            // Append into the attribute value when possible.
-            {
-                let mut doc = self.document.lock().expect("vue doc");
-                let prev = doc.get_attribute(handle, "value").unwrap_or_default();
-                let next = format!("{prev}{key}");
-                doc.set_attribute(handle, "value", &next);
-                input_detail.insert("value".into(), HostValue::string(next));
-            }
-            engine.invoke(
-                fire,
-                &[
-                    HostValue::Number(handle.0 as f64),
-                    HostValue::string("input"),
-                    HostValue::Object(input_detail),
-                ],
-            )?;
+            self.commit_text(engine, key, "insertText")?;
         }
-        engine.run_microtasks()?;
-        let _ = self.pump_frame(engine)?;
         Ok(true)
     }
 
     pub fn focused(&self) -> Option<NodeHandle> {
         self.document.lock().expect("vue doc").focused()
     }
+
+    #[cfg(feature = "iced-view")]
+    fn native_component_name(&self, id: WidgetId) -> Option<String> {
+        self.bridge
+            .lock()
+            .ok()?
+            .get(id)
+            .and_then(|widget| widget.props.native_component.clone())
+    }
+
+    #[cfg(not(feature = "iced-view"))]
+    fn native_component_name(&self, _id: u64) -> Option<String> {
+        None
+    }
+}
+
+fn file_drag_detail(
+    paths: &[PathBuf],
+    position: Option<(f32, f32)>,
+) -> BTreeMap<String, HostValue> {
+    let mut detail = BTreeMap::new();
+    if let Some((x, y)) = position {
+        detail.insert("clientX".into(), HostValue::Number(f64::from(x)));
+        detail.insert("clientY".into(), HostValue::Number(f64::from(y)));
+    }
+    let files = paths
+        .iter()
+        .map(|path| {
+            let mut file = BTreeMap::new();
+            file.insert(
+                "name".into(),
+                HostValue::string(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+            );
+            file.insert(
+                "path".into(),
+                HostValue::string(path.to_string_lossy().into_owned()),
+            );
+            file.insert("type".into(), HostValue::string(""));
+            if let Ok(metadata) = path.metadata() {
+                file.insert("size".into(), HostValue::Number(metadata.len() as f64));
+                if let Ok(modified) = metadata.modified()
+                    && let Ok(duration) = modified.duration_since(UNIX_EPOCH)
+                {
+                    file.insert(
+                        "lastModified".into(),
+                        HostValue::Number(duration.as_secs_f64() * 1000.0),
+                    );
+                }
+            }
+            HostValue::Object(file)
+        })
+        .collect();
+    detail.insert("files".into(), HostValue::Array(files));
+    detail
+}
+
+impl Drop for VueHost {
+    fn drop(&mut self) {
+        #[cfg(feature = "iced-view")]
+        self.unmount_all_native_components();
+    }
+}
+
+fn is_focusable_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "input"
+            | "textarea"
+            | "button"
+            | "select"
+            | "a"
+            | "nana-button"
+            | "nana-switch"
+            | "nana-sidebar-row"
+            | "nana-input"
+            | "nana-textarea"
+            | "nana-checkbox"
+            | "nana-select"
+            | "nana-range"
+    )
 }
 
 /// Measure the semantic forest with the Style-Model layout subset and map boxes
@@ -1062,6 +2352,402 @@ macro_rules! refuse_dual_js_engines {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingEngine {
+        invocations: Vec<(JsFunctionId, Vec<HostValue>)>,
+    }
+
+    impl JsEngine for RecordingEngine {
+        fn initialize(&mut self, _artifact: RuntimeArtifact) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+
+        fn register_host_api(&mut self, _api: &HostApiRegistry) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+
+        fn resolve_function(&mut self, _name: &str) -> Result<JsFunctionId, JsEngineError> {
+            Ok(JsFunctionId(1))
+        }
+
+        fn invoke(
+            &mut self,
+            target: JsFunctionId,
+            args: &[HostValue],
+        ) -> Result<HostValue, JsEngineError> {
+            self.invocations.push((target, args.to_vec()));
+            Ok(HostValue::Bool(true))
+        }
+
+        fn run_microtasks(&mut self) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+
+        fn interrupt(&mut self) {}
+        fn request_gc(&mut self) {}
+        fn shutdown(&mut self) {}
+    }
+
+    fn fired_events(engine: &RecordingEngine) -> Vec<(u64, String, BTreeMap<String, HostValue>)> {
+        engine
+            .invocations
+            .iter()
+            .filter_map(|(_, args)| {
+                let target = args.first()?.as_f64()? as u64;
+                let name = args.get(1)?.as_str()?.to_string();
+                let detail = args.get(2)?.as_object()?.clone();
+                Some((target, name, detail))
+            })
+            .collect()
+    }
+
+    fn install_input_nodes(host: &mut VueHost) -> (NodeHandle, NodeHandle) {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        let root = doc.mount_root();
+        let first = doc.create_element("input");
+        let second = doc.create_element("button");
+        doc.insert(first, root, None);
+        doc.insert(second, root, None);
+        drop(doc);
+
+        let store = host.layout_box_store();
+        store.begin_frame();
+        store.record(first, 0.0, 0.0, 80.0, 40.0);
+        store.record(second, 100.0, 0.0, 80.0, 40.0);
+        host.sync_iced_layout_boxes();
+        (first, second)
+    }
+
+    #[test]
+    fn pointer_capture_keeps_target_and_blur_releases_it() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        host.lifecycle_pump = Some(JsFunctionId(2));
+        let (first, second) = install_input_nodes(&mut host);
+        let mut engine = RecordingEngine::default();
+
+        let mut down = PointerInput::mouse(PointerEventKind::Down, 10.0, 12.0);
+        down.pointer_id = 7;
+        down.screen_x = 210.0;
+        down.screen_y = 312.0;
+        down.buttons = 1;
+        down.pressure = 0.5;
+        down.modifiers.shift = true;
+        assert!(
+            host.dispatch_pointer(&mut engine, down)
+                .expect("pointer down")
+        );
+
+        let api = host.host_api_registry();
+        api.call(
+            "setPointerCapture",
+            &[HostValue::Number(first.0 as f64), HostValue::Number(7.0)],
+        )
+        .expect("capture pointer");
+        assert_eq!(
+            api.call(
+                "hasPointerCapture",
+                &[HostValue::Number(first.0 as f64), HostValue::Number(7.0),],
+            )
+            .expect("query capture"),
+            HostValue::Bool(true)
+        );
+
+        let mut movement = PointerInput::mouse(PointerEventKind::Move, 120.0, 12.0);
+        movement.pointer_id = 7;
+        movement.buttons = 1;
+        movement.pressure = 0.25;
+        movement.tangential_pressure = -0.2;
+        movement.tilt_x = 25;
+        movement.tilt_y = -12;
+        movement.twist = 180;
+        movement.modifiers.alt = true;
+        assert!(
+            host.dispatch_pointer(&mut engine, movement)
+                .expect("captured move")
+        );
+
+        let events = fired_events(&engine);
+        let captured_move = events
+            .iter()
+            .find(|(_, name, detail)| {
+                name == "pointermove"
+                    && detail.get("pointerId").and_then(HostValue::as_f64) == Some(7.0)
+            })
+            .expect("pointermove event");
+        assert_eq!(captured_move.0, first.0);
+        assert_ne!(captured_move.0, second.0);
+        assert_eq!(
+            captured_move.2.get("clientX").and_then(HostValue::as_f64),
+            Some(120.0)
+        );
+        assert_eq!(
+            captured_move.2.get("altKey").and_then(HostValue::as_bool),
+            Some(true)
+        );
+        let tangential_pressure = captured_move
+            .2
+            .get("tangentialPressure")
+            .and_then(HostValue::as_f64)
+            .expect("tangential pressure");
+        assert!((tangential_pressure + 0.2).abs() < 1e-6);
+        assert_eq!(
+            captured_move.2.get("tiltX").and_then(HostValue::as_f64),
+            Some(25.0)
+        );
+        assert_eq!(
+            captured_move.2.get("tiltY").and_then(HostValue::as_f64),
+            Some(-12.0)
+        );
+        assert_eq!(
+            captured_move.2.get("twist").and_then(HostValue::as_f64),
+            Some(180.0)
+        );
+        assert!(events.iter().any(|(target, name, detail)| {
+            *target == first.0
+                && name == "gotpointercapture"
+                && detail.get("pointerId").and_then(HostValue::as_f64) == Some(7.0)
+        }));
+
+        host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+            .expect("window blur");
+        assert_eq!(
+            api.call(
+                "hasPointerCapture",
+                &[HostValue::Number(first.0 as f64), HostValue::Number(7.0),],
+            )
+            .expect("capture released"),
+            HostValue::Bool(false)
+        );
+        assert!(fired_events(&engine).iter().any(|(target, name, detail)| {
+            *target == first.0
+                && name == "lostpointercapture"
+                && detail.get("pointerId").and_then(HostValue::as_f64) == Some(7.0)
+        }));
+    }
+
+    #[test]
+    fn file_drag_tracks_hit_target_and_exposes_file_descriptors() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (first, second) = install_input_nodes(&mut host);
+        let mut engine = RecordingEngine::default();
+        let paths = vec![
+            PathBuf::from("C:/drop/avatar.png"),
+            PathBuf::from("C:/drop/background.jpg"),
+        ];
+
+        host.dispatch_file_drag(
+            &mut engine,
+            FileDragEventKind::Hover,
+            &paths,
+            Some((10.0, 12.0)),
+        )
+        .expect("hover first target");
+        host.dispatch_file_drag(
+            &mut engine,
+            FileDragEventKind::Hover,
+            &paths,
+            Some((120.0, 12.0)),
+        )
+        .expect("hover second target");
+        host.dispatch_file_drag(
+            &mut engine,
+            FileDragEventKind::Drop,
+            &paths,
+            Some((120.0, 12.0)),
+        )
+        .expect("drop second target");
+
+        let events = fired_events(&engine);
+        assert_eq!(
+            events
+                .iter()
+                .map(|(target, name, _)| (*target, name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (first.0, "dragenter"),
+                (first.0, "dragover"),
+                (first.0, "dragleave"),
+                (second.0, "dragenter"),
+                (second.0, "dragover"),
+                (second.0, "drop"),
+            ]
+        );
+        let files = events
+            .last()
+            .and_then(|(_, _, detail)| detail.get("files"))
+            .and_then(HostValue::as_array)
+            .expect("drop files");
+        assert_eq!(files.len(), 2);
+        let file = files[0].as_object().expect("file descriptor");
+        assert_eq!(
+            file.get("name").and_then(HostValue::as_str),
+            Some("avatar.png")
+        );
+        assert_eq!(
+            file.get("path").and_then(HostValue::as_str),
+            Some("C:/drop/avatar.png")
+        );
+        assert_eq!(
+            files[1]
+                .as_object()
+                .and_then(|file| file.get("name"))
+                .and_then(HostValue::as_str),
+            Some("background.jpg")
+        );
+    }
+
+    #[test]
+    fn composition_end_commits_through_beforeinput_and_input() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "Nana");
+            doc.set_focus(input);
+        }
+        let mut engine = RecordingEngine::default();
+
+        host.dispatch_composition(
+            &mut engine,
+            &CompositionInput::new(CompositionEventKind::Start, ""),
+        )
+        .expect("composition start");
+        host.dispatch_composition(
+            &mut engine,
+            &CompositionInput::new(CompositionEventKind::Update, "界"),
+        )
+        .expect("composition update");
+        host.dispatch_composition(
+            &mut engine,
+            &CompositionInput::new(CompositionEventKind::End, "界"),
+        )
+        .expect("composition end");
+
+        let events = fired_events(&engine);
+        let names = events
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "compositionstart",
+                "compositionupdate",
+                "compositionend",
+                "beforeinput",
+                "input"
+            ]
+        );
+        let input_event = events.last().expect("input event");
+        assert_eq!(input_event.0, input.0);
+        assert_eq!(
+            input_event.2.get("value").and_then(HostValue::as_str),
+            Some("Nana界")
+        );
+        assert_eq!(
+            input_event.2.get("inputType").and_then(HostValue::as_str),
+            Some("insertCompositionText")
+        );
+        assert_eq!(
+            host.document()
+                .lock()
+                .expect("document")
+                .get_attribute(input, "value")
+                .as_deref(),
+            Some("Nana界")
+        );
+    }
+
+    #[test]
+    fn native_ime_emits_composition_without_double_committing_iced_value() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "Nana");
+            doc.set_focus(input);
+        }
+        let mut engine = RecordingEngine::default();
+
+        host.dispatch_native_ime(
+            &mut engine,
+            &ImeEvent::Preedit {
+                text: "世".into(),
+                selection: Some((3, 3)),
+            },
+        )
+        .expect("preedit");
+        host.dispatch_native_ime(&mut engine, &ImeEvent::Commit("世界".into()))
+            .expect("commit lifecycle");
+
+        let events = fired_events(&engine);
+        assert_eq!(
+            events
+                .iter()
+                .map(|(_, name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["compositionstart", "compositionupdate", "compositionend"]
+        );
+        assert_eq!(
+            events
+                .last()
+                .and_then(|(_, _, detail)| detail.get("data"))
+                .and_then(HostValue::as_str),
+            Some("世界")
+        );
+        assert_eq!(
+            host.document()
+                .lock()
+                .expect("document")
+                .get_attribute(input, "value")
+                .as_deref(),
+            Some("Nana"),
+            "Iced BridgeEvent::Input remains the single value-commit path"
+        );
+    }
+
+    #[test]
+    fn tab_and_shift_tab_move_focus_in_document_order() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (first, second) = install_input_nodes(&mut host);
+        host.document().lock().expect("document").set_focus(first);
+        let mut engine = RecordingEngine::default();
+
+        host.dispatch_keyboard(&mut engine, &KeyboardInput::key_down("Tab", "Tab"), None)
+            .expect("tab");
+        assert_eq!(host.focused(), Some(second));
+
+        let mut key_up = KeyboardInput::key_down("Tab", "Tab");
+        key_up.kind = KeyboardEventKind::Up;
+        host.dispatch_keyboard(&mut engine, &key_up, None)
+            .expect("tab keyup");
+        let mut reverse = KeyboardInput::key_down("Tab", "Tab");
+        reverse.modifiers.shift = true;
+        host.dispatch_keyboard(&mut engine, &reverse, None)
+            .expect("shift tab");
+        assert_eq!(host.focused(), Some(first));
+
+        let events = fired_events(&engine);
+        assert!(
+            events
+                .iter()
+                .any(|(target, name, _)| { *target == first.0 && name == "blur" })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|(target, name, _)| { *target == second.0 && name == "focus" })
+        );
+    }
 
     #[test]
     fn document_element_set_theme_rebuilds_bg_before_snapshot() {

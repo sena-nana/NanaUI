@@ -29,5 +29,7 @@ serde_json.workspace = true
 v8 = { workspace = true, optional = true }
 
 [dev-dependencies]
-nana-ui-vue = { path = "../nana-ui-vue", default-features = false }
+nana-ui-vue = { path = "../nana-ui-vue", default-features = false, features = ["hosted"] }
 nana-ui-web-api.workspace = true
+nana-ui = { workspace = true, features = ["hosted"] }
+iced.workspace = true

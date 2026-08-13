@@ -294,9 +294,11 @@ fn translate_descendants(
     let mut updated: Vec<(NodeHandle, LayoutBox)> = Vec::new();
     while let Some(child) = stack.pop() {
         if let Some(mut box_) = get_layout_box_from(layout_store, doc, child) {
-            box_.x += dx;
-            box_.y += dy;
-            layout_store.record(child, box_.x, box_.y, box_.width, box_.height);
+            box_ = layout_store.translate(child, dx, dy).unwrap_or_else(|| {
+                box_.x += dx;
+                box_.y += dy;
+                box_
+            });
             updated.push((child, box_));
         }
         stack.extend(doc.children_of(child));

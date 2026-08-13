@@ -4,6 +4,7 @@
 //! second paint path. JavaScript runs in the selected Rust-owned engine and all
 //! visible output still maps through NanaUI to Iced/WGPU.
 
+mod canvas;
 mod fetch;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -12,7 +13,13 @@ use std::time::{Duration, Instant};
 
 use nana_js_engine::{HostApiRegistry, HostValue, JsException, RuntimeArtifact};
 
+pub use canvas::{
+    CanvasBitmap, CanvasError, CanvasId, CanvasResourceKind, CanvasRuntime, CanvasUpload,
+    SharedCanvasRuntime, shared_canvas_runtime,
+};
 use fetch::{FetchCompletion, FetchRuntime};
+
+const RAF_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub use nana_ui_platform::{
     ClipboardHost, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
@@ -43,8 +50,10 @@ pub fn compose_runtime_artifact(name: impl Into<String>, app_source: &str) -> Ru
 /// In-memory Web API host state shared with JS via `__nanaHost`.
 #[derive(Debug)]
 pub struct WebApiState {
+    local_storage: SharedStorage,
     storage: HashMap<String, BTreeMap<String, String>>,
     pending_raf: BTreeSet<u64>,
+    raf_deadline: Option<Instant>,
     timeouts: BTreeMap<u64, Instant>,
     intervals: BTreeMap<u64, (Instant, Duration)>,
     document_dataset: BTreeMap<String, String>,
@@ -69,10 +78,19 @@ impl WebApiState {
     }
 
     pub fn with_fetch_host(fetch_host: SharedFetchHost) -> Self {
+        Self::with_fetch_host_and_local_storage(fetch_host, shared_storage())
+    }
+
+    pub fn with_fetch_host_and_local_storage(
+        fetch_host: SharedFetchHost,
+        local_storage: SharedStorage,
+    ) -> Self {
         Self {
             location_path: "/".into(),
+            local_storage,
             storage: HashMap::new(),
             pending_raf: BTreeSet::new(),
+            raf_deadline: None,
             timeouts: BTreeMap::new(),
             intervals: BTreeMap::new(),
             document_dataset: BTreeMap::new(),
@@ -84,10 +102,23 @@ impl WebApiState {
     }
 
     pub fn storage_get(&self, bucket: &str, key: &str) -> Option<String> {
+        if bucket == "local" {
+            return self
+                .local_storage
+                .lock()
+                .ok()
+                .and_then(|storage| storage.get(key).cloned());
+        }
         self.storage.get(bucket).and_then(|m| m.get(key).cloned())
     }
 
     pub fn storage_set(&mut self, bucket: &str, key: &str, value: String) {
+        if bucket == "local" {
+            if let Ok(mut storage) = self.local_storage.lock() {
+                storage.insert(key.to_string(), value);
+            }
+            return;
+        }
         self.storage
             .entry(bucket.to_string())
             .or_default()
@@ -95,18 +126,37 @@ impl WebApiState {
     }
 
     pub fn storage_remove(&mut self, bucket: &str, key: &str) {
+        if bucket == "local" {
+            if let Ok(mut storage) = self.local_storage.lock() {
+                storage.remove(key);
+            }
+            return;
+        }
         if let Some(map) = self.storage.get_mut(bucket) {
             map.remove(key);
         }
     }
 
     pub fn storage_clear(&mut self, bucket: &str) {
+        if bucket == "local" {
+            if let Ok(mut storage) = self.local_storage.lock() {
+                storage.clear();
+            }
+            return;
+        }
         if let Some(map) = self.storage.get_mut(bucket) {
             map.clear();
         }
     }
 
     pub fn storage_keys(&self, bucket: &str) -> Vec<String> {
+        if bucket == "local" {
+            return self
+                .local_storage
+                .lock()
+                .map(|storage| storage.keys().cloned().collect())
+                .unwrap_or_default();
+        }
         self.storage
             .get(bucket)
             .map(|m| m.keys().cloned().collect())
@@ -132,8 +182,12 @@ impl WebApiState {
 
     /// Due raf ids + timeout ids + interval ids that should fire.
     pub fn due_timers(&mut self, now: Instant) -> DueTimers {
-        let raf: Vec<u64> = self.pending_raf.iter().copied().collect();
-        self.pending_raf.clear();
+        let raf = if self.raf_deadline.is_some_and(|deadline| deadline <= now) {
+            self.raf_deadline = None;
+            std::mem::take(&mut self.pending_raf).into_iter().collect()
+        } else {
+            Vec::new()
+        };
 
         let mut timeouts = Vec::new();
         let ready: Vec<u64> = self
@@ -177,9 +231,7 @@ impl WebApiState {
     /// Earliest useful host wakeup. There is no polling when idle; an active
     /// background fetch uses a short bounded wake until its completion arrives.
     pub fn next_wakeup(&self, now: Instant) -> Option<Instant> {
-        if !self.pending_raf.is_empty() {
-            return Some(now);
-        }
+        let raf = self.raf_deadline;
         let timer = self
             .timeouts
             .values()
@@ -190,12 +242,7 @@ impl WebApiState {
             .fetch
             .has_pending()
             .then(|| now + Duration::from_millis(8));
-        match (timer, fetch) {
-            (Some(timer), Some(fetch)) => Some(timer.min(fetch)),
-            (Some(timer), None) => Some(timer),
-            (None, Some(fetch)) => Some(fetch),
-            (None, None) => None,
-        }
+        raf.into_iter().chain(timer).chain(fetch).min()
     }
 }
 
@@ -251,6 +298,11 @@ impl DueTimers {
 
 /// Shared handle used by VueHost and examples.
 pub type SharedWebApiState = Arc<Mutex<WebApiState>>;
+pub type SharedStorage = Arc<Mutex<BTreeMap<String, String>>>;
+
+pub fn shared_storage() -> SharedStorage {
+    Arc::new(Mutex::new(BTreeMap::new()))
+}
 
 pub fn shared_web_api_state() -> SharedWebApiState {
     Arc::new(Mutex::new(WebApiState::new()))
@@ -260,12 +312,38 @@ pub fn shared_web_api_state_with_fetch(fetch_host: SharedFetchHost) -> SharedWeb
     Arc::new(Mutex::new(WebApiState::with_fetch_host(fetch_host)))
 }
 
+pub fn shared_web_api_state_with_local_storage(local_storage: SharedStorage) -> SharedWebApiState {
+    Arc::new(Mutex::new(WebApiState::with_fetch_host_and_local_storage(
+        shared_fetch_host(NativeFetchHost::new(FetchPolicy::default())),
+        local_storage,
+    )))
+}
+
 /// Register storage / timer / documentElement / location / clipboard host ops.
 ///
 /// Clipboard defaults to the platform backend ([`default_shared_clipboard`]): OS
 /// pasteboard on desktop, unsupported on Android.
 pub fn register_web_api_host_ops(api: &mut HostApiRegistry, state: SharedWebApiState) {
-    register_web_api_host_ops_with_clipboard(api, state, default_shared_clipboard());
+    register_web_api_host_ops_with_resources(
+        api,
+        state,
+        default_shared_clipboard(),
+        shared_canvas_runtime(),
+    );
+}
+
+/// Register the Web API surface with a caller-owned Canvas/image resource
+/// store. VueHost uses this form so DOM canvas nodes and host rendering share
+/// one lifecycle without coupling the generic web API crate to WGPU.
+pub fn register_web_api_host_ops_with_resources(
+    api: &mut HostApiRegistry,
+    state: SharedWebApiState,
+    clipboard: SharedClipboardHost,
+    canvas: SharedCanvasRuntime,
+) {
+    register_web_api_storage_and_timer_ops(api, state);
+    register_clipboard_host_ops(api, clipboard);
+    canvas::register_canvas_host_ops(api, canvas);
 }
 
 /// Like [`register_web_api_host_ops`], but with an injected clipboard (tests).
@@ -274,8 +352,7 @@ pub fn register_web_api_host_ops_with_clipboard(
     state: SharedWebApiState,
     clipboard: SharedClipboardHost,
 ) {
-    register_web_api_storage_and_timer_ops(api, state);
-    register_clipboard_host_ops(api, clipboard);
+    register_web_api_host_ops_with_resources(api, state, clipboard, shared_canvas_runtime());
 }
 
 /// Register `clipboardReadText` / `clipboardWriteText` against a shared host.
@@ -363,7 +440,11 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
         let state = Arc::clone(&state);
         api.register("rafSchedule", move |args| {
             let id = arg_u64(args, 0)?;
-            lock(&state)?.pending_raf.insert(id);
+            let mut state = lock(&state)?;
+            state.pending_raf.insert(id);
+            state
+                .raf_deadline
+                .get_or_insert_with(|| Instant::now() + RAF_FRAME_INTERVAL);
             Ok(HostValue::Null)
         });
     }
@@ -371,7 +452,11 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
         let state = Arc::clone(&state);
         api.register("rafCancel", move |args| {
             let id = arg_u64(args, 0)?;
-            lock(&state)?.pending_raf.remove(&id);
+            let mut state = lock(&state)?;
+            state.pending_raf.remove(&id);
+            if state.pending_raf.is_empty() {
+                state.raf_deadline = None;
+            }
             Ok(HostValue::Null)
         });
     }
@@ -706,10 +791,33 @@ mod tests {
             &[HostValue::Number(2.0), HostValue::Number(0.0)],
         )
         .unwrap();
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(18));
         let due = state.lock().unwrap().due_timers(Instant::now());
         assert!(due.raf.contains(&1));
         assert!(due.timeouts.contains(&2));
+    }
+
+    #[test]
+    fn raf_wakeup_deadline_is_stable_until_drained_or_cancelled() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        api.call("rafSchedule", &[HostValue::Number(1.0)]).unwrap();
+        let first = state
+            .lock()
+            .unwrap()
+            .next_wakeup(Instant::now())
+            .expect("rAF wakeup");
+        std::thread::sleep(Duration::from_millis(1));
+        let second = state
+            .lock()
+            .unwrap()
+            .next_wakeup(Instant::now())
+            .expect("same rAF wakeup");
+        assert_eq!(first, second);
+
+        api.call("rafCancel", &[HostValue::Number(1.0)]).unwrap();
+        assert!(state.lock().unwrap().next_wakeup(Instant::now()).is_none());
     }
 
     #[test]
@@ -720,11 +828,13 @@ mod tests {
         let mut api = HostApiRegistry::new();
         register_web_api_host_ops(&mut api, Arc::clone(&state));
         api.call("rafSchedule", &[HostValue::Number(1.0)]).unwrap();
+        std::thread::sleep(Duration::from_millis(18));
         let due1 = state.lock().unwrap().due_timers(Instant::now());
         assert_eq!(due1.raf, vec![1]);
         assert!(state.lock().unwrap().due_timers(Instant::now()).is_empty());
         // Nested schedule (as Transition's second rAF).
         api.call("rafSchedule", &[HostValue::Number(2.0)]).unwrap();
+        std::thread::sleep(Duration::from_millis(18));
         let due2 = state.lock().unwrap().due_timers(Instant::now());
         assert_eq!(due2.raf, vec![2]);
     }

@@ -14,7 +14,7 @@ path = "src/main.rs"
 default = ["engine-quickjs"]
 engine-quickjs = ["dep:nana-js-quickjs"]
 engine-v8 = ["dep:nana-js-v8", "nana-js-v8/engine"]
-windowed = ["dep:nana-ui", "nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/controls", "dep:iced", "nana-ui-vue/iced-view"]
+windowed = ["dep:nana-ui", "nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/controls", "dep:iced", "nana-ui-vue/iced-view", "nana-ui-vue/hosted"]
 
 [dependencies]
 nana-js-engine.workspace = true

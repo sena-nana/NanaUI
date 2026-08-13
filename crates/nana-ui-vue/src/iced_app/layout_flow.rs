@@ -737,6 +737,7 @@ fn wrap_content_height(
 /// CSS / measure default: missing gap is 0 (never silent 8px).
 /// Prefer [`LayoutStyle::main_gap`] / [`LayoutStyle::cross_gap`] for axis-aware
 /// two-value / `row-gap`·`column-gap` layouts.
+#[cfg(test)]
 fn layout_gap(layout: &crate::css_map::LayoutStyle) -> f32 {
     layout.gap_or(0.0)
 }
@@ -1163,8 +1164,64 @@ fn is_gpu_preview_slot(props: &WidgetProps) -> bool {
             c.as_str(),
             "nana-gpu-preview" | "nana-gpu" | "nana-gpu-slot"
         )
-    }) || props.agent_id.to_ascii_lowercase().contains("gpu")
+    }) || props.attrs.contains_key("data-nana-gpu")
+        || props.agent_id.to_ascii_lowercase().contains("gpu")
         || props.role.eq_ignore_ascii_case("nana-gpu")
+}
+
+fn is_raster_resource_slot(props: &WidgetProps) -> bool {
+    props.attrs.contains_key("data-nana-canvas") || props.attrs.contains_key("data-nana-image")
+}
+
+fn raster_resource_view<Message: 'static>(props: &WidgetProps) -> Element<'static, Message> {
+    let id = props
+        .attrs
+        .get("data-nana-canvas")
+        .or_else(|| props.attrs.get("data-nana-image"))
+        .and_then(|id| id.parse().ok());
+    #[cfg(feature = "hosted")]
+    {
+        if let Some(id) = id
+            && let Some(binding) = active_host_texture(&crate::canvas_gpu::slot(
+                nana_ui_web_api::CanvasId(id),
+            ))
+        {
+            let aspect_ratio = binding.aspect_ratio();
+            return nana_ui::GpuTextureView::new(binding.texture)
+                .with_corner_radius(props.layout.border_radius.unwrap_or(0.0))
+                .contain(aspect_ratio);
+        }
+    }
+    let Some(bitmap) = id.and_then(active_canvas_bitmap) else {
+        return Space::new().width(Length::Fill).height(Length::Fill).into();
+    };
+    let handle = cached_canvas_handle(&bitmap);
+    iced::widget::image::Image::new(handle)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .content_fit(iced::ContentFit::Contain)
+        .border_radius(props.layout.border_radius.unwrap_or(0.0))
+        .into()
+}
+
+thread_local! {
+    static CANVAS_HANDLE_CACHE: RefCell<std::collections::HashMap<u64, (u64, iced::widget::image::Handle)>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn cached_canvas_handle(bitmap: &CanvasBitmap) -> iced::widget::image::Handle {
+    CANVAS_HANDLE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((version, handle)) = cache.get(&bitmap.id.0)
+            && *version == bitmap.version
+        {
+            return handle.clone();
+        }
+        let handle =
+            iced::widget::image::Handle::from_rgba(bitmap.width, bitmap.height, bitmap.rgba.clone());
+        cache.insert(bitmap.id.0, (bitmap.version, handle.clone()));
+        handle
+    })
 }
 
 /// Row with `justify-content: space-between` and a definite cross-axis height.
@@ -1218,6 +1275,15 @@ fn gpu_preview_placeholder<Message: 'static>(
     snap: &SemanticSnapshot,
     tokens: ThemeTokens,
 ) -> Element<'static, Message> {
+    if let Some(slot) = props.attrs.get("data-nana-gpu")
+        && let Some(binding) = active_host_texture(slot)
+    {
+        let aspect_ratio = binding.aspect_ratio();
+        return nana_ui::GpuTextureView::new(binding.texture)
+            .with_opacity(props.layout.opacity.unwrap_or(1.0))
+            .with_corner_radius(props.layout.border_radius.unwrap_or(0.0))
+            .contain(aspect_ratio);
+    }
     let slot_h = children
         .iter()
         .find_map(|cid| {

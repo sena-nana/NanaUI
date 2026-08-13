@@ -3,7 +3,7 @@ export function createRenderer(_options) {
   return {
     render() {},
     createApp() {
-      return { mount() {}, unmount() {}, use() { return this; }, provide() { return this; } };
+      return { config: {}, mount() {}, unmount() {}, use() { return this; }, provide() { return this; } };
     },
   };
 }
