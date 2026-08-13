@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::rc::Rc;
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
@@ -302,11 +303,24 @@ where
                 .wrapping(text::Wrapping::None)
                 .ellipsis(text::Ellipsis::End),
         );
-        if let Some(trailing) = self.trailing {
-            content = content.push(trailing);
-        }
+        let row_hovered = if let Some(tools) = self.tools {
+            let row_hovered = Rc::new(Cell::new(false));
+            let trailing = self
+                .trailing
+                .unwrap_or_else(|| space().width(Length::Shrink).into());
+            content = content.push(Element::new(SidebarRowAccessories {
+                children: [trailing, tools],
+                row_hovered: row_hovered.clone(),
+            }));
+            Some(row_hovered)
+        } else {
+            if let Some(trailing) = self.trailing {
+                content = content.push(trailing);
+            }
+            None
+        };
 
-        let select = button(content)
+        let select: Element<'a, Message> = button(content)
             .width(Length::Fill)
             .height(Length::Fixed(row_height))
             .padding(Padding {
@@ -322,7 +336,16 @@ where
                 self.state,
                 self.tone,
                 tokens.metrics.radius_sm,
-            ));
+            ))
+            .into();
+        let select = if let Some(row_hovered) = row_hovered {
+            Element::new(SidebarRowHoverTracker {
+                content: select,
+                row_hovered,
+            })
+        } else {
+            select
+        };
 
         let mut layers = stack![select];
         if let Some((expanded, on_toggle)) = self.disclosure {
@@ -350,36 +373,6 @@ where
                     .center_y(Length::Fill),
             );
         }
-        if let Some(tools) = self.tools {
-            let tools_background = if self.state == SidebarRowState::Active {
-                colors.selected_hover
-            } else {
-                colors.hover
-            };
-            let tools = container(
-                container(tools)
-                    .height(Length::Fill)
-                    .padding([0.0, 3.0])
-                    .center_y(Length::Fill)
-                    .style(move |_theme: &Theme| {
-                        iced::widget::container::Style::default().background(tools_background)
-                    }),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(Padding {
-                top: 0.0,
-                right: 5.0,
-                bottom: 0.0,
-                left: 0.0,
-            })
-            .align_right(Length::Fill)
-            .center_y(Length::Fill);
-            layers = layers.push(Element::new(SidebarToolsOverlay {
-                content: tools.into(),
-                hovered: Cell::new(false),
-            }));
-        }
         container(layers)
             .width(Length::Fill)
             .height(Length::Fixed(row_height))
@@ -387,12 +380,14 @@ where
     }
 }
 
-struct SidebarToolsOverlay<'a, Message> {
+// Keeps the row and its nested accessory on the same pointer path. A separate
+// Stack layer would levitate the cursor away from the selectable row.
+struct SidebarRowHoverTracker<'a, Message> {
     content: Element<'a, Message>,
-    hovered: Cell<bool>,
+    row_hovered: Rc<Cell<bool>>,
 }
 
-impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarToolsOverlay<'_, Message> {
+impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarRowHoverTracker<'_, Message> {
     fn tag(&self) -> widget::tree::Tag {
         self.content.as_widget().tag()
     }
@@ -429,17 +424,144 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarToolsOverlay<'_,
         viewport: &Rectangle,
     ) {
         let is_hovered = cursor.is_over(layout.bounds());
-        if self.hovered.replace(is_hovered) != is_hovered {
+        if self.row_hovered.replace(is_hovered) != is_hovered {
             shell.request_redraw();
         }
-        if !is_hovered {
-            return;
-        }
-
         self.content
             .as_widget_mut()
             .update(tree, event, layout, cursor, renderer, shell, viewport);
-        if !shell.is_event_captured() && captures_tools_pointer(event, tools_bounds(layout), cursor)
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let is_hovered = cursor.is_over(layout.bounds());
+        self.row_hovered.set(is_hovered);
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        let is_hovered = cursor.is_over(layout.bounds());
+        self.row_hovered.set(is_hovered);
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut widget::Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: iced::Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+// The trailing metadata and tools share one stable slot so swapping them does
+// not change the label width or require an opaque cover over the row.
+struct SidebarRowAccessories<'a, Message> {
+    children: [Element<'a, Message>; 2],
+    row_hovered: Rc<Cell<bool>>,
+}
+
+impl<Message> SidebarRowAccessories<'_, Message> {
+    fn visible_index(&self) -> usize {
+        usize::from(self.row_hovered.get())
+    }
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarRowAccessories<'_, Message> {
+    fn diff(&mut self, tree: &mut widget::Tree) {
+        tree.diff_children(&mut self.children);
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Shrink, Length::Shrink)
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let limits = limits.loose();
+        let mut children = self
+            .children
+            .iter_mut()
+            .zip(&mut tree.children)
+            .map(|(child, tree)| child.as_widget_mut().layout(tree, renderer, &limits))
+            .collect::<Vec<_>>();
+        let intrinsic = children.iter().fold(Size::ZERO, |size, child| {
+            Size::new(
+                size.width.max(child.size().width),
+                size.height.max(child.size().height),
+            )
+        });
+        let size = limits.resolve(Length::Shrink, Length::Shrink, intrinsic);
+        for child in &mut children {
+            child.align_mut(Alignment::End, Alignment::Center, size);
+        }
+        layout::Node::with_children(size, children)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let index = self.visible_index();
+        let child_layout = layout.children().nth(index).expect("sidebar row accessory");
+        self.children[index].as_widget_mut().update(
+            &mut tree.children[index],
+            event,
+            child_layout,
+            cursor,
+            renderer,
+            shell,
+            viewport,
+        );
+        if index == 1
+            && !shell.is_event_captured()
+            && captures_tools_pointer(event, child_layout.bounds(), cursor)
         {
             shell.capture_event();
         }
@@ -455,13 +577,16 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarToolsOverlay<'_,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let is_hovered = cursor.is_over(layout.bounds());
-        self.hovered.set(is_hovered);
-        if is_hovered {
-            self.content
-                .as_widget()
-                .draw(tree, renderer, theme, style, layout, cursor, viewport);
-        }
+        let index = self.visible_index();
+        self.children[index].as_widget().draw(
+            &tree.children[index],
+            renderer,
+            theme,
+            style,
+            layout.children().nth(index).expect("sidebar row accessory"),
+            cursor,
+            viewport,
+        );
     }
 
     fn operate(
@@ -471,11 +596,13 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarToolsOverlay<'_,
         renderer: &iced::Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        if self.hovered.get() {
-            self.content
-                .as_widget_mut()
-                .operate(tree, layout, renderer, operation);
-        }
+        let index = self.visible_index();
+        self.children[index].as_widget_mut().operate(
+            &mut tree.children[index],
+            layout.children().nth(index).expect("sidebar row accessory"),
+            renderer,
+            operation,
+        );
     }
 
     fn mouse_interaction(
@@ -486,15 +613,14 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarToolsOverlay<'_,
         viewport: &Rectangle,
         renderer: &iced::Renderer,
     ) -> mouse::Interaction {
-        let is_hovered = cursor.is_over(layout.bounds());
-        self.hovered.set(is_hovered);
-        if is_hovered {
-            self.content
-                .as_widget()
-                .mouse_interaction(tree, layout, cursor, viewport, renderer)
-        } else {
-            mouse::Interaction::default()
-        }
+        let index = self.visible_index();
+        self.children[index].as_widget().mouse_interaction(
+            &tree.children[index],
+            layout.children().nth(index).expect("sidebar row accessory"),
+            cursor,
+            viewport,
+            renderer,
+        )
     }
 
     fn overlay<'b>(
@@ -505,13 +631,14 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarToolsOverlay<'_,
         viewport: &Rectangle,
         translation: iced::Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
-        if self.hovered.get() {
-            self.content
-                .as_widget_mut()
-                .overlay(tree, layout, renderer, viewport, translation)
-        } else {
-            None
-        }
+        let index = self.visible_index();
+        self.children[index].as_widget_mut().overlay(
+            &mut tree.children[index],
+            layout.children().nth(index).expect("sidebar row accessory"),
+            renderer,
+            viewport,
+            translation,
+        )
     }
 }
 
@@ -524,13 +651,6 @@ fn captures_tools_pointer(event: &Event, bounds: Rectangle, cursor: mouse::Curso
                 | Event::Touch(iced::touch::Event::FingerPressed { .. })
                 | Event::Touch(iced::touch::Event::FingerLifted { .. })
         )
-}
-
-fn tools_bounds(layout: Layout<'_>) -> Rectangle {
-    layout
-        .children()
-        .next()
-        .map_or(layout.bounds(), |tools| tools.bounds())
 }
 
 /// A titled, optionally collapsible sidebar group.
