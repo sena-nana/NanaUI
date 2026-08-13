@@ -17,7 +17,8 @@ var source: texture_2d<f32>;
 var source_sampler: sampler;
 
 struct LayerUniform {
-    opacity: vec4<f32>,
+    // opacity, corner radius (logical px), width, height
+    params: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -44,7 +45,13 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(source, source_sampler, input.uv) * layer.opacity.x;
+    let radius = min(layer.params.y, min(layer.params.z, layer.params.w) * 0.5);
+    let centered = abs(input.uv * layer.params.zw - layer.params.zw * 0.5);
+    let corner = centered - (layer.params.zw * 0.5 - vec2<f32>(radius));
+    let distance = length(max(corner, vec2<f32>(0.0)))
+        + min(max(corner.x, corner.y), 0.0) - radius;
+    let coverage = select(1.0, clamp(0.5 - distance / max(fwidth(distance), 0.0001), 0.0, 1.0), radius > 0.0);
+    return textureSample(source, source_sampler, input.uv) * layer.params.x * coverage;
 }
 "#;
 
@@ -127,6 +134,131 @@ impl HostTexture {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostTextureAlphaMode {
+    #[default]
+    Premultiplied,
+    Opaque,
+}
+
+impl HostTextureAlphaMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Premultiplied => "premultiplied",
+            Self::Opaque => "opaque",
+        }
+    }
+}
+
+/// JS-visible metadata plus the host-owned WGPU view used by `<nana-gpu>`.
+#[derive(Debug, Clone)]
+pub struct HostTextureBinding {
+    pub slot: String,
+    pub texture: HostTexture,
+    pub width: u32,
+    pub height: u32,
+    pub alpha_mode: HostTextureAlphaMode,
+}
+
+impl HostTextureBinding {
+    pub fn aspect_ratio(&self) -> f32 {
+        if self.width == 0 || self.height == 0 {
+            1.0
+        } else {
+            self.width as f32 / self.height as f32
+        }
+    }
+}
+
+/// Shared slot registry. It stores texture views only; Device/Queue ownership
+/// remains with the hosted renderer.
+#[derive(Debug, Clone, Default)]
+pub struct HostTextureRegistry {
+    bindings: Arc<RwLock<HashMap<String, HostTextureBinding>>>,
+    revision: Arc<AtomicU64>,
+}
+
+impl HostTextureRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(
+        &self,
+        slot: impl Into<String>,
+        texture: HostTexture,
+        width: u32,
+        height: u32,
+        alpha_mode: HostTextureAlphaMode,
+    ) -> HostTextureBinding {
+        let slot = slot.into();
+        let binding = HostTextureBinding {
+            slot: slot.clone(),
+            texture,
+            width: width.max(1),
+            height: height.max(1),
+            alpha_mode,
+        };
+        self.bindings
+            .write()
+            .expect("host texture registry")
+            .insert(slot, binding.clone());
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        binding
+    }
+
+    pub fn get(&self, slot: &str) -> Option<HostTextureBinding> {
+        self.bindings
+            .read()
+            .ok()
+            .and_then(|bindings| bindings.get(slot).cloned())
+    }
+
+    pub fn remove(&self, slot: &str) -> Option<HostTextureBinding> {
+        let removed = self.bindings.write().ok()?.remove(slot);
+        if removed.is_some() {
+            self.revision.fetch_add(1, Ordering::AcqRel);
+        }
+        removed
+    }
+
+    /// Marks a slot's content as changed while retaining its texture view.
+    /// Consumers can compare [`Self::revision`] to schedule the next frame.
+    pub fn invalidate(&self, slot: &str) -> Option<u64> {
+        let version = self.get(slot)?.texture.invalidate();
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        Some(version)
+    }
+
+    /// Device-loss boundary: every prior JS texture handle becomes unresolved.
+    pub fn invalidate_all(&self) -> usize {
+        let Ok(mut bindings) = self.bindings.write() else {
+            return 0;
+        };
+        let count = bindings.len();
+        bindings.clear();
+        if count > 0 {
+            self.revision.fetch_add(1, Ordering::AcqRel);
+        }
+        count
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    pub fn len(&self) -> usize {
+        self.bindings
+            .read()
+            .map(|bindings| bindings.len())
+            .unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Presentation properties for one host texture layer.
 ///
 /// Layer order follows the order of the surrounding Iced elements (for
@@ -136,6 +268,7 @@ impl HostTexture {
 pub struct HostTextureLayer {
     texture: HostTexture,
     opacity: f32,
+    corner_radius: f32,
     clip: Option<LogicalRect>,
 }
 
@@ -144,6 +277,7 @@ impl HostTextureLayer {
         Self {
             texture,
             opacity: 1.0,
+            corner_radius: 0.0,
             clip: None,
         }
     }
@@ -160,6 +294,15 @@ impl HostTextureLayer {
         self
     }
 
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = if radius.is_finite() {
+            radius.max(0.0)
+        } else {
+            0.0
+        };
+        self
+    }
+
     pub const fn texture(&self) -> &HostTexture {
         &self.texture
     }
@@ -170,6 +313,10 @@ impl HostTextureLayer {
 
     pub const fn clip(&self) -> Option<LogicalRect> {
         self.clip
+    }
+
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
     }
 }
 
@@ -197,6 +344,11 @@ impl GpuTextureView {
 
     pub fn with_clip(mut self, clip: LogicalRect) -> Self {
         self.layer.clip = Some(clip);
+        self
+    }
+
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.layer = self.layer.with_corner_radius(radius);
         self
     }
 
@@ -293,7 +445,12 @@ impl shader::Primitive for GpuTexturePrimitive {
                 &layer_uniform,
                 0,
                 bytemuck::bytes_of(&LayerUniform {
-                    opacity: [self.layer.opacity, 0.0, 0.0, 0.0],
+                    params: [
+                        self.layer.opacity,
+                        self.layer.corner_radius,
+                        bounds.width.max(0.0),
+                        bounds.height.max(0.0),
+                    ],
                 }),
             );
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -322,11 +479,23 @@ impl shader::Primitive for GpuTexturePrimitive {
                     slot,
                     viewport: viewport_rect,
                     clip,
-                    _layer_uniform: layer_uniform,
+                    layer_uniform,
                     used: true,
                 },
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
+            queue.write_buffer(
+                &prepared.layer_uniform,
+                0,
+                bytemuck::bytes_of(&LayerUniform {
+                    params: [
+                        self.layer.opacity,
+                        self.layer.corner_radius,
+                        bounds.width.max(0.0),
+                        bounds.height.max(0.0),
+                    ],
+                }),
+            );
             prepared.slot = slot;
             prepared.viewport = viewport_rect;
             prepared.clip = clip;
@@ -494,7 +663,7 @@ struct PreparedTexture {
     slot: RenderSlot,
     viewport: [f32; 4],
     clip: Option<crate::geometry::PhysicalRect>,
-    _layer_uniform: wgpu::Buffer,
+    layer_uniform: wgpu::Buffer,
     used: bool,
 }
 
@@ -502,6 +671,7 @@ struct PreparedTexture {
 struct TextureKey {
     id: u64,
     opacity: u32,
+    corner_radius: u32,
     clip: Option<[u32; 4]>,
 }
 
@@ -510,6 +680,7 @@ impl TextureKey {
         Self {
             id: layer.texture.id(),
             opacity: layer.opacity.to_bits(),
+            corner_radius: layer.corner_radius.to_bits(),
             clip: layer.clip.map(|clip| {
                 [
                     clip.x.to_bits(),
@@ -525,7 +696,7 @@ impl TextureKey {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LayerUniform {
-    opacity: [f32; 4],
+    params: [f32; 4],
 }
 
 fn finite_opacity(opacity: f32) -> f32 {

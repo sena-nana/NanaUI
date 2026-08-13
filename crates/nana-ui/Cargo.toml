@@ -66,10 +66,10 @@ iced.workspace = true
 iced_wgpu = { workspace = true, optional = true }
 iced_winit = { workspace = true, optional = true }
 nana-ui-core.workspace = true
+nana-ui-platform.workspace = true
 nana-window = { path = "../nana-window" }
 merman = { version = "=0.7.0-alpha.1", default-features = false, features = ["render", "ratex-math"], optional = true }
-# merman-render 0.7.0 still calls the 0.12.1 OptionsBuilder seed API.
-roughr-merman = { version = "=0.12.1", optional = true }
+roughr-merman = { version = "=0.12.0", optional = true }
 pulldown-cmark = { version = "0.13.4", default-features = false, optional = true }
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 unicode-segmentation = { version = "1.13.0", optional = true }
@@ -96,6 +96,13 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
 ], optional = true }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 iced_wgpu.workspace = true

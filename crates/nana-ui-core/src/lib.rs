@@ -24,8 +24,8 @@ pub mod theme;
 pub use box_layout::{
     AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,
     GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
-    OverflowSpec, PaddingSpec, ParentBox, PositionSpec, ViewportAxis, resolve_grid_column_widths,
-    resolve_grid_track_sizes,
+    OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec, ViewportAxis,
+    resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use geometry::{

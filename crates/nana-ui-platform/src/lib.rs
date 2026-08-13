@@ -9,10 +9,10 @@ pub use clipboard::{
     default_shared_clipboard, shared_clipboard,
 };
 pub use fetch::{
-    FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
-    NativeFetchHost, SharedFetchHost, shared_fetch_host,
+    FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
+    FetchResponse, NativeFetchHost, SharedFetchHost, shared_fetch_host,
 };
-pub use ime::{ImeHost, ImeRequest, UnsupportedIme};
+pub use ime::{ImeCursorArea, ImeEvent, ImeHost, ImePurpose, ImeRequest, UnsupportedIme};
 
 /// Capability flags described without tying to a concrete OS crate yet.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -58,10 +58,10 @@ impl PlatformCapabilities {
         }
     }
 
-    /// Desktop hosted path: OS clipboard via `arboard`; soft IME still stub.
+    /// Desktop hosted path: OS clipboard plus winit/Iced IME composition.
     pub const fn desktop() -> Self {
         Self {
-            ime: false,
+            ime: true,
             clipboard: true,
             vulkan_surface: true,
             rust_js_engine: true,
@@ -87,7 +87,9 @@ mod tests {
     #[test]
     fn desktop_claims_clipboard_android_does_not() {
         assert!(PlatformCapabilities::desktop().clipboard);
+        assert!(PlatformCapabilities::desktop().ime);
         assert!(PlatformCapabilities::desktop_stub().clipboard);
+        assert!(!PlatformCapabilities::android_mvp().ime);
         assert!(!PlatformCapabilities::android_mvp().clipboard);
     }
 }

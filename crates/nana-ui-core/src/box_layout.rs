@@ -716,6 +716,66 @@ pub struct ParentBox {
     pub height: Option<f32>,
 }
 
+/// CSS 2D affine paint transform applied without changing layout.
+///
+/// The six fields use the Canvas/CSS `matrix(a, b, c, d, e, f)` convention.
+/// NanaUI applies the matrix around the box center, matching the default CSS
+/// transform origin. Translation is expressed in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaintTransform {
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub e: f32,
+    pub f: f32,
+}
+
+impl Default for PaintTransform {
+    fn default() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+}
+
+impl PaintTransform {
+    pub fn is_identity(self) -> bool {
+        self == Self::default()
+    }
+
+    /// Concatenates a transform function on the right, preserving CSS list order.
+    pub fn then(self, rhs: Self) -> Self {
+        Self {
+            a: self.a * rhs.a + self.c * rhs.b,
+            b: self.b * rhs.a + self.d * rhs.b,
+            c: self.a * rhs.c + self.c * rhs.d,
+            d: self.b * rhs.c + self.d * rhs.d,
+            e: self.a * rhs.e + self.c * rhs.f + self.e,
+            f: self.b * rhs.e + self.d * rhs.f + self.f,
+        }
+    }
+
+    /// Returns the world-space matrix using the default center transform origin.
+    pub fn around_center(self, x: f32, y: f32, width: f32, height: f32) -> [f32; 6] {
+        let cx = x + width * 0.5;
+        let cy = y + height * 0.5;
+        [
+            self.a,
+            self.b,
+            self.c,
+            self.d,
+            cx + self.e - self.a * cx - self.c * cy,
+            cy + self.f - self.b * cx - self.d * cy,
+        ]
+    }
+}
+
 impl ParentBox {
     pub fn new(width: Option<f32>, height: Option<f32>) -> Self {
         Self { width, height }
@@ -747,6 +807,13 @@ pub struct LayoutStyle {
     /// CSS `z-index`（整数）。`None` = auto；fixed 层默认按树序叠在内容之上。
     #[serde(default)]
     pub z_index: Option<i32>,
+    /// Paint-only `transform` subset. It never participates in flex/grid
+    /// measurement. Unsupported affine forms remain in
+    /// [`Self::unsupported_transform`] for compatibility diagnostics.
+    #[serde(default)]
+    pub transform: Option<PaintTransform>,
+    #[serde(default)]
+    pub unsupported_transform: Option<String>,
     /// Uniform `gap` shorthand residue / class defaults. Axis overrides win.
     /// `%` / calc 保留为 [`LengthSpec`]（同 margin/padding），布局时相对 CB 解析；
     /// 解析期无 CB 时不得收成 px 或静默丢弃。
@@ -887,6 +954,8 @@ impl Default for LayoutStyle {
             box_sizing: BoxSizing::BorderBox,
             position: PositionSpec::Static,
             z_index: None,
+            transform: None,
+            unsupported_transform: None,
             gap: None,
             row_gap: None,
             column_gap: None,

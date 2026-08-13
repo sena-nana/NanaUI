@@ -45,6 +45,8 @@ pub mod tooltip;
 pub mod virtual_list;
 pub mod widgets;
 pub mod window_chrome;
+#[cfg(all(feature = "hosted", target_os = "windows"))]
+mod windows_pen;
 pub mod workspace;
 
 pub use absolute::{Absolute, absolute_content_max};
@@ -134,7 +136,10 @@ pub use dock::{
 pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};
 pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
-pub use gpu_texture::{GpuTextureView, HostTexture, HostTextureLayer};
+pub use gpu_texture::{
+    GpuTextureView, HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureLayer,
+    HostTextureRegistry,
+};
 #[cfg(feature = "gpu")]
 pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
 #[cfg(feature = "graph-canvas")]
@@ -146,7 +151,8 @@ pub use graph::{
 };
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
-    HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface, HostedSurfaceFrame,
+    HostedDeviceLost, HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface,
+    HostedSurfaceFrame,
 };
 #[cfg(feature = "hosted")]
 pub use hosted_renderer::{HostedUiFrame, HostedUiRenderer, HostedUiTarget};
@@ -157,10 +163,12 @@ pub use hosted_runtime::{
 };
 #[cfg(feature = "hosted")]
 pub use hosted_runtime::{
-    HostedDisplayArea, HostedProgram, HostedProgramContext, HostedProgramUpdate, HostedRedraw,
-    HostedRunError, HostedRuntimeEvent, HostedTitleBarMode, HostedUiCommand, HostedWindowAction,
-    HostedWindowCaptureId, HostedWindowCommand, HostedWindowEvent, HostedWindowGeometry,
-    HostedWindowId, HostedWindowPlacement, HostedWindowRole, HostedWindowSettings, run_hosted,
+    HostedDisplayArea, HostedFrameMetrics, HostedInputDisposition, HostedInputEvent,
+    HostedInputModifiers, HostedPointerPhase, HostedPointerType, HostedProgram,
+    HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError, HostedRuntimeEvent,
+    HostedTitleBarMode, HostedUiCommand, HostedWindowAction, HostedWindowCaptureId,
+    HostedWindowCommand, HostedWindowEvent, HostedWindowGeometry, HostedWindowId,
+    HostedWindowPlacement, HostedWindowRole, HostedWindowSettings, run_hosted, run_hosted_with,
 };
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{

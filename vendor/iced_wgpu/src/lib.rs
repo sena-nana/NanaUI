@@ -39,6 +39,7 @@ mod triangle;
 #[cfg(any(feature = "image", feature = "svg"))]
 #[path = "image/mod.rs"]
 mod image;
+mod opacity;
 
 #[cfg(not(any(feature = "image", feature = "svg")))]
 #[path = "image/null.rs"]
@@ -89,6 +90,38 @@ pub struct Renderer {
     image_cache: std::cell::RefCell<image::Cache>,
 
     staging_belt: wgpu::util::StagingBelt,
+    opacity: opacity::Pipeline,
+
+    /// Renderer-level isolation groups recorded by widgets during draw.
+    /// The ranges refer to the stable layer order of the current frame.
+    opacity_groups: Vec<OpacityGroup>,
+    open_opacity_groups: Vec<OpenOpacityGroup>,
+    next_layer_index: usize,
+    group_textures: Vec<GroupTexture>,
+}
+
+struct GroupTexture {
+    width: u32,
+    height: u32,
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpacityGroup {
+    start: usize,
+    end: usize,
+    bounds: Rectangle,
+    opacity: f32,
+    affine: [f32; 6],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpenOpacityGroup {
+    start: usize,
+    bounds: Rectangle,
+    opacity: f32,
+    affine: [f32; 6],
 }
 
 impl Renderer {
@@ -116,9 +149,67 @@ impl Renderer {
                 engine.device.clone(),
                 buffer::MAX_WRITE_SIZE as u64,
             ),
+            opacity: opacity::Pipeline::new(&engine.device, engine.format),
+
+            opacity_groups: Vec::new(),
+            open_opacity_groups: Vec::new(),
+            next_layer_index: 1,
+            group_textures: Vec::new(),
 
             engine,
         }
+    }
+
+    /// Starts an isolated opacity group. All primitives recorded until the
+    /// matching [`end_opacity_group`](Self::end_opacity_group) are composited
+    /// together before `opacity` is applied.
+    pub fn start_opacity_group(&mut self, bounds: Rectangle, opacity: f32) {
+        self.layers.push_clip(bounds);
+        let bounds = bounds * self.layers.transformation();
+        let start = self.next_layer_index;
+        self.next_layer_index += 1;
+        self.open_opacity_groups.push(OpenOpacityGroup {
+            start,
+            bounds,
+            opacity: opacity.clamp(0.0, 1.0),
+            affine: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        });
+    }
+
+    /// Starts an isolated 2D affine group. The matrix uses the CSS/Canvas
+    /// `matrix(a, b, c, d, e, f)` convention in logical coordinates.
+    pub fn start_affine_group(&mut self, bounds: Rectangle, affine: [f32; 6]) {
+        self.layers.push_clip(bounds);
+        let bounds = bounds * self.layers.transformation();
+        let start = self.next_layer_index;
+        self.next_layer_index += 1;
+        self.open_opacity_groups.push(OpenOpacityGroup {
+            start,
+            bounds,
+            opacity: 1.0,
+            affine,
+        });
+    }
+
+    /// Ends the latest isolated affine group.
+    pub fn end_affine_group(&mut self) {
+        self.end_opacity_group();
+    }
+
+    /// Ends the latest isolated opacity group.
+    pub fn end_opacity_group(&mut self) {
+        let Some(group) = self.open_opacity_groups.pop() else {
+            debug_assert!(false, "end_opacity_group without a matching start");
+            return;
+        };
+        self.layers.pop_clip();
+        self.opacity_groups.push(OpacityGroup {
+            start: group.start,
+            end: self.next_layer_index,
+            bounds: group.bounds,
+            opacity: group.opacity,
+            affine: group.affine,
+        });
     }
 
     /// Record commands that draw the current primitives to the target texture view.
@@ -287,15 +378,21 @@ impl Renderer {
         self.text_viewport
             .update(&self.engine.queue, viewport.physical_size());
 
-        let physical_bounds =
+        let viewport_physical_bounds =
             Rectangle::<f32>::from(Rectangle::with_size(viewport.physical_size()));
 
-        self.layers.merge();
+        // Isolation ranges depend on stable layer boundaries. Merging across
+        // an opacity boundary would destroy both ordering and group semantics.
+        if self.opacity_groups.is_empty() {
+            self.layers.merge();
+        } else {
+            self.layers.flush();
+        }
 
         for layer in self.layers.iter() {
             let clip_bounds = layer.bounds * scale_factor;
 
-            if physical_bounds
+            if viewport_physical_bounds
                 .intersection(&clip_bounds)
                 .and_then(Rectangle::snap)
                 .is_none()
@@ -404,6 +501,47 @@ impl Renderer {
     ) {
         use std::mem::ManuallyDrop;
 
+        struct GroupSurface {
+            group: OpacityGroup,
+            view: wgpu::TextureView,
+        }
+
+        let extent = wgpu::Extent3d {
+            width: viewport.physical_width(),
+            height: viewport.physical_height(),
+            depth_or_array_layers: 1,
+        };
+        let group_count = self.opacity_groups.len();
+        while self.group_textures.len() < group_count {
+            self.group_textures.push(create_group_texture(
+                &self.engine.device,
+                self.engine.format,
+                extent.width,
+                extent.height,
+            ));
+        }
+        self.group_textures.truncate(group_count);
+        for texture in &mut self.group_textures {
+            if texture.width != extent.width || texture.height != extent.height {
+                *texture = create_group_texture(
+                    &self.engine.device,
+                    self.engine.format,
+                    extent.width,
+                    extent.height,
+                );
+            }
+        }
+        let group_surfaces = self
+            .opacity_groups
+            .iter()
+            .copied()
+            .zip(&self.group_textures)
+            .map(|(group, texture)| GroupSurface {
+                group,
+                view: texture.view.clone(),
+            })
+            .collect::<Vec<_>>();
+
         let mut render_pass =
             ManuallyDrop::new(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("iced_wgpu render pass"),
@@ -443,144 +581,86 @@ impl Renderer {
         let mut image_layer = 0;
 
         let scale_factor = viewport.scale_factor();
-        let physical_bounds =
+        let viewport_physical_bounds =
             Rectangle::<f32>::from(Rectangle::with_size(viewport.physical_size()));
 
         let scale = Transformation::scale(scale_factor);
 
-        for layer in self.layers.iter() {
-            let Some(physical_bounds) =
-                physical_bounds.intersection(&(layer.bounds * scale_factor))
-            else {
-                continue;
-            };
+        for (layer_index, layer) in self.layers.iter().enumerate() {
+            let active_group = group_surfaces
+                .iter()
+                .enumerate()
+                .filter(|(_, surface)| {
+                    layer_index >= surface.group.start && layer_index < surface.group.end
+                })
+                .min_by_key(|(_, surface)| surface.group.end - surface.group.start)
+                .map(|(index, _)| index);
+            let active_target = active_group
+                .map(|index| &group_surfaces[index].view)
+                .unwrap_or(frame);
 
-            let Some(scissor_rect) = physical_bounds.snap() else {
-                continue;
-            };
-
-            if !layer.quads.is_empty() {
-                let render_span = debug::render(debug::Primitive::Quad);
-                self.quad.render(
-                    &self.engine.quad_pipeline,
-                    quad_layer,
-                    scissor_rect,
-                    &layer.quads,
-                    &mut render_pass,
-                );
-                render_span.finish();
-
-                quad_layer += 1;
-            }
-
-            if !layer.triangles.is_empty() {
-                let _ = ManuallyDrop::into_inner(render_pass);
-
-                let render_span = debug::render(debug::Primitive::Triangle);
-                mesh_layer += self.triangle.render(
-                    &self.engine.triangle_pipeline,
-                    encoder,
-                    frame,
-                    mesh_layer,
-                    &layer.triangles,
-                    physical_bounds,
-                    scale,
-                );
-                render_span.finish();
-
-                render_pass =
-                    ManuallyDrop::new(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("iced_wgpu render pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: frame,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
+            let _ = ManuallyDrop::into_inner(render_pass);
+            render_pass =
+                ManuallyDrop::new(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("iced_wgpu layer render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: active_target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: if active_group.is_some_and(|index| {
+                                group_surfaces[index].group.start == layer_index
+                            }) {
+                                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                            } else {
+                                wgpu::LoadOp::Load
                             },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    }));
-            }
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                }));
+            if let Some((physical_bounds, scissor_rect)) = viewport_physical_bounds
+                .intersection(&(layer.bounds * scale_factor))
+                .and_then(|bounds| bounds.snap().map(|scissor| (bounds, scissor)))
+            {
+                if !layer.quads.is_empty() {
+                    let render_span = debug::render(debug::Primitive::Quad);
+                    self.quad.render(
+                        &self.engine.quad_pipeline,
+                        quad_layer,
+                        scissor_rect,
+                        &layer.quads,
+                        &mut render_pass,
+                    );
+                    render_span.finish();
 
-            if !layer.primitives.is_empty() {
-                let render_span = debug::render(debug::Primitive::Shader);
-
-                let primitive_storage = self
-                    .engine
-                    .primitive_storage
-                    .read()
-                    .expect("Read primitive storage");
-
-                let mut need_render = Vec::new();
-
-                for instance in &layer.primitives {
-                    let bounds = instance.bounds * scale;
-
-                    if let Some(clip_bounds) = (instance.bounds * scale)
-                        .intersection(&physical_bounds)
-                        .and_then(Rectangle::snap)
-                    {
-                        render_pass.set_viewport(
-                            bounds.x,
-                            bounds.y,
-                            bounds.width,
-                            bounds.height,
-                            0.0,
-                            1.0,
-                        );
-
-                        render_pass.set_scissor_rect(
-                            clip_bounds.x,
-                            clip_bounds.y,
-                            clip_bounds.width,
-                            clip_bounds.height,
-                        );
-
-                        let drawn = instance
-                            .primitive
-                            .draw(&primitive_storage, &mut render_pass);
-
-                        if !drawn {
-                            need_render.push((instance, clip_bounds));
-                        }
-                    }
+                    quad_layer += 1;
                 }
 
-                render_pass.set_viewport(
-                    0.0,
-                    0.0,
-                    viewport.physical_width() as f32,
-                    viewport.physical_height() as f32,
-                    0.0,
-                    1.0,
-                );
-
-                render_pass.set_scissor_rect(
-                    0,
-                    0,
-                    viewport.physical_width(),
-                    viewport.physical_height(),
-                );
-
-                if !need_render.is_empty() {
+                if !layer.triangles.is_empty() {
                     let _ = ManuallyDrop::into_inner(render_pass);
 
-                    for (instance, clip_bounds) in need_render {
-                        instance
-                            .primitive
-                            .render(&primitive_storage, encoder, frame, &clip_bounds);
-                    }
+                    let render_span = debug::render(debug::Primitive::Triangle);
+                    mesh_layer += self.triangle.render(
+                        &self.engine.triangle_pipeline,
+                        encoder,
+                        active_target,
+                        mesh_layer,
+                        &layer.triangles,
+                        physical_bounds,
+                        scale,
+                    );
+                    render_span.finish();
 
                     render_pass =
                         ManuallyDrop::new(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("iced_wgpu render pass"),
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: frame,
+                                view: active_target,
                                 depth_slice: None,
                                 resolve_target: None,
                                 ops: wgpu::Operations {
@@ -595,35 +675,186 @@ impl Renderer {
                         }));
                 }
 
-                render_span.finish();
+                if !layer.primitives.is_empty() {
+                    let render_span = debug::render(debug::Primitive::Shader);
+
+                    let primitive_storage = self
+                        .engine
+                        .primitive_storage
+                        .read()
+                        .expect("Read primitive storage");
+
+                    let mut need_render = Vec::new();
+
+                    for instance in &layer.primitives {
+                        let bounds = instance.bounds * scale;
+
+                        if let Some(clip_bounds) = (instance.bounds * scale)
+                            .intersection(&physical_bounds)
+                            .and_then(Rectangle::snap)
+                        {
+                            render_pass.set_viewport(
+                                bounds.x,
+                                bounds.y,
+                                bounds.width,
+                                bounds.height,
+                                0.0,
+                                1.0,
+                            );
+
+                            render_pass.set_scissor_rect(
+                                clip_bounds.x,
+                                clip_bounds.y,
+                                clip_bounds.width,
+                                clip_bounds.height,
+                            );
+
+                            let drawn = instance
+                                .primitive
+                                .draw(&primitive_storage, &mut render_pass);
+
+                            if !drawn {
+                                need_render.push((instance, clip_bounds));
+                            }
+                        }
+                    }
+
+                    render_pass.set_viewport(
+                        0.0,
+                        0.0,
+                        viewport.physical_width() as f32,
+                        viewport.physical_height() as f32,
+                        0.0,
+                        1.0,
+                    );
+
+                    render_pass.set_scissor_rect(
+                        0,
+                        0,
+                        viewport.physical_width(),
+                        viewport.physical_height(),
+                    );
+
+                    if !need_render.is_empty() {
+                        let _ = ManuallyDrop::into_inner(render_pass);
+
+                        for (instance, clip_bounds) in need_render {
+                            instance.primitive.render(
+                                &primitive_storage,
+                                encoder,
+                                active_target,
+                                &clip_bounds,
+                            );
+                        }
+
+                        render_pass = ManuallyDrop::new(encoder.begin_render_pass(
+                            &wgpu::RenderPassDescriptor {
+                                label: Some("iced_wgpu render pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: active_target,
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                                multiview_mask: None,
+                            },
+                        ));
+                    }
+
+                    render_span.finish();
+                }
+
+                #[cfg(any(feature = "svg", feature = "image"))]
+                if !layer.images.is_empty() {
+                    let render_span = debug::render(debug::Primitive::Image);
+                    self.image.render(
+                        &self.engine.image_pipeline,
+                        image_layer,
+                        scissor_rect,
+                        &mut render_pass,
+                    );
+                    render_span.finish();
+
+                    image_layer += 1;
+                }
+
+                if !layer.text.is_empty() {
+                    let render_span = debug::render(debug::Primitive::Text);
+                    text_layer += self.text.render(
+                        &self.engine.text_pipeline,
+                        &self.text_viewport,
+                        text_layer,
+                        &layer.text,
+                        scissor_rect,
+                        &mut render_pass,
+                    );
+                    render_span.finish();
+                }
             }
 
-            #[cfg(any(feature = "svg", feature = "image"))]
-            if !layer.images.is_empty() {
-                let render_span = debug::render(debug::Primitive::Image);
-                self.image.render(
-                    &self.engine.image_pipeline,
-                    image_layer,
-                    scissor_rect,
-                    &mut render_pass,
+            let _ = ManuallyDrop::into_inner(render_pass);
+
+            let mut ending = group_surfaces
+                .iter()
+                .enumerate()
+                .filter(|(_, surface)| surface.group.end == layer_index + 1)
+                .collect::<Vec<_>>();
+            ending.sort_by_key(|(_, surface)| surface.group.end - surface.group.start);
+            for (group_index, surface) in ending {
+                let parent = group_surfaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, parent)| {
+                        *index != group_index
+                            && parent.group.start <= surface.group.start
+                            && parent.group.end >= surface.group.end
+                    })
+                    .min_by_key(|(_, parent)| parent.group.end - parent.group.start)
+                    .map(|(_, parent)| &parent.view)
+                    .unwrap_or(frame);
+                let transformed_bounds = affine_bounds(surface.group.bounds, surface.group.affine);
+                let Some(scissor) = (transformed_bounds * scale_factor)
+                    .intersection(&viewport_physical_bounds)
+                    .and_then(Rectangle::snap)
+                else {
+                    continue;
+                };
+                self.opacity.composite(
+                    &self.engine.device,
+                    encoder,
+                    &surface.view,
+                    parent,
+                    surface.group.opacity,
+                    surface.group.affine,
+                    scale_factor,
+                    viewport.physical_size(),
+                    scissor,
                 );
-                render_span.finish();
-
-                image_layer += 1;
             }
 
-            if !layer.text.is_empty() {
-                let render_span = debug::render(debug::Primitive::Text);
-                text_layer += self.text.render(
-                    &self.engine.text_pipeline,
-                    &self.text_viewport,
-                    text_layer,
-                    &layer.text,
-                    scissor_rect,
-                    &mut render_pass,
-                );
-                render_span.finish();
-            }
+            render_pass =
+                ManuallyDrop::new(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("iced_wgpu continuation render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: frame,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                }));
         }
 
         let _ = ManuallyDrop::into_inner(render_pass);
@@ -633,7 +864,7 @@ impl Renderer {
                 .iter()
                 .filter(|layer| {
                     !layer.is_empty()
-                        && physical_bounds
+                        && viewport_physical_bounds
                             .intersection(&(layer.bounds * scale_factor))
                             .is_some_and(|viewport| viewport.snap().is_some())
                 })
@@ -664,9 +895,64 @@ impl Renderer {
     }
 }
 
+fn create_group_texture(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> GroupTexture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("iced_wgpu isolated group texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    GroupTexture {
+        width,
+        height,
+        _texture: texture,
+        view,
+    }
+}
+
+fn affine_bounds(bounds: Rectangle, [a, b, c, d, e, f]: [f32; 6]) -> Rectangle {
+    let points = [
+        (bounds.x, bounds.y),
+        (bounds.x + bounds.width, bounds.y),
+        (bounds.x, bounds.y + bounds.height),
+        (bounds.x + bounds.width, bounds.y + bounds.height),
+    ];
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for (x, y) in points {
+        let tx = a * x + c * y + e;
+        let ty = b * x + d * y + f;
+        min_x = min_x.min(tx);
+        min_y = min_y.min(ty);
+        max_x = max_x.max(tx);
+        max_y = max_y.max(ty);
+    }
+    Rectangle::new(
+        Point::new(min_x, min_y),
+        Size::new((max_x - min_x).max(0.0), (max_y - min_y).max(0.0)),
+    )
+}
+
 impl core::Renderer for Renderer {
     fn start_layer(&mut self, bounds: Rectangle) {
         self.layers.push_clip(bounds);
+        self.next_layer_index += 1;
     }
 
     fn end_layer(&mut self) {
@@ -717,6 +1003,9 @@ impl core::Renderer for Renderer {
 
     fn reset(&mut self, new_bounds: Rectangle) {
         self.layers.reset(new_bounds);
+        self.opacity_groups.clear();
+        self.open_opacity_groups.clear();
+        self.next_layer_index = 1;
     }
 
     fn settings(&self) -> renderer::Settings {
@@ -974,5 +1263,93 @@ impl renderer::Headless for Renderer {
             ),
             background_color,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Renderer as _;
+    use crate::core::renderer;
+
+    #[test]
+    fn opacity_group_isolates_overlapping_primitives() {
+        let Some(mut renderer) = futures::executor::block_on(
+            <Renderer as renderer::Headless>::new(renderer::Settings::default(), Some("wgpu")),
+        ) else {
+            // A machine without a headless adapter cannot exercise pixel output.
+            return;
+        };
+
+        let size = Size::new(8, 4);
+        renderer.reset(Rectangle::with_size(Size::new(8.0, 4.0)));
+        renderer.start_opacity_group(Rectangle::with_size(Size::new(8.0, 4.0)), 0.5);
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: Rectangle::new(Point::new(0.0, 0.0), Size::new(6.0, 4.0)),
+                ..renderer::Quad::default()
+            },
+            Color::from_rgb(1.0, 0.0, 0.0),
+        );
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: Rectangle::new(Point::new(2.0, 0.0), Size::new(6.0, 4.0)),
+                ..renderer::Quad::default()
+            },
+            Color::from_rgb(1.0, 0.0, 0.0),
+        );
+        renderer.end_opacity_group();
+
+        let pixels =
+            <Renderer as renderer::Headless>::screenshot(&mut renderer, size, 1.0, Color::WHITE);
+        let pixel = |x: usize, y: usize| &pixels[(y * 8 + x) * 4..(y * 8 + x + 1) * 4];
+        let single = pixel(1, 1);
+        let overlap = pixel(3, 1);
+
+        assert_eq!(
+            single, overlap,
+            "group opacity must be applied after overlap composition"
+        );
+        assert!(
+            single[0] > 245 && (175..=200).contains(&single[1]),
+            "{single:?}"
+        );
+        assert_eq!(single[1], single[2]);
+    }
+
+    #[test]
+    fn affine_group_rotates_primitives_as_one_composited_subtree() {
+        let Some(mut renderer) = futures::executor::block_on(
+            <Renderer as renderer::Headless>::new(renderer::Settings::default(), Some("wgpu")),
+        ) else {
+            return;
+        };
+
+        let size = Size::new(8, 6);
+        renderer.reset(Rectangle::with_size(Size::new(8.0, 6.0)));
+        // 90 degree clockwise screen-space rotation: (x, y) -> (8 - y, x).
+        renderer.start_affine_group(
+            Rectangle::with_size(Size::new(8.0, 6.0)),
+            [0.0, 1.0, -1.0, 0.0, 8.0, 0.0],
+        );
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: Rectangle::new(Point::new(1.0, 1.0), Size::new(3.0, 1.0)),
+                ..renderer::Quad::default()
+            },
+            Color::from_rgb(1.0, 0.0, 0.0),
+        );
+        renderer.end_affine_group();
+
+        let pixels =
+            <Renderer as renderer::Headless>::screenshot(&mut renderer, size, 1.0, Color::WHITE);
+        let pixel = |x: usize, y: usize| &pixels[(y * 8 + x) * 4..(y * 8 + x + 1) * 4];
+        assert!(
+            pixel(6, 2)[0] > 245 && pixel(6, 2)[1] < 10,
+            "{:?}",
+            pixel(6, 2)
+        );
+        assert!(pixel(2, 1)[1] > 245, "source position should be cleared");
+        assert!(pixel(5, 2)[1] > 245, "rotation width must remain one pixel");
     }
 }

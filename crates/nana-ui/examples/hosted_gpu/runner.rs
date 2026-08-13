@@ -116,9 +116,13 @@ impl HostedProgram for DemoProgram {
             HostedWindowEvent::Moved { .. }
             | HostedWindowEvent::FocusChanged { .. }
             | HostedWindowEvent::VisibilityChanged { .. }
+            | HostedWindowEvent::Ime { .. }
+            | HostedWindowEvent::Closed { .. }
             | HostedWindowEvent::FileHovered { .. }
+            | HostedWindowEvent::FilesHovered { .. }
             | HostedWindowEvent::FileDropped { .. }
             | HostedWindowEvent::FileHoverCancelled { .. }
+            | HostedWindowEvent::FilesDropped { .. }
             | HostedWindowEvent::KeyPressed { .. } => HostedProgramUpdate::default(),
             HostedWindowEvent::CloseRequested { .. } => HostedProgramUpdate::exit(),
         }
