@@ -51,7 +51,7 @@
 | `ActionMenu` | `ActionMenu` | 触发器锚定、默认起始边对齐、标准菜单间距与视口约束 |
 | `ActionMenuItem` | `ActionMenuItem` | 三档行高、leading/hint/active/danger/disabled 与真实消息 |
 | `AnchoredActionMenu` | `AnchoredActionMenu` | 四种锚点方向和视口边界约束 |
-| `ContextMenuHost` | `ContextMenuHost` | 层级菜单、搜索、确认标签、危险操作和统一关闭事件 |
+| `ContextMenuTrigger` + `ContextMenuHost` | `v-context-menu` + `ContextMenuHost` | 捕获右键逻辑坐标、窗口边缘约束、层级菜单、搜索、确认标签、危险操作和统一关闭事件 |
 | `OverlayHost` | `OverlayHost` | 保持视觉与事件顺序的原生 Stack 宿主 |
 | `CalendarHeatmap` | `CalendarHeatmap` | 完整周模型、可配置等级、单 Canvas 缓存、指针/触摸命中和 tooltip |
 | `UiImageViewer` | `ImageViewer` | 接收宿主渲染内容、指针中心滚轮缩放、鼠标/触摸平移与关闭合同；不强制编解码器或 CPU 像素副本 |

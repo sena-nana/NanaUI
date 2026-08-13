@@ -87,7 +87,8 @@ pub use components::key_capture_layer::{KeyCaptureEvent, KeyCaptureLayer};
 pub use components::keymap_layer::KeymapLayer;
 pub use components::menus::{
     ActionMenuItem, AnchoredActionMenu, AnchoredMenuPlacement, AnchoredMenuPosition,
-    ContextMenuEvent, ContextMenuHost, ContextMenuItem, OverlayHost,
+    ContextMenuAnchor, ContextMenuEvent, ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
+    OverlayHost,
 };
 #[cfg(feature = "overlays")]
 pub use components::overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};

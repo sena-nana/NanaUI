@@ -16,10 +16,10 @@ use nana_ui::components::{
     CalendarHeatmapActiveCell, CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel,
     CalendarHeatmapOptions, Card as UiCard, Checkbox as UiCheckbox,
     CommandPalette as UiCommandPalette, CommandPaletteEvent, CommandPaletteItem,
-    ConfirmDialog as UiConfirmDialog, ContextMenuEvent, ContextMenuHost, ContextMenuItem,
-    ControlSize, Dropdown as UiDropdown, DropdownEvent, DropdownOption, IconButton as UiIconButton,
-    ImageViewer as UiImageViewer, ImageViewerSource, Input as UiInput,
-    InteractiveCard as UiInteractiveCard, ListItem as UiListItem, NativeMarkdown,
+    ConfirmDialog as UiConfirmDialog, ContextMenuAnchor, ContextMenuEvent, ContextMenuHost,
+    ContextMenuItem, ContextMenuTrigger, ControlSize, Dropdown as UiDropdown, DropdownEvent,
+    DropdownOption, IconButton as UiIconButton, ImageViewer as UiImageViewer, ImageViewerSource,
+    Input as UiInput, InteractiveCard as UiInteractiveCard, ListItem as UiListItem, NativeMarkdown,
     Popover as UiPopover, Progress as UiProgress, RangeField as UiRangeField,
     SearchDropdown as UiSearchDropdown, SearchDropdownOption, SearchDropdownState,
     SegmentedControl as UiSegmentedControl, SelectionOption, SettingsCollapsibleCard,
@@ -158,6 +158,7 @@ pub enum GalleryMessage {
     OverlayInteraction,
     EditText(text_editor::Action),
     ToggleContextMenu,
+    OpenContextMenu(ContextMenuAnchor),
     ToggleImageViewer,
     RequestImageViewerClose(DialogCloseTrigger),
     TogglePopover,
@@ -272,6 +273,7 @@ pub struct GalleryState {
     dialog_policy: DialogClosePolicy,
     menu_confirmation: MenuConfirmation<ContextAction>,
     context_action: Option<ContextAction>,
+    context_anchor: Option<ContextMenuAnchor>,
     context_items: OnceCell<Vec<ContextMenuItem<'static, ContextAction>>>,
     context_query: String,
     context_path: Vec<usize>,
@@ -345,6 +347,7 @@ impl GalleryState {
             dialog_policy: DialogClosePolicy::default(),
             menu_confirmation: MenuConfirmation::new(),
             context_action: None,
+            context_anchor: None,
             context_items: OnceCell::new(),
             context_query: String::new(),
             context_path: Vec::new(),
@@ -708,7 +711,15 @@ impl GalleryState {
                 self.menu_confirmation.clear();
                 self.context_query.clear();
                 self.context_path.clear();
+                self.context_anchor = None;
                 self.overlay.toggle(GalleryOverlay::ContextMenu);
+            }
+            GalleryMessage::OpenContextMenu(anchor) => {
+                self.menu_confirmation.clear();
+                self.context_query.clear();
+                self.context_path.clear();
+                self.context_anchor = Some(anchor);
+                self.overlay.open(GalleryOverlay::ContextMenu);
             }
             GalleryMessage::ToggleImageViewer => {
                 self.menu_confirmation.clear();
@@ -743,6 +754,7 @@ impl GalleryState {
                 }
                 ContextMenuEvent::Dismiss => {
                     self.overlay.dismiss();
+                    self.context_anchor = None;
                     self.menu_confirmation.clear();
                     self.context_query.clear();
                     self.context_path.clear();
