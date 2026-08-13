@@ -94,9 +94,9 @@ drag/minimize/toggle-maximize/close 语义动作。标准 Iced 应用通过公�
 窗口 Task。
 
 `HostedWindowEvent::KeyPressed` 将原生按键规范化为与 `Keymap` 共用的 `KeyStroke`，
-供应用观察窗口级快捷键；同一个原生事件仍会继续交给 Iced 控件，因此该事件不承担
-拦截、文本输入或业务 dispatch。按键重复事实显式保留，快捷键含义与 handler 继续由
-应用拥有。
+并携带当前有稳定 ID 的焦点控件，供应用按焦点上下文观察窗口级快捷键；同一个原生
+事件仍会继续交给 Iced 控件，因此该事件不承担拦截、文本输入或业务 dispatch。按键
+重复事实显式保留，快捷键含义与 handler 继续由应用拥有。
 
 macOS 使用 transparent titlebar 与 full-size content view，把 36px NanaUI 标题栏
 绘制到窗口顶部，并为左侧原生交通灯保留 78px。Windows/Linux 关闭系统 decorations，

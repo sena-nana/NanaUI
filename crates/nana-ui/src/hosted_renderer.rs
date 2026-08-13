@@ -1,5 +1,6 @@
 //! Iced rendering hosted by an application-owned WGPU context.
 
+use iced::advanced::widget::Operation;
 use iced::{Color, Element, Pixels, Size, Theme, mouse};
 use iced_wgpu::graphics::core::{
     Event, InputMethod, Rectangle, input_method, renderer, shell, time::Instant, window,
@@ -140,6 +141,20 @@ impl<Message> HostedUiRenderer<Message> {
 
     pub(crate) const fn modifiers(&self) -> ModifiersState {
         self.modifiers
+    }
+
+    pub(crate) fn focused_widget(&mut self) -> Option<iced::advanced::widget::Id> {
+        let interface = self.interface.as_mut()?;
+        let mut operation = iced::advanced::widget::operation::focusable::find_focused();
+        interface.operate(
+            &self.renderer,
+            &mut iced::advanced::widget::operation::black_box(&mut operation),
+        );
+        match operation.finish() {
+            iced::advanced::widget::operation::Outcome::Some(id) => Some(id),
+            iced::advanced::widget::operation::Outcome::None
+            | iced::advanced::widget::operation::Outcome::Chain(_) => None,
+        }
     }
 
     pub fn queue_event(&mut self, event: Event) {
