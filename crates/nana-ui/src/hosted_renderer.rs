@@ -138,6 +138,10 @@ impl<Message> HostedUiRenderer<Message> {
         self.viewport.logical_size()
     }
 
+    pub(crate) const fn modifiers(&self) -> ModifiersState {
+        self.modifiers
+    }
+
     pub fn queue_event(&mut self, event: Event) {
         queue_event(&mut self.events, event);
     }
