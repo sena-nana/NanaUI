@@ -114,6 +114,25 @@ fn context_menu_search_filters_items() {
 }
 
 #[test]
+fn context_menu_tracks_hovered_submenu_paths_without_closing_the_overlay() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
+    state.update(GalleryMessage::ToggleContextMenu);
+    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::OpenSubmenu(
+        vec![0],
+    )));
+
+    assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
+    assert_eq!(state.context_path, vec![0]);
+
+    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::OpenSubmenu(
+        Vec::new(),
+    )));
+    assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
+    assert!(state.context_path.is_empty());
+}
+
+#[test]
 fn tree_view_events_update_expansion_and_selection_by_stable_id() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::TreeView(TreeViewEvent::Toggle(

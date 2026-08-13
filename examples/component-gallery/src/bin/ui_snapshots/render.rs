@@ -317,6 +317,9 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     }));
     context_menu.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu.update(GalleryMessage::ToggleContextMenu);
+    context_menu.update(GalleryMessage::ContextMenu(ContextMenuEvent::OpenSubmenu(
+        vec![0],
+    )));
     paths.push(gallery_snapshot(
         &mut renderer,
         &output,
