@@ -122,6 +122,7 @@ use nana_js_engine::{
 #[cfg(feature = "iced-view")]
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
 pub use nana_ui_platform::ImeEvent;
+use nana_ui_runtime::TextInputState;
 use nana_ui_web_api::{
     SharedCanvasRuntime, SharedWebApiState, compose_runtime_artifact, default_shared_clipboard,
     register_web_api_host_ops_with_resources, shared_canvas_runtime, shared_web_api_state,
@@ -2153,9 +2154,9 @@ impl VueHost {
         engine: &mut E,
         event: &ImeEvent,
     ) -> Result<bool, JsEngineError> {
-        if self.focused().is_none() {
+        let Some(target) = self.focused() else {
             return Ok(false);
-        }
+        };
         match event {
             ImeEvent::Enabled => Ok(true),
             ImeEvent::Preedit { text, selection } => {
@@ -2191,10 +2192,6 @@ impl VueHost {
                     .set_ime_composition(target, None);
                 // Browser compositionend carries committed text. The Iced
                 // editor's ensuing Input message owns the value mutation.
-                let target = self.document.lock().expect("vue doc").focused();
-                let Some(target) = target else {
-                    return Ok(false);
-                };
                 let mut detail = BTreeMap::new();
                 detail.insert("data".into(), HostValue::string(text));
                 detail.insert("isComposing".into(), HostValue::Bool(false));
@@ -2713,6 +2710,41 @@ mod tests {
     }
 
     #[test]
+    fn committed_text_replaces_runtime_owned_unicode_selection() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "你好ab");
+            doc.set_focus(input);
+            assert!(doc.set_text_input_state(
+                input,
+                TextInputState {
+                    value: "你好ab".into(),
+                    selection: nana_ui_runtime::TextSelection {
+                        anchor: 0,
+                        focus: "你".len(),
+                    },
+                }
+            ));
+        }
+        let mut engine = RecordingEngine::default();
+
+        assert!(host.commit_text(&mut engine, "娜", "insertText").unwrap());
+        let document = host.document();
+        let doc = document.lock().expect("document");
+        let state = doc.text_input_state(input).expect("text input state");
+        assert_eq!(state.value, "娜好ab");
+        assert_eq!(
+            state.selection,
+            nana_ui_runtime::TextSelection::caret("娜".len())
+        );
+        assert_eq!(doc.get_attribute(input, "value").as_deref(), Some("娜好ab"));
+    }
+
+    #[test]
     fn native_ime_emits_composition_without_double_committing_iced_value() {
         let mut host = VueHost::new();
         host.fire_event = Some(JsFunctionId(1));
@@ -2733,8 +2765,24 @@ mod tests {
             },
         )
         .expect("preedit");
+        assert_eq!(
+            host.document()
+                .lock()
+                .expect("document")
+                .ime_composition(input)
+                .expect("runtime preedit")
+                .selection,
+            Some((3, 3))
+        );
         host.dispatch_native_ime(&mut engine, &ImeEvent::Commit("世界".into()))
             .expect("commit lifecycle");
+        assert!(
+            host.document()
+                .lock()
+                .expect("document")
+                .ime_composition(input)
+                .is_none()
+        );
 
         let events = fired_events(&engine);
         assert_eq!(
