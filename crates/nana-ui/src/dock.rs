@@ -830,7 +830,8 @@ impl DockController {
             | HostedWindowEvent::FocusChanged { .. }
             | HostedWindowEvent::FileHovered { .. }
             | HostedWindowEvent::FileDropped { .. }
-            | HostedWindowEvent::FileHoverCancelled { .. } => DockUpdate::default(),
+            | HostedWindowEvent::FileHoverCancelled { .. }
+            | HostedWindowEvent::KeyPressed { .. } => DockUpdate::default(),
         }
     }
 

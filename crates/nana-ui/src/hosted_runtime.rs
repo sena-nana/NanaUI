@@ -21,19 +21,37 @@ use nana_window::{
     MaterialEffect, MaterialOutcome, clear_system_material, prepare_custom_title_bar,
 };
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::keyboard::ModifiersState;
 
 #[cfg(feature = "browser")]
 use crate::layout_probe::LayoutBounds;
 use crate::theme::ThemeModeExt;
 use crate::{
     AppearanceSettings, BackdropTarget, HostedGpuContext, HostedGpuError, HostedGpuResources,
-    HostedGpuSurface, HostedSurfaceFrame, HostedUiRenderer, HostedUiTarget, ThemeMode,
-    WindowChromeAction, WindowMaterialMode,
+    HostedGpuSurface, HostedSurfaceFrame, HostedUiRenderer, HostedUiTarget, KeyModifiers,
+    KeyStroke, ThemeMode, WindowChromeAction, WindowMaterialMode,
 };
 
 const HOSTED_REDRAW_SETTLE_PASSES: usize = 3;
+
+fn hosted_key_stroke(key: &winit::keyboard::Key, modifiers: ModifiersState) -> Option<KeyStroke> {
+    let key = match key {
+        winit::keyboard::Key::Named(named) => format!("{named:?}"),
+        winit::keyboard::Key::Character(character) => character.to_string(),
+        winit::keyboard::Key::Unidentified(_) | winit::keyboard::Key::Dead(_) => return None,
+    };
+    Some(KeyStroke::new(
+        key,
+        KeyModifiers {
+            control: modifiers.control_key(),
+            alt: modifiers.alt_key(),
+            shift: modifiers.shift_key(),
+            logo: modifiers.super_key(),
+        },
+    ))
+}
 
 /// Stable application-owned identity for one hosted window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -558,6 +576,13 @@ pub enum HostedWindowEvent {
         id: HostedWindowId,
         window_id: iced::window::Id,
     },
+    /// Read-only key press observed before the same native event is handled by Iced widgets.
+    KeyPressed {
+        id: HostedWindowId,
+        window_id: iced::window::Id,
+        stroke: KeyStroke,
+        repeat: bool,
+    },
 }
 
 impl HostedWindowEvent {
@@ -571,7 +596,8 @@ impl HostedWindowEvent {
             | Self::CloseRequested { id, .. }
             | Self::FileHovered { id, .. }
             | Self::FileDropped { id, .. }
-            | Self::FileHoverCancelled { id, .. } => *id,
+            | Self::FileHoverCancelled { id, .. }
+            | Self::KeyPressed { id, .. } => *id,
         }
     }
 }
@@ -1249,6 +1275,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
         id: HostedWindowId,
         event: WindowEvent,
     ) {
+        let key_press = self.key_press(id, &event);
         match event {
             WindowEvent::RedrawRequested => {
                 self.redraw(event_loop, id);
@@ -1308,6 +1335,24 @@ impl<Program: HostedProgram> HostedReady<Program> {
             }
             event => self.push_window_event(id, event),
         }
+        if let Some((stroke, repeat)) = key_press {
+            self.notify_key_pressed(event_loop, id, stroke, repeat);
+        }
+    }
+
+    fn key_press(&self, id: HostedWindowId, event: &WindowEvent) -> Option<(KeyStroke, bool)> {
+        let WindowEvent::KeyboardInput { event, .. } = event else {
+            return None;
+        };
+        if event.state != ElementState::Pressed {
+            return None;
+        }
+        let modifiers = if id == HostedWindowId::PRIMARY {
+            self.ui.modifiers()
+        } else {
+            self.auxiliary.get(&id)?.ui.modifiers()
+        };
+        hosted_key_stroke(&event.logical_key, modifiers).map(|stroke| (stroke, event.repeat))
     }
 
     fn window_scale_factor(&self, id: HostedWindowId) -> Option<f32> {
@@ -1367,6 +1412,27 @@ impl<Program: HostedProgram> HostedReady<Program> {
         let context = self.program_context();
         let update = self.program.window_event(
             HostedWindowEvent::FileHoverCancelled { id, window_id },
+            &context,
+        );
+        self.apply_program_update(event_loop, update);
+    }
+
+    fn notify_key_pressed(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: HostedWindowId,
+        stroke: KeyStroke,
+        repeat: bool,
+    ) {
+        let window_id = self.iced_window_id(id);
+        let context = self.program_context();
+        let update = self.program.window_event(
+            HostedWindowEvent::KeyPressed {
+                id,
+                window_id,
+                stroke,
+                repeat,
+            },
             &context,
         );
         self.apply_program_update(event_loop, update);
@@ -2841,13 +2907,40 @@ mod tests {
     use super::{
         HostedDisplayArea, HostedProgramUpdate, HostedRedraw, HostedTitleBarMode,
         HostedWindowEvent, HostedWindowId, HostedWindowPlacement, HostedWindowRole,
-        HostedWindowSettings, should_request_redraw, window_attributes, window_background,
-        window_level,
+        HostedWindowSettings, hosted_key_stroke, should_request_redraw, window_attributes,
+        window_background, window_level,
     };
     use iced::{Point, Size};
     use iced_winit::winit;
     use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome};
     use std::path::PathBuf;
+
+    #[test]
+    fn hosted_key_press_uses_the_shared_keymap_stroke_contract() {
+        let stroke = hosted_key_stroke(
+            &winit::keyboard::Key::Character("V".into()),
+            winit::keyboard::ModifiersState::CONTROL,
+        )
+        .expect("character key");
+
+        assert_eq!(
+            stroke,
+            crate::KeyStroke::new(
+                "v",
+                crate::KeyModifiers {
+                    control: true,
+                    ..crate::KeyModifiers::default()
+                },
+            )
+        );
+        assert!(
+            hosted_key_stroke(
+                &winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+                winit::keyboard::ModifiersState::empty(),
+            )
+            .is_none()
+        );
+    }
 
     #[cfg(feature = "browser")]
     #[test]
