@@ -781,6 +781,7 @@ pub struct HostedProgramUpdate {
     pub redraw: HostedRedraw,
     pub window_commands: Vec<HostedWindowCommand>,
     pub ui_commands: Vec<HostedUiCommand>,
+    pub capture_input: bool,
     pub exit: bool,
 }
 
@@ -791,6 +792,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::Primary,
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }
@@ -801,6 +803,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::Window(id),
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }
@@ -811,6 +814,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::All,
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }
@@ -822,6 +826,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::DynamicPrimary,
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }
@@ -832,6 +837,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::DynamicWindow(id),
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }
@@ -842,6 +848,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::DynamicAll,
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }
@@ -852,6 +859,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::None,
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: true,
         }
     }
@@ -866,6 +874,7 @@ impl HostedProgramUpdate {
             redraw: HostedRedraw::Window(id),
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }
@@ -880,6 +889,12 @@ impl HostedProgramUpdate {
 
     pub fn with_ui_commands(mut self, commands: impl IntoIterator<Item = HostedUiCommand>) -> Self {
         self.ui_commands.extend(commands);
+        self
+    }
+
+    /// Stops the current projected key press before it reaches the retained Iced tree.
+    pub const fn capture_input(mut self) -> Self {
+        self.capture_input = true;
         self
     }
 }
@@ -1277,6 +1292,11 @@ impl<Program: HostedProgram> HostedReady<Program> {
         event: WindowEvent,
     ) {
         let key_press = self.key_press(id, &event);
+        if let Some((stroke, repeat, focused_widget)) = key_press
+            && self.notify_key_pressed(event_loop, id, stroke, repeat, focused_widget)
+        {
+            return;
+        }
         match event {
             WindowEvent::RedrawRequested => {
                 self.redraw(event_loop, id);
@@ -1335,9 +1355,6 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 self.push_window_event(id, WindowEvent::HoveredFileCancelled);
             }
             event => self.push_window_event(id, event),
-        }
-        if let Some((stroke, repeat, focused_widget)) = key_press {
-            self.notify_key_pressed(event_loop, id, stroke, repeat, focused_widget);
         }
     }
 
@@ -1432,7 +1449,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
         stroke: KeyStroke,
         repeat: bool,
         focused_widget: Option<iced::advanced::widget::Id>,
-    ) {
+    ) -> bool {
         let window_id = self.iced_window_id(id);
         let context = self.program_context();
         let update = self.program.window_event(
@@ -1445,7 +1462,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
             },
             &context,
         );
+        let capture_input = update.capture_input;
         self.apply_program_update(event_loop, update);
+        capture_input
     }
 
     fn push_window_event(&mut self, id: HostedWindowId, event: WindowEvent) {
@@ -3030,6 +3049,12 @@ mod tests {
             HostedProgramUpdate::redraw_dynamic_all().redraw,
             HostedRedraw::DynamicAll
         );
+    }
+
+    #[test]
+    fn key_press_capture_is_opt_in() {
+        assert!(!HostedProgramUpdate::default().capture_input);
+        assert!(HostedProgramUpdate::default().capture_input().capture_input);
     }
 
     #[test]
