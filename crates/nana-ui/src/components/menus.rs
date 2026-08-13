@@ -21,7 +21,6 @@ use crate::widgets::{
 };
 
 const MENU_PANEL_WIDTH: f32 = 192.0;
-const MENU_PANEL_SPACING: f32 = 4.0;
 const MENU_ITEM_SPACING: f32 = 1.0;
 const MENU_CONTENT_SPACING: f32 = 4.0;
 const MENU_SURFACE_PADDING: f32 = 4.0;
@@ -791,8 +790,8 @@ fn context_menu_list_height(size: Size, searchable: bool, tokens: ThemeTokens) -
 }
 
 fn resolve_submenu_position(trigger: Rectangle, surface: Size, viewport: Size) -> Point {
-    let right = trigger.x + trigger.width + MENU_SURFACE_PADDING + MENU_PANEL_SPACING;
-    let left = trigger.x - MENU_SURFACE_PADDING - MENU_PANEL_SPACING - surface.width;
+    let right = trigger.x + trigger.width + MENU_SURFACE_PADDING;
+    let left = trigger.x - MENU_SURFACE_PADDING - surface.width;
     let max_x = (viewport.width - surface.width).max(0.0);
     let x = if right + surface.width <= viewport.width {
         right
@@ -1106,8 +1105,8 @@ fn collect_matches<'a, T>(
 mod tests {
     use super::{
         ActionMenuItem, AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuInput,
-        ContextMenuItem, ControlSize, SubmenuAnchor, collect_matches, context_menu_input,
-        context_menu_panel_size, resolve_submenu_position, submenu_hover_path,
+        ContextMenuItem, ControlSize, MENU_SURFACE_PADDING, SubmenuAnchor, collect_matches,
+        context_menu_input, context_menu_panel_size, resolve_submenu_position, submenu_hover_path,
     };
     use crate::theme::ThemeModeExt;
     use iced::advanced::widget::{self, Widget};
@@ -1183,7 +1182,7 @@ mod tests {
 
         assert_eq!(
             resolve_submenu_position(trigger, surface, viewport),
-            Point::new(142.0, 150.0)
+            Point::new(trigger.x - MENU_SURFACE_PADDING - surface.width, 150.0)
         );
     }
 
@@ -1193,7 +1192,10 @@ mod tests {
 
         assert_eq!(
             resolve_submenu_position(trigger, Size::new(200.0, 120.0), Size::new(800.0, 600.0),),
-            Point::new(240.0, 76.0)
+            Point::new(
+                trigger.x + trigger.width + MENU_SURFACE_PADDING,
+                trigger.y - MENU_SURFACE_PADDING,
+            )
         );
     }
 
