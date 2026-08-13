@@ -15,6 +15,13 @@ Code under `engine/iced` must not depend on NanaUI crates, components, Vue
 semantics, Live2D concepts, or application behavior. `scripts/check-engine-boundary.py`
 enforces this manifest boundary in CI.
 
+The reverse dependency is also constrained. Only the current migration adapters
+`nana-ui`, `nana-ui-vue`, and the Android compatibility host may have non-dev
+Iced dependencies. Backend-neutral contracts live in `nana-ui-core`,
+`nana-ui-platform`, `nana-window`, and the JS/Web API crates. CI enforces this
+allowlist with the same boundary check; adding another adapter must be an
+explicit architecture decision, not an incidental dependency.
+
 ## Imported lineage
 
 The initial in-tree snapshot was assembled on 2026-08-13 from:
