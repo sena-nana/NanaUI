@@ -48,6 +48,7 @@
 | `UiDrawer` | `Drawer` | 左右方向、正文、Footer、关闭与内部交互消息；L2 `nana-drawer` / `side` 已映射 |
 | `Tooltip` | `Tooltip` | 统一 placement、delay、viewport padding 与视觉样式 |
 | `UiPopover` | `Popover` | 自定义 Iced overlay、受控打开、四向锚定、Escape/外部点击关闭与嵌套交互 |
+| `ActionMenu` | `ActionMenu` | 触发器锚定、默认起始边对齐、标准菜单间距与视口约束 |
 | `ActionMenuItem` | `ActionMenuItem` | 三档行高、leading/hint/active/danger/disabled 与真实消息 |
 | `AnchoredActionMenu` | `AnchoredActionMenu` | 四种锚点方向和视口边界约束 |
 | `ContextMenuHost` | `ContextMenuHost` | 层级菜单、搜索、确认标签、危险操作和统一关闭事件 |

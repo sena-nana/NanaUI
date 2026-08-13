@@ -92,7 +92,7 @@ pub use components::menus::{
 #[cfg(feature = "overlays")]
 pub use components::overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};
 #[cfg(feature = "popover")]
-pub use components::popover::{Popover, PopoverPlacement};
+pub use components::popover::{ActionMenu, Popover, PopoverAlignment, PopoverPlacement};
 #[cfg(feature = "qr-code")]
 pub use components::qr_code::{QrCodeCanvas, QrCodeError};
 #[cfg(feature = "controls")]
