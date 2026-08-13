@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the one-way NanaUI -> in-tree Iced compatibility dependency."""
+"""Enforce the complete NanaUI <-> in-tree Iced compatibility boundary."""
 
 from __future__ import annotations
 
@@ -11,6 +11,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = (ROOT / "engine" / "iced").resolve()
+ICED_PACKAGES = {"iced", "iced-wgpu", "iced-winit"}
+COMPATIBILITY_PACKAGES = {
+    "nana-android-host",
+    "nana-ui",
+    "nana-ui-vue",
+}
 
 
 def metadata(manifest: Path) -> dict[str, object]:
@@ -21,6 +27,7 @@ def metadata(manifest: Path) -> dict[str, object]:
             "--format-version",
             "1",
             "--no-deps",
+            "--locked",
             "--manifest-path",
             str(manifest),
         ],
@@ -61,17 +68,25 @@ def main() -> int:
                 )
 
     root_metadata = metadata(ROOT / "Cargo.toml")
-    iced_packages = {"iced", "iced-wgpu", "iced-winit"}
     for package in root_metadata["packages"]:
         for dependency in package["dependencies"]:
             normalized_name = dependency["name"].replace("_", "-")
-            if normalized_name not in iced_packages:
+            if normalized_name not in ICED_PACKAGES:
                 continue
 
             dependency_path = dependency.get("path")
             if not dependency_path or not is_within(Path(dependency_path), ENGINE):
                 failures.append(
                     f'{package["name"]} resolves {dependency["name"]} outside engine/iced'
+                )
+            if (
+                package["name"].startswith("nana-")
+                and package["name"] not in COMPATIBILITY_PACKAGES
+                and dependency.get("kind") != "dev"
+            ):
+                failures.append(
+                    f'{package["name"]} has non-dev Iced dependency '
+                    f'{dependency["name"]}; only compatibility adapters may depend on Iced'
                 )
 
     if failures:
@@ -80,7 +95,8 @@ def main() -> int:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    print("Iced engine dependency boundary: OK")
+    adapters = ", ".join(sorted(COMPATIBILITY_PACKAGES))
+    print(f"Iced compatibility boundary: OK (adapters: {adapters})")
     return 0
 
 
