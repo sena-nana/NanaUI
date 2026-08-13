@@ -99,7 +99,7 @@ pub use components::popover::{ActionMenu, Popover, PopoverAlignment, PopoverPlac
 #[cfg(feature = "qr-code")]
 pub use components::qr_code::{QrCodeCanvas, QrCodeError};
 #[cfg(feature = "controls")]
-pub use components::reorder_list::{ReorderItem, ReorderList};
+pub use components::reorder_list::{ReorderItem, ReorderList, TreeDropIntent, TreeDropPosition};
 #[cfg(feature = "rich-text")]
 pub use components::rich_text::{
     MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
@@ -125,7 +125,7 @@ pub use components::tree_view::{
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
 #[cfg(feature = "rich-text")]
-pub use components::{SelectableRichText, TextSelectionGroup};
+pub use components::{SelectableRichText, TextSelectionGroup, TextSelectionSnapshot};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,

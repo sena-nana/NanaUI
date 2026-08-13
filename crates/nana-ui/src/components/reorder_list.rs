@@ -21,6 +21,7 @@ enum ReorderOutcome {
     Reorder {
         source: usize,
         before: Option<usize>,
+        tree_target: Option<(usize, TreeDropPosition)>,
     },
     Cancelled,
 }
@@ -117,6 +118,7 @@ impl ReorderState {
             ReorderOutcome::Reorder {
                 source,
                 before: drop_before_index(bounds, drop_targets, Some(source), self.position),
+                tree_target: tree_drop_target(bounds, drop_targets, Some(source), self.position),
             }
         } else {
             ReorderOutcome::Select(source)
@@ -132,6 +134,21 @@ impl ReorderState {
         self.position = None;
         self.moved = false;
     }
+}
+
+/// The stable placement resolved for a tree drop target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeDropPosition {
+    Before,
+    Inside,
+    After,
+}
+
+/// A framework-owned tree drop intent. Applications retain ownership of node semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeDropIntent<T> {
+    pub target: T,
+    pub position: TreeDropPosition,
 }
 
 fn item_at(bounds: &[Rectangle], enabled: &[bool], position: Point) -> Option<usize> {
@@ -159,6 +176,34 @@ fn drop_before_index(
         })
         .find(|(_, bounds)| position.y < bounds.center_y())
         .map(|(index, _)| index)
+}
+
+fn tree_drop_target(
+    bounds: &[Rectangle],
+    drop_targets: &[bool],
+    excluded: Option<usize>,
+    position: Option<Point>,
+) -> Option<(usize, TreeDropPosition)> {
+    let position = position?;
+    bounds
+        .iter()
+        .enumerate()
+        .find(|(index, bounds)| {
+            Some(*index) != excluded
+                && drop_targets.get(*index).copied().unwrap_or(false)
+                && bounds.contains(position)
+        })
+        .map(|(index, bounds)| {
+            let offset = (position.y - bounds.y) / bounds.height.max(1.0);
+            let placement = if offset < 0.25 {
+                TreeDropPosition::Before
+            } else if offset > 0.75 {
+                TreeDropPosition::After
+            } else {
+                TreeDropPosition::Inside
+            };
+            (index, placement)
+        })
 }
 
 fn reorder_changes_position(length: usize, source: usize, before: Option<usize>) -> bool {
@@ -214,6 +259,7 @@ impl<'a, T, Message> ReorderItem<'a, T, Message> {
 
 type SelectHandler<'a, T, Message> = Rc<dyn Fn(T) -> Message + 'a>;
 type ReorderHandler<'a, T, Message> = Rc<dyn Fn(T, Option<T>) -> Message + 'a>;
+type TreeDropHandler<'a, T, Message> = Rc<dyn Fn(T, TreeDropIntent<T>) -> Message + 'a>;
 
 /// A vertical list with thresholded mouse/touch reordering.
 ///
@@ -223,6 +269,7 @@ pub struct ReorderList<'a, T, Message> {
     items: Vec<ReorderItem<'a, T, Message>>,
     on_select: SelectHandler<'a, T, Message>,
     on_reorder: Option<ReorderHandler<'a, T, Message>>,
+    on_tree_drop: Option<TreeDropHandler<'a, T, Message>>,
     spacing: f32,
     indicator: Color,
 }
@@ -240,6 +287,7 @@ where
             items: items.into_iter().collect(),
             on_select: Rc::new(on_select),
             on_reorder: None,
+            on_tree_drop: None,
             spacing: 1.0,
             indicator: Color::from_rgb8(62, 143, 255),
         }
@@ -247,6 +295,18 @@ where
 
     pub fn on_reorder(mut self, on_reorder: impl Fn(T, Option<T>) -> Message + 'a) -> Self {
         self.on_reorder = Some(Rc::new(on_reorder));
+        self
+    }
+
+    /// Resolve a drag release to a stable target value and `before / inside / after` intent.
+    ///
+    /// NanaUI only owns pointer geometry. The application must reject semantic no-ops, cycles,
+    /// invalid parent types, and unsupported cross-container moves.
+    pub fn on_tree_drop(
+        mut self,
+        on_tree_drop: impl Fn(T, TreeDropIntent<T>) -> Message + 'a,
+    ) -> Self {
+        self.on_tree_drop = Some(Rc::new(on_tree_drop));
         self
     }
 
@@ -287,6 +347,7 @@ where
             drop_targets,
             on_select: self.on_select,
             on_reorder: self.on_reorder,
+            on_tree_drop: self.on_tree_drop,
             indicator: self.indicator,
         })
     }
@@ -299,6 +360,7 @@ struct ReorderListWidget<'a, T, Message> {
     drop_targets: Vec<bool>,
     on_select: SelectHandler<'a, T, Message>,
     on_reorder: Option<ReorderHandler<'a, T, Message>>,
+    on_tree_drop: Option<TreeDropHandler<'a, T, Message>>,
     indicator: Color,
 }
 
@@ -359,6 +421,20 @@ where
             .map(|item| item.bounds())
             .collect::<Vec<_>>();
         let state = tree.state.downcast_mut::<ReorderState>();
+        if state.source.is_none() {
+            self.content.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                content_layout,
+                cursor,
+                renderer,
+                shell,
+                viewport,
+            );
+            if shell.is_event_captured() {
+                return;
+            }
+        }
         if let Some(outcome) = state.update(
             event,
             &bounds,
@@ -372,8 +448,19 @@ where
                         shell.publish((self.on_select)(value));
                     }
                 }
-                ReorderOutcome::Reorder { source, before } => {
-                    if reorder_changes_position(self.values.len(), source, before)
+                ReorderOutcome::Reorder {
+                    source,
+                    before,
+                    tree_target,
+                } => {
+                    if let Some(on_tree_drop) = self.on_tree_drop.as_ref() {
+                        if let (Some(value), Some((target, position))) =
+                            (self.values.get(source).cloned(), tree_target)
+                            && let Some(target) = self.values.get(target).cloned()
+                        {
+                            shell.publish(on_tree_drop(value, TreeDropIntent { target, position }));
+                        }
+                    } else if reorder_changes_position(self.values.len(), source, before)
                         && let (Some(value), Some(on_reorder)) =
                             (self.values.get(source).cloned(), self.on_reorder.as_ref())
                     {
@@ -388,15 +475,17 @@ where
             return;
         }
 
-        self.content.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            content_layout,
-            cursor,
-            renderer,
-            shell,
-            viewport,
-        );
+        if state.source.is_some() {
+            self.content.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                content_layout,
+                cursor,
+                renderer,
+                shell,
+                viewport,
+            );
+        }
     }
 
     fn draw(
@@ -428,6 +517,60 @@ where
         let Some(source) = state.moved.then_some(state.active_index).flatten() else {
             return;
         };
+        if self.on_tree_drop.is_some() {
+            let Some((target, position)) =
+                tree_drop_target(&bounds, &self.drop_targets, Some(source), state.position)
+            else {
+                return;
+            };
+            let Some(target_bounds) = bounds.get(target).copied() else {
+                return;
+            };
+            let marker = match position {
+                TreeDropPosition::Before => Rectangle::new(
+                    Point::new(target_bounds.x + 4.0, target_bounds.y - 1.0),
+                    Size::new((target_bounds.width - 8.0).max(0.0), 2.0),
+                ),
+                TreeDropPosition::After => Rectangle::new(
+                    Point::new(
+                        target_bounds.x + 4.0,
+                        target_bounds.y + target_bounds.height - 1.0,
+                    ),
+                    Size::new((target_bounds.width - 8.0).max(0.0), 2.0),
+                ),
+                TreeDropPosition::Inside => Rectangle::new(
+                    Point::new(target_bounds.x + 3.0, target_bounds.y + 2.0),
+                    Size::new(
+                        (target_bounds.width - 6.0).max(0.0),
+                        (target_bounds.height - 4.0).max(0.0),
+                    ),
+                ),
+            };
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: marker,
+                    border: iced::Border {
+                        color: self.indicator,
+                        width: if position == TreeDropPosition::Inside {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        radius: 4.0.into(),
+                    },
+                    ..renderer::Quad::default()
+                },
+                if position == TreeDropPosition::Inside {
+                    Color {
+                        a: 0.12,
+                        ..self.indicator
+                    }
+                } else {
+                    self.indicator
+                },
+            );
+            return;
+        }
         let before = drop_before_index(&bounds, &self.drop_targets, Some(source), state.position);
         if !reorder_changes_position(bounds.len(), source, before) {
             return;
@@ -594,6 +737,7 @@ mod tests {
             Some(ReorderOutcome::Reorder {
                 source: 0,
                 before: None,
+                tree_target: Some((2, TreeDropPosition::After)),
             })
         );
         assert!(reorder_changes_position(3, 0, None));
@@ -645,8 +789,43 @@ mod tests {
             Some(ReorderOutcome::Reorder {
                 source: 0,
                 before: Some(1),
+                tree_target: Some((1, TreeDropPosition::Inside)),
             })
         );
         assert_eq!(item_at(&bounds, &drag_sources, end), None);
+    }
+
+    #[test]
+    fn tree_drop_resolves_before_inside_and_after_zones() {
+        let bounds = row_bounds();
+        let enabled = vec![true; bounds.len()];
+        for (y, expected) in [
+            (30.0, TreeDropPosition::Before),
+            (42.0, TreeDropPosition::Inside),
+            (55.0, TreeDropPosition::After),
+        ] {
+            assert_eq!(
+                tree_drop_target(&bounds, &enabled, Some(0), Some(Point::new(40.0, y)),),
+                Some((1, expected)),
+            );
+        }
+        assert_eq!(
+            tree_drop_target(&bounds, &enabled, Some(1), Some(Point::new(40.0, 42.0)),),
+            None,
+        );
+        assert_eq!(
+            tree_drop_target(
+                &bounds,
+                &[true, false, true],
+                Some(0),
+                Some(Point::new(40.0, 42.0))
+            ),
+            None,
+        );
+        assert_eq!(
+            tree_drop_target(&bounds, &enabled, Some(0), Some(Point::new(40.0, 28.5))),
+            None,
+        );
+        assert_eq!(tree_drop_target(&bounds, &enabled, Some(0), None), None);
     }
 }

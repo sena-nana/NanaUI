@@ -8,8 +8,8 @@ use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Shell, mouse, overlay};
 use iced::widget::{button, column, container, row, scrollable, space, stack, text, tooltip};
 use iced::{
-    Alignment, Animation, Border, Color, Element, Event, Length, Padding, Rectangle, Shadow, Size,
-    Subscription, Theme, font,
+    Alignment, Animation, Border, Color, Element, Event, Length, Padding, Point, Rectangle, Shadow,
+    Size, Subscription, Theme, font,
 };
 
 use crate::components::ControlSize;
@@ -24,6 +24,8 @@ const FRAME_PADDING_LEFT: f32 = 12.0;
 const FRAME_GAP: f32 = 14.0;
 const ROW_PADDING_LEFT: f32 = 8.0;
 const ROW_ICON_SLOT_WIDTH: f32 = 16.0;
+const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
+const ROW_TREE_DEPTH_STEP: f32 = 12.0;
 const SECTION_ANIMATION_DURATION: iced::time::Duration = iced::time::Duration::from_millis(160);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -188,6 +190,8 @@ pub struct SidebarRow<'a, Message> {
     tone: SidebarRowTone,
     on_select: Option<Message>,
     disclosure: Option<(bool, Message)>,
+    on_right_press: Option<Rc<dyn Fn(Point) -> Message + 'a>>,
+    on_middle_press: Option<Rc<dyn Fn(Point) -> Message + 'a>>,
 }
 
 impl<'a, Message> SidebarRow<'a, Message>
@@ -207,6 +211,8 @@ where
             tone: SidebarRowTone::Default,
             on_select: None,
             disclosure: None,
+            on_right_press: None,
+            on_middle_press: None,
         }
     }
 
@@ -270,12 +276,24 @@ where
         self
     }
 
+    /// Emits the viewport-relative pointer position for a secondary-button press.
+    pub fn on_right_press(mut self, on_press: impl Fn(Point) -> Message + 'a) -> Self {
+        self.on_right_press = Some(Rc::new(on_press));
+        self
+    }
+
+    /// Emits the viewport-relative pointer position for a middle-button press.
+    pub fn on_middle_press(mut self, on_press: impl Fn(Point) -> Message + 'a) -> Self {
+        self.on_middle_press = Some(Rc::new(on_press));
+        self
+    }
+
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
         let row_height = self.size.height_in(tokens.metrics);
         let disabled = self.state == SidebarRowState::Disabled;
-        let depth_inset = ROW_PADDING_LEFT + f32::from(self.depth) * 14.0;
+        let depth_inset = sidebar_row_depth_inset(self.depth);
         let has_disclosure = self.disclosure.is_some();
         let mut content = row![]
             .width(Length::Fill)
@@ -373,10 +391,171 @@ where
                     .center_y(Length::Fill),
             );
         }
-        container(layers)
+        let row = container(layers)
             .width(Length::Fill)
             .height(Length::Fixed(row_height))
-            .into()
+            .into();
+        if self.on_right_press.is_some() || self.on_middle_press.is_some() {
+            Element::new(SidebarRowPointerTracker {
+                content: row,
+                on_right_press: self.on_right_press,
+                on_middle_press: self.on_middle_press,
+            })
+        } else {
+            row
+        }
+    }
+}
+
+fn sidebar_row_depth_inset(depth: u16) -> f32 {
+    if depth == 0 {
+        ROW_PADDING_LEFT
+    } else {
+        ROW_TREE_FIRST_DEPTH_INSET + f32::from(depth - 1) * ROW_TREE_DEPTH_STEP
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarPointerButton {
+    Right,
+    Middle,
+}
+
+fn sidebar_auxiliary_press(
+    event: &Event,
+    bounds: Rectangle,
+    cursor: mouse::Cursor,
+) -> Option<(SidebarPointerButton, Point)> {
+    let position = cursor
+        .position()
+        .filter(|position| bounds.contains(*position))?;
+    let button = match event {
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+            SidebarPointerButton::Right
+        }
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+            SidebarPointerButton::Middle
+        }
+        _ => return None,
+    };
+    Some((button, position))
+}
+
+struct SidebarRowPointerTracker<'a, Message> {
+    content: Element<'a, Message>,
+    on_right_press: Option<Rc<dyn Fn(Point) -> Message + 'a>>,
+    on_middle_press: Option<Rc<dyn Fn(Point) -> Message + 'a>>,
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarRowPointerTracker<'_, Message> {
+    fn tag(&self) -> widget::tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> widget::tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn diff(&mut self, tree: &mut widget::Tree) {
+        self.content.as_widget_mut().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
+        if shell.is_event_captured() {
+            return;
+        }
+        let Some((button, position)) = sidebar_auxiliary_press(event, layout.bounds(), cursor)
+        else {
+            return;
+        };
+        let message = match button {
+            SidebarPointerButton::Right => self.on_right_press.as_ref().map(|emit| emit(position)),
+            SidebarPointerButton::Middle => {
+                self.on_middle_press.as_ref().map(|emit| emit(position))
+            }
+        };
+        if let Some(message) = message {
+            shell.publish(message);
+            shell.capture_event();
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut widget::Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: iced::Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
     }
 }
 
@@ -643,20 +822,21 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidebarRowAccessories<'
 }
 
 fn captures_tools_pointer(event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> bool {
-    cursor.is_over(bounds)
-        && matches!(
-            event,
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                | Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                | Event::Touch(iced::touch::Event::FingerPressed { .. })
-                | Event::Touch(iced::touch::Event::FingerLifted { .. })
-        )
+    let position = match event {
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+        | Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => cursor.position(),
+        Event::Touch(iced::touch::Event::FingerPressed { position, .. })
+        | Event::Touch(iced::touch::Event::FingerLifted { position, .. }) => Some(*position),
+        _ => None,
+    };
+    position.is_some_and(|position| bounds.contains(position))
 }
 
 /// A titled, optionally collapsible sidebar group.
 pub struct SidebarSection<'a, Message> {
     title: Cow<'a, str>,
     count: Option<usize>,
+    tools: Option<Element<'a, Message>>,
     expanded: bool,
     on_toggle: Option<Message>,
     empty_text: Option<Cow<'a, str>>,
@@ -673,6 +853,7 @@ where
         Self {
             title: title.into(),
             count: None,
+            tools: None,
             expanded: true,
             on_toggle: None,
             empty_text: None,
@@ -684,6 +865,14 @@ where
 
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
+        self
+    }
+
+    /// Adds section actions that replace the count while the header is hovered.
+    ///
+    /// Pointer input in the tools slot is isolated from the optional section toggle.
+    pub fn tools(mut self, tools: impl Into<Element<'a, Message>>) -> Self {
+        self.tools = Some(tools.into());
         self
     }
 
@@ -742,11 +931,25 @@ where
             )
             .width(Length::Fill),
         );
-        if let Some(count) = self.count {
-            heading = heading.push(text(count).size(11).color(colors.faint));
-        }
+        let header_hovered = if let Some(tools) = self.tools {
+            let header_hovered = Rc::new(Cell::new(false));
+            let trailing = self
+                .count
+                .map(|count| text(count).size(11).color(colors.faint).into())
+                .unwrap_or_else(|| space().width(Length::Shrink).into());
+            heading = heading.push(Element::new(SidebarRowAccessories {
+                children: [trailing, tools],
+                row_hovered: header_hovered.clone(),
+            }));
+            Some(header_hovered)
+        } else {
+            if let Some(count) = self.count {
+                heading = heading.push(text(count).size(11).color(colors.faint));
+            }
+            None
+        };
 
-        let header = button(heading)
+        let header: Element<'a, Message> = button(heading)
             .width(Length::Fill)
             .height(Length::Fixed(row_height))
             .padding([0.0, ROW_PADDING_LEFT])
@@ -756,7 +959,16 @@ where
                 colors,
                 collapsible,
                 tokens.metrics.radius_sm,
-            ));
+            ))
+            .into();
+        let header = if let Some(header_hovered) = header_hovered {
+            Element::new(SidebarRowHoverTracker {
+                content: header,
+                row_hovered: header_hovered,
+            })
+        } else {
+            header
+        };
 
         let mut section = column![header];
         if expansion > 0.0 {
@@ -1038,12 +1250,13 @@ fn sidebar_footer_button_style(
 
 #[cfg(test)]
 mod tests {
-    use iced::Theme;
     use iced::widget::button;
+    use iced::{Event, Point, Rectangle, Size, Theme, mouse, touch};
 
     use super::{
-        ControlSize, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSectionState,
-        fixed_children_height, section_header_style, sidebar_row_style,
+        ControlSize, SidebarPointerButton, SidebarRow, SidebarRowState, SidebarRowTone,
+        SidebarSectionState, captures_tools_pointer, fixed_children_height, section_header_style,
+        sidebar_auxiliary_press, sidebar_row_depth_inset, sidebar_row_style,
     };
     use crate::theme::{ThemeMode, ThemeModeExt, UI_METRICS};
 
@@ -1105,5 +1318,71 @@ mod tests {
             fixed_children_height(&children, ControlSize::Small.height(), 1.0),
             98.0
         );
+    }
+
+    #[test]
+    fn tree_depth_aligns_the_first_child_with_a_leading_row_label() {
+        assert_eq!(sidebar_row_depth_inset(0), 8.0);
+        assert_eq!(sidebar_row_depth_inset(1), 30.0);
+        assert_eq!(sidebar_row_depth_inset(2), 42.0);
+    }
+
+    #[test]
+    fn auxiliary_pointer_events_keep_the_viewport_position_and_ignore_outside_presses() {
+        let bounds = Rectangle::new(Point::new(12.0, 20.0), Size::new(180.0, 28.0));
+        let inside = Point::new(80.0, 32.0);
+        assert_eq!(
+            sidebar_auxiliary_press(
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                bounds,
+                mouse::Cursor::Available(inside),
+            ),
+            Some((SidebarPointerButton::Right, inside))
+        );
+        assert_eq!(
+            sidebar_auxiliary_press(
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)),
+                bounds,
+                mouse::Cursor::Available(inside),
+            ),
+            Some((SidebarPointerButton::Middle, inside))
+        );
+        assert_eq!(
+            sidebar_auxiliary_press(
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                bounds,
+                mouse::Cursor::Available(Point::new(300.0, 32.0)),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn hover_tools_isolate_mouse_and_touch_presses_from_row_selection() {
+        let bounds = Rectangle::new(Point::new(140.0, 20.0), Size::new(42.0, 28.0));
+        let inside = Point::new(160.0, 32.0);
+        let finger = touch::Finger(7);
+
+        assert!(captures_tools_pointer(
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            bounds,
+            mouse::Cursor::Available(inside),
+        ));
+        assert!(captures_tools_pointer(
+            &Event::Touch(touch::Event::FingerPressed {
+                id: finger,
+                position: inside,
+            }),
+            bounds,
+            mouse::Cursor::Unavailable,
+        ));
+        assert!(!captures_tools_pointer(
+            &Event::Touch(touch::Event::FingerPressed {
+                id: finger,
+                position: Point::new(80.0, 32.0),
+            }),
+            bounds,
+            mouse::Cursor::Unavailable,
+        ));
     }
 }

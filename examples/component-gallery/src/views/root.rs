@@ -147,7 +147,12 @@ impl GalleryState {
 
     pub(super) fn gallery_sidebar(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
-        let mut section = SidebarSection::new("Gallery").count(6);
+        let mut section = SidebarSection::new("Gallery").count(6).tools(
+            UiIconButton::new("搜索命令", Icon::Search)
+                .on_press(GalleryMessage::ToggleCommandPalette)
+                .size(ControlSize::Small)
+                .view(tokens),
+        );
         for (target, label, row_icon) in [
             (GallerySection::Controls, "控件", Icon::Settings),
             (GallerySection::Surfaces, "表面", Icon::Folder),

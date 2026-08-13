@@ -76,6 +76,7 @@ pub struct AppTitleBar<'a, Message> {
     tokens: ThemeTokens,
     leading: Option<Element<'a, Message>>,
     center: Option<Element<'a, Message>>,
+    center_width: f32,
     trailing: Option<Element<'a, Message>>,
     chrome: WindowChrome,
     maximized: bool,
@@ -92,6 +93,7 @@ where
             tokens: theme.into(),
             leading: None,
             center: None,
+            center_width: 168.0,
             trailing: None,
             chrome: WindowChrome::custom(),
             maximized: false,
@@ -106,6 +108,12 @@ where
 
     pub fn center(mut self, center: impl Into<Element<'a, Message>>) -> Self {
         self.center = Some(center.into());
+        self
+    }
+
+    /// Sets the balanced center slot width for product breadcrumbs.
+    pub fn center_width(mut self, width: f32) -> Self {
+        self.center_width = width.max(1.0);
         self
     }
 
@@ -165,7 +173,7 @@ where
                 left: 6.0 + self.chrome.leading_inset,
             });
         let center = container(center)
-            .width(Length::Fixed(168.0))
+            .width(Length::Fixed(self.center_width))
             .height(Length::Fill)
             .padding([0.0, 14.0])
             .clip(true)

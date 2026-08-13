@@ -10,7 +10,7 @@ use pulldown_cmark::{
     Alignment as CmarkAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
 
-use crate::{SelectableRichText, TextSelectionGroup, ThemeTokens, ui_font};
+use crate::{SelectableRichText, TextSelectionGroup, TextSelectionSnapshot, ThemeTokens, ui_font};
 
 type VectorCache = Arc<Mutex<BTreeMap<VectorCacheKey, Option<Vec<u8>>>>>;
 
@@ -165,6 +165,20 @@ impl NativeMarkdown {
     where
         Message: Clone + 'static,
     {
+        self.view_with_selection_snapshot(tokens, on_link, move |selection| {
+            on_selection_change(selection.map(|selection| selection.text))
+        })
+    }
+
+    pub fn view_with_selection_snapshot<Message>(
+        &self,
+        tokens: ThemeTokens,
+        on_link: impl Fn(String) -> Message + Clone + 'static,
+        on_selection_change: impl Fn(Option<TextSelectionSnapshot>) -> Message + 'static,
+    ) -> Element<'static, Message>
+    where
+        Message: Clone + 'static,
+    {
         render_document(
             self,
             tokens,
@@ -192,6 +206,21 @@ impl NativeMarkdown {
         on_link: impl Fn(String) -> Message + Clone + 'static,
         render_image: impl Fn(MarkdownImage) -> Element<'static, Message> + 'static,
         on_selection_change: impl Fn(Option<String>) -> Message + 'static,
+    ) -> Element<'static, Message>
+    where
+        Message: Clone + 'static,
+    {
+        self.view_with_media_selection_snapshot(tokens, on_link, render_image, move |selection| {
+            on_selection_change(selection.map(|selection| selection.text))
+        })
+    }
+
+    pub fn view_with_media_selection_snapshot<Message>(
+        &self,
+        tokens: ThemeTokens,
+        on_link: impl Fn(String) -> Message + Clone + 'static,
+        render_image: impl Fn(MarkdownImage) -> Element<'static, Message> + 'static,
+        on_selection_change: impl Fn(Option<TextSelectionSnapshot>) -> Message + 'static,
     ) -> Element<'static, Message>
     where
         Message: Clone + 'static,
@@ -592,7 +621,7 @@ where
     render_document(document, tokens, on_link, None, None)
 }
 
-type SelectionCallback<Message> = Option<Rc<dyn Fn(Option<String>) -> Message>>;
+type SelectionCallback<Message> = Option<Rc<dyn Fn(Option<TextSelectionSnapshot>) -> Message>>;
 type ImageRenderer<Message> = Option<Rc<dyn Fn(MarkdownImage) -> Element<'static, Message>>>;
 type LinkHandler<Message> = Rc<dyn Fn(String) -> Message>;
 
@@ -1176,7 +1205,7 @@ where
     let mut value =
         SelectableRichText::new(spans).selection_group(selection_group, order, separator_before);
     if let Some(callback) = on_selection_change {
-        value = value.on_selection_change(move |selected| callback(selected));
+        value = value.on_selection_snapshot(move |selected| callback(selected));
     }
     value
 }

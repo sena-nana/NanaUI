@@ -23,7 +23,7 @@ pub struct SelectableRichText<Message> {
     selection_color: Color,
     on_link_click: Option<Box<dyn Fn(String) -> Message>>,
     selection_group: Option<(TextSelectionGroup, u64, String)>,
-    on_selection_change: Option<Box<dyn Fn(Option<String>) -> Message>>,
+    on_selection_change: Option<Box<dyn Fn(Option<TextSelectionSnapshot>) -> Message>>,
 }
 
 impl<Message> SelectableRichText<Message> {
@@ -95,9 +95,31 @@ impl<Message> SelectableRichText<Message> {
         mut self,
         on_selection_change: impl Fn(Option<String>) -> Message + 'static,
     ) -> Self {
+        self.on_selection_change = Some(Box::new(move |selection| {
+            on_selection_change(selection.map(|selection| selection.text))
+        }));
+        self
+    }
+
+    /// Reports the selected text together with its surface-relative visual bounds.
+    ///
+    /// Use this for selection toolbars and other overlays that must not change
+    /// the document layout. The bounds are absent only before the selected
+    /// nodes have produced geometry.
+    pub fn on_selection_snapshot(
+        mut self,
+        on_selection_change: impl Fn(Option<TextSelectionSnapshot>) -> Message + 'static,
+    ) -> Self {
         self.on_selection_change = Some(Box::new(on_selection_change));
         self
     }
+}
+
+/// A completed rich-text selection and its surface-relative visual envelope.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextSelectionSnapshot {
+    pub text: String,
+    pub bounds: Option<Rectangle>,
 }
 
 /// Shared selection state for a document composed from multiple rich-text nodes.
@@ -147,6 +169,13 @@ impl TextSelectionGroup {
             .lock()
             .ok()
             .and_then(|state| group_selected_text(&state))
+    }
+
+    pub fn selection_snapshot(&self) -> Option<TextSelectionSnapshot> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| group_selection_snapshot(&state))
     }
 
     fn register_text(
@@ -221,7 +250,7 @@ impl TextSelectionGroup {
         true
     }
 
-    fn finish(&self, owner: u64) -> Option<Option<String>> {
+    fn finish(&self, owner: u64) -> Option<Option<TextSelectionSnapshot>> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
@@ -229,7 +258,7 @@ impl TextSelectionGroup {
             return None;
         }
         state.dragging_owner = None;
-        Some(group_selected_text(&state))
+        Some(group_selection_snapshot(&state))
     }
 
     fn select_all(&self) -> bool {
@@ -794,6 +823,43 @@ fn group_selected_text(state: &TextSelectionGroupState) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+fn group_selection_snapshot(state: &TextSelectionGroupState) -> Option<TextSelectionSnapshot> {
+    let text = group_selected_text(state)?;
+    let (start, end) = ordered_group_selection(state)?;
+    let mut bounds = None;
+    for (&order, node) in state.nodes.range(start.order..=end.order) {
+        let local_start =
+            if order == start.order { start.index } else { 0 }.min(node.graphemes.len());
+        let local_end = if order == end.order {
+            end.index
+        } else {
+            node.graphemes.len()
+        }
+        .min(node.graphemes.len());
+        let geometry_start = local_start.min(node.span_bounds.len());
+        let geometry_end = local_end.min(node.span_bounds.len());
+        for selected in node.span_bounds[geometry_start..geometry_end]
+            .iter()
+            .flatten()
+            .copied()
+        {
+            bounds = Some(match bounds {
+                Some(current) => rectangle_union(current, selected),
+                None => selected,
+            });
+        }
+    }
+    Some(TextSelectionSnapshot { text, bounds })
+}
+
+fn rectangle_union(left: Rectangle, right: Rectangle) -> Rectangle {
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    let right_edge = (left.x + left.width).max(right.x + right.width);
+    let bottom_edge = (left.y + left.height).max(right.y + right.height);
+    Rectangle::new(Point::new(x, y), Size::new(right_edge - x, bottom_edge - y))
+}
+
 fn group_hit_point(
     state: &TextSelectionGroupState,
     position: Point,
@@ -930,6 +996,46 @@ mod tests {
                 anchor: 0,
                 focus: 2,
             })
+        );
+    }
+
+    #[test]
+    fn selection_snapshot_unions_only_selected_grapheme_bounds() {
+        let group = TextSelectionGroup::default();
+        group.register_text(10, &split_graphemes(&spans("ABC")), "");
+        group.register_geometry(
+            10,
+            Rectangle::new(Point::new(10.0, 20.0), Size::new(90.0, 40.0)),
+            vec![
+                vec![Rectangle::new(
+                    Point::new(10.0, 20.0),
+                    Size::new(10.0, 10.0),
+                )],
+                vec![Rectangle::new(
+                    Point::new(20.0, 20.0),
+                    Size::new(10.0, 10.0),
+                )],
+                vec![Rectangle::new(
+                    Point::new(10.0, 40.0),
+                    Size::new(10.0, 10.0),
+                )],
+            ],
+        );
+        assert!(group.begin(
+            10,
+            Selection {
+                anchor: 1,
+                focus: 3,
+            },
+        ));
+        let snapshot = group.selection_snapshot().unwrap();
+        assert_eq!(snapshot.text, "BC");
+        assert_eq!(
+            snapshot.bounds,
+            Some(Rectangle::new(
+                Point::new(10.0, 20.0),
+                Size::new(20.0, 30.0),
+            ))
         );
     }
 }

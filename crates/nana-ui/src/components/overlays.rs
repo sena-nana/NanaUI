@@ -1,14 +1,14 @@
 use std::borrow::Cow;
 
 use iced::widget::{button, column, container, mouse_area, row, space, text};
-use iced::{font, Alignment, Element, Length, Padding};
+use iced::{Alignment, Element, Length, Padding, font};
 
 use crate::components::{Button as UiButton, ControlSize};
 use crate::dialog::DialogSize;
-use crate::icons::{icon, Icon};
-use crate::theme::{ui_font, ThemeTokens};
-use crate::tooltip::{tooltip_view, TooltipConfig};
-use crate::widgets::{dialog_close_style, dialog_scrim_style, dialog_surface_style, ButtonKind};
+use crate::icons::{Icon, icon};
+use crate::theme::{ThemeTokens, ui_font};
+use crate::tooltip::{TooltipConfig, tooltip_view};
+use crate::widgets::{ButtonKind, dialog_close_style, dialog_scrim_style, dialog_surface_style};
 
 /// A modal surface with explicit outside, close and inner-interaction messages.
 ///
@@ -82,10 +82,12 @@ where
     pub fn view(self, theme: impl Into<ThemeTokens>) -> Element<'a, Message> {
         let tokens = theme.into();
         let colors = tokens.colors;
-        let mut heading = column![text(self.title)
-            .size(14)
-            .font(ui_font(font::Weight::Semibold))
-            .color(colors.text)]
+        let mut heading = column![
+            text(self.title)
+                .size(14)
+                .font(ui_font(font::Weight::Semibold))
+                .color(colors.text)
+        ]
         .spacing(4)
         .width(Length::Fill);
         if let Some(description) = self.description {

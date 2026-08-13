@@ -83,14 +83,14 @@ pub use popover::{ActionMenu, Popover, PopoverAlignment, PopoverPlacement};
 #[cfg(feature = "qr-code")]
 pub use qr_code::{QrCodeCanvas, QrCodeError};
 #[cfg(feature = "controls")]
-pub use reorder_list::{ReorderItem, ReorderList};
+pub use reorder_list::{ReorderItem, ReorderList, TreeDropIntent, TreeDropPosition};
 #[cfg(feature = "rich-text")]
 pub use rich_text::{
     MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
     MarkdownTableAlignment, NativeMarkdown, native_markdown,
 };
 #[cfg(feature = "rich-text")]
-pub use selectable_rich_text::{SelectableRichText, TextSelectionGroup};
+pub use selectable_rich_text::{SelectableRichText, TextSelectionGroup, TextSelectionSnapshot};
 #[cfg(feature = "selects")]
 pub use selects::{
     Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
