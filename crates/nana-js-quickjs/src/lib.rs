@@ -764,6 +764,40 @@ mod tests {
     }
 
     #[test]
+    fn typed_array_host_arguments_preserve_binary_bytes() {
+        let mut engine = QuickJsEngine::new();
+        let mut api = HostApiRegistry::new();
+        api.register("capture", |args| {
+            Ok(args.first().cloned().unwrap_or(HostValue::Null))
+        });
+        engine.register_host_api(&api).unwrap();
+        engine
+            .initialize(RuntimeArtifact::from_source(
+                "typed-array.js",
+                r#"
+                globalThis.__nanaProbe = {
+                  run: () => globalThis.__nanaHost.call(
+                    'capture',
+                    [new Uint8Array([0, 127, 255])],
+                  )
+                };
+                "#,
+            ))
+            .unwrap();
+        let run = engine.resolve_function("__nanaProbe.run").unwrap();
+        let result = engine.invoke(run, &[]).unwrap();
+        assert_eq!(
+            result,
+            HostValue::Array(vec![
+                HostValue::Number(0.0),
+                HostValue::Number(127.0),
+                HostValue::Number(255.0),
+            ])
+        );
+        engine.shutdown();
+    }
+
+    #[test]
     fn runs_shared_vue_runtime_probe() {
         let mut engine = QuickJsEngine::new();
         let (api, state) = probe_host_registry();

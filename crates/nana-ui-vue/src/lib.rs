@@ -98,6 +98,8 @@ mod multi_window;
 #[cfg(feature = "iced-view")]
 mod native_component;
 mod renderer;
+#[cfg(feature = "iced-view")]
+mod runtime_text;
 mod scroll;
 mod shell_contract;
 mod style;
@@ -188,6 +190,8 @@ pub use native_component::{
 #[cfg(feature = "iced-view")]
 pub use renderer::register_dom_host_ops_with_components;
 pub use renderer::{HostDocs, register_dom_host_ops, register_dom_host_ops_with_bridge};
+#[cfg(feature = "iced-view")]
+pub use runtime_text::IcedTextShaper;
 #[cfg(feature = "iced-view")]
 pub use scroll::drain_pending_scroll_tasks;
 pub use scroll::{
@@ -757,7 +761,11 @@ impl VueHost {
             bridge.sync_sidebar_footer_into_document(&mut doc);
         }
         bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
-        bridge.snapshot()
+        let mut snapshot = bridge.snapshot();
+        let mut document = self.document.lock().expect("vue doc");
+        document.apply_runtime_hierarchy(&mut snapshot);
+        document.sync_semantic_styles(&snapshot);
+        snapshot
     }
 
     /// Ensure host-owned [`EditorStore`] buffers exist for every Textarea node.
@@ -1022,7 +1030,6 @@ impl VueHost {
 
     fn register_input_host_ops(&self, api: &mut HostApiRegistry) {
         {
-            let input = Arc::clone(&self.input);
             let document = Arc::clone(&self.document);
             api.register("setPointerCapture", move |args| {
                 let node = args
@@ -1035,25 +1042,24 @@ impl VueHost {
                     .and_then(HostValue::as_f64)
                     .map(|id| id as u64)
                     .ok_or_else(|| nana_js_engine::JsException::new("missing pointer id"))?;
-                if document
+                let mut document = document
                     .lock()
-                    .map_err(|_| nana_js_engine::JsException::new("vue doc poisoned"))?
-                    .element_tag(node)
-                    .is_none()
-                {
+                    .map_err(|_| nana_js_engine::JsException::new("vue doc poisoned"))?;
+                if document.element_tag(node).is_none() {
                     return Err(nana_js_engine::JsException::new(
                         "pointer node is not mounted",
                     ));
                 }
-                input
-                    .lock()
-                    .map_err(|_| nana_js_engine::JsException::new("input state poisoned"))?
-                    .capture(pointer_id, node);
+                if !document.capture_pointer(pointer_id, node) {
+                    return Err(nana_js_engine::JsException::new(
+                        "pointer capture could not be committed",
+                    ));
+                }
                 Ok(HostValue::Null)
             });
         }
         {
-            let input = Arc::clone(&self.input);
+            let document = Arc::clone(&self.document);
             api.register("releasePointerCapture", move |args| {
                 let node = args
                     .first()
@@ -1064,15 +1070,15 @@ impl VueHost {
                     .and_then(HostValue::as_f64)
                     .map(|id| id as u64)
                     .ok_or_else(|| nana_js_engine::JsException::new("missing pointer id"))?;
-                let released = input
+                let mut document = document
                     .lock()
-                    .map_err(|_| nana_js_engine::JsException::new("input state poisoned"))?
-                    .release_capture(pointer_id, node);
+                    .map_err(|_| nana_js_engine::JsException::new("vue doc poisoned"))?;
+                let released = node.is_some_and(|node| document.release_pointer(pointer_id, node));
                 Ok(HostValue::Bool(released))
             });
         }
         {
-            let input = Arc::clone(&self.input);
+            let document = Arc::clone(&self.document);
             api.register("hasPointerCapture", move |args| {
                 let node = args
                     .first()
@@ -1083,10 +1089,10 @@ impl VueHost {
                     .and_then(HostValue::as_f64)
                     .map(|id| id as u64)
                     .ok_or_else(|| nana_js_engine::JsException::new("missing pointer id"))?;
-                let captured = input
+                let captured = document
                     .lock()
-                    .map_err(|_| nana_js_engine::JsException::new("input state poisoned"))?
-                    .capture_target(pointer_id);
+                    .map_err(|_| nana_js_engine::JsException::new("vue doc poisoned"))?
+                    .pointer_capture(pointer_id);
                 Ok(HostValue::Bool(captured == node && node.is_some()))
             });
         }
@@ -1376,12 +1382,16 @@ impl VueHost {
             if let Some(focused) = focused {
                 self.fire_dom_event(engine, focused, "blur", BTreeMap::new())?;
             }
-            let captures = self.input.lock().expect("input state").clear();
-            for (pointer_id, target) in captures {
-                let mut detail = BTreeMap::new();
-                detail.insert("pointerId".into(), HostValue::Number(pointer_id as f64));
-                self.fire_dom_event(engine, target, "lostpointercapture", detail)?;
+            self.input.lock().expect("input state").clear();
+            {
+                let mut document = self.document.lock().expect("vue doc");
+                // A pending acquisition was never observable before blur. Match
+                // the previous DOM-compatible behavior by publishing only the
+                // release of captures that actually remained authoritative.
+                let _ = document.take_pointer_capture_changes();
+                document.clear_pointer_captures();
             }
+            self.flush_pointer_capture_events(engine)?;
         }
         let args = match self.event_window_id {
             Some(window_id) => vec![HostValue::Number(window_id as f64), event.to_host_value()],
@@ -1589,13 +1599,13 @@ impl VueHost {
         let mut doc = self.document.lock().expect("vue doc");
         let previous = doc.focused();
         let next = doc.hit_test(x, y).and_then(|hit| {
-            let mut walk = Some(hit);
-            while let Some(node) = walk {
+            let route = doc.event_route(hit)?;
+            for id in std::iter::once(route.target).chain(route.bubble) {
+                let node = NodeHandle::from(id);
                 let tag = doc.element_tag(node).unwrap_or_default();
                 if is_focusable_tag(&tag) || self.native_component_name(node.0).is_some() {
                     return Some(node);
                 }
-                walk = doc.parent_node(node);
             }
             None
         });
@@ -1638,13 +1648,15 @@ impl VueHost {
     ) -> (Vec<NodeHandle>, Vec<NodeHandle>) {
         let doc = self.document.lock().expect("vue doc");
         let path = |start: Option<NodeHandle>| {
-            let mut nodes = Vec::new();
-            let mut current = start;
-            while let Some(node) = current {
-                nodes.push(node);
-                current = doc.parent_node(node);
-            }
-            nodes
+            start
+                .and_then(|target| doc.event_route(target))
+                .map(|route| {
+                    std::iter::once(route.target)
+                        .chain(route.bubble)
+                        .map(NodeHandle::from)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
         };
         let previous_path = path(previous);
         let next_path = path(next);
@@ -1669,17 +1681,20 @@ impl VueHost {
         engine: &mut E,
     ) -> Result<(), JsEngineError> {
         let changes = self
-            .input
+            .document
             .lock()
-            .expect("input state")
-            .take_capture_changes();
-        for (gained, pointer_id, target) in changes {
+            .expect("vue doc")
+            .take_pointer_capture_changes();
+        for change in changes {
             let mut detail = BTreeMap::new();
-            detail.insert("pointerId".into(), HostValue::Number(pointer_id as f64));
+            detail.insert(
+                "pointerId".into(),
+                HostValue::Number(change.pointer_id as f64),
+            );
             self.fire_dom_event(
                 engine,
-                target,
-                if gained {
+                NodeHandle::from(change.target),
+                if change.captured {
                     "gotpointercapture"
                 } else {
                     "lostpointercapture"
@@ -1701,10 +1716,10 @@ impl VueHost {
             doc.hit_test(input.client_x, input.client_y)
         };
         let mut captured = self
-            .input
+            .document
             .lock()
-            .expect("input state")
-            .capture_target(input.pointer_id);
+            .expect("vue doc")
+            .pointer_capture(input.pointer_id);
         if captured.is_some_and(|target| {
             self.document
                 .lock()
@@ -1712,10 +1727,12 @@ impl VueHost {
                 .element_tag(target)
                 .is_none()
         }) {
-            self.input
-                .lock()
-                .expect("input state")
-                .release_capture(input.pointer_id, captured);
+            if let Some(captured) = captured {
+                self.document
+                    .lock()
+                    .expect("vue doc")
+                    .release_pointer(input.pointer_id, captured);
+            }
             self.flush_pointer_capture_events(engine)?;
             captured = None;
         }
@@ -1875,10 +1892,17 @@ impl VueHost {
         self.flush_pointer_capture_events(engine)?;
 
         if matches!(input.kind, PointerEventKind::Up | PointerEventKind::Cancel) {
-            self.input
+            let captured = self
+                .document
                 .lock()
-                .expect("input state")
-                .release_capture(input.pointer_id, None);
+                .expect("vue doc")
+                .pointer_capture(input.pointer_id);
+            if let Some(captured) = captured {
+                self.document
+                    .lock()
+                    .expect("vue doc")
+                    .release_pointer(input.pointer_id, captured);
+            }
             self.flush_pointer_capture_events(engine)?;
         }
         engine.run_microtasks()?;
@@ -2067,21 +2091,29 @@ impl VueHost {
         };
         let next = {
             let doc = self.document.lock().expect("vue doc");
-            let previous = doc.get_attribute(target, "value").unwrap_or_default();
-            format!("{previous}{text}")
+            let mut state = doc.text_input_state(target).unwrap_or_else(|| {
+                TextInputState::new(doc.get_attribute(target, "value").unwrap_or_default())
+            });
+            if !state.replace_selection(text) {
+                return Ok(false);
+            }
+            state
         };
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(text));
         detail.insert("inputType".into(), HostValue::string(input_type));
-        detail.insert("value".into(), HostValue::string(&next));
+        detail.insert("value".into(), HostValue::string(&next.value));
         detail.insert("isComposing".into(), HostValue::Bool(false));
         if !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
             return Ok(false);
         }
-        self.document
-            .lock()
-            .expect("vue doc")
-            .set_attribute(target, "value", &next);
+        {
+            let mut document = self.document.lock().expect("vue doc");
+            if !document.set_text_input_state(target, next.clone()) {
+                return Ok(false);
+            }
+            document.set_attribute(target, "value", &next.value);
+        }
         self.fire_dom_event(engine, target, "input", detail)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
@@ -2126,11 +2158,19 @@ impl VueHost {
         }
         match event {
             ImeEvent::Enabled => Ok(true),
-            ImeEvent::Preedit { text, .. } => {
+            ImeEvent::Preedit { text, selection } => {
                 let started = {
-                    let mut input = self.input.lock().expect("input state");
-                    let started = input.begin_composition();
-                    input.update_preedit(text);
+                    let mut document = self.document.lock().expect("vue doc");
+                    let started = document.ime_composition(target).is_none();
+                    if !document.set_ime_composition(
+                        target,
+                        Some(nana_ui_runtime::ImeComposition {
+                            text: text.clone(),
+                            selection: *selection,
+                        }),
+                    ) {
+                        return Err(JsEngineError::new("invalid native IME preedit state"));
+                    }
                     started
                 };
                 if started {
@@ -2145,7 +2185,10 @@ impl VueHost {
                 )
             }
             ImeEvent::Commit(text) => {
-                self.input.lock().expect("input state").finish_composition();
+                self.document
+                    .lock()
+                    .expect("vue doc")
+                    .set_ime_composition(target, None);
                 // Browser compositionend carries committed text. The Iced
                 // editor's ensuing Input message owns the value mutation.
                 let target = self.document.lock().expect("vue doc").focused();
@@ -2161,7 +2204,12 @@ impl VueHost {
                 Ok(true)
             }
             ImeEvent::Disabled => {
-                let data = self.input.lock().expect("input state").finish_composition();
+                let data = {
+                    let mut document = self.document.lock().expect("vue doc");
+                    let data = document.ime_composition(target).map(|ime| ime.text);
+                    document.set_ime_composition(target, None);
+                    data
+                };
                 let Some(data) = data else {
                     return Ok(true);
                 };

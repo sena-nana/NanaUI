@@ -4,10 +4,17 @@ use serde::Serialize;
 pub struct BenchmarkReport {
     pub profile: &'static str,
     pub adapter: AdapterReport,
+    pub renderer: RendererReport,
     pub iterations: usize,
     pub warmup_iterations: usize,
     pub viewport: [u32; 2],
     pub cases: Vec<CaseReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RendererReport {
+    pub antialiasing: &'static str,
+    pub target_format: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,6 +41,7 @@ pub struct CaseReport {
 pub struct Distribution {
     pub median: f64,
     pub p95: f64,
+    pub p99: f64,
     pub min: f64,
     pub max: f64,
 }
@@ -85,10 +93,12 @@ fn summarize(values: impl Iterator<Item = f64>) -> Distribution {
     assert!(!values.is_empty(), "benchmark must contain samples");
     let median = percentile(&values, 0.50);
     let p95 = percentile(&values, 0.95);
+    let p99 = percentile(&values, 0.99);
 
     Distribution {
         median: round(median),
         p95: round(p95),
+        p99: round(p99),
         min: round(values[0]),
         max: round(values[values.len() - 1]),
     }
@@ -138,9 +148,12 @@ mod tests {
         assert_eq!(report.item_count, 100);
         assert_eq!(report.view_construction_ms.median, 2.0);
         assert_eq!(report.view_construction_ms.p95, 10.0);
+        assert_eq!(report.view_construction_ms.p99, 10.0);
         assert_eq!(report.cpu_total_ms.median, 14.0);
         assert_eq!(report.cpu_total_ms.p95, 46.0);
+        assert_eq!(report.cpu_total_ms.p99, 46.0);
         assert_eq!(report.total_ms.median, 20.0);
         assert_eq!(report.total_ms.p95, 60.0);
+        assert_eq!(report.total_ms.p99, 60.0);
     }
 }

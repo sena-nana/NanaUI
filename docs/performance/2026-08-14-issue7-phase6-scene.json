@@ -1,0 +1,39 @@
+{
+  "phase": "issue-7-phase-6",
+  "profile": "release",
+  "samples": 200,
+  "rows": [
+    {
+      "nodes": 100,
+      "primitives": 100,
+      "initial_extraction_ms": 0.240792,
+      "local_update_p95_ms": 0.001084,
+      "idle_update_p95_ms": 0.000042,
+      "frame_graph_p95_ms": 0.0115
+    },
+    {
+      "nodes": 500,
+      "primitives": 500,
+      "initial_extraction_ms": 0.797334,
+      "local_update_p95_ms": 0.001,
+      "idle_update_p95_ms": 0.000042,
+      "frame_graph_p95_ms": 0.028
+    },
+    {
+      "nodes": 1000,
+      "primitives": 1000,
+      "initial_extraction_ms": 1.5791250000000001,
+      "local_update_p95_ms": 0.001084,
+      "idle_update_p95_ms": 0.000042,
+      "frame_graph_p95_ms": 0.060541000000000005
+    },
+    {
+      "nodes": 5000,
+      "primitives": 5000,
+      "initial_extraction_ms": 7.402958,
+      "local_update_p95_ms": 0.000792,
+      "idle_update_p95_ms": 0.000042,
+      "frame_graph_p95_ms": 0.298917
+    }
+  ]
+}

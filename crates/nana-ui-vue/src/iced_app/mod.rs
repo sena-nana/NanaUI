@@ -43,6 +43,7 @@ use nana_ui::{
 use nana_ui::{
     AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
 };
+use nana_ui_scene::{RenderOperation, ResourceId, ScenePrimitiveKind, UiScene};
 use nana_ui_web_api::{CanvasBitmap, SharedCanvasRuntime};
 
 use crate::bridge::{
@@ -64,6 +65,54 @@ thread_local! {
     static ACTIVE_CANVAS_RUNTIME: RefCell<Option<SharedCanvasRuntime>> = const { RefCell::new(None) };
     static ACTIVE_NATIVE_COMPONENTS: RefCell<Option<NativeComponentRegistry>> = const { RefCell::new(None) };
     static ACTIVE_PAINT_AFFINE: RefCell<[f32; 6]> = const { RefCell::new([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]) };
+    static ACTIVE_SCENE_CUSTOMS: RefCell<Option<std::collections::HashMap<WidgetId, IcedCustomLayer>>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug, Clone)]
+struct IcedCustomLayer {
+    resource: String,
+}
+
+fn with_active_scene<T>(scene: Option<&UiScene>, build: impl FnOnce() -> T) -> T {
+    struct Reset(Option<std::collections::HashMap<WidgetId, IcedCustomLayer>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTIVE_SCENE_CUSTOMS.with(|active| {
+                active.replace(self.0.take());
+            });
+        }
+    }
+    let layers = scene.and_then(|scene| {
+        let graph = scene.frame_graph(ResourceId(1)).ok()?;
+        let mut layers = std::collections::HashMap::new();
+        for operation in graph.passes.iter().flat_map(|pass| &pass.operations) {
+            let RenderOperation::InvokeCustom(id) = operation else {
+                continue;
+            };
+            let primitive = scene.primitive(*id)?;
+            let ScenePrimitiveKind::Custom(custom) = &primitive.kind else {
+                continue;
+            };
+            if custom.renderer.as_ref() == "nana.host-texture" {
+                layers.insert(
+                    primitive.node.get(),
+                    IcedCustomLayer {
+                        resource: custom.resource.to_string(),
+                    },
+                );
+            }
+        }
+        Some(layers)
+    });
+    ACTIVE_SCENE_CUSTOMS.with(|active| {
+        let previous = active.replace(layers);
+        let _reset = Reset(previous);
+        build()
+    })
+}
+
+fn active_scene_custom(id: WidgetId) -> Option<IcedCustomLayer> {
+    ACTIVE_SCENE_CUSTOMS.with(|active| active.borrow().as_ref()?.get(&id).cloned())
 }
 
 fn with_active_native_components<T>(
@@ -558,13 +607,45 @@ pub fn view_semantic_tree_static_with_native_components<Message>(
 where
     Message: Clone + 'static,
 {
+    view_semantic_tree_static_with_scene(
+        snap,
+        tokens,
+        viewport,
+        editors,
+        menus,
+        host_textures,
+        canvas_runtime,
+        components,
+        None,
+        map_event,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn view_semantic_tree_static_with_scene<Message>(
+    snap: &SemanticSnapshot,
+    tokens: ThemeTokens,
+    viewport: Option<(f32, f32)>,
+    editors: Option<&EditorStore>,
+    menus: Option<&MenuStore>,
+    host_textures: Option<&HostTextureRegistry>,
+    canvas_runtime: Option<&SharedCanvasRuntime>,
+    components: Option<&NativeComponentRegistry>,
+    scene: Option<&UiScene>,
+    map_event: impl Fn(BridgeEvent) -> Message + Clone + 'static,
+) -> Element<'static, Message>
+where
+    Message: Clone + 'static,
+{
     let build = || {
         with_active_host_textures(host_textures, || {
             with_active_canvas(canvas_runtime, || {
                 with_active_native_components(components, || {
-                    view_semantic_tree_static_with_editors_inner(
-                        snap, tokens, viewport, editors, menus, map_event,
-                    )
+                    with_active_scene(scene, || {
+                        view_semantic_tree_static_with_editors_inner(
+                            snap, tokens, viewport, editors, menus, map_event,
+                        )
+                    })
                 })
             })
         })
@@ -1199,7 +1280,7 @@ where
         }
         // GPU preview: documented nana-gpu / data-nana-gpu / agent host contract.
         WidgetKind::Column | WidgetKind::Box if is_gpu_preview_slot(&props) => {
-            gpu_preview_placeholder(&props, &children, snap, tokens)
+            gpu_preview_placeholder(widget.id, &props, &children, snap, tokens)
         }
         // SpaceBetween Row with a definite cross-axis height: trailing Fill spacer.
         WidgetKind::Row if is_space_between_fixed_row(&props) => {

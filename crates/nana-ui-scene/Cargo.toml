@@ -1,0 +1,22 @@
+[package]
+name = "nana-ui-scene"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Backend-neutral retained scene and render graph for NanaUI"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+benchmark = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+nana-ui-core.workspace = true
+nana-ui-runtime.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[[bin]]
+name = "nana-scene-benchmark"
+path = "src/bin/nana-scene-benchmark.rs"
+required-features = ["benchmark"]

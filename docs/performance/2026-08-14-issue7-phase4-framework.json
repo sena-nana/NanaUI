@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "profile": "release",
+  "warmup_iterations": 100,
+  "iterations": 1000,
+  "view_event_update_ms": {
+    "p50": 0.0,
+    "p95": 0.001,
+    "p99": 0.001
+  },
+  "action_dispatch_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  }
+}

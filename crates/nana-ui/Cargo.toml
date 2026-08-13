@@ -66,6 +66,7 @@ iced.workspace = true
 iced_wgpu = { workspace = true, optional = true }
 iced_winit = { workspace = true, optional = true }
 nana-ui-core.workspace = true
+nana-ui-runtime.workspace = true
 nana-ui-platform.workspace = true
 nana-window = { path = "../nana-window" }
 merman = { version = "=0.7.0-alpha.1", default-features = false, features = ["render", "ratex-math"], optional = true }
