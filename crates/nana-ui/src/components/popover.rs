@@ -10,6 +10,14 @@ use crate::widgets::menu_surface_style;
 
 pub use nana_ui_core::PopoverPlacement;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PopoverAlignment {
+    Start,
+    #[default]
+    Center,
+    End,
+}
+
 /// An interactive anchored overlay with keyboard trigger and dismiss behavior.
 pub struct Popover<'a, Message> {
     trigger: Element<'a, Message>,
@@ -18,8 +26,10 @@ pub struct Popover<'a, Message> {
     on_toggle: Message,
     on_close: Message,
     placement: PopoverPlacement,
+    alignment: PopoverAlignment,
     gap: f32,
     width: f32,
+    padding: f32,
     close_on_escape: bool,
     close_on_outside: bool,
     tokens: ThemeTokens,
@@ -44,8 +54,10 @@ where
             on_toggle,
             on_close,
             placement: PopoverPlacement::Bottom,
+            alignment: PopoverAlignment::Center,
             gap: 6.0,
             width: 240.0,
+            padding: 10.0,
             close_on_escape: true,
             close_on_outside: true,
             tokens: theme.into(),
@@ -57,6 +69,11 @@ where
         self
     }
 
+    pub fn alignment(mut self, alignment: PopoverAlignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
     pub fn gap(mut self, gap: f32) -> Self {
         self.gap = gap.max(0.0);
         self
@@ -64,6 +81,11 @@ where
 
     pub fn width(mut self, width: f32) -> Self {
         self.width = width.max(120.0);
+        self
+    }
+
+    pub fn padding(mut self, padding: f32) -> Self {
+        self.padding = padding.max(0.0);
         self
     }
 
@@ -91,7 +113,7 @@ where
             });
         let surface = container(self.content)
             .width(Length::Fixed(self.width))
-            .padding(10)
+            .padding(self.padding)
             .style(menu_surface_style(self.tokens));
         Element::new(PopoverWidget {
             trigger: trigger.into(),
@@ -99,10 +121,65 @@ where
             open: self.open,
             on_close: self.on_close,
             placement: self.placement,
+            alignment: self.alignment,
             gap: self.gap,
             close_on_escape: self.close_on_escape,
             close_on_outside: self.close_on_outside,
         })
+    }
+}
+
+/// A trigger-bound action menu with standard menu geometry.
+///
+/// The menu aligns its start edge with the trigger by default. Placement and
+/// alignment remain configurable for controls near viewport edges.
+pub struct ActionMenu<'a, Message> {
+    popover: Popover<'a, Message>,
+}
+
+impl<'a, Message> ActionMenu<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    pub fn new(
+        trigger: impl Into<Element<'a, Message>>,
+        content: impl Into<Element<'a, Message>>,
+        open: bool,
+        on_toggle: Message,
+        on_close: Message,
+        theme: impl Into<ThemeTokens>,
+    ) -> Self {
+        Self {
+            popover: Popover::new(trigger, content, open, on_toggle, on_close, theme)
+                .alignment(PopoverAlignment::Start)
+                .gap(4.0)
+                .width(200.0)
+                .padding(4.0),
+        }
+    }
+
+    pub fn placement(mut self, placement: PopoverPlacement) -> Self {
+        self.popover = self.popover.placement(placement);
+        self
+    }
+
+    pub fn alignment(mut self, alignment: PopoverAlignment) -> Self {
+        self.popover = self.popover.alignment(alignment);
+        self
+    }
+
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.popover = self.popover.gap(gap);
+        self
+    }
+
+    pub fn width(mut self, width: f32) -> Self {
+        self.popover = self.popover.width(width);
+        self
+    }
+
+    pub fn view(self) -> Element<'a, Message> {
+        self.popover.view()
     }
 }
 
@@ -112,6 +189,7 @@ struct PopoverWidget<'a, Message> {
     open: bool,
     on_close: Message,
     placement: PopoverPlacement,
+    alignment: PopoverAlignment,
     gap: f32,
     close_on_escape: bool,
     close_on_outside: bool,
@@ -246,6 +324,7 @@ where
                 tree: surface_tree,
                 on_close: self.on_close.clone(),
                 placement: self.placement,
+                alignment: self.alignment,
                 gap: self.gap,
                 close_on_escape: self.close_on_escape,
                 close_on_outside: self.close_on_outside,
@@ -262,6 +341,7 @@ struct PopoverOverlay<'a, 'b, Message> {
     tree: &'b mut widget::Tree,
     on_close: Message,
     placement: PopoverPlacement,
+    alignment: PopoverAlignment,
     gap: f32,
     close_on_escape: bool,
     close_on_outside: bool,
@@ -278,8 +358,14 @@ where
             &layout::Limits::new(Size::ZERO, bounds),
         );
         let size = surface.size();
-        let point =
-            resolve_popover_position(self.trigger_bounds, size, bounds, self.placement, self.gap);
+        let point = resolve_popover_position(
+            self.trigger_bounds,
+            size,
+            bounds,
+            self.placement,
+            self.alignment,
+            self.gap,
+        );
         layout::Node::with_children(size, vec![surface]).move_to(point)
     }
 
@@ -387,24 +473,25 @@ fn resolve_popover_position(
     surface: Size,
     viewport: Size,
     placement: PopoverPlacement,
+    alignment: PopoverAlignment,
     gap: f32,
 ) -> Point {
     let mut point = match placement {
         PopoverPlacement::Top => Point::new(
-            trigger.center_x() - surface.width / 2.0,
+            horizontal_position(trigger, surface.width, alignment),
             trigger.y - surface.height - gap,
         ),
         PopoverPlacement::Bottom => Point::new(
-            trigger.center_x() - surface.width / 2.0,
+            horizontal_position(trigger, surface.width, alignment),
             trigger.y + trigger.height + gap,
         ),
         PopoverPlacement::Left => Point::new(
             trigger.x - surface.width - gap,
-            trigger.center_y() - surface.height / 2.0,
+            vertical_position(trigger, surface.height, alignment),
         ),
         PopoverPlacement::Right => Point::new(
             trigger.x + trigger.width + gap,
-            trigger.center_y() - surface.height / 2.0,
+            vertical_position(trigger, surface.height, alignment),
         ),
     };
     point.x = point
@@ -416,9 +503,25 @@ fn resolve_popover_position(
     point
 }
 
+fn horizontal_position(trigger: Rectangle, width: f32, alignment: PopoverAlignment) -> f32 {
+    match alignment {
+        PopoverAlignment::Start => trigger.x,
+        PopoverAlignment::Center => trigger.center_x() - width / 2.0,
+        PopoverAlignment::End => trigger.x + trigger.width - width,
+    }
+}
+
+fn vertical_position(trigger: Rectangle, height: f32, alignment: PopoverAlignment) -> f32 {
+    match alignment {
+        PopoverAlignment::Start => trigger.y,
+        PopoverAlignment::Center => trigger.center_y() - height / 2.0,
+        PopoverAlignment::End => trigger.y + trigger.height - height,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PopoverPlacement, resolve_popover_position};
+    use super::{PopoverAlignment, PopoverPlacement, resolve_popover_position};
     use iced::{Point, Rectangle, Size};
 
     #[test]
@@ -429,6 +532,7 @@ mod tests {
                 Size::new(80.0, 60.0),
                 Size::new(120.0, 120.0),
                 PopoverPlacement::Bottom,
+                PopoverAlignment::Center,
                 6.0,
             ),
             Point::new(40.0, 60.0)
@@ -439,9 +543,26 @@ mod tests {
                 Size::new(80.0, 60.0),
                 Size::new(120.0, 120.0),
                 PopoverPlacement::Left,
+                PopoverAlignment::Center,
                 6.0,
             ),
             Point::new(0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn action_menu_alignment_starts_at_the_trigger_edge() {
+        let trigger = Rectangle::new(Point::new(36.0, 80.0), Size::new(28.0, 28.0));
+        assert_eq!(
+            resolve_popover_position(
+                trigger,
+                Size::new(200.0, 120.0),
+                Size::new(480.0, 320.0),
+                PopoverPlacement::Top,
+                PopoverAlignment::Start,
+                4.0,
+            ),
+            Point::new(36.0, 0.0)
         );
     }
 }

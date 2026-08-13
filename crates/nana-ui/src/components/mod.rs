@@ -78,7 +78,7 @@ pub use menus::{
 #[cfg(feature = "overlays")]
 pub use overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};
 #[cfg(feature = "popover")]
-pub use popover::{Popover, PopoverPlacement};
+pub use popover::{ActionMenu, Popover, PopoverAlignment, PopoverPlacement};
 #[cfg(feature = "qr-code")]
 pub use qr_code::{QrCodeCanvas, QrCodeError};
 #[cfg(feature = "controls")]
