@@ -82,6 +82,7 @@ impl HostedProgram for DemoProgram {
             redraw: HostedRedraw::Primary,
             window_commands: Vec::new(),
             ui_commands: Vec::new(),
+            capture_input: false,
             exit: false,
         }
     }

@@ -95,8 +95,9 @@ drag/minimize/toggle-maximize/close 语义动作。标准 Iced 应用通过公�
 
 `HostedWindowEvent::KeyPressed` 将原生按键规范化为与 `Keymap` 共用的 `KeyStroke`，
 并携带当前有稳定 ID 的焦点控件，供应用按焦点上下文观察窗口级快捷键；同一个原生
-事件仍会继续交给 Iced 控件，因此该事件不承担拦截、文本输入或业务 dispatch。按键
-重复事实显式保留，快捷键含义与 handler 继续由应用拥有。
+事件默认继续交给 Iced 控件；只有应用返回 `HostedProgramUpdate::capture_input()` 时才
+停止传播，用于焦点明确的富输入动作。按键重复事实显式保留，快捷键含义与 handler
+继续由应用拥有。
 
 Hosted renderer 会执行 Iced 控件产生的系统剪贴板读写请求，并将异步结果通过窗口
 waker 重新送回同一个 retained UI tree；普通输入框的复制、剪切和文本粘贴因此继续
