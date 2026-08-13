@@ -8,7 +8,8 @@
 Gallery 页面、状态、快照与基准属于 Demo crate。
 
 **产品 UI 前端采用 Vue-first。** 应用只使用 Vue+JS 与 NanaUI 内置接口即可构建完整
-窗口 UI 和小游戏；Iced/WGPU 仍是统一布局与绘制基座。`VueHostedRuntime` 作为
+窗口 UI 和小游戏；Nana Runtime 是 retained state 权威，UiScene 是 renderer-neutral
+render state 权威，Iced/WGPU 是迁移期 compatibility backend。`VueHostedRuntime` 作为
 `HostedProgram` 接入窗口循环：先分发 Vue/Iced 混合树输入，再按 `preventDefault`
 决定是否交给 Iced 默认路径。Rust 可以控制语义树，也可以注册高性能 Iced 组件，但所有
 供 Vue 使用的原生能力必须以 `nana-*` Vue 组件或稳定 JS 接口暴露，并与普通 Vue 节点
@@ -21,15 +22,17 @@ feature 仅承载应用明确请求的外部网页内容，不参与 NanaUI 组�
 **三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
 
 三层都写入同一 **Style Model = Tokens + Semantics + Layout**（见
-`nana_ui_core::style_model`），再由 `nana-ui` widgets **唯一绘制**。  
+`nana_ui_core::style_model`），再进入同一 `UiWorld` 和 `UiScene`。迁移期 `nana-ui`
+widgets 仍绘制标准控件，不能将其描述为长期 framework contract。
 L1 不是「CSS→仅 ThemeTokens」：布局进 Layout，已知 class 进 Semantics，主题档位进
 Tokens；任意业务 CSS 色值不得污染正式 token。
 
-L1/L2/L3 是三种输入合同，不是三个运行时模式或三套渲染实现。L1 与 L2 共享一个
-`MessageBridge` 语义森林；paint 前统一由 Style Model `measure_layout` 提供几何，paint
-后仅以 iced `LayoutProbe` 回写为权威。`NanaTreeDocument` 只保存 DOM 兼容状态和几何
-缓存，不再维护独立合成布局。DesktopShell Region 投影为快照级一次索引与父链传播，
-不重复扫描整棵森林。
+L1/L2/L3 是三种输入合同，不是三个运行时模式或三套渲染实现。L1 与 L2 的
+`MessageBridge` 只保留 compatibility semantic props；`NanaTreeDocument` 的 create /
+insert / remove / text / focus / layout 全部写入 `UiWorld`，不再维护第二份权威树或几何
+cache。paint 前 Style Model measure 与 paint 后 Iced `LayoutProbe` 是迁移期的两个
+geometry phase，结果都只写回 Runtime。详细不变量见
+[`runtime-scene.md`](runtime-scene.md)。
 
 | 层 | 含义 | 住在哪 |
 |----|------|--------|

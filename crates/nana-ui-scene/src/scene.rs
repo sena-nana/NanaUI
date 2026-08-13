@@ -1,0 +1,603 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+use nana_ui_runtime::{CustomRenderNode, ExtractedNode, StableNodeId};
+
+use crate::{
+    AccessMode, CompiledRenderGraph, GraphError, PassId, RenderGraph, RenderOperation, RenderPass,
+    RenderResource, ResourceAccess, ResourceId,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SceneRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AffineTransform(pub [f32; 6]);
+
+impl AffineTransform {
+    pub const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+
+    pub fn then(self, rhs: Self) -> Self {
+        let [a, b, c, d, e, f] = self.0;
+        let [ra, rb, rc, rd, re, rf] = rhs.0;
+        Self([
+            a * ra + c * rb,
+            b * ra + d * rb,
+            a * rc + c * rd,
+            b * rc + d * rd,
+            a * re + c * rf + e,
+            b * re + d * rf + f,
+        ])
+    }
+}
+
+impl Default for AffineTransform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipRegion {
+    pub bounds: SceneRect,
+    pub transform: AffineTransform,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PrimitiveId {
+    pub node: StableNodeId,
+    pub slot: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScenePrimitiveKind {
+    Quad {
+        background: Option<[f32; 4]>,
+        border_color: Option<[f32; 4]>,
+        border_width: f32,
+        corner_radius: f32,
+    },
+    Text {
+        content: String,
+        color: Option<[f32; 4]>,
+        size: f32,
+        weight: Option<u16>,
+        family: Option<String>,
+        letter_spacing: f32,
+    },
+    Custom(CustomRenderNode),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenePrimitive {
+    pub id: PrimitiveId,
+    pub node: StableNodeId,
+    pub bounds: SceneRect,
+    pub transform: AffineTransform,
+    pub clips: Vec<ClipRegion>,
+    pub opacity: f32,
+    pub z_index: i32,
+    pub document_order: usize,
+    pub kind: ScenePrimitiveKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SceneOrderKey {
+    z_index: i32,
+    document_order: usize,
+    slot: u8,
+    node: StableNodeId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneDelta {
+    pub updated_nodes: usize,
+    pub removed_nodes: usize,
+    pub rebuilt_primitives: usize,
+    pub order_rebuilt: bool,
+    pub primitive_count: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct UiScene {
+    nodes: HashMap<StableNodeId, ExtractedNode>,
+    node_order: HashMap<StableNodeId, usize>,
+    primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
+    ordered: BTreeSet<SceneOrderKey>,
+}
+
+impl UiScene {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn primitives(&self) -> impl Iterator<Item = &ScenePrimitive> {
+        self.ordered.iter().filter_map(|key| {
+            self.primitives.get(&PrimitiveId {
+                node: key.node,
+                slot: key.slot,
+            })
+        })
+    }
+
+    /// Apply Runtime's dirty extraction and tombstone stream atomically.
+    pub fn apply_delta(
+        &mut self,
+        extracted: impl IntoIterator<Item = ExtractedNode>,
+        removals: impl IntoIterator<Item = StableNodeId>,
+    ) -> SceneDelta {
+        let mut removed_nodes = 0;
+        let mut changed = Vec::new();
+        let mut hierarchy_changed = false;
+        for id in removals {
+            if let Some(old) = self.nodes.remove(&id) {
+                removed_nodes += 1;
+                hierarchy_changed |= old.parent.is_some() || !old.children.is_empty();
+                self.remove_node_primitives(id);
+            }
+        }
+        let mut updated_nodes = 0;
+        for node in extracted {
+            hierarchy_changed |= self
+                .nodes
+                .get(&node.id)
+                .is_none_or(|old| old.parent != node.parent || old.children != node.children);
+            changed.push(node.id);
+            self.nodes.insert(node.id, node);
+            updated_nodes += 1;
+        }
+        let order_rebuilt = (updated_nodes != 0 || removed_nodes != 0)
+            && (hierarchy_changed || self.node_order.len() != self.nodes.len());
+        let mut rebuilt_primitives = 0;
+        if updated_nodes != 0 || removed_nodes != 0 {
+            if order_rebuilt {
+                self.rebuild_document_order();
+                for primitive in self.primitives.values_mut() {
+                    if let Some(order) = self.node_order.get(&primitive.node) {
+                        primitive.document_order = *order;
+                    }
+                }
+            }
+            for &id in &changed {
+                rebuilt_primitives += self.rebuild_node_primitives(id);
+            }
+            if order_rebuilt {
+                self.sort_primitives();
+            } else {
+                for id in changed {
+                    self.insert_node_ordered(id);
+                }
+            }
+        }
+        SceneDelta {
+            updated_nodes,
+            removed_nodes,
+            rebuilt_primitives,
+            order_rebuilt,
+            primitive_count: self.primitives.len(),
+        }
+    }
+
+    /// Build the default frame pass. Custom operations remain in exact scene
+    /// order, allowing a backend extension to draw between ordinary UI items.
+    pub fn frame_graph(&self, target: ResourceId) -> Result<CompiledRenderGraph, GraphError> {
+        let mut graph = RenderGraph::new();
+        graph.add_resource(RenderResource {
+            id: target,
+            label: "ui-target".into(),
+            external: true,
+        })?;
+        graph.add_pass(RenderPass {
+            id: PassId(1),
+            label: "ui-main".into(),
+            dependencies: Vec::new(),
+            resources: vec![ResourceAccess {
+                resource: target,
+                mode: AccessMode::Write,
+            }],
+            operations: self
+                .primitives()
+                .map(|primitive| match primitive.kind {
+                    ScenePrimitiveKind::Custom(_) => RenderOperation::InvokeCustom(primitive.id),
+                    _ => RenderOperation::Draw(primitive.id),
+                })
+                .collect(),
+        })?;
+        graph.compile()
+    }
+
+    pub fn primitive(&self, id: PrimitiveId) -> Option<&ScenePrimitive> {
+        self.primitives.get(&id)
+    }
+
+    fn rebuild_document_order(&mut self) {
+        self.node_order.clear();
+        let mut roots = self
+            .nodes
+            .values()
+            .filter(|node| node.parent.is_none() || !self.nodes.contains_key(&node.parent.unwrap()))
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        roots.sort_unstable();
+        let mut visited = HashSet::new();
+        let mut order = 0;
+        for root in roots {
+            self.visit_order(root, &mut visited, &mut order);
+        }
+        // Malformed/incomplete deltas must not make retained nodes disappear.
+        let mut detached = self.nodes.keys().copied().collect::<Vec<_>>();
+        detached.sort_unstable();
+        for id in detached {
+            if !visited.contains(&id) {
+                self.visit_order(id, &mut visited, &mut order);
+            }
+        }
+    }
+
+    fn visit_order(
+        &mut self,
+        id: StableNodeId,
+        visited: &mut HashSet<StableNodeId>,
+        order: &mut usize,
+    ) {
+        if !visited.insert(id) {
+            return;
+        }
+        self.node_order.insert(id, *order);
+        *order += 1;
+        let children = self
+            .nodes
+            .get(&id)
+            .map(|node| node.children.clone())
+            .unwrap_or_default();
+        for child in children {
+            self.visit_order(child, visited, order);
+        }
+    }
+
+    fn sort_primitives(&mut self) {
+        self.ordered.clear();
+        for primitive in self.primitives.values() {
+            self.ordered.insert(Self::order_key(primitive));
+        }
+    }
+
+    fn insert_node_ordered(&mut self, node: StableNodeId) {
+        for slot in 0..=2 {
+            if let Some(primitive) = self.primitives.get(&PrimitiveId { node, slot }) {
+                self.ordered.insert(Self::order_key(primitive));
+            }
+        }
+    }
+
+    fn rebuild_node_primitives(&mut self, id: StableNodeId) -> usize {
+        self.remove_node_primitives(id);
+        let Some(node) = self.nodes.get(&id).cloned() else {
+            return 0;
+        };
+        let before = self.primitives.len();
+        let (parent_transform, parent_opacity, parent_clips) = self.ancestor_state(&node);
+        let layout = node.layout;
+        let bounds = SceneRect {
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+        };
+        let local_transform = node
+            .source_style
+            .layout
+            .transform
+            .map(|transform| {
+                AffineTransform(transform.around_center(
+                    layout.x,
+                    layout.y,
+                    layout.width,
+                    layout.height,
+                ))
+            })
+            .unwrap_or_default();
+        let transform = parent_transform.then(local_transform);
+        let opacity = parent_opacity
+            * node
+                .source_style
+                .layout
+                .opacity
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0);
+        let mut clips = parent_clips.to_vec();
+        if node.source_style.layout.clips_overflow() {
+            clips.push(ClipRegion { bounds, transform });
+        }
+        let node_order = self.node_order.get(&id).copied().unwrap_or_default();
+        if node.style.visible && opacity > 0.0 {
+            let style = node.source_style.layout.as_ref();
+            if style.has_surface_paint() {
+                self.insert_primitive(ScenePrimitive {
+                    id: PrimitiveId { node: id, slot: 0 },
+                    node: id,
+                    bounds,
+                    transform,
+                    clips: parent_clips.to_vec(),
+                    opacity,
+                    z_index: node.z_index,
+                    document_order: node_order,
+                    kind: ScenePrimitiveKind::Quad {
+                        background: style.background,
+                        border_color: style.border_color,
+                        border_width: style.border_width.unwrap_or(0.0).max(0.0),
+                        corner_radius: style.border_radius.unwrap_or(0.0).max(0.0),
+                    },
+                });
+            }
+            if let Some(custom) = node.custom_render.clone() {
+                self.insert_primitive(ScenePrimitive {
+                    id: PrimitiveId { node: id, slot: 1 },
+                    node: id,
+                    bounds,
+                    transform,
+                    clips: clips.clone(),
+                    opacity,
+                    z_index: node.z_index,
+                    document_order: node_order,
+                    kind: ScenePrimitiveKind::Custom(custom),
+                });
+            }
+            if let Some(text) = node.text.as_ref().filter(|text| !text.value.is_empty()) {
+                self.insert_primitive(ScenePrimitive {
+                    id: PrimitiveId { node: id, slot: 2 },
+                    node: id,
+                    bounds,
+                    transform,
+                    clips: clips.clone(),
+                    opacity,
+                    z_index: node.z_index,
+                    document_order: node_order,
+                    kind: ScenePrimitiveKind::Text {
+                        content: text.value.clone(),
+                        color: node.style.color,
+                        size: node.style.font_size,
+                        weight: node.style.font_weight,
+                        family: node.style.font_family.as_deref().map(str::to_owned),
+                        letter_spacing: node.style.letter_spacing,
+                    },
+                });
+            }
+        }
+        self.primitives.len() - before
+    }
+
+    fn ancestor_state(&self, node: &ExtractedNode) -> (AffineTransform, f32, Vec<ClipRegion>) {
+        let mut ancestors = Vec::new();
+        let mut parent = node.parent;
+        let mut visited = HashSet::new();
+        while let Some(id) = parent.filter(|id| visited.insert(*id)) {
+            let Some(node) = self.nodes.get(&id) else {
+                break;
+            };
+            ancestors.push(node);
+            parent = node.parent;
+        }
+        ancestors.reverse();
+        let mut transform = AffineTransform::IDENTITY;
+        let mut opacity = 1.0;
+        let mut clips = Vec::new();
+        for ancestor in ancestors {
+            let layout = ancestor.layout;
+            let local = ancestor
+                .source_style
+                .layout
+                .transform
+                .map(|value| {
+                    AffineTransform(value.around_center(
+                        layout.x,
+                        layout.y,
+                        layout.width,
+                        layout.height,
+                    ))
+                })
+                .unwrap_or_default();
+            transform = transform.then(local);
+            opacity *= ancestor
+                .source_style
+                .layout
+                .opacity
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0);
+            if ancestor.source_style.layout.clips_overflow() {
+                clips.push(ClipRegion {
+                    bounds: SceneRect {
+                        x: layout.x,
+                        y: layout.y,
+                        width: layout.width,
+                        height: layout.height,
+                    },
+                    transform,
+                });
+            }
+        }
+        (transform, opacity, clips)
+    }
+
+    fn remove_node_primitives(&mut self, id: StableNodeId) {
+        for slot in 0..=2 {
+            if let Some(primitive) = self.primitives.remove(&PrimitiveId { node: id, slot }) {
+                self.ordered.remove(&Self::order_key(&primitive));
+            }
+        }
+    }
+
+    fn insert_primitive(&mut self, primitive: ScenePrimitive) {
+        self.primitives.insert(primitive.id, primitive);
+    }
+
+    fn order_key(primitive: &ScenePrimitive) -> SceneOrderKey {
+        SceneOrderKey {
+            z_index: primitive.z_index,
+            document_order: primitive.document_order,
+            slot: primitive.id.slot,
+            node: primitive.node,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nana_ui_runtime::{
+        ComputedStyle, CustomRenderNode, LayoutBox, NodeKind, NodeStyle, TextContent,
+    };
+
+    use super::*;
+
+    fn id(value: u64) -> StableNodeId {
+        StableNodeId::new(value).unwrap()
+    }
+
+    fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
+        ExtractedNode {
+            id: id(value),
+            kind: NodeKind::Element { tag: "div".into() },
+            parent: parent.map(id),
+            children: children.iter().copied().map(id).collect(),
+            layout: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 80.0,
+            },
+            source_style: NodeStyle::default(),
+            style: ComputedStyle::default(),
+            text: None,
+            text_metrics: None,
+            z_index: 0,
+            focused: false,
+            ime: None,
+            text_input: None,
+            custom_render: None,
+        }
+    }
+
+    #[test]
+    fn extraction_preserves_custom_interleaving_and_removals() {
+        let mut root = node(1, None, &[2]);
+        root.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.1, 0.2, 0.3, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.custom_render = Some(CustomRenderNode {
+            renderer: Arc::from("host-texture"),
+            resource: Arc::from("preview"),
+            revision: 3,
+        });
+        child.text = Some(TextContent {
+            value: "caption".into(),
+        });
+        let mut scene = UiScene::new();
+        let delta = scene.apply_delta([root, child], []);
+        assert_eq!(delta.primitive_count, 3);
+        let graph = scene.frame_graph(ResourceId(7)).unwrap();
+        assert_eq!(
+            graph.passes[0].operations,
+            vec![
+                RenderOperation::Draw(PrimitiveId {
+                    node: id(1),
+                    slot: 0
+                }),
+                RenderOperation::InvokeCustom(PrimitiveId {
+                    node: id(2),
+                    slot: 1
+                }),
+                RenderOperation::Draw(PrimitiveId {
+                    node: id(2),
+                    slot: 2
+                }),
+            ]
+        );
+        let root_before = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .unwrap()
+            .clone();
+        let mut changed_child = node(2, Some(1), &[]);
+        changed_child.custom_render = Some(CustomRenderNode {
+            renderer: Arc::from("host-texture"),
+            resource: Arc::from("preview"),
+            revision: 4,
+        });
+        let delta = scene.apply_delta([changed_child], []);
+        assert!(!delta.order_rebuilt);
+        assert_eq!(delta.rebuilt_primitives, 1);
+        assert_eq!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 0,
+                })
+                .unwrap(),
+            &root_before,
+            "a local extraction must not rebuild unrelated primitives"
+        );
+        let delta = scene.apply_delta([], [id(2)]);
+        assert_eq!(delta.removed_nodes, 1);
+        assert_eq!(delta.primitive_count, 1);
+    }
+
+    #[test]
+    fn ancestor_clip_transform_and_opacity_are_composed() {
+        let mut root = node(1, None, &[2]);
+        root.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                overflow_x: nana_ui_core::OverflowSpec::Hidden,
+                opacity: Some(0.5),
+                transform: Some(nana_ui_core::PaintTransform {
+                    e: 4.0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.custom_render = Some(CustomRenderNode {
+            renderer: Arc::from("test"),
+            resource: Arc::from("resource"),
+            revision: 0,
+        });
+        child.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                opacity: Some(0.5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([root, child], []);
+        let custom = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom(_)))
+            .unwrap();
+        assert_eq!(custom.opacity, 0.25);
+        assert_eq!(custom.clips.len(), 1);
+        assert_eq!(custom.transform.0[4], 4.0);
+    }
+}

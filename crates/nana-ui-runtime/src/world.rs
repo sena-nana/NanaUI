@@ -1,0 +1,2551 @@
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
+
+use bevy_ecs::component::{Component, Mutable};
+use bevy_ecs::entity::Entity;
+use bevy_ecs::world::World;
+
+use crate::animation::ActiveAnimation;
+use crate::schedule::{DirtyMask, SystemWork, push_work};
+use crate::{
+    AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame, AnimationId,
+    AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode, ImeComposition,
+    InteractionState, LayoutBox, LayoutInput, MutationQueue, NodeStyle, PointerCaptureChange,
+    TextContent, TextInputState, TextMetrics, TextShaper, UiMutation,
+};
+
+/// Stable external node identity. Zero is reserved so missing/default IDs
+/// cannot accidentally address a live node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableNodeId(u64);
+
+impl StableNodeId {
+    pub const fn new(value: u64) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable document/window ownership boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DocumentId(u64);
+
+impl DocumentId {
+    pub const fn new(value: u64) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeKind {
+    Document,
+    Element { tag: String },
+    Text,
+    Comment,
+}
+
+#[derive(Component)]
+struct Identity {
+    stable: StableNodeId,
+    document: DocumentId,
+}
+
+#[derive(Component)]
+struct Kind(NodeKind);
+
+#[derive(Component, Default)]
+struct Hierarchy {
+    parent: Option<StableNodeId>,
+    children: Vec<StableNodeId>,
+}
+
+#[derive(Debug, Clone)]
+struct HitEntry {
+    id: StableNodeId,
+    layout: LayoutBox,
+    transform: [f32; 6],
+    clips: Vec<(LayoutBox, [f32; 6])>,
+    z_index: i32,
+    order: usize,
+}
+
+impl HitEntry {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        transformed_contains(self.layout, self.transform, x, y)
+            && self
+                .clips
+                .iter()
+                .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeSnapshot {
+    pub id: StableNodeId,
+    pub document: DocumentId,
+    pub kind: NodeKind,
+    pub parent: Option<StableNodeId>,
+    pub children: Vec<StableNodeId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitReport {
+    pub generation: u64,
+    pub mutations: usize,
+    pub created: usize,
+    pub inserted: usize,
+    pub detached: usize,
+    pub reparented: usize,
+    pub despawned: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiWorldError {
+    DuplicateNode(StableNodeId),
+    RetiredNode(StableNodeId),
+    MissingNode(StableNodeId),
+    CrossDocument {
+        parent: StableNodeId,
+        child: StableNodeId,
+    },
+    FocusDocument {
+        document: DocumentId,
+        target: StableNodeId,
+    },
+    Cycle {
+        parent: StableNodeId,
+        child: StableNodeId,
+    },
+    InvalidBefore {
+        parent: StableNodeId,
+        before: StableNodeId,
+    },
+    InvalidStyle(StableNodeId),
+    InvalidText(StableNodeId),
+    InvalidLayout(StableNodeId),
+    InvalidIme(StableNodeId),
+    InvalidCustomRender(StableNodeId),
+    NotFocusable(StableNodeId),
+    NotFocused(StableNodeId),
+    PointerCaptureMismatch {
+        pointer_id: u64,
+        target: StableNodeId,
+    },
+    InvalidAnimation(AnimationId),
+    MissingAnimation(AnimationId),
+    InvalidTextInput(StableNodeId),
+    MissingTextInput(StableNodeId),
+}
+
+impl fmt::Display for UiWorldError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateNode(id) => write!(formatter, "node {} already exists", id.get()),
+            Self::RetiredNode(id) => write!(formatter, "node {} was retired", id.get()),
+            Self::MissingNode(id) => write!(formatter, "node {} does not exist", id.get()),
+            Self::CrossDocument { parent, child } => write!(
+                formatter,
+                "cannot parent node {} under node {} from another document",
+                child.get(),
+                parent.get()
+            ),
+            Self::FocusDocument { document, target } => write!(
+                formatter,
+                "node {} does not belong to document {}",
+                target.get(),
+                document.get()
+            ),
+            Self::Cycle { parent, child } => write!(
+                formatter,
+                "parenting node {} under node {} would create a cycle",
+                child.get(),
+                parent.get()
+            ),
+            Self::InvalidBefore { parent, before } => write!(
+                formatter,
+                "node {} is not a child of parent {}",
+                before.get(),
+                parent.get()
+            ),
+            Self::InvalidStyle(id) => write!(formatter, "node {} has an invalid style", id.get()),
+            Self::InvalidText(id) => {
+                write!(formatter, "node {} has invalid text metrics", id.get())
+            }
+            Self::InvalidLayout(id) => {
+                write!(formatter, "node {} has an invalid layout box", id.get())
+            }
+            Self::InvalidIme(id) => write!(formatter, "node {} has an invalid IME range", id.get()),
+            Self::InvalidCustomRender(id) => {
+                write!(
+                    formatter,
+                    "node {} has invalid custom render content",
+                    id.get()
+                )
+            }
+            Self::NotFocusable(id) => write!(formatter, "node {} cannot receive focus", id.get()),
+            Self::NotFocused(id) => write!(formatter, "node {} is not focused", id.get()),
+            Self::PointerCaptureMismatch { pointer_id, target } => write!(
+                formatter,
+                "pointer {pointer_id} is not captured by node {}",
+                target.get()
+            ),
+            Self::InvalidAnimation(id) => write!(formatter, "animation {} is invalid", id.get()),
+            Self::MissingAnimation(id) => {
+                write!(formatter, "animation {} is not active", id.get())
+            }
+            Self::InvalidTextInput(id) => {
+                write!(formatter, "node {} has invalid text input state", id.get())
+            }
+            Self::MissingTextInput(id) => {
+                write!(formatter, "node {} has no text input state", id.get())
+            }
+        }
+    }
+}
+
+impl std::error::Error for UiWorldError {}
+
+#[derive(Debug, Clone)]
+struct PlannedNode {
+    document: DocumentId,
+    parent: Option<StableNodeId>,
+    children: Vec<StableNodeId>,
+}
+
+/// The sole authoritative retained identity and hierarchy store.
+pub struct UiWorld {
+    world: World,
+    entities: HashMap<StableNodeId, Entity>,
+    retired: HashSet<StableNodeId>,
+    dirty_entities: HashSet<StableNodeId>,
+    focused: HashMap<DocumentId, StableNodeId>,
+    hit_test_index: HashMap<DocumentId, Vec<HitEntry>>,
+    pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
+    pending_pointer_capture_changes: Vec<PointerCaptureChange>,
+    pending_render_removals: Vec<StableNodeId>,
+    animations: HashMap<AnimationId, ActiveAnimation>,
+    generation: u64,
+}
+
+impl Default for UiWorld {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UiWorld {
+    pub fn new() -> Self {
+        Self {
+            world: World::new(),
+            entities: HashMap::new(),
+            retired: HashSet::new(),
+            dirty_entities: HashSet::new(),
+            focused: HashMap::new(),
+            hit_test_index: HashMap::new(),
+            pointer_captures: HashMap::new(),
+            pending_pointer_capture_changes: Vec::new(),
+            pending_render_removals: Vec::new(),
+            animations: HashMap::new(),
+            generation: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entities.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    pub fn contains(&self, id: StableNodeId) -> bool {
+        self.entities.contains_key(&id)
+    }
+
+    pub fn is_retired(&self, id: StableNodeId) -> bool {
+        self.retired.contains(&id)
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn event_route(&self, target: StableNodeId) -> Option<EventRoute> {
+        let mut bubble = Vec::new();
+        let mut current = self.node(target)?.parent;
+        while let Some(id) = current {
+            bubble.push(id);
+            current = self.node(id)?.parent;
+        }
+        let mut capture = bubble.clone();
+        capture.reverse();
+        Some(EventRoute {
+            capture,
+            target,
+            bubble,
+        })
+    }
+
+    pub fn pointer_capture(&self, document: DocumentId, pointer_id: u64) -> Option<StableNodeId> {
+        self.pointer_captures.get(&(document, pointer_id)).copied()
+    }
+
+    pub fn pointer_captures(&self, document: DocumentId) -> Vec<(u64, StableNodeId)> {
+        let mut captures = self
+            .pointer_captures
+            .iter()
+            .filter_map(|(&(owner, pointer_id), &target)| {
+                (owner == document).then_some((pointer_id, target))
+            })
+            .collect::<Vec<_>>();
+        captures.sort_unstable_by_key(|(pointer_id, _)| *pointer_id);
+        captures
+    }
+
+    pub fn take_pointer_capture_changes(&mut self) -> Vec<PointerCaptureChange> {
+        std::mem::take(&mut self.pending_pointer_capture_changes)
+    }
+
+    pub fn next_animation_deadline(&self) -> Option<Duration> {
+        self.animations
+            .values()
+            .map(|animation| animation.next_deadline)
+            .min()
+    }
+
+    /// Sample only active animations that are due at `now`. This method does
+    /// not mark render state dirty: consumers apply sampled values through the
+    /// normal atomic mutation boundary.
+    pub fn advance_animations(&mut self, now: Duration) -> AnimationFrame {
+        let mut due = self
+            .animations
+            .iter()
+            .filter_map(|(&id, animation)| (animation.next_deadline <= now).then_some(id))
+            .collect::<Vec<_>>();
+        due.sort_unstable();
+        let mut samples = Vec::with_capacity(due.len());
+        for id in due {
+            let animation = self
+                .animations
+                .get_mut(&id)
+                .expect("due animation must remain active");
+            let sample = animation
+                .sample(now)
+                .expect("due animation must produce a sample");
+            if sample.finished {
+                self.animations.remove(&id);
+            }
+            samples.push(sample);
+        }
+        AnimationFrame {
+            samples,
+            next_deadline: self.next_animation_deadline(),
+        }
+    }
+
+    /// Drain dirty components into deterministic system work. Calling this on
+    /// an unchanged world returns an empty work set and performs no scheduling.
+    pub fn take_system_work(&mut self) -> SystemWork {
+        let mut ids = std::mem::take(&mut self.dirty_entities)
+            .into_iter()
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        let mut work = SystemWork {
+            generation: self.generation,
+            style: Vec::new(),
+            text: Vec::new(),
+            layout: Vec::new(),
+            input_hit_test: Vec::new(),
+            focus_ime: Vec::new(),
+            accessibility: Vec::new(),
+            render_extraction: Vec::new(),
+            render_removals: std::mem::take(&mut self.pending_render_removals),
+        };
+        work.render_removals.sort_unstable();
+        for id in ids {
+            let entity = self.entities[&id];
+            let bits = self
+                .world
+                .get_mut::<DirtyMask>(entity)
+                .expect("entity must have dirty component")
+                .take();
+            let bits = if matches!(self.component::<Kind>(id).0, NodeKind::Text) {
+                bits
+            } else {
+                bits & !DirtyMask::TEXT
+            };
+            push_work(&mut work, id, bits);
+        }
+        work
+    }
+
+    pub fn node(&self, id: StableNodeId) -> Option<NodeSnapshot> {
+        let entity = *self.entities.get(&id)?;
+        let identity = self.world.get::<Identity>(entity)?;
+        let kind = self.world.get::<Kind>(entity)?;
+        let hierarchy = self.world.get::<Hierarchy>(entity)?;
+        Some(NodeSnapshot {
+            id: identity.stable,
+            document: identity.document,
+            kind: kind.0.clone(),
+            parent: hierarchy.parent,
+            children: hierarchy.children.clone(),
+        })
+    }
+
+    pub fn focused(&self, document: DocumentId) -> Option<StableNodeId> {
+        self.focused.get(&document).copied()
+    }
+
+    pub fn text(&self, id: StableNodeId) -> Option<&str> {
+        let entity = *self.entities.get(&id)?;
+        self.world
+            .get::<TextContent>(entity)
+            .map(|text| text.value.as_str())
+    }
+
+    pub fn layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<LayoutBox>(entity).copied()
+    }
+
+    pub fn node_style(&self, id: StableNodeId) -> Option<&NodeStyle> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<NodeStyle>(entity)
+    }
+
+    pub fn interaction(&self, id: StableNodeId) -> Option<InteractionState> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<InteractionState>(entity).copied()
+    }
+
+    pub fn text_input(&self, id: StableNodeId) -> Option<&TextInputState> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<TextInputState>(entity)
+    }
+
+    pub fn ime(&self, id: StableNodeId) -> Option<&ImeComposition> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<ImeComposition>(entity)
+    }
+
+    pub fn custom_render(&self, id: StableNodeId) -> Option<&CustomRenderNode> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<CustomRenderNode>(entity)
+    }
+
+    pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<AccessibilityState>(entity)
+    }
+
+    /// Project the visible accessibility tree from the same retained authority.
+    pub fn project_accessibility(&self, document: DocumentId) -> Vec<AccessibilityNode> {
+        self.document_order(document)
+            .into_iter()
+            .filter_map(|id| self.project_accessibility_node(id))
+            .collect()
+    }
+
+    /// Project only accessibility nodes named by scheduled dirty work.
+    pub fn project_accessibility_nodes(&self, ids: &[StableNodeId]) -> Vec<AccessibilityNode> {
+        ids.iter()
+            .filter_map(|&id| self.project_accessibility_node(id))
+            .collect()
+    }
+
+    /// Resolve inherited visual state for dirty nodes. Parent state is always
+    /// resolved before its descendants, independent of stable ID order.
+    pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
+        let mut resolved = HashSet::new();
+        for &id in ids {
+            self.resolve_style(id, &mut resolved)?;
+        }
+        self.reconcile_focus(ids);
+        Ok(())
+    }
+
+    /// Drop focus and composition when dirty visual or interaction state makes
+    /// the focused node ineligible.
+    pub fn reconcile_focus(&mut self, ids: &[StableNodeId]) {
+        let dirty = ids.iter().copied().collect::<HashSet<_>>();
+        let invalid_focus = self
+            .focused
+            .iter()
+            .filter_map(|(&document, &id)| {
+                let invalid = dirty.contains(&id)
+                    && (!self.component::<ComputedStyle>(id).visible
+                        || !self.component::<InteractionState>(id).focusable);
+                invalid.then_some((document, id))
+            })
+            .collect::<Vec<_>>();
+        for (document, id) in invalid_focus {
+            self.focused.remove(&document);
+            self.remove_ime(id);
+            self.mark(
+                id,
+                DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+            );
+        }
+    }
+
+    /// Shape only explicitly scheduled text. The runtime owns invalidation and
+    /// storage while the renderer adapter supplies its real shaping backend.
+    pub fn shape_text(
+        &mut self,
+        ids: &[StableNodeId],
+        shaper: &mut impl TextShaper,
+    ) -> Result<(), UiWorldError> {
+        let mut shaped = Vec::with_capacity(ids.len());
+        for &id in ids {
+            if !self.contains(id) {
+                return Err(UiWorldError::MissingNode(id));
+            }
+            let text = self.component::<TextContent>(id).clone();
+            let style = self.component::<ComputedStyle>(id).clone();
+            let metrics = shaper.shape(id, &text, &style);
+            if !metrics.width.is_finite()
+                || !metrics.height.is_finite()
+                || metrics.width < 0.0
+                || metrics.height < 0.0
+            {
+                return Err(UiWorldError::InvalidText(id));
+            }
+            shaped.push((id, metrics));
+        }
+        for (id, metrics) in shaped {
+            *self.component_mut::<TextMetrics>(id) = metrics;
+        }
+        Ok(())
+    }
+
+    pub fn layout_inputs(&self, ids: &[StableNodeId]) -> Result<Vec<LayoutInput>, UiWorldError> {
+        ids.iter()
+            .copied()
+            .map(|id| {
+                if !self.contains(id) {
+                    return Err(UiWorldError::MissingNode(id));
+                }
+                let kind = &self.component::<Kind>(id).0;
+                let hierarchy = self.component::<Hierarchy>(id);
+                Ok(LayoutInput {
+                    id,
+                    parent: hierarchy.parent,
+                    children: hierarchy.children.clone(),
+                    style: self.component::<NodeStyle>(id).layout.clone(),
+                    text_metrics: matches!(kind, NodeKind::Text)
+                        .then(|| *self.component::<TextMetrics>(id)),
+                })
+            })
+            .collect()
+    }
+
+    /// Rebuild one document's event-time hit-test index after scheduled input
+    /// or layout work. Pointer dispatch then scans only compact hit entries.
+    pub fn rebuild_hit_test(&mut self, document: DocumentId) {
+        let mut roots = self
+            .entities
+            .keys()
+            .copied()
+            .filter(|id| {
+                self.component::<Identity>(*id).document == document
+                    && self.component::<Hierarchy>(*id).parent.is_none()
+            })
+            .collect::<Vec<_>>();
+        roots.sort_unstable();
+        let mut stack = roots
+            .into_iter()
+            .rev()
+            .map(|id| (id, IDENTITY_AFFINE, Vec::new()))
+            .collect::<Vec<_>>();
+        let mut entries = Vec::new();
+        let mut order = 0;
+        while let Some((id, parent_transform, parent_clips)) = stack.pop() {
+            let layout = *self.component::<LayoutBox>(id);
+            let node_style = self.component::<NodeStyle>(id).layout.as_ref();
+            let local = node_style
+                .transform
+                .map(|transform| {
+                    transform.around_center(layout.x, layout.y, layout.width, layout.height)
+                })
+                .unwrap_or(IDENTITY_AFFINE);
+            let transform = then_affine(parent_transform, local);
+            let mut child_clips = parent_clips.clone();
+            if node_style.clips_overflow() {
+                child_clips.push((layout, transform));
+            }
+            stack.extend(
+                self.component::<Hierarchy>(id)
+                    .children
+                    .iter()
+                    .rev()
+                    .map(|child| (*child, transform, child_clips.clone())),
+            );
+
+            let style = self.component::<ComputedStyle>(id);
+            let interaction = self.component::<InteractionState>(id);
+            if style.visible && interaction.pointer_events {
+                entries.push(HitEntry {
+                    id,
+                    layout,
+                    transform,
+                    clips: parent_clips,
+                    z_index: node_style.z_index.unwrap_or_default(),
+                    order,
+                });
+            }
+            order += 1;
+        }
+        self.hit_test_index.insert(document, entries);
+    }
+
+    pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
+        self.hit_test_candidates(document, x, y).into_iter().next()
+    }
+
+    pub fn hit_test_candidates(&self, document: DocumentId, x: f32, y: f32) -> Vec<StableNodeId> {
+        let mut candidates = self
+            .hit_test_index
+            .get(&document)
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry.contains(x, y))
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|entry| {
+            (
+                std::cmp::Reverse(entry.z_index),
+                std::cmp::Reverse(entry.order),
+            )
+        });
+        candidates.into_iter().map(|entry| entry.id).collect()
+    }
+
+    /// Produce a renderer-neutral snapshot in retained document order.
+    pub fn extract_document(&self, document: DocumentId) -> Vec<ExtractedNode> {
+        self.document_order(document)
+            .into_iter()
+            .filter_map(|id| self.extract_node(id).filter(|node| node.style.visible))
+            .collect()
+    }
+
+    /// Extract only dirty nodes. Hidden nodes stay present with `visible=false`
+    /// so an incremental renderer can remove their previous primitives.
+    pub fn extract_nodes(&self, ids: &[StableNodeId]) -> Vec<ExtractedNode> {
+        ids.iter().filter_map(|&id| self.extract_node(id)).collect()
+    }
+
+    pub fn commit(&mut self, queue: MutationQueue) -> Result<CommitReport, UiWorldError> {
+        let mut report = CommitReport {
+            generation: self.generation,
+            mutations: queue.len(),
+            created: 0,
+            inserted: 0,
+            detached: 0,
+            reparented: 0,
+            despawned: 0,
+        };
+        if queue.is_empty() {
+            return Ok(report);
+        }
+        ValidationPlan::new(self).validate(queue.as_slice())?;
+        self.generation = self.generation.wrapping_add(1);
+        report.generation = self.generation;
+        for mutation in queue.as_slice() {
+            self.apply(mutation, &mut report);
+        }
+        Ok(report)
+    }
+
+    fn apply(&mut self, mutation: &UiMutation, report: &mut CommitReport) {
+        match mutation {
+            UiMutation::Create { id, document, kind } => {
+                let entity = self
+                    .world
+                    .spawn((
+                        Identity {
+                            stable: *id,
+                            document: *document,
+                        },
+                        Kind(kind.clone()),
+                        Hierarchy::default(),
+                        NodeStyle::default(),
+                        ComputedStyle::default(),
+                        TextContent::default(),
+                        TextMetrics::default(),
+                        LayoutBox::default(),
+                        InteractionState::default(),
+                        AccessibilityState::default(),
+                        DirtyMask::all(),
+                    ))
+                    .id();
+                self.entities.insert(*id, entity);
+                self.dirty_entities.insert(*id);
+                report.created += 1;
+            }
+            UiMutation::Insert {
+                parent,
+                child,
+                before,
+            } => {
+                let old_parent = self
+                    .node(*child)
+                    .expect("validated child must exist")
+                    .parent;
+                if old_parent == Some(*parent) && *before == Some(*child) {
+                    return;
+                }
+                if let Some(old_parent) = old_parent {
+                    self.hierarchy_mut(old_parent)
+                        .children
+                        .retain(|id| id != child);
+                }
+                let siblings = &mut self.hierarchy_mut(*parent).children;
+                let index = before
+                    .and_then(|before| siblings.iter().position(|id| *id == before))
+                    .unwrap_or(siblings.len());
+                siblings.insert(index, *child);
+                self.hierarchy_mut(*child).parent = Some(*parent);
+                if old_parent == Some(*parent) {
+                    // Retained-order moves carry the entire subtree; descendants
+                    // keep their inherited state and local geometry until layout
+                    // writeback identifies actual changes.
+                    self.mark(
+                        *child,
+                        DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                } else {
+                    self.mark_subtree(
+                        *child,
+                        DirtyMask::STYLE
+                            | DirtyMask::TEXT
+                            | DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                }
+                self.mark_ancestors(
+                    *parent,
+                    DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                );
+                if let Some(old_parent) = old_parent {
+                    self.mark_ancestors(
+                        old_parent,
+                        DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                }
+                if old_parent.is_some() {
+                    report.reparented += 1;
+                } else {
+                    report.inserted += 1;
+                }
+            }
+            UiMutation::Remove { id } => {
+                let parent = self.node(*id).expect("validated node must exist").parent;
+                if let Some(parent) = parent {
+                    self.hierarchy_mut(parent)
+                        .children
+                        .retain(|child| child != id);
+                    self.hierarchy_mut(*id).parent = None;
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::STYLE
+                            | DirtyMask::TEXT
+                            | DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                    self.mark_ancestors(
+                        parent,
+                        DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                    report.detached += 1;
+                }
+            }
+            UiMutation::DespawnSubtree { root } => {
+                let root_snapshot = self.node(*root).expect("validated root must exist");
+                if let Some(parent) = root_snapshot.parent {
+                    self.hierarchy_mut(parent)
+                        .children
+                        .retain(|child| child != root);
+                    self.mark_ancestors(
+                        parent,
+                        DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                }
+                let mut stack = vec![*root];
+                while let Some(id) = stack.pop() {
+                    let snapshot = self.node(id).expect("validated subtree must exist");
+                    stack.extend(snapshot.children.iter().rev().copied());
+                    let entity = self
+                        .entities
+                        .remove(&id)
+                        .expect("entity index must contain node");
+                    self.dirty_entities.remove(&id);
+                    if self.focused.get(&snapshot.document) == Some(&id) {
+                        self.focused.remove(&snapshot.document);
+                    }
+                    if let Some(index) = self.hit_test_index.get_mut(&snapshot.document) {
+                        index.retain(|entry| entry.id != id);
+                    }
+                    let released = self
+                        .pointer_captures
+                        .iter()
+                        .filter_map(|(&(document, pointer_id), &target)| {
+                            (target == id).then_some((document, pointer_id))
+                        })
+                        .collect::<Vec<_>>();
+                    for key @ (_, pointer_id) in released {
+                        self.pointer_captures.remove(&key);
+                        self.pending_pointer_capture_changes
+                            .push(PointerCaptureChange {
+                                pointer_id,
+                                target: id,
+                                captured: false,
+                            });
+                    }
+                    self.animations
+                        .retain(|_, animation| animation.spec.target != id);
+                    let _ = self.world.despawn(entity);
+                    self.retired.insert(id);
+                    self.pending_render_removals.push(id);
+                    report.despawned += 1;
+                }
+            }
+            UiMutation::SetStyle { id, style } => {
+                let previous = self.component::<NodeStyle>(*id).clone();
+                let inherited_text_changed = previous.layout.font_size != style.layout.font_size
+                    || previous.layout.font_weight != style.layout.font_weight
+                    || previous.layout.font_family != style.layout.font_family
+                    || previous.layout.line_height != style.layout.line_height
+                    || previous.layout.letter_spacing != style.layout.letter_spacing;
+                let inherited_paint_changed = previous.foreground != style.foreground
+                    || previous.layout.color != style.layout.color
+                    || previous.layout.opacity != style.layout.opacity;
+                let visibility_changed = previous.layout.hidden != style.layout.hidden;
+                let transform_changed = previous.layout.transform != style.layout.transform
+                    || previous.layout.unsupported_transform != style.layout.unsupported_transform;
+                let stacking_changed = previous.layout.z_index != style.layout.z_index;
+                let layout_changed =
+                    layout_semantics_changed(previous.layout.as_ref(), style.layout.as_ref());
+                *self.component_mut::<NodeStyle>(*id) = style.clone();
+
+                self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                if inherited_paint_changed {
+                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
+                if inherited_text_changed {
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::STYLE
+                            | DirtyMask::TEXT
+                            | DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::RENDER,
+                    );
+                }
+                if visibility_changed {
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::STYLE
+                            | DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                }
+                if transform_changed || stacking_changed {
+                    self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
+                }
+                if layout_changed {
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                }
+                if (layout_changed || inherited_text_changed || visibility_changed)
+                    && let Some(parent) = self.node(*id).and_then(|node| node.parent)
+                {
+                    self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetText { id, text } => {
+                *self.component_mut::<TextContent>(*id) = text.clone();
+                self.mark(
+                    *id,
+                    DirtyMask::TEXT
+                        | DirtyMask::LAYOUT
+                        | DirtyMask::RENDER
+                        | DirtyMask::ACCESSIBILITY,
+                );
+                if let Some(parent) = self.node(*id).and_then(|node| node.parent) {
+                    self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
+                }
+            }
+            UiMutation::WriteLayout { id, layout } => {
+                *self.component_mut::<LayoutBox>(*id) = *layout;
+                self.mark_subtree(
+                    *id,
+                    DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                );
+            }
+            UiMutation::SetInteraction { id, interaction } => {
+                *self.component_mut::<InteractionState>(*id) = *interaction;
+                self.mark(
+                    *id,
+                    DirtyMask::INPUT
+                        | DirtyMask::FOCUS_IME
+                        | DirtyMask::RENDER
+                        | DirtyMask::ACCESSIBILITY,
+                );
+            }
+            UiMutation::SetCustomRender { id, content } => {
+                let entity = self.entities[id];
+                if let Some(content) = content {
+                    self.world.entity_mut(entity).insert(content.clone());
+                } else {
+                    self.world.entity_mut(entity).remove::<CustomRenderNode>();
+                }
+                self.mark(*id, DirtyMask::RENDER);
+            }
+            UiMutation::SetAccessibility { id, accessibility } => {
+                *self.component_mut::<AccessibilityState>(*id) = accessibility.clone();
+                self.mark(*id, DirtyMask::ACCESSIBILITY);
+            }
+            UiMutation::CapturePointer { pointer_id, target } => {
+                let document = self.component::<Identity>(*target).document;
+                let previous = self
+                    .pointer_captures
+                    .insert((document, *pointer_id), *target);
+                if previous == Some(*target) {
+                    return;
+                }
+                if let Some(previous) = previous {
+                    self.pending_pointer_capture_changes
+                        .push(PointerCaptureChange {
+                            pointer_id: *pointer_id,
+                            target: previous,
+                            captured: false,
+                        });
+                }
+                self.pending_pointer_capture_changes
+                    .push(PointerCaptureChange {
+                        pointer_id: *pointer_id,
+                        target: *target,
+                        captured: true,
+                    });
+            }
+            UiMutation::ReleasePointer { pointer_id, target } => {
+                let document = self.component::<Identity>(*target).document;
+                self.pointer_captures.remove(&(document, *pointer_id));
+                self.pending_pointer_capture_changes
+                    .push(PointerCaptureChange {
+                        pointer_id: *pointer_id,
+                        target: *target,
+                        captured: false,
+                    });
+            }
+            UiMutation::StartAnimation { animation } => {
+                self.animations
+                    .insert(animation.id, ActiveAnimation::new(*animation));
+            }
+            UiMutation::StopAnimation { id } => {
+                self.animations.remove(id);
+            }
+            UiMutation::RequestFocus { document, target } => {
+                let old = match target {
+                    Some(target) => self.focused.insert(*document, *target),
+                    None => self.focused.remove(document),
+                };
+                if let Some(old) = old.filter(|old| Some(*old) != *target) {
+                    self.remove_ime(old);
+                    self.mark(
+                        old,
+                        DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                }
+                if let Some(target) = target {
+                    self.mark(
+                        *target,
+                        DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                }
+            }
+            UiMutation::SetIme { id, composition } => {
+                let entity = self.entities[id];
+                if let Some(composition) = composition {
+                    self.world.entity_mut(entity).insert(composition.clone());
+                } else {
+                    self.world.entity_mut(entity).remove::<ImeComposition>();
+                }
+                self.mark(*id, DirtyMask::FOCUS_IME | DirtyMask::RENDER);
+            }
+            UiMutation::SetTextInput { id, state } => {
+                let entity = self.entities[id];
+                if let Some(state) = state {
+                    self.world.entity_mut(entity).insert(state.clone());
+                } else {
+                    self.world.entity_mut(entity).remove::<TextInputState>();
+                    self.remove_ime(*id);
+                }
+                self.mark(
+                    *id,
+                    DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                );
+            }
+            UiMutation::SetTextSelection { id, selection } => {
+                self.component_mut::<TextInputState>(*id).selection = *selection;
+                self.mark(*id, DirtyMask::FOCUS_IME | DirtyMask::ACCESSIBILITY);
+            }
+            UiMutation::ReplaceTextSelection { id, text } => {
+                let replaced = self
+                    .component_mut::<TextInputState>(*id)
+                    .replace_selection(text);
+                debug_assert!(replaced, "validated selection must remain valid");
+                self.mark(
+                    *id,
+                    DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                );
+            }
+        }
+    }
+
+    fn component<T: Component>(&self, id: StableNodeId) -> &T {
+        self.world
+            .get::<T>(self.entities[&id])
+            .expect("entity must have runtime component")
+    }
+
+    fn extract_node(&self, id: StableNodeId) -> Option<ExtractedNode> {
+        let entity = *self.entities.get(&id)?;
+        let identity = self.world.get::<Identity>(entity)?;
+        let style = self.world.get::<ComputedStyle>(entity)?.clone();
+        let kind = self.world.get::<Kind>(entity)?.0.clone();
+        let is_text = matches!(kind, NodeKind::Text);
+        let source_style = self.world.get::<NodeStyle>(entity)?.clone();
+        let hierarchy = self.world.get::<Hierarchy>(entity)?;
+        Some(ExtractedNode {
+            id,
+            kind,
+            parent: hierarchy.parent,
+            children: hierarchy.children.clone(),
+            layout: *self.world.get::<LayoutBox>(entity)?,
+            z_index: source_style.layout.z_index.unwrap_or_default(),
+            source_style,
+            style,
+            text: if is_text {
+                self.world.get::<TextContent>(entity).cloned()
+            } else {
+                None
+            },
+            text_metrics: if is_text {
+                self.world.get::<TextMetrics>(entity).copied()
+            } else {
+                None
+            },
+            focused: self.focused.get(&identity.document) == Some(&id),
+            ime: self.world.get::<ImeComposition>(entity).cloned(),
+            text_input: self.world.get::<TextInputState>(entity).cloned(),
+            custom_render: self.world.get::<CustomRenderNode>(entity).cloned(),
+        })
+    }
+
+    fn project_accessibility_node(&self, id: StableNodeId) -> Option<AccessibilityNode> {
+        let entity = *self.entities.get(&id)?;
+        let identity = self.world.get::<Identity>(entity)?;
+        let style = self.world.get::<ComputedStyle>(entity)?;
+        if !style.visible {
+            return None;
+        }
+        let hierarchy = self.world.get::<Hierarchy>(entity)?;
+        let state = self.world.get::<AccessibilityState>(entity)?;
+        let kind = &self.world.get::<Kind>(entity)?.0;
+        if matches!(kind, NodeKind::Comment) {
+            return None;
+        }
+        let role = match (state.role, kind) {
+            (AccessibilityRole::Generic, NodeKind::Document) => AccessibilityRole::Document,
+            (AccessibilityRole::Generic, NodeKind::Text) => AccessibilityRole::Text,
+            (role, _) => role,
+        };
+        let label = state.label.clone().or_else(|| {
+            matches!(kind, NodeKind::Text)
+                .then(|| self.world.get::<TextContent>(entity))
+                .flatten()
+                .filter(|text| !text.value.is_empty())
+                .map(|text| Arc::<str>::from(text.value.as_str()))
+        });
+        Some(AccessibilityNode {
+            id,
+            parent: hierarchy.parent,
+            children: hierarchy
+                .children
+                .iter()
+                .copied()
+                .filter(|child| {
+                    let child = self.entities[child];
+                    self.world
+                        .get::<ComputedStyle>(child)
+                        .is_some_and(|style| style.visible)
+                        && self
+                            .world
+                            .get::<Kind>(child)
+                            .is_some_and(|kind| !matches!(kind.0, NodeKind::Comment))
+                })
+                .collect(),
+            role,
+            label,
+            value: self
+                .world
+                .get::<TextInputState>(entity)
+                .map(|input| Arc::<str>::from(input.value.as_str()))
+                .or_else(|| state.value.clone()),
+            disabled: state.disabled,
+            checked: state.checked,
+            selected: state.selected,
+            focused: self.focused.get(&identity.document) == Some(&id),
+            bounds: *self.world.get::<LayoutBox>(entity)?,
+        })
+    }
+
+    fn component_mut<T: Component<Mutability = Mutable>>(
+        &mut self,
+        id: StableNodeId,
+    ) -> bevy_ecs::world::Mut<'_, T> {
+        self.world
+            .get_mut::<T>(self.entities[&id])
+            .expect("entity must have runtime component")
+    }
+
+    fn remove_ime(&mut self, id: StableNodeId) {
+        let entity = self.entities[&id];
+        self.world.entity_mut(entity).remove::<ImeComposition>();
+    }
+
+    fn resolve_style(
+        &mut self,
+        id: StableNodeId,
+        resolved: &mut HashSet<StableNodeId>,
+    ) -> Result<(), UiWorldError> {
+        if !self.contains(id) {
+            return Err(UiWorldError::MissingNode(id));
+        }
+        if !resolved.insert(id) {
+            return Ok(());
+        }
+        let parent = self.component::<Hierarchy>(id).parent;
+        if let Some(parent) = parent {
+            self.resolve_style(parent, resolved)?;
+        }
+        let local = self.component::<NodeStyle>(id).clone();
+        let inherited = parent
+            .map(|parent| self.component::<ComputedStyle>(parent).clone())
+            .unwrap_or_default();
+        let layout = local.layout.as_ref();
+        *self.component_mut::<ComputedStyle>(id) = ComputedStyle {
+            foreground: local.foreground.unwrap_or(inherited.foreground),
+            color: layout.color.or(inherited.color),
+            opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
+            visible: !layout.hidden && inherited.visible,
+            font_size: layout.font_size.unwrap_or(inherited.font_size),
+            font_weight: layout.font_weight.or(inherited.font_weight),
+            font_family: layout
+                .font_family
+                .as_deref()
+                .map(Arc::<str>::from)
+                .or(inherited.font_family),
+            line_height: layout.line_height.or(inherited.line_height),
+            letter_spacing: layout.letter_spacing.unwrap_or(inherited.letter_spacing),
+        };
+        Ok(())
+    }
+
+    pub fn document_order(&self, document: DocumentId) -> Vec<StableNodeId> {
+        let mut roots = self
+            .entities
+            .keys()
+            .copied()
+            .filter(|id| {
+                let identity = self.component::<Identity>(*id);
+                identity.document == document && self.component::<Hierarchy>(*id).parent.is_none()
+            })
+            .collect::<Vec<_>>();
+        roots.sort_unstable();
+        let mut order = Vec::new();
+        let mut stack = roots.into_iter().rev().collect::<Vec<_>>();
+        while let Some(id) = stack.pop() {
+            order.push(id);
+            stack.extend(
+                self.component::<Hierarchy>(id)
+                    .children
+                    .iter()
+                    .rev()
+                    .copied(),
+            );
+        }
+        order
+    }
+
+    fn hierarchy_mut(&mut self, id: StableNodeId) -> bevy_ecs::world::Mut<'_, Hierarchy> {
+        let entity = *self.entities.get(&id).expect("validated node must exist");
+        self.world
+            .get_mut::<Hierarchy>(entity)
+            .expect("entity must have hierarchy")
+    }
+
+    fn mark(&mut self, id: StableNodeId, bits: u8) -> bool {
+        let entity = self.entities[&id];
+        let changed = self
+            .world
+            .get_mut::<DirtyMask>(entity)
+            .expect("entity must have dirty component")
+            .insert(bits);
+        if changed {
+            self.dirty_entities.insert(id);
+        }
+        changed
+    }
+
+    fn mark_subtree(&mut self, root: StableNodeId, bits: u8) {
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let children = self.node(id).expect("hierarchy node must exist").children;
+            stack.extend(children.iter().rev().copied());
+            let _ = self.mark(id, bits);
+        }
+    }
+
+    fn mark_ancestors(&mut self, start: StableNodeId, bits: u8) {
+        let mut current = Some(start);
+        while let Some(id) = current {
+            current = self.node(id).expect("hierarchy node must exist").parent;
+            if !self.mark(id, bits) {
+                break;
+            }
+        }
+    }
+}
+
+const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+fn then_affine([a, b, c, d, e, f]: [f32; 6], rhs: [f32; 6]) -> [f32; 6] {
+    let [ra, rb, rc, rd, re, rf] = rhs;
+    [
+        a * ra + c * rb,
+        b * ra + d * rb,
+        a * rc + c * rd,
+        b * rc + d * rd,
+        a * re + c * rf + e,
+        b * re + d * rf + f,
+    ]
+}
+
+fn transformed_contains(bounds: LayoutBox, [a, b, c, d, e, f]: [f32; 6], x: f32, y: f32) -> bool {
+    let determinant = a * d - b * c;
+    if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
+        return false;
+    }
+    let translated_x = x - e;
+    let translated_y = y - f;
+    let local_x = (d * translated_x - c * translated_y) / determinant;
+    let local_y = (-b * translated_x + a * translated_y) / determinant;
+    bounds.contains(local_x, local_y)
+}
+
+fn layout_semantics_changed(
+    previous: &nana_ui_core::LayoutStyle,
+    next: &nana_ui_core::LayoutStyle,
+) -> bool {
+    previous.direction != next.direction
+        || previous.flex_reverse != next.flex_reverse
+        || previous.order != next.order
+        || previous.flex_wrap != next.flex_wrap
+        || previous.display != next.display
+        || previous.box_sizing != next.box_sizing
+        || previous.position != next.position
+        || previous.gap != next.gap
+        || previous.row_gap != next.row_gap
+        || previous.column_gap != next.column_gap
+        || previous.padding != next.padding
+        || previous.padding_top != next.padding_top
+        || previous.padding_right != next.padding_right
+        || previous.padding_bottom != next.padding_bottom
+        || previous.padding_left != next.padding_left
+        || previous.margin != next.margin
+        || previous.margin_top != next.margin_top
+        || previous.margin_right != next.margin_right
+        || previous.margin_bottom != next.margin_bottom
+        || previous.margin_left != next.margin_left
+        || previous.offset_top != next.offset_top
+        || previous.offset_right != next.offset_right
+        || previous.offset_bottom != next.offset_bottom
+        || previous.offset_left != next.offset_left
+        || previous.width != next.width
+        || previous.height != next.height
+        || previous.min_width != next.min_width
+        || previous.max_width != next.max_width
+        || previous.min_height != next.min_height
+        || previous.max_height != next.max_height
+        || previous.allow_shrink != next.allow_shrink
+        || previous.align_items != next.align_items
+        || previous.align_self != next.align_self
+        || previous.align_content != next.align_content
+        || previous.justify_content != next.justify_content
+        || previous.justify_items != next.justify_items
+        || previous.justify_self != next.justify_self
+        || previous.flex_grow != next.flex_grow
+        || previous.flex_shrink != next.flex_shrink
+        || previous.flex_basis != next.flex_basis
+        || previous.overflow_x != next.overflow_x
+        || previous.overflow_y != next.overflow_y
+        || previous.text_overflow_ellipsis != next.text_overflow_ellipsis
+        || previous.white_space_nowrap != next.white_space_nowrap
+        || previous.grid_columns != next.grid_columns
+        || previous.grid_rows != next.grid_rows
+        || previous.grid_columns_unsupported != next.grid_columns_unsupported
+        || previous.grid_rows_unsupported != next.grid_rows_unsupported
+        || previous.grid_auto_columns != next.grid_auto_columns
+        || previous.grid_auto_rows != next.grid_auto_rows
+        || previous.grid_auto_flow != next.grid_auto_flow
+        || previous.border_width != next.border_width
+}
+
+struct ValidationPlan<'a> {
+    source: &'a UiWorld,
+    nodes: HashMap<StableNodeId, PlannedNode>,
+    removed: HashSet<StableNodeId>,
+    newly_retired: HashSet<StableNodeId>,
+    interactions: HashMap<StableNodeId, InteractionState>,
+    styles: HashMap<StableNodeId, NodeStyle>,
+    focus: HashMap<DocumentId, Option<StableNodeId>>,
+    pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
+    animations: HashMap<AnimationId, AnimationSpec>,
+    text_inputs: HashMap<StableNodeId, Option<TextInputState>>,
+}
+
+impl<'a> ValidationPlan<'a> {
+    fn new(source: &'a UiWorld) -> Self {
+        Self {
+            source,
+            nodes: HashMap::new(),
+            removed: HashSet::new(),
+            newly_retired: HashSet::new(),
+            interactions: HashMap::new(),
+            styles: HashMap::new(),
+            focus: HashMap::new(),
+            pointer_captures: source.pointer_captures.clone(),
+            animations: source
+                .animations
+                .iter()
+                .map(|(&id, animation)| (id, animation.spec))
+                .collect(),
+            text_inputs: HashMap::new(),
+        }
+    }
+
+    fn validate(mut self, mutations: &[UiMutation]) -> Result<(), UiWorldError> {
+        for mutation in mutations {
+            match mutation {
+                UiMutation::Create { id, document, .. } => self.create(*id, *document)?,
+                UiMutation::Insert {
+                    parent,
+                    child,
+                    before,
+                } => self.insert(*parent, *child, *before)?,
+                UiMutation::Remove { id } => self.detach(*id)?,
+                UiMutation::DespawnSubtree { root } => self.despawn_subtree(*root)?,
+                UiMutation::SetStyle { id, style } => {
+                    self.node(*id)?;
+                    let layout = style.layout.as_ref();
+                    if layout.opacity.is_some_and(|opacity| {
+                        !opacity.is_finite() || !(0.0..=1.0).contains(&opacity)
+                    }) || layout
+                        .font_size
+                        .is_some_and(|size| !size.is_finite() || size <= 0.0)
+                        || layout
+                            .letter_spacing
+                            .is_some_and(|spacing| !spacing.is_finite())
+                        || layout
+                            .font_weight
+                            .is_some_and(|weight| !(1..=1000).contains(&weight))
+                        || layout.color.is_some_and(|color| {
+                            color.into_iter().any(|channel| {
+                                !channel.is_finite() || !(0.0..=1.0).contains(&channel)
+                            })
+                        })
+                    {
+                        return Err(UiWorldError::InvalidStyle(*id));
+                    }
+                    self.styles.insert(*id, style.clone());
+                }
+                UiMutation::SetText { id, .. } => {
+                    self.node(*id)?;
+                }
+                UiMutation::WriteLayout { id, layout } => {
+                    self.node(*id)?;
+                    if !layout.x.is_finite()
+                        || !layout.y.is_finite()
+                        || !layout.width.is_finite()
+                        || !layout.height.is_finite()
+                        || layout.width < 0.0
+                        || layout.height < 0.0
+                    {
+                        return Err(UiWorldError::InvalidLayout(*id));
+                    }
+                }
+                UiMutation::SetInteraction { id, interaction } => {
+                    self.node(*id)?;
+                    self.interactions.insert(*id, *interaction);
+                }
+                UiMutation::SetCustomRender { id, content } => {
+                    self.node(*id)?;
+                    if content.as_ref().is_some_and(|content| {
+                        content.renderer.trim().is_empty() || content.resource.trim().is_empty()
+                    }) {
+                        return Err(UiWorldError::InvalidCustomRender(*id));
+                    }
+                }
+                UiMutation::SetAccessibility { id, .. } => {
+                    self.node(*id)?;
+                }
+                UiMutation::CapturePointer { pointer_id, target } => {
+                    let document = self.node(*target)?.document;
+                    self.pointer_captures
+                        .insert((document, *pointer_id), *target);
+                }
+                UiMutation::ReleasePointer { pointer_id, target } => {
+                    let document = self.node(*target)?.document;
+                    if self.pointer_captures.get(&(document, *pointer_id)) != Some(target) {
+                        return Err(UiWorldError::PointerCaptureMismatch {
+                            pointer_id: *pointer_id,
+                            target: *target,
+                        });
+                    }
+                    self.pointer_captures.remove(&(document, *pointer_id));
+                }
+                UiMutation::StartAnimation { animation } => {
+                    self.node(animation.target)?;
+                    if !animation.is_valid() {
+                        return Err(UiWorldError::InvalidAnimation(animation.id));
+                    }
+                    self.animations.insert(animation.id, *animation);
+                }
+                UiMutation::StopAnimation { id } => {
+                    if self.animations.remove(id).is_none() {
+                        return Err(UiWorldError::MissingAnimation(*id));
+                    }
+                }
+                UiMutation::RequestFocus { document, target } => {
+                    if let Some(target) = target {
+                        let node = self.node(*target)?;
+                        if node.document != *document {
+                            return Err(UiWorldError::FocusDocument {
+                                document: *document,
+                                target: *target,
+                            });
+                        }
+                        let interaction =
+                            self.interactions.get(target).copied().unwrap_or_else(|| {
+                                self.source
+                                    .entities
+                                    .get(target)
+                                    .map(|_| *self.source.component::<InteractionState>(*target))
+                                    .unwrap_or_default()
+                            });
+                        let visible = self
+                            .styles
+                            .get(target)
+                            .map(|style| !style.layout.hidden)
+                            .unwrap_or_else(|| {
+                                self.source
+                                    .entities
+                                    .get(target)
+                                    .map(|_| {
+                                        self.source.component::<ComputedStyle>(*target).visible
+                                    })
+                                    .unwrap_or(true)
+                            });
+                        if !interaction.focusable || !visible {
+                            return Err(UiWorldError::NotFocusable(*target));
+                        }
+                    }
+                    self.focus.insert(*document, *target);
+                }
+                UiMutation::SetIme { id, composition } => {
+                    let document = self.node(*id)?.document;
+                    let focused = self
+                        .focus
+                        .get(&document)
+                        .copied()
+                        .unwrap_or_else(|| self.source.focused(document));
+                    if focused != Some(*id) {
+                        return Err(UiWorldError::NotFocused(*id));
+                    }
+                    if let Some(ImeComposition {
+                        text,
+                        selection: Some((start, end)),
+                    }) = composition
+                        && (start > end
+                            || *end > text.len()
+                            || !text.is_char_boundary(*start)
+                            || !text.is_char_boundary(*end))
+                    {
+                        return Err(UiWorldError::InvalidIme(*id));
+                    }
+                }
+                UiMutation::SetTextInput { id, state } => {
+                    self.node(*id)?;
+                    if state
+                        .as_ref()
+                        .is_some_and(|state| !state.selection.is_valid_for(&state.value))
+                    {
+                        return Err(UiWorldError::InvalidTextInput(*id));
+                    }
+                    self.text_inputs.insert(*id, state.clone());
+                }
+                UiMutation::SetTextSelection { id, selection } => {
+                    let mut state = self.text_input(*id)?;
+                    if !selection.is_valid_for(&state.value) {
+                        return Err(UiWorldError::InvalidTextInput(*id));
+                    }
+                    state.selection = *selection;
+                    self.text_inputs.insert(*id, Some(state));
+                }
+                UiMutation::ReplaceTextSelection { id, text } => {
+                    let mut state = self.text_input(*id)?;
+                    if !state.replace_selection(text) {
+                        return Err(UiWorldError::InvalidTextInput(*id));
+                    }
+                    self.text_inputs.insert(*id, Some(state));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn create(&mut self, id: StableNodeId, document: DocumentId) -> Result<(), UiWorldError> {
+        if self.exists(id) {
+            return Err(UiWorldError::DuplicateNode(id));
+        }
+        if self.source.retired.contains(&id) || self.newly_retired.contains(&id) {
+            return Err(UiWorldError::RetiredNode(id));
+        }
+        self.removed.remove(&id);
+        self.nodes.insert(
+            id,
+            PlannedNode {
+                document,
+                parent: None,
+                children: Vec::new(),
+            },
+        );
+        Ok(())
+    }
+
+    fn insert(
+        &mut self,
+        parent: StableNodeId,
+        child: StableNodeId,
+        before: Option<StableNodeId>,
+    ) -> Result<(), UiWorldError> {
+        let parent_document = self.node(parent)?.document;
+        let child_node = self.node(child)?.clone();
+        if child_node.document != parent_document {
+            return Err(UiWorldError::CrossDocument { parent, child });
+        }
+        if parent == child || self.has_ancestor(parent, child)? {
+            return Err(UiWorldError::Cycle { parent, child });
+        }
+        if before == Some(child) && child_node.parent == Some(parent) {
+            return Ok(());
+        }
+        if let Some(before) = before
+            && !self.node(parent)?.children.contains(&before)
+        {
+            return Err(UiWorldError::InvalidBefore { parent, before });
+        }
+        self.detach(child)?;
+        let siblings = &mut self.node_mut(parent)?.children;
+        let index = before
+            .and_then(|before| siblings.iter().position(|id| *id == before))
+            .unwrap_or(siblings.len());
+        siblings.insert(index, child);
+        self.node_mut(child)?.parent = Some(parent);
+        Ok(())
+    }
+
+    fn detach(&mut self, id: StableNodeId) -> Result<(), UiWorldError> {
+        let parent = self.node(id)?.parent;
+        if let Some(parent) = parent {
+            self.node_mut(parent)?.children.retain(|child| *child != id);
+            self.node_mut(id)?.parent = None;
+        }
+        Ok(())
+    }
+
+    fn despawn_subtree(&mut self, root: StableNodeId) -> Result<(), UiWorldError> {
+        self.detach(root)?;
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let children = self.node(id)?.children.clone();
+            stack.extend(children);
+            self.nodes.remove(&id);
+            self.removed.insert(id);
+            self.newly_retired.insert(id);
+            self.pointer_captures.retain(|_, target| *target != id);
+            self.animations
+                .retain(|_, animation| animation.target != id);
+            self.text_inputs.remove(&id);
+        }
+        Ok(())
+    }
+
+    fn has_ancestor(
+        &mut self,
+        mut id: StableNodeId,
+        candidate: StableNodeId,
+    ) -> Result<bool, UiWorldError> {
+        let mut visited = HashSet::new();
+        loop {
+            if id == candidate {
+                return Ok(true);
+            }
+            if !visited.insert(id) {
+                return Ok(false);
+            }
+            let Some(parent) = self.node(id)?.parent else {
+                return Ok(false);
+            };
+            id = parent;
+        }
+    }
+
+    fn exists(&self, id: StableNodeId) -> bool {
+        !self.removed.contains(&id) && (self.nodes.contains_key(&id) || self.source.contains(id))
+    }
+
+    fn text_input(&mut self, id: StableNodeId) -> Result<TextInputState, UiWorldError> {
+        self.node(id)?;
+        if let Some(state) = self.text_inputs.get(&id) {
+            return state.clone().ok_or(UiWorldError::MissingTextInput(id));
+        }
+        self.source
+            .text_input(id)
+            .cloned()
+            .ok_or(UiWorldError::MissingTextInput(id))
+    }
+
+    fn node(&mut self, id: StableNodeId) -> Result<&PlannedNode, UiWorldError> {
+        self.ensure(id)?;
+        Ok(self.nodes.get(&id).expect("ensured node must exist"))
+    }
+
+    fn node_mut(&mut self, id: StableNodeId) -> Result<&mut PlannedNode, UiWorldError> {
+        self.ensure(id)?;
+        Ok(self.nodes.get_mut(&id).expect("ensured node must exist"))
+    }
+
+    fn ensure(&mut self, id: StableNodeId) -> Result<(), UiWorldError> {
+        if self.removed.contains(&id) {
+            return Err(UiWorldError::MissingNode(id));
+        }
+        if self.nodes.contains_key(&id) {
+            return Ok(());
+        }
+        let snapshot = self.source.node(id).ok_or(UiWorldError::MissingNode(id))?;
+        self.nodes.insert(
+            id,
+            PlannedNode {
+                document: snapshot.document,
+                parent: snapshot.parent,
+                children: snapshot.children,
+            },
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Easing;
+    use nana_ui_core::{LayoutStyle, LengthSpec, OverflowSpec, PaintTransform, SemanticColorRole};
+
+    fn node(value: u64) -> StableNodeId {
+        StableNodeId::new(value).unwrap()
+    }
+
+    fn document(value: u64) -> DocumentId {
+        DocumentId::new(value).unwrap()
+    }
+
+    #[test]
+    fn batch_builds_reparents_and_detaches_hierarchy() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=4 {
+            queue.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(1), node(3), None);
+        queue.insert(node(1), node(4), Some(node(3)));
+        let report = world.commit(queue).unwrap();
+        assert_eq!(report.created, 4);
+        assert_eq!(report.inserted, 3);
+        assert_eq!(report.reparented, 0);
+        assert_eq!(
+            world.node(node(1)).unwrap().children,
+            vec![node(2), node(4), node(3)]
+        );
+
+        let mut queue = MutationQueue::new();
+        queue.insert(node(2), node(3), None);
+        queue.remove(node(4));
+        let report = world.commit(queue).unwrap();
+        assert_eq!(report.reparented, 1);
+        assert_eq!(report.detached, 1);
+        assert_eq!(world.node(node(1)).unwrap().children, vec![node(2)]);
+        assert_eq!(world.node(node(2)).unwrap().children, vec![node(3)]);
+        assert_eq!(world.node(node(4)).unwrap().parent, None);
+    }
+
+    #[test]
+    fn invalid_batch_is_atomic() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        world.commit(queue).unwrap();
+
+        let mut queue = MutationQueue::new();
+        queue.create(node(2), document(1), NodeKind::Text);
+        queue.insert(node(99), node(2), None);
+        assert_eq!(
+            world.commit(queue),
+            Err(UiWorldError::MissingNode(node(99)))
+        );
+        assert!(!world.contains(node(2)));
+        assert_eq!(world.len(), 1);
+    }
+
+    #[test]
+    fn committed_text_selection_is_unicode_safe_and_batch_atomic() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "input".into(),
+            },
+        );
+        queue.set_text_input(node(1), Some(TextInputState::new("你好ab")));
+        queue.set_text_selection(
+            node(1),
+            crate::TextSelection {
+                anchor: 0,
+                focus: "你".len(),
+            },
+        );
+        queue.replace_text_selection(node(1), "娜");
+        world.commit(queue).unwrap();
+        let state = world.text_input(node(1)).unwrap();
+        assert_eq!(state.value, "娜好ab");
+        assert_eq!(state.selection, crate::TextSelection::caret("娜".len()));
+
+        let generation = world.generation();
+        let mut invalid = MutationQueue::new();
+        invalid.set_text_selection(
+            node(1),
+            crate::TextSelection {
+                anchor: 1,
+                focus: 1,
+            },
+        );
+        assert_eq!(
+            world.commit(invalid),
+            Err(UiWorldError::InvalidTextInput(node(1)))
+        );
+        assert_eq!(world.generation(), generation);
+        assert_eq!(world.text_input(node(1)).unwrap().value, "娜好ab");
+
+        let accessibility = world.project_accessibility(document(1));
+        assert_eq!(accessibility[0].value.as_deref(), Some("娜好ab"));
+        assert_eq!(
+            world.extract_document(document(1))[0]
+                .text_input
+                .as_ref()
+                .unwrap()
+                .selection,
+            crate::TextSelection::caret("娜".len())
+        );
+    }
+
+    #[test]
+    fn animations_are_atomic_deadline_driven_and_replaceable() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), NodeKind::Text);
+        world.commit(queue).unwrap();
+
+        let animation_id = AnimationId::new(1).unwrap();
+        let missing_id = AnimationId::new(2).unwrap();
+        let animation = AnimationSpec {
+            id: animation_id,
+            target: node(1),
+            start: Duration::from_millis(100),
+            duration: Duration::from_millis(100),
+            frame_interval: Duration::from_millis(16),
+            easing: Easing::EaseOutCubic,
+        };
+        let generation = world.generation();
+        let mut invalid = MutationQueue::new();
+        invalid.start_animation(animation);
+        invalid.stop_animation(missing_id);
+        assert_eq!(
+            world.commit(invalid),
+            Err(UiWorldError::MissingAnimation(missing_id))
+        );
+        assert_eq!(world.generation(), generation);
+        assert_eq!(world.next_animation_deadline(), None);
+
+        let mut invalid_timing = MutationQueue::new();
+        invalid_timing.start_animation(AnimationSpec {
+            duration: Duration::ZERO,
+            ..animation
+        });
+        assert_eq!(
+            world.commit(invalid_timing),
+            Err(UiWorldError::InvalidAnimation(animation_id))
+        );
+        assert_eq!(world.generation(), generation);
+
+        let mut start = MutationQueue::new();
+        start.start_animation(animation);
+        world.commit(start).unwrap();
+        assert_eq!(
+            world.next_animation_deadline(),
+            Some(Duration::from_millis(100))
+        );
+        assert!(
+            world
+                .advance_animations(Duration::from_millis(99))
+                .samples
+                .is_empty()
+        );
+        let first = world.advance_animations(Duration::from_millis(100));
+        assert_eq!(first.samples.len(), 1);
+        assert_eq!(first.samples[0].progress, 0.0);
+        assert_eq!(first.next_deadline, Some(Duration::from_millis(116)));
+
+        let replacement = AnimationSpec {
+            target: node(2),
+            start: Duration::from_millis(150),
+            easing: Easing::Linear,
+            ..animation
+        };
+        let mut replace = MutationQueue::new();
+        replace.start_animation(replacement);
+        world.commit(replace).unwrap();
+        let middle = world.advance_animations(Duration::from_millis(200));
+        assert_eq!(middle.samples.len(), 1);
+        assert_eq!(middle.samples[0].target, node(2));
+        assert_eq!(middle.samples[0].progress, 0.5);
+        assert!(!middle.samples[0].finished);
+
+        let end = world.advance_animations(Duration::from_millis(250));
+        assert_eq!(end.samples.len(), 1);
+        assert_eq!(end.samples[0].progress, 1.0);
+        assert!(end.samples[0].finished);
+        assert_eq!(end.next_deadline, None);
+
+        let mut start_then_stop = MutationQueue::new();
+        start_then_stop.start_animation(animation);
+        start_then_stop.stop_animation(animation_id);
+        world.commit(start_then_stop).unwrap();
+        assert_eq!(world.next_animation_deadline(), None);
+    }
+
+    #[test]
+    fn despawning_animation_target_cancels_its_wakeup() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.start_animation(AnimationSpec {
+            id: AnimationId::new(1).unwrap(),
+            target: node(2),
+            start: Duration::from_millis(10),
+            duration: Duration::from_secs(1),
+            frame_interval: Duration::from_millis(16),
+            easing: Easing::Linear,
+        });
+        world.commit(queue).unwrap();
+        assert_eq!(
+            world.next_animation_deadline(),
+            Some(Duration::from_millis(10))
+        );
+
+        let mut remove = MutationQueue::new();
+        remove.despawn_subtree(node(1));
+        world.commit(remove).unwrap();
+        assert_eq!(world.next_animation_deadline(), None);
+        assert!(world.advance_animations(Duration::MAX).samples.is_empty());
+    }
+
+    #[test]
+    fn subtree_despawn_retires_ids_and_stale_handles_do_not_alias() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=3 {
+            queue.create(node(id), document(1), NodeKind::Text);
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut queue = MutationQueue::new();
+        queue.despawn_subtree(node(2));
+        let report = world.commit(queue).unwrap();
+        assert_eq!(report.despawned, 2);
+        assert_eq!(
+            world.node(node(1)).unwrap().children,
+            Vec::<StableNodeId>::new()
+        );
+        assert!(!world.contains(node(2)));
+        assert!(world.is_retired(node(2)));
+        let work = world.take_system_work();
+        assert_eq!(work.render_removals, vec![node(2), node(3)]);
+
+        let mut queue = MutationQueue::new();
+        queue.create(node(2), document(1), NodeKind::Text);
+        assert_eq!(world.commit(queue), Err(UiWorldError::RetiredNode(node(2))));
+    }
+
+    #[test]
+    fn batch_cannot_recreate_an_id_after_despawn() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        world.commit(queue).unwrap();
+
+        let mut queue = MutationQueue::new();
+        queue.despawn_subtree(node(1));
+        queue.create(node(1), document(1), NodeKind::Document);
+        assert_eq!(world.commit(queue), Err(UiWorldError::RetiredNode(node(1))));
+        assert!(world.contains(node(1)));
+        assert!(!world.is_retired(node(1)));
+    }
+
+    #[test]
+    fn dirty_work_is_incremental_and_static_world_stays_idle() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=4 {
+            queue.create(node(id), document(1), NodeKind::Text);
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(1), node(3), None);
+        queue.insert(node(3), node(4), None);
+        let report = world.commit(queue).unwrap();
+        assert_eq!(report.generation, 1);
+
+        let initial = world.take_system_work();
+        assert_eq!(initial.generation, 1);
+        assert_eq!(initial.style, vec![node(1), node(2), node(3), node(4)]);
+        assert_eq!(initial.render_extraction, initial.style);
+        assert!(world.take_system_work().is_empty());
+
+        let empty = world.commit(MutationQueue::new()).unwrap();
+        assert_eq!(empty.generation, 1);
+        assert!(world.take_system_work().is_empty());
+
+        let mut queue = MutationQueue::new();
+        queue.insert(node(2), node(3), None);
+        let report = world.commit(queue).unwrap();
+        assert_eq!(report.generation, 2);
+        let work = world.take_system_work();
+        assert_eq!(work.style, vec![node(3), node(4)]);
+        assert_eq!(work.text, vec![node(3), node(4)]);
+        assert_eq!(work.focus_ime, vec![node(3), node(4)]);
+        assert_eq!(work.layout, vec![node(1), node(2), node(3), node(4)]);
+        assert_eq!(work.render_extraction, work.layout);
+        assert!(world.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn sibling_reorder_does_not_recompute_unchanged_descendant_styles() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=4 {
+            queue.create(node(id), document(1), NodeKind::Text);
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(1), node(3), None);
+        queue.insert(node(2), node(4), None);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut queue = MutationQueue::new();
+        queue.insert(node(1), node(3), Some(node(2)));
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        assert!(work.style.is_empty());
+        assert!(work.text.is_empty());
+        assert!(work.focus_ime.is_empty());
+        assert_eq!(work.input_hit_test, vec![node(3)]);
+        assert_eq!(work.layout, vec![node(1)]);
+        assert_eq!(work.render_extraction, vec![node(1), node(3)]);
+    }
+
+    #[test]
+    fn paint_only_style_change_does_not_schedule_subtree_layout() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=3 {
+            queue.create(node(id), document(1), NodeKind::Text);
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut paint = MutationQueue::new();
+        paint.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    color: Some([0.2, 0.4, 0.8, 1.0]),
+                    opacity: Some(0.8),
+                    ..LayoutStyle::default()
+                }),
+                foreground: Some(SemanticColorRole::Accent),
+            },
+        );
+        world.commit(paint).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.style, vec![node(1), node(2), node(3)]);
+        assert!(work.text.is_empty());
+        assert!(work.layout.is_empty());
+        assert!(work.input_hit_test.is_empty());
+        assert_eq!(work.render_extraction, vec![node(1), node(2), node(3)]);
+
+        let mut layout = MutationQueue::new();
+        layout.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(240.0)),
+                    ..LayoutStyle::default()
+                }),
+                foreground: None,
+            },
+        );
+        world.commit(layout).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.layout, vec![node(1), node(2), node(3)]);
+        assert_eq!(work.input_hit_test, vec![node(2), node(3)]);
+    }
+
+    #[test]
+    fn hit_test_respects_cumulative_transform_and_ancestor_clip() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 50.0,
+                height: 50.0,
+            },
+        );
+        queue.write_layout(
+            node(2),
+            LayoutBox {
+                x: 40.0,
+                y: 0.0,
+                width: 30.0,
+                height: 30.0,
+            },
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    overflow_x: OverflowSpec::Hidden,
+                    transform: Some(PaintTransform {
+                        e: 10.0,
+                        ..PaintTransform::default()
+                    }),
+                    ..LayoutStyle::default()
+                }),
+                foreground: None,
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.rebuild_hit_test(document(1));
+
+        assert_eq!(world.hit_test(document(1), 55.0, 10.0), Some(node(2)));
+        assert_eq!(world.hit_test(document(1), 45.0, 10.0), None);
+        assert_eq!(world.hit_test(document(1), 65.0, 10.0), None);
+    }
+
+    #[test]
+    fn rejects_cycles_cross_document_parenting_and_invalid_sibling_anchor() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "main".into() },
+        );
+        queue.create(node(3), document(2), NodeKind::Document);
+        queue.insert(node(1), node(2), None);
+        world.commit(queue).unwrap();
+
+        let mut cycle = MutationQueue::new();
+        cycle.insert(node(2), node(1), None);
+        assert_eq!(
+            world.commit(cycle),
+            Err(UiWorldError::Cycle {
+                parent: node(2),
+                child: node(1)
+            })
+        );
+
+        let mut cross_document = MutationQueue::new();
+        cross_document.insert(node(1), node(3), None);
+        assert_eq!(
+            world.commit(cross_document),
+            Err(UiWorldError::CrossDocument {
+                parent: node(1),
+                child: node(3)
+            })
+        );
+
+        let mut invalid_before = MutationQueue::new();
+        invalid_before.insert(node(1), node(2), Some(node(3)));
+        assert_eq!(
+            world.commit(invalid_before),
+            Err(UiWorldError::InvalidBefore {
+                parent: node(1),
+                before: node(3)
+            })
+        );
+    }
+
+    #[derive(Default)]
+    struct FunctionalShaper {
+        calls: Vec<StableNodeId>,
+    }
+
+    impl TextShaper for FunctionalShaper {
+        fn shape(
+            &mut self,
+            id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+        ) -> TextMetrics {
+            self.calls.push(id);
+            TextMetrics {
+                width: text.value.chars().count() as f32 * style.font_size,
+                height: style.font_size,
+            }
+        }
+    }
+
+    #[test]
+    fn style_text_layout_input_focus_ime_hit_test_and_extraction_form_one_pipeline() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "input".into(),
+            },
+        );
+        queue.create(node(3), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    opacity: Some(0.5),
+                    z_index: Some(2),
+                    ..LayoutStyle::default()
+                }),
+                foreground: Some(SemanticColorRole::Accent),
+            },
+        );
+        queue.set_style(
+            node(3),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    opacity: Some(0.5),
+                    font_size: Some(20.0),
+                    ..LayoutStyle::default()
+                }),
+                foreground: None,
+            },
+        );
+        queue.set_text(
+            node(3),
+            TextContent {
+                value: "输入".into(),
+            },
+        );
+        queue.set_interaction(
+            node(2),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        world.commit(queue).unwrap();
+
+        let work = world.take_system_work();
+        assert_eq!(work.text, vec![node(3)]);
+        world.resolve_styles(&work.style).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        assert_eq!(shaper.calls, vec![node(3)]);
+        let layout = world.layout_inputs(&work.layout).unwrap();
+        let text = layout.iter().find(|input| input.id == node(3)).unwrap();
+        assert_eq!(text.parent, Some(node(2)));
+        assert_eq!(text.text_metrics.unwrap().width, 40.0);
+
+        let mut queue = MutationQueue::new();
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        queue.write_layout(
+            node(2),
+            LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 80.0,
+                height: 40.0,
+            },
+        );
+        queue.write_layout(
+            node(3),
+            LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 40.0,
+                height: 20.0,
+            },
+        );
+        queue.request_focus(document(1), Some(node(2)));
+        queue.set_ime(
+            node(2),
+            Some(ImeComposition {
+                text: "拼音".into(),
+                selection: Some((0, 6)),
+            }),
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.reconcile_focus(&work.focus_ime);
+        world.rebuild_hit_test(document(1));
+        assert_eq!(world.hit_test(document(1), 20.0, 20.0), Some(node(2)));
+
+        let extracted = world.extract_document(document(1));
+        let input = extracted.iter().find(|entry| entry.id == node(2)).unwrap();
+        let text = extracted.iter().find(|entry| entry.id == node(3)).unwrap();
+        assert!(input.focused);
+        assert_eq!(input.ime.as_ref().unwrap().text, "拼音");
+        assert_eq!(text.style.foreground, SemanticColorRole::Accent);
+        assert_eq!(text.style.opacity, 0.25);
+
+        let mut queue = MutationQueue::new();
+        queue.set_interaction(
+            node(2),
+            InteractionState {
+                focusable: false,
+                ..InteractionState::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.reconcile_focus(&work.focus_ime);
+        assert_eq!(world.focused(document(1)), None);
+        assert!(
+            world
+                .extract_document(document(1))
+                .iter()
+                .find(|entry| entry.id == node(2))
+                .unwrap()
+                .ime
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn invalid_visual_input_is_rejected_atomically() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Text);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut queue = MutationQueue::new();
+        queue.set_text(
+            node(1),
+            TextContent {
+                value: "valid".into(),
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                width: -1.0,
+                ..LayoutBox::default()
+            },
+        );
+        assert_eq!(
+            world.commit(queue),
+            Err(UiWorldError::InvalidLayout(node(1)))
+        );
+        assert_eq!(world.generation(), 1);
+        assert!(world.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn custom_render_extension_requires_nonempty_backend_neutral_keys() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "gpu".into() },
+        );
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut queue = MutationQueue::new();
+        queue.set_custom_render(
+            node(1),
+            Some(CustomRenderNode {
+                renderer: Arc::from(""),
+                resource: Arc::from("program"),
+                revision: 0,
+            }),
+        );
+        assert_eq!(
+            world.commit(queue),
+            Err(UiWorldError::InvalidCustomRender(node(1)))
+        );
+        assert!(world.custom_render(node(1)).is_none());
+        assert!(world.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn accessibility_projection_uses_runtime_hierarchy_focus_and_geometry() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        queue.create(node(2), document(1), NodeKind::Text);
+        queue.create(node(3), document(1), NodeKind::Comment);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(1), node(3), None);
+        queue.set_text(
+            node(2),
+            TextContent {
+                value: "Build".into(),
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                role: AccessibilityRole::Button,
+                label: Some(Arc::from("Build project")),
+                value: None,
+                disabled: false,
+                checked: None,
+                selected: None,
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 10.0,
+                y: 20.0,
+                width: 80.0,
+                height: 28.0,
+            },
+        );
+        queue.request_focus(document(1), Some(node(1)));
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+
+        let projected = world.project_accessibility(document(1));
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].role, AccessibilityRole::Button);
+        assert_eq!(projected[0].label.as_deref(), Some("Build project"));
+        assert!(projected[0].focused);
+        assert_eq!(projected[0].children, vec![node(2)]);
+        assert_eq!(projected[0].bounds.width, 80.0);
+        assert_eq!(projected[1].role, AccessibilityRole::Text);
+        assert_eq!(projected[1].label.as_deref(), Some("Build"));
+
+        let mut queue = MutationQueue::new();
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                disabled: true,
+                ..world.accessibility(node(1)).unwrap().clone()
+            },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.accessibility, vec![node(1)]);
+        assert!(work.style.is_empty());
+        assert!(work.layout.is_empty());
+    }
+
+    #[test]
+    fn pointer_capture_and_event_routes_share_runtime_hierarchy_and_lifetime() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=3 {
+            queue.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        world.commit(queue).unwrap();
+
+        assert_eq!(
+            world.event_route(node(3)).unwrap(),
+            EventRoute {
+                capture: vec![node(1), node(2)],
+                target: node(3),
+                bubble: vec![node(2), node(1)],
+            }
+        );
+
+        let mut queue = MutationQueue::new();
+        queue.capture_pointer(7, node(2));
+        queue.capture_pointer(7, node(3));
+        world.commit(queue).unwrap();
+        assert_eq!(world.pointer_capture(document(1), 7), Some(node(3)));
+        assert_eq!(
+            world.take_pointer_capture_changes(),
+            vec![
+                PointerCaptureChange {
+                    pointer_id: 7,
+                    target: node(2),
+                    captured: true,
+                },
+                PointerCaptureChange {
+                    pointer_id: 7,
+                    target: node(2),
+                    captured: false,
+                },
+                PointerCaptureChange {
+                    pointer_id: 7,
+                    target: node(3),
+                    captured: true,
+                },
+            ]
+        );
+
+        let generation = world.generation();
+        let mut invalid = MutationQueue::new();
+        invalid.release_pointer(7, node(2));
+        assert_eq!(
+            world.commit(invalid),
+            Err(UiWorldError::PointerCaptureMismatch {
+                pointer_id: 7,
+                target: node(2),
+            })
+        );
+        assert_eq!(world.generation(), generation);
+        assert_eq!(world.pointer_capture(document(1), 7), Some(node(3)));
+
+        let mut remove = MutationQueue::new();
+        remove.despawn_subtree(node(2));
+        world.commit(remove).unwrap();
+        assert_eq!(world.pointer_capture(document(1), 7), None);
+        assert_eq!(
+            world.take_pointer_capture_changes(),
+            vec![PointerCaptureChange {
+                pointer_id: 7,
+                target: node(3),
+                captured: false,
+            }]
+        );
+        assert!(world.event_route(node(3)).is_none());
+    }
+}

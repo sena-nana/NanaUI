@@ -19,7 +19,7 @@ use nana_ui::{
     ui_font, ui_font_sources, workspace_view,
 };
 
-use crate::report::{AdapterReport, BenchmarkReport, CaseReport, Sample};
+use crate::report::{AdapterReport, BenchmarkReport, CaseReport, RendererReport, Sample};
 
 const VIEWPORT_WIDTH: u32 = 900;
 const VIEWPORT_HEIGHT: u32 = 640;
@@ -225,6 +225,10 @@ pub fn run() -> BenchmarkReport {
             name: adapter_info.name,
             backend: format!("{:?}", adapter_info.backend),
             device_type: format!("{:?}", adapter_info.device_type),
+        },
+        renderer: RendererReport {
+            antialiasing: "MSAAx4",
+            target_format: "Bgra8UnormSrgb",
         },
         iterations: ITERATIONS,
         warmup_iterations: WARMUP_ITERATIONS,

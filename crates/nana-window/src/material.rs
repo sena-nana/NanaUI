@@ -62,8 +62,8 @@ pub enum MaterialFallback {
 impl MaterialFallback {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::PlatformDoesNotProvideNativeMaterial => "当前平台无原生窗口材质",
-            Self::NativeMaterialUnavailable => "原生材质不可用，已回退实色",
+            Self::PlatformDoesNotProvideNativeMaterial => "当前设备不支持透明窗口效果",
+            Self::NativeMaterialUnavailable => "透明效果不可用，已使用实色背景",
         }
     }
 }
@@ -94,11 +94,8 @@ impl PlatformMaterialSupport {
 
     pub const fn hint(self) -> &'static str {
         match self {
-            Self::Vibrancy => {
-                "本平台首选 Vibrancy。Hosted GPU 表面若与材质层冲突会回退实色，不崩溃。"
-            }
-            Self::MicaAcrylic => "本平台首选 Mica；失败时尝试 Acrylic，再失败则回退实色。",
-            Self::None => "当前平台无原生窗口材质；选择透明时保持可读的实色背景。",
+            Self::Vibrancy | Self::MicaAcrylic => "支持透明窗口效果；不可用时会自动使用实色背景。",
+            Self::None => "当前设备使用实色窗口背景。",
         }
     }
 }
@@ -160,7 +157,7 @@ impl MaterialOutcome {
     pub fn status_label(self) -> String {
         match self.fallback {
             Some(reason) => format!("{}（{}）", self.effect.label(), reason.label()),
-            None if self.is_native() => format!("已应用 {}", self.effect.label()),
+            None if self.is_native() => "透明效果已启用".to_string(),
             None => "实色背景".to_string(),
         }
     }

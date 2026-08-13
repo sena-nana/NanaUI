@@ -1098,14 +1098,14 @@ fn label_text<'a, Message: 'a>(
     t.into()
 }
 
-fn line_height_from_spec(spec: crate::css_map::LineHeightSpec) -> LineHeight {
+pub(crate) fn line_height_from_spec(spec: crate::css_map::LineHeightSpec) -> LineHeight {
     match spec {
         crate::css_map::LineHeightSpec::Relative(f) => LineHeight::Relative(f.max(0.0)),
         crate::css_map::LineHeightSpec::Absolute(px) => LineHeight::Absolute(px.max(0.0).into()),
     }
 }
 
-fn css_font_weight_to_iced(weight: Option<u16>) -> font::Weight {
+pub(crate) fn css_font_weight_to_iced(weight: Option<u16>) -> font::Weight {
     match weight.unwrap_or(400) {
         0..=199 => font::Weight::Thin,
         200..=299 => font::Weight::ExtraLight,
@@ -1122,7 +1122,7 @@ fn css_font_weight_to_iced(weight: Option<u16>) -> font::Weight {
 /// Map CSS `font-family` preference onto the bundled Nana UI face when possible.
 /// Unknown names fall back to [`ui_font`] (Noto Sans SC) so CJK never silently
 /// drops to an unloaded system default while `bundled-fonts` is active.
-fn resolve_iced_font(family: Option<&str>, weight: font::Weight) -> iced::Font {
+pub(crate) fn resolve_iced_font(family: Option<&str>, weight: font::Weight) -> iced::Font {
     match family.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         Some("monospace") | Some("ui-monospace") => iced::Font {
             weight,
@@ -1270,16 +1270,25 @@ fn needs_definite_fill_column(props: &WidgetProps) -> bool {
 /// Unhosted `<nana-gpu>` surface: light theme fill + radius/border from tokens.
 /// No invented tech label — only render text when the app supplies label/hint.
 fn gpu_preview_placeholder<Message: 'static>(
+    id: WidgetId,
     props: &WidgetProps,
     children: &[WidgetId],
     snap: &SemanticSnapshot,
     tokens: ThemeTokens,
 ) -> Element<'static, Message> {
-    if let Some(slot) = props.attrs.get("data-nana-gpu")
+    let scene_layer = active_scene_custom(id);
+    let slot = scene_layer
+        .as_ref()
+        .map(|layer| layer.resource.as_str())
+        .or_else(|| props.attrs.get("data-nana-gpu").map(String::as_str));
+    if let Some(slot) = slot
         && let Some(binding) = active_host_texture(slot)
     {
         let aspect_ratio = binding.aspect_ratio();
         return nana_ui::GpuTextureView::new(binding.texture)
+            // Compatibility painting still applies ancestor opacity/transform
+            // through the surrounding Iced widgets. Use only this node's local
+            // value here so the composed UiScene opacity is not multiplied twice.
             .with_opacity(props.layout.opacity.unwrap_or(1.0))
             .with_corner_radius(props.layout.border_radius.unwrap_or(0.0))
             .contain(aspect_ratio);
