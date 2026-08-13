@@ -117,7 +117,8 @@ impl HostedProgram for DemoProgram {
             | HostedWindowEvent::VisibilityChanged { .. }
             | HostedWindowEvent::FileHovered { .. }
             | HostedWindowEvent::FileDropped { .. }
-            | HostedWindowEvent::FileHoverCancelled { .. } => HostedProgramUpdate::default(),
+            | HostedWindowEvent::FileHoverCancelled { .. }
+            | HostedWindowEvent::KeyPressed { .. } => HostedProgramUpdate::default(),
             HostedWindowEvent::CloseRequested { .. } => HostedProgramUpdate::exit(),
         }
     }
