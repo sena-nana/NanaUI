@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 7,
   "profile": "release",
   "warmup_iterations": 100,
   "iterations": 1000,
@@ -12,5 +12,50 @@
     "p50": 0.0,
     "p95": 0.0,
     "p99": 0.0
+  },
+  "component_activate_ms": {
+    "p50": 0.001,
+    "p95": 0.001,
+    "p99": 0.001
+  },
+  "component_noop_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "virtual_list_10k_window_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "virtual_list_10k_update_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "virtual_list_10k_materialize_ms": {
+    "p50": 0.039,
+    "p95": 0.043,
+    "p99": 0.046
+  },
+  "virtual_table_10k_x_100_window_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "virtual_table_10k_x_100_materialize_ms": {
+    "p50": 0.818,
+    "p95": 0.844,
+    "p99": 0.874
+  },
+  "virtual_table_column_resize_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "virtual_scroll_40_visible_nodes_ms": {
+    "p50": 0.003,
+    "p95": 0.003,
+    "p99": 0.004
   }
 }

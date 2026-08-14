@@ -4,6 +4,19 @@ use crate::layout::{RegionId, RegionPlacement, RegionScope, RegionState, Workspa
 pub const TITLE_BAR_HEIGHT: f32 = 36.0;
 pub const RESIZE_HANDLE_SIZE: f32 = 8.0;
 
+/// A backend-neutral logical-pixel position.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LogicalPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl LogicalPoint {
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
 /// A logical-pixel rectangle that can be handed to a content view.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LogicalRect {

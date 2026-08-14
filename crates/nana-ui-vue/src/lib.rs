@@ -351,6 +351,7 @@ pub struct VueHost {
     pub theme: ThemeMode,
     document: Arc<Mutex<NanaTreeDocument>>,
     bridge: Arc<Mutex<MessageBridge>>,
+    layout_boxes: Arc<LayoutBoxStore>,
     web_api: SharedWebApiState,
     canvas: SharedCanvasRuntime,
     diagnostics: DiagnosticBindings,
@@ -477,6 +478,7 @@ impl VueHost {
             theme,
             document: Arc::new(Mutex::new(document)),
             bridge: Arc::new(Mutex::new(bridge)),
+            layout_boxes: Arc::new(LayoutBoxStore::new()),
             web_api,
             canvas,
             diagnostics: DiagnosticBindings::default(),
@@ -916,19 +918,21 @@ impl VueHost {
         let mut api = HostApiRegistry::new();
         api.set_observer(self.diagnostics.host_calls.clone());
         #[cfg(feature = "iced-view")]
-        register_dom_host_ops_with_components(
+        crate::renderer::register_dom_host_ops_with_components_and_layout(
             &mut api,
             Arc::clone(&self.document),
             Arc::clone(&self.bridge),
             Arc::clone(&self.web_api),
             self.components.clone(),
+            Arc::clone(&self.layout_boxes),
         );
         #[cfg(not(feature = "iced-view"))]
-        register_dom_host_ops_with_bridge(
+        crate::renderer::register_dom_host_ops_with_bridge_and_layout(
             &mut api,
             Arc::clone(&self.document),
             Arc::clone(&self.bridge),
             Arc::clone(&self.web_api),
+            Arc::clone(&self.layout_boxes),
         );
         #[cfg(feature = "iced-view")]
         {
@@ -1188,17 +1192,12 @@ impl VueHost {
 
     pub fn resolve_layout(&mut self) {
         // After iced has painted, writeback is authoritative (chrome/scroll offsets).
-        let iced = shared_layout_box_store().snapshot();
+        let iced = self.layout_boxes.snapshot();
         if !iced.is_empty() {
             let bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
             doc.apply_layout_boxes(&iced);
-            reapply_scroll_translations(
-                &mut doc,
-                &bridge,
-                &shared_layout_box_store(),
-                &shared_scroll_offset_store(),
-            );
+            reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
             return;
         }
         let mut bridge = self.bridge.lock().expect("vue bridge");
@@ -1211,24 +1210,19 @@ impl VueHost {
     /// `layoutBox` / `getBoundingClientRect` already prefer the live store; this
     /// keeps hit-tests and `snapshot_boxes` aligned with paint.
     pub fn sync_iced_layout_boxes(&mut self) {
-        let iced = shared_layout_box_store().snapshot();
+        let iced = self.layout_boxes.snapshot();
         if iced.is_empty() {
             return;
         }
         let bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
         doc.apply_layout_boxes(&iced);
-        reapply_scroll_translations(
-            &mut doc,
-            &bridge,
-            &shared_layout_box_store(),
-            &shared_scroll_offset_store(),
-        );
+        reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
     }
 
     /// Shared iced layout writeback buffer (same as probes / `layoutBox`).
     pub fn layout_box_store(&self) -> Arc<LayoutBoxStore> {
-        shared_layout_box_store()
+        Arc::clone(&self.layout_boxes)
     }
 
     /// Rust → Vue theme inject (bridge + document + web-api + optional `__nanaApplyTheme`).
@@ -1386,6 +1380,7 @@ impl VueHost {
             self.input.lock().expect("input state").clear();
             {
                 let mut document = self.document.lock().expect("vue doc");
+                document.clear_pointer_interactions();
                 // A pending acquisition was never observable before blur. Match
                 // the previous DOM-compatible behavior by publishing only the
                 // release of captures that actually remained authoritative.
@@ -1455,6 +1450,22 @@ impl VueHost {
         event: BridgeEvent,
     ) -> Result<bool, JsEngineError> {
         let id = event.widget_id();
+        if let BridgeEvent::Scroll {
+            id,
+            offset,
+            metrics,
+        } = event
+        {
+            let mut document = self.document.lock().expect("vue doc");
+            let changed = crate::scroll::sync_host_scroll_offset(
+                &mut document,
+                &self.layout_boxes,
+                id,
+                offset,
+                metrics,
+            );
+            return Ok(changed);
+        }
         #[cfg(feature = "iced-view")]
         let editor_text = if let BridgeEvent::Editor { id, action } = &event {
             self.editors.perform(*id, action.clone());
@@ -1495,6 +1506,27 @@ impl VueHost {
         if menu_confirm_armed {
             return Ok(true);
         }
+        let committed_input = match &event {
+            BridgeEvent::Input { id, value } => Some((*id, value.as_str())),
+            _ => None,
+        };
+        #[cfg(feature = "iced-view")]
+        let committed_input = committed_input.or_else(|| match (&event, editor_text.as_deref()) {
+            (BridgeEvent::Editor { id, .. }, Some(value)) => Some((*id, value)),
+            _ => None,
+        });
+        if let Some((id, value)) = committed_input {
+            let target = NodeHandle(id);
+            let mut document = self.document.lock().expect("vue doc");
+            let Some(mut state) = document.text_input_state(target) else {
+                return Err(JsEngineError::new(
+                    "native input target has no retained text input state",
+                ));
+            };
+            state.synchronize_editor_value(value);
+            document.set_text_input_state(target, state);
+            document.set_attribute(target, "value", value);
+        }
         if let BridgeEvent::Native { name, payload, .. } = &event {
             let detail = match payload {
                 HostValue::Object(detail) => detail.clone(),
@@ -1516,7 +1548,7 @@ impl VueHost {
                 }
                 BridgeEvent::Input { id, value } => bridge.note_input(*id, value.clone()),
                 BridgeEvent::Change { id, value } => bridge.note_change(*id, *value),
-                BridgeEvent::Native { .. } => Vec::new(),
+                BridgeEvent::Scroll { .. } | BridgeEvent::Native { .. } => Vec::new(),
                 #[cfg(feature = "iced-view")]
                 BridgeEvent::Editor { id, .. } => {
                     let text = editor_text.clone().unwrap_or_default();
@@ -1630,11 +1662,12 @@ impl VueHost {
             .document
             .lock()
             .ok()
-            .and_then(|doc| get_layout_box(&doc, target))
+            .and_then(|doc| get_layout_box_from(&self.layout_boxes, &doc, target))
         else {
             return detail;
         };
-        let (local_x, local_y) = shared_layout_box_store()
+        let (local_x, local_y) = self
+            .layout_boxes
             .local_point(target, input.client_x, input.client_y)
             .unwrap_or((input.client_x - bounds.x, input.client_y - bounds.y));
         detail.insert("offsetX".into(), HostValue::Number(local_x as f64));
@@ -1740,10 +1773,10 @@ impl VueHost {
         let target = captured.or_else(|| {
             if input.kind == PointerEventKind::Cancel {
                 return self
-                    .input
+                    .document
                     .lock()
-                    .expect("input state")
-                    .hover_target(input.pointer_id);
+                    .expect("vue doc")
+                    .pointer_hover(input.pointer_id);
             }
             let doc = self.document.lock().expect("vue doc");
             doc.hit_event_target(input.client_x, input.client_y, input.kind.pointer_name())
@@ -1759,10 +1792,10 @@ impl VueHost {
         ) && captured.is_none()
         {
             let previous = self
-                .input
+                .document
                 .lock()
-                .expect("input state")
-                .hover_target(input.pointer_id);
+                .expect("vue doc")
+                .pointer_hover(input.pointer_id);
             if previous != physical_hit {
                 if let Some(previous) = previous {
                     let mut transition = detail.clone();
@@ -1817,10 +1850,10 @@ impl VueHost {
                         self.fire_dom_event(engine, node, "mouseenter", transition)?;
                     }
                 }
-                self.input
+                self.document
                     .lock()
-                    .expect("input state")
-                    .set_hover(input.pointer_id, physical_hit);
+                    .expect("vue doc")
+                    .set_pointer_hover(input.pointer_id, physical_hit);
             }
         }
 
@@ -1842,10 +1875,10 @@ impl VueHost {
         match input.kind {
             PointerEventKind::Down => {
                 if let Some(target) = target {
-                    self.input
+                    self.document
                         .lock()
-                        .expect("input state")
-                        .set_pressed(input.pointer_id, target);
+                        .expect("vue doc")
+                        .press_pointer(input.pointer_id, target);
                 }
                 let (previous, next) = self.focus_target_at(input.client_x, input.client_y);
                 if previous != next {
@@ -1859,10 +1892,10 @@ impl VueHost {
             }
             PointerEventKind::Up => {
                 let pressed = self
-                    .input
+                    .document
                     .lock()
-                    .expect("input state")
-                    .take_pressed(input.pointer_id);
+                    .expect("vue doc")
+                    .release_pointer_press(input.pointer_id);
                 if pressed.is_some() && pressed == physical_hit {
                     let click_target = pressed.expect("checked above");
                     let is_semantic = self
@@ -1882,10 +1915,10 @@ impl VueHost {
                 }
             }
             PointerEventKind::Cancel => {
-                self.input
+                self.document
                     .lock()
-                    .expect("input state")
-                    .take_pressed(input.pointer_id);
+                    .expect("vue doc")
+                    .release_pointer_press(input.pointer_id);
             }
             PointerEventKind::Move => {}
         }
@@ -2019,6 +2052,130 @@ impl VueHost {
         Ok(allowed)
     }
 
+    pub(crate) fn accessibility_focus<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+    ) -> Result<bool, JsEngineError> {
+        let previous = {
+            let mut document = self.document.lock().expect("vue doc");
+            if document.element_tag(target).is_none() {
+                return Ok(false);
+            }
+            let previous = document.focused();
+            if previous == Some(target) {
+                return Ok(false);
+            }
+            document.set_focus(target);
+            previous
+        };
+        if let Some(previous) = previous {
+            self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
+        }
+        self.fire_dom_event(engine, target, "focus", BTreeMap::new())?;
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(true)
+    }
+
+    pub(crate) fn accessibility_click<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+    ) -> Result<bool, JsEngineError> {
+        let node = self
+            .document
+            .lock()
+            .expect("vue doc")
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.id.get() == target.0);
+        let Some(node) = node else {
+            return Ok(false);
+        };
+        let event = match node.role {
+            nana_ui_runtime::AccessibilityRole::Checkbox
+            | nana_ui_runtime::AccessibilityRole::Switch => BridgeEvent::Toggle {
+                id: target.0,
+                value: !node.checked.unwrap_or(false),
+            },
+            nana_ui_runtime::AccessibilityRole::Tab
+            | nana_ui_runtime::AccessibilityRole::ListItem
+            | nana_ui_runtime::AccessibilityRole::MenuItem => BridgeEvent::Select { id: target.0 },
+            _ => BridgeEvent::Press { id: target.0 },
+        };
+        self.dispatch_bridge_event(engine, event)
+    }
+
+    pub(crate) fn accessibility_set_value<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        value: &str,
+    ) -> Result<bool, JsEngineError> {
+        let supported = {
+            let document = self.document.lock().expect("vue doc");
+            document.text_input_state(target).is_some()
+                && document.get_attribute(target, "disabled").is_none()
+                && document.get_attribute(target, "readonly").is_none()
+        };
+        if !supported {
+            return Ok(false);
+        }
+
+        let next = TextInputState::new(value);
+        let mut detail = BTreeMap::new();
+        detail.insert("data".into(), HostValue::string(value));
+        detail.insert(
+            "inputType".into(),
+            HostValue::string("insertReplacementText"),
+        );
+        detail.insert("value".into(), HostValue::string(value));
+        detail.insert("isComposing".into(), HostValue::Bool(false));
+        if !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
+            return Ok(false);
+        }
+        {
+            let mut document = self.document.lock().expect("vue doc");
+            if !document.set_text_input_state(target, next) {
+                return Ok(false);
+            }
+            document.set_attribute(target, "value", value);
+        }
+        self.fire_dom_event(engine, target, "input", detail)?;
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(true)
+    }
+
+    pub(crate) fn accessibility_set_selection<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        selection: nana_ui_runtime::TextSelection,
+    ) -> Result<bool, JsEngineError> {
+        {
+            let mut document = self.document.lock().expect("vue doc");
+            if document.get_attribute(target, "disabled").is_some() {
+                return Ok(false);
+            }
+            let Some(mut state) = document.text_input_state(target) else {
+                return Ok(false);
+            };
+            if !selection.is_valid_for(&state.value) || state.selection == selection {
+                return Ok(false);
+            }
+            state.selection = selection;
+            if !document.set_text_input_state(target, state) {
+                return Ok(false);
+            }
+        }
+        self.fire_dom_event(engine, target, "select", BTreeMap::new())?;
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(true)
+    }
+
     fn advance_tab_focus(&self, reverse: bool) -> (Option<NodeHandle>, Option<NodeHandle>) {
         let mut document = self.document.lock().expect("vue doc");
         let previous = document.focused();
@@ -2129,6 +2286,38 @@ impl VueHost {
         let Some(target) = self.document.lock().expect("vue doc").focused() else {
             return Ok(false);
         };
+        {
+            let mut document = self.document.lock().expect("vue doc");
+            if document.text_input_state(target).is_none() {
+                let value = document.get_attribute(target, "value").unwrap_or_default();
+                if !document.set_text_input_state(target, TextInputState::new(value)) {
+                    return Err(JsEngineError::new(
+                        "composition target has no retained text input state",
+                    ));
+                }
+            }
+            let composition = match input.kind {
+                CompositionEventKind::Start | CompositionEventKind::Update => {
+                    Some(nana_ui_runtime::ImeComposition {
+                        text: input.data.clone(),
+                        selection: None,
+                    })
+                }
+                CompositionEventKind::End => None,
+            };
+            if !document.set_ime_composition(target, composition) {
+                return Err(JsEngineError::new("invalid composition state"));
+            }
+        }
+        self.dispatch_composition_event(engine, target, input)
+    }
+
+    fn dispatch_composition_event<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        input: &CompositionInput,
+    ) -> Result<bool, JsEngineError> {
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(&input.data));
         detail.insert(
@@ -2162,6 +2351,14 @@ impl VueHost {
             ImeEvent::Preedit { text, selection } => {
                 let started = {
                     let mut document = self.document.lock().expect("vue doc");
+                    if document.text_input_state(target).is_none() {
+                        let value = document.get_attribute(target, "value").unwrap_or_default();
+                        if !document.set_text_input_state(target, TextInputState::new(value)) {
+                            return Err(JsEngineError::new(
+                                "native IME target has no retained text input state",
+                            ));
+                        }
+                    }
                     let started = document.ime_composition(target).is_none();
                     if !document.set_ime_composition(
                         target,
@@ -2175,13 +2372,15 @@ impl VueHost {
                     started
                 };
                 if started {
-                    self.dispatch_composition(
+                    self.dispatch_composition_event(
                         engine,
+                        target,
                         &CompositionInput::new(CompositionEventKind::Start, ""),
                     )?;
                 }
-                self.dispatch_composition(
+                self.dispatch_composition_event(
                     engine,
+                    target,
                     &CompositionInput::new(CompositionEventKind::Update, text),
                 )
             }
@@ -2466,6 +2665,77 @@ mod tests {
     }
 
     #[test]
+    fn iced_scroll_event_updates_runtime_without_firing_vue_event() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let document = host.document();
+        let scrollport = {
+            let mut doc = document.lock().expect("document");
+            let root = doc.mount_root();
+            let scrollport = doc.create_element("div");
+            doc.insert(scrollport, root, None);
+            scrollport
+        };
+        let mut engine = RecordingEngine::default();
+
+        assert!(
+            host.dispatch_bridge_event(
+                &mut engine,
+                BridgeEvent::Scroll {
+                    id: scrollport.0,
+                    offset: ScrollOffset { x: 0.0, y: 48.0 },
+                    metrics: nana_ui_runtime::ScrollMetrics {
+                        viewport_width: 100.0,
+                        viewport_height: 100.0,
+                        content_width: 100.0,
+                        content_height: 300.0,
+                    },
+                },
+            )
+            .expect("dispatch scroll")
+        );
+        assert_eq!(
+            document.lock().expect("document").scroll_offset(scrollport),
+            ScrollOffset { x: 0.0, y: 48.0 }
+        );
+        assert!(engine.invocations.is_empty());
+
+        assert!(
+            !host
+                .dispatch_bridge_event(
+                    &mut engine,
+                    BridgeEvent::Scroll {
+                        id: scrollport.0,
+                        offset: ScrollOffset { x: 0.0, y: 48.0 },
+                        metrics: nana_ui_runtime::ScrollMetrics {
+                            viewport_width: 100.0,
+                            viewport_height: 100.0,
+                            content_width: 100.0,
+                            content_height: 300.0,
+                        },
+                    },
+                )
+                .expect("repeat scroll")
+        );
+    }
+
+    #[test]
+    fn vue_hosts_isolate_paint_geometry_for_equal_node_handles() {
+        let first = VueHost::new();
+        let second = VueHost::new();
+        let node = NodeHandle(2);
+        first
+            .layout_box_store()
+            .record(node, 10.0, 20.0, 30.0, 40.0);
+        second
+            .layout_box_store()
+            .record(node, 100.0, 200.0, 300.0, 400.0);
+
+        assert_eq!(first.layout_box_store().get(node).unwrap().x, 10.0);
+        assert_eq!(second.layout_box_store().get(node).unwrap().x, 100.0);
+    }
+
+    #[test]
     fn pointer_capture_keeps_target_and_blur_releases_it() {
         let mut host = VueHost::new();
         host.fire_event = Some(JsFunctionId(1));
@@ -2668,11 +2938,27 @@ mod tests {
             &CompositionInput::new(CompositionEventKind::Update, "界"),
         )
         .expect("composition update");
+        assert_eq!(
+            host.document()
+                .lock()
+                .expect("document")
+                .ime_composition(input)
+                .expect("runtime composition")
+                .text,
+            "界"
+        );
         host.dispatch_composition(
             &mut engine,
             &CompositionInput::new(CompositionEventKind::End, "界"),
         )
         .expect("composition end");
+        assert!(
+            host.document()
+                .lock()
+                .expect("document")
+                .ime_composition(input)
+                .is_none()
+        );
 
         let events = fired_events(&engine);
         let names = events
@@ -2811,6 +3097,61 @@ mod tests {
     }
 
     #[test]
+    fn native_input_commits_runtime_value_before_firing_vue_events() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        host.bridge().lock().expect("bridge").register(
+            input.0,
+            WidgetKind::Input,
+            WidgetProps {
+                value: "你好ab".into(),
+                ..WidgetProps::default()
+            },
+        );
+        {
+            let document = host.document();
+            let mut document = document.lock().expect("document");
+            document.set_attribute(input, "value", "你好ab");
+            assert!(document.set_text_input_state(input, TextInputState::new("你好ab")));
+        }
+        let mut engine = RecordingEngine::default();
+
+        assert!(
+            host.dispatch_bridge_event(
+                &mut engine,
+                BridgeEvent::Input {
+                    id: input.0,
+                    value: "你娜好ab".into(),
+                },
+            )
+            .expect("native input")
+        );
+
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert_eq!(
+            document.get_attribute(input, "value").as_deref(),
+            Some("你娜好ab")
+        );
+        assert_eq!(
+            document.text_input_state(input),
+            Some(TextInputState {
+                value: "你娜好ab".into(),
+                selection: nana_ui_runtime::TextSelection::caret("你娜".len()),
+            })
+        );
+        drop(document);
+        assert_eq!(
+            fired_events(&engine)
+                .iter()
+                .map(|(_, name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["input", "update:modelValue"]
+        );
+    }
+
+    #[test]
     fn tab_and_shift_tab_move_focus_in_document_order() {
         let mut host = VueHost::new();
         host.fire_event = Some(JsFunctionId(1));
@@ -2842,6 +3183,134 @@ mod tests {
             events
                 .iter()
                 .any(|(target, name, _)| { *target == second.0 && name == "focus" })
+        );
+    }
+
+    #[test]
+    fn accessibility_focus_uses_retained_focus_and_dom_lifecycle() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (first, second) = install_input_nodes(&mut host);
+        host.document().lock().expect("document").set_focus(first);
+        let mut engine = RecordingEngine::default();
+
+        assert!(host.accessibility_focus(&mut engine, second).unwrap());
+        assert_eq!(host.focused(), Some(second));
+        assert_eq!(
+            fired_events(&engine)
+                .iter()
+                .map(|(target, name, _)| (*target, name.as_str()))
+                .collect::<Vec<_>>(),
+            [(first.0, "blur"), (second.0, "focus")]
+        );
+    }
+
+    #[test]
+    fn accessibility_set_value_uses_the_committed_text_event_path() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut document = document.lock().expect("document");
+            document.set_attribute(input, "value", "旧值");
+            assert!(document.set_text_input_state(input, TextInputState::new("旧值")));
+        }
+        let _ = host.semantic_snapshot();
+        let mut engine = RecordingEngine::default();
+
+        assert!(
+            host.accessibility_set_value(&mut engine, input, "新的值")
+                .unwrap()
+        );
+        let document = host.document();
+        let document = document.lock().expect("document");
+        let state = document.text_input_state(input).expect("text input state");
+        assert_eq!(state.value, "新的值");
+        assert_eq!(
+            state.selection,
+            nana_ui_runtime::TextSelection::caret("新的值".len())
+        );
+        assert_eq!(
+            fired_events(&engine)
+                .iter()
+                .map(|(_, name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["beforeinput", "input"]
+        );
+        assert_eq!(
+            fired_events(&engine)
+                .last()
+                .and_then(|(_, _, detail)| detail.get("inputType"))
+                .and_then(HostValue::as_str),
+            Some("insertReplacementText")
+        );
+        drop(document);
+
+        host.document()
+            .lock()
+            .expect("document")
+            .set_attribute(input, "readonly", "");
+        let event_count = fired_events(&engine).len();
+        assert!(
+            !host
+                .accessibility_set_value(&mut engine, input, "禁止写入")
+                .unwrap()
+        );
+        assert_eq!(fired_events(&engine).len(), event_count);
+    }
+
+    #[test]
+    fn accessibility_selection_updates_runtime_and_allows_read_only_text() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut document = document.lock().expect("document");
+            document.set_attribute(input, "value", "你a");
+            document.set_attribute(input, "readonly", "");
+            assert!(document.set_text_input_state(input, TextInputState::new("你a")));
+        }
+        let mut engine = RecordingEngine::default();
+        let selection = nana_ui_runtime::TextSelection {
+            anchor: "你".len(),
+            focus: "你a".len(),
+        };
+
+        assert!(
+            host.accessibility_set_selection(&mut engine, input, selection)
+                .unwrap()
+        );
+        assert_eq!(
+            host.document()
+                .lock()
+                .expect("document")
+                .text_input_state(input)
+                .unwrap()
+                .selection,
+            selection
+        );
+        assert_eq!(
+            fired_events(&engine)
+                .iter()
+                .map(|(_, name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["select"]
+        );
+
+        host.document()
+            .lock()
+            .expect("document")
+            .set_attribute(input, "disabled", "");
+        assert!(
+            !host
+                .accessibility_set_selection(
+                    &mut engine,
+                    input,
+                    nana_ui_runtime::TextSelection::caret(0),
+                )
+                .unwrap()
         );
     }
 

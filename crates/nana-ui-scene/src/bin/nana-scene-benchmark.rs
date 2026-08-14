@@ -115,6 +115,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
             width: 160.0,
             height: 2.0,
         },
+        scroll_offset: nana_ui_runtime::ScrollOffset::default(),
         source_style: NodeStyle {
             layout: Arc::new(LayoutStyle {
                 background: Some([shade, 0.2, 0.4, 1.0]),
@@ -129,6 +130,8 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         focused: false,
         ime: None,
         text_input: None,
+        standard_visual: None,
+        standard_visual_foreground: None,
         custom_render: None,
     }
 }

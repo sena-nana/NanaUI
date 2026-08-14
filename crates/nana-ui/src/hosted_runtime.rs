@@ -13,7 +13,12 @@ use iced_wgpu::graphics::core::renderer;
 use iced_wgpu::wgpu;
 use iced_winit::futures::futures::executor;
 use iced_winit::winit;
-use nana_ui_platform::ImeEvent;
+use nana_ui_platform::{ImeEvent, TextInputPurpose, TextInputRequest};
+pub use nana_ui_platform::{
+    InputDisposition as HostedInputDisposition, InputEvent as HostedInputEvent,
+    InputModifiers as HostedInputModifiers, PointerPhase as HostedPointerPhase,
+    PointerType as HostedPointerType, WindowId as HostedWindowId,
+};
 #[cfg(target_os = "macos")]
 use nana_window::MaterialFallback;
 #[cfg(not(target_os = "macos"))]
@@ -30,6 +35,8 @@ use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+#[cfg(not(target_os = "android"))]
+use crate::accessibility::HostedAccessibility;
 #[cfg(feature = "browser")]
 use crate::layout_probe::LayoutBounds;
 use crate::theme::ThemeModeExt;
@@ -42,11 +49,7 @@ use crate::{
 const HOSTED_REDRAW_SETTLE_PASSES: usize = 3;
 
 fn hosted_key_stroke(key: &winit::keyboard::Key, modifiers: ModifiersState) -> Option<KeyStroke> {
-    let key = match key {
-        winit::keyboard::Key::Named(named) => format!("{named:?}"),
-        winit::keyboard::Key::Character(character) => character.to_string(),
-        winit::keyboard::Key::Unidentified(_) | winit::keyboard::Key::Dead(_) => return None,
-    };
+    let key = hosted_input_key(key)?;
     Some(KeyStroke::new(
         key,
         KeyModifiers {
@@ -58,12 +61,12 @@ fn hosted_key_stroke(key: &winit::keyboard::Key, modifiers: ModifiersState) -> O
     ))
 }
 
-/// Stable application-owned identity for one hosted window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HostedWindowId(pub u64);
-
-impl HostedWindowId {
-    pub const PRIMARY: Self = Self(0);
+fn hosted_input_key(key: &winit::keyboard::Key) -> Option<String> {
+    Some(match key {
+        winit::keyboard::Key::Named(named) => format!("{named:?}"),
+        winit::keyboard::Key::Character(character) => character.to_string(),
+        winit::keyboard::Key::Unidentified(_) | winit::keyboard::Key::Dead(_) => return None,
+    })
 }
 
 /// Application-owned identity for one asynchronous hosted-window capture.
@@ -123,80 +126,13 @@ impl From<LayoutBounds> for HostedBrowserBounds {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HostedInputModifiers {
-    pub alt: bool,
-    pub control: bool,
-    pub meta: bool,
-    pub shift: bool,
-}
-
-impl From<ModifiersState> for HostedInputModifiers {
-    fn from(value: ModifiersState) -> Self {
-        Self {
-            alt: value.alt_key(),
-            control: value.control_key(),
-            meta: value.super_key(),
-            shift: value.shift_key(),
-        }
+fn hosted_input_modifiers(value: ModifiersState) -> HostedInputModifiers {
+    HostedInputModifiers {
+        alt: value.alt_key(),
+        control: value.control_key(),
+        meta: value.super_key(),
+        shift: value.shift_key(),
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum HostedInputEvent {
-    Pointer {
-        phase: HostedPointerPhase,
-        pointer_id: u64,
-        pointer_type: HostedPointerType,
-        x: f32,
-        y: f32,
-        screen_x: f32,
-        screen_y: f32,
-        button: i16,
-        buttons: u16,
-        pressure: f32,
-        tangential_pressure: f32,
-        tilt_x: i16,
-        tilt_y: i16,
-        twist: u16,
-        is_primary: bool,
-        modifiers: HostedInputModifiers,
-    },
-    Wheel {
-        x: f32,
-        y: f32,
-        delta_x: f32,
-        delta_y: f32,
-        line_delta: bool,
-        modifiers: HostedInputModifiers,
-    },
-    Keyboard {
-        pressed: bool,
-        key: String,
-        code: String,
-        repeat: bool,
-        modifiers: HostedInputModifiers,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostedPointerPhase {
-    Down,
-    Move,
-    Up,
-    Cancel,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostedPointerType {
-    Mouse,
-    Touch,
-    Pen,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HostedInputDisposition {
-    pub prevent_default: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -904,6 +840,12 @@ pub enum HostedWindowCommand {
 }
 
 /// Commands that operate on retained NanaUI widget state after the next rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedTextPosition {
+    pub line: usize,
+    pub index: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum HostedUiCommand {
     Focus {
@@ -915,6 +857,12 @@ pub enum HostedUiCommand {
         target: String,
         x: f32,
         y: f32,
+    },
+    SelectText {
+        window_id: HostedWindowId,
+        target: String,
+        anchor: HostedTextPosition,
+        focus: HostedTextPosition,
     },
 }
 
@@ -1095,6 +1043,63 @@ pub trait HostedProgram: Sized + 'static {
 
     fn theme_mode(&self) -> ThemeMode;
 
+    /// Project the retained semantic tree for one native window.
+    ///
+    /// Returning an empty initial tree disables the platform adapter unless
+    /// [`HostedProgram::accessibility_adapter_enabled`] opts into asynchronous
+    /// semantic publication.
+    /// The node IDs and bounds must come from the same authority as input and
+    /// rendering so assistive technology never targets a parallel UI model.
+    fn accessibility_snapshot(
+        &self,
+        _id: HostedWindowId,
+    ) -> Vec<nana_ui_runtime::AccessibilityNode> {
+        Vec::new()
+    }
+
+    /// Keep a platform accessibility adapter installed while the current tree
+    /// is empty, so retained programs can publish nodes asynchronously.
+    ///
+    /// A non-empty initial snapshot remains an implicit opt-in for compatibility.
+    fn accessibility_adapter_enabled(&self) -> bool {
+        false
+    }
+
+    /// Return accessibility work accumulated since the previous call.
+    ///
+    /// The default preserves snapshot-based programs. Retained runtimes should
+    /// override this and return a delta, or `None` when semantics are unchanged.
+    fn accessibility_update(
+        &mut self,
+        id: HostedWindowId,
+    ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
+        Some(nana_ui_runtime::AccessibilityUpdate::Full {
+            generation: None,
+            nodes: self.accessibility_snapshot(id),
+        })
+    }
+
+    fn accessibility_action(
+        &mut self,
+        _id: HostedWindowId,
+        _request: nana_ui_runtime::AccessibilityActionRequest,
+        _context: &HostedProgramContext<Self::Message>,
+    ) -> HostedProgramUpdate {
+        HostedProgramUpdate::default()
+    }
+
+    /// Whether this program implements [`HostedProgram::accessibility_action`].
+    /// The platform tree only advertises actions when this returns `true`.
+    fn accessibility_actions_enabled(&self) -> bool {
+        false
+    }
+
+    /// Optional backend-neutral IME state for retained scene programs whose
+    /// focused editor is not represented by an Iced text widget.
+    fn text_input_request(&self, _id: HostedWindowId) -> Option<TextInputRequest> {
+        None
+    }
+
     /// Preferred window material from Appearance settings.
     ///
     /// Defaults to [`WindowMaterialMode::Translucent`] so hosted windows that
@@ -1242,7 +1247,7 @@ where
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut runner = HostedRunner::<Program>::Loading {
         proxy: event_loop.create_proxy(),
-        settings,
+        settings: Box::new(settings),
         failure: None,
         initialize: Some(Box::new(initialize)),
     };
@@ -1264,7 +1269,7 @@ type HostedInitializer<Program> = Box<
 enum HostedRunner<Program: HostedProgram> {
     Loading {
         proxy: EventLoopProxy<Program::Message>,
-        settings: HostedWindowSettings,
+        settings: Box<HostedWindowSettings>,
         failure: Option<String>,
         initialize: Option<HostedInitializer<Program>>,
     },
@@ -1275,6 +1280,8 @@ enum HostedRunner<Program: HostedProgram> {
 }
 
 struct HostedAuxiliary<Message> {
+    #[cfg(not(target_os = "android"))]
+    accessibility: Option<HostedAccessibility>,
     #[cfg(target_os = "windows")]
     pen_hook: crate::windows_pen::WindowsPenHook,
     surface: HostedGpuSurface,
@@ -1303,6 +1310,8 @@ impl<Message> Drop for HostedAuxiliary<Message> {
 }
 
 struct HostedReady<Program: HostedProgram> {
+    #[cfg(not(target_os = "android"))]
+    accessibility: Option<HostedAccessibility>,
     #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
     browsers: HashMap<HostedBrowserId, HostedBrowserHost>,
     #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
@@ -1374,7 +1383,7 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
         match initialize::<Program>(
             event_loop,
             proxy.clone(),
-            settings.clone(),
+            settings.as_ref().clone(),
             initialize_program,
         ) {
             Ok(ready) => *self = Self::Ready(Box::new(ready)),
@@ -1440,6 +1449,22 @@ impl<Program: HostedProgram> ApplicationHandler<Program::Message> for HostedRunn
     }
 }
 
+#[cfg(not(target_os = "android"))]
+fn initial_accessibility_snapshot<Program: HostedProgram>(
+    program: &mut Program,
+    id: HostedWindowId,
+) -> (Option<u64>, Vec<nana_ui_runtime::AccessibilityNode>) {
+    match program.accessibility_update(id) {
+        Some(nana_ui_runtime::AccessibilityUpdate::Full { generation, nodes }) => {
+            (generation, nodes)
+        }
+        Some(nana_ui_runtime::AccessibilityUpdate::Delta(delta)) => {
+            (Some(delta.generation), program.accessibility_snapshot(id))
+        }
+        None => (None, program.accessibility_snapshot(id)),
+    }
+}
+
 fn initialize<Program: HostedProgram>(
     event_loop: &ActiveEventLoop,
     proxy: EventLoopProxy<Program::Message>,
@@ -1448,7 +1473,9 @@ fn initialize<Program: HostedProgram>(
 ) -> Result<HostedReady<Program>, String> {
     let window = Arc::new(
         event_loop
-            .create_window(window_attributes_for_event_loop(event_loop, &settings))
+            .create_window(
+                window_attributes_for_event_loop(event_loop, &settings).with_visible(false),
+            )
             .map_err(|error| format!("failed to create hosted window: {error}"))?,
     );
     if settings.title_bar_mode == HostedTitleBarMode::Custom {
@@ -1461,7 +1488,22 @@ fn initialize<Program: HostedProgram>(
     .map_err(|error| error.to_string())?;
     let iced_window_id = iced::window::Id::unique();
     let context = program_context(&graphics, &proxy, iced_window_id, false);
-    let (program, startup) = initialize_program(&context).map_err(|error| error.to_string())?;
+    let (mut program, startup) = initialize_program(&context).map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "android"))]
+    let accessibility = {
+        let (generation, nodes) =
+            initial_accessibility_snapshot(&mut program, HostedWindowId::PRIMARY);
+        (program.accessibility_adapter_enabled() || !nodes.is_empty()).then(|| {
+            HostedAccessibility::new(
+                event_loop,
+                Arc::clone(&window),
+                generation,
+                nodes,
+                program.accessibility_actions_enabled(),
+                window.scale_factor() as f32,
+            )
+        })
+    };
     let material = material_for(
         window.as_ref(),
         program.theme_mode(),
@@ -1478,6 +1520,8 @@ fn initialize<Program: HostedProgram>(
     #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
     let (browser_events_tx, browser_events_rx) = mpsc::channel();
     let mut ready = HostedReady {
+        #[cfg(not(target_os = "android"))]
+        accessibility,
         #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
         browsers: HashMap::new(),
         #[cfg(all(feature = "browser", any(target_os = "windows", target_os = "macos")))]
@@ -1513,6 +1557,7 @@ fn initialize<Program: HostedProgram>(
     for message in startup {
         ready.process_message(event_loop, message);
     }
+    ready.graphics.window().set_visible(true);
     ready.graphics.window().request_redraw();
     Ok(ready)
 }
@@ -1550,6 +1595,22 @@ impl<Program: HostedProgram> HostedReady<Program> {
         id: HostedWindowId,
         event: WindowEvent,
     ) {
+        #[cfg(not(target_os = "android"))]
+        if id == HostedWindowId::PRIMARY {
+            if let Some(accessibility) = self.accessibility.as_mut() {
+                accessibility.process_event(self.graphics.window().as_ref(), &event);
+            }
+        } else if let Some(host) = self.auxiliary.get_mut(&id)
+            && let Some(accessibility) = host.accessibility.as_mut()
+        {
+            accessibility.process_event(host.surface.window().as_ref(), &event);
+        }
+        #[cfg(not(target_os = "android"))]
+        for request in self.take_accessibility_actions(id) {
+            let context = self.program_context();
+            let update = self.program.accessibility_action(id, request, &context);
+            self.apply_program_update(event_loop, update);
+        }
         if let Some(modal) = self.active_modal_child(id)
             && blocks_for_modal(&event)
         {
@@ -1732,7 +1793,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 tilt_y: event.tilt_y,
                 twist: event.twist,
                 is_primary: event.is_primary,
-                modifiers: self.modifiers.get(&id).copied().unwrap_or_default().into(),
+                modifiers: hosted_input_modifiers(
+                    self.modifiers.get(&id).copied().unwrap_or_default(),
+                ),
             };
             let context = self.program_context();
             let (_, update) = self.program.input_event(id, input, &context);
@@ -1747,7 +1810,8 @@ impl<Program: HostedProgram> HostedReady<Program> {
     ) -> Option<HostedInputEvent> {
         use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase};
 
-        let modifiers = self.modifiers.get(&id).copied().unwrap_or_default().into();
+        let modifiers =
+            hosted_input_modifiers(self.modifiers.get(&id).copied().unwrap_or_default());
         let cursor = self.cursor_positions.get(&id).copied().unwrap_or_default();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1928,7 +1992,8 @@ impl<Program: HostedProgram> HostedReady<Program> {
             }
             WindowEvent::KeyboardInput { event, .. } => Some(HostedInputEvent::Keyboard {
                 pressed: event.state == ElementState::Pressed,
-                key: event.logical_key.to_text().unwrap_or_default().to_owned(),
+                key: hosted_input_key(&event.logical_key).unwrap_or_default(),
+                text: event.text.as_ref().map(ToString::to_string),
                 code: format!("{:?}", event.physical_key),
                 repeat: event.repeat,
                 modifiers,
@@ -2535,6 +2600,30 @@ impl<Program: HostedProgram> HostedReady<Program> {
                     host.ui.queue_scroll_by(target, x, y);
                 }
             }
+            HostedUiCommand::SelectText {
+                window_id,
+                target,
+                anchor,
+                focus,
+            } => {
+                if window_id == HostedWindowId::PRIMARY {
+                    self.ui.queue_text_selection(
+                        target,
+                        anchor.line,
+                        anchor.index,
+                        focus.line,
+                        focus.index,
+                    );
+                } else if let Some(host) = self.auxiliary.get_mut(&window_id) {
+                    host.ui.queue_text_selection(
+                        target,
+                        anchor.line,
+                        anchor.index,
+                        focus.line,
+                        focus.index,
+                    );
+                }
+            }
         }
     }
 
@@ -2558,9 +2647,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 ));
             }
         }
-        let mut attributes = window_attributes_for_event_loop(event_loop, &settings);
+        let attributes =
+            window_attributes_for_event_loop(event_loop, &settings).with_visible(false);
         #[cfg(target_os = "windows")]
-        if settings.modal {
+        let attributes = if settings.modal {
             let parent = settings.parent.expect("validated modal parent");
             let parent_window = self.window(parent).expect("validated modal parent window");
             let handle = parent_window
@@ -2569,8 +2659,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
             let RawWindowHandle::Win32(handle) = handle.as_raw() else {
                 return Err("Windows modal owner is not an HWND".into());
             };
-            attributes = attributes.with_owner_window(handle.hwnd.get());
-        }
+            attributes.with_owner_window(handle.hwnd.get())
+        } else {
+            attributes
+        };
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -2597,6 +2689,20 @@ impl<Program: HostedProgram> HostedReady<Program> {
             self.program.theme_mode(),
             settings.transparent_background,
         );
+        #[cfg(not(target_os = "android"))]
+        let accessibility = {
+            let (generation, nodes) = initial_accessibility_snapshot(&mut self.program, id);
+            (self.program.accessibility_adapter_enabled() || !nodes.is_empty()).then(|| {
+                HostedAccessibility::new(
+                    event_loop,
+                    Arc::clone(&window),
+                    generation,
+                    nodes,
+                    self.program.accessibility_actions_enabled(),
+                    window.scale_factor() as f32,
+                )
+            })
+        };
         let geometry = window_geometry(&window);
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
@@ -2604,6 +2710,8 @@ impl<Program: HostedProgram> HostedReady<Program> {
         self.auxiliary.insert(
             id,
             HostedAuxiliary {
+                #[cfg(not(target_os = "android"))]
+                accessibility,
                 #[cfg(target_os = "windows")]
                 pen_hook,
                 surface,
@@ -2617,6 +2725,7 @@ impl<Program: HostedProgram> HostedReady<Program> {
         if let Some(parent) = modal_parent.and_then(|id| self.window(id)) {
             parent.set_enable(false);
         }
+        window.set_visible(true);
         window.request_redraw();
         Ok(HostedWindowEvent::Ready {
             id,
@@ -2934,6 +3043,84 @@ impl<Program: HostedProgram> HostedReady<Program> {
         } else {
             self.redraw_auxiliary(event_loop, id);
         }
+        #[cfg(not(target_os = "android"))]
+        self.synchronize_accessibility(id);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn synchronize_accessibility(&mut self, id: HostedWindowId) {
+        let has_adapter = if id == HostedWindowId::PRIMARY {
+            self.accessibility.is_some()
+        } else {
+            self.auxiliary
+                .get(&id)
+                .is_some_and(|host| host.accessibility.is_some())
+        };
+        if !has_adapter {
+            return;
+        }
+        let Some(scale_factor) = self.window_scale_factor(id) else {
+            return;
+        };
+        let scale_factor_changed = if id == HostedWindowId::PRIMARY {
+            self.accessibility
+                .as_ref()
+                .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor))
+        } else {
+            self.auxiliary
+                .get(&id)
+                .and_then(|host| host.accessibility.as_ref())
+                .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor))
+        };
+        let pending = self.program.accessibility_update(id);
+        let update = if scale_factor_changed {
+            match pending {
+                Some(update @ nana_ui_runtime::AccessibilityUpdate::Full { .. }) => Some(update),
+                Some(nana_ui_runtime::AccessibilityUpdate::Delta(delta)) => {
+                    Some(nana_ui_runtime::AccessibilityUpdate::Full {
+                        generation: Some(delta.generation),
+                        nodes: self.program.accessibility_snapshot(id),
+                    })
+                }
+                None => Some(nana_ui_runtime::AccessibilityUpdate::Full {
+                    generation: None,
+                    nodes: self.program.accessibility_snapshot(id),
+                }),
+            }
+        } else {
+            pending
+        };
+        let Some(update) = update else {
+            return;
+        };
+        if id == HostedWindowId::PRIMARY {
+            if let Some(accessibility) = self.accessibility.as_mut() {
+                accessibility.synchronize(update, scale_factor);
+            }
+        } else if let Some(accessibility) = self
+            .auxiliary
+            .get_mut(&id)
+            .and_then(|host| host.accessibility.as_mut())
+        {
+            accessibility.synchronize(update, scale_factor);
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn take_accessibility_actions(
+        &self,
+        id: HostedWindowId,
+    ) -> Vec<nana_ui_runtime::AccessibilityActionRequest> {
+        if id == HostedWindowId::PRIMARY {
+            self.accessibility
+                .as_ref()
+                .map_or_else(Vec::new, HostedAccessibility::take_actions)
+        } else {
+            self.auxiliary
+                .get(&id)
+                .and_then(|host| host.accessibility.as_ref())
+                .map_or_else(Vec::new, HostedAccessibility::take_actions)
+        }
     }
 
     fn redraw_primary(&mut self, event_loop: &ActiveEventLoop) {
@@ -3033,6 +3220,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
                 format: frame.texture.format(),
                 view: &target,
             },
+        );
+        apply_text_input_request(
+            self.graphics.window().as_ref(),
+            self.program.text_input_request(HostedWindowId::PRIMARY),
         );
         let rendered_at = Instant::now();
         self.graphics.present(frame);
@@ -3155,9 +3346,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
         let theme_mode = self.program.theme_mode();
         let colors = theme_mode.colors();
         let prepared_at = Instant::now();
+        let text_input_request = self.program.text_input_request(id);
         let ui_frame = {
             let host = self.auxiliary.get_mut(&id).expect("hosted auxiliary");
-            host.ui.present_prepared(
+            let frame = host.ui.present_prepared(
                 prepared,
                 &theme_mode.iced_theme(),
                 renderer::Style {
@@ -3169,7 +3361,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
                     format: frame.texture.format(),
                     view: &target,
                 },
-            )
+            );
+            apply_text_input_request(host.surface.window().as_ref(), text_input_request);
+            frame
         };
         let rendered_at = Instant::now();
         self.graphics.present(frame);
@@ -3405,6 +3599,27 @@ impl<Program: HostedProgram> HostedReady<Program> {
             host.surface.window().request_redraw();
         }
     }
+}
+
+fn apply_text_input_request(window: &winit::window::Window, request: Option<TextInputRequest>) {
+    let Some(request) = request else {
+        return;
+    };
+    window.set_ime_allowed(request.enabled);
+    if !request.enabled {
+        return;
+    }
+    if let Some(cursor) = request.cursor_area {
+        window.set_ime_cursor_area(
+            winit::dpi::LogicalPosition::new(cursor.x, cursor.y + cursor.height),
+            winit::dpi::LogicalSize::new(cursor.width.max(1.0), cursor.height.max(1.0)),
+        );
+    }
+    window.set_ime_purpose(match request.purpose {
+        TextInputPurpose::Normal => winit::window::ImePurpose::Normal,
+        TextInputPurpose::Password => winit::window::ImePurpose::Password,
+        TextInputPurpose::Terminal => winit::window::ImePurpose::Terminal,
+    });
 }
 
 fn should_request_redraw(
@@ -3724,8 +3939,8 @@ mod tests {
     use super::{
         HostedDisplayArea, HostedProgramUpdate, HostedRedraw, HostedTitleBarMode,
         HostedWindowEvent, HostedWindowId, HostedWindowPlacement, HostedWindowRole,
-        HostedWindowSettings, hosted_key_stroke, push_unique_path, should_request_redraw,
-        window_attributes, window_background, window_level,
+        HostedWindowSettings, hosted_input_key, hosted_key_stroke, push_unique_path,
+        should_request_redraw, window_attributes, window_background, window_level,
     };
     use iced::{Point, Size};
     use iced_winit::winit;
@@ -3757,6 +3972,12 @@ mod tests {
                 winit::keyboard::ModifiersState::empty(),
             )
             .is_none()
+        );
+        assert_eq!(
+            hosted_input_key(&winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::ArrowDown,
+            )),
+            Some("ArrowDown".into())
         );
     }
 

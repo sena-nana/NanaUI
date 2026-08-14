@@ -21,7 +21,7 @@ engine-v8 = []
 [dependencies]
 nana-js-engine.workspace = true
 nana-ui-core.workspace = true
-nana-ui-platform.workspace = true
+nana-ui-platform = { workspace = true, features = ["experimental-android"] }
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["controls"] }
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
 nana-js-quickjs = { workspace = true, optional = true }

@@ -8,8 +8,8 @@ use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     AppearanceSettings, BackdropTarget, HostedGpuResources, HostedInputDisposition,
     HostedInputEvent, HostedPointerPhase, HostedPointerType, HostedProgram, HostedProgramContext,
-    HostedProgramUpdate, HostedRuntimeEvent, HostedWindowCommand, HostedWindowEvent,
-    HostedWindowId, ThemeMode, WindowMaterialMode,
+    HostedProgramUpdate, HostedRuntimeEvent, HostedTextPosition, HostedUiCommand,
+    HostedWindowCommand, HostedWindowEvent, HostedWindowId, ThemeMode, WindowMaterialMode,
 };
 
 use crate::iced_app::view_semantic_tree_static_with_scene;
@@ -112,6 +112,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             Some(host.canvas_runtime_ref()),
             Some(host.components()),
             Some(document.scene()),
+            Some(host.layout_box_store()),
             |event| event,
         ))
     }
@@ -130,6 +131,139 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         host.lock()
             .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
             .dispatch_bridge_event(&mut self.engine, event)
+    }
+
+    pub fn accessibility_action(
+        &mut self,
+        id: HostedWindowId,
+        request: nana_ui_runtime::AccessibilityActionRequest,
+    ) -> Result<bool, JsEngineError> {
+        let host = self.require_host(VueWindowId(id.0))?;
+        let mut host = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+        let target = crate::NodeHandle(request.target.get());
+        match request.action {
+            nana_ui_runtime::AccessibilityAction::Focus => {
+                host.accessibility_focus(&mut self.engine, target)
+            }
+            nana_ui_runtime::AccessibilityAction::Click => {
+                host.accessibility_click(&mut self.engine, target)
+            }
+            nana_ui_runtime::AccessibilityAction::SetValue(value) => {
+                host.accessibility_set_value(&mut self.engine, target, &value)
+            }
+            nana_ui_runtime::AccessibilityAction::SetSelection(selection) => {
+                host.accessibility_set_selection(&mut self.engine, target, selection)
+            }
+        }
+    }
+
+    pub fn accessibility_snapshot(
+        &self,
+        id: HostedWindowId,
+    ) -> Vec<nana_ui_runtime::AccessibilityNode> {
+        self.vue
+            .host(VueWindowId(id.0))
+            .and_then(|host| host.lock().ok().map(|host| host.document()))
+            .and_then(|document| {
+                document
+                    .lock()
+                    .ok()
+                    .map(|document| document.accessibility_snapshot())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn take_accessibility_update(
+        &mut self,
+        id: HostedWindowId,
+    ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
+        self.vue
+            .host(VueWindowId(id.0))
+            .and_then(|host| host.lock().ok().map(|host| host.document()))
+            .and_then(|document| {
+                document
+                    .lock()
+                    .ok()
+                    .and_then(|mut document| document.take_accessibility_update())
+            })
+    }
+
+    pub fn hosted_accessibility_action(
+        &mut self,
+        id: HostedWindowId,
+        request: nana_ui_runtime::AccessibilityActionRequest,
+    ) -> Result<HostedProgramUpdate, JsEngineError> {
+        let selects_text = matches!(
+            &request.action,
+            nana_ui_runtime::AccessibilityAction::SetSelection(_)
+        );
+        let focuses = matches!(&request.action, nana_ui_runtime::AccessibilityAction::Focus);
+        let target = request.target;
+        let changed = self.accessibility_action(id, request)?;
+        let mut update = self.program_update(changed);
+        if changed {
+            if focuses && let Some(command) = self.text_focus_command(id, target)? {
+                update = update.with_ui_commands([command]);
+            } else if selects_text && let Some(command) = self.text_selection_command(id, target)? {
+                update = update.with_ui_commands([command]);
+            }
+        }
+        Ok(update)
+    }
+
+    fn text_focus_command(
+        &self,
+        id: HostedWindowId,
+        target: nana_ui_runtime::StableNodeId,
+    ) -> Result<Option<HostedUiCommand>, JsEngineError> {
+        let host = self.require_host(VueWindowId(id.0))?;
+        let document = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .document();
+        let is_text_input = document
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue document poisoned"))?
+            .text_input_state(crate::NodeHandle(target.get()))
+            .is_some();
+        Ok(is_text_input.then(|| HostedUiCommand::Focus {
+            window_id: id,
+            target: crate::iced_app::hosted_text_widget_id(target.get()),
+        }))
+    }
+
+    fn text_selection_command(
+        &self,
+        id: HostedWindowId,
+        target: nana_ui_runtime::StableNodeId,
+    ) -> Result<Option<HostedUiCommand>, JsEngineError> {
+        let host = self.require_host(VueWindowId(id.0))?;
+        let document = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .document();
+        let Some(state) = document
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue document poisoned"))?
+            .text_input_state(crate::NodeHandle(target.get()))
+        else {
+            // A select listener may synchronously remove its target. The
+            // Runtime/Vue mutation remains valid; there is no retained editor
+            // left to synchronize after the callback.
+            return Ok(None);
+        };
+        let anchor = hosted_text_position(&state.value, state.selection.anchor)
+            .ok_or_else(|| JsEngineError::new("invalid accessibility selection anchor"))?;
+        let focus = hosted_text_position(&state.value, state.selection.focus)
+            .ok_or_else(|| JsEngineError::new("invalid accessibility selection focus"))?;
+        Ok(Some(HostedUiCommand::SelectText {
+            window_id: id,
+            target: crate::iced_app::hosted_text_widget_id(target.get()),
+            anchor,
+            focus,
+        }))
     }
 
     pub fn dispatch_input(
@@ -222,6 +356,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             HostedInputEvent::Keyboard {
                 pressed,
                 key,
+                text: _,
                 code,
                 repeat,
                 modifiers,
@@ -521,6 +656,19 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     }
 }
 
+fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPosition> {
+    if byte_offset > value.len() || !value.is_char_boundary(byte_offset) {
+        return None;
+    }
+    let before = &value[..byte_offset];
+    Some(HostedTextPosition {
+        line: before.bytes().filter(|byte| *byte == b'\n').count(),
+        index: before
+            .rsplit_once('\n')
+            .map_or(before.len(), |(_, line)| line.len()),
+    })
+}
+
 fn map_modifiers(value: nana_ui::HostedInputModifiers) -> InputModifiers {
     InputModifiers {
         alt: value.alt,
@@ -633,6 +781,40 @@ impl<E: JsEngine + 'static> HostedProgram for VueHostedProgram<E> {
         self.theme
     }
 
+    fn accessibility_snapshot(
+        &self,
+        id: HostedWindowId,
+    ) -> Vec<nana_ui_runtime::AccessibilityNode> {
+        self.runtime.accessibility_snapshot(id)
+    }
+
+    fn accessibility_adapter_enabled(&self) -> bool {
+        true
+    }
+
+    fn accessibility_update(
+        &mut self,
+        id: HostedWindowId,
+    ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
+        self.runtime.take_accessibility_update(id)
+    }
+
+    fn accessibility_actions_enabled(&self) -> bool {
+        true
+    }
+
+    fn accessibility_action(
+        &mut self,
+        id: HostedWindowId,
+        request: nana_ui_runtime::AccessibilityActionRequest,
+        _context: &HostedProgramContext<Self::Message>,
+    ) -> HostedProgramUpdate {
+        match self.runtime.hosted_accessibility_action(id, request) {
+            Ok(update) => update,
+            Err(_) => HostedProgramUpdate::default(),
+        }
+    }
+
     fn window_material_mode(&self) -> WindowMaterialMode {
         self.appearance.window_material()
     }
@@ -688,5 +870,24 @@ impl<E: JsEngine + 'static> HostedProgram for VueHostedProgram<E> {
 
     fn rebuild_gpu(&mut self, context: &HostedProgramContext<Self::Message>) {
         let _ = self.runtime.hosted_rebuild_gpu(context.gpu().clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosted_text_positions_preserve_utf8_lines_and_byte_indices() {
+        let value = "你a\n好b";
+        assert_eq!(
+            hosted_text_position(value, "你".len()),
+            Some(HostedTextPosition { line: 0, index: 3 })
+        );
+        assert_eq!(
+            hosted_text_position(value, "你a\n好".len()),
+            Some(HostedTextPosition { line: 1, index: 3 })
+        );
+        assert_eq!(hosted_text_position(value, 1), None);
     }
 }

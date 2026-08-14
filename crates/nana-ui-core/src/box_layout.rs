@@ -71,7 +71,7 @@ impl OverflowSpec {
 
     /// `overflow: hidden` / `clip` — paint must clip descendants to the padding box.
     pub fn clips(self) -> bool {
-        matches!(self, Self::Hidden)
+        matches!(self, Self::Hidden | Self::Auto | Self::Scroll)
     }
 }
 
@@ -1495,12 +1495,22 @@ fn resolve_box_edge_specs_signed(
 
 #[cfg(test)]
 mod tests {
-    use super::{BoxSizing, FlexDirection, LayoutStyle, LengthSpec, ParentBox};
+    use super::{BoxSizing, FlexDirection, LayoutStyle, LengthSpec, OverflowSpec, ParentBox};
+
+    #[test]
+    fn scrollable_overflow_is_also_a_paint_clip() {
+        assert!(OverflowSpec::Hidden.clips());
+        assert!(OverflowSpec::Auto.clips());
+        assert!(OverflowSpec::Scroll.clips());
+        assert!(!OverflowSpec::Visible.clips());
+    }
 
     #[test]
     fn child_main_length_grows_to_fill() {
-        let mut layout = LayoutStyle::default();
-        layout.flex_grow = Some(1.0);
+        let layout = LayoutStyle {
+            flex_grow: Some(1.0),
+            ..LayoutStyle::default()
+        };
         assert_eq!(
             layout.child_main_length(FlexDirection::Row),
             Some(LengthSpec::Fill)
@@ -1509,8 +1519,10 @@ mod tests {
 
     #[test]
     fn resolve_content_box_height_chain() {
-        let mut shell = LayoutStyle::default();
-        shell.height = Some(LengthSpec::Fill);
+        let shell = LayoutStyle {
+            height: Some(LengthSpec::Fill),
+            ..LayoutStyle::default()
+        };
         let parent = ParentBox::from_viewport(800.0, 600.0);
         let box_ = shell.resolve_content_box(parent);
         assert_eq!(box_.height, Some(600.0));
@@ -1518,10 +1530,12 @@ mod tests {
 
     #[test]
     fn resolve_content_box_keeps_declared_width_under_content_box() {
-        let mut layout = LayoutStyle::default();
-        layout.width = Some(LengthSpec::Px(100.0));
-        layout.padding = Some(LengthSpec::Px(10.0));
-        layout.box_sizing = BoxSizing::ContentBox;
+        let layout = LayoutStyle {
+            width: Some(LengthSpec::Px(100.0)),
+            padding: Some(LengthSpec::Px(10.0)),
+            box_sizing: BoxSizing::ContentBox,
+            ..LayoutStyle::default()
+        };
         let parent = ParentBox::from_viewport(400.0, 200.0);
         let box_ = layout.resolve_content_box(parent);
         assert_eq!(
@@ -1534,12 +1548,14 @@ mod tests {
     #[test]
     fn resolve_content_box_fill_subtracts_chrome_under_content_box() {
         // Fill / 100% allocation is border-box; content area = allocation − pad − border.
-        let mut layout = LayoutStyle::default();
-        layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Fill);
-        layout.padding = Some(LengthSpec::Px(10.0));
-        layout.border_width = Some(5.0);
-        layout.box_sizing = BoxSizing::ContentBox;
+        let layout = LayoutStyle {
+            width: Some(LengthSpec::Fill),
+            height: Some(LengthSpec::Fill),
+            padding: Some(LengthSpec::Px(10.0)),
+            border_width: Some(5.0),
+            box_sizing: BoxSizing::ContentBox,
+            ..LayoutStyle::default()
+        };
         let parent = ParentBox::from_viewport(400.0, 200.0);
         let box_ = layout.resolve_content_box(parent);
         assert_eq!(
@@ -1557,13 +1573,13 @@ mod tests {
     #[test]
     fn resolve_content_box_grow_auto_subtracts_chrome_under_content_box() {
         // flex-grow>0 with auto main: allocated share is border-box.
-        let mut layout = LayoutStyle::default();
-        layout.flex_grow = Some(1.0);
-        layout.width = None;
-        layout.height = None;
-        layout.padding = Some(LengthSpec::Px(8.0));
-        layout.border_width = Some(2.0);
-        layout.box_sizing = BoxSizing::ContentBox;
+        let layout = LayoutStyle {
+            flex_grow: Some(1.0),
+            padding: Some(LengthSpec::Px(8.0)),
+            border_width: Some(2.0),
+            box_sizing: BoxSizing::ContentBox,
+            ..LayoutStyle::default()
+        };
         let parent = ParentBox::from_viewport(300.0, 150.0);
         let box_ = layout.resolve_content_box(parent);
         assert_eq!(box_.width, Some(280.0), "300 − 16pad − 4border");
@@ -1572,11 +1588,13 @@ mod tests {
 
     #[test]
     fn resolve_content_box_subtracts_padding_and_border_under_border_box() {
-        let mut layout = LayoutStyle::default();
-        layout.width = Some(LengthSpec::Px(100.0));
-        layout.padding = Some(LengthSpec::Px(10.0));
-        layout.border_width = Some(5.0);
-        layout.box_sizing = BoxSizing::BorderBox;
+        let layout = LayoutStyle {
+            width: Some(LengthSpec::Px(100.0)),
+            padding: Some(LengthSpec::Px(10.0)),
+            border_width: Some(5.0),
+            box_sizing: BoxSizing::BorderBox,
+            ..LayoutStyle::default()
+        };
         let parent = ParentBox::from_viewport(400.0, 200.0);
         let box_ = layout.resolve_content_box(parent);
         assert_eq!(
@@ -1588,8 +1606,10 @@ mod tests {
 
     #[test]
     fn min_height_zero_does_not_inherit_parent_height() {
-        let mut layout = LayoutStyle::default();
-        layout.min_height = Some(LengthSpec::Px(0.0));
+        let layout = LayoutStyle {
+            min_height: Some(LengthSpec::Px(0.0)),
+            ..LayoutStyle::default()
+        };
         let parent = ParentBox::from_viewport(800.0, 600.0);
         let box_ = layout.resolve_content_box(parent);
         assert_eq!(
@@ -1600,9 +1620,11 @@ mod tests {
 
     #[test]
     fn min_height_zero_with_fill_height_still_chains() {
-        let mut layout = LayoutStyle::default();
-        layout.height = Some(LengthSpec::Fill);
-        layout.min_height = Some(LengthSpec::Px(0.0)); // sentinel from CSS min-height:100%
+        let layout = LayoutStyle {
+            height: Some(LengthSpec::Fill),
+            min_height: Some(LengthSpec::Px(0.0)), // sentinel from CSS min-height:100%
+            ..LayoutStyle::default()
+        };
         let parent = ParentBox::from_viewport(800.0, 600.0);
         let box_ = layout.resolve_content_box(parent);
         assert_eq!(box_.height, Some(600.0));
@@ -1610,8 +1632,10 @@ mod tests {
 
     #[test]
     fn row_cross_gap_percent_falls_back_when_height_indefinite() {
-        let mut layout = LayoutStyle::default();
-        layout.gap = Some(LengthSpec::Percent(10.0));
+        let layout = LayoutStyle {
+            gap: Some(LengthSpec::Percent(10.0)),
+            ..LayoutStyle::default()
+        };
         // Auto-height wrap: content_h is 0 before shrink-to-fit — must not lock % to 0.
         let indefinite = ParentBox::new(Some(200.0), Some(0.0));
         assert_eq!(
@@ -1632,10 +1656,12 @@ mod tests {
 
     #[test]
     fn padding_margin_percent_resolves_against_containing_block_width() {
-        let mut layout = LayoutStyle::default();
-        layout.padding = Some(LengthSpec::Percent(10.0));
-        layout.margin_top = Some(LengthSpec::Percent(5.0));
-        layout.margin_left = Some(LengthSpec::Px(8.0));
+        let layout = LayoutStyle {
+            padding: Some(LengthSpec::Percent(10.0)),
+            margin_top: Some(LengthSpec::Percent(5.0)),
+            margin_left: Some(LengthSpec::Px(8.0)),
+            ..LayoutStyle::default()
+        };
         let pad = layout.resolved_padding_against(Some(200.0));
         let margin = layout.resolved_margin_against(Some(200.0));
         assert_eq!(pad.top, 20.0);

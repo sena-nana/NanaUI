@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
@@ -9,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::drag_handle::DragHandle;
 use crate::geometry::TITLE_BAR_HEIGHT as WINDOW_TITLE_BAR_HEIGHT;
-use crate::resize_drag::{ResizeAxis, ResizeDrag};
 use crate::shell::{
     window_chrome_controls, window_chrome_drag_start_area, window_chrome_drag_tracker,
 };
@@ -21,13 +21,14 @@ use crate::{
     HostedProgramUpdate, HostedTitleBarMode, HostedWindowCommand, HostedWindowEvent,
     HostedWindowId, HostedWindowSettings,
 };
+use nana_ui_core::LogicalPoint;
 
 const DOCK_LAYOUT_VERSION: u8 = 1;
 const DIVIDER_HIT_SIZE: f32 = 8.0;
 const TITLE_BAR_HEIGHT: f32 = 28.0;
 const MIN_SPLIT_RATIO: f32 = 0.05;
 const MAX_SPLIT_RATIO: f32 = 0.95;
-const DRAG_INSERT_HOVER_DELAY: iced::time::Duration = iced::time::Duration::from_millis(80);
+const DRAG_INSERT_HOVER_DELAY: Duration = Duration::from_millis(80);
 const DRAG_CARD_WIDTH: f32 = 280.0;
 const DRAG_CARD_HEIGHT: f32 = 180.0;
 const DRAG_CARD_OFFSET: f32 = 12.0;
@@ -343,6 +344,7 @@ pub enum DockAction {
         surface: DockSurfaceId,
     },
     CancelDrag,
+    AdvanceDragDwell,
     Hover(bool),
     CardHover(DockId, bool),
     Hide(DockId),
@@ -362,6 +364,156 @@ pub enum DockAction {
     Reset,
 }
 
+/// Backend-neutral Dock state mutation. Iced widgets adapt [`DockAction`] into this contract.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DockMutation {
+    ActivateTab(DockId),
+    ReorderTab {
+        id: DockId,
+        before: Option<DockId>,
+    },
+    ResizeStart {
+        surface: DockSurfaceId,
+        path: Vec<usize>,
+    },
+    ResizeMove(LogicalPoint),
+    ResizeEnd,
+    ResizeSplit {
+        surface: DockSurfaceId,
+        path: Vec<usize>,
+        ratio: f32,
+    },
+    AdjustSplit {
+        surface: DockSurfaceId,
+        path: Vec<usize>,
+        steps: f32,
+    },
+    KeyboardAdjust(f32),
+    BlurSplit,
+    ResetSplit {
+        surface: DockSurfaceId,
+        path: Vec<usize>,
+    },
+    SurfaceResized {
+        surface: DockSurfaceId,
+        width: f32,
+        height: f32,
+    },
+    SurfaceGeometry {
+        surface: DockSurfaceId,
+        bounds: DockBounds,
+    },
+    SurfaceLayout {
+        surface: DockSurfaceId,
+        bounds: DockBounds,
+    },
+    DragStart {
+        surface: DockSurfaceId,
+        id: DockId,
+    },
+    DragMove {
+        surface: DockSurfaceId,
+        position: LogicalPoint,
+    },
+    DragEnd {
+        surface: DockSurfaceId,
+    },
+    CancelDrag,
+    AdvanceDragDwell,
+    CardHover(DockId, bool),
+    Hide(DockId),
+    Show(DockId),
+    Float {
+        id: DockId,
+        bounds: DockBounds,
+        monitor: Option<String>,
+    },
+    Dock {
+        id: DockId,
+        target: DockDropTarget,
+    },
+    Focus(DockId),
+    CloseSurface(DockSurfaceId),
+    SetLocked(bool),
+    Reset,
+}
+
+impl From<DockAction> for DockMutation {
+    fn from(action: DockAction) -> Self {
+        match action {
+            DockAction::ActivateTab(id) => Self::ActivateTab(id),
+            DockAction::ReorderTab { id, before } => Self::ReorderTab { id, before },
+            DockAction::ResizeStart { surface, path } => Self::ResizeStart { surface, path },
+            DockAction::ResizeMove(position) => {
+                Self::ResizeMove(LogicalPoint::new(position.x, position.y))
+            }
+            DockAction::ResizeEnd => Self::ResizeEnd,
+            DockAction::ResizeSplit {
+                surface,
+                path,
+                ratio,
+            } => Self::ResizeSplit {
+                surface,
+                path,
+                ratio,
+            },
+            DockAction::AdjustSplit {
+                surface,
+                path,
+                steps,
+            } => Self::AdjustSplit {
+                surface,
+                path,
+                steps,
+            },
+            DockAction::KeyboardAdjust(steps) => Self::KeyboardAdjust(steps),
+            DockAction::BlurSplit => Self::BlurSplit,
+            DockAction::ResetSplit { surface, path } => Self::ResetSplit { surface, path },
+            DockAction::SurfaceResized {
+                surface,
+                width,
+                height,
+            } => Self::SurfaceResized {
+                surface,
+                width,
+                height,
+            },
+            DockAction::SurfaceGeometry { surface, bounds } => {
+                Self::SurfaceGeometry { surface, bounds }
+            }
+            DockAction::SurfaceLayout { surface, bounds } => {
+                Self::SurfaceLayout { surface, bounds }
+            }
+            DockAction::DragStart { surface, id } => Self::DragStart { surface, id },
+            DockAction::DragMove { surface, position } => Self::DragMove {
+                surface,
+                position: LogicalPoint::new(position.x, position.y),
+            },
+            DockAction::DragEnd { surface } => Self::DragEnd { surface },
+            DockAction::CancelDrag => Self::CancelDrag,
+            DockAction::AdvanceDragDwell => Self::AdvanceDragDwell,
+            DockAction::Hover(_) => Self::AdvanceDragDwell,
+            DockAction::CardHover(id, hovered) => Self::CardHover(id, hovered),
+            DockAction::Hide(id) => Self::Hide(id),
+            DockAction::Show(id) => Self::Show(id),
+            DockAction::Float {
+                id,
+                bounds,
+                monitor,
+            } => Self::Float {
+                id,
+                bounds,
+                monitor,
+            },
+            DockAction::Dock { id, target } => Self::Dock { id, target },
+            DockAction::Focus(id) => Self::Focus(id),
+            DockAction::CloseSurface(surface) => Self::CloseSurface(surface),
+            DockAction::SetLocked(locked) => Self::SetLocked(locked),
+            DockAction::Reset => Self::Reset,
+        }
+    }
+}
+
 /// Side effects the application must execute against host-owned windows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DockHostEffect {
@@ -376,6 +528,8 @@ pub enum DockHostEffect {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DockUpdate {
+    /// The persisted [`DockLayout`] changed and consumers should save it.
+    /// Transient pointer, preview, focus and measured geometry updates remain false.
     pub changed: bool,
     pub effects: Vec<DockHostEffect>,
 }
@@ -406,17 +560,37 @@ impl std::error::Error for DockError {}
 struct ActiveResize {
     surface: DockSurfaceId,
     path: Vec<usize>,
-    drag: ResizeDrag,
+    axis: DockAxis,
+    start_position: Option<f32>,
+    start_ratio: f32,
+    ratio_per_pixel: f32,
+}
+
+impl ActiveResize {
+    fn value(&mut self, position: LogicalPoint) -> Option<f32> {
+        let position = match self.axis {
+            DockAxis::Horizontal => position.x,
+            DockAxis::Vertical => position.y,
+        };
+        if !position.is_finite() {
+            return None;
+        }
+        let Some(start_position) = self.start_position else {
+            self.start_position = Some(position);
+            return None;
+        };
+        Some(self.start_ratio + (position - start_position) * self.ratio_per_pixel)
+    }
 }
 
 #[derive(Debug, Clone)]
 struct ActiveDrag {
     source_surface: DockSurfaceId,
     id: DockId,
-    start: Option<Point>,
-    position: Option<Point>,
+    start: Option<LogicalPoint>,
+    position: Option<LogicalPoint>,
     moved: bool,
-    pending_target: Option<(DockDropTarget, iced::time::Instant)>,
+    pending_target: Option<(DockDropTarget, Duration)>,
     target: Option<DockDropTarget>,
     hover_surface: Option<DockSurfaceId>,
     transient_surface: Option<DockSurfaceId>,
@@ -535,8 +709,8 @@ impl DockSurfaceGeometry {
         )
     }
 
-    fn local_to_global(self, position: Point) -> Point {
-        Point::new(self.window.x + position.x, self.window.y + position.y)
+    fn local_to_global(self, position: LogicalPoint) -> LogicalPoint {
+        LogicalPoint::new(self.window.x + position.x, self.window.y + position.y)
     }
 
     fn set_window(&mut self, window: DockBounds) {
@@ -570,6 +744,7 @@ pub struct DockController {
     chrome_style: DockChromeStyle,
     floating_window_title: String,
     hovered_card: Option<DockId>,
+    clock_origin: Instant,
 }
 
 impl DockController {
@@ -615,6 +790,7 @@ impl DockController {
             chrome_style: DockChromeStyle::default(),
             floating_window_title: String::new(),
             hovered_card: None,
+            clock_origin: Instant::now(),
         })
     }
 
@@ -705,7 +881,7 @@ impl DockController {
         Some(root)
     }
 
-    fn settle_drag_target(&self, drag: &mut ActiveDrag, now: iced::time::Instant) {
+    fn settle_drag_target(&self, drag: &mut ActiveDrag, now: Duration) {
         let Some((candidate, ready_at)) = drag.pending_target.as_ref() else {
             return;
         };
@@ -730,7 +906,7 @@ impl DockController {
             None => {}
         }
         if self.is_drag_frame_needed() {
-            subscriptions.push(iced::window::frames().map(|_| DockAction::Hover(false)));
+            subscriptions.push(iced::window::frames().map(|_| DockAction::AdvanceDragDwell));
         }
         Subscription::batch(subscriptions)
     }
@@ -901,10 +1077,28 @@ impl DockController {
     }
 
     pub fn update(&mut self, action: DockAction) -> DockUpdate {
-        self.update_at(action, iced::time::Instant::now())
+        self.update_mutation(action.into())
     }
 
-    fn update_at(&mut self, action: DockAction, now: iced::time::Instant) -> DockUpdate {
+    /// Applies one backend-neutral mutation using the controller's monotonic clock.
+    pub fn update_mutation(&mut self, mutation: DockMutation) -> DockUpdate {
+        self.update_mutation_at(mutation, self.clock_origin.elapsed())
+    }
+
+    #[cfg(test)]
+    fn update_at(&mut self, action: DockAction, now: Instant) -> DockUpdate {
+        self.update_at_duration(action, now.saturating_duration_since(self.clock_origin))
+    }
+
+    /// Compatibility action entry at an explicit monotonic timestamp.
+    pub fn update_at_duration(&mut self, action: DockAction, now: Duration) -> DockUpdate {
+        self.update_mutation_at(action.into(), now)
+    }
+
+    /// Applies one backend-neutral mutation at an explicit monotonic timestamp.
+    pub fn update_mutation_at(&mut self, action: DockMutation, now: Duration) -> DockUpdate {
+        use DockMutation as DockAction;
+
         if self.layout.locked
             && !matches!(
                 action,
@@ -933,7 +1127,10 @@ impl DockController {
                 self.active_resize = geometry.map(|(axis, ratio, extent)| ActiveResize {
                     surface,
                     path: path.clone(),
-                    drag: ResizeDrag::new(resize_axis(axis), ratio, 1.0 / extent),
+                    axis,
+                    start_position: None,
+                    start_ratio: ratio,
+                    ratio_per_pixel: 1.0 / extent,
                 });
                 self.focused_split = geometry.map(|(axis, _, _)| (surface, path, axis));
                 DockUpdate::default()
@@ -942,7 +1139,7 @@ impl DockController {
                 let Some(active) = &mut self.active_resize else {
                     return DockUpdate::default();
                 };
-                let Some(ratio) = active.drag.value(position) else {
+                let Some(ratio) = active.value(position) else {
                     return DockUpdate::default();
                 };
                 let surface = active.surface;
@@ -985,7 +1182,7 @@ impl DockController {
                 let Some((surface, path, _)) = self.focused_split.clone() else {
                     return DockUpdate::default();
                 };
-                self.update_at(
+                self.update_mutation_at(
                     DockAction::AdjustSplit {
                         surface,
                         path,
@@ -1197,7 +1394,7 @@ impl DockController {
                 self.promote_drag_to_floating(drag)
             }
             DockAction::CancelDrag => self.cancel_drag(),
-            DockAction::Hover(_) => {
+            DockAction::AdvanceDragDwell => {
                 let Some(mut drag) = self.active_drag.take() else {
                     return DockUpdate::default();
                 };
@@ -1384,7 +1581,7 @@ impl DockController {
         }
     }
 
-    fn drag_card_bounds(position: Point) -> DockBounds {
+    fn drag_card_bounds(position: LogicalPoint) -> DockBounds {
         DockBounds::new(
             position.x + DRAG_CARD_OFFSET,
             position.y + DRAG_CARD_OFFSET,
@@ -1396,7 +1593,7 @@ impl DockController {
     fn begin_transient_drag(
         &mut self,
         drag: &mut ActiveDrag,
-        position: Point,
+        position: LogicalPoint,
     ) -> Option<DockHostEffect> {
         if drag.transient_surface.is_some() {
             return None;
@@ -1450,7 +1647,7 @@ impl DockController {
         }
     }
 
-    fn drag_bounds(&self, drag: &ActiveDrag, position: Point) -> Option<DockBounds> {
+    fn drag_bounds(&self, drag: &ActiveDrag, position: LogicalPoint) -> Option<DockBounds> {
         let current = drag.bounds?;
         let bounds = if drag.source_surface == DockSurfaceId(0) {
             DockBounds::new(
@@ -1770,7 +1967,7 @@ impl DockController {
     fn drop_target_at(
         &self,
         dragged: &DockId,
-        position: Point,
+        position: LogicalPoint,
         drag_surface: DockSurfaceId,
         hover_surface: DockSurfaceId,
     ) -> Option<DockDropTarget> {
@@ -1811,7 +2008,7 @@ impl DockController {
         &self,
         drag: &ActiveDrag,
         event_surface: DockSurfaceId,
-        position: Point,
+        position: LogicalPoint,
     ) -> Option<DockSurfaceId> {
         let transient_surface = drag.transient_surface;
         let contains = |surface| {
@@ -1876,7 +2073,7 @@ impl DockController {
             .global_layout()
     }
 
-    fn local_to_global(&self, surface: DockSurfaceId, position: Point) -> Point {
+    fn local_to_global(&self, surface: DockSurfaceId, position: LogicalPoint) -> LogicalPoint {
         self.surface_geometry
             .get(&surface)
             .copied()
@@ -3729,7 +3926,7 @@ fn collect_view_drop_targets(
     }
 }
 
-fn bounds_contains(bounds: DockBounds, point: Point) -> bool {
+fn bounds_contains(bounds: DockBounds, point: LogicalPoint) -> bool {
     point.x >= bounds.x
         && point.y >= bounds.y
         && point.x <= bounds.x + bounds.width
@@ -3946,13 +4143,6 @@ fn finite_positive(value: f32, fallback: f32) -> f32 {
         value
     } else {
         fallback
-    }
-}
-
-fn resize_axis(axis: DockAxis) -> ResizeAxis {
-    match axis {
-        DockAxis::Horizontal => ResizeAxis::Horizontal,
-        DockAxis::Vertical => ResizeAxis::Vertical,
     }
 }
 
@@ -4371,7 +4561,8 @@ mod tests {
         let mut controller = tab_drag_controller();
         let now = iced::time::Instant::now();
         move_source_to_position(&mut controller, now, Point::new(50.0, 400.0));
-        controller.update_at(DockAction::Hover(false), after_drag_dwell(now));
+        let settled = controller.update_at(DockAction::AdvanceDragDwell, after_drag_dwell(now));
+        assert!(!settled.changed, "preview state is not persisted layout");
         assert_eq!(
             controller.drop_target().map(|target| target.zone),
             Some(DockDropZone::Left)
@@ -5586,38 +5777,63 @@ mod tests {
     #[test]
     fn resize_uses_local_split_extent_and_reenters_at_the_pointer() {
         let mut controller = controller();
-        controller.update(DockAction::SurfaceGeometry {
-            surface: DockSurfaceId(0),
-            bounds: DockBounds::new(40.0, 60.0, 1_000.0, 700.0),
-        });
+        let now = Duration::ZERO;
+        controller.update_mutation_at(
+            DockMutation::SurfaceGeometry {
+                surface: DockSurfaceId(0),
+                bounds: DockBounds::new(40.0, 60.0, 1_000.0, 700.0),
+            },
+            now,
+        );
 
-        controller.update(DockAction::ResizeStart {
-            surface: DockSurfaceId(0),
-            path: vec![1],
-        });
-        controller.update(DockAction::ResizeMove(Point::new(600.0, 300.0)));
-        controller.update(DockAction::ResizeMove(Point::new(600.0, 1_300.0)));
+        controller.update_mutation_at(
+            DockMutation::ResizeStart {
+                surface: DockSurfaceId(0),
+                path: vec![1],
+            },
+            now,
+        );
+        controller.update_mutation_at(
+            DockMutation::ResizeMove(LogicalPoint::new(600.0, 300.0)),
+            now,
+        );
+        controller.update_mutation_at(
+            DockMutation::ResizeMove(LogicalPoint::new(600.0, 1_300.0)),
+            now,
+        );
         let (_, maximum) =
             split_at_path(&controller.layout().main, &[1]).expect("nested split maximum");
         assert!(maximum < 1.0);
 
         let local_extent = 700.0 - DIVIDER_HIT_SIZE;
-        controller.update(DockAction::ResizeMove(Point::new(
-            600.0,
-            300.0 + local_extent * 0.1,
-        )));
+        controller.update_mutation_at(
+            DockMutation::ResizeMove(LogicalPoint::new(600.0, 300.0 + local_extent * 0.1)),
+            now,
+        );
         let (_, reentered) =
             split_at_path(&controller.layout().main, &[1]).expect("nested split reentered");
         assert!((reentered - 0.85).abs() < 0.000_1);
 
-        controller.update(DockAction::ResizeEnd);
-        controller.update(DockAction::ResizeStart {
-            surface: DockSurfaceId(0),
-            path: Vec::new(),
-        });
-        controller.update(DockAction::ResizeMove(Point::new(300.0, 200.0)));
-        controller.update(DockAction::ResizeMove(Point::new(-1_000.0, 200.0)));
-        controller.update(DockAction::ResizeMove(Point::new(399.2, 200.0)));
+        controller.update_mutation_at(DockMutation::ResizeEnd, now);
+        controller.update_mutation_at(
+            DockMutation::ResizeStart {
+                surface: DockSurfaceId(0),
+                path: Vec::new(),
+            },
+            now,
+        );
+        controller.update_mutation_at(
+            DockMutation::ResizeMove(LogicalPoint::new(300.0, 200.0)),
+            now,
+        );
+        controller.update_mutation_at(
+            DockMutation::ResizeMove(LogicalPoint::new(-1_000.0, 200.0)),
+            now,
+        );
+        controller.update_mutation_at(
+            DockMutation::ResizeMove(LogicalPoint::new(399.2, 200.0)),
+            now,
+        );
         let (_, root_reentered) =
             split_at_path(&controller.layout().main, &[]).expect("root split reentered");
         assert!((root_reentered - 0.35).abs() < 0.000_1);

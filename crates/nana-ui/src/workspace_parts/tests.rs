@@ -174,12 +174,12 @@ fn controller_applies_deterministic_region_state() {
 #[test]
 fn controller_animates_region_extent_and_commits_the_target_immediately() {
     let mut controller = WorkspaceController::new();
-    let started = iced::time::Instant::now();
+    let started = std::time::Duration::from_millis(100);
 
-    assert!(controller.update(WorkspaceAction::SetRegionCollapsed(
-        RegionId::Resources,
-        true,
-    )));
+    assert!(controller.update_at(
+        WorkspaceAction::SetRegionCollapsed(RegionId::Resources, true),
+        started,
+    ));
     assert!(
         controller
             .layout()
@@ -188,32 +188,30 @@ fn controller_animates_region_extent_and_commits_the_target_immediately() {
             .collapsed_value()
     );
 
-    let middle = controller.region_extent_at(
-        &RegionId::Resources,
-        started + iced::time::Duration::from_millis(120),
-    );
+    assert!(controller.update_at(
+        WorkspaceAction::AnimationFrame(started + std::time::Duration::from_millis(120)),
+        started + std::time::Duration::from_millis(120),
+    ));
+    let middle = controller.region_extent(&RegionId::Resources);
     assert!(middle > 0.0 && middle < 260.0);
 
-    let finished = started + iced::time::Duration::from_millis(300);
-    assert_eq!(
-        controller.region_extent_at(&RegionId::Resources, finished),
-        0.0
-    );
-    assert!(controller.update(WorkspaceAction::AnimationFrame(finished)));
-    assert!(!controller.transitions.contains_key(&RegionId::Resources));
+    let finished = started + std::time::Duration::from_millis(300);
+    assert!(controller.update_at(WorkspaceAction::AnimationFrame(finished), finished,));
+    assert_eq!(controller.region_extent(&RegionId::Resources), 0.0);
+    assert!(!controller.model.has_active_transitions());
 }
 
 #[test]
 fn controller_reverses_an_active_collapse_without_losing_region_state() {
     let mut controller = WorkspaceController::new();
-    assert!(controller.update(WorkspaceAction::SetRegionCollapsed(
-        RegionId::Resources,
-        true,
-    )));
-    assert!(controller.update(WorkspaceAction::SetRegionCollapsed(
-        RegionId::Resources,
-        false,
-    )));
+    assert!(controller.update_at(
+        WorkspaceAction::SetRegionCollapsed(RegionId::Resources, true),
+        std::time::Duration::ZERO,
+    ));
+    assert!(controller.update_at(
+        WorkspaceAction::SetRegionCollapsed(RegionId::Resources, false),
+        std::time::Duration::from_millis(120),
+    ));
     assert!(
         !controller
             .layout()
@@ -221,13 +219,7 @@ fn controller_reverses_an_active_collapse_without_losing_region_state() {
             .expect("resources")
             .collapsed_value()
     );
-    assert!(
-        !controller
-            .transitions
-            .get(&RegionId::Resources)
-            .expect("transition")
-            .target_collapsed
-    );
+    assert!(controller.model.has_active_transitions());
 }
 
 #[test]

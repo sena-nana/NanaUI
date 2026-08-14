@@ -253,6 +253,34 @@ impl HostedProgram for AcceptanceProgram {
         ThemeMode::Light
     }
 
+    fn accessibility_snapshot(&self, id: HostedWindowId) -> Vec<nana_ui::AccessibilityNode> {
+        self.runtime.accessibility_snapshot(id)
+    }
+
+    fn accessibility_adapter_enabled(&self) -> bool {
+        true
+    }
+
+    fn accessibility_update(&mut self, id: HostedWindowId) -> Option<nana_ui::AccessibilityUpdate> {
+        self.runtime.take_accessibility_update(id)
+    }
+
+    fn accessibility_actions_enabled(&self) -> bool {
+        true
+    }
+
+    fn accessibility_action(
+        &mut self,
+        id: HostedWindowId,
+        request: nana_ui::AccessibilityActionRequest,
+        _context: &HostedProgramContext<Self::Message>,
+    ) -> HostedProgramUpdate {
+        match self.runtime.hosted_accessibility_action(id, request) {
+            Ok(update) => update,
+            Err(_) => HostedProgramUpdate::default(),
+        }
+    }
+
     fn window_material_mode(&self) -> WindowMaterialMode {
         WindowMaterialMode::Solid
     }
@@ -344,6 +372,12 @@ mod tests {
             }
             let host = runtime.vue().host(VueWindowId::PRIMARY).unwrap();
             let snapshot = host.lock().unwrap().semantic_snapshot();
+            let accessibility = runtime.accessibility_snapshot(HostedWindowId::PRIMARY);
+            assert!(
+                accessibility
+                    .iter()
+                    .any(|node| { node.role == nana_ui::AccessibilityRole::TextInput })
+            );
             assert!(
                 snapshot
                     .widgets

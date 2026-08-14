@@ -20,6 +20,7 @@ members = [
     "examples/vue-counter",
     "examples/vue-hosted-acceptance",
     "examples/native-rhi-probe",
+    "examples/runtime-host-fixture",
 ]
 exclude = ["engine/iced"]
 resolver = "2"
@@ -45,7 +46,7 @@ nana-js-quickjs = { path = "crates/nana-js-quickjs" }
 nana-js-v8 = { path = "crates/nana-js-v8" }
 nana-ui-web-api = { path = "crates/nana-ui-web-api" }
 nana-ui-vue = { path = "crates/nana-ui-vue" }
-nana-ui-platform = { path = "crates/nana-ui-platform" }
+nana-ui-platform = { path = "crates/nana-ui-platform", default-features = false }
 nana-ui-devtools = { path = "crates/nana-ui-devtools" }
 nana-ui = { path = "crates/nana-ui" }
 nana-window = { path = "crates/nana-window" }
@@ -73,3 +74,4 @@ fontdue = "0.9"
 # `nana-ui` can cross-compile to aarch64-linux-android. Desktop backends unchanged.
 [patch.crates-io]
 arboard = { path = "vendor/arboard" }
+winit = { git = "https://github.com/iced-rs/winit.git", rev = "05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed" }

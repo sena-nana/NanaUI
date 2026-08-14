@@ -43,7 +43,7 @@ use nana_ui::{
 use nana_ui::{
     AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
 };
-use nana_ui_scene::{RenderOperation, ResourceId, ScenePrimitiveKind, UiScene};
+use nana_ui_scene::UiScene;
 use nana_ui_web_api::{CanvasBitmap, SharedCanvasRuntime};
 
 use crate::bridge::{
@@ -58,6 +58,10 @@ use crate::menu_store::MenuStore;
 use crate::native_component::NativeComponentRegistry;
 use crate::tree::{LayoutBoxStore, NodeHandle, shared_layout_box_store};
 
+pub(crate) fn hosted_text_widget_id(id: WidgetId) -> String {
+    format!("nana-vue-text-{id}")
+}
+
 thread_local! {
     /// Build-time texture lookup only. Every produced GPU widget owns a cloned
     /// `HostTexture`, so no thread-local state leaks into rendering.
@@ -65,54 +69,55 @@ thread_local! {
     static ACTIVE_CANVAS_RUNTIME: RefCell<Option<SharedCanvasRuntime>> = const { RefCell::new(None) };
     static ACTIVE_NATIVE_COMPONENTS: RefCell<Option<NativeComponentRegistry>> = const { RefCell::new(None) };
     static ACTIVE_PAINT_AFFINE: RefCell<[f32; 6]> = const { RefCell::new([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]) };
-    static ACTIVE_SCENE_CUSTOMS: RefCell<Option<std::collections::HashMap<WidgetId, IcedCustomLayer>>> = const { RefCell::new(None) };
+    static ACTIVE_SCENE_HOST_TEXTURES: RefCell<Option<nana_ui::HostTextureSceneResolver>> = const { RefCell::new(None) };
+    static ACTIVE_LAYOUT_BOXES: RefCell<Option<Arc<LayoutBoxStore>>> = const { RefCell::new(None) };
 }
 
-#[derive(Debug, Clone)]
-struct IcedCustomLayer {
-    resource: String,
-}
-
-fn with_active_scene<T>(scene: Option<&UiScene>, build: impl FnOnce() -> T) -> T {
-    struct Reset(Option<std::collections::HashMap<WidgetId, IcedCustomLayer>>);
+fn with_active_layout_boxes<T>(store: Option<Arc<LayoutBoxStore>>, build: impl FnOnce() -> T) -> T {
+    struct Reset(Option<Arc<LayoutBoxStore>>);
     impl Drop for Reset {
         fn drop(&mut self) {
-            ACTIVE_SCENE_CUSTOMS.with(|active| {
-                active.replace(self.0.take());
-            });
+            ACTIVE_LAYOUT_BOXES.with(|active| active.replace(self.0.take()));
         }
     }
-    let layers = scene.and_then(|scene| {
-        let graph = scene.frame_graph(ResourceId(1)).ok()?;
-        let mut layers = std::collections::HashMap::new();
-        for operation in graph.passes.iter().flat_map(|pass| &pass.operations) {
-            let RenderOperation::InvokeCustom(id) = operation else {
-                continue;
-            };
-            let primitive = scene.primitive(*id)?;
-            let ScenePrimitiveKind::Custom(custom) = &primitive.kind else {
-                continue;
-            };
-            if custom.renderer.as_ref() == "nana.host-texture" {
-                layers.insert(
-                    primitive.node.get(),
-                    IcedCustomLayer {
-                        resource: custom.resource.to_string(),
-                    },
-                );
-            }
-        }
-        Some(layers)
-    });
-    ACTIVE_SCENE_CUSTOMS.with(|active| {
-        let previous = active.replace(layers);
+    ACTIVE_LAYOUT_BOXES.with(|active| {
+        let previous = active.replace(store);
         let _reset = Reset(previous);
         build()
     })
 }
 
-fn active_scene_custom(id: WidgetId) -> Option<IcedCustomLayer> {
-    ACTIVE_SCENE_CUSTOMS.with(|active| active.borrow().as_ref()?.get(&id).cloned())
+fn active_layout_box_store() -> Arc<LayoutBoxStore> {
+    ACTIVE_LAYOUT_BOXES
+        .with(|active| active.borrow().clone())
+        .unwrap_or_else(shared_layout_box_store)
+}
+
+fn with_active_scene<T>(scene: Option<&UiScene>, build: impl FnOnce() -> T) -> T {
+    struct Reset(Option<nana_ui::HostTextureSceneResolver>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTIVE_SCENE_HOST_TEXTURES.with(|active| {
+                active.replace(self.0.take());
+            });
+        }
+    }
+    let resolver = scene.map(|scene| {
+        ACTIVE_HOST_TEXTURES.with(|textures| {
+            let textures = textures.borrow().clone().unwrap_or_default();
+            nana_ui::HostTextureSceneResolver::new(scene, &textures)
+                .unwrap_or_else(|error| panic!("Vue scene cannot be presented: {error}"))
+        })
+    });
+    ACTIVE_SCENE_HOST_TEXTURES.with(|active| {
+        let previous = active.replace(resolver);
+        let _reset = Reset(previous);
+        build()
+    })
+}
+
+fn active_scene_host_texture(id: WidgetId) -> Option<HostTextureBinding> {
+    ACTIVE_SCENE_HOST_TEXTURES.with(|active| active.borrow().as_ref()?.binding(id))
 }
 
 fn with_active_native_components<T>(
@@ -215,12 +220,7 @@ pub fn writeback_iced_layout_boxes_with_scroll(
     apply: impl FnOnce(&[(NodeHandle, crate::LayoutBox)]),
 ) {
     writeback_iced_layout_boxes(apply);
-    crate::scroll::reapply_scroll_translations(
-        doc,
-        bridge,
-        &shared_layout_box_store(),
-        &crate::scroll::shared_scroll_offset_store(),
-    );
+    crate::scroll::reapply_scroll_translations(doc, bridge, &shared_layout_box_store());
 }
 
 /// Transparent iced wrapper that records absolute paint bounds into a
@@ -396,7 +396,7 @@ fn probe_layout<'a, Message: 'a>(
     id: WidgetId,
     content: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    LayoutProbe::new(id, shared_layout_box_store(), content).into()
+    LayoutProbe::new(id, active_layout_box_store(), content).into()
 }
 
 fn probe_transformed_layout<'a, Message: 'a>(
@@ -404,7 +404,7 @@ fn probe_transformed_layout<'a, Message: 'a>(
     content: Element<'a, Message>,
     transform: Option<crate::css_map::PaintTransform>,
 ) -> Element<'a, Message> {
-    LayoutProbe::new(id, shared_layout_box_store(), content)
+    LayoutProbe::new(id, active_layout_box_store(), content)
         .with_transform(transform)
         .into()
 }
@@ -447,7 +447,7 @@ where
     Message: Clone + 'a,
 {
     let build = || {
-        shared_layout_box_store().begin_frame();
+        active_layout_box_store().begin_frame();
         let parent = viewport
             .map(|(w, h)| ParentBox::from_viewport(w, h))
             .unwrap_or_default();
@@ -617,6 +617,7 @@ where
         canvas_runtime,
         components,
         None,
+        None,
         map_event,
     )
 }
@@ -632,19 +633,22 @@ pub(crate) fn view_semantic_tree_static_with_scene<Message>(
     canvas_runtime: Option<&SharedCanvasRuntime>,
     components: Option<&NativeComponentRegistry>,
     scene: Option<&UiScene>,
+    layout_boxes: Option<Arc<LayoutBoxStore>>,
     map_event: impl Fn(BridgeEvent) -> Message + Clone + 'static,
 ) -> Element<'static, Message>
 where
     Message: Clone + 'static,
 {
     let build = || {
-        with_active_host_textures(host_textures, || {
-            with_active_canvas(canvas_runtime, || {
-                with_active_native_components(components, || {
-                    with_active_scene(scene, || {
-                        view_semantic_tree_static_with_editors_inner(
-                            snap, tokens, viewport, editors, menus, map_event,
-                        )
+        with_active_layout_boxes(layout_boxes, || {
+            with_active_host_textures(host_textures, || {
+                with_active_canvas(canvas_runtime, || {
+                    with_active_native_components(components, || {
+                        with_active_scene(scene, || {
+                            view_semantic_tree_static_with_editors_inner(
+                                snap, tokens, viewport, editors, menus, map_event,
+                            )
+                        })
                     })
                 })
             })
@@ -668,7 +672,7 @@ fn view_semantic_tree_static_with_editors_inner<Message>(
 where
     Message: Clone + 'static,
 {
-    shared_layout_box_store().begin_frame();
+    active_layout_box_store().begin_frame();
     let parent = viewport
         .map(|(w, h)| ParentBox::from_viewport(w, h))
         .unwrap_or_default();
@@ -920,6 +924,7 @@ where
                 widget.props.placeholder.as_str()
             };
             Input::new(placeholder, widget.props.value.as_str())
+                .id(hosted_text_widget_id(id))
                 .size(widget.props.size)
                 .disabled(widget.props.disabled)
                 .on_input(move |value| map(BridgeEvent::Input { id, value }))
@@ -1662,6 +1667,7 @@ where
                 props.placeholder.clone()
             };
             Input::new(placeholder, props.value.clone())
+                .id(hosted_text_widget_id(wid))
                 .size(props.size)
                 .disabled(props.disabled)
                 .on_input(move |value| map(BridgeEvent::Input { id: wid, value }))

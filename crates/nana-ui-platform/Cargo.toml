@@ -6,6 +6,12 @@ rust-version = "1.92"
 description = "Android/desktop input, IME, clipboard, and fetch host boundary"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["clipboard", "fetch"]
+clipboard = ["dep:arboard"]
+fetch = ["dep:url", "dep:ureq"]
+experimental-android = []
+
 [lib]
 name = "nana_ui_platform"
 path = "src/lib.rs"
@@ -13,9 +19,9 @@ path = "src/lib.rs"
 [dependencies]
 nana-ui-core.workspace = true
 # Text-only OS clipboard (workspace patches Android stub in vendor/arboard).
-arboard = { version = "3.6", default-features = false }
-url.workspace = true
-ureq.workspace = true
+arboard = { version = "3.6", default-features = false, optional = true }
+url = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
