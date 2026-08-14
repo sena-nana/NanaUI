@@ -20,6 +20,62 @@ fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
     })
 }
 
+fn add_length_px(length: nana_ui_core::LengthSpec, offset: f32) -> nana_ui_core::LengthSpec {
+    use nana_ui_core::LengthSpec;
+    match length {
+        LengthSpec::Px(value) => LengthSpec::Px(value + offset),
+        LengthSpec::Percent(percent) => LengthSpec::CalcPercentOffset {
+            percent,
+            offset_px: offset,
+        },
+        LengthSpec::Em(em) => LengthSpec::CalcEmOffset {
+            em,
+            offset_px: offset,
+        },
+        LengthSpec::Rem(rem) => LengthSpec::CalcRemOffset {
+            rem,
+            offset_px: offset,
+        },
+        LengthSpec::Viewport { axis, value } => LengthSpec::CalcViewportOffset {
+            axis,
+            value,
+            offset_px: offset,
+        },
+        LengthSpec::CalcPercentOffset { percent, offset_px } => LengthSpec::CalcPercentOffset {
+            percent,
+            offset_px: offset_px + offset,
+        },
+        LengthSpec::CalcEmOffset { em, offset_px } => LengthSpec::CalcEmOffset {
+            em,
+            offset_px: offset_px + offset,
+        },
+        LengthSpec::CalcRemOffset { rem, offset_px } => LengthSpec::CalcRemOffset {
+            rem,
+            offset_px: offset_px + offset,
+        },
+        LengthSpec::CalcViewportOffset {
+            axis,
+            value,
+            offset_px,
+        } => LengthSpec::CalcViewportOffset {
+            axis,
+            value,
+            offset_px: offset_px + offset,
+        },
+        other => other,
+    }
+}
+
+fn format_range_value(value: f64, step: f64) -> Arc<str> {
+    let decimals = (0_i32..=6)
+        .find(|decimals| {
+            let scale = 10_f64.powi(*decimals);
+            (step * scale - (step * scale).round()).abs() <= f64::EPSILON * scale.max(1.0)
+        })
+        .unwrap_or(6) as usize;
+    Arc::from(format!("{value:.decimals$}"))
+}
+
 fn text_field_style(multiline: bool) -> NodeStyle {
     let mut layout = (*control_layout(nana_ui_core::UI_METRICS.field_padding_x)).clone();
     layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
@@ -200,7 +256,6 @@ impl Button {
         self.disabled = disabled;
         self
     }
-
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
@@ -243,15 +298,67 @@ impl ComponentView for Button {
 /// Compact action whose visible glyph is independent from its accessible name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IconButton {
-    pub glyph: String,
+    pub icon: nana_ui_core::Icon,
     pub label: Arc<str>,
+    pub kind: nana_ui_core::ButtonKind,
+    pub size: nana_ui_core::ControlSize,
+    pub selected: bool,
     pub disabled: bool,
+    pub tooltip: Option<IconButtonTooltip>,
+    pub(crate) tooltip_open: bool,
     pub style: NodeStyle,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconButtonTooltip {
+    pub label: Arc<str>,
+    pub config: nana_ui_core::TooltipConfig,
+}
+
 impl IconButton {
-    pub fn new(glyph: impl Into<String>, label: impl Into<Arc<str>>) -> Self {
-        let mut style = Button::new("").style;
+    pub fn new(icon: nana_ui_core::Icon, label: impl Into<Arc<str>>) -> Self {
+        let mut style = NodeStyle {
+            foreground: Some(nana_ui_core::SemanticColorRole::Muted),
+            interaction: crate::InteractionStyle {
+                selected: SemanticPaint {
+                    foreground: Some(nana_ui_core::SemanticColorRole::AccentOnSoft),
+                    background: Some(nana_ui_core::SemanticColorRole::AccentSoft),
+                    ..SemanticPaint::default()
+                },
+                selected_hovered: SemanticPaint {
+                    foreground: Some(nana_ui_core::SemanticColorRole::AccentOnSoft),
+                    background: Some(nana_ui_core::SemanticColorRole::AccentSoftHover),
+                    ..SemanticPaint::default()
+                },
+                selected_pressed: SemanticPaint {
+                    foreground: Some(nana_ui_core::SemanticColorRole::AccentOnSoft),
+                    background: Some(nana_ui_core::SemanticColorRole::AccentSoftPressed),
+                    ..SemanticPaint::default()
+                },
+                hovered: SemanticPaint {
+                    foreground: Some(nana_ui_core::SemanticColorRole::Text),
+                    background: Some(nana_ui_core::SemanticColorRole::Hover),
+                    ..SemanticPaint::default()
+                },
+                pressed: SemanticPaint {
+                    foreground: Some(nana_ui_core::SemanticColorRole::Text),
+                    background: Some(nana_ui_core::SemanticColorRole::Active),
+                    ..SemanticPaint::default()
+                },
+                focused: SemanticPaint {
+                    border: Some(nana_ui_core::SemanticColorRole::Accent),
+                    ..SemanticPaint::default()
+                },
+                disabled: SemanticPaint {
+                    foreground: Some(nana_ui_core::SemanticColorRole::Faint),
+                    ..SemanticPaint::default()
+                },
+            },
+            text_horizontal_alignment: TextHorizontalAlignment::Center,
+            text_vertical_alignment: TextVerticalAlignment::Center,
+            ..NodeStyle::default()
+        };
+        style.layout = control_layout(nana_ui_core::UI_METRICS.compact_control_padding_x);
         let layout = Arc::make_mut(&mut style.layout);
         layout.padding_left = Some(nana_ui_core::LengthSpec::Px(
             nana_ui_core::UI_METRICS.compact_control_padding_x,
@@ -262,18 +369,48 @@ impl IconButton {
         ));
         layout.min_height = layout.min_width;
         Self {
-            glyph: glyph.into(),
+            icon,
             label: label.into(),
+            kind: nana_ui_core::ButtonKind::Ghost,
+            size: nana_ui_core::ControlSize::Medium,
+            selected: false,
             disabled: false,
+            tooltip: None,
+            tooltip_open: false,
             style,
         }
     }
 
+    pub fn kind(mut self, kind: nana_ui_core::ButtonKind) -> Self {
+        self.kind = kind;
+        self
+    }
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.min_width = Some(nana_ui_core::LengthSpec::Px(size.height()));
+        layout.min_height = layout.min_width;
+        self
+    }
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+    pub fn tooltip(
+        mut self,
+        label: impl Into<Arc<str>>,
+        config: nana_ui_core::TooltipConfig,
+    ) -> Self {
+        self.tooltip = Some(IconButtonTooltip {
+            label: label.into(),
+            config,
+        });
+        self
+    }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
-
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
@@ -288,19 +425,69 @@ impl ComponentView for IconButton {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != Some(self.glyph.as_str()) {
-            mutations.set_text(
-                id,
-                TextContent {
-                    value: self.glyph.clone(),
-                },
-            );
+        if self.tooltip.is_some() && world.overlay_host(id).is_none() {
+            mutations.set_overlay_host(id, OverlayHostState::default());
+        }
+        let visual = StandardVisual::Icon {
+            icon: self.icon,
+            size: self.size.icon_size(),
+            tooltip: self.tooltip.as_ref().map(|tooltip| crate::TooltipVisual {
+                label: Arc::clone(&tooltip.label),
+                config: tooltip.config,
+                open: self.tooltip_open,
+            }),
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        let mut effective_style = self.style.clone();
+        effective_style.background = match self.kind {
+            nana_ui_core::ButtonKind::Primary => Some(nana_ui_core::SemanticColorRole::Accent),
+            nana_ui_core::ButtonKind::Subtle => Some(nana_ui_core::SemanticColorRole::Subtle),
+            nana_ui_core::ButtonKind::Selected => Some(nana_ui_core::SemanticColorRole::Selected),
+            _ => None,
+        };
+        effective_style.foreground = Some(match self.kind {
+            nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentText,
+            nana_ui_core::ButtonKind::Warning => nana_ui_core::SemanticColorRole::Warning,
+            nana_ui_core::ButtonKind::Danger => nana_ui_core::SemanticColorRole::Danger,
+            _ => nana_ui_core::SemanticColorRole::Muted,
+        });
+        effective_style.interaction.hovered.background = Some(match self.kind {
+            nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentStrong,
+            nana_ui_core::ButtonKind::Subtle
+            | nana_ui_core::ButtonKind::Selected
+            | nana_ui_core::ButtonKind::Ghost
+            | nana_ui_core::ButtonKind::Warning
+            | nana_ui_core::ButtonKind::Danger
+            | nana_ui_core::ButtonKind::Text => nana_ui_core::SemanticColorRole::Hover,
+        });
+        effective_style.interaction.pressed.background = Some(match self.kind {
+            nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentStrong,
+            _ => nana_ui_core::SemanticColorRole::Active,
+        });
+        effective_style.interaction.selected.foreground =
+            Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
+        effective_style.interaction.selected.background =
+            Some(nana_ui_core::SemanticColorRole::AccentSoft);
+        effective_style.interaction.selected_hovered.foreground =
+            Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
+        effective_style.interaction.selected_hovered.background =
+            Some(nana_ui_core::SemanticColorRole::AccentSoftHover);
+        effective_style.interaction.selected_pressed.foreground =
+            Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
+        effective_style.interaction.selected_pressed.background =
+            Some(nana_ui_core::SemanticColorRole::AccentSoftPressed);
+        let selected = self.selected || self.kind == nana_ui_core::ButtonKind::Selected;
+        if selected {
+            effective_style.background = Some(nana_ui_core::SemanticColorRole::AccentSoft);
+            effective_style.foreground = Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
         }
         project_common(
             id,
             world,
             mutations,
-            &self.style,
+            &effective_style,
             InteractionState {
                 pointer_events: !self.disabled,
                 focusable: !self.disabled,
@@ -309,6 +496,7 @@ impl ComponentView for IconButton {
                 role: AccessibilityRole::Button,
                 label: Some(Arc::clone(&self.label)),
                 disabled: self.disabled,
+                selected: Some(selected),
                 ..AccessibilityState::default()
             },
         );
@@ -318,14 +506,20 @@ impl ComponentView for IconButton {
 /// Non-interactive content surface. Actions belong to explicit child controls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Card {
-    pub label: Option<Arc<str>>,
+    pub title: Option<Arc<str>>,
+    pub kind: nana_ui_core::CardKind,
+    pub loading: bool,
+    pub(crate) loading_phase: f32,
     pub style: NodeStyle,
 }
 
 impl Card {
     pub fn new() -> Self {
         Self {
-            label: None,
+            title: None,
+            kind: nana_ui_core::CardKind::Surface,
+            loading: false,
+            loading_phase: 0.0,
             style: NodeStyle {
                 layout: Arc::new(nana_ui_core::LayoutStyle {
                     padding_left: Some(nana_ui_core::LengthSpec::Px(
@@ -352,7 +546,32 @@ impl Card {
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.label = Some(label.into());
+        self.title = Some(label.into());
+        self
+    }
+    pub fn title(self, title: impl Into<Arc<str>>) -> Self {
+        self.label(title)
+    }
+    pub fn kind(mut self, kind: nana_ui_core::CardKind) -> Self {
+        self.kind = kind;
+        self
+    }
+    pub fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+    pub fn padding(mut self, padding: f32) -> Self {
+        let layout = Arc::make_mut(&mut self.style.layout);
+        let value = nana_ui_core::LengthSpec::Px(padding.max(0.0));
+        layout.padding_left = Some(value);
+        layout.padding_right = Some(value);
+        layout.padding_top = Some(value);
+        layout.padding_bottom = Some(value);
+        self
+    }
+    pub fn height(mut self, height: f32) -> Self {
+        Arc::make_mut(&mut self.style.layout).height =
+            Some(nana_ui_core::LengthSpec::Px(height.max(0.0)));
         self
     }
 
@@ -374,14 +593,71 @@ impl ComponentView for Card {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != self.title.as_deref() {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: self.title.as_deref().unwrap_or_default().to_owned(),
+                },
+            );
+        }
+        let visual = StandardVisual::Card {
+            title: self.title.clone(),
+            kind: self.kind,
+            loading: self.loading,
+            loading_phase: self.loading_phase,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        let mut effective_style = self.style.clone();
+        let layout = Arc::make_mut(&mut effective_style.layout);
+        match self.kind {
+            nana_ui_core::CardKind::Surface => {
+                effective_style.background = Some(nana_ui_core::SemanticColorRole::Surface);
+                effective_style.border = Some(nana_ui_core::SemanticColorRole::Border);
+                layout.border_width = Some(1.0);
+            }
+            nana_ui_core::CardKind::Outlined => {
+                effective_style.background = None;
+                effective_style.border = Some(nana_ui_core::SemanticColorRole::BorderStrong);
+                layout.border_width = Some(1.0);
+            }
+            nana_ui_core::CardKind::Raised => {
+                effective_style.background = Some(nana_ui_core::SemanticColorRole::Surface);
+                effective_style.border = Some(nana_ui_core::SemanticColorRole::BorderSoft);
+                layout.border_width = Some(1.0);
+            }
+            nana_ui_core::CardKind::Flat => {
+                effective_style.background = None;
+                effective_style.border = None;
+                layout.border_width = Some(0.0);
+            }
+            nana_ui_core::CardKind::Selected => {
+                effective_style.background = Some(nana_ui_core::SemanticColorRole::Selected);
+                effective_style.border = Some(nana_ui_core::SemanticColorRole::BorderSoft);
+                layout.border_width = Some(1.0);
+            }
+        }
+        if self.title.is_some() {
+            let base =
+                layout
+                    .padding_top
+                    .or(layout.padding)
+                    .unwrap_or(nana_ui_core::LengthSpec::Px(
+                        nana_ui_core::UI_METRICS.panel_padding_y,
+                    ));
+            layout.padding_top = Some(add_length_px(base, 24.0));
+        }
         project_common(
             id,
             world,
             mutations,
-            &self.style,
+            &effective_style,
             InteractionState::default(),
             AccessibilityState {
-                label: self.label.clone(),
+                label: self.title.clone(),
+                busy: self.loading,
                 ..AccessibilityState::default()
             },
         );
@@ -393,12 +669,26 @@ pub struct ListItem {
     pub label: String,
     pub selected: bool,
     pub disabled: bool,
+    pub(crate) slots: ListItemSlots,
+    pub gap: f32,
+    pub size: nana_ui_core::ControlSize,
+    pub auto_height: bool,
     pub style: NodeStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ListItemSlots {
+    pub leading: Option<StableNodeId>,
+    pub content: Option<StableNodeId>,
+    pub trailing: Option<StableNodeId>,
 }
 
 impl ListItem {
     pub fn new(label: impl Into<String>) -> Self {
         let mut layout = (*control_layout(nana_ui_core::UI_METRICS.list_item_padding_x)).clone();
+        layout.direction = Some(nana_ui_core::FlexDirection::Row);
+        layout.align_items = nana_ui_core::AlignSpec::Center;
+        layout.gap = Some(nana_ui_core::LengthSpec::Px(8.0));
         layout.min_height = Some(nana_ui_core::LengthSpec::Px(
             nana_ui_core::UI_METRICS.selection_height,
         ));
@@ -406,12 +696,26 @@ impl ListItem {
             label: label.into(),
             selected: false,
             disabled: false,
+            slots: ListItemSlots::default(),
+            gap: 8.0,
+            size: nana_ui_core::ControlSize::Small,
+            auto_height: false,
             style: NodeStyle {
                 layout: Arc::new(layout),
-                background: Some(nana_ui_core::SemanticColorRole::Surface),
+                background: None,
                 interaction: crate::InteractionStyle {
                     selected: SemanticPaint {
                         background: Some(nana_ui_core::SemanticColorRole::Selected),
+                        ..SemanticPaint::default()
+                    },
+                    selected_hovered: SemanticPaint {
+                        background: Some(nana_ui_core::SemanticColorRole::SelectedHover),
+                        border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
+                        ..SemanticPaint::default()
+                    },
+                    selected_pressed: SemanticPaint {
+                        background: Some(nana_ui_core::SemanticColorRole::SelectedPressed),
+                        border: Some(nana_ui_core::SemanticColorRole::Accent),
                         ..SemanticPaint::default()
                     },
                     hovered: SemanticPaint {
@@ -431,7 +735,6 @@ impl ListItem {
                         background: Some(nana_ui_core::SemanticColorRole::Subtle),
                         ..SemanticPaint::default()
                     },
-                    ..crate::InteractionStyle::default()
                 },
                 text_vertical_alignment: TextVerticalAlignment::Center,
                 ..NodeStyle::default()
@@ -446,6 +749,32 @@ impl ListItem {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+    /// Declarative projection hook for adapters that already own and validate
+    /// the retained hierarchy. Direct Runtime consumers should prefer
+    /// `AppContext::set_list_item_slots`, which validates and orders children
+    /// atomically.
+    pub fn slots(mut self, slots: ListItemSlots) -> Self {
+        self.slots = slots;
+        self
+    }
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap.max(0.0);
+        Arc::make_mut(&mut self.style.layout).gap = Some(nana_ui_core::LengthSpec::Px(self.gap));
+        self
+    }
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        Arc::make_mut(&mut self.style.layout).min_height =
+            Some(nana_ui_core::LengthSpec::Px(size.height()));
+        self
+    }
+    pub fn auto_height(mut self, auto_height: bool) -> Self {
+        self.auto_height = auto_height;
+        if auto_height {
+            Arc::make_mut(&mut self.style.layout).min_height = None;
+        }
         self
     }
 
@@ -463,13 +792,26 @@ impl ComponentView for ListItem {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != Some(self.label.as_str()) {
+        let visible_label = if self.slots.content.is_none() {
+            self.label.as_str()
+        } else {
+            ""
+        };
+        if world.text(id) != Some(visible_label) {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.label.clone(),
+                    value: visible_label.to_owned(),
                 },
             );
+        }
+        let visual = StandardVisual::ListItem {
+            leading: self.slots.leading,
+            content: self.slots.content,
+            trailing: self.slots.trailing,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -893,14 +1235,23 @@ impl ComponentView for MenuItem {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tooltip {
     pub label: Arc<str>,
+    pub config: nana_ui_core::TooltipConfig,
     pub style: NodeStyle,
 }
 
 impl Tooltip {
     pub fn new(label: impl Into<Arc<str>>) -> Self {
+        Self::with_config(label, nana_ui_core::TooltipConfig::default())
+    }
+
+    pub fn with_config(label: impl Into<Arc<str>>, config: nana_ui_core::TooltipConfig) -> Self {
+        let mut style = overlay_surface_style(config.max_width.max(0.0));
+        Arc::make_mut(&mut style.layout).max_width =
+            Some(nana_ui_core::LengthSpec::Px(config.max_width.max(0.0)));
         Self {
             label: label.into(),
-            style: overlay_surface_style(320.0),
+            config,
+            style,
         }
     }
 }
@@ -964,7 +1315,7 @@ fn overlay_surface_style(max_width: f32) -> NodeStyle {
     }
 }
 
-fn toggle_style() -> NodeStyle {
+fn checkbox_style() -> NodeStyle {
     NodeStyle {
         foreground: Some(nana_ui_core::SemanticColorRole::Text),
         background: Some(nana_ui_core::SemanticColorRole::Background),
@@ -976,22 +1327,23 @@ fn toggle_style() -> NodeStyle {
                 ..SemanticPaint::default()
             },
             selected_hovered: SemanticPaint {
-                background: Some(nana_ui_core::SemanticColorRole::Accent),
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                background: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
                 ..SemanticPaint::default()
             },
             selected_pressed: SemanticPaint {
-                background: Some(nana_ui_core::SemanticColorRole::Accent),
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                background: Some(nana_ui_core::SemanticColorRole::Active),
+                border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
                 ..SemanticPaint::default()
             },
             hovered: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                background: Some(nana_ui_core::SemanticColorRole::Hover),
+                border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
                 ..SemanticPaint::default()
             },
             pressed: SemanticPaint {
-                background: Some(nana_ui_core::SemanticColorRole::Background),
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                background: Some(nana_ui_core::SemanticColorRole::Active),
+                border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
                 ..SemanticPaint::default()
             },
             focused: SemanticPaint {
@@ -999,10 +1351,41 @@ fn toggle_style() -> NodeStyle {
                 ..SemanticPaint::default()
             },
             disabled: SemanticPaint {
-                foreground: Some(nana_ui_core::SemanticColorRole::Faint),
+                foreground: Some(nana_ui_core::SemanticColorRole::Muted),
                 background: Some(nana_ui_core::SemanticColorRole::Subtle),
                 border: Some(nana_ui_core::SemanticColorRole::Border),
             },
+        },
+        text_vertical_alignment: TextVerticalAlignment::Center,
+        ..NodeStyle::default()
+    }
+}
+
+fn switch_style() -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            border_radius: Some(nana_ui_core::UI_METRICS.radius_sm),
+            ..nana_ui_core::LayoutStyle::default()
+        }),
+        foreground: Some(nana_ui_core::SemanticColorRole::Text),
+        interaction: crate::InteractionStyle {
+            hovered: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Hover),
+                ..SemanticPaint::default()
+            },
+            pressed: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Active),
+                ..SemanticPaint::default()
+            },
+            focused: SemanticPaint {
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                ..SemanticPaint::default()
+            },
+            disabled: SemanticPaint {
+                foreground: Some(nana_ui_core::SemanticColorRole::Muted),
+                ..SemanticPaint::default()
+            },
+            ..crate::InteractionStyle::default()
         },
         text_vertical_alignment: TextVerticalAlignment::Center,
         ..NodeStyle::default()
@@ -1023,7 +1406,7 @@ impl Checkbox {
             label: label.into(),
             checked,
             disabled: false,
-            style: toggle_style(),
+            style: checkbox_style(),
         }
     }
 
@@ -1057,7 +1440,7 @@ impl ComponentView for Checkbox {
         let visual = StandardVisual::Checkbox {
             checked: self.checked,
         };
-        if world.standard_visual(id) != Some(visual) {
+        if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
         project_common(
@@ -1083,8 +1466,14 @@ impl ComponentView for Checkbox {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Switch {
     pub label: String,
+    pub hint: Option<Arc<str>>,
     pub checked: bool,
+    pub control_position: nana_ui_core::SwitchControlPosition,
+    pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
+    pub loading: bool,
+    pub(crate) loading_phase: f32,
+    pub invalid: bool,
     pub style: NodeStyle,
 }
 
@@ -1092,14 +1481,42 @@ impl Switch {
     pub fn new(label: impl Into<String>, checked: bool) -> Self {
         Self {
             label: label.into(),
+            hint: None,
             checked,
+            control_position: nana_ui_core::SwitchControlPosition::End,
+            size: nana_ui_core::ControlSize::Medium,
             disabled: false,
-            style: toggle_style(),
+            loading: false,
+            loading_phase: 0.0,
+            invalid: false,
+            style: switch_style(),
         }
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+    pub fn hint(mut self, hint: impl Into<Arc<str>>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+    pub fn control_position(mut self, position: nana_ui_core::SwitchControlPosition) -> Self {
+        self.control_position = position;
+        self
+    }
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        Arc::make_mut(&mut self.style.layout).min_height =
+            Some(nana_ui_core::LengthSpec::Px(size.height()));
+        self
+    }
+    pub fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
         self
     }
 
@@ -1117,34 +1534,60 @@ impl ComponentView for Switch {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != Some(self.label.as_str()) {
+        if world.text(id).is_some_and(|text| !text.is_empty()) {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.label.clone(),
+                    value: String::new(),
                 },
             );
         }
         let visual = StandardVisual::Switch {
+            label: Arc::from(self.label.as_str()),
+            hint: self.hint.clone(),
             checked: self.checked,
+            control_position: self.control_position,
+            size: self.size,
+            loading: self.loading,
+            loading_phase: self.loading_phase,
+            invalid: self.invalid,
         };
-        if world.standard_visual(id) != Some(visual) {
+        if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
+        let mut effective_style = self.style.clone();
+        let layout = Arc::make_mut(&mut effective_style.layout);
+        if layout.width.is_none() {
+            layout.width = Some(nana_ui_core::LengthSpec::Fill);
+        }
+        layout.min_height = Some(nana_ui_core::LengthSpec::Px(if self.hint.is_some() {
+            42.0
+        } else {
+            self.size.height()
+        }));
+        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(self.size.padding_x()));
+        layout.padding_right = layout.padding_left;
+        if self.invalid {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+        }
+        effective_style.interaction.disabled.foreground =
+            Some(nana_ui_core::SemanticColorRole::Muted);
         project_common(
             id,
             world,
             mutations,
-            &self.style,
+            &effective_style,
             InteractionState {
-                pointer_events: !self.disabled,
-                focusable: !self.disabled,
+                pointer_events: !self.disabled && !self.loading,
+                focusable: !self.disabled && !self.loading,
             },
             AccessibilityState {
                 role: AccessibilityRole::Switch,
                 label: Some(Arc::from(self.label.as_str())),
                 disabled: self.disabled,
                 checked: Some(self.checked),
+                busy: self.loading,
+                invalid: self.invalid,
                 ..AccessibilityState::default()
             },
         );
@@ -1233,7 +1676,7 @@ impl ComponentView for Slider {
         let visual = StandardVisual::Slider {
             ratio: self.ratio(),
         };
-        if world.standard_visual(id) != Some(visual) {
+        if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
         project_common(
@@ -1250,6 +1693,184 @@ impl ComponentView for Slider {
                 label: self.label.clone(),
                 value: Some(Arc::from(self.value.to_string())),
                 disabled: self.disabled,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeField {
+    pub value: f64,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub step: f64,
+    pub page_step: f64,
+    pub label: Option<Arc<str>>,
+    pub unit: Option<Arc<str>>,
+    pub size: nana_ui_core::ControlSize,
+    pub disabled: bool,
+    pub invalid: bool,
+    pub dragging: Option<RangeDragState>,
+    pub style: NodeStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeDragState {
+    pub pointer_id: u64,
+    pub initial_value: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeChanged {
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeAdjustment {
+    Decrement,
+    Increment,
+    PageDecrement,
+    PageIncrement,
+    Minimum,
+    Maximum,
+}
+
+impl RangeField {
+    pub fn new(value: f64, minimum: f64, maximum: f64, step: f64) -> Result<Self, SliderError> {
+        if !value.is_finite() || !minimum.is_finite() || !maximum.is_finite() || !step.is_finite() {
+            return Err(SliderError::NonFinite);
+        }
+        if minimum >= maximum || step <= 0.0 {
+            return Err(SliderError::InvalidRange);
+        }
+        if !(minimum..=maximum).contains(&value) {
+            return Err(SliderError::OutOfRange);
+        }
+        let mut field = Self {
+            value,
+            minimum,
+            maximum,
+            step,
+            page_step: step * 10.0,
+            label: None,
+            unit: None,
+            size: nana_ui_core::ControlSize::Medium,
+            disabled: false,
+            invalid: false,
+            dragging: None,
+            style: Slider::new(value as f32, minimum as f32, maximum as f32)?.style,
+        };
+        field.value = field.quantize(value);
+        Ok(field)
+    }
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn unit(mut self, unit: impl Into<Arc<str>>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+    pub fn page_step(mut self, page_step: f64) -> Result<Self, SliderError> {
+        if !page_step.is_finite() {
+            return Err(SliderError::NonFinite);
+        }
+        if page_step <= 0.0 {
+            return Err(SliderError::InvalidRange);
+        }
+        self.page_step = page_step;
+        Ok(self)
+    }
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+    pub fn ratio(&self) -> f32 {
+        ((self.value - self.minimum) / (self.maximum - self.minimum)) as f32
+    }
+    pub fn quantize(&self, value: f64) -> f64 {
+        let steps = ((value.clamp(self.minimum, self.maximum) - self.minimum) / self.step).round();
+        (self.minimum + steps * self.step).clamp(self.minimum, self.maximum)
+    }
+}
+
+impl ComponentView for RangeField {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "range-field".into(),
+        }
+    }
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let value = format_range_value(self.value, self.step);
+        let visual = StandardVisual::Range {
+            label: self.label.clone(),
+            value: Arc::clone(&value),
+            unit: self.unit.clone(),
+            size: self.size,
+            ratio: self.ratio(),
+            invalid: self.invalid,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        if world.text(id).is_some_and(|text| !text.is_empty()) {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        let mut effective_style = self.style.clone();
+        let layout = Arc::make_mut(&mut effective_style.layout);
+        if layout.width.is_none() {
+            layout.width = Some(nana_ui_core::LengthSpec::Fill);
+        }
+        layout.min_height = Some(nana_ui_core::LengthSpec::Px(self.size.height()));
+        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::UI_METRICS.field_padding_x,
+        ));
+        layout.padding_right = layout.padding_left;
+        if self.invalid {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+        }
+        effective_style.interaction.disabled.foreground =
+            Some(nana_ui_core::SemanticColorRole::Muted);
+        project_common(
+            id,
+            world,
+            mutations,
+            &effective_style,
+            InteractionState {
+                pointer_events: !self.disabled,
+                focusable: !self.disabled,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Slider,
+                label: self.label.clone(),
+                value: Some(match &self.unit {
+                    Some(unit) => Arc::from(format!("{} {}", value, unit)),
+                    None => value,
+                }),
+                disabled: self.disabled,
+                invalid: self.invalid,
+                numeric_minimum: Some(self.minimum),
+                numeric_maximum: Some(self.maximum),
+                numeric_step: Some(self.step),
+                numeric_value: Some(self.value),
                 ..AccessibilityState::default()
             },
         );
