@@ -21,9 +21,9 @@ pub use components::{
     ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode, EventRoute,
     ExtractedNode, ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput,
     NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, SemanticPaint,
-    StandardVisual, TextContent, TextHorizontalAlignment, TextInputState, TextMetrics,
-    TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment,
-    TooltipVisual,
+    StandardVisual, TextContent, TextHorizontalAlignment, TextInputPresentation, TextInputState,
+    TextMetrics, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
+    TextVerticalAlignment, TooltipVisual,
 };
 pub use framework::{
     AppContext, Entity, ExtensionRegistrar, FrameworkError, Subscription, Task, UiExtension, View,

@@ -78,11 +78,15 @@ fn format_range_value(value: f64, step: f64) -> Arc<str> {
 
 fn text_field_style(multiline: bool) -> NodeStyle {
     let mut layout = (*control_layout(nana_ui_core::UI_METRICS.field_padding_x)).clone();
+    layout.width = Some(nana_ui_core::LengthSpec::Percent(100.0));
     layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
         nana_ui_core::ControlSize::Medium.line_height(),
     ));
     if multiline {
         layout.min_height = Some(nana_ui_core::LengthSpec::Px(96.0));
+    } else {
+        layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
+        layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
     }
     NodeStyle {
         layout: Arc::new(layout),
@@ -117,6 +121,9 @@ struct TextFieldProjection<'a> {
     state: &'a TextInputState,
     label: &'a Option<Arc<str>>,
     disabled: bool,
+    busy: bool,
+    editable: bool,
+    invalid: bool,
     multiline: bool,
     style: &'a NodeStyle,
 }
@@ -129,6 +136,9 @@ fn project_text_field(
 ) {
     if world.text_input(id) != Some(field.state) {
         mutations.set_text_input(id, Some(field.state.clone()));
+    }
+    if !field.editable && world.ime(id).is_some() {
+        mutations.set_ime(id, None);
     }
     project_common(
         id,
@@ -143,8 +153,10 @@ fn project_text_field(
             role: AccessibilityRole::TextInput,
             label: field.label.clone(),
             disabled: field.disabled,
+            busy: field.busy,
+            invalid: field.invalid,
             multiline: field.multiline,
-            editable: true,
+            editable: field.editable,
             ..AccessibilityState::default()
         },
     );
@@ -210,8 +222,14 @@ impl ComponentView for Text {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Button {
     pub label: String,
+    pub kind: nana_ui_core::ButtonKind,
+    pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
+    pub loading: bool,
+    pub(crate) loading_phase: f32,
+    pub invalid: bool,
     pub style: NodeStyle,
+    pub(crate) style_override: bool,
 }
 
 impl Button {
@@ -220,19 +238,24 @@ impl Button {
         layout.font_weight = Some(500);
         Self {
             label: label.into(),
+            kind: nana_ui_core::ButtonKind::Ghost,
+            size: nana_ui_core::ControlSize::Medium,
             disabled: false,
+            loading: false,
+            loading_phase: 0.0,
+            invalid: false,
             style: NodeStyle {
                 layout: Arc::new(layout),
-                foreground: Some(nana_ui_core::SemanticColorRole::AccentOnSoft),
-                background: Some(nana_ui_core::SemanticColorRole::AccentSoft),
+                foreground: Some(nana_ui_core::SemanticColorRole::Text),
+                background: None,
                 border: None,
                 interaction: crate::InteractionStyle {
                     hovered: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::AccentSoftHover),
+                        background: Some(nana_ui_core::SemanticColorRole::Hover),
                         ..SemanticPaint::default()
                     },
                     pressed: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::AccentSoftPressed),
+                        background: Some(nana_ui_core::SemanticColorRole::Active),
                         ..SemanticPaint::default()
                     },
                     focused: SemanticPaint {
@@ -249,15 +272,52 @@ impl Button {
                 text_horizontal_alignment: TextHorizontalAlignment::Center,
                 text_vertical_alignment: TextVerticalAlignment::Center,
             },
+            style_override: false,
         }
+    }
+
+    pub fn kind(mut self, kind: nana_ui_core::ButtonKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Replace host-owned outer layout without opting out of Button semantic
+    /// paint. Apply [`Self::size`] afterwards when the size contract owns
+    /// padding, height and typography.
+    pub fn layout(mut self, layout: Arc<nana_ui_core::LayoutStyle>) -> Self {
+        self.style.layout = layout;
+        self
+    }
+
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(size.padding_x()));
+        layout.padding_right = layout.padding_left;
+        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
+        layout.font_size = Some(size.text_size());
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
+        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
+
+    pub fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
+        self.style_override = true;
         self
     }
 }
@@ -276,19 +336,120 @@ impl ComponentView for Button {
         if world.text(id) != Some(text.value.as_str()) {
             mutations.set_text(id, text);
         }
+        let visual = StandardVisual::Button {
+            label: Arc::from(self.label.as_str()),
+            kind: self.kind,
+            size: self.size,
+            loading: self.loading,
+            loading_phase: self.loading_phase,
+            invalid: self.invalid,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        let mut effective_style = self.style.clone();
+        let layout = Arc::make_mut(&mut effective_style.layout);
+        if self.loading {
+            layout.padding_left = Some(
+                layout
+                    .padding_left
+                    .map_or(nana_ui_core::LengthSpec::Px(10.0), |padding| {
+                        add_length_px(padding, 10.0)
+                    }),
+            );
+            layout.padding_right = Some(
+                layout
+                    .padding_right
+                    .map_or(nana_ui_core::LengthSpec::Px(10.0), |padding| {
+                        add_length_px(padding, 10.0)
+                    }),
+            );
+        }
+        if !self.style_override {
+            effective_style.foreground = Some(match self.kind {
+                nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentOnSoft,
+                nana_ui_core::ButtonKind::Warning => nana_ui_core::SemanticColorRole::Warning,
+                nana_ui_core::ButtonKind::Danger => nana_ui_core::SemanticColorRole::Danger,
+                nana_ui_core::ButtonKind::Text => nana_ui_core::SemanticColorRole::Accent,
+                nana_ui_core::ButtonKind::Ghost
+                | nana_ui_core::ButtonKind::Subtle
+                | nana_ui_core::ButtonKind::Selected => nana_ui_core::SemanticColorRole::Text,
+            });
+            effective_style.background = match self.kind {
+                nana_ui_core::ButtonKind::Ghost
+                | nana_ui_core::ButtonKind::Danger
+                | nana_ui_core::ButtonKind::Text => None,
+                nana_ui_core::ButtonKind::Subtle => Some(nana_ui_core::SemanticColorRole::Subtle),
+                nana_ui_core::ButtonKind::Selected => {
+                    Some(nana_ui_core::SemanticColorRole::Selected)
+                }
+                nana_ui_core::ButtonKind::Primary => {
+                    Some(nana_ui_core::SemanticColorRole::AccentSoft)
+                }
+                nana_ui_core::ButtonKind::Warning => {
+                    Some(nana_ui_core::SemanticColorRole::WarningSoft)
+                }
+            };
+            effective_style.border = if self.kind == nana_ui_core::ButtonKind::Subtle {
+                Some(nana_ui_core::SemanticColorRole::BorderSoft)
+            } else {
+                None
+            };
+            effective_style.interaction.hovered.background = Some(match self.kind {
+                nana_ui_core::ButtonKind::Primary => {
+                    nana_ui_core::SemanticColorRole::AccentSoftHover
+                }
+                nana_ui_core::ButtonKind::Warning => {
+                    nana_ui_core::SemanticColorRole::WarningSoftHover
+                }
+                nana_ui_core::ButtonKind::Danger => {
+                    nana_ui_core::SemanticColorRole::DangerSoftHover
+                }
+                nana_ui_core::ButtonKind::Selected => {
+                    nana_ui_core::SemanticColorRole::SelectedHover
+                }
+                _ => nana_ui_core::SemanticColorRole::Hover,
+            });
+            effective_style.interaction.pressed.background = Some(match self.kind {
+                nana_ui_core::ButtonKind::Primary => {
+                    nana_ui_core::SemanticColorRole::AccentSoftPressed
+                }
+                nana_ui_core::ButtonKind::Warning => {
+                    nana_ui_core::SemanticColorRole::WarningSoftPressed
+                }
+                nana_ui_core::ButtonKind::Danger => {
+                    nana_ui_core::SemanticColorRole::DangerSoftPressed
+                }
+                nana_ui_core::ButtonKind::Selected => {
+                    nana_ui_core::SemanticColorRole::SelectedPressed
+                }
+                _ => nana_ui_core::SemanticColorRole::Active,
+            });
+        }
+        if self.invalid {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.hovered.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.pressed.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.focused.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+        }
         project_common(
             id,
             world,
             mutations,
-            &self.style,
+            &effective_style,
             InteractionState {
-                pointer_events: !self.disabled,
-                focusable: !self.disabled,
+                pointer_events: !self.disabled && !self.loading,
+                focusable: !self.disabled && !self.loading,
             },
             AccessibilityState {
                 role: AccessibilityRole::Button,
                 label: Some(Arc::from(self.label.as_str())),
-                disabled: self.disabled,
+                disabled: self.disabled || self.loading,
+                busy: self.loading,
+                invalid: self.invalid,
                 ..AccessibilityState::default()
             },
         );
@@ -904,8 +1065,15 @@ impl std::error::Error for SliderError {}
 pub struct TextInput {
     pub state: TextInputState,
     pub label: Option<Arc<str>>,
+    pub placeholder: Arc<str>,
+    pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
+    pub loading: bool,
+    pub read_only: bool,
+    pub secure: bool,
+    pub invalid: bool,
     pub style: NodeStyle,
+    pub(crate) style_override: bool,
 }
 
 impl TextInput {
@@ -913,8 +1081,15 @@ impl TextInput {
         Self {
             state: TextInputState::new(value),
             label: None,
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
             disabled: false,
+            loading: false,
+            read_only: false,
+            secure: false,
+            invalid: false,
             style: text_field_style(false),
+            style_override: false,
         }
     }
 
@@ -928,8 +1103,52 @@ impl TextInput {
         self
     }
 
+    pub fn placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Replace host-owned outer layout while retaining TextInput semantic
+    /// paint and interaction states.
+    pub fn layout(mut self, layout: Arc<nana_ui_core::LayoutStyle>) -> Self {
+        self.style.layout = layout;
+        self
+    }
+
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(size.padding_x()));
+        layout.padding_right = layout.padding_left;
+        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
+        layout.font_size = Some(size.text_size());
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
+        self
+    }
+
+    pub fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
+        self.style_override = true;
         self
     }
 
@@ -946,6 +1165,23 @@ impl ComponentView for TextInput {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let visual = StandardVisual::TextInput {
+            placeholder: Arc::clone(&self.placeholder),
+            size: self.size,
+            secure: self.secure,
+            invalid: self.invalid,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        let mut effective_style = self.style.clone();
+        if self.invalid && !self.style_override {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.hovered.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.focused.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+        }
         project_text_field(
             id,
             world,
@@ -953,9 +1189,12 @@ impl ComponentView for TextInput {
             TextFieldProjection {
                 state: &self.state,
                 label: &self.label,
-                disabled: self.disabled,
+                disabled: self.disabled || self.loading,
+                busy: self.loading,
+                editable: !self.disabled && !self.loading && !self.read_only,
+                invalid: self.invalid,
                 multiline: false,
-                style: &self.style,
+                style: &effective_style,
             },
         );
     }
@@ -1015,6 +1254,9 @@ impl ComponentView for TextArea {
                 state: &self.state,
                 label: &self.label,
                 disabled: self.disabled,
+                busy: false,
+                editable: !self.disabled,
+                invalid: false,
                 multiline: true,
                 style: &self.style,
             },
@@ -1317,6 +1559,12 @@ fn overlay_surface_style(max_width: f32) -> NodeStyle {
 
 fn checkbox_style() -> NodeStyle {
     NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            min_height: Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::ControlSize::Medium.height(),
+            )),
+            ..nana_ui_core::LayoutStyle::default()
+        }),
         foreground: Some(nana_ui_core::SemanticColorRole::Text),
         background: Some(nana_ui_core::SemanticColorRole::Background),
         border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
@@ -1397,6 +1645,7 @@ pub struct Checkbox {
     pub label: String,
     pub checked: bool,
     pub disabled: bool,
+    pub invalid: bool,
     pub style: NodeStyle,
 }
 
@@ -1406,12 +1655,18 @@ impl Checkbox {
             label: label.into(),
             checked,
             disabled: false,
+            invalid: false,
             style: checkbox_style(),
         }
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
         self
     }
 
@@ -1443,11 +1698,27 @@ impl ComponentView for Checkbox {
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
+        let mut effective_style = self.style.clone();
+        if self.invalid {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.hovered.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.pressed.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.focused.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.selected.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.selected_hovered.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.selected_pressed.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+        }
         project_common(
             id,
             world,
             mutations,
-            &self.style,
+            &effective_style,
             InteractionState {
                 pointer_events: !self.disabled,
                 focusable: !self.disabled,
@@ -1457,6 +1728,7 @@ impl ComponentView for Checkbox {
                 label: Some(Arc::from(self.label.as_str())),
                 disabled: self.disabled,
                 checked: Some(self.checked),
+                invalid: self.invalid,
                 ..AccessibilityState::default()
             },
         );
