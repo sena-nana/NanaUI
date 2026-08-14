@@ -925,10 +925,10 @@ fn gallery_dock() -> DockController {
         0.26,
         DockNode::tabs(
             [
-                DockId::from("gallery.scenes"),
-                DockId::from("gallery.sources"),
+                DockId::from("gallery.navigation"),
+                DockId::from("gallery.assets"),
             ],
-            "gallery.scenes",
+            "gallery.navigation",
         ),
         DockNode::split(
             DockAxis::Vertical,
@@ -936,36 +936,36 @@ fn gallery_dock() -> DockController {
             DockNode::split(
                 DockAxis::Horizontal,
                 0.72,
-                DockNode::item("gallery.editor"),
+                DockNode::item("gallery.primary"),
                 DockNode::tabs(
                     [
-                        DockId::from("gallery.properties"),
-                        DockId::from("gallery.connection"),
+                        DockId::from("gallery.inspector"),
+                        DockId::from("gallery.outline"),
                     ],
-                    "gallery.properties",
+                    "gallery.inspector",
                 ),
             ),
             DockNode::tabs(
                 [
-                    DockId::from("gallery.mixer"),
-                    DockId::from("gallery.cue"),
-                    DockId::from("gallery.controls"),
+                    DockId::from("gallery.console"),
+                    DockId::from("gallery.problems"),
+                    DockId::from("gallery.output"),
                 ],
-                "gallery.mixer",
+                "gallery.console",
             ),
         ),
     );
     let specs = [
-        DockItemSpec::new("gallery.editor", "Studio Editor").limits(360.0, 240.0),
-        DockItemSpec::new("gallery.scenes", "Scenes").limits(150.0, 120.0),
-        DockItemSpec::new("gallery.sources", "Sources").limits(150.0, 120.0),
-        DockItemSpec::new("gallery.properties", "Properties").limits(180.0, 140.0),
-        DockItemSpec::new("gallery.connection", "NanaLive").limits(180.0, 140.0),
-        DockItemSpec::new("gallery.mixer", "Audio Mixer").limits(240.0, 120.0),
-        DockItemSpec::new("gallery.cue", "Cue").limits(140.0, 120.0),
-        DockItemSpec::new("gallery.controls", "Controls").limits(140.0, 120.0),
+        DockItemSpec::new("gallery.primary", "Primary").limits(360.0, 240.0),
+        DockItemSpec::new("gallery.navigation", "Navigation").limits(150.0, 120.0),
+        DockItemSpec::new("gallery.assets", "Assets").limits(150.0, 120.0),
+        DockItemSpec::new("gallery.inspector", "Inspector").limits(180.0, 140.0),
+        DockItemSpec::new("gallery.outline", "Outline").limits(180.0, 140.0),
+        DockItemSpec::new("gallery.console", "Console").limits(240.0, 120.0),
+        DockItemSpec::new("gallery.problems", "Problems").limits(140.0, 120.0),
+        DockItemSpec::new("gallery.output", "Output").limits(140.0, 120.0),
     ];
-    let mut dock = DockController::new("gallery.editor", specs, DockLayout::new(main))
+    let mut dock = DockController::new("gallery.primary", specs, DockLayout::new(main))
         .expect("gallery dock definition is valid");
     dock.set_chrome_style(DockChromeStyle::Card);
     dock

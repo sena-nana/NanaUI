@@ -586,7 +586,7 @@ fn ui(texture: Option<HostTexture>) -> Element<'static, (), Theme, IcedRenderer>
     let preview = runtime_preview(texture);
     let header = container(
         row![
-            text("Preview · Program").size(18),
+            text("Live2D Composition").size(18),
             space().width(Length::Fill),
             text("LIVE").color(Color::from_rgb8(255, 92, 112)),
         ]

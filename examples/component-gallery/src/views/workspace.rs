@@ -41,30 +41,27 @@ impl GalleryState {
             DockSurfaceId(0),
             DockContents::new()
                 .insert(
-                    "gallery.editor",
-                    dock_panel("Preview · Program", "不可移动的主内容节点"),
+                    "gallery.primary",
+                    dock_panel("Primary Content", "不可移动的主内容节点"),
                 )
-                .insert("gallery.scenes", dock_panel("Scene A", "选择当前场景"))
-                .insert("gallery.sources", dock_panel("Image", "当前场景实例"))
+                .insert("gallery.navigation", dock_panel("Section A", "工作区导航"))
+                .insert("gallery.assets", dock_panel("Asset", "应用提供的资源内容"))
                 .insert(
-                    "gallery.properties",
-                    dock_panel("Transform", "位置、缩放与旋转"),
+                    "gallery.inspector",
+                    dock_panel("Selection", "应用提供的检查器内容"),
                 )
                 .insert(
-                    "gallery.connection",
-                    dock_panel("NanaLive", "已连接的 Actor 输入"),
+                    "gallery.outline",
+                    dock_panel("Outline", "当前内容的结构投影"),
                 )
-                .insert("gallery.mixer", dock_panel("Master", "音量与静音"))
-                .insert("gallery.cue", dock_panel("Cue 01", "确定性执行队列"))
-                .insert(
-                    "gallery.controls",
-                    dock_panel("Controls", "Take 与输出状态"),
-                ),
+                .insert("gallery.console", dock_panel("Console", "应用运行输出"))
+                .insert("gallery.problems", dock_panel("Problems", "应用诊断列表"))
+                .insert("gallery.output", dock_panel("Output", "应用提供的输出内容")),
             GalleryMessage::Dock,
             tokens,
         );
         let locked = self.dock.layout().locked;
-        let hidden_sources = !self.dock.is_visible(&DockId::from("gallery.sources"));
+        let hidden_assets = !self.dock.is_visible(&DockId::from("gallery.assets"));
         let floating_count = self.dock.layout().floating.len();
         container(
             column![
@@ -78,19 +75,19 @@ impl GalleryState {
                                 .on_press(GalleryMessage::Dock(DockAction::SetLocked(!locked)))
                                 .style(button_style(tokens, ButtonKind::Subtle)),
                             button(
-                                text(if hidden_sources {
-                                    "恢复 Sources"
+                                text(if hidden_assets {
+                                    "恢复 Assets"
                                 } else {
-                                    "隐藏 Sources"
+                                    "隐藏 Assets"
                                 })
                                 .size(11)
                             )
                             .height(Length::Fixed(28.0))
                             .padding([0.0, 8.0])
-                            .on_press(GalleryMessage::Dock(if hidden_sources {
-                                DockAction::Show(DockId::from("gallery.sources"))
+                            .on_press(GalleryMessage::Dock(if hidden_assets {
+                                DockAction::Show(DockId::from("gallery.assets"))
                             } else {
-                                DockAction::Hide(DockId::from("gallery.sources"))
+                                DockAction::Hide(DockId::from("gallery.assets"))
                             }))
                             .style(button_style(tokens, ButtonKind::Subtle)),
                             button(text("重置 Dock").size(11))
