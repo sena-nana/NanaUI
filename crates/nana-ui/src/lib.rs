@@ -41,6 +41,10 @@ mod runtime_animation;
 #[cfg(feature = "hosted")]
 mod runtime_host;
 mod runtime_input;
+mod runtime_text;
+#[cfg(feature = "gpu")]
+mod scene_gpu;
+#[cfg(feature = "gpu")]
 mod scene_view;
 pub mod selection;
 pub mod settings;
@@ -147,9 +151,9 @@ pub use components::{SelectableRichText, TextSelectionGroup, TextSelectionSnapsh
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,
-    DockDropTarget, DockDropZone, DockError, DockHostEffect, DockId, DockItemSpec, DockLayout,
-    DockMutation, DockNode, DockSurfaceId, DockUpdate, FloatingDock, dock_window_workspace,
-    dock_workspace,
+    DockDropTarget, DockDropZone, DockError, DockHostEffect, DockId, DockItemLayout, DockItemSpec,
+    DockLayout, DockMutation, DockNode, DockSplitLayout, DockSurfaceId, DockSurfaceLayout,
+    DockTabsLayout, DockUpdate, FloatingDock, dock_window_workspace, dock_workspace,
 };
 #[cfg(feature = "hosted")]
 pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};
@@ -224,6 +228,14 @@ pub use runtime_host::{
     RuntimeWindowSettings, run_runtime,
 };
 pub use runtime_input::RuntimeInputAdapter;
+pub use runtime_text::IcedTextShaper;
+#[cfg(feature = "gpu")]
+pub use scene_gpu::{
+    SceneGpuNode, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
+    SceneGpuRendererRegistry, SceneResourceEncodeContext, SceneResourceProduceError,
+    SceneResourceProducer, SceneResourceProducerRegistry,
+};
+#[cfg(feature = "gpu")]
 pub use scene_view::{HostTextureSceneResolver, IcedSceneView, ScenePaintError};
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{

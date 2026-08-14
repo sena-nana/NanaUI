@@ -144,9 +144,22 @@ pub struct TextMetrics {
     pub height: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TextShapeConstraints {
+    pub max_width: Option<f32>,
+    pub max_height: Option<f32>,
+    pub wrap: bool,
+    pub ellipsis: bool,
+}
+
 pub trait TextShaper {
-    fn shape(&mut self, id: StableNodeId, text: &TextContent, style: &ComputedStyle)
-    -> TextMetrics;
+    fn shape(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> TextMetrics;
 }
 
 #[derive(Debug, Clone, PartialEq)]

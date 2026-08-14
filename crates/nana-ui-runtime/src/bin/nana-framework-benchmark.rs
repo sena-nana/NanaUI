@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use nana_ui_core::{TableColumn, VirtualListLayout, VirtualTableLayout};
 use nana_ui_runtime::{
-    Activate, AppContext, Button, ContextPredicate, DocumentId, KeyContext, List, NodeKind,
-    ScrollAxes, ScrollOffset, ScrollView, Table, TableCell, TableRow, Text, TextContent,
+    Activate, AppContext, Button, ContextPredicate, DocumentId, KeyContext, LayoutViewport, List,
+    NodeKind, ScrollAxes, ScrollOffset, ScrollView, Table, TableCell, TableRow, Text, TextContent,
     VirtualListItems, VirtualTableItems,
 };
 use serde::Serialize;
@@ -33,6 +33,7 @@ struct Report {
     virtual_table_10k_x_100_materialize_ms: Distribution,
     virtual_table_column_resize_ms: Distribution,
     virtual_scroll_40_visible_nodes_ms: Distribution,
+    canonical_layout_5000_nodes_ms: Distribution,
 }
 
 #[derive(Serialize)]
@@ -114,11 +115,24 @@ fn main() {
     let mut virtual_table_materializations = Vec::with_capacity(ITERATIONS);
     let mut virtual_table_resizes = Vec::with_capacity(ITERATIONS);
     let mut virtual_scroll_updates = Vec::with_capacity(ITERATIONS);
+    let mut canonical_layout_updates = Vec::with_capacity(ITERATIONS);
     let mut virtual_list = VirtualListLayout::new(std::iter::repeat_n(20.0, 10_000));
     let mut virtual_table = VirtualTableLayout::new(
         std::iter::repeat_n(20.0, 10_000),
         (0..100).map(|index| TableColumn::new(format!("column-{index}"), 80.0)),
     );
+    let layout_document = DocumentId::new(2).unwrap();
+    let mut layout_context = AppContext::new();
+    let layout_root = layout_context
+        .create_component(layout_document, List::new())
+        .unwrap();
+    for index in 0..4_999 {
+        let child = layout_context
+            .create_component(layout_document, Text::new(format!("row {index}")))
+            .unwrap();
+        layout_context.append_child(layout_root, child).unwrap();
+    }
+    let _ = layout_context.take_system_work();
     for iteration in 0..(WARMUP_ITERATIONS + ITERATIONS) {
         let started = Instant::now();
         context
@@ -278,6 +292,17 @@ fn main() {
         assert_eq!(scroll_work.input_hit_test.len(), 41);
         assert_eq!(scroll_work.render_extraction.len(), 41);
         assert!(scroll_work.layout.is_empty());
+        let viewport_width = if iteration.is_multiple_of(2) {
+            1_280.0
+        } else {
+            1_024.0
+        };
+        let started = Instant::now();
+        layout_context
+            .layout_document(layout_document, LayoutViewport::new(viewport_width, 800.0))
+            .unwrap();
+        let canonical_layout_elapsed = started.elapsed();
+        let _ = layout_context.take_system_work();
         if iteration >= WARMUP_ITERATIONS {
             updates.push(update_elapsed);
             actions.push(action_elapsed);
@@ -290,10 +315,11 @@ fn main() {
             virtual_table_materializations.push(virtual_table_materialize_elapsed);
             virtual_table_resizes.push(virtual_table_resize_elapsed);
             virtual_scroll_updates.push(virtual_scroll_elapsed);
+            canonical_layout_updates.push(canonical_layout_elapsed);
         }
     }
     write_report(&Report {
-        schema_version: 7,
+        schema_version: 8,
         profile: if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -312,6 +338,7 @@ fn main() {
         virtual_table_10k_x_100_materialize_ms: summarize(&virtual_table_materializations),
         virtual_table_column_resize_ms: summarize(&virtual_table_resizes),
         virtual_scroll_40_visible_nodes_ms: summarize(&virtual_scroll_updates),
+        canonical_layout_5000_nodes_ms: summarize(&canonical_layout_updates),
     });
 }
 
