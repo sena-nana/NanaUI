@@ -78,11 +78,12 @@ pub mod runtime {
 /// after the corresponding catalog entry is qualified. Existing consumers can
 /// opt into this namespace while completing their own migration.
 pub mod compatibility {
-    pub use crate::components::actions::IconButton;
+    pub use crate::components::actions::{Button, IconButton};
     #[cfg(feature = "controls")]
-    pub use crate::components::controls::{RangeField, Switch};
+    pub use crate::components::controls::{Checkbox, Input, RangeField, Switch};
     #[cfg(feature = "surfaces")]
     pub use crate::components::surfaces::{Card, ListItem};
+    pub use iced::widget::Text;
 }
 
 pub use absolute::{Absolute, absolute_content_max};
@@ -96,7 +97,7 @@ pub use component_support::{
     ComponentCapability, ComponentFamily, ComponentId, ComponentMigrationState, ComponentSupport,
     component_catalog, component_ids, component_support, component_uses_runtime,
 };
-pub use components::actions::{Button, ControlSize};
+pub use components::actions::ControlSize;
 #[cfg(feature = "calendar")]
 pub use components::calendar::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum,
@@ -114,8 +115,8 @@ pub use components::command_palette::{
 pub use components::controls::HostedSyntaxHighlighting;
 #[cfg(feature = "controls")]
 pub use components::controls::{
-    Checkbox, HostedTextarea, HostedTextareaState, Input, SegmentedControl, Select,
-    SelectionOption, TabDragGroup, TabDragSurface, Tabs, Textarea,
+    HostedTextarea, HostedTextareaState, SegmentedControl, Select, SelectionOption, TabDragGroup,
+    TabDragSurface, Tabs, Textarea,
 };
 #[cfg(feature = "feedback")]
 pub use components::feedback::{
@@ -227,7 +228,9 @@ pub use nana_ui_platform::ImeEvent;
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
-pub use nana_ui_runtime::{Card, IconButton, ListItem, RangeField, Switch};
+pub use nana_ui_runtime::{
+    Button, Card, Checkbox, IconButton, ListItem, RangeField, Switch, Text, TextInput,
+};
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
 pub use nana_window::{

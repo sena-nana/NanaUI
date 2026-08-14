@@ -456,7 +456,9 @@ impl UiScene {
             let standard_visual_uses_root_surface = matches!(
                 node.standard_visual,
                 Some(
-                    StandardVisual::Icon { .. }
+                    StandardVisual::Button { .. }
+                        | StandardVisual::TextInput { .. }
+                        | StandardVisual::Icon { .. }
                         | StandardVisual::Switch { .. }
                         | StandardVisual::Card { .. }
                         | StandardVisual::ListItem { .. }
@@ -474,6 +476,30 @@ impl UiScene {
             } else {
                 node.style.border_color
             };
+            let (surface_background, surface_border_color, surface_border_width) =
+                match node.component_geometry.as_ref() {
+                    Some(ComponentGeometry::Button {
+                        background,
+                        border,
+                        border_width,
+                        ..
+                    }) => (*background, *border, *border_width),
+                    Some(ComponentGeometry::TextInput {
+                        background,
+                        border,
+                        border_width,
+                        ..
+                    }) => (*background, *border, *border_width),
+                    _ => (
+                        node.style.background,
+                        surface_border_color,
+                        if surface_border_color.is_some() {
+                            style.border_width.unwrap_or(0.0).max(0.0)
+                        } else {
+                            0.0
+                        },
+                    ),
+                };
             if style.has_surface_paint()
                 || ((node.standard_visual.is_none() || standard_visual_uses_root_surface)
                     && (node.style.background.is_some() || node.style.border_color.is_some()))
@@ -488,13 +514,9 @@ impl UiScene {
                     z_index: node.z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
-                        background: node.style.background,
+                        background: surface_background,
                         border_color: surface_border_color,
-                        border_width: if surface_border_color.is_some() {
-                            style.border_width.unwrap_or(0.0).max(0.0)
-                        } else {
-                            0.0
-                        },
+                        border_width: surface_border_width,
                         corner_radius: style.border_radius.unwrap_or(0.0).max(0.0),
                         shadow: match node.component_geometry.as_ref() {
                             Some(ComponentGeometry::Card { elevation, .. }) => *elevation,
@@ -519,7 +541,9 @@ impl UiScene {
             let component_owns_text = matches!(
                 node.component_geometry,
                 Some(
-                    ComponentGeometry::Switch { .. }
+                    ComponentGeometry::Button { .. }
+                        | ComponentGeometry::TextInput { .. }
+                        | ComponentGeometry::Switch { .. }
                         | ComponentGeometry::Range { .. }
                         | ComponentGeometry::Card { .. }
                 )
@@ -595,6 +619,59 @@ impl UiScene {
                 });
             }
             match node.component_geometry.as_ref() {
+                Some(ComponentGeometry::Button { label, .. }) => {
+                    self.insert_primitive(component_text_primitive(
+                        id,
+                        2,
+                        label,
+                        TextHorizontalAlignment::Center,
+                        false,
+                        &node,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node_order,
+                    ));
+                }
+                Some(ComponentGeometry::TextInput {
+                    text,
+                    selection,
+                    selection_color,
+                    ..
+                }) => {
+                    if let Some(selection) = selection {
+                        self.insert_primitive(visual_quad(
+                            &VisualPrimitiveContext {
+                                node: id,
+                                transform,
+                                clips: &clips,
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                            },
+                            1,
+                            scene_rect(*selection),
+                            VisualQuadStyle {
+                                background: Some(*selection_color),
+                                border_color: None,
+                                border_width: 0.0,
+                                corner_radius: 0.0,
+                            },
+                        ));
+                    }
+                    self.insert_primitive(component_text_primitive(
+                        id,
+                        2,
+                        text,
+                        TextHorizontalAlignment::Start,
+                        false,
+                        &node,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node_order,
+                    ));
+                }
                 Some(ComponentGeometry::Switch { label, hint, .. }) => {
                     self.insert_primitive(component_text_primitive(
                         id,
@@ -696,6 +773,121 @@ impl UiScene {
                 document_order: node_order,
             };
             match node.standard_visual {
+                Some(StandardVisual::Button { loading_phase, .. }) => {
+                    if let Some(ComponentGeometry::Button {
+                        spinner,
+                        focus_ring,
+                        ..
+                    }) = node.component_geometry.as_ref()
+                    {
+                        if let Some(spinner) = spinner {
+                            self.insert_primitive(ScenePrimitive {
+                                id: PrimitiveId { node: id, slot: 3 },
+                                node: id,
+                                bounds: scene_rect(*spinner),
+                                transform,
+                                clips: clips.clone(),
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                                kind: ScenePrimitiveKind::Spinner {
+                                    phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
+                                    color: node.standard_visual_foreground.or(node.style.color),
+                                },
+                            });
+                        }
+                        if let Some(color) = focus_ring {
+                            self.insert_primitive(visual_quad(
+                                &VisualPrimitiveContext {
+                                    node: id,
+                                    transform,
+                                    clips: &parent_clips,
+                                    opacity,
+                                    z_index: node.z_index,
+                                    document_order: node_order,
+                                },
+                                7,
+                                SceneRect {
+                                    x: bounds.x - 3.0,
+                                    y: bounds.y - 3.0,
+                                    width: bounds.width + 6.0,
+                                    height: bounds.height + 6.0,
+                                },
+                                VisualQuadStyle {
+                                    background: None,
+                                    border_color: Some(*color),
+                                    border_width: 2.0,
+                                    corner_radius: style.border_radius.unwrap_or(0.0).max(0.0)
+                                        + 3.0,
+                                },
+                            ));
+                        }
+                    }
+                }
+                Some(StandardVisual::TextInput { .. }) => {
+                    if let Some(ComponentGeometry::TextInput {
+                        caret,
+                        preedit,
+                        focus_ring,
+                        caret_color,
+                        preedit_color,
+                        ..
+                    }) = node.component_geometry.as_ref()
+                    {
+                        if let Some(caret) = caret {
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                4,
+                                scene_rect(*caret),
+                                VisualQuadStyle {
+                                    background: Some(*caret_color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: 0.0,
+                                },
+                            ));
+                        }
+                        if let Some(preedit) = preedit {
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                5,
+                                scene_rect(*preedit),
+                                VisualQuadStyle {
+                                    background: Some(*preedit_color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: 0.0,
+                                },
+                            ));
+                        }
+                        if let Some(color) = focus_ring {
+                            self.insert_primitive(visual_quad(
+                                &VisualPrimitiveContext {
+                                    node: id,
+                                    transform,
+                                    clips: &parent_clips,
+                                    opacity,
+                                    z_index: node.z_index,
+                                    document_order: node_order,
+                                },
+                                7,
+                                SceneRect {
+                                    x: bounds.x - 3.0,
+                                    y: bounds.y - 3.0,
+                                    width: bounds.width + 6.0,
+                                    height: bounds.height + 6.0,
+                                },
+                                VisualQuadStyle {
+                                    background: None,
+                                    border_color: Some(*color),
+                                    border_width: 2.0,
+                                    corner_radius: style.border_radius.unwrap_or(0.0).max(0.0)
+                                        + 3.0,
+                                },
+                            ));
+                        }
+                    }
+                }
                 Some(StandardVisual::Checkbox { checked }) => {
                     let extent = 16.0_f32.min(bounds.height);
                     let indicator = SceneRect {
@@ -1169,7 +1361,11 @@ fn component_text_primitive(
             letter_spacing: node.style.letter_spacing,
             wrap: false,
             ellipsis,
-            shaping: TextShaping::Auto,
+            shaping: if node.text_input.is_some() {
+                TextShaping::Advanced
+            } else {
+                TextShaping::Auto
+            },
             horizontal_alignment,
             vertical_alignment: TextVerticalAlignment::Center,
         },
@@ -1459,6 +1655,76 @@ mod tests {
                 vertical_alignment: TextVerticalAlignment::Center,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() {
+        let mut input = node(1, None, &[]);
+        input.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.1, 0.1, 0.1, 1.0]),
+                border_width: Some(1.0),
+                border_color: Some([0.3, 0.3, 0.3, 1.0]),
+                border_radius: Some(6.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 8.0,
+                    y: 0.0,
+                    width: 84.0,
+                    height: 32.0,
+                },
+                content: Arc::from("release/next"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Some(LayoutBox {
+                x: 8.0,
+                y: 8.0,
+                width: 40.0,
+                height: 16.0,
+            }),
+            caret: Some(LayoutBox {
+                x: 48.0,
+                y: 8.0,
+                width: 1.0,
+                height: 16.0,
+            }),
+            preedit: Some(LayoutBox {
+                x: 48.0,
+                y: 23.0,
+                width: 18.0,
+                height: 1.0,
+            }),
+            background: Some([0.1, 0.1, 0.1, 1.0]),
+            border: Some([0.3, 0.3, 0.3, 1.0]),
+            border_width: 1.0,
+            focus_ring: Some([0.2, 0.6, 1.0, 1.0]),
+            selection_color: [0.2, 0.4, 0.7, 0.4],
+            caret_color: [0.2, 0.6, 1.0, 1.0],
+            preedit_color: [0.2, 0.6, 1.0, 1.0],
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        for slot in [0, 1, 2, 4, 5, 7] {
+            assert!(scene.primitive(PrimitiveId { node: id(1), slot }).is_some());
+        }
+        assert!(matches!(
+            scene.primitive(PrimitiveId { node: id(1), slot: 2 }).unwrap().kind,
+            ScenePrimitiveKind::Text { ref content, .. } if content == "release/next"
         ));
     }
 
