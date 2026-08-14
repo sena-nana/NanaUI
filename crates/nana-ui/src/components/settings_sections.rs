@@ -4,7 +4,8 @@ use std::rc::Rc;
 use iced::widget::{button, column, container, row, space, text};
 use iced::{Alignment, Element, Length, Padding};
 
-use super::{ControlSize, RangeField, SegmentedControl, SelectionOption, Switch};
+use super::{ControlSize, SegmentedControl, SelectionOption};
+use crate::compatibility::{RangeField, Switch};
 use crate::icons::{Icon, disclosure_icon};
 use crate::settings::{AppearanceSettings, SettingsCard, SettingsRow};
 use crate::theme::{ThemeMode, ThemeTokens, UI_METRICS, ui_font};
