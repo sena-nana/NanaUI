@@ -1353,6 +1353,7 @@ dependencies = [
  "live2d-wgpu",
  "nana-ui",
  "nana-ui-core",
+ "nana-ui-platform",
  "nana-ui-scene",
  "png 0.18.1",
  "serde",
