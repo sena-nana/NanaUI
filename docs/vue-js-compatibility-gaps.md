@@ -384,6 +384,17 @@ Rust 接口。
 
 Vue 输入组件可正常使用中日韩输入法，候选框位置和最终文本均正确。
 
+**当前证据**
+
+macOS 26.5.2 的真实拼音输入已通过：系统候选窗跟随 hosted Vue 输入框，
+`nihao` 预编辑后提交“你好”，输入框、Vue v-model 文本与 AXValue 同步且没有双重提交。
+同机 AX SetTextSelection 也已通过真实编辑器替换验收：系统选择 `NanaUI` 的 `0:4`
+后直接提交拼音，输入框得到“你好UI”，Vue v-model 同步得到同一值；平台选择不再只更新
+accessibility/Runtime 语义而遗漏 retained editor caret。
+`BridgeEvent::Input` 在发 DOM `input/update:modelValue` 前提交 Runtime
+`TextInputState` 与 DOM value，普通键盘和 IME 共用同一 committed-value 事务。
+Windows/Linux CJK、多窗口焦点切换与 selection 仍需各目标平台实机验收。
+
 ### NUI-WINDOW-01：单 V8 多窗口 Vue 根
 
 **实施前状态**

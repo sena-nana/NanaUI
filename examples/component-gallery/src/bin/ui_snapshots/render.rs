@@ -10,6 +10,15 @@ use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
+use nana_ui::runtime::{
+    AppContext, Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
+    DocumentId, IconButton as RuntimeIconButton, LayoutBox, List as RuntimeList,
+    ListItem as RuntimeListItem, MutationQueue, NodeStyle, ScrollAxes, ScrollOffset,
+    ScrollView as RuntimeScrollView, Slider as RuntimeSlider, Switch as RuntimeSwitch,
+    Tab as RuntimeTab, TabList as RuntimeTabList, Table as RuntimeTable,
+    TableCell as RuntimeTableCell, TableRow as RuntimeTableRow, Text as RuntimeText,
+    TextArea as RuntimeTextArea, TextInput as RuntimeTextInput, TextVerticalAlignment,
+};
 use nana_ui::{
     AppTitleBar, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
     DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
@@ -18,6 +27,8 @@ use nana_ui::{
     dock_window_workspace, dock_workspace,
 };
 use nana_ui::{CommandPaletteEvent, ContextMenuEvent};
+use nana_ui_core::{LayoutStyle, SemanticColorRole};
+use nana_ui_scene::UiScene;
 
 use crate::write;
 
@@ -74,8 +85,22 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     }
     drop(font_system);
 
-    let output = std::env::current_dir()?.join("target/ui-snapshots");
+    let output = std::env::var_os("NANA_UI_SNAPSHOT_OUTPUT")
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?.join("target/ui-snapshots"));
     let mut paths = vec![
+        runtime_scene_snapshot(
+            &mut renderer,
+            &output,
+            "runtime-scene-dark.png",
+            ThemeMode::Dark,
+        )?,
+        runtime_scene_snapshot(
+            &mut renderer,
+            &output,
+            "runtime-scene-light.png",
+            ThemeMode::Light,
+        )?,
         titlebar_snapshot(
             &mut renderer,
             &output,
@@ -459,7 +484,7 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         WorkspaceAction::SetRegionCollapsed(RegionId::Resources, true),
     ));
     sidebar_collapsed.update(GalleryMessage::Workspace(WorkspaceAction::AnimationFrame(
-        Instant::now() + iced::time::Duration::from_millis(300),
+        std::time::Duration::from_millis(300),
     )));
     paths.push(gallery_snapshot(
         &mut renderer,
@@ -507,6 +532,378 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     )?);
 
     Ok(paths)
+}
+
+fn runtime_scene_snapshot(
+    renderer: &mut Renderer,
+    output: &Path,
+    name: &str,
+    theme: ThemeMode,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let size = Size::new(900, 500);
+    let scene = runtime_scene(theme)?;
+    let view =
+        nana_ui::IcedSceneView::new(&scene, Size::new(size.width as f32, size.height as f32))?;
+    let view: Element<'_, (), Theme, Renderer> = view.into();
+    let pixels = snapshot(
+        renderer,
+        view,
+        &theme.iced_theme(),
+        theme.colors().background,
+        size,
+    );
+    let path = output.join(name);
+    write::png(&path, size, &pixels)?;
+    Ok(path)
+}
+
+fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>> {
+    let mut context = AppContext::new();
+    context.set_theme(theme)?;
+    let document = DocumentId::new(1).expect("snapshot document ID is non-zero");
+    let title = context.create_component(
+        document,
+        RuntimeText::new("Build queue").style(NodeStyle {
+            foreground: Some(SemanticColorRole::Text),
+            layout: std::sync::Arc::new(LayoutStyle {
+                font_size: Some(20.0),
+                font_weight: Some(600),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        }),
+    )?;
+    let input = context.create_component(
+        document,
+        RuntimeTextInput::new("release/issue-7").label("Branch"),
+    )?;
+    let button = context.create_component(document, RuntimeButton::new("Run build"))?;
+    let table = context.create_component(document, RuntimeTable::new().label("Recent builds"))?;
+    let checkbox =
+        context.create_component(document, RuntimeCheckbox::new("Notifications", true))?;
+    let toggle = context.create_component(document, RuntimeSwitch::new("Auto build", true))?;
+    let slider = context.create_component(
+        document,
+        RuntimeSlider::new(68.0, 0.0, 100.0)?.label("Volume"),
+    )?;
+    let tabs = context.create_component(document, RuntimeTabList::new().label("Output"))?;
+    let preview = context.create_component(document, RuntimeTab::new("Preview").selected(true))?;
+    let program = context.create_component(document, RuntimeTab::new("Program"))?;
+    context.append_child(tabs, preview)?;
+    context.append_child(tabs, program)?;
+    let scroll_component = RuntimeScrollView::new(ScrollAxes::Vertical)
+        .label("Activity")
+        .style(NodeStyle {
+            background: Some(SemanticColorRole::Surface),
+            border: Some(SemanticColorRole::Border),
+            layout: std::sync::Arc::new(LayoutStyle {
+                border_width: Some(1.0),
+                border_radius: Some(6.0),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        });
+    let activity = context.create_component(document, scroll_component)?;
+    context.scroll_to(activity, ScrollOffset { x: 0.0, y: 8.0 })?;
+    let activity_lines = [
+        context.create_component(document, RuntimeText::new("Queued #1043"))?,
+        context.create_component(document, RuntimeText::new("Built #1042"))?,
+        context.create_component(document, RuntimeText::new("Published artifacts"))?,
+    ];
+    for line in activity_lines {
+        context.append_child(activity, line)?;
+    }
+    let card = context.create_component(document, RuntimeCard::new().label("Source inspector"))?;
+    let card_title = context.create_component(document, RuntimeText::new("Source inspector"))?;
+    let add_source =
+        context.create_component(document, RuntimeIconButton::new("+", "Add source"))?;
+    let notes = context.create_component(
+        document,
+        RuntimeTextArea::new("Camera follows Program.\nAudio monitoring enabled.")
+            .label("Source notes"),
+    )?;
+    let source_list =
+        context.create_component(document, RuntimeList::new().label("Scene sources"))?;
+    let source_items = [
+        context.create_component(document, RuntimeListItem::new("Camera").selected(true))?,
+        context.create_component(document, RuntimeListItem::new("Live2D actor"))?,
+        context.create_component(document, RuntimeListItem::new("Lower third").disabled(true))?,
+    ];
+    context.append_child(card, card_title)?;
+    context.append_child(card, add_source)?;
+    context.append_child(card, notes)?;
+    context.append_child(card, source_list)?;
+    for item in source_items {
+        context.append_child(source_list, item)?;
+    }
+
+    let rows = [
+        ["Build", "Status", "Duration"],
+        ["#1042", "Succeeded", "1m 18s"],
+        ["#1041", "Succeeded", "1m 21s"],
+        ["#1040", "Failed", "42s"],
+    ];
+    let mut cells = Vec::new();
+    for (row_index, values) in rows.into_iter().enumerate() {
+        let row = context.create_component(document, RuntimeTableRow::new())?;
+        context.append_child(table, row)?;
+        for value in values {
+            let style = NodeStyle {
+                foreground: Some(if row_index == 0 {
+                    SemanticColorRole::Muted
+                } else {
+                    SemanticColorRole::Text
+                }),
+                background: Some(if row_index == 0 {
+                    SemanticColorRole::Subtle
+                } else {
+                    SemanticColorRole::Surface
+                }),
+                border: Some(SemanticColorRole::Border),
+                layout: std::sync::Arc::new(LayoutStyle {
+                    padding_left: Some(nana_ui_core::LengthSpec::Px(10.0)),
+                    padding_right: Some(nana_ui_core::LengthSpec::Px(10.0)),
+                    border_width: Some(1.0),
+                    font_weight: (row_index == 0).then_some(600),
+                    ..LayoutStyle::default()
+                }),
+                text_vertical_alignment: TextVerticalAlignment::Center,
+                ..NodeStyle::default()
+            };
+            let cell = context.create_component(
+                document,
+                RuntimeTableCell::new(value)
+                    .column_header(row_index == 0)
+                    .style(style),
+            )?;
+            context.append_child(row, cell)?;
+            cells.push(cell.stable_id());
+        }
+    }
+
+    let mut layout = MutationQueue::new();
+    for (id, bounds) in [
+        (
+            title.stable_id(),
+            LayoutBox {
+                x: 28.0,
+                y: 24.0,
+                width: 584.0,
+                height: 28.0,
+            },
+        ),
+        (
+            input.stable_id(),
+            LayoutBox {
+                x: 28.0,
+                y: 66.0,
+                width: 390.0,
+                height: 36.0,
+            },
+        ),
+        (
+            button.stable_id(),
+            LayoutBox {
+                x: 430.0,
+                y: 66.0,
+                width: 182.0,
+                height: 36.0,
+            },
+        ),
+        (
+            table.stable_id(),
+            LayoutBox {
+                x: 28.0,
+                y: 122.0,
+                width: 584.0,
+                height: 208.0,
+            },
+        ),
+        (
+            checkbox.stable_id(),
+            LayoutBox {
+                x: 28.0,
+                y: 338.0,
+                width: 170.0,
+                height: 32.0,
+            },
+        ),
+        (
+            toggle.stable_id(),
+            LayoutBox {
+                x: 220.0,
+                y: 338.0,
+                width: 170.0,
+                height: 32.0,
+            },
+        ),
+        (
+            slider.stable_id(),
+            LayoutBox {
+                x: 420.0,
+                y: 338.0,
+                width: 192.0,
+                height: 32.0,
+            },
+        ),
+        (
+            tabs.stable_id(),
+            LayoutBox {
+                x: 28.0,
+                y: 390.0,
+                width: 584.0,
+                height: 36.0,
+            },
+        ),
+        (
+            preview.stable_id(),
+            LayoutBox {
+                x: 28.0,
+                y: 390.0,
+                width: 116.0,
+                height: 36.0,
+            },
+        ),
+        (
+            program.stable_id(),
+            LayoutBox {
+                x: 152.0,
+                y: 390.0,
+                width: 116.0,
+                height: 36.0,
+            },
+        ),
+        (
+            activity.stable_id(),
+            LayoutBox {
+                x: 300.0,
+                y: 390.0,
+                width: 312.0,
+                height: 76.0,
+            },
+        ),
+        (
+            activity_lines[0].stable_id(),
+            LayoutBox {
+                x: 312.0,
+                y: 398.0,
+                width: 288.0,
+                height: 24.0,
+            },
+        ),
+        (
+            activity_lines[1].stable_id(),
+            LayoutBox {
+                x: 312.0,
+                y: 426.0,
+                width: 288.0,
+                height: 24.0,
+            },
+        ),
+        (
+            activity_lines[2].stable_id(),
+            LayoutBox {
+                x: 312.0,
+                y: 454.0,
+                width: 288.0,
+                height: 24.0,
+            },
+        ),
+        (
+            card.stable_id(),
+            LayoutBox {
+                x: 636.0,
+                y: 24.0,
+                width: 236.0,
+                height: 442.0,
+            },
+        ),
+        (
+            card_title.stable_id(),
+            LayoutBox {
+                x: 652.0,
+                y: 40.0,
+                width: 160.0,
+                height: 28.0,
+            },
+        ),
+        (
+            add_source.stable_id(),
+            LayoutBox {
+                x: 824.0,
+                y: 36.0,
+                width: 32.0,
+                height: 32.0,
+            },
+        ),
+        (
+            notes.stable_id(),
+            LayoutBox {
+                x: 652.0,
+                y: 84.0,
+                width: 204.0,
+                height: 112.0,
+            },
+        ),
+        (
+            source_list.stable_id(),
+            LayoutBox {
+                x: 652.0,
+                y: 216.0,
+                width: 204.0,
+                height: 140.0,
+            },
+        ),
+        (
+            source_items[0].stable_id(),
+            LayoutBox {
+                x: 652.0,
+                y: 216.0,
+                width: 204.0,
+                height: 36.0,
+            },
+        ),
+        (
+            source_items[1].stable_id(),
+            LayoutBox {
+                x: 652.0,
+                y: 258.0,
+                width: 204.0,
+                height: 36.0,
+            },
+        ),
+        (
+            source_items[2].stable_id(),
+            LayoutBox {
+                x: 652.0,
+                y: 300.0,
+                width: 204.0,
+                height: 36.0,
+            },
+        ),
+    ] {
+        layout.write_layout(id, bounds);
+    }
+    let column_widths = [180.0, 244.0, 160.0];
+    for (index, id) in cells.into_iter().enumerate() {
+        let row = index / column_widths.len();
+        let column = index % column_widths.len();
+        layout.write_layout(
+            id,
+            LayoutBox {
+                x: 28.0 + column_widths[..column].iter().sum::<f32>(),
+                y: 122.0 + row as f32 * 48.0,
+                width: column_widths[column],
+                height: 48.0,
+            },
+        );
+    }
+    context.commit_mutations(layout)?;
+    let work = context.take_system_work();
+    context.resolve_styles(&work.style)?;
+    let mut scene = UiScene::new();
+    scene.apply_delta(context.world().extract_document(document), []);
+    Ok(scene)
 }
 
 fn titlebar_snapshot(

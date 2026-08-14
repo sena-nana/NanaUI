@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nana_ui_runtime::{
-    AnimationId, AnimationSpec, DocumentId, Easing, MutationQueue, NodeKind, NodeStyle,
-    StableNodeId, UiWorld,
+    AnimationId, AnimationSpec, DocumentId, Easing, InteractionStyle, MutationQueue, NodeKind,
+    NodeStyle, SemanticPaint, StableNodeId, UiWorld,
 };
 use serde::Serialize;
 
@@ -37,8 +37,12 @@ struct Case {
     local_paint_work_nodes: usize,
     idle_schedule_ms: Distribution,
     idle_animation_deadline_ms: Distribution,
-    active_animation_sample_ms: Distribution,
-    active_animation_samples: usize,
+    scheduled_animation_deadline_ms: Distribution,
+    sparse_animation_sample_ms: Distribution,
+    scheduled_animations: usize,
+    due_animation_samples: usize,
+    pointer_hover_transition_ms: Distribution,
+    pointer_hover_work_nodes: usize,
 }
 
 #[derive(Serialize)]
@@ -64,13 +68,22 @@ fn main() {
         let mut local_paint_systems = Vec::with_capacity(ITERATIONS);
         let mut idle_schedule = Vec::with_capacity(ITERATIONS);
         let mut idle_animation_deadline = Vec::with_capacity(ITERATIONS);
-        let mut active_animation_sample = Vec::with_capacity(ITERATIONS);
+        let mut scheduled_animation_deadline = Vec::with_capacity(ITERATIONS);
+        let mut sparse_animation_sample = Vec::with_capacity(ITERATIONS);
+        let mut pointer_hover_transition = Vec::with_capacity(ITERATIONS);
         let mut steady_world = UiWorld::new();
         steady_world
             .commit(tree_mutations(nodes, document))
             .unwrap();
         let initial_steady_work = steady_world.take_system_work();
         run_systems(&mut steady_world, document, &initial_steady_work);
+        let mut interactive = MutationQueue::new();
+        for target in [node(nodes.saturating_sub(1).max(1)), node(nodes)] {
+            interactive.set_style(target, interactive_style(None));
+        }
+        steady_world.commit(interactive).unwrap();
+        let work = steady_world.take_system_work();
+        run_systems(&mut steady_world, document, &work);
         for iteration in 0..(WARMUP_ITERATIONS + ITERATIONS) {
             let started = Instant::now();
             let queue = tree_mutations(nodes, document);
@@ -89,21 +102,38 @@ fn main() {
             let deadline = world.next_animation_deadline();
             let idle_animation_deadline_elapsed = started.elapsed();
             assert_eq!(deadline, None);
-            let mut animation = MutationQueue::new();
-            animation.start_animation(AnimationSpec {
-                id: AnimationId::new(1).unwrap(),
-                target: node(nodes),
-                start: Duration::ZERO,
-                duration: Duration::from_secs(1),
-                frame_interval: Duration::from_millis(16),
-                easing: Easing::Linear,
-            });
-            world.commit(animation).unwrap();
+            let mut animations = MutationQueue::new();
+            for index in 1..=nodes {
+                let due = index == 1;
+                animations.start_animation(AnimationSpec {
+                    id: AnimationId::new(index as u64).unwrap(),
+                    target: node(index),
+                    start: if due {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_secs(60)
+                    },
+                    duration: if due {
+                        Duration::from_millis(1)
+                    } else {
+                        Duration::from_secs(1)
+                    },
+                    frame_interval: Duration::from_millis(16),
+                    easing: Easing::Linear,
+                });
+            }
+            world.commit(animations).unwrap();
             let started = Instant::now();
-            let frame = world.advance_animations(Duration::from_millis(500));
-            let active_animation_sample_elapsed = started.elapsed();
+            let deadline = world.next_animation_deadline();
+            let scheduled_animation_deadline_elapsed = started.elapsed();
+            assert_eq!(deadline, Some(Duration::ZERO));
+            let started = Instant::now();
+            let frame = world.advance_animations(Duration::from_millis(1));
+            let sparse_animation_sample_elapsed = started.elapsed();
             assert_eq!(frame.samples.len(), 1);
-            assert_eq!(frame.samples[0].target, node(nodes));
+            assert_eq!(frame.samples[0].target, node(1));
+            assert!(frame.samples[0].finished);
+            assert_eq!(frame.next_deadline, Some(Duration::from_secs(60)));
 
             let mut queue = MutationQueue::new();
             if iteration.is_multiple_of(2) {
@@ -124,17 +154,11 @@ fn main() {
             let mut queue = MutationQueue::new();
             queue.set_style(
                 node(nodes),
-                NodeStyle {
-                    layout: Arc::new(nana_ui_core::LayoutStyle {
-                        background: Some(if iteration.is_multiple_of(2) {
-                            [0.2, 0.4, 0.8, 1.0]
-                        } else {
-                            [0.8, 0.4, 0.2, 1.0]
-                        }),
-                        ..Default::default()
-                    }),
-                    foreground: None,
-                },
+                interactive_style(Some(if iteration.is_multiple_of(2) {
+                    [0.2, 0.4, 0.8, 1.0]
+                } else {
+                    [0.8, 0.4, 0.2, 1.0]
+                })),
             );
             let started = Instant::now();
             steady_world.commit(queue).unwrap();
@@ -153,6 +177,20 @@ fn main() {
             let idle = steady_world.take_system_work();
             let idle_schedule_elapsed = started.elapsed();
             assert!(idle.is_empty());
+            let hover_target = if iteration.is_multiple_of(2) {
+                node(nodes)
+            } else {
+                node(nodes.saturating_sub(1).max(1))
+            };
+            let started = Instant::now();
+            steady_world
+                .set_pointer_hover(document, 1, Some(hover_target))
+                .unwrap();
+            let pointer_hover_transition_elapsed = started.elapsed();
+            let work = steady_world.take_system_work();
+            assert!((1..=2).contains(&work.style.len()));
+            assert_eq!(work.style, work.render_extraction);
+            steady_world.resolve_styles(&work.style).unwrap();
             if iteration >= WARMUP_ITERATIONS {
                 enqueue.push(enqueue_elapsed);
                 initial_commit.push(initial_commit_elapsed);
@@ -166,7 +204,9 @@ fn main() {
                 local_paint_systems.push(local_paint_systems_elapsed);
                 idle_schedule.push(idle_schedule_elapsed);
                 idle_animation_deadline.push(idle_animation_deadline_elapsed);
-                active_animation_sample.push(active_animation_sample_elapsed);
+                scheduled_animation_deadline.push(scheduled_animation_deadline_elapsed);
+                sparse_animation_sample.push(sparse_animation_sample_elapsed);
+                pointer_hover_transition.push(pointer_hover_transition_elapsed);
             }
         }
         cases.push(Case {
@@ -184,12 +224,16 @@ fn main() {
             local_paint_work_nodes: 1,
             idle_schedule_ms: summarize(&idle_schedule),
             idle_animation_deadline_ms: summarize(&idle_animation_deadline),
-            active_animation_sample_ms: summarize(&active_animation_sample),
-            active_animation_samples: 1,
+            scheduled_animation_deadline_ms: summarize(&scheduled_animation_deadline),
+            sparse_animation_sample_ms: summarize(&sparse_animation_sample),
+            scheduled_animations: nodes,
+            due_animation_samples: 1,
+            pointer_hover_transition_ms: summarize(&pointer_hover_transition),
+            pointer_hover_work_nodes: 2,
         });
     }
     let report = Report {
-        schema_version: 4,
+        schema_version: 6,
         profile: if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -201,6 +245,23 @@ fn main() {
         cases,
     };
     write_report(&report);
+}
+
+fn interactive_style(background: Option<[f32; 4]>) -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background,
+            ..Default::default()
+        }),
+        interaction: InteractionStyle {
+            hovered: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Hover),
+                ..SemanticPaint::default()
+            },
+            ..InteractionStyle::default()
+        },
+        ..NodeStyle::default()
+    }
 }
 
 fn run_systems(world: &mut UiWorld, document: DocumentId, work: &nana_ui_runtime::SystemWork) {

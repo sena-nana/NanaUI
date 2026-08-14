@@ -1,6 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use nana_ui_runtime::{CustomRenderNode, ExtractedNode, StableNodeId};
+use nana_ui_core::LineHeightSpec;
+use nana_ui_runtime::{
+    CustomRenderNode, ExtractedNode, StableNodeId, StandardVisual, TextHorizontalAlignment,
+    TextVerticalAlignment,
+};
 
 use crate::{
     AccessMode, CompiledRenderGraph, GraphError, PassId, RenderGraph, RenderOperation, RenderPass,
@@ -67,7 +71,12 @@ pub enum ScenePrimitiveKind {
         size: f32,
         weight: Option<u16>,
         family: Option<String>,
+        line_height: Option<LineHeightSpec>,
         letter_spacing: f32,
+        wrap: bool,
+        ellipsis: bool,
+        horizontal_alignment: TextHorizontalAlignment,
+        vertical_alignment: TextVerticalAlignment,
     },
     Custom(CustomRenderNode),
 }
@@ -93,6 +102,8 @@ struct SceneOrderKey {
     node: StableNodeId,
 }
 
+const MAX_NODE_PRIMITIVE_SLOT: u8 = 5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneDelta {
     pub updated_nodes: usize,
@@ -102,7 +113,7 @@ pub struct SceneDelta {
     pub primitive_count: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct UiScene {
     nodes: HashMap<StableNodeId, ExtractedNode>,
     node_order: HashMap<StableNodeId, usize>,
@@ -275,7 +286,7 @@ impl UiScene {
     }
 
     fn insert_node_ordered(&mut self, node: StableNodeId) {
-        for slot in 0..=2 {
+        for slot in 0..=MAX_NODE_PRIMITIVE_SLOT {
             if let Some(primitive) = self.primitives.get(&PrimitiveId { node, slot }) {
                 self.ordered.insert(Self::order_key(primitive));
             }
@@ -324,7 +335,10 @@ impl UiScene {
         let node_order = self.node_order.get(&id).copied().unwrap_or_default();
         if node.style.visible && opacity > 0.0 {
             let style = node.source_style.layout.as_ref();
-            if style.has_surface_paint() {
+            if style.has_surface_paint()
+                || (node.standard_visual.is_none()
+                    && (node.style.background.is_some() || node.style.border_color.is_some()))
+            {
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 0 },
                     node: id,
@@ -335,8 +349,8 @@ impl UiScene {
                     z_index: node.z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
-                        background: style.background,
-                        border_color: style.border_color,
+                        background: node.style.background,
+                        border_color: node.style.border_color,
                         border_width: style.border_width.unwrap_or(0.0).max(0.0),
                         corner_radius: style.border_radius.unwrap_or(0.0).max(0.0),
                     },
@@ -356,10 +370,28 @@ impl UiScene {
                 });
             }
             if let Some(text) = node.text.as_ref().filter(|text| !text.value.is_empty()) {
+                let padding = style.resolved_padding_against(Some(bounds.width));
+                let border = style.resolved_border_width();
+                let leading_visual = match node.standard_visual {
+                    Some(StandardVisual::Checkbox { .. }) => 24.0,
+                    Some(StandardVisual::Switch { .. }) => 38.0,
+                    _ => 0.0,
+                };
+                let text_bounds = SceneRect {
+                    x: bounds.x + border + padding.left + leading_visual,
+                    y: bounds.y + border + padding.top,
+                    width: (bounds.width
+                        - border * 2.0
+                        - padding.left
+                        - padding.right
+                        - leading_visual)
+                        .max(0.0),
+                    height: (bounds.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
+                };
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 2 },
                     node: id,
-                    bounds,
+                    bounds: text_bounds,
                     transform,
                     clips: clips.clone(),
                     opacity,
@@ -371,9 +403,166 @@ impl UiScene {
                         size: node.style.font_size,
                         weight: node.style.font_weight,
                         family: node.style.font_family.as_deref().map(str::to_owned),
+                        line_height: node.style.line_height,
                         letter_spacing: node.style.letter_spacing,
+                        wrap: !style.white_space_nowrap,
+                        ellipsis: style.text_overflow_ellipsis,
+                        horizontal_alignment: node.source_style.text_horizontal_alignment,
+                        vertical_alignment: node.source_style.text_vertical_alignment,
                     },
                 });
+            }
+            match node.standard_visual {
+                Some(StandardVisual::Checkbox { checked }) => {
+                    let extent = 16.0_f32.min(bounds.height);
+                    let indicator = SceneRect {
+                        x: bounds.x,
+                        y: bounds.y + (bounds.height - extent) / 2.0,
+                        width: extent,
+                        height: extent,
+                    };
+                    self.insert_primitive(visual_quad(
+                        id,
+                        3,
+                        indicator,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node.z_index,
+                        node_order,
+                        node.style.background,
+                        node.style.border_color,
+                        1.0,
+                        4.0,
+                    ));
+                    if checked {
+                        self.insert_primitive(ScenePrimitive {
+                            id: PrimitiveId { node: id, slot: 4 },
+                            node: id,
+                            bounds: indicator,
+                            transform,
+                            clips: clips.clone(),
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                            kind: ScenePrimitiveKind::Text {
+                                content: "✓".into(),
+                                color: node.standard_visual_foreground,
+                                size: 12.0,
+                                weight: Some(700),
+                                family: None,
+                                line_height: None,
+                                letter_spacing: 0.0,
+                                wrap: false,
+                                ellipsis: false,
+                                horizontal_alignment: TextHorizontalAlignment::Center,
+                                vertical_alignment: TextVerticalAlignment::Center,
+                            },
+                        });
+                    }
+                }
+                Some(StandardVisual::Switch { checked }) => {
+                    let track = SceneRect {
+                        x: bounds.x,
+                        y: bounds.y + (bounds.height - 18.0) / 2.0,
+                        width: 30.0,
+                        height: 18.0,
+                    };
+                    self.insert_primitive(visual_quad(
+                        id,
+                        3,
+                        track,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node.z_index,
+                        node_order,
+                        node.style.background,
+                        node.style.border_color,
+                        1.0,
+                        9.0,
+                    ));
+                    self.insert_primitive(visual_quad(
+                        id,
+                        4,
+                        SceneRect {
+                            x: track.x + if checked { 15.0 } else { 3.0 },
+                            y: track.y + 3.0,
+                            width: 12.0,
+                            height: 12.0,
+                        },
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node.z_index,
+                        node_order,
+                        node.standard_visual_foreground,
+                        None,
+                        0.0,
+                        6.0,
+                    ));
+                }
+                Some(StandardVisual::Slider { ratio }) => {
+                    let thumb_extent = 14.0_f32.min(bounds.width).min(bounds.height);
+                    let track_inset = thumb_extent / 2.0;
+                    let track = SceneRect {
+                        x: bounds.x + track_inset,
+                        y: bounds.y + (bounds.height - 4.0) / 2.0,
+                        width: (bounds.width - thumb_extent).max(0.0),
+                        height: 4.0,
+                    };
+                    self.insert_primitive(visual_quad(
+                        id,
+                        3,
+                        track,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node.z_index,
+                        node_order,
+                        node.style.border_color,
+                        None,
+                        0.0,
+                        2.0,
+                    ));
+                    self.insert_primitive(visual_quad(
+                        id,
+                        4,
+                        SceneRect {
+                            width: track.width * ratio,
+                            ..track
+                        },
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node.z_index,
+                        node_order,
+                        node.style.background,
+                        None,
+                        0.0,
+                        2.0,
+                    ));
+                    self.insert_primitive(visual_quad(
+                        id,
+                        5,
+                        SceneRect {
+                            x: bounds.x + track.width * ratio,
+                            y: bounds.y + (bounds.height - thumb_extent) / 2.0,
+                            width: thumb_extent,
+                            height: thumb_extent,
+                        },
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node.z_index,
+                        node_order,
+                        node.style.background,
+                        node.style.border_color,
+                        1.0,
+                        thumb_extent / 2.0,
+                    ));
+                }
+                None => {}
             }
         }
         self.primitives.len() - before
@@ -427,12 +616,20 @@ impl UiScene {
                     transform,
                 });
             }
+            transform = transform.then(AffineTransform([
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -ancestor.scroll_offset.x,
+                -ancestor.scroll_offset.y,
+            ]));
         }
         (transform, opacity, clips)
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
-        for slot in 0..=2 {
+        for slot in 0..=MAX_NODE_PRIMITIVE_SLOT {
             if let Some(primitive) = self.primitives.remove(&PrimitiveId { node: id, slot }) {
                 self.ordered.remove(&Self::order_key(&primitive));
             }
@@ -450,6 +647,39 @@ impl UiScene {
             slot: primitive.id.slot,
             node: primitive.node,
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visual_quad(
+    node: StableNodeId,
+    slot: u8,
+    bounds: SceneRect,
+    transform: AffineTransform,
+    clips: Vec<ClipRegion>,
+    opacity: f32,
+    z_index: i32,
+    document_order: usize,
+    background: Option<[f32; 4]>,
+    border_color: Option<[f32; 4]>,
+    border_width: f32,
+    corner_radius: f32,
+) -> ScenePrimitive {
+    ScenePrimitive {
+        id: PrimitiveId { node, slot },
+        node,
+        bounds,
+        transform,
+        clips,
+        opacity,
+        z_index,
+        document_order,
+        kind: ScenePrimitiveKind::Quad {
+            background,
+            border_color,
+            border_width,
+            corner_radius,
+        },
     }
 }
 
@@ -479,6 +709,7 @@ mod tests {
                 width: 100.0,
                 height: 80.0,
             },
+            scroll_offset: nana_ui_runtime::ScrollOffset::default(),
             source_style: NodeStyle::default(),
             style: ComputedStyle::default(),
             text: None,
@@ -487,6 +718,8 @@ mod tests {
             focused: false,
             ime: None,
             text_input: None,
+            standard_visual: None,
+            standard_visual_foreground: None,
             custom_render: None,
         }
     }
@@ -599,5 +832,140 @@ mod tests {
         assert_eq!(custom.opacity, 0.25);
         assert_eq!(custom.clips.len(), 1);
         assert_eq!(custom.transform.0[4], 4.0);
+    }
+
+    #[test]
+    fn text_primitive_preserves_content_box_and_paint_semantics() {
+        let mut text = node(1, None, &[]);
+        text.text = Some(TextContent {
+            value: "Build".into(),
+        });
+        text.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                padding_top: Some(nana_ui_core::LengthSpec::Px(2.0)),
+                padding_right: Some(nana_ui_core::LengthSpec::Px(8.0)),
+                padding_bottom: Some(nana_ui_core::LengthSpec::Px(4.0)),
+                padding_left: Some(nana_ui_core::LengthSpec::Px(10.0)),
+                border_width: Some(1.0),
+                white_space_nowrap: true,
+                text_overflow_ellipsis: true,
+                ..Default::default()
+            }),
+            text_horizontal_alignment: TextHorizontalAlignment::Center,
+            text_vertical_alignment: TextVerticalAlignment::Center,
+            ..Default::default()
+        };
+        text.style.line_height = Some(LineHeightSpec::Absolute(18.0));
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([text], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 2,
+            })
+            .unwrap();
+        assert_eq!(
+            primitive.bounds,
+            SceneRect {
+                x: 11.0,
+                y: 3.0,
+                width: 80.0,
+                height: 72.0,
+            }
+        );
+        assert!(matches!(
+            primitive.kind,
+            ScenePrimitiveKind::Text {
+                line_height: Some(LineHeightSpec::Absolute(18.0)),
+                wrap: false,
+                ellipsis: true,
+                horizontal_alignment: TextHorizontalAlignment::Center,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn standard_control_visuals_expand_without_backend_tag_matching() {
+        let mut checkbox = node(1, None, &[]);
+        checkbox.text = Some(TextContent {
+            value: "Notifications".into(),
+        });
+        checkbox.standard_visual = Some(StandardVisual::Checkbox { checked: true });
+        checkbox.style.background = Some([0.2, 0.5, 0.9, 1.0]);
+        checkbox.style.border_color = Some([0.1, 0.2, 0.3, 1.0]);
+
+        let mut slider = node(2, None, &[]);
+        slider.standard_visual = Some(StandardVisual::Slider { ratio: 0.25 });
+        slider.style.background = Some([0.2, 0.5, 0.9, 1.0]);
+        slider.style.border_color = Some([0.4, 0.4, 0.4, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([checkbox, slider], []);
+        assert_eq!(scene.primitives().count(), 6);
+        let checkbox_text = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 2,
+            })
+            .unwrap();
+        assert_eq!(checkbox_text.bounds.x, 24.0);
+        assert_eq!(checkbox_text.bounds.width, 76.0);
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 4,
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text { ref content, .. } if content == "✓"
+        ));
+        assert_eq!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(2),
+                    slot: 4,
+                })
+                .unwrap()
+                .bounds
+                .width,
+            21.5
+        );
+    }
+
+    #[test]
+    fn scroll_offset_transforms_descendants_but_not_viewport_clip() {
+        let mut scroller = node(1, None, &[2]);
+        scroller.layout.height = 50.0;
+        scroller.scroll_offset = nana_ui_runtime::ScrollOffset { x: 0.0, y: 60.0 };
+        scroller.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                overflow_y: nana_ui_core::OverflowSpec::Scroll,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.layout.y = 80.0;
+        child.text = Some(TextContent {
+            value: "Visible".into(),
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([scroller, child], []);
+        let text = scene
+            .primitive(PrimitiveId {
+                node: id(2),
+                slot: 2,
+            })
+            .unwrap();
+        assert_eq!(text.transform.0[5], -60.0);
+        assert_eq!(text.bounds.y, 80.0);
+        assert_eq!(text.clips.len(), 1);
+        assert_eq!(text.clips[0].bounds.height, 50.0);
+        assert_eq!(text.clips[0].transform, AffineTransform::IDENTITY);
     }
 }

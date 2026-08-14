@@ -6,7 +6,9 @@ primitive；`hosted-gpu-demo` 进一步验证宿主控制窗口、事件循环�
 上下文。它们没有对 NanaShader 做任何改动，也不把等价场景验证冒充真实
 NanaShader/Live2D 接入。
 
-`run_hosted` 与 `HostedProgram` 提供推荐的完整宿主入口；应用只实现业务状态、
+`run_runtime` 与 `RuntimeProgram` 是新 Rust 应用的推荐完整宿主入口；应用持有
+`RuntimeDocument` 并产出 UiScene，不依赖 Iced Message/Element/window identity。
+`run_hosted` 与 `HostedProgram` 保留为已有 Iced consumer 的兼容入口；应用只实现业务状态、
 各窗口视图、业务消息、副作用调度，以及设备恢复后自身 GPU 资源的重建。窗口、
 Surface、唯一 Device/Queue、输入路由与合并、同帧更新与 present、系统材质、窗口
 按钮、失焦/遮挡、设备丢失重试和空闲唤醒均由 NanaUI 负责。业务通过稳定的

@@ -1,4 +1,7 @@
 use super::*;
+use std::collections::HashMap;
+
+use iced::Point;
 use iced::Vector;
 use iced::widget::column;
 
@@ -194,7 +197,7 @@ where
     if !state.resizable_value()
         || state.disabled_value()
         || state.fill_priority_value() > 0
-        || controller.transitions.contains_key(state.id())
+        || controller.region_transitioning(state.id())
     {
         return surface;
     }
