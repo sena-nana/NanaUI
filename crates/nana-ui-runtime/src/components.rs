@@ -150,6 +150,14 @@ pub struct TextShapeConstraints {
     pub max_height: Option<f32>,
     pub wrap: bool,
     pub ellipsis: bool,
+    pub shaping: TextShaping,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextShaping {
+    #[default]
+    Auto,
+    Advanced,
 }
 
 pub trait TextShaper {

@@ -33,6 +33,8 @@ insert / remove / text / focus / layout 全部写入 `UiWorld`，不再维护第
 cache。paint 前 Style Model measure 与 paint 后 Iced `LayoutProbe` 是迁移期的两个
 geometry phase，结果都只写回 Runtime。详细不变量见
 [`runtime-scene.md`](runtime-scene.md)。
+组件从 compatibility painter 向 Runtime painter 的逐项支持状态、公共查询合同与晋级门禁见
+[`component-migration.md`](component-migration.md)。
 
 | 层 | 含义 | 住在哪 |
 |----|------|--------|

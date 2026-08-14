@@ -4,7 +4,7 @@ use std::sync::Arc;
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{
     CustomRenderNode, ExtractedNode, StableNodeId, StandardVisual, TextHorizontalAlignment,
-    TextVerticalAlignment,
+    TextShaping, TextVerticalAlignment,
 };
 
 use crate::{
@@ -76,6 +76,7 @@ pub enum ScenePrimitiveKind {
         letter_spacing: f32,
         wrap: bool,
         ellipsis: bool,
+        shaping: TextShaping,
         horizontal_alignment: TextHorizontalAlignment,
         vertical_alignment: TextVerticalAlignment,
     },
@@ -493,6 +494,11 @@ impl UiScene {
                         letter_spacing: node.style.letter_spacing,
                         wrap: !style.white_space_nowrap,
                         ellipsis: style.text_overflow_ellipsis,
+                        shaping: if node.text_input.is_some() {
+                            TextShaping::Advanced
+                        } else {
+                            TextShaping::Auto
+                        },
                         horizontal_alignment: node.source_style.text_horizontal_alignment,
                         vertical_alignment: node.source_style.text_vertical_alignment,
                     },
@@ -541,6 +547,7 @@ impl UiScene {
                                 letter_spacing: 0.0,
                                 wrap: false,
                                 ellipsis: false,
+                                shaping: TextShaping::Auto,
                                 horizontal_alignment: TextHorizontalAlignment::Center,
                                 vertical_alignment: TextVerticalAlignment::Center,
                             },

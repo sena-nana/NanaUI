@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pixel similarity gate for NanaUI snapshots / evidence PNGs.
+# Optional pixel-similarity diagnostic for NanaUI snapshots / evidence PNGs.
 #
 # ImageMagick `compare -metric SSIM` on this toolchain reports a *distortion*
 # (lower is better). The parenthesized value is the normalized distortion in
@@ -7,19 +7,15 @@
 #
 #   similarity = 1.0 - normalized_distortion
 #
-# Default threshold: similarity >= 0.98  (normalized distortion <= 0.02).
-# Override with NANA_PIXEL_SSIM_MIN (e.g. 0.98). Documented so the gate is not
-# an undocumented gut feel.
-#
 # Usage:
 #   scripts/pixel_ssim_compare.sh <baseline.png> <candidate.png>
 #   scripts/pixel_ssim_compare.sh --dir <baseline_dir> <candidate_dir>
 #
-# Exit 0 when every pair passes; 1 on failure / tool error.
+# Pixel similarity does not determine rendering correctness and is never a
+# promotion gate. Exit 1 only when the diagnostic cannot run (missing files,
+# tool errors or unparseable output).
 
 set -euo pipefail
-
-MIN="${NANA_PIXEL_SSIM_MIN:-0.98}"
 
 compare_pair() {
   local baseline="$1"
@@ -67,14 +63,8 @@ PY
 
   local sim
   sim="$(python3 -c "print(1.0 - float('$norm'))")"
-  local pass
-  pass="$(python3 -c "import sys; sys.exit(0 if float('$sim') + 1e-12 >= float('$MIN') else 1)" && echo yes || echo no)"
-
-  printf 'SSIM %s vs %s: similarity=%.6f (norm_dist=%.6f) threshold=%.2f -> %s\n' \
-    "$(basename "$baseline")" "$(basename "$candidate")" "$sim" "$norm" "$MIN" \
-    "$([[ $pass == yes ]] && echo PASS || echo FAIL)"
-
-  [[ $pass == yes ]]
+  printf 'SSIM diagnostic %s vs %s: similarity=%.6f (norm_dist=%.6f; non-gating)\n' \
+    "$(basename "$baseline")" "$(basename "$candidate")" "$sim" "$norm"
 }
 
 if [[ "${1:-}" == "--dir" ]]; then

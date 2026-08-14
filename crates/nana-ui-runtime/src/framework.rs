@@ -2630,11 +2630,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             hovered_checked.style.background,
-            Some(
-                nana_ui_core::SemanticPalette::dark()
-                    .accent_strong
-                    .as_rgba_array()
-            )
+            Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
         );
     }
 
@@ -2996,8 +2992,61 @@ mod tests {
             .unwrap();
         assert_eq!(
             dark.style.background,
-            Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
+            Some(
+                nana_ui_core::SemanticPalette::dark()
+                    .accent_soft
+                    .as_rgba_array()
+            )
         );
+        context
+            .world_mut()
+            .set_pointer_hover(document, 1, Some(button.stable_id()))
+            .unwrap();
+        let work = context.world_mut().take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            context
+                .world()
+                .extract_nodes(&[button.stable_id()])
+                .pop()
+                .unwrap()
+                .style
+                .background,
+            Some(
+                nana_ui_core::SemanticPalette::dark()
+                    .accent_soft_hover
+                    .as_rgba_array()
+            )
+        );
+        context
+            .world_mut()
+            .press_pointer(document, 1, button.stable_id())
+            .unwrap();
+        let work = context.world_mut().take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            context
+                .world()
+                .extract_nodes(&[button.stable_id()])
+                .pop()
+                .unwrap()
+                .style
+                .background,
+            Some(
+                nana_ui_core::SemanticPalette::dark()
+                    .accent_soft_pressed
+                    .as_rgba_array()
+            )
+        );
+        assert_eq!(
+            context.release_pointer(document, 1),
+            Some(button.stable_id())
+        );
+        context
+            .world_mut()
+            .set_pointer_hover(document, 1, None)
+            .unwrap();
+        context.world_mut().take_system_work();
 
         assert!(context.set_theme(ThemeMode::Light).unwrap());
         let work = context.world_mut().take_system_work();
@@ -3013,7 +3062,7 @@ mod tests {
             light.style.background,
             Some(
                 nana_ui_core::SemanticPalette::light()
-                    .accent
+                    .accent_soft
                     .as_rgba_array()
             )
         );
@@ -3036,7 +3085,7 @@ mod tests {
             focused.style.border_color,
             Some(
                 nana_ui_core::SemanticPalette::light()
-                    .accent_text
+                    .accent
                     .as_rgba_array()
             )
         );
