@@ -47,6 +47,10 @@ layout 收敛后直接绘制这棵已更新的 `UserInterface`。输入消息返
 `desired_maximum_frame_latency` 设为 `1`。
 
 `HostTexture` 以稳定 ID 和 generation 包装引用计数的 WGPU `TextureView`。宿主替换或 resize 纹理时递增 generation，NanaUI 只重建对应 bind group；未出现的纹理实例在帧末从 pipeline cache 清除。当前合同接收可过滤的二维 float 纹理，并使用预乘 Alpha 合成。`GpuTextureView::contain` 在布局区域内保持传入宽高比，业务无需重复实现响应式 contain 计算。
+实时 mailbox consumer 在 `RuntimeProgram::prepare_window_frame` 中 acquire 最新纹理并更新
+HostTexture registry；被替换的 lease 必须保留到同一窗口 Surface 成功 submit/present 后，
+再由 `window_frame_presented` 释放。两处 hook 都由 host 带稳定 WindowId 调用，应用不得在
+普通 UI update 或 redraw cadence 中提前归还 GPU 资源。
 
 需要直接参与 Scene 图的高级内容注册 `SceneGpuRenderer`。RenderGraph 为 custom resource
 建立显式 prepare/sample pass 与 hazard；direct renderer 在 Iced 当前 frame 中取得同一

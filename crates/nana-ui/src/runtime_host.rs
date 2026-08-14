@@ -182,6 +182,26 @@ pub trait RuntimeProgram: Sized + 'static {
         None
     }
 
+    /// Acquire application-owned frame resources immediately before the host
+    /// flushes and paints this window. Resources retired here must remain alive
+    /// until [`Self::window_frame_presented`] confirms Surface submission.
+    fn prepare_window_frame(
+        &mut self,
+        _id: WindowId,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+    }
+
+    /// Release resources retired by [`Self::prepare_window_frame`] only after
+    /// the host has submitted and presented this window's frame.
+    fn window_frame_presented(
+        &mut self,
+        _id: WindowId,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
     fn rebuild_gpu(&mut self, _context: &RuntimeProgramContext<Self::Message>) {}
 
     fn input_event(
@@ -356,6 +376,8 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
             .get(&id)
             .copied()
             .unwrap_or_else(|| platform_geometry(hosted.geometry()));
+        let context = Self::context(hosted, id, geometry, self.tasks.clone());
+        self.program.prepare_window_frame(id, &context);
         let viewport =
             nana_ui_runtime::LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
         let update = self
@@ -383,6 +405,17 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
                     panic!("RuntimeProgram resource production failed: {error}")
                 });
         }
+    }
+
+    fn window_frame_presented(
+        &mut self,
+        id: WindowId,
+        _material: crate::MaterialOutcome,
+        hosted: &HostedProgramContext<Self::Message>,
+    ) -> HostedProgramUpdate {
+        let geometry = self.geometries.get(&id).copied().unwrap_or_default();
+        let context = Self::context(hosted, id, geometry, self.tasks.clone());
+        Self::hosted_update(self.program.window_frame_presented(id, &context))
     }
 
     fn rebuild_gpu(&mut self, hosted: &HostedProgramContext<Self::Message>) {
