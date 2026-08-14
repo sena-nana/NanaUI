@@ -133,10 +133,10 @@ macro_rules! component_catalog {
 }
 
 component_catalog! {
-    TEXT => { id: "text", name: "Text", family: Primitive, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Accessibility] },
-    BUTTON => { id: "button", name: "Button", family: Control, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    TEXT_INPUT => { id: "text-input", name: "TextInput", family: Control, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
-    CHECKBOX => { id: "checkbox", name: "Checkbox", family: Control, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    TEXT => { id: "text", name: "Text", family: Primitive, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
+    BUTTON => { id: "button", name: "Button", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    TEXT_INPUT => { id: "text-input", name: "TextInput", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
+    CHECKBOX => { id: "checkbox", name: "Checkbox", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     ICON_BUTTON => { id: "icon-button", name: "IconButton", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     CARD => { id: "card", name: "Card", family: Primitive, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility, Animation] },
     SWITCH => { id: "switch", name: "Switch", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
@@ -241,24 +241,12 @@ mod tests {
     }
 
     #[test]
-    fn first_batch_is_candidate_until_component_acceptance() {
+    fn qualified_components_route_only_reviewed_runtime_paths() {
         for id in [
             component_ids::TEXT,
             component_ids::BUTTON,
             component_ids::TEXT_INPUT,
             component_ids::CHECKBOX,
-        ] {
-            let support = component_support(id).expect("first-batch component is cataloged");
-            assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
-            assert!(support.compiled);
-            assert!(support.supports(ComponentCapability::Render));
-            assert!(support.supports(ComponentCapability::Accessibility));
-        }
-    }
-
-    #[test]
-    fn second_batch_routes_only_reviewed_components() {
-        for id in [
             component_ids::ICON_BUTTON,
             component_ids::SWITCH,
             component_ids::CARD,
@@ -269,6 +257,19 @@ mod tests {
             assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
             assert_eq!(component_uses_runtime(id), support.compiled);
         }
+    }
+
+    #[test]
+    fn first_batch_public_exports_are_runtime_components() {
+        let _: nana_ui_runtime::Text = crate::Text::new("Status");
+        let _: nana_ui_runtime::Button = crate::Button::new("Run");
+        let _: nana_ui_runtime::TextInput = crate::TextInput::new("main");
+        let _: nana_ui_runtime::Checkbox = crate::Checkbox::new("Enabled", true);
+
+        let _: nana_ui_runtime::Text = crate::components::Text::new("Status");
+        let _: nana_ui_runtime::Button = crate::components::Button::new("Run");
+        let _: nana_ui_runtime::TextInput = crate::components::TextInput::new("main");
+        let _: nana_ui_runtime::Checkbox = crate::components::Checkbox::new("Enabled", true);
     }
 
     #[test]

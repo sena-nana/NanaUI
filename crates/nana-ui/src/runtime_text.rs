@@ -6,6 +6,7 @@ use nana_ui_runtime::{
     ComputedStyle, StableNodeId, TextContent, TextMetrics, TextShapeConstraints, TextShaper,
     TextShaping,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::ui_font;
 
@@ -26,34 +27,7 @@ impl TextShaper for IcedTextShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
-        let font = resolve_font(style.font_family.as_deref(), font_weight(style.font_weight));
-        let paragraph = RendererParagraph::with_text(Text {
-            content: text.value.as_str(),
-            bounds: Size::new(
-                constraints.max_width.unwrap_or(f32::INFINITY),
-                constraints.max_height.unwrap_or(f32::INFINITY),
-            ),
-            size: Pixels(style.font_size),
-            line_height: style.line_height.map(line_height).unwrap_or_default(),
-            font,
-            align_x: Alignment::Default,
-            align_y: alignment::Vertical::Top,
-            shaping: match constraints.shaping {
-                TextShaping::Auto => Shaping::Auto,
-                TextShaping::Advanced => Shaping::Advanced,
-            },
-            wrapping: if constraints.wrap {
-                Wrapping::Word
-            } else {
-                Wrapping::None
-            },
-            ellipsis: if constraints.ellipsis {
-                Ellipsis::End
-            } else {
-                Ellipsis::None
-            },
-            hint_factor: None,
-        });
+        let paragraph = paragraph(text, style, constraints);
         let bounds = paragraph.min_bounds();
         let tracking = style.letter_spacing * text.value.chars().count().saturating_sub(1) as f32;
         TextMetrics {
@@ -61,6 +35,67 @@ impl TextShaper for IcedTextShaper {
             height: bounds.height,
         }
     }
+
+    fn horizontal_offset(
+        &mut self,
+        _id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        style: &ComputedStyle,
+    ) -> f32 {
+        if byte_offset > text.value.len() || !text.value.is_char_boundary(byte_offset) {
+            return 0.0;
+        }
+        let paragraph = paragraph(
+            text,
+            style,
+            TextShapeConstraints {
+                shaping: TextShaping::Advanced,
+                ..TextShapeConstraints::default()
+            },
+        );
+        let graphemes = text.value[..byte_offset].graphemes(true).count();
+        paragraph
+            .grapheme_position(0, graphemes)
+            .map_or(0.0, |position| {
+                position.x + style.letter_spacing * graphemes.saturating_sub(1) as f32
+            })
+    }
+}
+
+fn paragraph(
+    text: &TextContent,
+    style: &ComputedStyle,
+    constraints: TextShapeConstraints,
+) -> RendererParagraph {
+    let font = resolve_font(style.font_family.as_deref(), font_weight(style.font_weight));
+    RendererParagraph::with_text(Text {
+        content: text.value.as_str(),
+        bounds: Size::new(
+            constraints.max_width.unwrap_or(f32::INFINITY),
+            constraints.max_height.unwrap_or(f32::INFINITY),
+        ),
+        size: Pixels(style.font_size),
+        line_height: style.line_height.map(line_height).unwrap_or_default(),
+        font,
+        align_x: Alignment::Default,
+        align_y: alignment::Vertical::Top,
+        shaping: match constraints.shaping {
+            TextShaping::Auto => Shaping::Auto,
+            TextShaping::Advanced => Shaping::Advanced,
+        },
+        wrapping: if constraints.wrap {
+            Wrapping::Word
+        } else {
+            Wrapping::None
+        },
+        ellipsis: if constraints.ellipsis {
+            Ellipsis::End
+        } else {
+            Ellipsis::None
+        },
+        hint_factor: None,
+    })
 }
 
 fn line_height(spec: nana_ui_core::LineHeightSpec) -> LineHeight {
@@ -116,5 +151,34 @@ mod tests {
         );
         assert!(metrics.width > 0.0);
         assert!(metrics.height > 0.0);
+    }
+
+    #[test]
+    fn cursor_offsets_follow_shaped_graphemes_instead_of_utf8_width_guesses() {
+        let text = TextContent {
+            value: "A👩‍💻界".into(),
+        };
+        let style = ComputedStyle::default();
+        let after_ascii = IcedTextShaper.horizontal_offset(
+            StableNodeId::new(1).unwrap(),
+            &text,
+            "A".len(),
+            &style,
+        );
+        let after_emoji = IcedTextShaper.horizontal_offset(
+            StableNodeId::new(1).unwrap(),
+            &text,
+            "A👩‍💻".len(),
+            &style,
+        );
+        let at_end = IcedTextShaper.horizontal_offset(
+            StableNodeId::new(1).unwrap(),
+            &text,
+            text.value.len(),
+            &style,
+        );
+        assert!(after_ascii > 0.0);
+        assert!(after_emoji > after_ascii);
+        assert!(at_end > after_emoji);
     }
 }
