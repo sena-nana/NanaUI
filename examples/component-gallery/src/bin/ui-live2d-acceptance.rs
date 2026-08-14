@@ -24,13 +24,14 @@ use live2d_wgpu::{
     RegistrationRequest, RenderTarget, RenderView, Renderer as Live2dRenderer, RendererOptions,
     SubmissionBatch, SubmissionToken,
 };
+use nana_ui::compatibility::Button;
 use nana_ui::runtime::{
     Card as RuntimeCard, CustomRenderNode, DocumentId, LayoutBox, MutationQueue, NodeKind,
     RuntimeDocument, Text as RuntimeText, UiScene,
 };
 use nana_ui::widgets::{ButtonKind, panel_style};
 use nana_ui::{
-    Button, HostTexture, HostTextureAlphaMode, HostTextureRegistry, IcedSceneView,
+    HostTexture, HostTextureAlphaMode, HostTextureRegistry, IcedSceneView,
     SceneResourceEncodeContext, SceneResourceProducer, SceneResourceProducerRegistry, ThemeMode,
     ThemeModeExt, UI_BASE_TEXT_SIZE, ui_font, ui_font_sources,
 };

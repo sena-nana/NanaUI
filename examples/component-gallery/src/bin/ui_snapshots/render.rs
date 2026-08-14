@@ -10,6 +10,9 @@ use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
+use nana_ui::compatibility::{
+    Button as LegacyButton, Checkbox as LegacyCheckbox, Input as LegacyInput,
+};
 use nana_ui::runtime::{
     AppContext, Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
     DocumentId, IconButton as RuntimeIconButton, LayoutBox, List as RuntimeList,
@@ -20,11 +23,10 @@ use nana_ui::runtime::{
     TextArea as RuntimeTextArea, TextInput as RuntimeTextInput, TextVerticalAlignment,
 };
 use nana_ui::{
-    AppTitleBar, Button as LegacyButton, ButtonKind, Checkbox as LegacyCheckbox, DockAction,
-    DockBounds, DockChromeStyle, DockContents, DockController, DockDropZone, DockHostEffect,
-    DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, FloatingDock, Input as LegacyInput,
-    LayoutBounds, LayoutProbe, PaneChromeActionKind, RegionId, SettingsTabId, ThemeMode,
-    ThemeModeExt, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
+    AppTitleBar, ButtonKind, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
+    DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
+    FloatingDock, LayoutBounds, LayoutProbe, PaneChromeActionKind, RegionId, SettingsTabId,
+    ThemeMode, ThemeModeExt, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
     WorkspaceAction, dock_window_workspace, dock_workspace,
 };
 use nana_ui::{CommandPaletteEvent, ContextMenuEvent};
@@ -702,7 +704,10 @@ fn migration_runtime_scene(
         document,
         RuntimeTextInput::new("release/issue-7").label("Branch"),
     )?;
-    let button = context.create_component(document, RuntimeButton::new("Run build"))?;
+    let button = context.create_component(
+        document,
+        RuntimeButton::new("Run build").kind(ButtonKind::Primary),
+    )?;
     let checkbox =
         context.create_component(document, RuntimeCheckbox::new("Notifications", true))?;
     let layout = [

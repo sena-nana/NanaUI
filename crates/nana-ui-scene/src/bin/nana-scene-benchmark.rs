@@ -131,6 +131,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         ime: None,
         text_input: None,
         standard_visual: None,
+        component_geometry: None,
         standard_visual_foreground: None,
         custom_render: None,
     }
