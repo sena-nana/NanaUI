@@ -62,6 +62,9 @@ deadline；Runtime 不创建计时线程。due sample 本身不伪造 render dir
 source 不得强制整个 Runtime 全量更新。
 Iced hosted compatibility 通过 `RuntimeAnimationClock` 将 duration epoch 映射为
 `Instant`；adapter 不创建 timer，也不替应用决定 sample 是否需要 redraw。
+应用级 sampled state、外部 runtime pump 与 retry backoff 使用
+`RuntimeProgram::next_wakeup/wake`；host 将该 deadline 与所有 document animation deadline
+取最早值。这条路径不依赖 redraw，`wake` 只有在业务状态实际变化时才请求窗口更新。
 
 Workspace 的持久布局、viewport/scale、resize drag 与 collapse transition 由
 `nana-ui-core::WorkspaceModel` 单独持有，并只接受显式 `Duration` 时间。静态 geometry
