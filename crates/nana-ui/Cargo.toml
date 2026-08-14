@@ -91,7 +91,7 @@ wgpu = { workspace = true, optional = true }
 android-activity = { version = "0.6", features = ["native-activity"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-accesskit_winit = { version = "0.33.2", optional = true }
+accesskit_winit = { path = "../../vendor/accesskit_winit", optional = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 wry = { version = "=0.55.1", optional = true }
