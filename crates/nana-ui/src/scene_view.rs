@@ -9,22 +9,26 @@ use std::fmt;
 use std::sync::Arc;
 
 use iced::advanced::Renderer as _;
+use iced::advanced::graphics::geometry::Renderer as _;
 use iced::advanced::text::{Alignment, Ellipsis, LineHeight, Renderer as _, Shaping, Wrapping};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Text, layout, mouse, renderer};
 use iced::alignment;
 use iced::font::Weight;
+use iced::widget::canvas;
 use iced::{
-    Background, Border, Color, Element, Font, Length, Pixels, Point, Rectangle, Size, Theme,
+    Background, Border, Color, Element, Font, Length, Pixels, Point, Rectangle, Shadow, Size,
+    Theme, Vector,
 };
 use iced_wgpu::primitive::Renderer as _;
-use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
+use nana_ui_runtime::{StableNodeId, TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::{
     PrimitiveId, RenderOperation, ResourceId, ScenePrimitive, ScenePrimitiveKind, SceneRect,
     UiScene,
 };
 
 use crate::gpu_texture::GpuTexturePrimitive;
+use crate::icons::{paint_icon_geometry, paint_spinner_geometry};
 use crate::scene_gpu::SceneGpuPrimitive;
 use crate::{
     HostTextureBinding, HostTextureLayer, HostTextureRegistry, SceneGpuNode,
@@ -40,6 +44,7 @@ pub enum ScenePaintError {
     UnsupportedTextStyle(PrimitiveId),
     UnsupportedCustomRenderer(PrimitiveId),
     MissingCustomResource(PrimitiveId),
+    MissingNode(StableNodeId),
 }
 
 impl fmt::Display for ScenePaintError {
@@ -82,6 +87,7 @@ impl fmt::Display for ScenePaintError {
                 id.node.get(),
                 id.slot
             ),
+            Self::MissingNode(id) => write!(formatter, "scene node {} is unavailable", id.get()),
         }
     }
 }
@@ -140,6 +146,7 @@ pub struct IcedSceneView<'scene> {
     gpu_renderers: Option<SceneGpuRendererRegistry>,
     operations: Arc<[RenderOperation]>,
     size: Size,
+    scene_origin: Point,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +167,19 @@ impl SceneSource<'_> {
 impl<'scene> IcedSceneView<'scene> {
     pub fn new(scene: &'scene UiScene, size: Size) -> Result<Self, ScenePaintError> {
         Self::borrowed(scene, None, None, size)
+    }
+
+    /// Paint exactly one retained Runtime subtree inside an Iced layout slot.
+    /// The subtree's absolute scene origin is normalized to the widget origin;
+    /// no second widget state tree is created.
+    pub fn for_node(
+        scene: &'scene UiScene,
+        node: StableNodeId,
+        size: Size,
+    ) -> Result<Self, ScenePaintError> {
+        let mut view = Self::borrowed(scene, None, None, size)?;
+        view.restrict_to_node(node)?;
+        Ok(view)
     }
 
     pub fn with_host_textures(
@@ -195,6 +215,17 @@ impl<'scene> IcedSceneView<'scene> {
         Self::from_shared_with_renderers(scene, host_textures, None, size)
     }
 
+    pub fn from_shared_node(
+        scene: Arc<UiScene>,
+        node: StableNodeId,
+        host_textures: Option<HostTextureRegistry>,
+        size: Size,
+    ) -> Result<IcedSceneView<'static>, ScenePaintError> {
+        let mut view = Self::from_shared(scene, host_textures, size)?;
+        view.restrict_to_node(node)?;
+        Ok(view)
+    }
+
     pub fn from_shared_with_renderers(
         scene: Arc<UiScene>,
         host_textures: Option<HostTextureRegistry>,
@@ -208,6 +239,7 @@ impl<'scene> IcedSceneView<'scene> {
             gpu_renderers,
             operations,
             size,
+            scene_origin: Point::ORIGIN,
         })
     }
 
@@ -228,7 +260,31 @@ impl<'scene> IcedSceneView<'scene> {
             gpu_renderers,
             operations,
             size,
+            scene_origin: Point::ORIGIN,
         })
+    }
+
+    fn restrict_to_node(&mut self, node: StableNodeId) -> Result<(), ScenePaintError> {
+        let bounds = self
+            .scene()
+            .node_bounds(node)
+            .ok_or(ScenePaintError::MissingNode(node))?;
+        self.scene_origin = Point::new(bounds.x, bounds.y);
+        self.operations = self
+            .operations
+            .iter()
+            .filter(|operation| {
+                let id = match operation {
+                    RenderOperation::PrepareExternal(id)
+                    | RenderOperation::Draw(id)
+                    | RenderOperation::InvokeCustom(id) => *id,
+                };
+                self.scene().is_node_in_subtree(node, id.node)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        Ok(())
     }
 }
 
@@ -316,7 +372,8 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let origin = layout.bounds().position();
+        let origin =
+            layout.bounds().position() - Vector::new(self.scene_origin.x, self.scene_origin.y);
         for operation in self.operations.iter() {
             let id = match operation {
                 RenderOperation::PrepareExternal(_) => continue,
@@ -391,6 +448,7 @@ fn paint_primitive(
             border_color,
             border_width,
             corner_radius,
+            shadow,
         } => renderer.fill_quad(
             renderer::Quad {
                 bounds,
@@ -401,6 +459,11 @@ fn paint_primitive(
                     ))
                     .width(*border_width)
                     .rounded(*corner_radius),
+                shadow: shadow.map_or_else(Shadow::default, |shadow| Shadow {
+                    color: color_with_opacity(shadow.color, primitive.opacity),
+                    offset: Vector::new(0.0, shadow.offset_y),
+                    blur_radius: shadow.blur_radius,
+                }),
                 ..renderer::Quad::default()
             },
             Background::Color(color_with_opacity(
@@ -482,6 +545,37 @@ fn paint_primitive(
                 clip,
             );
         }
+        ScenePrimitiveKind::Icon { icon, color } => {
+            renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                let mut frame = canvas::Frame::new(renderer, bounds.size());
+                let scale = bounds.width.min(bounds.height) / 24.0;
+                let offset = Point::new(
+                    (bounds.width - 24.0 * scale) / 2.0,
+                    (bounds.height - 24.0 * scale) / 2.0,
+                );
+                paint_icon_geometry(
+                    &mut frame,
+                    *icon,
+                    scale,
+                    offset,
+                    color_with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), primitive.opacity),
+                    1.7,
+                );
+                renderer.draw_geometry(frame.into_geometry());
+            });
+        }
+        ScenePrimitiveKind::Spinner { phase, color } => {
+            renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                let mut frame = canvas::Frame::new(renderer, bounds.size());
+                paint_spinner_geometry(
+                    &mut frame,
+                    bounds.size(),
+                    *phase,
+                    color_with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), primitive.opacity),
+                );
+                renderer.draw_geometry(frame.into_geometry());
+            });
+        }
         ScenePrimitiveKind::Custom(_) => {
             unreachable!("custom primitives are rejected by IcedSceneView::new")
         }
@@ -539,7 +633,8 @@ fn supported_family(family: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use nana_ui_runtime::{
-        AppContext, Button as RuntimeButton, CustomRenderNode, DocumentId, LayoutBox, MutationQueue,
+        AppContext, Button as RuntimeButton, Card as RuntimeCard, CustomRenderNode, DocumentId,
+        LayoutBox, MutationQueue,
     };
 
     use super::*;
@@ -657,6 +752,66 @@ mod tests {
                 node: button.stable_id(),
                 slot: 1,
             }
+        )));
+    }
+
+    #[test]
+    fn node_view_paints_only_the_selected_runtime_subtree() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let card = context
+            .create_component(document, RuntimeCard::new().title("Actions"))
+            .unwrap();
+        let child = context
+            .create_component(document, RuntimeButton::new("Build"))
+            .unwrap();
+        let outside = context
+            .create_component(document, RuntimeButton::new("Outside"))
+            .unwrap();
+        context.append_child(card, child).unwrap();
+        let mut layout = MutationQueue::new();
+        for (id, x, y, width, height) in [
+            (card.stable_id(), 40.0, 20.0, 160.0, 80.0),
+            (child.stable_id(), 52.0, 48.0, 80.0, 32.0),
+            (outside.stable_id(), 240.0, 20.0, 80.0, 32.0),
+        ] {
+            layout.write_layout(
+                id,
+                LayoutBox {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+            );
+        }
+        context.commit_mutations(layout).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            context.world().extract_nodes(&work.render_extraction),
+            work.render_removals,
+        );
+
+        let view =
+            IcedSceneView::for_node(&scene, card.stable_id(), Size::new(160.0, 80.0)).unwrap();
+        assert_eq!(view.scene_origin, Point::new(40.0, 20.0));
+        assert!(view.operations.iter().all(|operation| {
+            let primitive = match operation {
+                RenderOperation::PrepareExternal(id)
+                | RenderOperation::Draw(id)
+                | RenderOperation::InvokeCustom(id) => *id,
+            };
+            scene.is_node_in_subtree(card.stable_id(), primitive.node)
+        }));
+        assert!(view.operations.iter().any(|operation| matches!(
+            operation,
+            RenderOperation::Draw(id) if id.node == child.stable_id()
+        )));
+        assert!(!view.operations.iter().any(|operation| matches!(
+            operation,
+            RenderOperation::Draw(id) if id.node == outside.stable_id()
         )));
     }
 }

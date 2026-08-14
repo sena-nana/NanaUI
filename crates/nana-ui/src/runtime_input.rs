@@ -2,7 +2,8 @@
 
 use nana_ui_core::TableNavigation;
 use nana_ui_platform::{InputDisposition, InputEvent, PointerPhase};
-use nana_ui_runtime::{AppContext, DocumentId, FrameworkError, ScrollOffset};
+use nana_ui_runtime::{AppContext, DocumentId, FrameworkError, RangeAdjustment, ScrollOffset};
+use std::time::Duration;
 
 const DEFAULT_LINE_SCROLL_EXTENT: f32 = 60.0;
 
@@ -30,6 +31,19 @@ impl RuntimeInputAdapter {
         document: DocumentId,
         event: &InputEvent,
     ) -> Result<InputDisposition, FrameworkError> {
+        self.dispatch_at(context, document, event, Duration::ZERO)
+    }
+
+    /// Dispatch input at the host's monotonic Runtime timestamp. Timed
+    /// component behavior such as tooltip delay uses this clock; no component
+    /// owns a timer or requests frames while idle.
+    pub fn dispatch_at(
+        self,
+        context: &mut AppContext,
+        document: DocumentId,
+        event: &InputEvent,
+        now: Duration,
+    ) -> Result<InputDisposition, FrameworkError> {
         let handled = match event {
             InputEvent::Pointer {
                 phase,
@@ -41,19 +55,30 @@ impl RuntimeInputAdapter {
                 ..
             } => {
                 let target = context.pointer_target(document, *x, *y);
-                context.set_pointer_hover(document, *pointer_id, target)?;
+                context.set_pointer_hover_at(document, *pointer_id, target, now)?;
                 match phase {
-                    PointerPhase::Move => target.is_some(),
+                    PointerPhase::Move => {
+                        context.update_range_drag(document, *pointer_id, *x)? || target.is_some()
+                    }
                     PointerPhase::Down if *is_primary && *button == 0 => {
                         if let Some(target) = target {
                             context.focus_node(document, target)?;
                             context.press_pointer(document, *pointer_id, target)?;
+                            if context.is_range_field(target) {
+                                context.begin_range_drag(document, *pointer_id, target, *x)?;
+                            }
                             true
                         } else {
                             false
                         }
                     }
                     PointerPhase::Up if *is_primary && *button == 0 => {
+                        if context.end_range_drag(document, *pointer_id, false)? {
+                            context.release_pointer(document, *pointer_id);
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
                         let pressed = context.release_pointer(document, *pointer_id);
                         pressed == target
                             && target
@@ -62,9 +87,10 @@ impl RuntimeInputAdapter {
                                 .unwrap_or(false)
                     }
                     PointerPhase::Cancel => {
+                        let range = context.end_range_drag(document, *pointer_id, true)?;
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
-                        context.set_pointer_hover(document, *pointer_id, None)?;
-                        pressed
+                        context.set_pointer_hover_at(document, *pointer_id, None, now)?;
+                        range || pressed
                     }
                     _ => false,
                 }
@@ -108,6 +134,33 @@ impl RuntimeInputAdapter {
                 ..
             } if *pressed && !modifiers.alt && !modifiers.shift => {
                 let primary = modifiers.control || modifiers.meta;
+                let range_adjustment = (!primary)
+                    .then_some(match key.as_str() {
+                        "ArrowLeft" | "ArrowDown" => Some(RangeAdjustment::Decrement),
+                        "ArrowRight" | "ArrowUp" => Some(RangeAdjustment::Increment),
+                        "PageDown" => Some(RangeAdjustment::PageDecrement),
+                        "PageUp" => Some(RangeAdjustment::PageIncrement),
+                        "Home" => Some(RangeAdjustment::Minimum),
+                        "End" => Some(RangeAdjustment::Maximum),
+                        _ => None,
+                    })
+                    .flatten();
+                if let Some(adjustment) = range_adjustment
+                    && context.adjust_focused_range(document, adjustment)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+                if !primary
+                    && matches!(key.as_str(), " " | "Space" | "Enter")
+                    && let Some(target) = context.world().focused(document)
+                    && context.activate_node(target)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
                 let navigation = match (key.as_str(), primary) {
                     ("ArrowUp", false) => Some(TableNavigation::PreviousRow),
                     ("ArrowDown", false) => Some(TableNavigation::NextRow),
@@ -147,8 +200,8 @@ mod tests {
     use super::*;
     use nana_ui_platform::{InputModifiers, PointerType};
     use nana_ui_runtime::{
-        Activate, Button, LayoutBox, MutationQueue, ScrollAxes, ScrollMetrics, ScrollView, Table,
-        TableCell, TableRow, TextInput,
+        Activate, Button, LayoutBox, MutationQueue, RangeField, ScrollAxes, ScrollMetrics,
+        ScrollView, Table, TableCell, TableRow, TextInput,
     };
 
     fn wheel(x: f32, y: f32, delta_y: f32) -> InputEvent {
@@ -413,5 +466,80 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().focused(document), Some(second.stable_id()));
+    }
+
+    #[test]
+    fn range_field_quantizes_keyboard_and_cancels_captured_drag() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let range = context
+            .create_component(document, RangeField::new(0.5, 0.0, 1.0, 0.1).unwrap())
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            range.stable_id(),
+            LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 300.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.rebuild_hit_test(document);
+        assert!(context.focus_node(document, range.stable_id()).unwrap());
+
+        let key = |key: &str| InputEvent::Keyboard {
+            pressed: true,
+            key: key.into(),
+            text: None,
+            code: key.into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &key("ArrowRight"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!((context.read(range, |range| range.value).unwrap() - 0.6).abs() < 1e-12);
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &key("Home"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
+
+        let track = match context.world().component_geometry(range.stable_id()) {
+            Some(nana_ui_runtime::ComponentGeometry::Range { track, .. }) => track,
+            _ => panic!("range geometry expected"),
+        };
+        let drag_x = track.x + track.width * 0.8;
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, drag_x, 20.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.read(range, |range| range.value).unwrap(), 0.8);
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Cancel, drag_x, 20.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
+        assert_eq!(context.world().pointer_capture(document, 1), None);
     }
 }

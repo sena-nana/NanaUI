@@ -19,8 +19,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
-    CustomRenderNode, ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox,
-    MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, TextInputState, UiWorld,
+    Card as RuntimeCard, ComponentView, CustomRenderNode, IconButton as RuntimeIconButton,
+    ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, ListItem as RuntimeListItem,
+    ListItemSlots, MutationQueue, NodeKind, NodeStyle, RangeField as RuntimeRangeField,
+    StableNodeId, Switch as RuntimeSwitch, TextContent, TextInputState, UiWorld,
 };
 use nana_ui_scene::UiScene;
 
@@ -723,6 +725,9 @@ impl NanaTreeDocument {
                     widget.kind,
                     crate::WidgetKind::Dialog | crate::WidgetKind::Drawer
                 ),
+                busy: widget.props.loading,
+                invalid: widget.props.invalid,
+                ..AccessibilityState::default()
             };
             if self.runtime.accessibility(id) != Some(&accessibility) {
                 mutations.set_accessibility(id, accessibility);
@@ -745,6 +750,7 @@ impl NanaTreeDocument {
             } else if self.runtime.text_input(id).is_some() {
                 mutations.set_text_input(id, None);
             }
+            project_migrating_component(widget, snapshot, id, &self.runtime, &mut mutations);
         }
         let _ = self.runtime.commit(mutations);
         self.flush_runtime_systems();
@@ -1849,6 +1855,159 @@ impl NanaTreeDocument {
     }
 }
 
+fn project_migrating_component(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    id: StableNodeId,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) {
+    match widget.kind {
+        crate::WidgetKind::Button => {
+            let icon = widget
+                .children
+                .iter()
+                .filter_map(|child| snapshot.get(*child))
+                .find(|child| child.kind == crate::WidgetKind::Icon)
+                .and_then(|child| {
+                    nana_ui_core::Icon::parse_name(child.props.display_label())
+                        .or_else(|| nana_ui_core::Icon::parse_name(&child.props.value))
+                })
+                .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value));
+            if let Some(icon) = icon {
+                let label = if widget.props.hint.is_empty() {
+                    widget.props.display_label()
+                } else {
+                    widget.props.hint.as_str()
+                };
+                let mut component = RuntimeIconButton::new(icon, Arc::<str>::from(label))
+                    .kind(widget.props.button_kind)
+                    .size(widget.props.size)
+                    .selected(widget.props.active)
+                    .disabled(widget.props.disabled);
+                if !widget.props.hint.is_empty() {
+                    component = component.tooltip(
+                        Arc::<str>::from(widget.props.hint.as_str()),
+                        nana_ui_core::TooltipConfig::default(),
+                    );
+                }
+                component.project(id, world, mutations);
+            } else if matches!(
+                world.standard_visual(id),
+                Some(nana_ui_runtime::StandardVisual::Icon { .. })
+            ) {
+                mutations.set_standard_visual(id, None);
+            }
+        }
+        crate::WidgetKind::Switch => {
+            let mut component =
+                RuntimeSwitch::new(widget.props.display_label(), widget.props.toggled)
+                    .control_position(widget.props.control_position)
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid);
+            if !widget.props.hint.is_empty() {
+                component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            component.project(id, world, mutations);
+        }
+        crate::WidgetKind::Card => {
+            let mut component = RuntimeCard::new()
+                .kind(widget.props.card_kind)
+                .loading(widget.props.loading);
+            if !widget.props.label.is_empty() {
+                component = component.title(Arc::<str>::from(widget.props.label.as_str()));
+            }
+            if let Some(nana_ui_core::LengthSpec::Px(padding)) = widget.props.layout.padding_left {
+                component = component.padding(padding);
+            }
+            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
+                component = component.height(height);
+            }
+            component.project(id, world, mutations);
+        }
+        crate::WidgetKind::ListItem => {
+            let slot = |name: &str| {
+                widget.children.iter().find_map(|child| {
+                    let child = snapshot.get(*child)?;
+                    (child.props.attrs.get("data-slot").map(String::as_str) == Some(name))
+                        .then(|| StableNodeId::new(child.id))
+                        .flatten()
+                })
+            };
+            let leading = slot("leading").or_else(|| slot("list-item-leading"));
+            let trailing = slot("trailing").or_else(|| slot("list-item-trailing"));
+            let content = slot("content")
+                .or_else(|| slot("list-item-content"))
+                .or_else(|| {
+                    widget.children.iter().find_map(|child| {
+                        let id = StableNodeId::new(*child)?;
+                        (Some(id) != leading && Some(id) != trailing).then_some(id)
+                    })
+                });
+            RuntimeListItem::new(widget.props.display_label())
+                .slots(ListItemSlots {
+                    leading,
+                    content,
+                    trailing,
+                })
+                .gap(widget.props.layout.gap_or(8.0))
+                .size(widget.props.size)
+                .auto_height(widget.props.auto_height)
+                .selected(widget.props.active)
+                .disabled(widget.props.disabled)
+                .project(id, world, mutations);
+        }
+        crate::WidgetKind::Range => {
+            let minimum = f64::from(widget.props.min);
+            let supplied_maximum = f64::from(widget.props.max);
+            let supplied_step = f64::from(widget.props.step);
+            let malformed = !minimum.is_finite()
+                || !supplied_maximum.is_finite()
+                || supplied_maximum <= minimum
+                || !supplied_step.is_finite()
+                || supplied_step <= 0.0;
+            let minimum = if minimum.is_finite() { minimum } else { 0.0 };
+            let maximum = if supplied_maximum.is_finite() && supplied_maximum > minimum {
+                supplied_maximum
+            } else {
+                minimum + 1.0
+            };
+            let step = if supplied_step.is_finite() && supplied_step > 0.0 {
+                supplied_step
+            } else {
+                1.0
+            };
+            let value = f64::from(widget.props.number).clamp(minimum, maximum);
+            let mut component = RuntimeRangeField::new(value, minimum, maximum, step)
+                .expect("normalized Vue range contract is valid")
+                .disabled(widget.props.disabled)
+                .invalid(widget.props.invalid || malformed);
+            if !widget.props.label.is_empty() {
+                component = component.label(Arc::<str>::from(widget.props.label.as_str()));
+            }
+            if !widget.props.unit.is_empty() {
+                component = component.unit(Arc::<str>::from(widget.props.unit.as_str()));
+            }
+            component.project(id, world, mutations);
+        }
+        _ => {
+            if matches!(
+                world.standard_visual(id),
+                Some(
+                    nana_ui_runtime::StandardVisual::Icon { .. }
+                        | nana_ui_runtime::StandardVisual::Switch { .. }
+                        | nana_ui_runtime::StandardVisual::Range { .. }
+                        | nana_ui_runtime::StandardVisual::Card { .. }
+                )
+            ) {
+                mutations.set_standard_visual(id, None);
+            }
+        }
+    }
+}
+
 fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> AccessibilityRole {
     match explicit_role.trim().to_ascii_lowercase().as_str() {
         "document" => return AccessibilityRole::Document,
@@ -2422,6 +2581,109 @@ mod tests {
         assert_eq!(accessibility.label.as_deref(), Some("Build"));
         assert!(accessibility.disabled);
         assert_eq!(accessibility.selected, Some(true));
+    }
+
+    #[test]
+    fn switch_and_range_project_one_retained_visual_and_accessibility_state() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let switch = doc.create_element("nana-switch");
+        let range = doc.create_element("nana-range");
+        doc.insert(switch, doc.mount_root(), None);
+        doc.insert(range, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            switch.0,
+            crate::WidgetKind::Switch,
+            crate::WidgetProps {
+                label: "Live preview".into(),
+                hint: "Updates while editing".into(),
+                toggled: true,
+                loading: true,
+                invalid: true,
+                control_position: nana_ui_core::SwitchControlPosition::Start,
+                size: nana_ui_core::ControlSize::Large,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            range.0,
+            crate::WidgetKind::Range,
+            crate::WidgetProps {
+                label: "Opacity".into(),
+                unit: "%".into(),
+                min: 0.0,
+                max: 1.0,
+                step: 0.25,
+                number: 0.62,
+                invalid: true,
+                ..Default::default()
+            },
+        );
+        let snapshot = bridge.snapshot();
+        doc.sync_semantic_styles(&snapshot);
+        doc.apply_layout_boxes(&[
+            (
+                switch,
+                LayoutBox {
+                    handle: switch,
+                    x: 10.0,
+                    y: 10.0,
+                    width: 220.0,
+                    height: 44.0,
+                },
+            ),
+            (
+                range,
+                LayoutBox {
+                    handle: range,
+                    x: 10.0,
+                    y: 70.0,
+                    width: 220.0,
+                    height: 36.0,
+                },
+            ),
+        ]);
+
+        let switch_id = StableNodeId::try_from(switch).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(switch_id),
+            Some(nana_ui_runtime::StandardVisual::Switch {
+                checked: true,
+                control_position: nana_ui_core::SwitchControlPosition::Start,
+                size: nana_ui_core::ControlSize::Large,
+                loading: true,
+                invalid: true,
+                ..
+            })
+        ));
+        let range_id = StableNodeId::try_from(range).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(range_id),
+            Some(nana_ui_runtime::StandardVisual::Range {
+                ratio,
+                invalid: true,
+                ..
+            })
+                if (ratio - 0.5).abs() < f32::EPSILON
+        ));
+        let accessibility = doc.accessibility_snapshot();
+        let switch_accessibility = accessibility
+            .iter()
+            .find(|node| node.id == switch_id)
+            .unwrap();
+        assert_eq!(switch_accessibility.checked, Some(true));
+        assert!(switch_accessibility.busy);
+        assert!(switch_accessibility.invalid);
+        let range_accessibility = accessibility
+            .iter()
+            .find(|node| node.id == range_id)
+            .unwrap();
+        assert_eq!(range_accessibility.numeric_minimum, Some(0.0));
+        assert_eq!(range_accessibility.numeric_maximum, Some(1.0));
+        assert_eq!(range_accessibility.numeric_step, Some(0.25));
+        assert_eq!(range_accessibility.numeric_value, Some(0.5));
+        assert!(doc.scene().node_bounds(switch_id).is_some());
+        assert!(doc.scene().node_bounds(range_id).is_some());
     }
 
     #[test]
