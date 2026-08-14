@@ -43,11 +43,17 @@ the existing idle-redraw contract.
 
 ## Current first batch
 
-`Text`, `Button`, `TextInput` (the compatibility `Input`) and `Checkbox` are
-`RuntimeCandidate`. Their Runtime contracts exist, but candidate status remains until functional
-interaction, strict layout, rendering semantics, accessibility and human visual review all pass.
-Workspace, Dock, Sidebar, Overlay and other professional components remain `Compatibility` unless
-their individual catalog entry says otherwise.
+`Text`, `Button`, `TextInput`, and `Checkbox` are `RuntimeQualified`; their root, `components`
+aggregate, and Vue hosted default routes use Runtime while their Iced adapters remain under
+`nana_ui::compatibility`. A hosted Runtime Scene never silently rebuilds a qualified component
+through Iced when retained state is missing. Button passed
+all semantic kinds, sizes, loading, activation, focus and accessibility review. TextInput passed
+placeholder, shaped selection/caret, secure, invalid, read-only/loading, keyboard, IME preedit and
+native input-purpose review. Text passed wrapping, clipping, alignment, typography and
+accessibility review. Checkbox passed checked/off, hover, pressed, focused, disabled, invalid,
+pointer, keyboard and accessibility activation states in dark and light. Workspace, Dock,
+Sidebar, Overlay and other professional components remain `Compatibility` unless their individual
+catalog entry says otherwise.
 
 ## Current second batch
 

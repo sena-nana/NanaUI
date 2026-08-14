@@ -6,21 +6,23 @@ use iced::widget::{container, text};
 use iced::{Element, Length, Padding, Point, Size, Theme, mouse};
 use iced_wgpu::Renderer;
 use nana_ui::compatibility::{
-    Card as IcedCard, IconButton as IcedIconButton, ListItem as IcedListItem,
-    RangeField as IcedRangeField, Switch as IcedSwitch,
+    Button as IcedButton, Card as IcedCard, Checkbox as IcedCheckbox, IconButton as IcedIconButton,
+    Input as IcedInput, ListItem as IcedListItem, RangeField as IcedRangeField,
+    Switch as IcedSwitch,
 };
 use nana_ui::runtime::{
-    AccessibilityAction, AccessibilityActionRequest, Card as RuntimeCard, DocumentId, Entity,
-    IconButton as RuntimeIconButton, LayoutViewport, List as RuntimeList,
-    ListItem as RuntimeListItem, ListItemSlots, MutationQueue, NodeStyle,
-    RangeField as RuntimeRangeField, RuntimeDocument, StableNodeId, Switch as RuntimeSwitch,
-    Text as RuntimeText,
+    AccessibilityAction, AccessibilityActionRequest, Button as RuntimeButton, Card as RuntimeCard,
+    Checkbox as RuntimeCheckbox, DocumentId, Entity, IconButton as RuntimeIconButton,
+    LayoutViewport, List as RuntimeList, ListItem as RuntimeListItem, ListItemSlots, MutationQueue,
+    NodeStyle, RangeField as RuntimeRangeField, RuntimeDocument, StableNodeId,
+    Switch as RuntimeSwitch, Text as RuntimeText, TextHorizontalAlignment,
+    TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
 };
 use nana_ui::{
     CardKind, ControlSize, IcedSceneView, IcedTextShaper, Icon, RuntimeInputAdapter, ThemeMode,
     ThemeModeExt, TooltipConfig, TooltipPlacement,
 };
-use nana_ui_core::{LengthSpec, SwitchControlPosition};
+use nana_ui_core::{LengthSpec, SemanticColorRole, SwitchControlPosition};
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
 use crate::write;
@@ -32,6 +34,10 @@ const GAP: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Component {
+    Text,
+    Button,
+    TextInput,
+    Checkbox,
     IconButton,
     Switch,
     Card,
@@ -42,6 +48,10 @@ enum Component {
 impl Component {
     const fn name(self) -> &'static str {
         match self {
+            Self::Text => "text",
+            Self::Button => "button",
+            Self::TextInput => "text-input",
+            Self::Checkbox => "checkbox",
             Self::IconButton => "icon-button",
             Self::Switch => "switch",
             Self::Card => "card",
@@ -62,6 +72,242 @@ struct Fixture {
 }
 
 const FIXTURES: &[Fixture] = &[
+    f(
+        Component::Text,
+        "normal",
+        "body text uses the shared 13px baseline",
+    ),
+    f(
+        Component::Text,
+        "wrap",
+        "long text wraps inside its authored content box",
+    ),
+    f(
+        Component::Text,
+        "ellipsis",
+        "single-line overflow clips with an ellipsis",
+    ),
+    f(
+        Component::Text,
+        "centered",
+        "horizontal and vertical anchors use the content box",
+    ),
+    f(
+        Component::Text,
+        "muted",
+        "muted text keeps readable semantic contrast",
+    ),
+    f(
+        Component::Button,
+        "ghost",
+        "ghost kind is transparent until interaction",
+    ),
+    f(
+        Component::Button,
+        "subtle",
+        "subtle kind has neutral surface and border",
+    ),
+    f(
+        Component::Button,
+        "selected",
+        "selected kind keeps persistent selected semantics",
+    ),
+    f(
+        Component::Button,
+        "primary",
+        "primary kind uses accent-soft semantics",
+    ),
+    f(
+        Component::Button,
+        "warning",
+        "warning kind uses warning semantics",
+    ),
+    f(
+        Component::Button,
+        "danger",
+        "danger kind uses danger semantics",
+    ),
+    f(
+        Component::Button,
+        "text-kind",
+        "text kind uses accent text without a surface",
+    ),
+    f(
+        Component::Button,
+        "small",
+        "small size follows compact control metrics",
+    ),
+    f(
+        Component::Button,
+        "medium",
+        "medium size follows standard control metrics",
+    ),
+    f(
+        Component::Button,
+        "large",
+        "large size follows large control metrics",
+    ),
+    f(
+        Component::Button,
+        "hover",
+        "hover feedback covers the complete hit target",
+    ),
+    f(
+        Component::Button,
+        "pressed",
+        "pressed feedback is distinct from hover",
+    ),
+    f(Component::Button, "focused", "keyboard focus is visible"),
+    f(
+        Component::Button,
+        "disabled",
+        "disabled button cannot activate or focus",
+    ),
+    f(
+        Component::Button,
+        "loading",
+        "loading is visible and prevents duplicate activation",
+    ),
+    f(
+        Component::Button,
+        "pointer-activation",
+        "pointer activation emits once",
+    ),
+    f(
+        Component::Button,
+        "keyboard-activation",
+        "Space activation emits once",
+    ),
+    f(
+        Component::TextInput,
+        "value",
+        "committed value uses field padding and baseline",
+    ),
+    f(
+        Component::TextInput,
+        "placeholder",
+        "empty input paints faint placeholder text",
+    ),
+    f(
+        Component::TextInput,
+        "hover",
+        "hover strengthens the neutral border",
+    ),
+    f(
+        Component::TextInput,
+        "focused",
+        "focus paints border and caret",
+    ),
+    f(
+        Component::TextInput,
+        "selection",
+        "selected text has shaped highlight geometry",
+    ),
+    f(
+        Component::TextInput,
+        "disabled",
+        "disabled input is inert and visibly disabled",
+    ),
+    f(
+        Component::TextInput,
+        "invalid",
+        "invalid input keeps a danger border while focused",
+    ),
+    f(
+        Component::TextInput,
+        "secure",
+        "secure input masks committed text",
+    ),
+    f(
+        Component::TextInput,
+        "small",
+        "small size follows compact field metrics",
+    ),
+    f(
+        Component::TextInput,
+        "large",
+        "large size follows large field metrics",
+    ),
+    f(
+        Component::TextInput,
+        "read-only",
+        "read-only input remains focusable but rejects edits",
+    ),
+    f(
+        Component::TextInput,
+        "loading",
+        "loading input is busy and rejects input",
+    ),
+    f(
+        Component::TextInput,
+        "keyboard-edit",
+        "keyboard input commits through typed state",
+    ),
+    f(
+        Component::TextInput,
+        "ime-preedit",
+        "IME preedit is visibly distinct from committed text",
+    ),
+    f(
+        Component::TextInput,
+        "ime-commit",
+        "IME commit updates value and clears preedit",
+    ),
+    f(
+        Component::TextInput,
+        "accessibility-set-value",
+        "accessibility SetValue updates the field",
+    ),
+    f(
+        Component::Checkbox,
+        "off",
+        "off state exposes false in paint and accessibility",
+    ),
+    f(
+        Component::Checkbox,
+        "on",
+        "on state exposes true in paint and accessibility",
+    ),
+    f(
+        Component::Checkbox,
+        "hover",
+        "hover feedback reaches the indicator",
+    ),
+    f(
+        Component::Checkbox,
+        "pressed",
+        "pressed feedback is distinct from hover",
+    ),
+    f(
+        Component::Checkbox,
+        "focused",
+        "keyboard focus is visible around the indicator",
+    ),
+    f(
+        Component::Checkbox,
+        "disabled",
+        "disabled checkbox cannot toggle or focus",
+    ),
+    f(
+        Component::Checkbox,
+        "invalid",
+        "invalid state keeps semantic danger treatment",
+    ),
+    f(
+        Component::Checkbox,
+        "pointer-toggle",
+        "pointer activation toggles once",
+    ),
+    f(
+        Component::Checkbox,
+        "space-toggle",
+        "Space activation toggles once",
+    ),
+    f(
+        Component::Checkbox,
+        "accessibility-toggle",
+        "accessibility click toggles once",
+    ),
     f(
         Component::IconButton,
         "normal",
@@ -455,6 +701,72 @@ fn iced_fixture(
         mouse::Cursor::Unavailable
     };
     let view: Element<'static, (), Theme, Renderer> = match fixture.component {
+        Component::Text => {
+            let content = if fixture.state == "wrap" || fixture.state == "ellipsis" {
+                "A deliberately long migration label that must respect its authored content box."
+            } else {
+                "Migration text 文本"
+            };
+            let mut label = text(content).size(13);
+            if fixture.state == "muted" {
+                label = label.color(tokens.colors.muted);
+            }
+            container(label)
+                .width(if matches!(fixture.state, "wrap" | "ellipsis") {
+                    Length::Fixed(180.0)
+                } else {
+                    Length::Fill
+                })
+                .height(Length::Fixed(if fixture.state == "wrap" {
+                    44.0
+                } else {
+                    32.0
+                }))
+                .align_x(if fixture.state == "centered" {
+                    iced::alignment::Horizontal::Center
+                } else {
+                    iced::alignment::Horizontal::Left
+                })
+                .align_y(iced::alignment::Vertical::Center)
+                .into()
+        }
+        Component::Button => IcedButton::label("Run build")
+            .kind(button_kind(fixture.state))
+            .size(button_control_size(fixture.state))
+            .disabled(fixture.state == "disabled")
+            .loading(fixture.state == "loading", 3)
+            .on_press(())
+            .view(tokens),
+        Component::TextInput => {
+            let input = IcedInput::new(
+                "Branch name",
+                if fixture.state == "placeholder" {
+                    ""
+                } else {
+                    "release/next"
+                },
+            )
+            .size(text_input_control_size(fixture.state))
+            .disabled(matches!(fixture.state, "disabled" | "loading"))
+            .invalid(fixture.state == "invalid")
+            .secure(fixture.state == "secure");
+            if fixture.state == "read-only" {
+                input.view(tokens)
+            } else {
+                input.on_input(|_| ()).view(tokens)
+            }
+        }
+        Component::Checkbox => IcedCheckbox::new(
+            matches!(
+                fixture.state,
+                "on" | "pointer-toggle" | "space-toggle" | "accessibility-toggle"
+            ),
+            "Notifications",
+        )
+        .disabled(fixture.state == "disabled")
+        .invalid(fixture.state == "invalid")
+        .on_toggle(|_| ())
+        .view(tokens),
         Component::IconButton => IcedIconButton::new("Add source", Icon::Add)
             .selected(fixture.state == "selected")
             .disabled(fixture.state == "disabled")
@@ -558,6 +870,93 @@ fn runtime_fixture(
         .create_component(document_id, RuntimeList::new().style(root_style))?;
 
     let target = match fixture.component {
+        Component::Text => {
+            let mut style = NodeStyle {
+                foreground: Some(if fixture.state == "muted" {
+                    SemanticColorRole::Muted
+                } else {
+                    SemanticColorRole::Text
+                }),
+                text_horizontal_alignment: if fixture.state == "centered" {
+                    TextHorizontalAlignment::Center
+                } else {
+                    TextHorizontalAlignment::Start
+                },
+                text_vertical_alignment: TextVerticalAlignment::Center,
+                ..NodeStyle::default()
+            };
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(if matches!(fixture.state, "wrap" | "ellipsis") {
+                LengthSpec::Px(180.0)
+            } else {
+                LengthSpec::Percent(100.0)
+            });
+            layout.height = Some(LengthSpec::Px(if fixture.state == "wrap" {
+                44.0
+            } else {
+                32.0
+            }));
+            layout.font_size = Some(13.0);
+            layout.white_space_nowrap = fixture.state == "ellipsis";
+            layout.text_overflow_ellipsis = fixture.state == "ellipsis";
+            document
+                .context_mut()
+                .create_component(
+                    document_id,
+                    RuntimeText::new(if matches!(fixture.state, "wrap" | "ellipsis") {
+                        "A deliberately long migration label that must respect its authored content box."
+                    } else {
+                        "Migration text 文本"
+                    })
+                    .style(style),
+                )?
+                .stable_id()
+        }
+        Component::Button => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeButton::new("Run build")
+                    .kind(button_kind(fixture.state))
+                    .size(button_control_size(fixture.state))
+                    .disabled(fixture.state == "disabled")
+                    .loading(fixture.state == "loading"),
+            )?
+            .stable_id(),
+        Component::TextInput => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeTextInput::new(if fixture.state == "placeholder" {
+                    ""
+                } else {
+                    "release/next"
+                })
+                .label("Branch name")
+                .placeholder("Branch name")
+                .size(text_input_control_size(fixture.state))
+                .disabled(fixture.state == "disabled")
+                .loading(fixture.state == "loading")
+                .read_only(fixture.state == "read-only")
+                .invalid(fixture.state == "invalid")
+                .secure(fixture.state == "secure"),
+            )?
+            .stable_id(),
+        Component::Checkbox => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeCheckbox::new(
+                    "Notifications",
+                    matches!(
+                        fixture.state,
+                        "on" | "pointer-toggle" | "space-toggle" | "accessibility-toggle"
+                    ),
+                )
+                .disabled(fixture.state == "disabled")
+                .invalid(fixture.state == "invalid"),
+            )?
+            .stable_id(),
         Component::IconButton => {
             let tooltip = TooltipConfig {
                 placement: if fixture.state == "tooltip-edge" {
@@ -740,6 +1139,22 @@ fn apply_runtime_state(
             )?
             .prevent_default),
         "focused" => Ok(context.focus_node(document_id, target)?),
+        "invalid" if fixture.component == Component::TextInput => {
+            Ok(context.focus_node(document_id, target)?)
+        }
+        "selection" => {
+            context.focus_node(document_id, target)?;
+            Ok(context.apply_accessibility_action(
+                document_id,
+                AccessibilityActionRequest {
+                    target,
+                    action: AccessibilityAction::SetSelection(TextSelection {
+                        anchor: 0,
+                        focus: "release".len(),
+                    }),
+                },
+            )?)
+        }
         "keyboard-activation" | "space-toggle" => {
             context.focus_node(document_id, target)?;
             Ok(adapter
@@ -767,6 +1182,21 @@ fn apply_runtime_state(
                 action: AccessibilityAction::Click,
             },
         )?),
+        "keyboard-edit" => {
+            context.focus_node(document_id, target)?;
+            Ok(adapter
+                .dispatch(context, document_id, &keyboard_text("X"))?
+                .prevent_default)
+        }
+        "ime-preedit" => {
+            context.focus_node(document_id, target)?;
+            Ok(context.set_ime_preedit(document_id, "你".into(), None)?)
+        }
+        "ime-commit" => {
+            context.focus_node(document_id, target)?;
+            context.set_ime_preedit(document_id, "你".into(), None)?;
+            Ok(context.commit_ime(document_id, "你")?)
+        }
         "drag" => {
             adapter.dispatch(
                 context,
@@ -812,7 +1242,14 @@ fn apply_runtime_state(
             document_id,
             AccessibilityActionRequest {
                 target,
-                action: AccessibilityAction::SetValue("0.73".into()),
+                action: AccessibilityAction::SetValue(
+                    if fixture.component == Component::TextInput {
+                        "updated"
+                    } else {
+                        "0.73"
+                    }
+                    .into(),
+                ),
             },
         )?),
         _ => Ok(false),
@@ -864,6 +1301,17 @@ fn keyboard(key: &str) -> InputEvent {
     }
 }
 
+fn keyboard_text(text: &str) -> InputEvent {
+    InputEvent::Keyboard {
+        pressed: true,
+        key: text.into(),
+        text: Some(text.into()),
+        code: "KeyX".into(),
+        repeat: false,
+        modifiers: InputModifiers::default(),
+    }
+}
+
 fn write_evidence(
     path: &Path,
     fixture: Fixture,
@@ -895,45 +1343,92 @@ fn write_evidence(
     let active_overlay = world
         .overlay_host(runtime.target)
         .and_then(|host| host.active);
-    let expects_hit = fixture.state != "disabled";
-    let hit_ok = if fixture.component == Component::Card {
+    let expects_hit =
+        !matches!(fixture.state, "disabled" | "loading") && fixture.component != Component::Text;
+    let hit_ok = if fixture.component == Component::Card || fixture.component == Component::Text {
         true
     } else if expects_hit {
         hit == Some(runtime.target)
     } else {
         hit != Some(runtime.target)
     };
-    let action_state = matches!(
-        fixture.state,
-        "hover"
-            | "pressed"
-            | "selected-hover"
-            | "selected-pressed"
-            | "focused"
-            | "keyboard-activation"
-            | "tooltip-delay"
-            | "tooltip-edge"
-            | "pointer-toggle"
-            | "space-toggle"
-            | "accessibility-toggle"
-            | "pointer-activation"
-            | "drag"
-            | "drag-cancel"
-            | "arrow-decrement"
-            | "arrow-increment"
-            | "page-decrement"
-            | "page-increment"
-            | "home"
-            | "end"
-            | "accessibility-set-value"
-    );
+    let action_state = (fixture.component == Component::TextInput && fixture.state == "invalid")
+        || matches!(
+            fixture.state,
+            "hover"
+                | "pressed"
+                | "selected-hover"
+                | "selected-pressed"
+                | "focused"
+                | "selection"
+                | "keyboard-activation"
+                | "tooltip-delay"
+                | "tooltip-edge"
+                | "pointer-toggle"
+                | "space-toggle"
+                | "accessibility-toggle"
+                | "pointer-activation"
+                | "drag"
+                | "drag-cancel"
+                | "arrow-decrement"
+                | "arrow-increment"
+                | "page-decrement"
+                | "page-increment"
+                | "home"
+                | "end"
+                | "accessibility-set-value"
+                | "keyboard-edit"
+                | "ime-preedit"
+                | "ime-commit"
+        );
+    let geometry_ok = matches!(
+        fixture.component,
+        Component::Text
+            | Component::Button
+            | Component::TextInput
+            | Component::Checkbox
+            | Component::IconButton
+    ) || geometry.is_some();
+    let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
+        Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
+            (bounds.width - 180.0).abs() < 0.01
+        }
+        Component::Text => bounds.width > 0.0 && bounds.height >= 32.0,
+        Component::Button => {
+            let expected = button_control_size(fixture.state).height();
+            (bounds.height - expected).abs() < 0.01
+        }
+        Component::TextInput => {
+            (bounds.width - 380.0).abs() < 0.01
+                && (bounds.height - text_input_control_size(fixture.state).height()).abs() < 0.01
+        }
+        Component::Checkbox => bounds.height >= ControlSize::Medium.height(),
+        _ => true,
+    });
     let runtime_ok = bounds.is_some()
         && accessibility.is_some()
-        && (fixture.component == Component::IconButton || geometry.is_some())
+        && geometry_ok
+        && layout_ok
         && runtime.idle
         && hit_ok
         && (!action_state || runtime.action_applied)
-        && (fixture.state != "loading" || runtime.next_deadline.is_some())
+        && (fixture.state != "loading"
+            || fixture.component == Component::TextInput
+            || runtime.next_deadline.is_some())
+        && (fixture.component != Component::TextInput
+            || match fixture.state {
+                "read-only" => accessibility.is_some_and(|node| !node.editable && !node.disabled),
+                "loading" => accessibility.is_some_and(|node| node.busy && node.disabled),
+                "secure" => accessibility.is_some_and(|node| node.value.is_none()),
+                "selection" => matches!(
+                    geometry,
+                    Some(nana_ui::runtime::ComponentGeometry::TextInput {
+                        selection: Some(_),
+                        ..
+                    })
+                ),
+                _ => true,
+            })
         && (!matches!(fixture.state, "tooltip-delay" | "tooltip-edge")
             || (tooltip.is_some() && tooltip == active_overlay));
     let iced_verdict = if matches!(fixture.state, "control-start" | "disabled" | "invalid")
@@ -958,7 +1453,7 @@ fn write_evidence(
     let (review_verdict, review_observed) = review_result(fixture);
     let divergence = intentional_divergence(fixture);
     let report = format!(
-        "expected: {}\niced_observed: {}\niced_verdict: {}\nruntime_expected: {}\nruntime_observed: bounds={bounds:?}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
+        "expected: {}\niced_observed: {}\niced_verdict: {}\nruntime_expected: {}\nruntime_observed: bounds={bounds:?}; layout_ok={layout_ok}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
         fixture.expected,
         fixture.iced_contract,
         iced_verdict,
@@ -984,6 +1479,22 @@ fn write_evidence(
 
 fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
     match (fixture.component, fixture.state) {
+        (Component::Button, _) => (
+            "pass",
+            "Fresh isolated dark and light review confirms semantic kinds, three control sizes, interaction feedback, external focus, disabled and loading presentation, complete label geometry, hit behavior and accessibility",
+        ),
+        (Component::TextInput, _) => (
+            "pass",
+            "Fresh isolated dark and light review confirms placeholder contrast, shaped selection and caret geometry, external focus, invalid, secure, size, read-only, loading, keyboard and IME preedit or commit presentation",
+        ),
+        (Component::Text, _) => (
+            "pass",
+            "Runtime text uses the authored content box, shared typography, semantic contrast, wrapping or ellipsis, alignment, clipping and accessibility in dark and light",
+        ),
+        (Component::Checkbox, _) => (
+            "pass",
+            "Runtime checkbox keeps indicator and label geometry, semantic checked and invalid paint, complete-row hit testing, focus, disabled behavior and accessibility in dark and light",
+        ),
         (Component::IconButton, "hover" | "pressed" | "focused" | "selected") => (
             "pass",
             "Runtime uses distinct neutral hover and pressed layers, an external focus ring, and a persistent accent-selected treatment while preserving icon contrast in dark and light",
@@ -1026,6 +1537,34 @@ fn control_size(state: &str) -> ControlSize {
         "medium" => ControlSize::Medium,
         "large" => ControlSize::Large,
         _ => ControlSize::Small,
+    }
+}
+
+fn button_control_size(state: &str) -> ControlSize {
+    match state {
+        "small" => ControlSize::Small,
+        "large" => ControlSize::Large,
+        _ => ControlSize::Medium,
+    }
+}
+
+fn text_input_control_size(state: &str) -> ControlSize {
+    match state {
+        "small" => ControlSize::Small,
+        "large" => ControlSize::Large,
+        _ => ControlSize::Medium,
+    }
+}
+
+fn button_kind(state: &str) -> nana_ui::ButtonKind {
+    match state {
+        "subtle" => nana_ui::ButtonKind::Subtle,
+        "selected" => nana_ui::ButtonKind::Selected,
+        "primary" => nana_ui::ButtonKind::Primary,
+        "warning" => nana_ui::ButtonKind::Warning,
+        "danger" => nana_ui::ButtonKind::Danger,
+        "text-kind" => nana_ui::ButtonKind::Text,
+        _ => nana_ui::ButtonKind::Ghost,
     }
 }
 
