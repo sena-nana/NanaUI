@@ -234,6 +234,8 @@ pub struct WidgetProps {
     pub auto_height: bool,
     pub disabled: bool,
     pub loading: bool,
+    pub read_only: bool,
+    pub secure: bool,
     pub toggled: bool,
     pub active: bool,
     pub muted: bool,
@@ -292,6 +294,8 @@ impl Default for WidgetProps {
             auto_height: false,
             disabled: false,
             loading: false,
+            read_only: false,
+            secure: false,
             toggled: false,
             active: false,
             muted: false,
@@ -425,6 +429,7 @@ impl WidgetProps {
             "auto-height" | "autoheight" => self.auto_height = host_truthy(value),
             "disabled" => self.disabled = host_truthy(value),
             "loading" => self.loading = host_truthy(value),
+            "readonly" | "read-only" => self.read_only = host_truthy(value),
             "toggled" | "model-value" | "checked" => {
                 if value.as_bool().is_some() || matches!(value, nana_js_engine::HostValue::Bool(_))
                 {
@@ -651,6 +656,7 @@ impl WidgetProps {
             "type" => {
                 // input type=checkbox upgrades handled by resolve layer.
                 let t = host_string(value).to_ascii_lowercase();
+                self.secure = t == "password";
                 if t == "checkbox" {
                     self.toggled = self.toggled || host_truthy(value);
                 }
@@ -6204,6 +6210,8 @@ mod tests {
             ("autoHeight".into(), nana_js_engine::HostValue::Bool(true)),
             ("loading".into(), nana_js_engine::HostValue::Bool(true)),
             ("invalid".into(), nana_js_engine::HostValue::Bool(true)),
+            ("readonly".into(), nana_js_engine::HostValue::Bool(true)),
+            ("type".into(), nana_js_engine::HostValue::string("password")),
             ("step".into(), nana_js_engine::HostValue::Number(0.25)),
         ]));
 
@@ -6212,6 +6220,8 @@ mod tests {
         assert!(props.auto_height);
         assert!(props.loading);
         assert!(props.invalid);
+        assert!(props.read_only);
+        assert!(props.secure);
         assert_eq!(props.step, 0.25);
     }
 }

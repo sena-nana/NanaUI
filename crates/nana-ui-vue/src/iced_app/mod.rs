@@ -32,13 +32,15 @@ use iced::widget::text::{self as text_widget, Ellipsis, LineHeight};
 use iced::widget::{Space, column, container, row, scrollable, space, stack, text};
 use iced::{Alignment, Background, Border, Color, Element, Event, Length, Padding, Shadow, Size};
 use iced::{Point, Rectangle, Renderer, Theme};
-use nana_ui::compatibility::{Card, IconButton, ListItem, RangeField, Switch};
+use nana_ui::compatibility::{
+    Button, Card, Checkbox, IconButton, Input, ListItem, RangeField, Switch,
+};
 use nana_ui::{
-    ActionMenuItem, AnchoredMenuPosition, Button, ButtonKind, ButtonPaintOverride, Checkbox,
-    ConfirmDialog, ControlSize, Dialog, Drawer, DrawerSide, EmptyState, HostTextureBinding,
-    HostTextureRegistry, Icon, Input, Popover, Progress, SegmentedControl, Select, SelectionOption,
-    SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Spinner, Tabs,
-    Textarea, ThemeTokens, Tooltip, TooltipConfig, TooltipPlacement, icon, ui_font,
+    ActionMenuItem, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ConfirmDialog,
+    ControlSize, Dialog, Drawer, DrawerSide, EmptyState, HostTextureBinding, HostTextureRegistry,
+    Icon, Popover, Progress, SegmentedControl, Select, SelectionOption, SettingsCard, SettingsRow,
+    SidebarRow, SidebarRowState, SidebarRowTone, Spinner, Tabs, Textarea, ThemeTokens, Tooltip,
+    TooltipConfig, TooltipPlacement, icon, ui_font,
 };
 use nana_ui::{
     AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
@@ -752,6 +754,76 @@ where
     layers.into()
 }
 
+fn runtime_component_for_widget(
+    snap: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> Option<nana_ui::ComponentId> {
+    match widget.kind {
+        WidgetKind::Text => Some(nana_ui::component_ids::TEXT),
+        WidgetKind::Checkbox => Some(nana_ui::component_ids::CHECKBOX),
+        WidgetKind::Switch => Some(nana_ui::component_ids::SWITCH),
+        WidgetKind::Card => Some(nana_ui::component_ids::CARD),
+        WidgetKind::ListItem => Some(nana_ui::component_ids::LIST_ITEM),
+        WidgetKind::Range => Some(nana_ui::component_ids::RANGE_FIELD),
+        WidgetKind::Button => {
+            let (icon, label) =
+                resolve_button_icon_and_label(snap, &widget.props, &widget.children);
+            Some(
+                if (is_square_icon_button(&widget.props) || (icon.is_some() && label.is_empty()))
+                    && matches!(icon, Some(ResolvedButtonIcon::Glyph(_)))
+                {
+                    nana_ui::component_ids::ICON_BUTTON
+                } else {
+                    nana_ui::component_ids::BUTTON
+                },
+            )
+        }
+        WidgetKind::Input => Some(nana_ui::component_ids::TEXT_INPUT),
+        _ => None,
+    }
+}
+
+fn qualified_runtime_scene_view<'a, Message>(
+    snap: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> Option<Element<'a, Message>>
+where
+    Message: 'a,
+{
+    let component = runtime_component_for_widget(snap, widget)
+        .filter(|id| nana_ui::component_uses_runtime(*id))?;
+    // Public view helpers without a Scene are the explicit compatibility
+    // adapter. Once a hosted Runtime Scene is active, a qualified component
+    // must remain on that route: missing retained state is an invariant
+    // violation, never a reason to manufacture an Iced tree.
+    ACTIVE_SCENE.with(|active| {
+        active.borrow().clone().map(|scene| {
+            let id = nana_ui_runtime::StableNodeId::new(widget.id)
+                .expect("Vue widget identity must be non-zero");
+            let bounds = scene.node_bounds(id).unwrap_or_else(|| {
+                panic!(
+                    "qualified Runtime component `{}` is missing Scene node {}",
+                    component.as_str(),
+                    widget.id
+                )
+            });
+            nana_ui::IcedSceneView::from_shared_node(
+                scene,
+                id,
+                None,
+                Size::new(bounds.width, bounds.height),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "qualified Runtime component `{}` cannot create its Scene view: {error}",
+                    component.as_str()
+                )
+            })
+            .into()
+        })
+    })
+}
+
 fn view_widget<'a, Message>(
     snap: &'a SemanticSnapshot,
     id: WidgetId,
@@ -792,35 +864,7 @@ where
             | WidgetKind::Row
             | WidgetKind::Card
     );
-    let runtime_component = match widget.kind {
-        WidgetKind::Switch => Some(nana_ui::component_ids::SWITCH),
-        WidgetKind::Card => Some(nana_ui::component_ids::CARD),
-        WidgetKind::ListItem => Some(nana_ui::component_ids::LIST_ITEM),
-        WidgetKind::Range => Some(nana_ui::component_ids::RANGE_FIELD),
-        WidgetKind::Button => {
-            let (icon, label) =
-                resolve_button_icon_and_label(snap, &widget.props, &widget.children);
-            ((is_square_icon_button(&widget.props) || (icon.is_some() && label.is_empty()))
-                && matches!(icon, Some(ResolvedButtonIcon::Glyph(_))))
-            .then_some(nana_ui::component_ids::ICON_BUTTON)
-        }
-        _ => None,
-    };
-    let runtime_view = runtime_component
-        .filter(|id| nana_ui::component_uses_runtime(*id))
-        .and_then(|_| {
-            let scene = ACTIVE_SCENE.with(|active| active.borrow().clone())?;
-            let id = nana_ui_runtime::StableNodeId::new(widget.id)?;
-            let bounds = scene.node_bounds(id)?;
-            nana_ui::IcedSceneView::from_shared_node(
-                scene,
-                id,
-                None,
-                Size::new(bounds.width, bounds.height),
-            )
-            .ok()
-            .map(Element::from)
-        });
+    let runtime_view = qualified_runtime_scene_view(snap, widget);
     let content = if let Some(runtime_view) = runtime_view {
         runtime_view
     } else {
@@ -969,12 +1013,19 @@ where
                 } else {
                     widget.props.placeholder.as_str()
                 };
-                Input::new(placeholder, widget.props.value.as_str())
+                let input = Input::new(placeholder, widget.props.value.as_str())
                     .id(hosted_text_widget_id(id))
                     .size(widget.props.size)
-                    .disabled(widget.props.disabled)
-                    .on_input(move |value| map(BridgeEvent::Input { id, value }))
-                    .view(tokens)
+                    .disabled(widget.props.disabled || widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .secure(widget.props.secure);
+                if widget.props.read_only {
+                    input.view(tokens)
+                } else {
+                    input
+                        .on_input(move |value| map(BridgeEvent::Input { id, value }))
+                        .view(tokens)
+                }
             }
             WidgetKind::Textarea => textarea_view(widget, tokens, editors, menus, map_event),
             WidgetKind::Range => {
@@ -1208,6 +1259,35 @@ where
                 | WidgetKind::Card
         );
 
+    let finish = |content| {
+        let sized = if is_layout_chrome {
+            apply_flex_child_sizing(
+                content,
+                &props.layout,
+                parent_box,
+                parent_direction,
+                parent_align_items,
+                main_override,
+            )
+        } else {
+            let consume = button_box_consume(&kind, &props.layout);
+            apply_widget_box_model(
+                content,
+                &props.layout,
+                parent_box,
+                parent_direction,
+                parent_align_items,
+                main_override,
+                consume,
+            )
+        };
+        let faded = apply_opacity(sized, props.layout.opacity);
+        let transformed = apply_paint_transform(faded, props.layout.transform);
+        probe_transformed_layout(wid, transformed, props.layout.transform)
+    };
+    if let Some(runtime_view) = qualified_runtime_scene_view(snap, widget) {
+        return finish(runtime_view);
+    }
     let content = match kind {
         _ if props.native_component.is_some() => {
             let name = props.native_component.as_deref().unwrap_or_default();
@@ -1715,12 +1795,19 @@ where
             } else {
                 props.placeholder.clone()
             };
-            Input::new(placeholder, props.value.clone())
+            let input = Input::new(placeholder, props.value.clone())
                 .id(hosted_text_widget_id(wid))
                 .size(props.size)
-                .disabled(props.disabled)
-                .on_input(move |value| map(BridgeEvent::Input { id: wid, value }))
-                .view(tokens)
+                .disabled(props.disabled || props.loading)
+                .invalid(props.invalid)
+                .secure(props.secure);
+            if props.read_only {
+                input.view(tokens)
+            } else {
+                input
+                    .on_input(move |value| map(BridgeEvent::Input { id: wid, value }))
+                    .view(tokens)
+            }
         }
         WidgetKind::Textarea => textarea_view_owned(&props, wid, tokens, editors, menus, map_event),
         WidgetKind::Range => {
@@ -1812,30 +1899,7 @@ where
         }
         WidgetKind::Spinner => Spinner::new(owned_display(&props), 0).view(tokens.colors),
     };
-    let sized = if is_layout_chrome {
-        apply_flex_child_sizing(
-            content,
-            &props.layout,
-            parent_box,
-            parent_direction,
-            parent_align_items,
-            main_override,
-        )
-    } else {
-        let consume = button_box_consume(&kind, &props.layout);
-        apply_widget_box_model(
-            content,
-            &props.layout,
-            parent_box,
-            parent_direction,
-            parent_align_items,
-            main_override,
-            consume,
-        )
-    };
-    let faded = apply_opacity(sized, props.layout.opacity);
-    let transformed = apply_paint_transform(faded, props.layout.transform);
-    probe_transformed_layout(wid, transformed, props.layout.transform)
+    finish(content)
 }
 
 include!("transform.rs");
