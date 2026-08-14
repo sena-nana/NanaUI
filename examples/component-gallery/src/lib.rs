@@ -10,21 +10,24 @@ use nana_ui::command::{
     ContextPredicate, KeyBinding, KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch,
     KeymapState,
 };
+use nana_ui::compatibility::{
+    Card as UiCard, IconButton as UiIconButton, ListItem as UiListItem, RangeField as UiRangeField,
+    Switch as UiSwitch,
+};
 use nana_ui::components::{
     AboutMetadata, AboutSection, AnchoredMenuPlacement, AnchoredMenuPosition, AppearanceEvent,
     AppearanceSection, Button as UiButton, CalendarHeatmap as UiCalendarHeatmap,
     CalendarHeatmapActiveCell, CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel,
-    CalendarHeatmapOptions, Card as UiCard, Checkbox as UiCheckbox,
-    CommandPalette as UiCommandPalette, CommandPaletteEvent, CommandPaletteItem,
-    ConfirmDialog as UiConfirmDialog, ContextMenuAnchor, ContextMenuEvent, ContextMenuHost,
-    ContextMenuItem, ContextMenuTrigger, ControlSize, Dropdown as UiDropdown, DropdownEvent,
-    DropdownOption, IconButton as UiIconButton, ImageViewer as UiImageViewer, ImageViewerSource,
-    Input as UiInput, InteractiveCard as UiInteractiveCard, ListItem as UiListItem, NativeMarkdown,
-    Popover as UiPopover, Progress as UiProgress, RangeField as UiRangeField,
-    SearchDropdown as UiSearchDropdown, SearchDropdownOption, SearchDropdownState,
-    SegmentedControl as UiSegmentedControl, SelectionOption, SettingsCollapsibleCard,
-    Switch as UiSwitch, Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip, TreeNode,
-    TreeView as UiTreeView, TreeViewEvent, XYPad as UiXYPad, XYPadEvent, XYPadValue,
+    CalendarHeatmapOptions, Checkbox as UiCheckbox, CommandPalette as UiCommandPalette,
+    CommandPaletteEvent, CommandPaletteItem, ConfirmDialog as UiConfirmDialog, ContextMenuAnchor,
+    ContextMenuEvent, ContextMenuHost, ContextMenuItem, ContextMenuTrigger, ControlSize,
+    Dropdown as UiDropdown, DropdownEvent, DropdownOption, ImageViewer as UiImageViewer,
+    ImageViewerSource, Input as UiInput, InteractiveCard as UiInteractiveCard, NativeMarkdown,
+    Popover as UiPopover, Progress as UiProgress, SearchDropdown as UiSearchDropdown,
+    SearchDropdownOption, SearchDropdownState, SegmentedControl as UiSegmentedControl,
+    SelectionOption, SettingsCollapsibleCard, Tabs as UiTabs, Textarea as UiTextarea,
+    Tooltip as UiTooltip, TreeNode, TreeView as UiTreeView, TreeViewEvent, XYPad as UiXYPad,
+    XYPadEvent, XYPadValue,
 };
 use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 use nana_ui::icons::{Icon, icon, status_indicator};
