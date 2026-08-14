@@ -20,11 +20,12 @@ use nana_ui::runtime::{
     TextArea as RuntimeTextArea, TextInput as RuntimeTextInput, TextVerticalAlignment,
 };
 use nana_ui::{
-    AppTitleBar, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
-    DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
-    FloatingDock, PaneChromeActionKind, RegionId, SettingsTabId, ThemeMode, ThemeModeExt,
-    UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
-    dock_window_workspace, dock_workspace,
+    AppTitleBar, Button as LegacyButton, ButtonKind, Checkbox as LegacyCheckbox, DockAction,
+    DockBounds, DockChromeStyle, DockContents, DockController, DockDropZone, DockHostEffect,
+    DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, FloatingDock, Input as LegacyInput,
+    LayoutBounds, LayoutProbe, PaneChromeActionKind, RegionId, SettingsTabId, ThemeMode,
+    ThemeModeExt, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
+    WorkspaceAction, dock_window_workspace, dock_workspace,
 };
 use nana_ui::{CommandPaletteEvent, ContextMenuEvent};
 use nana_ui_core::{LayoutStyle, SemanticColorRole};
@@ -140,6 +141,11 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             WindowChrome::native_leading(78.0),
         )?,
     ];
+    paths.extend(component_migration_snapshots(
+        &mut renderer,
+        &output,
+        ThemeMode::Dark,
+    )?);
 
     for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
         paths.push(dock_window_merged_snapshot(
@@ -535,6 +541,263 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     )?);
 
     Ok(paths)
+}
+
+const MIGRATION_SIZE: Size<u32> = Size::new(520, 220);
+
+#[derive(Debug, Clone, Copy)]
+struct MigrationLayoutMessage {
+    component: &'static str,
+    bounds: LayoutBounds,
+}
+
+fn component_migration_snapshots(
+    renderer: &mut Renderer,
+    output: &Path,
+    theme: ThemeMode,
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let legacy = migration_legacy_view(theme);
+    let (legacy_pixels, legacy_layout) = snapshot_with_messages(
+        renderer,
+        legacy,
+        &theme.iced_theme(),
+        theme.colors().background,
+        MIGRATION_SIZE,
+    );
+    let legacy_path = output.join("migration-first-batch-iced-dark.png");
+    write::png(&legacy_path, MIGRATION_SIZE, &legacy_pixels)?;
+
+    let (runtime_scene, runtime_layout) = migration_runtime_scene(theme)?;
+    let runtime_view = nana_ui::IcedSceneView::new(
+        &runtime_scene,
+        Size::new(MIGRATION_SIZE.width as f32, MIGRATION_SIZE.height as f32),
+    )?;
+    let runtime_view: Element<'_, (), Theme, Renderer> = runtime_view.into();
+    let runtime_pixels = snapshot(
+        renderer,
+        runtime_view,
+        &theme.iced_theme(),
+        theme.colors().background,
+        MIGRATION_SIZE,
+    );
+    let runtime_path = output.join("migration-first-batch-runtime-dark.png");
+    write::png(&runtime_path, MIGRATION_SIZE, &runtime_pixels)?;
+
+    let comparison_size = Size::new(MIGRATION_SIZE.width * 2 + 8, MIGRATION_SIZE.height);
+    let comparison = side_by_side(&legacy_pixels, &runtime_pixels, MIGRATION_SIZE, 8);
+    let comparison_path = output.join("migration-first-batch-side-by-side-dark.png");
+    write::png(&comparison_path, comparison_size, &comparison)?;
+
+    let difference = pixel_difference(&legacy_pixels, &runtime_pixels);
+    let difference_path = output.join("migration-first-batch-difference-dark.png");
+    write::png(&difference_path, MIGRATION_SIZE, &difference)?;
+
+    let report_path = output.join("migration-first-batch-layout.txt");
+    write_migration_layout_report(&report_path, &legacy_layout, &runtime_layout)?;
+
+    Ok(vec![
+        legacy_path,
+        runtime_path,
+        comparison_path,
+        difference_path,
+        report_path,
+    ])
+}
+
+fn migration_legacy_view(
+    theme: ThemeMode,
+) -> Element<'static, MigrationLayoutMessage, Theme, Renderer> {
+    let tokens = theme.tokens();
+    let title = LayoutProbe::new(
+        container(text("Migration fixture").size(20))
+            .width(Length::Fill)
+            .height(Length::Fixed(28.0))
+            .align_y(iced::alignment::Vertical::Center),
+        |bounds| MigrationLayoutMessage {
+            component: "text",
+            bounds,
+        },
+    );
+    let input = LayoutProbe::new(
+        LegacyInput::new("Branch", "release/issue-7")
+            .on_input(|_| MigrationLayoutMessage {
+                component: "text-input:event",
+                bounds: LayoutBounds::new(0.0, 0.0, 0.0, 0.0),
+            })
+            .view(tokens)
+            .map(|message| message),
+        |bounds| MigrationLayoutMessage {
+            component: "text-input",
+            bounds,
+        },
+    );
+    let button = LayoutProbe::new(
+        LegacyButton::label("Run build")
+            .kind(ButtonKind::Primary)
+            .width(Length::Fixed(140.0))
+            .on_press(MigrationLayoutMessage {
+                component: "button:event",
+                bounds: LayoutBounds::new(0.0, 0.0, 0.0, 0.0),
+            })
+            .view(tokens),
+        |bounds| MigrationLayoutMessage {
+            component: "button",
+            bounds,
+        },
+    );
+    let checkbox = LayoutProbe::new(
+        container(
+            LegacyCheckbox::new(true, "Notifications")
+                .on_toggle(|_| MigrationLayoutMessage {
+                    component: "checkbox:event",
+                    bounds: LayoutBounds::new(0.0, 0.0, 0.0, 0.0),
+                })
+                .view(tokens),
+        )
+        .width(Length::Fixed(200.0)),
+        |bounds| MigrationLayoutMessage {
+            component: "checkbox",
+            bounds,
+        },
+    );
+    let actions = row![button, checkbox]
+        .spacing(12)
+        .height(Length::Fixed(32.0));
+    let content = column![title, input, actions]
+        .spacing(12)
+        .width(Length::Fill);
+    container(content)
+        .padding(24)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn migration_runtime_scene(
+    theme: ThemeMode,
+) -> Result<(UiScene, Vec<MigrationLayoutMessage>), Box<dyn std::error::Error>> {
+    let mut context = AppContext::new();
+    context.set_theme(theme)?;
+    let document = DocumentId::new(2).expect("migration fixture document ID is non-zero");
+    let title = context.create_component(
+        document,
+        RuntimeText::new("Migration fixture").style(NodeStyle {
+            foreground: Some(SemanticColorRole::Text),
+            layout: std::sync::Arc::new(LayoutStyle {
+                font_size: Some(20.0),
+                font_weight: Some(400),
+                ..LayoutStyle::default()
+            }),
+            text_vertical_alignment: TextVerticalAlignment::Center,
+            ..NodeStyle::default()
+        }),
+    )?;
+    let input = context.create_component(
+        document,
+        RuntimeTextInput::new("release/issue-7").label("Branch"),
+    )?;
+    let button = context.create_component(document, RuntimeButton::new("Run build"))?;
+    let checkbox =
+        context.create_component(document, RuntimeCheckbox::new("Notifications", true))?;
+    let layout = [
+        (
+            "text",
+            title.stable_id(),
+            LayoutBounds::new(24.0, 24.0, 472.0, 28.0),
+        ),
+        (
+            "text-input",
+            input.stable_id(),
+            LayoutBounds::new(24.0, 64.0, 472.0, 32.0),
+        ),
+        (
+            "button",
+            button.stable_id(),
+            LayoutBounds::new(24.0, 108.0, 140.0, 32.0),
+        ),
+        (
+            "checkbox",
+            checkbox.stable_id(),
+            LayoutBounds::new(176.0, 108.0, 200.0, 32.0),
+        ),
+    ];
+    let mut mutations = MutationQueue::new();
+    for (_, id, bounds) in layout {
+        mutations.write_layout(
+            id,
+            nana_ui::runtime::LayoutBox {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+            },
+        );
+    }
+    context.commit_mutations(mutations)?;
+    let work = context.take_system_work();
+    context.resolve_styles(&work.style)?;
+    let extracted = context.world().extract_nodes(&work.render_extraction);
+    let mut scene = UiScene::new();
+    scene.apply_delta(extracted, work.render_removals.iter().copied());
+    let layout = layout
+        .into_iter()
+        .map(|(component, _, bounds)| MigrationLayoutMessage { component, bounds })
+        .collect();
+    Ok((scene, layout))
+}
+
+fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32) -> Vec<u8> {
+    let output_width = size.width * 2 + gap;
+    let mut output = vec![0; (output_width * size.height * 4) as usize];
+    for y in 0..size.height as usize {
+        let source_start = y * size.width as usize * 4;
+        let source_end = source_start + size.width as usize * 4;
+        let row_start = y * output_width as usize * 4;
+        output[row_start..row_start + size.width as usize * 4]
+            .copy_from_slice(&left[source_start..source_end]);
+        let right_start = row_start + (size.width + gap) as usize * 4;
+        output[right_start..right_start + size.width as usize * 4]
+            .copy_from_slice(&right[source_start..source_end]);
+    }
+    output
+}
+
+fn pixel_difference(left: &[u8], right: &[u8]) -> Vec<u8> {
+    left.chunks_exact(4)
+        .zip(right.chunks_exact(4))
+        .flat_map(|(left, right)| {
+            let red = left[0].abs_diff(right[0]);
+            let green = left[1].abs_diff(right[1]);
+            let blue = left[2].abs_diff(right[2]);
+            [red, green, blue, 255]
+        })
+        .collect()
+}
+
+fn write_migration_layout_report(
+    path: &Path,
+    legacy: &[MigrationLayoutMessage],
+    runtime: &[MigrationLayoutMessage],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut report = String::from("component\ticed\truntime\tstrict_equal\n");
+    for runtime_entry in runtime {
+        let legacy_bounds = legacy
+            .iter()
+            .find(|entry| entry.component == runtime_entry.component)
+            .map(|entry| entry.bounds);
+        report.push_str(&format!(
+            "{}\t{:?}\t{:?}\t{}\n",
+            runtime_entry.component,
+            legacy_bounds,
+            runtime_entry.bounds,
+            legacy_bounds == Some(runtime_entry.bounds)
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, report)?;
+    Ok(())
 }
 
 fn runtime_scene_snapshot(
@@ -1355,6 +1618,47 @@ fn snapshot<Message>(
         size,
         mouse::Cursor::Unavailable,
     )
+}
+
+fn snapshot_with_messages<Message>(
+    renderer: &mut Renderer,
+    view: Element<'_, Message, Theme, Renderer>,
+    theme: &Theme,
+    background: Color,
+    size: Size<u32>,
+) -> (Vec<u8>, Vec<Message>) {
+    let viewport = Viewport::with_physical_size(size, renderer::Scale::default());
+    let mut interface = UserInterface::build(
+        view,
+        viewport.logical_size(),
+        user_interface::Cache::new(),
+        renderer,
+    );
+    let window = window::Headless;
+    let waker = shell::Waker::noop();
+    let mut messages = shell::Bus::new();
+    let _ = interface.update(
+        &window,
+        &waker,
+        &[Event::Window(
+            window::Event::RedrawRequested(Instant::now()),
+        )],
+        mouse::Cursor::Unavailable,
+        renderer,
+        &mut messages,
+    );
+    interface.draw(
+        renderer,
+        theme,
+        &renderer::Style {
+            text_color: theme.palette().background.base.text,
+        },
+        mouse::Cursor::Unavailable,
+    );
+    let cache = interface.into_cache();
+    let pixels = renderer.screenshot(&viewport, background);
+    drop(cache);
+    (pixels, messages.drain().collect())
 }
 
 fn snapshot_with_cursor<Message>(

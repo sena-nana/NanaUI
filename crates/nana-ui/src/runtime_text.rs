@@ -4,6 +4,7 @@ use iced::advanced::text::{
 use iced::{Pixels, Size, alignment, font};
 use nana_ui_runtime::{
     ComputedStyle, StableNodeId, TextContent, TextMetrics, TextShapeConstraints, TextShaper,
+    TextShaping,
 };
 
 use crate::ui_font;
@@ -37,7 +38,10 @@ impl TextShaper for IcedTextShaper {
             font,
             align_x: Alignment::Default,
             align_y: alignment::Vertical::Top,
-            shaping: Shaping::Advanced,
+            shaping: match constraints.shaping {
+                TextShaping::Auto => Shaping::Auto,
+                TextShaping::Advanced => Shaping::Advanced,
+            },
             wrapping: if constraints.wrap {
                 Wrapping::Word
             } else {

@@ -51,7 +51,9 @@ cargo run --release -p component-gallery --bin ui-benchmark --features benchmark
 
 ### 视觉基线
 
-离屏 WGPU 共生成 59 张快照。现有 7 张基线的 SSIM 全部不低于 0.98，最低为 `titlebar-custom-dark = 0.984525`；设置页人工复核通过。
+离屏 WGPU 共生成 59 张快照并完成人工复核。历史上记录过 7 张基线的 SSIM，现仅将其
+作为定位栅格差异的诊断数据；它不是正确性、组件晋级或视觉验收门槛。Iced 输出也不是
+绝对视觉真值，Runtime 应以主题语义、字体度量和布局合同正确为准。
 
 复核同时移除了设置页中的 `Vibrancy`、`Hosted GPU`、`nana-window` 等技术实现文案。界面只描述用户可理解的透明效果、设备支持和实色回退，且状态来自真实平台能力。
 

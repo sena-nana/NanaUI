@@ -18,7 +18,7 @@ use iced::{
     Background, Border, Color, Element, Font, Length, Pixels, Point, Rectangle, Size, Theme,
 };
 use iced_wgpu::primitive::Renderer as _;
-use nana_ui_runtime::{TextHorizontalAlignment, TextVerticalAlignment};
+use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::{
     PrimitiveId, RenderOperation, ResourceId, ScenePrimitive, ScenePrimitiveKind, SceneRect,
     UiScene,
@@ -417,6 +417,7 @@ fn paint_primitive(
             line_height,
             wrap,
             ellipsis,
+            shaping,
             horizontal_alignment,
             vertical_alignment,
             ..
@@ -460,7 +461,10 @@ fn paint_primitive(
                     font: scene_font(renderer.default_font(), family.as_deref(), *weight),
                     align_x,
                     align_y,
-                    shaping: Shaping::Advanced,
+                    shaping: match shaping {
+                        TextShaping::Auto => Shaping::Auto,
+                        TextShaping::Advanced => Shaping::Advanced,
+                    },
                     wrapping: if *wrap {
                         Wrapping::Word
                     } else {
