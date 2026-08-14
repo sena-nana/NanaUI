@@ -41,7 +41,7 @@ pub mod tree_view;
 #[cfg(feature = "xy-pad")]
 pub mod xy_pad;
 
-pub use actions::{Button, ControlSize};
+pub use actions::ControlSize;
 #[cfg(feature = "calendar")]
 pub use calendar::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum,
@@ -57,8 +57,8 @@ pub use command_palette::{
 };
 #[cfg(feature = "controls")]
 pub use controls::{
-    Checkbox, HostedTextarea, HostedTextareaState, Input, SegmentedControl, Select,
-    SelectionOption, TabDragGroup, TabDragSurface, Tabs, Textarea,
+    HostedTextarea, HostedTextareaState, SegmentedControl, Select, SelectionOption, TabDragGroup,
+    TabDragSurface, Tabs, Textarea,
 };
 #[cfg(feature = "feedback")]
 pub use feedback::{
@@ -76,7 +76,9 @@ pub use menus::{
     ContextMenuAnchor, ContextMenuEvent, ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
     OverlayHost,
 };
-pub use nana_ui_runtime::{Card, IconButton, ListItem, RangeField, Switch};
+pub use nana_ui_runtime::{
+    Button, Card, Checkbox, IconButton, ListItem, RangeField, Switch, Text, TextInput,
+};
 #[cfg(feature = "overlays")]
 pub use overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};
 #[cfg(feature = "popover")]
