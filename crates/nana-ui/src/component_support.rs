@@ -1,7 +1,8 @@
 //! Public, read-only component migration capabilities.
 //!
-//! This catalog describes support and promotion evidence. It never selects a
-//! renderer and must not be used to maintain parallel application state.
+//! This catalog describes support and promotion evidence and is the single
+//! source for NanaUI's internal default-backend decision. It must not be used
+//! to maintain parallel application state.
 
 use std::fmt;
 
@@ -136,12 +137,12 @@ component_catalog! {
     BUTTON => { id: "button", name: "Button", family: Control, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     TEXT_INPUT => { id: "text-input", name: "TextInput", family: Control, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     CHECKBOX => { id: "checkbox", name: "Checkbox", family: Control, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    ICON_BUTTON => { id: "icon-button", name: "IconButton", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    CARD => { id: "card", name: "Card", family: Primitive, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
-    SWITCH => { id: "switch", name: "Switch", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    ICON_BUTTON => { id: "icon-button", name: "IconButton", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    CARD => { id: "card", name: "Card", family: Primitive, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility, Animation] },
+    SWITCH => { id: "switch", name: "Switch", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
     TEXTAREA => { id: "textarea", name: "Textarea", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     HOSTED_TEXTAREA => { id: "hosted-textarea", name: "HostedTextarea", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
-    RANGE_FIELD => { id: "range-field", name: "RangeField", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    RANGE_FIELD => { id: "range-field", name: "RangeField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SELECT => { id: "select", name: "Select", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     SEGMENTED_CONTROL => { id: "segmented-control", name: "SegmentedControl", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     TABS => { id: "tabs", name: "Tabs", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
@@ -185,7 +186,7 @@ component_catalog! {
     LABELED_VALUE => { id: "labeled-value", name: "LabeledValue", family: Data, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
     EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
     INTERACTIVE_CARD => { id: "interactive-card", name: "InteractiveCard", family: Control, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    LIST_ITEM => { id: "list-item", name: "ListItem", family: Navigation, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    LIST_ITEM => { id: "list-item", name: "ListItem", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     WORKSPACE => { id: "workspace", name: "Workspace", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
     DOCK => { id: "dock", name: "Dock", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
@@ -210,6 +211,15 @@ pub const fn component_catalog() -> &'static [ComponentSupport] {
 /// Look up support facts without selecting or changing a renderer.
 pub fn component_support(id: ComponentId) -> Option<&'static ComponentSupport> {
     COMPONENT_CATALOG.iter().find(|support| support.id == id)
+}
+
+/// Internal default-backend routing derived from the same declaration as the
+/// public catalog. Candidate components deliberately remain on compatibility.
+#[doc(hidden)]
+pub fn component_uses_runtime(id: ComponentId) -> bool {
+    component_support(id).is_some_and(|support| {
+        support.compiled && support.migration == ComponentMigrationState::RuntimeQualified
+    })
 }
 
 #[cfg(test)]
@@ -247,6 +257,21 @@ mod tests {
     }
 
     #[test]
+    fn second_batch_routes_only_reviewed_components() {
+        for id in [
+            component_ids::ICON_BUTTON,
+            component_ids::SWITCH,
+            component_ids::CARD,
+            component_ids::LIST_ITEM,
+            component_ids::RANGE_FIELD,
+        ] {
+            let support = component_support(id).expect("second-batch component is cataloged");
+            assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
+            assert_eq!(component_uses_runtime(id), support.compiled);
+        }
+    }
+
+    #[test]
     fn migration_state_only_allows_monotonic_promotion() {
         use ComponentMigrationState::{Compatibility, RuntimeCandidate, RuntimeQualified};
 
@@ -260,8 +285,8 @@ mod tests {
     #[test]
     fn feature_availability_reports_the_current_build() {
         let switch = component_support(component_ids::SWITCH).unwrap();
-        assert_eq!(switch.required_feature, Some("controls"));
-        assert_eq!(switch.compiled, cfg!(feature = "controls"));
+        assert_eq!(switch.required_feature, None);
+        assert!(switch.compiled);
 
         let gpu = component_support(component_ids::GPU_VIEW).unwrap();
         assert_eq!(gpu.required_feature, Some("gpu"));

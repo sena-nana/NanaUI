@@ -455,7 +455,12 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
             .document_mut(id)
             .map(|document| {
                 let document_id = document.document();
-                RuntimeInputAdapter::default().dispatch(document.context_mut(), document_id, &event)
+                RuntimeInputAdapter::default().dispatch_at(
+                    document.context_mut(),
+                    document_id,
+                    &event,
+                    self.animation_clock.runtime_time(Instant::now()),
+                )
             })
             .transpose()
             .unwrap_or_else(|error| panic!("RuntimeProgram input dispatch failed: {error}"))
@@ -621,7 +626,7 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
             let Some(frame) = frame else {
                 continue;
             };
-            let had_samples = !frame.samples.is_empty();
+            let had_samples = frame.has_updates();
             let geometry = self.geometries.get(&id).copied().unwrap_or_default();
             let context = Self::context(hosted, id, geometry, self.tasks.clone());
             update = update.merge(
