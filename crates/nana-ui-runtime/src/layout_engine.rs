@@ -86,6 +86,8 @@ struct Size {
     height: f32,
 }
 
+type IntrinsicCache = HashMap<(StableNodeId, u32, u32), Size>;
+
 impl Size {
     fn new(width: f32, height: f32) -> Self {
         Self {
@@ -100,9 +102,10 @@ fn intrinsic_size(
     available: Size,
     viewport: LayoutViewport,
     nodes: &HashMap<StableNodeId, LayoutInput>,
-    cache: &mut HashMap<StableNodeId, Size>,
+    cache: &mut IntrinsicCache,
 ) -> Size {
-    if let Some(size) = cache.get(&id) {
+    let cache_key = (id, available.width.to_bits(), available.height.to_bits());
+    if let Some(size) = cache.get(&cache_key) {
         return *size;
     }
     let node = &nodes[&id];
@@ -200,7 +203,7 @@ fn intrinsic_size(
         height = height.min(max);
     }
     let size = Size::new(width, height);
-    cache.insert(id, size);
+    cache.insert(cache_key, size);
     size
 }
 
@@ -212,7 +215,7 @@ fn place_node(
     containing: Size,
     viewport: LayoutViewport,
     nodes: &HashMap<StableNodeId, LayoutInput>,
-    intrinsic: &mut HashMap<StableNodeId, Size>,
+    intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
 ) {
     let node = &nodes[&id];
@@ -692,5 +695,64 @@ mod tests {
         assert_eq!(layouts[&id(2)].width, 50.0);
         assert_eq!(layouts[&id(3)].x, 70.0);
         assert_eq!(layouts[&id(3)].width, 230.0);
+    }
+
+    #[test]
+    fn absolute_panel_children_resolve_fill_against_the_panel_content_box() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for value in 1..=3 {
+            queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+        }
+        queue.insert(id(1), id(2), None);
+        queue.insert(id(2), id(3), None);
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    height: Some(LengthSpec::Fill),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    position: PositionSpec::Absolute,
+                    offset_left: Some(LengthSpec::Px(8.0)),
+                    width: Some(LengthSpec::Px(280.0)),
+                    height: Some(LengthSpec::Px(200.0)),
+                    padding: Some(LengthSpec::Px(8.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(3),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    height: Some(LengthSpec::Px(32.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, LayoutViewport::new(1280.0, 900.0))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(layouts[&id(2)].width, 280.0);
+        assert_eq!(layouts[&id(3)].x, 16.0);
+        assert_eq!(layouts[&id(3)].width, 264.0);
     }
 }
