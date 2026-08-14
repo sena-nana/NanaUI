@@ -90,18 +90,14 @@ pub fn button_style_overridden(
 
         let background = match status {
             button::Status::Hovered => match kind {
-                ButtonKind::Primary => {
-                    Color::from_rgba(colors.accent.r, colors.accent.g, colors.accent.b, 0.20)
-                }
+                ButtonKind::Primary => colors.accent_soft_hover,
                 ButtonKind::Warning => fade(colors.warning, 0.20),
                 ButtonKind::Danger => fade(colors.danger, 0.18),
                 ButtonKind::Selected => colors.selected_hover,
                 _ => colors.hover,
             },
             button::Status::Pressed => match kind {
-                ButtonKind::Primary => {
-                    Color::from_rgba(colors.accent.r, colors.accent.g, colors.accent.b, 0.23)
-                }
+                ButtonKind::Primary => colors.accent_soft_pressed,
                 ButtonKind::Warning => fade(colors.warning, 0.24),
                 ButtonKind::Danger => fade(colors.danger, 0.22),
                 ButtonKind::Selected => colors.selected_pressed,

@@ -14,6 +14,7 @@ pub mod absolute;
 mod accessibility;
 mod async_runtime;
 pub mod command;
+pub mod component_support;
 pub mod components;
 pub mod dialog;
 pub mod dock;
@@ -76,6 +77,10 @@ pub use command::{
     ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
     ActionPickerState, ActionRegistry, ActionRegistryError, ContextPredicate, KeyBinding,
     KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch, KeymapState,
+};
+pub use component_support::{
+    ComponentCapability, ComponentFamily, ComponentId, ComponentMigrationState, ComponentSupport,
+    component_catalog, component_ids, component_support,
 };
 pub use components::actions::{Button, ControlSize, IconButton};
 #[cfg(feature = "calendar")]
