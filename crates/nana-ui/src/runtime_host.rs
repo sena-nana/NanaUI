@@ -221,6 +221,20 @@ pub trait RuntimeProgram: Sized + 'static {
         RuntimeProgramUpdate::default()
     }
 
+    /// Application-owned wake deadline for sampled state, external runtimes,
+    /// retry backoff or other work that must not depend on UI redraw cadence.
+    fn next_wakeup(&self) -> Option<Instant> {
+        None
+    }
+
+    fn wake(
+        &mut self,
+        _now: Instant,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
     fn animation_frame(
         &mut self,
         _id: WindowId,
@@ -565,14 +579,20 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
     }
 
     fn next_wakeup(&self) -> Option<Instant> {
-        self.geometries
+        let animation = self
+            .geometries
             .keys()
             .filter_map(|id| {
                 self.program
                     .document(*id)
                     .and_then(|document| self.animation_clock.next_wakeup(document.context()))
             })
-            .min()
+            .min();
+        match (animation, self.program.next_wakeup()) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
     }
 
     fn wake(
@@ -580,8 +600,19 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
         now: Instant,
         hosted: &HostedProgramContext<Self::Message>,
     ) -> HostedProgramUpdate {
+        let primary_geometry = self
+            .geometries
+            .get(&WindowId::PRIMARY)
+            .copied()
+            .unwrap_or_else(|| platform_geometry(hosted.geometry()));
+        let primary_context = Self::context(
+            hosted,
+            WindowId::PRIMARY,
+            primary_geometry,
+            self.tasks.clone(),
+        );
+        let mut update = self.program.wake(now, &primary_context);
         let ids = self.geometries.keys().copied().collect::<Vec<_>>();
-        let mut update = RuntimeProgramUpdate::default();
         for id in ids {
             let frame = self
                 .program
