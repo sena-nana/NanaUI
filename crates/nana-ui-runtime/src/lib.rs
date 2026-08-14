@@ -30,7 +30,8 @@ pub use framework::{
 pub use layout_engine::{LayoutViewport, RuntimeLayoutEngine};
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
-    ActionId, ContextPredicate, KeyContext, TableCursor, TableNavigation, ThemeMode,
+    ActionId, AlignSpec, ContextPredicate, FlexDirection, JustifySpec, KeyContext, LayoutStyle,
+    LengthSpec, PositionSpec, SemanticColorRole, TableCursor, TableNavigation, ThemeMode,
     VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
     VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualTableLayout,
     VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
