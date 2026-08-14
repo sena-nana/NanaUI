@@ -16,8 +16,8 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use nana_ui_core::{
-    AppearanceSettings, BackdropTarget, ButtonKind, ControlSize, Icon, ThemeMode,
-    WindowMaterialMode,
+    AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon,
+    SwitchControlPosition, ThemeMode, WindowMaterialMode,
 };
 
 use crate::css_cascade::{
@@ -228,7 +228,10 @@ pub struct WidgetProps {
     pub placeholder: String,
     pub value: String,
     pub button_kind: ButtonKind,
+    pub card_kind: CardKind,
     pub size: ControlSize,
+    pub control_position: SwitchControlPosition,
+    pub auto_height: bool,
     pub disabled: bool,
     pub loading: bool,
     pub toggled: bool,
@@ -283,7 +286,10 @@ impl Default for WidgetProps {
             placeholder: String::new(),
             value: String::new(),
             button_kind: ButtonKind::Ghost,
+            card_kind: CardKind::Surface,
             size: ControlSize::Medium,
+            control_position: SwitchControlPosition::End,
+            auto_height: false,
             disabled: false,
             loading: false,
             toggled: false,
@@ -385,8 +391,17 @@ impl WidgetProps {
                 }
             }
             "kind" | "button-kind" => {
-                if let Some(k) = parse_button_kind(&host_string(value)) {
+                let value = host_string(value);
+                if let Some(k) = parse_button_kind(&value) {
                     self.button_kind = k;
+                }
+                if let Some(k) = parse_card_kind(&value) {
+                    self.card_kind = k;
+                }
+            }
+            "card-kind" | "cardkind" => {
+                if let Some(k) = parse_card_kind(&host_string(value)) {
+                    self.card_kind = k;
                 }
             }
             "data-variant" => {
@@ -401,6 +416,13 @@ impl WidgetProps {
                     self.size = s;
                 }
             }
+            "control-position" | "controlposition" => {
+                self.control_position = match host_string(value).to_ascii_lowercase().as_str() {
+                    "start" | "left" => SwitchControlPosition::Start,
+                    _ => SwitchControlPosition::End,
+                };
+            }
+            "auto-height" | "autoheight" => self.auto_height = host_truthy(value),
             "disabled" => self.disabled = host_truthy(value),
             "loading" => self.loading = host_truthy(value),
             "toggled" | "model-value" | "checked" => {
@@ -3636,6 +3658,17 @@ pub fn parse_button_kind(raw: &str) -> Option<ButtonKind> {
     })
 }
 
+pub fn parse_card_kind(raw: &str) -> Option<CardKind> {
+    Some(match raw.trim().to_ascii_lowercase().as_str() {
+        "surface" => CardKind::Surface,
+        "outlined" | "outline" => CardKind::Outlined,
+        "raised" | "elevated" => CardKind::Raised,
+        "flat" => CardKind::Flat,
+        "selected" => CardKind::Selected,
+        _ => return None,
+    })
+}
+
 pub fn parse_control_size(raw: &str) -> Option<ControlSize> {
     Some(match raw.trim().to_ascii_lowercase().as_str() {
         "small" | "sm" => ControlSize::Small,
@@ -6155,5 +6188,30 @@ mod tests {
         assert!(views.inspector.widgets.is_empty());
         assert_eq!(views.primary.widgets.len(), snap.widgets.len());
         assert!(views.overlapping_ids().is_empty());
+    }
+
+    #[test]
+    fn migration_component_props_keep_typed_semantics() {
+        let props = WidgetProps::from_map(&BTreeMap::from([
+            (
+                "cardKind".into(),
+                nana_js_engine::HostValue::string("raised"),
+            ),
+            (
+                "controlPosition".into(),
+                nana_js_engine::HostValue::string("start"),
+            ),
+            ("autoHeight".into(), nana_js_engine::HostValue::Bool(true)),
+            ("loading".into(), nana_js_engine::HostValue::Bool(true)),
+            ("invalid".into(), nana_js_engine::HostValue::Bool(true)),
+            ("step".into(), nana_js_engine::HostValue::Number(0.25)),
+        ]));
+
+        assert_eq!(props.card_kind, CardKind::Raised);
+        assert_eq!(props.control_position, SwitchControlPosition::Start);
+        assert!(props.auto_height);
+        assert!(props.loading);
+        assert!(props.invalid);
+        assert_eq!(props.step, 0.25);
     }
 }

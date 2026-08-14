@@ -1449,6 +1449,15 @@ impl VueHost {
         engine: &mut E,
         event: BridgeEvent,
     ) -> Result<bool, JsEngineError> {
+        self.dispatch_bridge_event_inner(engine, event, true)
+    }
+
+    fn dispatch_bridge_event_inner<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        event: BridgeEvent,
+        emit_compatibility_click: bool,
+    ) -> Result<bool, JsEngineError> {
         let id = event.widget_id();
         if let BridgeEvent::Scroll {
             id,
@@ -1572,6 +1581,9 @@ impl VueHost {
             return Ok(false);
         }
         for name in js_events {
+            if name == "click" && !emit_compatibility_click {
+                continue;
+            }
             let mut detail = BTreeMap::new();
             match &event {
                 BridgeEvent::Toggle { value, .. } => {
@@ -1739,6 +1751,60 @@ impl VueHost {
         Ok(())
     }
 
+    fn semantic_default_action<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        requested_value: Option<f64>,
+        click_detail: Option<BTreeMap<String, HostValue>>,
+    ) -> Result<SemanticActionResult, JsEngineError> {
+        let widget = self
+            .bridge
+            .lock()
+            .expect("vue bridge")
+            .get(target.0)
+            .cloned();
+        let Some(widget) = widget else {
+            return Ok(SemanticActionResult::default());
+        };
+        if widget.props.disabled || widget.props.loading {
+            return Ok(SemanticActionResult {
+                handled: true,
+                default_prevented: false,
+            });
+        }
+        if let Some(click_detail) = click_detail
+            && !self.fire_dom_event(engine, target, "click", click_detail)?
+        {
+            return Ok(SemanticActionResult {
+                handled: true,
+                default_prevented: true,
+            });
+        }
+        let event = match widget.kind {
+            WidgetKind::Switch | WidgetKind::Checkbox => Some(BridgeEvent::Toggle {
+                id: target.0,
+                value: !widget.props.toggled,
+            }),
+            WidgetKind::Range => requested_value.map(|value| BridgeEvent::Change {
+                id: target.0,
+                value: quantize_range_value(&widget.props, value),
+            }),
+            WidgetKind::ListItem | WidgetKind::SidebarRow => {
+                Some(BridgeEvent::Select { id: target.0 })
+            }
+            WidgetKind::Button | WidgetKind::Chip => Some(BridgeEvent::Press { id: target.0 }),
+            _ => None,
+        };
+        if let Some(event) = event {
+            self.dispatch_bridge_event_inner(engine, event, false)?;
+        }
+        Ok(SemanticActionResult {
+            handled: true,
+            default_prevented: false,
+        })
+    }
+
     /// Dispatch one browser-style pointer event with hit-testing and capture.
     pub fn dispatch_pointer_result<E: JsEngine + ?Sized>(
         &mut self,
@@ -1896,7 +1962,7 @@ impl VueHost {
                     .lock()
                     .expect("vue doc")
                     .release_pointer_press(input.pointer_id);
-                if pressed.is_some() && pressed == physical_hit {
+                if !default_prevented && pressed.is_some() && pressed == physical_hit {
                     let click_target = pressed.expect("checked above");
                     let is_semantic = self
                         .bridge
@@ -1904,14 +1970,21 @@ impl VueHost {
                         .expect("vue bridge")
                         .contains(click_target.0);
                     if is_semantic {
-                        self.dispatch_bridge_event(
+                        let requested_value =
+                            self.pointer_range_value(click_target, input.client_x);
+                        let result = self.semantic_default_action(
                             engine,
-                            BridgeEvent::Press { id: click_target.0 },
+                            click_target,
+                            requested_value,
+                            Some(detail.clone()),
                         )?;
+                        default_prevented |= result.default_prevented;
+                        consumed = result.handled;
                     } else {
-                        self.fire_dom_event(engine, click_target, "click", detail.clone())?;
+                        default_prevented |=
+                            !self.fire_dom_event(engine, click_target, "click", detail.clone())?;
+                        consumed = true;
                     }
-                    consumed = true;
                 }
             }
             PointerEventKind::Cancel => {
@@ -1946,6 +2019,28 @@ impl VueHost {
             default_prevented,
             consumed,
         })
+    }
+
+    fn pointer_range_value(&self, target: NodeHandle, x: f32) -> Option<f64> {
+        let widget = self
+            .bridge
+            .lock()
+            .expect("vue bridge")
+            .get(target.0)
+            .cloned()?;
+        if widget.kind != WidgetKind::Range {
+            return None;
+        }
+        let bounds = self.document.lock().expect("vue doc").layout_box(target)?;
+        let ratio = if bounds.width > 0.0 {
+            ((x - bounds.x) / bounds.width).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Some(
+            f64::from(widget.props.min)
+                + f64::from(ratio) * f64::from(widget.props.max - widget.props.min),
+        )
     }
 
     pub fn dispatch_pointer<E: JsEngine + ?Sized>(
@@ -2034,7 +2129,60 @@ impl VueHost {
         if repeated {
             detail.insert("repeat".into(), HostValue::Bool(true));
         }
-        let allowed = self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
+        let mut allowed = self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
+        if allowed && input.kind == KeyboardEventKind::Down {
+            let widget = self
+                .bridge
+                .lock()
+                .expect("vue bridge")
+                .get(target.0)
+                .cloned();
+            if let Some(widget) = widget {
+                let key = input.key.to_ascii_lowercase();
+                let requested_value = match widget.kind {
+                    WidgetKind::Range => match key.as_str() {
+                        "arrowleft" | "arrowdown" => {
+                            Some(f64::from(widget.props.number - widget.props.step))
+                        }
+                        "arrowright" | "arrowup" => {
+                            Some(f64::from(widget.props.number + widget.props.step))
+                        }
+                        "pagedown" => {
+                            Some(f64::from(widget.props.number - widget.props.step * 10.0))
+                        }
+                        "pageup" => Some(f64::from(widget.props.number + widget.props.step * 10.0)),
+                        "home" => Some(f64::from(widget.props.min)),
+                        "end" => Some(f64::from(widget.props.max)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let activates = match widget.kind {
+                    WidgetKind::Button
+                    | WidgetKind::Chip
+                    | WidgetKind::ListItem
+                    | WidgetKind::SidebarRow => {
+                        !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
+                    }
+                    WidgetKind::Switch | WidgetKind::Checkbox => {
+                        !repeated && matches!(key.as_str(), " " | "space" | "spacebar")
+                    }
+                    WidgetKind::Range => requested_value.is_some(),
+                    _ => false,
+                };
+                if activates {
+                    let result = self.semantic_default_action(
+                        engine,
+                        target,
+                        requested_value,
+                        Some(BTreeMap::new()),
+                    )?;
+                    if result.handled {
+                        allowed = false;
+                    }
+                }
+            }
+        }
         if allowed && input.kind == KeyboardEventKind::Down && input.key.eq_ignore_ascii_case("tab")
         {
             let (previous, next) = self.advance_tab_focus(input.modifiers.shift);
@@ -2083,28 +2231,8 @@ impl VueHost {
         engine: &mut E,
         target: NodeHandle,
     ) -> Result<bool, JsEngineError> {
-        let node = self
-            .document
-            .lock()
-            .expect("vue doc")
-            .accessibility_snapshot()
-            .into_iter()
-            .find(|node| node.id.get() == target.0);
-        let Some(node) = node else {
-            return Ok(false);
-        };
-        let event = match node.role {
-            nana_ui_runtime::AccessibilityRole::Checkbox
-            | nana_ui_runtime::AccessibilityRole::Switch => BridgeEvent::Toggle {
-                id: target.0,
-                value: !node.checked.unwrap_or(false),
-            },
-            nana_ui_runtime::AccessibilityRole::Tab
-            | nana_ui_runtime::AccessibilityRole::ListItem
-            | nana_ui_runtime::AccessibilityRole::MenuItem => BridgeEvent::Select { id: target.0 },
-            _ => BridgeEvent::Press { id: target.0 },
-        };
-        self.dispatch_bridge_event(engine, event)
+        let result = self.semantic_default_action(engine, target, None, Some(BTreeMap::new()))?;
+        Ok(result.handled && !result.default_prevented)
     }
 
     pub(crate) fn accessibility_set_value<E: JsEngine + ?Sized>(
@@ -2113,6 +2241,23 @@ impl VueHost {
         target: NodeHandle,
         value: &str,
     ) -> Result<bool, JsEngineError> {
+        let range = {
+            let bridge = self.bridge.lock().expect("vue bridge");
+            bridge
+                .get(target.0)
+                .filter(|widget| widget.kind == WidgetKind::Range)
+                .cloned()
+        };
+        if let Some(range) = range {
+            if range.props.disabled || range.props.loading {
+                return Ok(false);
+            }
+            let Ok(value) = value.parse::<f64>() else {
+                return Ok(false);
+            };
+            let result = self.semantic_default_action(engine, target, Some(value), None)?;
+            return Ok(result.handled && !result.default_prevented);
+        }
         let supported = {
             let document = self.document.lock().expect("vue doc");
             document.text_input_state(target).is_some()
@@ -2517,6 +2662,28 @@ impl Drop for VueHost {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SemanticActionResult {
+    handled: bool,
+    default_prevented: bool,
+}
+
+fn quantize_range_value(props: &WidgetProps, value: f64) -> f64 {
+    let minimum = f64::from(props.min);
+    let maximum = f64::from(props.max);
+    let step = f64::from(props.step);
+    if !minimum.is_finite()
+        || !maximum.is_finite()
+        || maximum <= minimum
+        || !step.is_finite()
+        || step <= 0.0
+    {
+        return minimum;
+    }
+    let steps = ((value.clamp(minimum, maximum) - minimum) / step).round();
+    (minimum + steps * step).clamp(minimum, maximum)
+}
+
 fn is_focusable_tag(tag: &str) -> bool {
     matches!(
         tag,
@@ -2600,6 +2767,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingEngine {
         invocations: Vec<(JsFunctionId, Vec<HostValue>)>,
+        prevent_event: Option<String>,
     }
 
     impl JsEngine for RecordingEngine {
@@ -2621,7 +2789,11 @@ mod tests {
             args: &[HostValue],
         ) -> Result<HostValue, JsEngineError> {
             self.invocations.push((target, args.to_vec()));
-            Ok(HostValue::Bool(true))
+            let allowed = args
+                .get(1)
+                .and_then(HostValue::as_str)
+                .is_none_or(|name| self.prevent_event.as_deref() != Some(name));
+            Ok(HostValue::Bool(allowed))
         }
 
         fn run_microtasks(&mut self) -> Result<(), JsEngineError> {
@@ -2662,6 +2834,177 @@ mod tests {
         store.record(second, 100.0, 0.0, 80.0, 40.0);
         host.sync_iced_layout_boxes();
         (first, second)
+    }
+
+    fn install_semantic_switch(host: &mut VueHost) -> NodeHandle {
+        let node = {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            let node = doc.create_element("nana-switch");
+            let root = doc.mount_root();
+            doc.insert(node, root, None);
+            node
+        };
+        host.bridge.lock().expect("bridge").register(
+            node.0,
+            WidgetKind::Switch,
+            WidgetProps {
+                label: "Preview".into(),
+                toggled: false,
+                ..Default::default()
+            },
+        );
+        let snapshot = host.bridge.lock().expect("bridge").snapshot();
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        doc.sync_semantic_styles(&snapshot);
+        doc.apply_layout_boxes(&[(
+            node,
+            LayoutBox {
+                handle: node,
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 32.0,
+            },
+        )]);
+        node
+    }
+
+    #[test]
+    fn semantic_switch_pointer_default_action_updates_once_and_honors_prevent_default() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let node = install_semantic_switch(&mut host);
+        let mut engine = RecordingEngine::default();
+
+        host.pointer_click(&mut engine, 10.0, 10.0).unwrap();
+        let events = fired_events(&engine);
+        for name in ["click", "change", "update:modelValue"] {
+            assert_eq!(
+                events.iter().filter(|(_, event, _)| event == name).count(),
+                1,
+                "{name} must be emitted once"
+            );
+        }
+        assert!(
+            host.bridge
+                .lock()
+                .expect("bridge")
+                .get(node.0)
+                .unwrap()
+                .props
+                .toggled
+        );
+
+        let mut prevented = RecordingEngine {
+            prevent_event: Some("click".into()),
+            ..Default::default()
+        };
+        host.pointer_click(&mut prevented, 10.0, 10.0).unwrap();
+        assert!(
+            host.bridge
+                .lock()
+                .expect("bridge")
+                .get(node.0)
+                .unwrap()
+                .props
+                .toggled,
+            "prevented click must not apply the toggle default action"
+        );
+        let prevented_events = fired_events(&prevented);
+        assert_eq!(
+            prevented_events
+                .iter()
+                .filter(|(_, event, _)| event == "click")
+                .count(),
+            1
+        );
+        assert!(
+            prevented_events
+                .iter()
+                .all(|(_, event, _)| event != "change" && event != "update:modelValue")
+        );
+    }
+
+    #[test]
+    fn range_keyboard_and_accessibility_share_quantized_change_action() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let node = {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            let node = doc.create_element("nana-range");
+            let root = doc.mount_root();
+            doc.insert(node, root, None);
+            node
+        };
+        host.bridge.lock().expect("bridge").register(
+            node.0,
+            WidgetKind::Range,
+            WidgetProps {
+                min: 0.0,
+                max: 1.0,
+                step: 0.25,
+                number: 0.5,
+                ..Default::default()
+            },
+        );
+        let snapshot = host.bridge.lock().expect("bridge").snapshot();
+        host.document()
+            .lock()
+            .expect("document")
+            .sync_semantic_styles(&snapshot);
+        let mut engine = RecordingEngine::default();
+
+        assert!(
+            !host
+                .dispatch_keyboard(
+                    &mut engine,
+                    &KeyboardInput::key_down("ArrowRight", "ArrowRight"),
+                    Some(node),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            host.bridge
+                .lock()
+                .expect("bridge")
+                .get(node.0)
+                .unwrap()
+                .props
+                .number,
+            0.75
+        );
+        assert!(
+            host.accessibility_set_value(&mut engine, node, "0.88")
+                .unwrap()
+        );
+        assert_eq!(
+            host.bridge
+                .lock()
+                .expect("bridge")
+                .get(node.0)
+                .unwrap()
+                .props
+                .number,
+            1.0
+        );
+        let events = fired_events(&engine);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(_, event, _)| event == "change")
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(_, event, _)| event == "update:modelValue")
+                .count(),
+            2
+        );
     }
 
     #[test]

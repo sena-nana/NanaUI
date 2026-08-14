@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use accesskit::{
-    Action, ActionData, Node, NodeId, Rect, Role, TextPosition,
+    Action, ActionData, Invalid, Node, NodeId, Rect, Role, TextPosition,
     TextSelection as AccessKitTextSelection, Toggled, Tree, TreeId, TreeUpdate,
 };
 use nana_ui_runtime::{
@@ -291,6 +291,9 @@ impl AccessibilityProjector {
                 Some(ActionData::Value(value)) => {
                     nana_ui_runtime::AccessibilityAction::SetValue(value.into())
                 }
+                Some(ActionData::NumericValue(value)) if value.is_finite() => {
+                    nana_ui_runtime::AccessibilityAction::SetValue(value.to_string())
+                }
                 _ => return None,
             },
             Action::SetTextSelection => {
@@ -487,6 +490,24 @@ fn project_node(
     if node.modal {
         projected.set_modal();
     }
+    if node.busy {
+        projected.set_busy();
+    }
+    if node.invalid {
+        projected.set_invalid(Invalid::True);
+    }
+    if let Some(value) = node.numeric_value {
+        projected.set_numeric_value(value);
+    }
+    if let Some(minimum) = node.numeric_minimum {
+        projected.set_min_numeric_value(minimum);
+    }
+    if let Some(maximum) = node.numeric_maximum {
+        projected.set_max_numeric_value(maximum);
+    }
+    if let Some(step) = node.numeric_step {
+        projected.set_numeric_value_step(step);
+    }
     if node.role == AccessibilityRole::TextInput && !node.editable {
         projected.set_read_only();
     }
@@ -558,7 +579,8 @@ const fn supports_focus(role: AccessibilityRole) -> bool {
 }
 
 const fn supports_set_value(node: &AccessibilityNode) -> bool {
-    matches!(node.role, AccessibilityRole::TextInput) && node.editable
+    (matches!(node.role, AccessibilityRole::TextInput) && node.editable)
+        || matches!(node.role, AccessibilityRole::Slider)
 }
 
 fn projected_text_selection(
@@ -653,6 +675,12 @@ mod tests {
             editable: false,
             selection: None,
             modal: false,
+            busy: false,
+            invalid: false,
+            numeric_minimum: None,
+            numeric_maximum: None,
+            numeric_step: None,
+            numeric_value: None,
             focused: false,
             bounds: LayoutBox::default(),
         }
@@ -926,6 +954,26 @@ mod tests {
             .next()
             .unwrap();
         assert!(!malformed.supports_action(Action::SetValue));
+
+        let mut range = node(7, Some(1), &[]);
+        range.role = AccessibilityRole::Slider;
+        range.busy = true;
+        range.invalid = true;
+        range.numeric_minimum = Some(-1.0);
+        range.numeric_maximum = Some(1.0);
+        range.numeric_step = Some(0.25);
+        range.numeric_value = Some(0.5);
+        let (_, range) = project_node(&range, None, true, 1.0)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(range.supports_action(Action::SetValue));
+        assert!(range.is_busy());
+        assert_eq!(range.invalid(), Some(Invalid::True));
+        assert_eq!(range.min_numeric_value(), Some(-1.0));
+        assert_eq!(range.max_numeric_value(), Some(1.0));
+        assert_eq!(range.numeric_value_step(), Some(0.25));
+        assert_eq!(range.numeric_value(), Some(0.5));
     }
 
     #[cfg(not(target_os = "android"))]
@@ -1203,6 +1251,43 @@ mod tests {
                     target_tree: TreeId::ROOT,
                     target_node: NodeId(7),
                     data: None,
+                })
+                .is_none()
+        );
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn range_set_value_accepts_only_finite_numeric_payloads() {
+        let root = node(1, None, &[8]);
+        let mut range = node(8, Some(1), &[]);
+        range.role = AccessibilityRole::Slider;
+        range.numeric_minimum = Some(0.0);
+        range.numeric_maximum = Some(10.0);
+        range.numeric_step = Some(0.5);
+        range.numeric_value = Some(4.0);
+        let (projector, _) = AccessibilityProjector::new(vec![root, range], true, 1.0);
+
+        let projected = projector
+            .project_action_request(ActionRequest {
+                action: Action::SetValue,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId(8),
+                data: Some(ActionData::NumericValue(4.5)),
+            })
+            .unwrap();
+        assert_eq!(
+            projected.action,
+            nana_ui_runtime::AccessibilityAction::SetValue("4.5".into())
+        );
+
+        assert!(
+            projector
+                .project_action_request(ActionRequest {
+                    action: Action::SetValue,
+                    target_tree: TreeId::ROOT,
+                    target_node: NodeId(8),
+                    data: Some(ActionData::NumericValue(f64::NAN)),
                 })
                 .is_none()
         );

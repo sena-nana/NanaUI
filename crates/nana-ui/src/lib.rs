@@ -63,12 +63,26 @@ pub mod workspace;
 
 /// Canonical backend-neutral Nana framework API.
 ///
-/// New applications should build retained state through this module. The
-/// top-level Iced-shaped component exports remain migration compatibility
-/// adapters and are not the framework's stable extension contract.
+/// New applications should build retained state through this module. Qualified
+/// top-level component exports also route here; remaining Iced-shaped exports
+/// are migration adapters, not the framework's stable extension contract.
 pub mod runtime {
     pub use nana_ui_runtime::*;
     pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
+}
+
+/// Explicit Iced compatibility adapters retained while components migrate to
+/// the backend-neutral Runtime API.
+///
+/// Root-level component exports move to their Runtime implementation only
+/// after the corresponding catalog entry is qualified. Existing consumers can
+/// opt into this namespace while completing their own migration.
+pub mod compatibility {
+    pub use crate::components::actions::IconButton;
+    #[cfg(feature = "controls")]
+    pub use crate::components::controls::{RangeField, Switch};
+    #[cfg(feature = "surfaces")]
+    pub use crate::components::surfaces::{Card, ListItem};
 }
 
 pub use absolute::{Absolute, absolute_content_max};
@@ -80,9 +94,9 @@ pub use command::{
 };
 pub use component_support::{
     ComponentCapability, ComponentFamily, ComponentId, ComponentMigrationState, ComponentSupport,
-    component_catalog, component_ids, component_support,
+    component_catalog, component_ids, component_support, component_uses_runtime,
 };
-pub use components::actions::{Button, ControlSize, IconButton};
+pub use components::actions::{Button, ControlSize};
 #[cfg(feature = "calendar")]
 pub use components::calendar::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum,
@@ -100,8 +114,8 @@ pub use components::command_palette::{
 pub use components::controls::HostedSyntaxHighlighting;
 #[cfg(feature = "controls")]
 pub use components::controls::{
-    Checkbox, HostedTextarea, HostedTextareaState, Input, RangeField, SegmentedControl, Select,
-    SelectionOption, Switch, TabDragGroup, TabDragSurface, Tabs, Textarea,
+    Checkbox, HostedTextarea, HostedTextareaState, Input, SegmentedControl, Select,
+    SelectionOption, TabDragGroup, TabDragSurface, Tabs, Textarea,
 };
 #[cfg(feature = "feedback")]
 pub use components::feedback::{
@@ -142,9 +156,7 @@ pub use components::settings_sections::{
     AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
 };
 #[cfg(feature = "surfaces")]
-pub use components::surfaces::{
-    Card, DockPanel, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
-};
+pub use components::surfaces::{DockPanel, EmptyState, FormField, InteractiveCard, LabeledValue};
 #[cfg(feature = "surfaces")]
 pub use components::tree_view::{
     TreeNavigation, TreeNode, TreeView, TreeViewEvent, tree_navigation_event,
@@ -215,6 +227,7 @@ pub use nana_ui_platform::ImeEvent;
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
+pub use nana_ui_runtime::{Card, IconButton, ListItem, RangeField, Switch};
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
 pub use nana_window::{

@@ -32,13 +32,13 @@ use iced::widget::text::{self as text_widget, Ellipsis, LineHeight};
 use iced::widget::{Space, column, container, row, scrollable, space, stack, text};
 use iced::{Alignment, Background, Border, Color, Element, Event, Length, Padding, Shadow, Size};
 use iced::{Point, Rectangle, Renderer, Theme};
+use nana_ui::compatibility::{Card, IconButton, ListItem, RangeField, Switch};
 use nana_ui::{
-    ActionMenuItem, AnchoredMenuPosition, Button, ButtonKind, ButtonPaintOverride, Card, Checkbox,
+    ActionMenuItem, AnchoredMenuPosition, Button, ButtonKind, ButtonPaintOverride, Checkbox,
     ConfirmDialog, ControlSize, Dialog, Drawer, DrawerSide, EmptyState, HostTextureBinding,
-    HostTextureRegistry, Icon, IconButton, Input, ListItem, Popover, Progress, RangeField,
-    SegmentedControl, Select, SelectionOption, SettingsCard, SettingsRow, SidebarRow,
-    SidebarRowState, SidebarRowTone, Spinner, Switch, Tabs, Textarea, ThemeTokens, Tooltip,
-    TooltipConfig, TooltipPlacement, icon, ui_font,
+    HostTextureRegistry, Icon, Input, Popover, Progress, SegmentedControl, Select, SelectionOption,
+    SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Spinner, Tabs,
+    Textarea, ThemeTokens, Tooltip, TooltipConfig, TooltipPlacement, icon, ui_font,
 };
 use nana_ui::{
     AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
@@ -70,6 +70,7 @@ thread_local! {
     static ACTIVE_NATIVE_COMPONENTS: RefCell<Option<NativeComponentRegistry>> = const { RefCell::new(None) };
     static ACTIVE_PAINT_AFFINE: RefCell<[f32; 6]> = const { RefCell::new([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]) };
     static ACTIVE_SCENE_HOST_TEXTURES: RefCell<Option<nana_ui::HostTextureSceneResolver>> = const { RefCell::new(None) };
+    static ACTIVE_SCENE: RefCell<Option<Arc<UiScene>>> = const { RefCell::new(None) };
     static ACTIVE_LAYOUT_BOXES: RefCell<Option<Arc<LayoutBoxStore>>> = const { RefCell::new(None) };
 }
 
@@ -94,25 +95,36 @@ fn active_layout_box_store() -> Arc<LayoutBoxStore> {
 }
 
 fn with_active_scene<T>(scene: Option<&UiScene>, build: impl FnOnce() -> T) -> T {
-    struct Reset(Option<nana_ui::HostTextureSceneResolver>);
+    struct Reset {
+        resolver: Option<nana_ui::HostTextureSceneResolver>,
+        scene: Option<Arc<UiScene>>,
+    }
     impl Drop for Reset {
         fn drop(&mut self) {
             ACTIVE_SCENE_HOST_TEXTURES.with(|active| {
-                active.replace(self.0.take());
+                active.replace(self.resolver.take());
             });
+            ACTIVE_SCENE.with(|active| active.replace(self.scene.take()));
         }
     }
-    let resolver = scene.map(|scene| {
+    let scene = scene.map(|scene| Arc::new(scene.clone()));
+    let resolver = scene.as_ref().map(|scene| {
         ACTIVE_HOST_TEXTURES.with(|textures| {
             let textures = textures.borrow().clone().unwrap_or_default();
-            nana_ui::HostTextureSceneResolver::new(scene, &textures)
+            nana_ui::HostTextureSceneResolver::new(&scene, &textures)
                 .unwrap_or_else(|error| panic!("Vue scene cannot be presented: {error}"))
         })
     });
     ACTIVE_SCENE_HOST_TEXTURES.with(|active| {
         let previous = active.replace(resolver);
-        let _reset = Reset(previous);
-        build()
+        ACTIVE_SCENE.with(|active_scene| {
+            let previous_scene = active_scene.replace(scene);
+            let _reset = Reset {
+                resolver: previous,
+                scene: previous_scene,
+            };
+            build()
+        })
     })
 }
 
@@ -780,248 +792,285 @@ where
             | WidgetKind::Row
             | WidgetKind::Card
     );
-    let content = match widget.kind {
-        WidgetKind::Box | WidgetKind::Column
-            if let Some(chart) = crate::svg_icon::try_svg_chart_element(snap, widget.id) =>
-        {
-            // Preferred single track: structural <svg> charts via resvg (`svg_icon`).
-            chart
-        }
-        WidgetKind::Box | WidgetKind::Column
-            if widget.children.is_empty() && filled_svg_path_d(&widget.props).is_some() =>
-        {
-            // DEFER: legacy canvas path-d leaf when no SVG chart root is present.
-            // Keep for visual parity; do not extend — sink to L3 CalendarHeatmap.
-            heatmap_level_canvas(widget)
-        }
-        WidgetKind::Box | WidgetKind::Column | WidgetKind::SidebarFrame
-            if let Some(canvas) = try_composite_filled_svg_paths(snap, widget) =>
-        {
-            // DEFER: composite path-d canvas fallback (see `l1_charts`).
-            canvas
-        }
-        WidgetKind::SettingsCard => {
-            settings_card_view(snap, widget, tokens, parent_box, editors, menus, map_event)
-        }
-        WidgetKind::Column | WidgetKind::Box | WidgetKind::SidebarFrame => {
-            layout_column(snap, widget, tokens, parent_box, editors, menus, map_event)
-        }
-        WidgetKind::Row => layout_row(snap, widget, tokens, parent_box, editors, menus, map_event),
-        WidgetKind::Card => {
-            // Borrowed path still builds through layout_column; Card::view now
-            // Fill-matches its inner column so nested Fill bodies do not collapse.
-            let body = layout_column(
-                snap,
-                widget,
-                tokens,
-                parent_box,
-                editors,
-                menus,
-                map_event.clone(),
-            );
-            let mut card = Card::new(body);
-            if !widget.props.label.is_empty() {
-                card = card.title(widget.props.label.as_str());
-            }
-            card = card_with_css_height(card, &widget.props.layout, parent_box);
-            card = card_with_css_padding(card, &widget.props.layout, parent_box);
-            card.view(tokens)
-        }
-        WidgetKind::Text => {
-            // Vue nests `#text` under `h*` / `span`. Leaf Text keeps the fast path;
-            // parents with only empty labels must paint children or titles vanish.
-            // `display:flex` hosts (e.g. `.card h2`) must keep row axis so
-            // `align-items:center` stays vertical — a forced column would center
-            // the title horizontally and inflate top blank in the card heading.
-            if !widget.children.is_empty() && widget.props.display_label().is_empty() {
-                if text_host_column_axis(&widget.props.layout) {
-                    layout_column(snap, widget, tokens, parent_box, editors, menus, map_event)
-                } else {
-                    layout_row(snap, widget, tokens, parent_box, editors, menus, map_event)
-                }
-            } else {
-                label_text(
-                    widget.props.display_label().to_string(),
-                    widget.props.size,
-                    &widget.props.layout,
-                    parent_box.width,
-                )
-            }
-        }
-        WidgetKind::Icon => {
-            let size = crate::svg_icon::resolve_icon_size(&widget.props);
-            let color = widget
-                .props
-                .layout
-                .color
-                .map(rgba_color)
-                .unwrap_or(tokens.colors.text);
-            if let Some(handle) = crate::svg_icon::try_svg_handle(snap, widget.id) {
-                crate::svg_icon::svg_icon_element(handle, size, color)
-            } else if let Some(kind) = resolve_icon_from_props(&widget.props) {
-                icon(kind, size, color)
-            } else {
-                crate::svg_icon::empty_icon_placeholder(size)
-            }
-        }
+    let runtime_component = match widget.kind {
+        WidgetKind::Switch => Some(nana_ui::component_ids::SWITCH),
+        WidgetKind::Card => Some(nana_ui::component_ids::CARD),
+        WidgetKind::ListItem => Some(nana_ui::component_ids::LIST_ITEM),
+        WidgetKind::Range => Some(nana_ui::component_ids::RANGE_FIELD),
         WidgetKind::Button => {
-            let id = widget.id;
-            let map = map_event.clone();
-            button_view(
-                &widget.props,
-                &widget.children,
-                snap,
-                tokens,
-                parent_box.width,
-                map(BridgeEvent::Press { id }),
-            )
+            let (icon, label) =
+                resolve_button_icon_and_label(snap, &widget.props, &widget.children);
+            ((is_square_icon_button(&widget.props) || (icon.is_some() && label.is_empty()))
+                && matches!(icon, Some(ResolvedButtonIcon::Glyph(_))))
+            .then_some(nana_ui::component_ids::ICON_BUTTON)
         }
-        WidgetKind::Chip => {
-            let label = widget.props.display_label();
-            if label.is_empty() {
-                space().width(Length::Shrink).height(Length::Shrink).into()
-            } else {
+        _ => None,
+    };
+    let runtime_view = runtime_component
+        .filter(|id| nana_ui::component_uses_runtime(*id))
+        .and_then(|_| {
+            let scene = ACTIVE_SCENE.with(|active| active.borrow().clone())?;
+            let id = nana_ui_runtime::StableNodeId::new(widget.id)?;
+            let bounds = scene.node_bounds(id)?;
+            nana_ui::IcedSceneView::from_shared_node(
+                scene,
+                id,
+                None,
+                Size::new(bounds.width, bounds.height),
+            )
+            .ok()
+            .map(Element::from)
+        });
+    let content = if let Some(runtime_view) = runtime_view {
+        runtime_view
+    } else {
+        match widget.kind {
+            WidgetKind::Box | WidgetKind::Column
+                if let Some(chart) = crate::svg_icon::try_svg_chart_element(snap, widget.id) =>
+            {
+                // Preferred single track: structural <svg> charts via resvg (`svg_icon`).
+                chart
+            }
+            WidgetKind::Box | WidgetKind::Column
+                if widget.children.is_empty() && filled_svg_path_d(&widget.props).is_some() =>
+            {
+                // DEFER: legacy canvas path-d leaf when no SVG chart root is present.
+                // Keep for visual parity; do not extend — sink to L3 CalendarHeatmap.
+                heatmap_level_canvas(widget)
+            }
+            WidgetKind::Box | WidgetKind::Column | WidgetKind::SidebarFrame
+                if let Some(canvas) = try_composite_filled_svg_paths(snap, widget) =>
+            {
+                // DEFER: composite path-d canvas fallback (see `l1_charts`).
+                canvas
+            }
+            WidgetKind::SettingsCard => {
+                settings_card_view(snap, widget, tokens, parent_box, editors, menus, map_event)
+            }
+            WidgetKind::Column | WidgetKind::Box | WidgetKind::SidebarFrame => {
+                layout_column(snap, widget, tokens, parent_box, editors, menus, map_event)
+            }
+            WidgetKind::Row => {
+                layout_row(snap, widget, tokens, parent_box, editors, menus, map_event)
+            }
+            WidgetKind::Card => {
+                // Borrowed path still builds through layout_column; Card::view now
+                // Fill-matches its inner column so nested Fill bodies do not collapse.
+                let body = layout_column(
+                    snap,
+                    widget,
+                    tokens,
+                    parent_box,
+                    editors,
+                    menus,
+                    map_event.clone(),
+                );
+                let mut card = Card::new(body);
+                if !widget.props.label.is_empty() {
+                    card = card.title(widget.props.label.as_str());
+                }
+                card = card_with_css_height(card, &widget.props.layout, parent_box);
+                card = card_with_css_padding(card, &widget.props.layout, parent_box);
+                card.view(tokens)
+            }
+            WidgetKind::Text => {
+                // Vue nests `#text` under `h*` / `span`. Leaf Text keeps the fast path;
+                // parents with only empty labels must paint children or titles vanish.
+                // `display:flex` hosts (e.g. `.card h2`) must keep row axis so
+                // `align-items:center` stays vertical — a forced column would center
+                // the title horizontally and inflate top blank in the card heading.
+                if !widget.children.is_empty() && widget.props.display_label().is_empty() {
+                    if text_host_column_axis(&widget.props.layout) {
+                        layout_column(snap, widget, tokens, parent_box, editors, menus, map_event)
+                    } else {
+                        layout_row(snap, widget, tokens, parent_box, editors, menus, map_event)
+                    }
+                } else {
+                    label_text(
+                        widget.props.display_label().to_string(),
+                        widget.props.size,
+                        &widget.props.layout,
+                        parent_box.width,
+                    )
+                }
+            }
+            WidgetKind::Icon => {
+                let size = crate::svg_icon::resolve_icon_size(&widget.props);
+                let color = widget
+                    .props
+                    .layout
+                    .color
+                    .map(rgba_color)
+                    .unwrap_or(tokens.colors.text);
+                if let Some(handle) = crate::svg_icon::try_svg_handle(snap, widget.id) {
+                    crate::svg_icon::svg_icon_element(handle, size, color)
+                } else if let Some(kind) = resolve_icon_from_props(&widget.props) {
+                    icon(kind, size, color)
+                } else {
+                    crate::svg_icon::empty_icon_placeholder(size)
+                }
+            }
+            WidgetKind::Button => {
                 let id = widget.id;
                 let map = map_event.clone();
-                let kind = if widget.props.active {
-                    ButtonKind::Selected
+                button_view(
+                    &widget.props,
+                    &widget.children,
+                    snap,
+                    tokens,
+                    parent_box.width,
+                    map(BridgeEvent::Press { id }),
+                )
+            }
+            WidgetKind::Chip => {
+                let label = widget.props.display_label();
+                if label.is_empty() {
+                    space().width(Length::Shrink).height(Length::Shrink).into()
                 } else {
-                    ButtonKind::Subtle
-                };
-                let btn = Button::label(label)
-                    .kind(kind)
-                    .size(ControlSize::Small)
+                    let id = widget.id;
+                    let map = map_event.clone();
+                    let kind = if widget.props.active {
+                        ButtonKind::Selected
+                    } else {
+                        ButtonKind::Subtle
+                    };
+                    let btn = Button::label(label)
+                        .kind(kind)
+                        .size(ControlSize::Small)
+                        .disabled(widget.props.disabled)
+                        .on_press(map(BridgeEvent::Select { id }));
+                    apply_button_layout_chrome(btn, &widget.props, parent_box.width).view(tokens)
+                }
+            }
+            WidgetKind::Switch => {
+                let id = widget.id;
+                let map = map_event.clone();
+                let mut control = Switch::new(widget.props.toggled, widget.props.display_label())
                     .disabled(widget.props.disabled)
-                    .on_press(map(BridgeEvent::Select { id }));
-                apply_button_layout_chrome(btn, &widget.props, parent_box.width).view(tokens)
+                    .on_toggle(move |value| map(BridgeEvent::Toggle { id, value }));
+                if !widget.props.hint.is_empty() {
+                    control = control.hint(widget.props.hint.as_str());
+                }
+                control.view(tokens)
+            }
+            WidgetKind::Checkbox => {
+                let id = widget.id;
+                let map = map_event.clone();
+                Checkbox::new(widget.props.toggled, widget.props.display_label())
+                    .disabled(widget.props.disabled)
+                    .on_toggle(move |value| map(BridgeEvent::Toggle { id, value }))
+                    .view(tokens)
+            }
+            WidgetKind::Input => {
+                let id = widget.id;
+                let map = map_event.clone();
+                let placeholder = if widget.props.placeholder.is_empty() {
+                    widget.props.hint.as_str()
+                } else {
+                    widget.props.placeholder.as_str()
+                };
+                Input::new(placeholder, widget.props.value.as_str())
+                    .id(hosted_text_widget_id(id))
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .on_input(move |value| map(BridgeEvent::Input { id, value }))
+                    .view(tokens)
+            }
+            WidgetKind::Textarea => textarea_view(widget, tokens, editors, menus, map_event),
+            WidgetKind::Range => {
+                let id = widget.id;
+                let map = map_event.clone();
+                let min = widget.props.min;
+                let max = widget.props.max.max(min + f32::EPSILON);
+                let value = widget.props.number.clamp(min, max);
+                let mut range = RangeField::new(min..=max, value, move |v| {
+                    map(BridgeEvent::Change {
+                        id,
+                        value: f64::from(v),
+                    })
+                });
+                if !widget.props.label.is_empty() {
+                    range = range.label(widget.props.label.as_str());
+                }
+                if !widget.props.unit.is_empty() {
+                    range = range.unit(widget.props.unit.as_str());
+                }
+                range.size(widget.props.size).view(tokens)
+            }
+            WidgetKind::Tabs => selection_tabs(widget, tokens, map_event),
+            WidgetKind::Segmented => selection_segmented(widget, tokens, map_event),
+            WidgetKind::Select => selection_select(widget, tokens, map_event),
+            WidgetKind::Dialog => {
+                overlay_dialog(snap, widget, tokens, parent_box, editors, menus, map_event)
+            }
+            WidgetKind::Drawer => {
+                overlay_drawer(snap, widget, tokens, parent_box, editors, menus, map_event)
+            }
+            WidgetKind::Popover => {
+                overlay_popover(snap, widget, tokens, parent_box, editors, menus, map_event)
+            }
+            WidgetKind::ContextMenu => {
+                overlay_context_menu(widget, tokens, parent_box, menus, map_event)
+            }
+            WidgetKind::SidebarRow => {
+                let id = widget.id;
+                let map = map_event.clone();
+                let state = if widget.props.disabled {
+                    SidebarRowState::Disabled
+                } else if widget.props.active {
+                    SidebarRowState::Active
+                } else {
+                    SidebarRowState::Idle
+                };
+                let (leading, label) =
+                    resolve_row_leading_and_label(snap, &widget.props, &widget.children, tokens);
+                let mut row = SidebarRow::new(label)
+                    .state(state)
+                    .tone(SidebarRowTone::Default)
+                    .gap(widget.props.layout.gap_or(6.0))
+                    .on_select(map(BridgeEvent::Select { id }));
+                if let Some(icon_el) = leading {
+                    row = row.leading(icon_el);
+                }
+                row.view(tokens)
+            }
+            WidgetKind::ListItem => {
+                let id = widget.id;
+                let map = map_event.clone();
+                let (leading, label) =
+                    resolve_row_leading_and_label(snap, &widget.props, &widget.children, tokens);
+                let mut item = ListItem::label(label)
+                    .selected(widget.props.active)
+                    .disabled(widget.props.disabled)
+                    .gap(widget.props.layout.gap_or(8.0))
+                    .on_select(map(BridgeEvent::Select { id }));
+                if let Some(icon_el) = leading {
+                    item = item.leading(icon_el);
+                }
+                item.view(tokens)
+            }
+            WidgetKind::SettingsRow => {
+                settings_row_view(snap, widget, tokens, parent_box, editors, menus, map_event)
+            }
+            WidgetKind::EmptyState => {
+                let mut empty = EmptyState::new(widget.props.display_label());
+                if !widget.props.hint.is_empty() {
+                    empty = empty.message(widget.props.hint.as_str());
+                }
+                empty.view(tokens)
+            }
+            WidgetKind::Progress => {
+                let mut progress =
+                    Progress::new(widget.props.progress, widget.props.progress_max.max(1.0));
+                if !widget.props.display_label().is_empty() {
+                    progress = progress.label(widget.props.display_label());
+                }
+                progress.view(tokens)
+            }
+            WidgetKind::Spinner => {
+                Spinner::new(widget.props.display_label(), 0).view(tokens.colors)
             }
         }
-        WidgetKind::Switch => {
-            let id = widget.id;
-            let map = map_event.clone();
-            let mut control = Switch::new(widget.props.toggled, widget.props.display_label())
-                .disabled(widget.props.disabled)
-                .on_toggle(move |value| map(BridgeEvent::Toggle { id, value }));
-            if !widget.props.hint.is_empty() {
-                control = control.hint(widget.props.hint.as_str());
-            }
-            control.view(tokens)
-        }
-        WidgetKind::Checkbox => {
-            let id = widget.id;
-            let map = map_event.clone();
-            Checkbox::new(widget.props.toggled, widget.props.display_label())
-                .disabled(widget.props.disabled)
-                .on_toggle(move |value| map(BridgeEvent::Toggle { id, value }))
-                .view(tokens)
-        }
-        WidgetKind::Input => {
-            let id = widget.id;
-            let map = map_event.clone();
-            let placeholder = if widget.props.placeholder.is_empty() {
-                widget.props.hint.as_str()
-            } else {
-                widget.props.placeholder.as_str()
-            };
-            Input::new(placeholder, widget.props.value.as_str())
-                .id(hosted_text_widget_id(id))
-                .size(widget.props.size)
-                .disabled(widget.props.disabled)
-                .on_input(move |value| map(BridgeEvent::Input { id, value }))
-                .view(tokens)
-        }
-        WidgetKind::Textarea => textarea_view(widget, tokens, editors, menus, map_event),
-        WidgetKind::Range => {
-            let id = widget.id;
-            let map = map_event.clone();
-            let min = widget.props.min;
-            let max = widget.props.max.max(min + f32::EPSILON);
-            let value = widget.props.number.clamp(min, max);
-            let mut range = RangeField::new(min..=max, value, move |v| {
-                map(BridgeEvent::Change {
-                    id,
-                    value: f64::from(v),
-                })
-            });
-            if !widget.props.label.is_empty() {
-                range = range.label(widget.props.label.as_str());
-            }
-            if !widget.props.unit.is_empty() {
-                range = range.unit(widget.props.unit.as_str());
-            }
-            range.size(widget.props.size).view(tokens)
-        }
-        WidgetKind::Tabs => selection_tabs(widget, tokens, map_event),
-        WidgetKind::Segmented => selection_segmented(widget, tokens, map_event),
-        WidgetKind::Select => selection_select(widget, tokens, map_event),
-        WidgetKind::Dialog => {
-            overlay_dialog(snap, widget, tokens, parent_box, editors, menus, map_event)
-        }
-        WidgetKind::Drawer => {
-            overlay_drawer(snap, widget, tokens, parent_box, editors, menus, map_event)
-        }
-        WidgetKind::Popover => {
-            overlay_popover(snap, widget, tokens, parent_box, editors, menus, map_event)
-        }
-        WidgetKind::ContextMenu => {
-            overlay_context_menu(widget, tokens, parent_box, menus, map_event)
-        }
-        WidgetKind::SidebarRow => {
-            let id = widget.id;
-            let map = map_event.clone();
-            let state = if widget.props.disabled {
-                SidebarRowState::Disabled
-            } else if widget.props.active {
-                SidebarRowState::Active
-            } else {
-                SidebarRowState::Idle
-            };
-            let (leading, label) =
-                resolve_row_leading_and_label(snap, &widget.props, &widget.children, tokens);
-            let mut row = SidebarRow::new(label)
-                .state(state)
-                .tone(SidebarRowTone::Default)
-                .gap(widget.props.layout.gap_or(6.0))
-                .on_select(map(BridgeEvent::Select { id }));
-            if let Some(icon_el) = leading {
-                row = row.leading(icon_el);
-            }
-            row.view(tokens)
-        }
-        WidgetKind::ListItem => {
-            let id = widget.id;
-            let map = map_event.clone();
-            let (leading, label) =
-                resolve_row_leading_and_label(snap, &widget.props, &widget.children, tokens);
-            let mut item = ListItem::label(label)
-                .selected(widget.props.active)
-                .disabled(widget.props.disabled)
-                .gap(widget.props.layout.gap_or(8.0))
-                .on_select(map(BridgeEvent::Select { id }));
-            if let Some(icon_el) = leading {
-                item = item.leading(icon_el);
-            }
-            item.view(tokens)
-        }
-        WidgetKind::SettingsRow => {
-            settings_row_view(snap, widget, tokens, parent_box, editors, menus, map_event)
-        }
-        WidgetKind::EmptyState => {
-            let mut empty = EmptyState::new(widget.props.display_label());
-            if !widget.props.hint.is_empty() {
-                empty = empty.message(widget.props.hint.as_str());
-            }
-            empty.view(tokens)
-        }
-        WidgetKind::Progress => {
-            let mut progress =
-                Progress::new(widget.props.progress, widget.props.progress_max.max(1.0));
-            if !widget.props.display_label().is_empty() {
-                progress = progress.label(widget.props.display_label());
-            }
-            progress.view(tokens)
-        }
-        WidgetKind::Spinner => Spinner::new(widget.props.display_label(), 0).view(tokens.colors),
     };
     let sized = if is_layout_chrome {
         // layout_* already applied padding / scroll / size chrome.
