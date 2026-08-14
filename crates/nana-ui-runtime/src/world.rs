@@ -742,7 +742,15 @@ impl UiWorld {
             }
             let text = self.component::<TextContent>(id).clone();
             let style = self.component::<ComputedStyle>(id).clone();
-            let metrics = shaper.shape(id, &text, &style, Default::default());
+            let metrics = shaper.shape(
+                id,
+                &text,
+                &style,
+                crate::TextShapeConstraints {
+                    shaping: self.text_shaping(id),
+                    ..crate::TextShapeConstraints::default()
+                },
+            );
             validate_text_metrics(id, metrics)?;
             shaped.push((id, metrics));
         }
@@ -796,6 +804,7 @@ impl UiWorld {
                 .then(|| (layout.height - padding.top - padding.bottom - border * 2.0).max(0.0)),
                 wrap: !source.layout.white_space_nowrap,
                 ellipsis: source.layout.text_overflow_ellipsis,
+                shaping: self.text_shaping(id),
             };
             let metrics = shaper.shape(id, text, computed, constraints);
             validate_text_metrics(id, metrics)?;
@@ -808,6 +817,18 @@ impl UiWorld {
             *self.component_mut::<TextMetrics>(id) = metrics;
         }
         Ok(changed)
+    }
+
+    fn text_shaping(&self, id: StableNodeId) -> crate::TextShaping {
+        if self
+            .world
+            .get::<TextInputState>(self.entities[&id])
+            .is_some()
+        {
+            crate::TextShaping::Advanced
+        } else {
+            crate::TextShaping::Auto
+        }
     }
 
     pub fn layout_inputs(&self, ids: &[StableNodeId]) -> Result<Vec<LayoutInput>, UiWorldError> {

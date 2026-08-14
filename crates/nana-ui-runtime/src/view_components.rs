@@ -22,20 +22,23 @@ fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
 
 fn text_field_style(multiline: bool) -> NodeStyle {
     let mut layout = (*control_layout(nana_ui_core::UI_METRICS.field_padding_x)).clone();
+    layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
+        nana_ui_core::ControlSize::Medium.line_height(),
+    ));
     if multiline {
         layout.min_height = Some(nana_ui_core::LengthSpec::Px(96.0));
     }
     NodeStyle {
         layout: Arc::new(layout),
-        background: Some(nana_ui_core::SemanticColorRole::Surface),
-        border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
+        background: Some(nana_ui_core::SemanticColorRole::Background),
+        border: Some(nana_ui_core::SemanticColorRole::Border),
         interaction: crate::InteractionStyle {
             hovered: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
                 ..SemanticPaint::default()
             },
             focused: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                border: Some(nana_ui_core::SemanticColorRole::BorderSoft),
                 ..SemanticPaint::default()
             },
             disabled: SemanticPaint {
@@ -157,25 +160,27 @@ pub struct Button {
 
 impl Button {
     pub fn new(label: impl Into<String>) -> Self {
+        let mut layout = (*control_layout(nana_ui_core::UI_METRICS.control_padding_x)).clone();
+        layout.font_weight = Some(500);
         Self {
             label: label.into(),
             disabled: false,
             style: NodeStyle {
-                layout: control_layout(nana_ui_core::UI_METRICS.control_padding_x),
-                foreground: Some(nana_ui_core::SemanticColorRole::AccentText),
-                background: Some(nana_ui_core::SemanticColorRole::Accent),
-                border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                layout: Arc::new(layout),
+                foreground: Some(nana_ui_core::SemanticColorRole::AccentOnSoft),
+                background: Some(nana_ui_core::SemanticColorRole::AccentSoft),
+                border: None,
                 interaction: crate::InteractionStyle {
                     hovered: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                        background: Some(nana_ui_core::SemanticColorRole::AccentSoftHover),
                         ..SemanticPaint::default()
                     },
                     pressed: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Active),
+                        background: Some(nana_ui_core::SemanticColorRole::AccentSoftPressed),
                         ..SemanticPaint::default()
                     },
                     focused: SemanticPaint {
-                        border: Some(nana_ui_core::SemanticColorRole::AccentText),
+                        border: Some(nana_ui_core::SemanticColorRole::Accent),
                         ..SemanticPaint::default()
                     },
                     disabled: SemanticPaint {
@@ -962,20 +967,22 @@ fn overlay_surface_style(max_width: f32) -> NodeStyle {
 fn toggle_style() -> NodeStyle {
     NodeStyle {
         foreground: Some(nana_ui_core::SemanticColorRole::Text),
-        background: Some(nana_ui_core::SemanticColorRole::Surface),
+        background: Some(nana_ui_core::SemanticColorRole::Background),
         border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
         interaction: crate::InteractionStyle {
             selected: SemanticPaint {
                 background: Some(nana_ui_core::SemanticColorRole::Accent),
-                border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
                 ..SemanticPaint::default()
             },
             selected_hovered: SemanticPaint {
-                background: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                background: Some(nana_ui_core::SemanticColorRole::Accent),
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
                 ..SemanticPaint::default()
             },
             selected_pressed: SemanticPaint {
-                background: Some(nana_ui_core::SemanticColorRole::Active),
+                background: Some(nana_ui_core::SemanticColorRole::Accent),
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
                 ..SemanticPaint::default()
             },
             hovered: SemanticPaint {
@@ -983,11 +990,12 @@ fn toggle_style() -> NodeStyle {
                 ..SemanticPaint::default()
             },
             pressed: SemanticPaint {
-                background: Some(nana_ui_core::SemanticColorRole::Active),
+                background: Some(nana_ui_core::SemanticColorRole::Background),
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
                 ..SemanticPaint::default()
             },
             focused: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
                 ..SemanticPaint::default()
             },
             disabled: SemanticPaint {

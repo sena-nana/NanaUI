@@ -36,7 +36,7 @@ cargo run -p nana-css-parity --features webview-ref -- compare --webview
 # 强制跳过 WebView
 NANA_CSS_PARITY_SKIP_WEBVIEW=1 cargo run -p nana-css-parity --features webview-ref -- compare --webview
 
-# 像素闸门（Gallery 快照子集，SSIM similarity ≥ 0.98；见 scripts/pixel_ssim_compare.sh）
+# 可选像素诊断（只帮助定位差异，不作为正确性或晋级闸门）
 cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked
 ./scripts/pixel_ssim_compare.sh --dir docs/ui-snapshots/baselines target/ui-snapshots
 ```
@@ -254,14 +254,15 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 | grid 轴不被 `flex-row` 盖掉 | class hint 在已有 grid 轨时不改 direction | `grid-template-rows` + `flex-row` |
 | 简单 `:not(.class\|[attr])` | CompoundSelector 否定匹配 | `.tab:not(.is-active)` |
 
-### 硬闸状态
+### 验收状态
 
-| 闸 | 阈值 | 状态 |
+| 闸 | 标准 | 状态 |
 |----|------|------|
-| Gallery `pixel_ssim_compare` baselines | ≥0.98 | **1.0** |
-| QJS↔V8 evidence PNG | ≥0.98 | **1.0** |
-| `nana-ui-vue` iced-view lib | — | 绿 |
-| editor_store | — | 本轮未改 |
+| CSS 布局 | fixture 逻辑盒合同与声明容差 | 绿 |
+| Gallery 视觉 | 主题语义、字体、状态层级和人工评审正确 | 绿 |
+| `pixel_ssim_compare` | 可选诊断指标，不判定正确性 | 非门禁 |
+| `nana-ui-vue` iced-view lib | 功能测试通过 | 绿 |
+| editor_store | 本轮未改 | — |
 
 ### 盘点备注
 

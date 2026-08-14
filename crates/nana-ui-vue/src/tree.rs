@@ -2356,10 +2356,33 @@ mod tests {
             .scene()
             .frame_graph(nana_ui_scene::ResourceId(1))
             .unwrap();
-        assert!(graph.passes[0].operations.iter().any(|operation| matches!(
-            operation,
-            nana_ui_scene::RenderOperation::InvokeCustom(id) if id.node.get() == node.0
-        )));
+        let prepare_index = graph
+            .passes
+            .iter()
+            .position(|pass| {
+                pass.operations.iter().any(|operation| matches!(
+                    operation,
+                    nana_ui_scene::RenderOperation::PrepareExternal(id) if id.node.get() == node.0
+                ))
+            })
+            .expect("GPU resource must have an explicit preparation pass");
+        let invoke_index =
+            graph
+                .passes
+                .iter()
+                .position(|pass| {
+                    pass.operations.iter().any(|operation| matches!(
+                    operation,
+                    nana_ui_scene::RenderOperation::InvokeCustom(id) if id.node.get() == node.0
+                ))
+                })
+                .expect("GPU node must have a custom invocation pass");
+        assert!(prepare_index < invoke_index);
+        assert!(
+            graph.passes[invoke_index]
+                .dependencies
+                .contains(&graph.passes[prepare_index].id)
+        );
 
         doc.remove_attribute(node, "data-nana-gpu");
         doc.apply_layout_boxes(&[]);
