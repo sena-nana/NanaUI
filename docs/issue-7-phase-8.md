@@ -5,9 +5,9 @@
 ## Owner 与现状
 
 - Cubism model state、drawable/mask、motion/expression 与 Live2D RenderPlan 属于 `live2d-rs`；
-- NanaLive/业务宿主拥有 Actor 行为与何时产出画面；
+- 业务宿主拥有领域对象行为与何时产出画面；
 - NanaUI 只拥有通用 UI layout、UiScene custom node、GPU resource composition 与窗口/Device/Queue 生命周期；
-- NanaStudio 只应把 ActorComposite 当作可选 Source，不取得 Cubism 内部数据所有权。
+- 消费应用只应把宿主合成结果当作可选输入，不取得 Cubism 内部数据所有权。
 
 只读复核 `live2d-rs` revision `71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033`：`live2d-core` / `live2d-render` 已独立于 WGPU，`RenderPlan` 含 masks、mask draws、main draws、offscreens 与 ordered commands，并通过 backend-neutral `RenderBackend` dispatch；WGPU 只存在于下游 `live2d-wgpu` crate。当前 owner 侧已经具备正确的 core/backend 分层，不需要 NanaUI 复制这些类型或改写其架构。
 

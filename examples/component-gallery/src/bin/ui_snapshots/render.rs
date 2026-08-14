@@ -150,11 +150,11 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             WindowChrome::custom(),
             DockNode::tabs(
                 [
-                    DockId::from("scenes"),
-                    DockId::from("mixer"),
-                    DockId::from("controls"),
+                    DockId::from("navigation"),
+                    DockId::from("console"),
+                    DockId::from("output"),
                 ],
-                "mixer",
+                "console",
             ),
         )?);
         paths.push(dock_window_merged_snapshot(
@@ -166,8 +166,11 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             DockNode::split(
                 nana_ui::DockAxis::Horizontal,
                 0.5,
-                DockNode::tabs([DockId::from("scenes"), DockId::from("mixer")], "scenes"),
-                DockNode::item("controls"),
+                DockNode::tabs(
+                    [DockId::from("navigation"), DockId::from("console")],
+                    "navigation",
+                ),
+                DockNode::item("output"),
             ),
         )?);
         paths.push(dock_drag_window_snapshot(
@@ -940,7 +943,7 @@ fn dock_window_snapshot(
     let mut layout = DockLayout::new(DockNode::item("editor"));
     layout.floating.push(FloatingDock {
         surface,
-        root: DockNode::item("scenes"),
+        root: DockNode::item("navigation"),
         bounds: DockBounds::new(120.0, 120.0, size.width as f32, size.height as f32),
         monitor: None,
     });
@@ -948,7 +951,7 @@ fn dock_window_snapshot(
         "editor",
         [
             DockItemSpec::new("editor", "Editor").closeable(false),
-            DockItemSpec::new("scenes", "场景"),
+            DockItemSpec::new("navigation", "导航"),
         ],
         layout,
     )?;
@@ -959,11 +962,11 @@ fn dock_window_snapshot(
         &controller,
         surface,
         DockContents::new().insert(
-            "scenes",
+            "navigation",
             container(
                 column![
-                    text("Scene A").size(13).color(colors.text),
-                    text("Preview 当前场景").size(11).color(colors.muted),
+                    text("Section A").size(13).color(colors.text),
+                    text("工作区导航").size(11).color(colors.muted),
                 ]
                 .spacing(6),
             )
@@ -1002,9 +1005,9 @@ fn dock_window_merged_snapshot(
         "editor",
         [
             DockItemSpec::new("editor", "Editor").closeable(false),
-            DockItemSpec::new("scenes", "场景"),
-            DockItemSpec::new("mixer", "混音"),
-            DockItemSpec::new("controls", "控制"),
+            DockItemSpec::new("navigation", "导航"),
+            DockItemSpec::new("console", "控制台"),
+            DockItemSpec::new("output", "输出"),
         ],
         layout,
     )?;
@@ -1014,11 +1017,11 @@ fn dock_window_merged_snapshot(
     let colors = theme.colors();
     let contents = DockContents::new()
         .insert(
-            "scenes",
+            "navigation",
             container(
                 column![
-                    text("Scene A").size(13).color(colors.text),
-                    text("场景列表").size(11).color(colors.muted),
+                    text("Section A").size(13).color(colors.text),
+                    text("工作区导航").size(11).color(colors.muted),
                 ]
                 .spacing(6),
             )
@@ -1026,11 +1029,11 @@ fn dock_window_merged_snapshot(
             .height(Length::Fill),
         )
         .insert(
-            "mixer",
+            "console",
             container(
                 column![
-                    text("Program Bus").size(13).color(colors.text),
-                    text("音频与节目输出").size(11).color(colors.muted),
+                    text("Console").size(13).color(colors.text),
+                    text("应用运行输出").size(11).color(colors.muted),
                 ]
                 .spacing(6),
             )
@@ -1038,11 +1041,11 @@ fn dock_window_merged_snapshot(
             .height(Length::Fill),
         )
         .insert(
-            "controls",
+            "output",
             container(
                 column![
-                    text("Cue Controls").size(13).color(colors.text),
-                    text("导播控制").size(11).color(colors.muted),
+                    text("Output").size(13).color(colors.text),
+                    text("应用提供的输出内容").size(11).color(colors.muted),
                 ]
                 .spacing(6),
             )
@@ -1077,12 +1080,12 @@ fn dock_drag_window_snapshot(
         "editor",
         [
             DockItemSpec::new("editor", "Editor").closeable(false),
-            DockItemSpec::new("scenes", "场景"),
+            DockItemSpec::new("navigation", "导航"),
         ],
         DockLayout::new(DockNode::split(
             nana_ui::DockAxis::Horizontal,
             0.5,
-            DockNode::item("scenes"),
+            DockNode::item("navigation"),
             DockNode::item("editor"),
         )),
     )?;
@@ -1092,7 +1095,7 @@ fn dock_drag_window_snapshot(
     });
     controller.update(DockAction::DragStart {
         surface,
-        id: DockId::from("scenes"),
+        id: DockId::from("navigation"),
     });
     controller.update(DockAction::DragMove {
         surface,
@@ -1286,7 +1289,7 @@ fn prepare_dock_preview(state: &mut GalleryState) {
     let surface = DockSurfaceId(0);
     state.update(GalleryMessage::Dock(DockAction::DragStart {
         surface,
-        id: DockId::from("gallery.sources"),
+        id: DockId::from("gallery.assets"),
     }));
     state.update(GalleryMessage::Dock(DockAction::DragMove {
         surface,
