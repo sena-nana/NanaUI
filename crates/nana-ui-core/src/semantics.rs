@@ -100,6 +100,13 @@ pub enum CardKind {
     Selected,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SwitchControlPosition {
+    Start,
+    #[default]
+    End,
+}
+
 /// Placement options shared with LiliaUI tooltips.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TooltipPlacement {

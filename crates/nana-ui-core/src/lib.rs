@@ -50,8 +50,9 @@ pub use overlay::ExclusiveOverlay;
 pub use selection::{SelectionMove, SingleSelection};
 pub use semantics::{
     AnchoredMenuPlacement, ButtonKind, CardKind, ControlSize, DrawerSide, DropdownEvent,
-    DropdownSelection, PopoverPlacement, StatusTone, ToastTone, TooltipConfig, TooltipPlacement,
-    ValidationIntent, WindowChrome, WindowChromeAction, WindowControlMode, XYPadEvent, XYPadValue,
+    DropdownSelection, PopoverPlacement, StatusTone, SwitchControlPosition, ToastTone,
+    TooltipConfig, TooltipPlacement, ValidationIntent, WindowChrome, WindowChromeAction,
+    WindowControlMode, XYPadEvent, XYPadValue,
 };
 pub use settings::{
     AppearanceEvent, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,
