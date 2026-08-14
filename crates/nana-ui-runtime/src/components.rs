@@ -52,6 +52,20 @@ pub struct TooltipVisual {
 
 #[derive(Component, Debug, Clone, PartialEq)]
 pub enum StandardVisual {
+    Button {
+        label: Arc<str>,
+        kind: nana_ui_core::ButtonKind,
+        size: ControlSize,
+        loading: bool,
+        loading_phase: f32,
+        invalid: bool,
+    },
+    TextInput {
+        placeholder: Arc<str>,
+        size: ControlSize,
+        secure: bool,
+        invalid: bool,
+    },
     Checkbox {
         checked: bool,
     },
@@ -112,6 +126,27 @@ pub struct ComponentElevation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentGeometry {
+    Button {
+        label: ComponentTextRegion,
+        spinner: Option<LayoutBox>,
+        background: Option<[f32; 4]>,
+        border: Option<[f32; 4]>,
+        border_width: f32,
+        focus_ring: Option<[f32; 4]>,
+    },
+    TextInput {
+        text: ComponentTextRegion,
+        selection: Option<LayoutBox>,
+        caret: Option<LayoutBox>,
+        preedit: Option<LayoutBox>,
+        background: Option<[f32; 4]>,
+        border: Option<[f32; 4]>,
+        border_width: f32,
+        focus_ring: Option<[f32; 4]>,
+        selection_color: [f32; 4],
+        caret_color: [f32; 4],
+        preedit_color: [f32; 4],
+    },
     Switch {
         label: ComponentTextRegion,
         hint: Option<ComponentTextRegion>,
@@ -260,6 +295,44 @@ pub trait TextShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> TextMetrics;
+
+    /// Return the exact horizontal position of a UTF-8 boundary in one
+    /// unwrapped line. Backends should override this with their paragraph
+    /// engine; the prefix-shaped default keeps lightweight test shapers valid.
+    fn horizontal_offset(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        style: &ComputedStyle,
+    ) -> f32 {
+        if byte_offset > text.value.len() || !text.value.is_char_boundary(byte_offset) {
+            return 0.0;
+        }
+        self.shape(
+            id,
+            &TextContent {
+                value: text.value[..byte_offset].to_owned(),
+            },
+            style,
+            TextShapeConstraints {
+                shaping: TextShaping::Advanced,
+                ..TextShapeConstraints::default()
+            },
+        )
+        .width
+    }
+}
+
+/// Shaped single-line editing presentation. The committed value remains in
+/// [`TextInputState`]; this derived component only carries renderer geometry.
+#[derive(Component, Debug, Clone, PartialEq, Default)]
+pub struct TextInputPresentation {
+    pub display_value: String,
+    pub placeholder: bool,
+    pub selection: Option<(f32, f32)>,
+    pub caret_x: f32,
+    pub preedit: Option<(f32, f32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
