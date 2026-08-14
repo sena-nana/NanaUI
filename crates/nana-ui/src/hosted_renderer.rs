@@ -30,6 +30,15 @@ struct PendingFocus {
     target: String,
 }
 
+#[derive(Debug)]
+struct PendingTextSelection {
+    target: String,
+    anchor_line: usize,
+    anchor_index: usize,
+    focus_line: usize,
+    focus_index: usize,
+}
+
 /// Result of rendering one native UI frame into a host-provided texture.
 pub struct HostedUiFrame<Message> {
     pub messages: Vec<Message>,
@@ -78,6 +87,7 @@ pub struct HostedUiRenderer<Message> {
     ime_state: Option<(Rectangle, input_method::Purpose)>,
     pending_scroll_by: Vec<PendingScrollBy>,
     pending_focus: Option<PendingFocus>,
+    pending_text_selection: Option<PendingTextSelection>,
     ui_dirty: bool,
     dynamic_dirty: bool,
 }
@@ -132,6 +142,7 @@ impl<Message> HostedUiRenderer<Message> {
             ime_state: None,
             pending_scroll_by: Vec::new(),
             pending_focus: None,
+            pending_text_selection: None,
             ui_dirty: true,
             dynamic_dirty: true,
         }
@@ -236,6 +247,24 @@ impl<Message> HostedUiRenderer<Message> {
         self.mark_ui_dirty();
     }
 
+    pub(crate) fn queue_text_selection(
+        &mut self,
+        target: String,
+        anchor_line: usize,
+        anchor_index: usize,
+        focus_line: usize,
+        focus_index: usize,
+    ) {
+        self.pending_text_selection = Some(PendingTextSelection {
+            target,
+            anchor_line,
+            anchor_index,
+            focus_line,
+            focus_index,
+        });
+        self.mark_ui_dirty();
+    }
+
     /// Rebuilds the retained Iced tree and its layout.
     ///
     /// The application only calls this after a real UI state change. The
@@ -266,6 +295,20 @@ impl<Message> HostedUiRenderer<Message> {
             if let Some(pending) = self.pending_focus.take() {
                 let mut operation = iced::advanced::widget::operation::focusable::focus::<()>(
                     pending.target.into(),
+                );
+                interface.operate(&self.renderer, &mut operation);
+            }
+            if let Some(pending) = self.pending_text_selection.take() {
+                let mut operation = iced::advanced::widget::operation::text_input::select_range::<()>(
+                    pending.target.into(),
+                    iced::advanced::text::Position {
+                        line: pending.anchor_line,
+                        index: pending.anchor_index,
+                    },
+                    iced::advanced::text::Position {
+                        line: pending.focus_line,
+                        index: pending.focus_index,
+                    },
                 );
                 interface.operate(&self.renderer, &mut operation);
             }

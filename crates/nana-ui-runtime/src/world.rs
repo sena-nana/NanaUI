@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,13 +6,15 @@ use std::time::Duration;
 use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
+use nana_ui_core::{StyleModelRef, ThemeMode};
 
 use crate::animation::ActiveAnimation;
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::{
-    AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame, AnimationId,
-    AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode, ImeComposition,
-    InteractionState, LayoutBox, LayoutInput, MutationQueue, NodeStyle, PointerCaptureChange,
+    AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
+    AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode,
+    ImeComposition, InteractionState, LayoutBox, LayoutInput, MutationQueue, NodeStyle,
+    OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
     TextContent, TextInputState, TextMetrics, TextShaper, UiMutation,
 };
 
@@ -121,6 +123,10 @@ pub enum UiWorldError {
         document: DocumentId,
         target: StableNodeId,
     },
+    PointerDocument {
+        document: DocumentId,
+        target: StableNodeId,
+    },
     Cycle {
         parent: StableNodeId,
         child: StableNodeId,
@@ -132,9 +138,14 @@ pub enum UiWorldError {
     InvalidStyle(StableNodeId),
     InvalidText(StableNodeId),
     InvalidLayout(StableNodeId),
+    InvalidScrollOffset(StableNodeId),
+    InvalidScrollMetrics(StableNodeId),
     InvalidIme(StableNodeId),
     InvalidCustomRender(StableNodeId),
+    InvalidStandardVisual(StableNodeId),
+    InvalidOverlayHost(StableNodeId),
     NotFocusable(StableNodeId),
+    NotPointerInteractive(StableNodeId),
     NotFocused(StableNodeId),
     PointerCaptureMismatch {
         pointer_id: u64,
@@ -164,6 +175,12 @@ impl fmt::Display for UiWorldError {
                 target.get(),
                 document.get()
             ),
+            Self::PointerDocument { document, target } => write!(
+                formatter,
+                "pointer target {} does not belong to document {}",
+                target.get(),
+                document.get()
+            ),
             Self::Cycle { parent, child } => write!(
                 formatter,
                 "parenting node {} under node {} would create a cycle",
@@ -183,6 +200,12 @@ impl fmt::Display for UiWorldError {
             Self::InvalidLayout(id) => {
                 write!(formatter, "node {} has an invalid layout box", id.get())
             }
+            Self::InvalidScrollOffset(id) => {
+                write!(formatter, "node {} has an invalid scroll offset", id.get())
+            }
+            Self::InvalidScrollMetrics(id) => {
+                write!(formatter, "node {} has invalid scroll metrics", id.get())
+            }
             Self::InvalidIme(id) => write!(formatter, "node {} has an invalid IME range", id.get()),
             Self::InvalidCustomRender(id) => {
                 write!(
@@ -191,7 +214,20 @@ impl fmt::Display for UiWorldError {
                     id.get()
                 )
             }
+            Self::InvalidStandardVisual(id) => {
+                write!(
+                    formatter,
+                    "node {} has invalid standard visual state",
+                    id.get()
+                )
+            }
+            Self::InvalidOverlayHost(id) => {
+                write!(formatter, "node {} has an invalid active overlay", id.get())
+            }
             Self::NotFocusable(id) => write!(formatter, "node {} cannot receive focus", id.get()),
+            Self::NotPointerInteractive(id) => {
+                write!(formatter, "node {} cannot receive pointer input", id.get())
+            }
             Self::NotFocused(id) => write!(formatter, "node {} is not focused", id.get()),
             Self::PointerCaptureMismatch { pointer_id, target } => write!(
                 formatter,
@@ -230,9 +266,14 @@ pub struct UiWorld {
     focused: HashMap<DocumentId, StableNodeId>,
     hit_test_index: HashMap<DocumentId, Vec<HitEntry>>,
     pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
+    pointer_hover: HashMap<(DocumentId, u64), StableNodeId>,
+    pointer_press: HashMap<(DocumentId, u64), StableNodeId>,
     pending_pointer_capture_changes: Vec<PointerCaptureChange>,
     pending_render_removals: Vec<StableNodeId>,
+    pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
+    animation_deadlines: BTreeSet<(Duration, AnimationId)>,
+    style_model: StyleModelRef,
     generation: u64,
 }
 
@@ -252,9 +293,14 @@ impl UiWorld {
             focused: HashMap::new(),
             hit_test_index: HashMap::new(),
             pointer_captures: HashMap::new(),
+            pointer_hover: HashMap::new(),
+            pointer_press: HashMap::new(),
             pending_pointer_capture_changes: Vec::new(),
             pending_render_removals: Vec::new(),
+            pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
+            animation_deadlines: BTreeSet::new(),
+            style_model: StyleModelRef::default(),
             generation: 0,
         }
     }
@@ -277,6 +323,10 @@ impl UiWorld {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn theme_mode(&self) -> ThemeMode {
+        self.style_model.theme_mode
     }
 
     pub fn event_route(&self, target: StableNodeId) -> Option<EventRoute> {
@@ -315,34 +365,126 @@ impl UiWorld {
         std::mem::take(&mut self.pending_pointer_capture_changes)
     }
 
+    pub fn pointer_hover(&self, document: DocumentId, pointer_id: u64) -> Option<StableNodeId> {
+        self.pointer_hover.get(&(document, pointer_id)).copied()
+    }
+
+    pub fn pointer_press(&self, document: DocumentId, pointer_id: u64) -> Option<StableNodeId> {
+        self.pointer_press.get(&(document, pointer_id)).copied()
+    }
+
+    /// Update per-pointer hover authority and invalidate only the old/new
+    /// interaction paint. DOM adapters may derive enter/leave paths from the
+    /// returned previous target and the retained hierarchy.
+    pub fn set_pointer_hover(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: Option<StableNodeId>,
+    ) -> Result<Option<StableNodeId>, UiWorldError> {
+        if let Some(target) = target {
+            self.validate_pointer_target(document, target)?;
+        }
+        let key = (document, pointer_id);
+        let previous = match target {
+            Some(target) => self.pointer_hover.insert(key, target),
+            None => self.pointer_hover.remove(&key),
+        };
+        if previous != target {
+            self.generation = self.generation.wrapping_add(1);
+            if let Some(previous) = previous {
+                self.mark_interaction_style(previous);
+            }
+            if let Some(target) = target {
+                self.mark_interaction_style(target);
+            }
+        }
+        Ok(previous)
+    }
+
+    pub fn press_pointer(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+    ) -> Result<Option<StableNodeId>, UiWorldError> {
+        self.validate_pointer_target(document, target)?;
+        let previous = self.pointer_press.insert((document, pointer_id), target);
+        if previous != Some(target) {
+            self.generation = self.generation.wrapping_add(1);
+            if let Some(previous) = previous {
+                self.mark_interaction_style(previous);
+            }
+            self.mark_interaction_style(target);
+        }
+        Ok(previous)
+    }
+
+    pub fn release_pointer_press(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+    ) -> Option<StableNodeId> {
+        let previous = self.pointer_press.remove(&(document, pointer_id));
+        if let Some(previous) = previous {
+            self.generation = self.generation.wrapping_add(1);
+            self.mark_interaction_style(previous);
+        }
+        previous
+    }
+
+    pub fn clear_pointer_interactions(&mut self, document: DocumentId) {
+        let affected = self
+            .pointer_hover
+            .iter()
+            .chain(&self.pointer_press)
+            .filter_map(|(&(owner, _), &target)| (owner == document).then_some(target))
+            .collect::<HashSet<_>>();
+        self.pointer_hover
+            .retain(|(owner, _), _| *owner != document);
+        self.pointer_press
+            .retain(|(owner, _), _| *owner != document);
+        if !affected.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            for target in affected {
+                self.mark_interaction_style(target);
+            }
+        }
+    }
+
     pub fn next_animation_deadline(&self) -> Option<Duration> {
-        self.animations
-            .values()
-            .map(|animation| animation.next_deadline)
-            .min()
+        self.animation_deadlines
+            .first()
+            .map(|(deadline, _)| *deadline)
     }
 
     /// Sample only active animations that are due at `now`. This method does
     /// not mark render state dirty: consumers apply sampled values through the
     /// normal atomic mutation boundary.
     pub fn advance_animations(&mut self, now: Duration) -> AnimationFrame {
-        let mut due = self
-            .animations
-            .iter()
-            .filter_map(|(&id, animation)| (animation.next_deadline <= now).then_some(id))
+        let due = self
+            .animation_deadlines
+            .range(..=(now, AnimationId::new(u64::MAX).expect("max ID is nonzero")))
+            .copied()
             .collect::<Vec<_>>();
-        due.sort_unstable();
         let mut samples = Vec::with_capacity(due.len());
-        for id in due {
-            let animation = self
-                .animations
-                .get_mut(&id)
-                .expect("due animation must remain active");
-            let sample = animation
-                .sample(now)
-                .expect("due animation must produce a sample");
+        for (deadline, id) in due {
+            self.animation_deadlines.remove(&(deadline, id));
+            let (sample, next_deadline) = {
+                let animation = self
+                    .animations
+                    .get_mut(&id)
+                    .expect("due animation must remain active");
+                let sample = animation
+                    .sample(now)
+                    .expect("due animation must produce a sample");
+                let next_deadline = (!sample.finished).then_some(animation.next_deadline);
+                (sample, next_deadline)
+            };
             if sample.finished {
                 self.animations.remove(&id);
+            } else if let Some(next_deadline) = next_deadline {
+                self.animation_deadlines.insert((next_deadline, id));
             }
             samples.push(sample);
         }
@@ -367,10 +509,12 @@ impl UiWorld {
             input_hit_test: Vec::new(),
             focus_ime: Vec::new(),
             accessibility: Vec::new(),
+            accessibility_removals: std::mem::take(&mut self.pending_accessibility_removals),
             render_extraction: Vec::new(),
             render_removals: std::mem::take(&mut self.pending_render_removals),
         };
         work.render_removals.sort_unstable();
+        work.accessibility_removals.sort_unstable();
         for id in ids {
             let entity = self.entities[&id];
             let bits = self
@@ -378,7 +522,9 @@ impl UiWorld {
                 .get_mut::<DirtyMask>(entity)
                 .expect("entity must have dirty component")
                 .take();
-            let bits = if matches!(self.component::<Kind>(id).0, NodeKind::Text) {
+            let has_text = matches!(self.component::<Kind>(id).0, NodeKind::Text)
+                || !self.component::<TextContent>(id).value.is_empty();
+            let bits = if has_text {
                 bits
             } else {
                 bits & !DirtyMask::TEXT
@@ -406,6 +552,14 @@ impl UiWorld {
         self.focused.get(&document).copied()
     }
 
+    pub fn focused_text_input(
+        &self,
+        document: DocumentId,
+    ) -> Option<(StableNodeId, &TextInputState)> {
+        let id = self.focused(document)?;
+        Some((id, self.text_input(id)?))
+    }
+
     pub fn text(&self, id: StableNodeId) -> Option<&str> {
         let entity = *self.entities.get(&id)?;
         self.world
@@ -416,6 +570,21 @@ impl UiWorld {
     pub fn layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<LayoutBox>(entity).copied()
+    }
+
+    pub fn scroll_offset(&self, id: StableNodeId) -> Option<ScrollOffset> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<ScrollOffset>(entity).copied()
+    }
+
+    pub fn scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<ScrollMetrics>(entity).copied()
+    }
+
+    pub fn clamp_scroll_offset(&self, id: StableNodeId, offset: ScrollOffset) -> ScrollOffset {
+        self.scroll_metrics(id)
+            .map_or(offset, |metrics| metrics.clamp(offset))
     }
 
     pub fn node_style(&self, id: StableNodeId) -> Option<&NodeStyle> {
@@ -443,9 +612,19 @@ impl UiWorld {
         self.world.get::<CustomRenderNode>(entity)
     }
 
+    pub fn standard_visual(&self, id: StableNodeId) -> Option<StandardVisual> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<StandardVisual>(entity).copied()
+    }
+
     pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<AccessibilityState>(entity)
+    }
+
+    pub fn overlay_host(&self, id: StableNodeId) -> Option<OverlayHostState> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<OverlayHostState>(entity).copied()
     }
 
     /// Project the visible accessibility tree from the same retained authority.
@@ -461,6 +640,24 @@ impl UiWorld {
         ids.iter()
             .filter_map(|&id| self.project_accessibility_node(id))
             .collect()
+    }
+
+    /// Project one complete incremental accessibility transaction, including
+    /// tombstones for nodes removed from the retained world.
+    pub fn project_accessibility_delta(&self, work: &SystemWork) -> AccessibilityDelta {
+        let mut removed = work
+            .accessibility_removals
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        removed.extend(work.accessibility.iter().copied().filter(|id| {
+            self.entities.contains_key(id) && self.project_accessibility_node(*id).is_none()
+        }));
+        AccessibilityDelta {
+            generation: work.generation,
+            updated: self.project_accessibility_nodes(&work.accessibility),
+            removed: removed.into_iter().collect(),
+        }
     }
 
     /// Resolve inherited visual state for dirty nodes. Parent state is always
@@ -535,15 +732,19 @@ impl UiWorld {
                 if !self.contains(id) {
                     return Err(UiWorldError::MissingNode(id));
                 }
-                let kind = &self.component::<Kind>(id).0;
                 let hierarchy = self.component::<Hierarchy>(id);
+                let has_text = matches!(self.component::<Kind>(id).0, NodeKind::Text)
+                    || !self.component::<TextContent>(id).value.is_empty();
+                let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
+                if !self.overlay_branch_active(id) {
+                    Arc::make_mut(&mut style).hidden = true;
+                }
                 Ok(LayoutInput {
                     id,
                     parent: hierarchy.parent,
                     children: hierarchy.children.clone(),
-                    style: self.component::<NodeStyle>(id).layout.clone(),
-                    text_metrics: matches!(kind, NodeKind::Text)
-                        .then(|| *self.component::<TextMetrics>(id)),
+                    style,
+                    text_metrics: has_text.then(|| *self.component::<TextMetrics>(id)),
                 })
             })
             .collect()
@@ -583,12 +784,15 @@ impl UiWorld {
             if node_style.clips_overflow() {
                 child_clips.push((layout, transform));
             }
+            let scroll = *self.component::<ScrollOffset>(id);
+            let child_transform =
+                then_affine(transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
             stack.extend(
                 self.component::<Hierarchy>(id)
                     .children
                     .iter()
                     .rev()
-                    .map(|child| (*child, transform, child_clips.clone())),
+                    .map(|child| (*child, child_transform, child_clips.clone())),
             );
 
             let style = self.component::<ComputedStyle>(id);
@@ -682,6 +886,7 @@ impl UiWorld {
                         TextContent::default(),
                         TextMetrics::default(),
                         LayoutBox::default(),
+                        ScrollOffset::default(),
                         InteractionState::default(),
                         AccessibilityState::default(),
                         DirtyMask::all(),
@@ -816,11 +1021,25 @@ impl UiWorld {
                                 captured: false,
                             });
                     }
-                    self.animations
-                        .retain(|_, animation| animation.spec.target != id);
+                    self.pointer_hover.retain(|_, target| *target != id);
+                    self.pointer_press.retain(|_, target| *target != id);
+                    let cancelled = self
+                        .animations
+                        .iter()
+                        .filter_map(|(&animation_id, animation)| {
+                            (animation.spec.target == id)
+                                .then_some((animation_id, animation.next_deadline))
+                        })
+                        .collect::<Vec<_>>();
+                    for (animation_id, deadline) in cancelled {
+                        self.animations.remove(&animation_id);
+                        self.animation_deadlines.remove(&(deadline, animation_id));
+                    }
+                    self.clear_overlay_references(id);
                     let _ = self.world.despawn(entity);
                     self.retired.insert(id);
                     self.pending_render_removals.push(id);
+                    self.pending_accessibility_removals.push(id);
                     report.despawned += 1;
                 }
             }
@@ -866,6 +1085,9 @@ impl UiWorld {
                             | DirtyMask::ACCESSIBILITY
                             | DirtyMask::RENDER,
                     );
+                    if let Some(parent) = self.node(*id).and_then(|node| node.parent) {
+                        self.mark(parent, DirtyMask::ACCESSIBILITY);
+                    }
                 }
                 if transform_changed || stacking_changed {
                     self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
@@ -883,6 +1105,15 @@ impl UiWorld {
                     && let Some(parent) = self.node(*id).and_then(|node| node.parent)
                 {
                     self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetTheme { mode } => {
+                if self.style_model.theme_mode != *mode {
+                    self.style_model = StyleModelRef::new(*mode);
+                    let ids = self.entities.keys().copied().collect::<Vec<_>>();
+                    for id in ids {
+                        self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
+                    }
                 }
             }
             UiMutation::SetText { id, text } => {
@@ -905,8 +1136,33 @@ impl UiWorld {
                     DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
             }
+            UiMutation::SetScrollOffset { id, offset } => {
+                let offset = self.clamp_scroll_offset(*id, *offset);
+                if *self.component::<ScrollOffset>(*id) != offset {
+                    *self.component_mut::<ScrollOffset>(*id) = offset;
+                    self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetScrollMetrics { id, metrics } => {
+                let entity = self.entities[id];
+                if let Some(metrics) = metrics {
+                    self.world.entity_mut(entity).insert(*metrics);
+                } else {
+                    self.world.entity_mut(entity).remove::<ScrollMetrics>();
+                }
+                let current = *self.component::<ScrollOffset>(*id);
+                let clamped = self.clamp_scroll_offset(*id, current);
+                if current != clamped {
+                    *self.component_mut::<ScrollOffset>(*id) = clamped;
+                    self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
+                }
+            }
             UiMutation::SetInteraction { id, interaction } => {
                 *self.component_mut::<InteractionState>(*id) = *interaction;
+                if !interaction.pointer_events {
+                    self.pointer_hover.retain(|_, target| target != id);
+                    self.pointer_press.retain(|_, target| target != id);
+                }
                 self.mark(
                     *id,
                     DirtyMask::INPUT
@@ -924,9 +1180,85 @@ impl UiWorld {
                 }
                 self.mark(*id, DirtyMask::RENDER);
             }
+            UiMutation::SetStandardVisual { id, visual } => {
+                let entity = self.entities[id];
+                if let Some(visual) = visual {
+                    self.world.entity_mut(entity).insert(*visual);
+                } else {
+                    self.world.entity_mut(entity).remove::<StandardVisual>();
+                }
+                self.mark(*id, DirtyMask::RENDER);
+            }
             UiMutation::SetAccessibility { id, accessibility } => {
+                let previous = self.component::<AccessibilityState>(*id);
+                let interaction_style_changed = previous.disabled != accessibility.disabled
+                    || previous.checked != accessibility.checked
+                    || previous.selected != accessibility.selected;
                 *self.component_mut::<AccessibilityState>(*id) = accessibility.clone();
                 self.mark(*id, DirtyMask::ACCESSIBILITY);
+                if interaction_style_changed
+                    && !self.component::<NodeStyle>(*id).interaction.is_empty()
+                {
+                    self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetOverlayHost { host, state } => {
+                let entity = self.entities[host];
+                let previous = self.world.get::<OverlayHostState>(entity).copied();
+                if previous == Some(*state) {
+                    return;
+                }
+                self.world.entity_mut(entity).insert(*state);
+                self.mark(*host, DirtyMask::ACCESSIBILITY);
+                if let Some(inactive) = previous
+                    .and_then(|previous| previous.active)
+                    .filter(|active| Some(*active) != state.active)
+                {
+                    let mut inactive_nodes = HashSet::new();
+                    let mut stack = vec![inactive];
+                    while let Some(id) = stack.pop() {
+                        stack.extend(self.component::<Hierarchy>(id).children.iter().copied());
+                        inactive_nodes.insert(id);
+                    }
+                    let released = self
+                        .pointer_captures
+                        .iter()
+                        .filter_map(|(&(document, pointer_id), &target)| {
+                            inactive_nodes
+                                .contains(&target)
+                                .then_some((document, pointer_id, target))
+                        })
+                        .collect::<Vec<_>>();
+                    for (document, pointer_id, target) in released {
+                        self.pointer_captures.remove(&(document, pointer_id));
+                        self.pending_pointer_capture_changes
+                            .push(PointerCaptureChange {
+                                pointer_id,
+                                target,
+                                captured: false,
+                            });
+                    }
+                    self.pointer_hover
+                        .retain(|_, target| !inactive_nodes.contains(target));
+                    self.pointer_press
+                        .retain(|_, target| !inactive_nodes.contains(target));
+                }
+                let changed_roots = previous
+                    .and_then(|previous| previous.active)
+                    .into_iter()
+                    .chain(state.active)
+                    .collect::<HashSet<_>>();
+                for root in changed_roots {
+                    self.mark_subtree(
+                        root,
+                        DirtyMask::STYLE
+                            | DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                }
             }
             UiMutation::CapturePointer { pointer_id, target } => {
                 let document = self.component::<Identity>(*target).document;
@@ -962,11 +1294,19 @@ impl UiWorld {
                     });
             }
             UiMutation::StartAnimation { animation } => {
-                self.animations
-                    .insert(animation.id, ActiveAnimation::new(*animation));
+                let active = ActiveAnimation::new(*animation);
+                if let Some(previous) = self.animations.insert(animation.id, active) {
+                    self.animation_deadlines
+                        .remove(&(previous.next_deadline, animation.id));
+                }
+                self.animation_deadlines
+                    .insert((animation.start, animation.id));
             }
             UiMutation::StopAnimation { id } => {
-                self.animations.remove(id);
+                if let Some(animation) = self.animations.remove(id) {
+                    self.animation_deadlines
+                        .remove(&(animation.next_deadline, *id));
+                }
             }
             UiMutation::RequestFocus { document, target } => {
                 let old = match target {
@@ -975,12 +1315,28 @@ impl UiWorld {
                 };
                 if let Some(old) = old.filter(|old| Some(*old) != *target) {
                     self.remove_ime(old);
+                    if !self
+                        .component::<NodeStyle>(old)
+                        .interaction
+                        .focused
+                        .is_empty()
+                    {
+                        self.mark(old, DirtyMask::STYLE | DirtyMask::RENDER);
+                    }
                     self.mark(
                         old,
                         DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                     );
                 }
                 if let Some(target) = target {
+                    if !self
+                        .component::<NodeStyle>(*target)
+                        .interaction
+                        .focused
+                        .is_empty()
+                    {
+                        self.mark(*target, DirtyMask::STYLE | DirtyMask::RENDER);
+                    }
                     self.mark(
                         *target,
                         DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
@@ -1000,13 +1356,21 @@ impl UiWorld {
                 let entity = self.entities[id];
                 if let Some(state) = state {
                     self.world.entity_mut(entity).insert(state.clone());
+                    *self.component_mut::<TextContent>(*id) = TextContent {
+                        value: state.value.clone(),
+                    };
                 } else {
                     self.world.entity_mut(entity).remove::<TextInputState>();
+                    *self.component_mut::<TextContent>(*id) = TextContent::default();
                     self.remove_ime(*id);
                 }
                 self.mark(
                     *id,
-                    DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    DirtyMask::TEXT
+                        | DirtyMask::LAYOUT
+                        | DirtyMask::FOCUS_IME
+                        | DirtyMask::RENDER
+                        | DirtyMask::ACCESSIBILITY,
                 );
             }
             UiMutation::SetTextSelection { id, selection } => {
@@ -1014,13 +1378,20 @@ impl UiWorld {
                 self.mark(*id, DirtyMask::FOCUS_IME | DirtyMask::ACCESSIBILITY);
             }
             UiMutation::ReplaceTextSelection { id, text } => {
-                let replaced = self
-                    .component_mut::<TextInputState>(*id)
-                    .replace_selection(text);
+                let (replaced, value) = {
+                    let mut state = self.component_mut::<TextInputState>(*id);
+                    let replaced = state.replace_selection(text);
+                    (replaced, state.value.clone())
+                };
                 debug_assert!(replaced, "validated selection must remain valid");
+                *self.component_mut::<TextContent>(*id) = TextContent { value };
                 self.mark(
                     *id,
-                    DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    DirtyMask::TEXT
+                        | DirtyMask::LAYOUT
+                        | DirtyMask::FOCUS_IME
+                        | DirtyMask::RENDER
+                        | DirtyMask::ACCESSIBILITY,
                 );
             }
         }
@@ -1037,7 +1408,11 @@ impl UiWorld {
         let identity = self.world.get::<Identity>(entity)?;
         let style = self.world.get::<ComputedStyle>(entity)?.clone();
         let kind = self.world.get::<Kind>(entity)?.0.clone();
-        let is_text = matches!(kind, NodeKind::Text);
+        let has_text = matches!(kind, NodeKind::Text)
+            || self
+                .world
+                .get::<TextContent>(entity)
+                .is_some_and(|text| !text.value.is_empty());
         let source_style = self.world.get::<NodeStyle>(entity)?.clone();
         let hierarchy = self.world.get::<Hierarchy>(entity)?;
         Some(ExtractedNode {
@@ -1046,15 +1421,16 @@ impl UiWorld {
             parent: hierarchy.parent,
             children: hierarchy.children.clone(),
             layout: *self.world.get::<LayoutBox>(entity)?,
+            scroll_offset: *self.world.get::<ScrollOffset>(entity)?,
             z_index: source_style.layout.z_index.unwrap_or_default(),
             source_style,
             style,
-            text: if is_text {
+            text: if has_text {
                 self.world.get::<TextContent>(entity).cloned()
             } else {
                 None
             },
-            text_metrics: if is_text {
+            text_metrics: if has_text {
                 self.world.get::<TextMetrics>(entity).copied()
             } else {
                 None
@@ -1062,6 +1438,11 @@ impl UiWorld {
             focused: self.focused.get(&identity.document) == Some(&id),
             ime: self.world.get::<ImeComposition>(entity).cloned(),
             text_input: self.world.get::<TextInputState>(entity).cloned(),
+            standard_visual: self.world.get::<StandardVisual>(entity).copied(),
+            standard_visual_foreground: self
+                .world
+                .get::<StandardVisual>(entity)
+                .map(|_| self.style_model.palette.accent_text.as_rgba_array()),
             custom_render: self.world.get::<CustomRenderNode>(entity).cloned(),
         })
     }
@@ -1085,9 +1466,8 @@ impl UiWorld {
             (role, _) => role,
         };
         let label = state.label.clone().or_else(|| {
-            matches!(kind, NodeKind::Text)
-                .then(|| self.world.get::<TextContent>(entity))
-                .flatten()
+            self.world
+                .get::<TextContent>(entity)
                 .filter(|text| !text.value.is_empty())
                 .map(|text| Arc::<str>::from(text.value.as_str()))
         });
@@ -1119,6 +1499,13 @@ impl UiWorld {
             disabled: state.disabled,
             checked: state.checked,
             selected: state.selected,
+            multiline: state.multiline,
+            editable: state.editable,
+            selection: self
+                .world
+                .get::<TextInputState>(entity)
+                .map(|input| input.selection),
+            modal: state.modal,
             focused: self.focused.get(&identity.document) == Some(&id),
             bounds: *self.world.get::<LayoutBox>(entity)?,
         })
@@ -1133,9 +1520,84 @@ impl UiWorld {
             .expect("entity must have runtime component")
     }
 
+    fn validate_pointer_target(
+        &self,
+        document: DocumentId,
+        target: StableNodeId,
+    ) -> Result<(), UiWorldError> {
+        let entity = *self
+            .entities
+            .get(&target)
+            .ok_or(UiWorldError::MissingNode(target))?;
+        let identity = self
+            .world
+            .get::<Identity>(entity)
+            .expect("runtime entity must have identity");
+        if identity.document != document {
+            return Err(UiWorldError::PointerDocument { document, target });
+        }
+        let interaction = self
+            .world
+            .get::<InteractionState>(entity)
+            .expect("runtime entity must have interaction state");
+        if !interaction.pointer_events {
+            return Err(UiWorldError::NotPointerInteractive(target));
+        }
+        Ok(())
+    }
+
+    fn mark_interaction_style(&mut self, id: StableNodeId) {
+        if !self.component::<NodeStyle>(id).interaction.is_empty() {
+            self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
+        }
+    }
+
     fn remove_ime(&mut self, id: StableNodeId) {
         let entity = self.entities[&id];
         self.world.entity_mut(entity).remove::<ImeComposition>();
+    }
+
+    fn clear_overlay_references(&mut self, removed: StableNodeId) {
+        let updates = self
+            .entities
+            .iter()
+            .filter_map(|(&host, &entity)| {
+                (host != removed)
+                    .then(|| self.world.get::<OverlayHostState>(entity).copied())
+                    .flatten()
+                    .and_then(|mut state| {
+                        let previous = state;
+                        let restore_focus = (state.active == Some(removed))
+                            .then_some(state.restore_focus)
+                            .flatten();
+                        if state.active == Some(removed) {
+                            state.active = None;
+                            state.restore_focus = None;
+                        }
+                        if state.restore_focus == Some(removed) {
+                            state.restore_focus = None;
+                        }
+                        (state != previous).then_some((host, entity, state, restore_focus))
+                    })
+            })
+            .collect::<Vec<_>>();
+        for (host, entity, state, restore_focus) in updates {
+            self.world.entity_mut(entity).insert(state);
+            self.mark(host, DirtyMask::ACCESSIBILITY);
+            let document = self.component::<Identity>(host).document;
+            if let Some(restore_focus) = restore_focus.filter(|id| {
+                self.contains(*id)
+                    && self.component::<Identity>(*id).document == document
+                    && self.component::<InteractionState>(*id).focusable
+                    && self.component::<ComputedStyle>(*id).visible
+            }) {
+                self.focused.insert(document, restore_focus);
+                self.mark(
+                    restore_focus,
+                    DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                );
+            }
+        }
     }
 
     fn resolve_style(
@@ -1158,11 +1620,62 @@ impl UiWorld {
             .map(|parent| self.component::<ComputedStyle>(parent).clone())
             .unwrap_or_default();
         let layout = local.layout.as_ref();
+        let mut paint = crate::SemanticPaint {
+            foreground: local.foreground,
+            background: local.background,
+            border: local.border,
+        };
+        let accessibility = self.component::<AccessibilityState>(id);
+        let selected = accessibility.checked == Some(true) || accessibility.selected == Some(true);
+        if selected {
+            paint = paint.overlay(local.interaction.selected);
+        }
+        if self.pointer_hover.values().any(|target| *target == id) {
+            paint = paint.overlay(
+                if selected && !local.interaction.selected_hovered.is_empty() {
+                    local.interaction.selected_hovered
+                } else {
+                    local.interaction.hovered
+                },
+            );
+        }
+        if self.pointer_press.values().any(|target| *target == id) {
+            paint = paint.overlay(
+                if selected && !local.interaction.selected_pressed.is_empty() {
+                    local.interaction.selected_pressed
+                } else {
+                    local.interaction.pressed
+                },
+            );
+        }
+        let identity = self.component::<Identity>(id);
+        if self.focused.get(&identity.document) == Some(&id) {
+            paint = paint.overlay(local.interaction.focused);
+        }
+        if accessibility.disabled {
+            paint = paint.overlay(local.interaction.disabled);
+        }
+        let foreground = paint.foreground.unwrap_or(inherited.foreground);
+        let palette = self.style_model.palette;
         *self.component_mut::<ComputedStyle>(id) = ComputedStyle {
-            foreground: local.foreground.unwrap_or(inherited.foreground),
-            color: layout.color.or(inherited.color),
+            foreground,
+            color: layout.color.or_else(|| {
+                paint
+                    .foreground
+                    .map(|role| palette.get(role).as_rgba_array())
+                    .or(inherited.color)
+                    .or_else(|| Some(palette.get(foreground).as_rgba_array()))
+            }),
+            background: layout.background.or_else(|| {
+                paint
+                    .background
+                    .map(|role| palette.get(role).as_rgba_array())
+            }),
+            border_color: layout
+                .border_color
+                .or_else(|| paint.border.map(|role| palette.get(role).as_rgba_array())),
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
-            visible: !layout.hidden && inherited.visible,
+            visible: !layout.hidden && inherited.visible && self.overlay_branch_active(id),
             font_size: layout.font_size.unwrap_or(inherited.font_size),
             font_weight: layout.font_weight.or(inherited.font_weight),
             font_family: layout
@@ -1174,6 +1687,14 @@ impl UiWorld {
             letter_spacing: layout.letter_spacing.unwrap_or(inherited.letter_spacing),
         };
         Ok(())
+    }
+
+    fn overlay_branch_active(&self, id: StableNodeId) -> bool {
+        let Some(parent) = self.component::<Hierarchy>(id).parent else {
+            return true;
+        };
+        self.overlay_host(parent)
+            .is_none_or(|state| state.active == Some(id))
     }
 
     pub fn document_order(&self, document: DocumentId) -> Vec<StableNodeId> {
@@ -1337,6 +1858,8 @@ struct ValidationPlan<'a> {
     pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
     animations: HashMap<AnimationId, AnimationSpec>,
     text_inputs: HashMap<StableNodeId, Option<TextInputState>>,
+    overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
+    accessibility: HashMap<StableNodeId, AccessibilityState>,
 }
 
 impl<'a> ValidationPlan<'a> {
@@ -1356,6 +1879,8 @@ impl<'a> ValidationPlan<'a> {
                 .map(|(&id, animation)| (id, animation.spec))
                 .collect(),
             text_inputs: HashMap::new(),
+            overlay_hosts: HashMap::new(),
+            accessibility: HashMap::new(),
         }
     }
 
@@ -1389,11 +1914,22 @@ impl<'a> ValidationPlan<'a> {
                                 !channel.is_finite() || !(0.0..=1.0).contains(&channel)
                             })
                         })
+                        || layout.background.is_some_and(|color| {
+                            color.into_iter().any(|channel| {
+                                !channel.is_finite() || !(0.0..=1.0).contains(&channel)
+                            })
+                        })
+                        || layout.border_color.is_some_and(|color| {
+                            color.into_iter().any(|channel| {
+                                !channel.is_finite() || !(0.0..=1.0).contains(&channel)
+                            })
+                        })
                     {
                         return Err(UiWorldError::InvalidStyle(*id));
                     }
                     self.styles.insert(*id, style.clone());
                 }
+                UiMutation::SetTheme { .. } => {}
                 UiMutation::SetText { id, .. } => {
                     self.node(*id)?;
                 }
@@ -1409,6 +1945,31 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidLayout(*id));
                     }
                 }
+                UiMutation::SetScrollOffset { id, offset } => {
+                    self.node(*id)?;
+                    if !offset.x.is_finite()
+                        || !offset.y.is_finite()
+                        || offset.x < 0.0
+                        || offset.y < 0.0
+                    {
+                        return Err(UiWorldError::InvalidScrollOffset(*id));
+                    }
+                }
+                UiMutation::SetScrollMetrics { id, metrics } => {
+                    self.node(*id)?;
+                    if metrics.is_some_and(|metrics| {
+                        [
+                            metrics.viewport_width,
+                            metrics.viewport_height,
+                            metrics.content_width,
+                            metrics.content_height,
+                        ]
+                        .into_iter()
+                        .any(|extent| !extent.is_finite() || extent < 0.0)
+                    }) {
+                        return Err(UiWorldError::InvalidScrollMetrics(*id));
+                    }
+                }
                 UiMutation::SetInteraction { id, interaction } => {
                     self.node(*id)?;
                     self.interactions.insert(*id, *interaction);
@@ -1421,8 +1982,34 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidCustomRender(*id));
                     }
                 }
-                UiMutation::SetAccessibility { id, .. } => {
+                UiMutation::SetStandardVisual { id, visual } => {
                     self.node(*id)?;
+                    if matches!(visual, Some(StandardVisual::Slider { ratio }) if !ratio.is_finite() || !(0.0..=1.0).contains(ratio))
+                    {
+                        return Err(UiWorldError::InvalidStandardVisual(*id));
+                    }
+                }
+                UiMutation::SetAccessibility { id, accessibility } => {
+                    self.node(*id)?;
+                    self.accessibility.insert(*id, accessibility.clone());
+                }
+                UiMutation::SetOverlayHost { host, state } => {
+                    let host_document = self.node(*host)?.document;
+                    if let Some(active) = state.active {
+                        let active_node = self.node(active)?;
+                        if active_node.parent != Some(*host) {
+                            return Err(UiWorldError::InvalidOverlayHost(*host));
+                        }
+                    }
+                    if let Some(restore_focus) = state.restore_focus
+                        && self.node(restore_focus)?.document != host_document
+                    {
+                        return Err(UiWorldError::FocusDocument {
+                            document: host_document,
+                            target: restore_focus,
+                        });
+                    }
+                    self.overlay_hosts.insert(*host, *state);
                 }
                 UiMutation::CapturePointer { pointer_id, target } => {
                     let document = self.node(*target)?.document;
@@ -1468,20 +2055,11 @@ impl<'a> ValidationPlan<'a> {
                                     .map(|_| *self.source.component::<InteractionState>(*target))
                                     .unwrap_or_default()
                             });
-                        let visible = self
-                            .styles
-                            .get(target)
-                            .map(|style| !style.layout.hidden)
-                            .unwrap_or_else(|| {
-                                self.source
-                                    .entities
-                                    .get(target)
-                                    .map(|_| {
-                                        self.source.component::<ComputedStyle>(*target).visible
-                                    })
-                                    .unwrap_or(true)
-                            });
-                        if !interaction.focusable || !visible {
+                        let visible = self.focus_target_visible(*target)?;
+                        if !interaction.focusable
+                            || !visible
+                            || !self.active_modal_allows_focus(*document, *target)?
+                        {
                             return Err(UiWorldError::NotFocusable(*target));
                         }
                     }
@@ -1496,6 +2074,9 @@ impl<'a> ValidationPlan<'a> {
                         .unwrap_or_else(|| self.source.focused(document));
                     if focused != Some(*id) {
                         return Err(UiWorldError::NotFocused(*id));
+                    }
+                    if composition.is_some() {
+                        self.text_input(*id)?;
                     }
                     if let Some(ImeComposition {
                         text,
@@ -1536,6 +2117,7 @@ impl<'a> ValidationPlan<'a> {
                 }
             }
         }
+        self.validate_overlay_hosts()?;
         Ok(())
     }
 
@@ -1612,6 +2194,74 @@ impl<'a> ValidationPlan<'a> {
             self.animations
                 .retain(|_, animation| animation.target != id);
             self.text_inputs.remove(&id);
+            self.clear_overlay_references(id);
+        }
+        Ok(())
+    }
+
+    fn clear_overlay_references(&mut self, removed: StableNodeId) {
+        let hosts = self
+            .source
+            .entities
+            .keys()
+            .copied()
+            .chain(self.overlay_hosts.keys().copied())
+            .collect::<HashSet<_>>();
+        for host in hosts {
+            if host == removed || !self.exists(host) {
+                continue;
+            }
+            let Some(mut state) = self
+                .overlay_hosts
+                .get(&host)
+                .copied()
+                .or_else(|| self.source.overlay_host(host))
+            else {
+                continue;
+            };
+            if state.active == Some(removed) {
+                state.active = None;
+                state.restore_focus = None;
+            }
+            if state.restore_focus == Some(removed) {
+                state.restore_focus = None;
+            }
+            self.overlay_hosts.insert(host, state);
+        }
+    }
+
+    fn validate_overlay_hosts(&mut self) -> Result<(), UiWorldError> {
+        let hosts = self
+            .source
+            .entities
+            .keys()
+            .copied()
+            .chain(self.overlay_hosts.keys().copied())
+            .collect::<HashSet<_>>();
+        for host in hosts {
+            if !self.exists(host) {
+                continue;
+            }
+            let Some(state) = self
+                .overlay_hosts
+                .get(&host)
+                .copied()
+                .or_else(|| self.source.overlay_host(host))
+            else {
+                continue;
+            };
+            let host_document = self.node(host)?.document;
+            if let Some(active) = state.active
+                && (!self.exists(active) || self.node(active)?.parent != Some(host))
+            {
+                return Err(UiWorldError::InvalidOverlayHost(host));
+            }
+            if let Some(restore_focus) = state.restore_focus
+                && (!self.exists(restore_focus)
+                    || self.node(restore_focus)?.document != host_document)
+            {
+                return Err(UiWorldError::InvalidOverlayHost(host));
+            }
         }
         Ok(())
     }
@@ -1649,6 +2299,78 @@ impl<'a> ValidationPlan<'a> {
             .text_input(id)
             .cloned()
             .ok_or(UiWorldError::MissingTextInput(id))
+    }
+
+    fn overlay_branch_active(&mut self, id: StableNodeId) -> Result<bool, UiWorldError> {
+        let Some(parent) = self.node(id)?.parent else {
+            return Ok(true);
+        };
+        let state = self
+            .overlay_hosts
+            .get(&parent)
+            .copied()
+            .or_else(|| self.source.overlay_host(parent));
+        Ok(state.is_none_or(|state| state.active == Some(id)))
+    }
+
+    fn focus_target_visible(&mut self, mut id: StableNodeId) -> Result<bool, UiWorldError> {
+        loop {
+            let hidden = self
+                .styles
+                .get(&id)
+                .map(|style| style.layout.hidden)
+                .unwrap_or_else(|| {
+                    self.source
+                        .node_style(id)
+                        .is_some_and(|style| style.layout.hidden)
+                });
+            if hidden || !self.overlay_branch_active(id)? {
+                return Ok(false);
+            }
+            let Some(parent) = self.node(id)?.parent else {
+                return Ok(true);
+            };
+            id = parent;
+        }
+    }
+
+    fn active_modal_allows_focus(
+        &mut self,
+        document: DocumentId,
+        target: StableNodeId,
+    ) -> Result<bool, UiWorldError> {
+        let hosts = self
+            .source
+            .entities
+            .keys()
+            .copied()
+            .chain(self.overlay_hosts.keys().copied())
+            .collect::<HashSet<_>>();
+        for host in hosts {
+            let Some(state) = self
+                .overlay_hosts
+                .get(&host)
+                .copied()
+                .or_else(|| self.source.overlay_host(host))
+            else {
+                continue;
+            };
+            let Some(active) = state.active else {
+                continue;
+            };
+            if self.node(host)?.document != document {
+                continue;
+            }
+            let modal = self
+                .accessibility
+                .get(&active)
+                .or_else(|| self.source.accessibility(active))
+                .is_some_and(|state| state.modal);
+            if modal && !self.has_ancestor(target, active)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn node(&mut self, id: StableNodeId) -> Result<&PlannedNode, UiWorldError> {
@@ -1787,6 +2509,7 @@ mod tests {
         );
         assert_eq!(world.generation(), generation);
         assert_eq!(world.text_input(node(1)).unwrap().value, "娜好ab");
+        assert_eq!(world.text(node(1)), Some("娜好ab"));
 
         let accessibility = world.project_accessibility(document(1));
         assert_eq!(accessibility[0].value.as_deref(), Some("娜好ab"));
@@ -1938,6 +2661,19 @@ mod tests {
         assert!(world.is_retired(node(2)));
         let work = world.take_system_work();
         assert_eq!(work.render_removals, vec![node(2), node(3)]);
+        assert_eq!(work.accessibility_removals, vec![node(2), node(3)]);
+        let accessibility = world.project_accessibility_delta(&work);
+        assert_eq!(accessibility.generation, work.generation);
+        assert_eq!(accessibility.removed, vec![node(2), node(3)]);
+        assert_eq!(
+            accessibility
+                .updated
+                .iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>(),
+            vec![node(1)]
+        );
+        assert!(accessibility.updated[0].children.is_empty());
 
         let mut queue = MutationQueue::new();
         queue.create(node(2), document(1), NodeKind::Text);
@@ -2042,6 +2778,10 @@ mod tests {
                     ..LayoutStyle::default()
                 }),
                 foreground: Some(SemanticColorRole::Accent),
+                background: None,
+                border: None,
+                interaction: crate::InteractionStyle::default(),
+                ..NodeStyle::default()
             },
         );
         world.commit(paint).unwrap();
@@ -2061,6 +2801,10 @@ mod tests {
                     ..LayoutStyle::default()
                 }),
                 foreground: None,
+                background: None,
+                border: None,
+                interaction: crate::InteractionStyle::default(),
+                ..NodeStyle::default()
             },
         );
         world.commit(layout).unwrap();
@@ -2116,6 +2860,10 @@ mod tests {
                     ..LayoutStyle::default()
                 }),
                 foreground: None,
+                background: None,
+                border: None,
+                interaction: crate::InteractionStyle::default(),
+                ..NodeStyle::default()
             },
         );
         queue.set_interaction(
@@ -2222,6 +2970,10 @@ mod tests {
                     ..LayoutStyle::default()
                 }),
                 foreground: Some(SemanticColorRole::Accent),
+                background: None,
+                border: None,
+                interaction: crate::InteractionStyle::default(),
+                ..NodeStyle::default()
             },
         );
         queue.set_style(
@@ -2233,6 +2985,10 @@ mod tests {
                     ..LayoutStyle::default()
                 }),
                 foreground: None,
+                background: None,
+                border: None,
+                interaction: crate::InteractionStyle::default(),
+                ..NodeStyle::default()
             },
         );
         queue.set_text(
@@ -2290,6 +3046,7 @@ mod tests {
             },
         );
         queue.request_focus(document(1), Some(node(2)));
+        queue.set_text_input(node(2), Some(TextInputState::new("")));
         queue.set_ime(
             node(2),
             Some(ImeComposition {
@@ -2430,6 +3187,9 @@ mod tests {
                 disabled: false,
                 checked: None,
                 selected: None,
+                multiline: false,
+                editable: false,
+                modal: false,
             },
         );
         queue.write_layout(
@@ -2469,6 +3229,69 @@ mod tests {
         assert_eq!(work.accessibility, vec![node(1)]);
         assert!(work.style.is_empty());
         assert!(work.layout.is_empty());
+    }
+
+    #[test]
+    fn accessibility_delta_removes_and_restores_hidden_subtrees_atomically() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.create(node(3), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(world.project_accessibility(document(1)).len(), 3);
+
+        let mut hide = MutationQueue::new();
+        hide.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    hidden: true,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(hide).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        let hidden = world.project_accessibility_delta(&work);
+        assert_eq!(hidden.removed, vec![node(2), node(3)]);
+        assert_eq!(
+            hidden
+                .updated
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![node(1)]
+        );
+        assert!(hidden.updated[0].children.is_empty());
+
+        let mut show = MutationQueue::new();
+        show.set_style(node(2), NodeStyle::default());
+        world.commit(show).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        let visible = world.project_accessibility_delta(&work);
+        assert!(visible.removed.is_empty());
+        assert_eq!(
+            visible
+                .updated
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![node(1), node(2), node(3)]
+        );
+        assert_eq!(visible.updated[0].children, vec![node(2)]);
+        assert_eq!(visible.updated[1].children, vec![node(3)]);
     }
 
     #[test]
@@ -2547,5 +3370,193 @@ mod tests {
             }]
         );
         assert!(world.event_route(node(3)).is_none());
+    }
+
+    #[test]
+    fn pointer_hover_and_press_are_runtime_owned_and_targeted() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), NodeKind::Element { tag: "a".into() });
+        queue.create(node(3), document(1), NodeKind::Element { tag: "b".into() });
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(1), node(3), None);
+        for id in [node(2), node(3)] {
+            queue.set_style(
+                id,
+                NodeStyle {
+                    interaction: crate::InteractionStyle {
+                        hovered: crate::SemanticPaint {
+                            background: Some(SemanticColorRole::Hover),
+                            ..crate::SemanticPaint::default()
+                        },
+                        pressed: crate::SemanticPaint {
+                            background: Some(SemanticColorRole::Active),
+                            ..crate::SemanticPaint::default()
+                        },
+                        ..crate::InteractionStyle::default()
+                    },
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(2))),
+            Ok(None)
+        );
+        assert_eq!(world.pointer_hover(document(1), 7), Some(node(2)));
+        let work = world.take_system_work();
+        assert_eq!(work.style, vec![node(2)]);
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            world.extract_nodes(&[node(2)])[0].style.background,
+            Some(nana_ui_core::SemanticPalette::dark().hover.as_rgba_array())
+        );
+        let generation = world.generation();
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(2))),
+            Ok(Some(node(2)))
+        );
+        assert_eq!(world.generation(), generation);
+        assert!(world.take_system_work().is_empty());
+
+        assert_eq!(world.press_pointer(document(1), 7, node(2)), Ok(None));
+        assert_eq!(world.pointer_press(document(1), 7), Some(node(2)));
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            world.extract_nodes(&[node(2)])[0].style.background,
+            Some(nana_ui_core::SemanticPalette::dark().active.as_rgba_array())
+        );
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(3))),
+            Ok(Some(node(2)))
+        );
+        let work = world.take_system_work();
+        assert_eq!(work.style, vec![node(2), node(3)]);
+        assert_eq!(world.release_pointer_press(document(1), 7), Some(node(2)));
+
+        let mut disable = MutationQueue::new();
+        disable.set_interaction(
+            node(3),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+        );
+        world.commit(disable).unwrap();
+        assert_eq!(world.pointer_hover(document(1), 7), None);
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(3))),
+            Err(UiWorldError::NotPointerInteractive(node(3)))
+        );
+    }
+
+    #[test]
+    fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "scroll".into(),
+            },
+        );
+        queue.create(
+            node(3),
+            document(1),
+            NodeKind::Element { tag: "item".into() },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.write_layout(
+            node(2),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+            },
+        );
+        queue.write_layout(
+            node(3),
+            LayoutBox {
+                x: 0.0,
+                y: 80.0,
+                width: 100.0,
+                height: 20.0,
+            },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    overflow_y: OverflowSpec::Scroll,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut scroll = MutationQueue::new();
+        scroll.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: 60.0 });
+        world.commit(scroll).unwrap();
+        assert_eq!(world.layout_box(node(3)).unwrap().y, 80.0);
+        assert_eq!(world.scroll_offset(node(2)).unwrap().y, 60.0);
+        let work = world.take_system_work();
+        assert_eq!(work.input_hit_test, vec![node(2), node(3)]);
+        assert_eq!(work.render_extraction, vec![node(2), node(3)]);
+        assert!(work.layout.is_empty());
+        world.rebuild_hit_test(document(1));
+        assert_eq!(world.hit_test(document(1), 10.0, 25.0), Some(node(3)));
+        assert_ne!(world.hit_test(document(1), 10.0, 85.0), Some(node(3)));
+
+        let mut metrics = MutationQueue::new();
+        metrics.set_scroll_metrics(
+            node(2),
+            Some(ScrollMetrics {
+                viewport_width: 100.0,
+                viewport_height: 50.0,
+                content_width: 100.0,
+                content_height: 100.0,
+            }),
+        );
+        world.commit(metrics).unwrap();
+        assert_eq!(world.scroll_offset(node(2)).unwrap().y, 50.0);
+        let work = world.take_system_work();
+        assert_eq!(work.input_hit_test, vec![node(2), node(3)]);
+        assert!(work.layout.is_empty());
+
+        let generation = world.generation();
+        let mut invalid = MutationQueue::new();
+        invalid.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: -1.0 });
+        assert_eq!(
+            world.commit(invalid),
+            Err(UiWorldError::InvalidScrollOffset(node(2)))
+        );
+        assert_eq!(world.generation(), generation);
+
+        let mut invalid_metrics = MutationQueue::new();
+        invalid_metrics.set_scroll_metrics(
+            node(2),
+            Some(ScrollMetrics {
+                viewport_width: f32::NAN,
+                viewport_height: 50.0,
+                content_width: 100.0,
+                content_height: 100.0,
+            }),
+        );
+        assert_eq!(
+            world.commit(invalid_metrics),
+            Err(UiWorldError::InvalidScrollMetrics(node(2)))
+        );
+        assert_eq!(world.generation(), generation);
     }
 }

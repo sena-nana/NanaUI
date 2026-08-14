@@ -822,6 +822,13 @@ pub enum BridgeEvent {
         id: WidgetId,
         value: f64,
     },
+    /// Host scroll viewport changed. This updates retained runtime state only;
+    /// it is not a Vue DOM event.
+    Scroll {
+        id: WidgetId,
+        offset: nana_ui_runtime::ScrollOffset,
+        metrics: nana_ui_runtime::ScrollMetrics,
+    },
     /// Event emitted by a Rust/Iced component registered into the Vue tree.
     Native {
         id: WidgetId,
@@ -857,6 +864,7 @@ impl BridgeEvent {
             | Self::SelectValue { id, .. }
             | Self::Input { id, .. }
             | Self::Change { id, .. }
+            | Self::Scroll { id, .. }
             | Self::Native { id, .. } => *id,
             #[cfg(feature = "iced-view")]
             Self::Editor { id, .. } | Self::MenuSearch { id, .. } | Self::MenuPath { id, .. } => {
@@ -874,6 +882,7 @@ impl BridgeEvent {
             Self::SelectValue { .. } => "select",
             Self::Input { .. } => "input",
             Self::Change { .. } => "change",
+            Self::Scroll { .. } => "scroll",
             Self::Native { name, .. } => name,
             #[cfg(feature = "iced-view")]
             Self::Editor { .. } => "input",

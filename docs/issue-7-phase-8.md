@@ -22,11 +22,15 @@ NanaUI core 不新增 `Live2DNode` Rust 类型、Cubism drawable component、mod
 
 当前 host texture 路径共享 Device/Queue，不做 CPU readback、Base64、图片编码或额外子窗口；它是 Composite-only 的正确默认边界。只有业务明确需要 segmented layer insertion、协议协商成功且真实 workload 证明 offscreen texture pass 是瓶颈时，才值得实现同-pass custom backend。
 
+本阶段随后用 acceptance-only binary 对当前正式路径做了 macOS 实机验证。`component-gallery` 仅在 `live2d-acceptance` feature 下固定依赖 `live2d-rs` revision `71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033`；该依赖不会进入 NanaUI library feature 或公共类型。验收在同一个 Apple M4 / Metal Device/Queue 上执行真实 `live2d-wgpu::Renderer` 的 update/prepare/encode/submit，把含 4 个 clipping source 与 32 个 clipped drawable 的合成负载写入 512×512 host texture，再由 `GpuTextureView` 与 NanaUI 前后景控件合成。整个正常路径没有 CPU readback；CPU 读回只发生在验收末尾生成截图时。
+
+80 个 measured frame 以 UI-only / UI+Live2D 交替且反转顺序采样。UI+Live2D composed total P50/P95/P99 为 1.032/3.656/4.227 ms，CPU P95 为 0.188 ms；UI-only total P50/P95/P99 为 0.545/2.475/3.371 ms。最终截图含 408 个 distinct RGBA color，并人工确认 Live2D 输出位于 NanaUI 标题栏和控制栏之间。机器可读结果见 [`performance/2026-08-14-issue7-live2d-composition.json`](performance/2026-08-14-issue7-live2d-composition.json)。该负载执行的是真实 Live2D renderer、mask 与 host-texture composition，但模型数据是合成的，不被提升为授权产品模型验收。
+
 ## Native backend gate
 
 Workstream H 的前置条件是 Workstream G 通过。Phase 7 已确认：
 
-- 没有 NanaUI + Live2D 同 workload 的 WGPU/native A/B；
+- 没有 NanaUI + Live2D 的 WGPU/native-RHI A/B；现有 interleaved A/B 只比较 UI-only 与当前 WGPU composition 成本；
 - 没有第二平台 native backend；
 - 没有 surface/present/device-loss 完整证据；
 - 没有 WGPU 无法提供的必需能力；
@@ -36,8 +40,8 @@ Workstream H 的前置条件是 Workstream G 通过。Phase 7 已确认：
 
 ## 阶段复核
 
-本阶段只做 read-only owner/dependency/plan 审查与结论文档，没有修改 sibling `live2d-rs`，没有加入低价值 mock、backend selector 或技术 UI，也没有把通用渐变/host texture 验证冒充真实 Live2D 集成。
+本阶段没有修改 sibling `live2d-rs`，没有加入 backend selector 或技术 UI。新增 harness 运行 pinned owner revision 的真实 WGPU renderer，而不是渐变纹理 mock；它留在 Gallery acceptance feature 中，不扩大 NanaUI 产品 API 或默认依赖面。
 
-剩余真实集成缺口仍如实存在：尚无 Live2D RenderPlan 作为 UiScene custom operation 在同一复杂 frame graph 中执行的硬件证据。它不阻塞本阶段的 native backend NO-GO，却会继续作为产品集成验收项，不能在 Phase 9 被误报为完成。
+硬件证据表明正式 host-texture 路径当前已满足帧预算，因此同-pass `CustomRenderNode` 不是缺口，也不应为了“看起来更原生”提前实现。仍未覆盖的是授权产品模型；如果后续产品要以具体模型规模设性能门禁，应把模型作为外部验收输入复跑同一 harness，而不是把 Cubism loader 或资产放进 NanaUI。
 
 Phase 8 以正确所有权和 **NO-GO** 决策完成，可以进入 Phase 9，审核 Iced 退出指标、最终 DoD 和仍需留存的兼容债务。

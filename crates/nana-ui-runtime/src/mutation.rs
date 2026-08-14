@@ -1,8 +1,9 @@
 use crate::{
     AccessibilityState, AnimationId, AnimationSpec, CustomRenderNode, DocumentId, ImeComposition,
-    InteractionState, LayoutBox, NodeKind, NodeStyle, StableNodeId, TextContent, TextInputState,
-    TextSelection,
+    InteractionState, LayoutBox, NodeKind, NodeStyle, OverlayHostState, ScrollMetrics,
+    ScrollOffset, StableNodeId, StandardVisual, TextContent, TextInputState, TextSelection,
 };
+use nana_ui_core::ThemeMode;
 
 /// One retained-tree mutation. Mutations are validated as a batch before the
 /// authoritative world changes.
@@ -31,6 +32,9 @@ pub enum UiMutation {
         id: StableNodeId,
         style: NodeStyle,
     },
+    SetTheme {
+        mode: ThemeMode,
+    },
     SetText {
         id: StableNodeId,
         text: TextContent,
@@ -38,6 +42,14 @@ pub enum UiMutation {
     WriteLayout {
         id: StableNodeId,
         layout: LayoutBox,
+    },
+    SetScrollOffset {
+        id: StableNodeId,
+        offset: ScrollOffset,
+    },
+    SetScrollMetrics {
+        id: StableNodeId,
+        metrics: Option<ScrollMetrics>,
     },
     SetInteraction {
         id: StableNodeId,
@@ -47,9 +59,17 @@ pub enum UiMutation {
         id: StableNodeId,
         content: Option<CustomRenderNode>,
     },
+    SetStandardVisual {
+        id: StableNodeId,
+        visual: Option<StandardVisual>,
+    },
     SetAccessibility {
         id: StableNodeId,
         accessibility: AccessibilityState,
+    },
+    SetOverlayHost {
+        host: StableNodeId,
+        state: OverlayHostState,
     },
     CapturePointer {
         pointer_id: u64,
@@ -128,12 +148,26 @@ impl MutationQueue {
         self.mutations.push(UiMutation::SetStyle { id, style });
     }
 
+    pub fn set_theme(&mut self, mode: ThemeMode) {
+        self.mutations.push(UiMutation::SetTheme { mode });
+    }
+
     pub fn set_text(&mut self, id: StableNodeId, text: TextContent) {
         self.mutations.push(UiMutation::SetText { id, text });
     }
 
     pub fn write_layout(&mut self, id: StableNodeId, layout: LayoutBox) {
         self.mutations.push(UiMutation::WriteLayout { id, layout });
+    }
+
+    pub fn set_scroll_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
+        self.mutations
+            .push(UiMutation::SetScrollOffset { id, offset });
+    }
+
+    pub fn set_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) {
+        self.mutations
+            .push(UiMutation::SetScrollMetrics { id, metrics });
     }
 
     pub fn set_interaction(&mut self, id: StableNodeId, interaction: InteractionState) {
@@ -146,9 +180,19 @@ impl MutationQueue {
             .push(UiMutation::SetCustomRender { id, content });
     }
 
+    pub fn set_standard_visual(&mut self, id: StableNodeId, visual: Option<StandardVisual>) {
+        self.mutations
+            .push(UiMutation::SetStandardVisual { id, visual });
+    }
+
     pub fn set_accessibility(&mut self, id: StableNodeId, accessibility: AccessibilityState) {
         self.mutations
             .push(UiMutation::SetAccessibility { id, accessibility });
+    }
+
+    pub fn set_overlay_host(&mut self, host: StableNodeId, state: OverlayHostState) {
+        self.mutations
+            .push(UiMutation::SetOverlayHost { host, state });
     }
 
     pub fn capture_pointer(&mut self, pointer_id: u64, target: StableNodeId) {

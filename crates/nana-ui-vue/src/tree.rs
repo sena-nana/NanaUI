@@ -14,13 +14,13 @@
 //! then iced layout writeback after paint. Neither phase introduces another
 //! retained tree or layout algorithm.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_runtime::{
-    AccessibilityRole, AccessibilityState, CustomRenderNode, ImeComposition, InteractionState,
-    LayoutBox as RuntimeLayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent,
-    TextInputState, UiWorld,
+    AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
+    CustomRenderNode, ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox,
+    MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, TextInputState, UiWorld,
 };
 use nana_ui_scene::UiScene;
 
@@ -308,7 +308,10 @@ fn transform_layout_box(source: LayoutBox, [a, b, c, d, e, f]: [f32; 6]) -> Layo
     }
 }
 
-/// Process-wide store shared by iced-view probes and `layoutBox` host ops.
+/// Legacy store for standalone semantic-view helpers.
+///
+/// `VueHost` owns an isolated store and passes it to its probes and host ops;
+/// hosted/multi-window code must not use this process-wide fallback.
 pub fn shared_layout_box_store() -> Arc<LayoutBoxStore> {
     static STORE: OnceLock<Arc<LayoutBoxStore>> = OnceLock::new();
     Arc::clone(STORE.get_or_init(|| Arc::new(LayoutBoxStore::new())))
@@ -397,7 +400,13 @@ pub struct NanaTreeDocument {
     logical_height: f32,
     scale_factor: f32,
     synced_semantic_revision: Option<u64>,
+    pending_accessibility_updated: BTreeMap<StableNodeId, nana_ui_runtime::AccessibilityNode>,
+    pending_accessibility_removed: BTreeSet<StableNodeId>,
+    pending_accessibility_generation: u64,
+    accessibility_full_required: bool,
 }
+
+const MAX_PENDING_ACCESSIBILITY_CHANGES: usize = 4_096;
 
 impl std::fmt::Debug for NanaTreeDocument {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -490,6 +499,10 @@ impl NanaTreeDocument {
             logical_height,
             scale_factor: scale,
             synced_semantic_revision: None,
+            pending_accessibility_updated: BTreeMap::new(),
+            pending_accessibility_removed: BTreeSet::new(),
+            pending_accessibility_generation: 0,
+            accessibility_full_required: false,
         };
         doc.reset_layout_roots();
         doc
@@ -501,6 +514,63 @@ impl NanaTreeDocument {
 
     pub fn runtime_generation(&self) -> u64 {
         self.runtime.generation()
+    }
+
+    pub fn scroll_offset(&self, node: NodeHandle) -> nana_ui_runtime::ScrollOffset {
+        StableNodeId::try_from(node)
+            .ok()
+            .and_then(|id| self.runtime.scroll_offset(id))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_scroll_offset(
+        &mut self,
+        node: NodeHandle,
+        offset: nana_ui_runtime::ScrollOffset,
+    ) -> bool {
+        let Ok(id) = StableNodeId::try_from(node) else {
+            return false;
+        };
+        let offset = self.runtime.clamp_scroll_offset(id, offset);
+        if self.runtime.scroll_offset(id) == Some(offset) {
+            return false;
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_offset(id, offset);
+        self.runtime.commit(mutations).is_ok()
+    }
+
+    pub(crate) fn sync_scroll_viewport(
+        &mut self,
+        node: NodeHandle,
+        offset: nana_ui_runtime::ScrollOffset,
+        metrics: nana_ui_runtime::ScrollMetrics,
+    ) -> Option<(nana_ui_runtime::ScrollOffset, nana_ui_runtime::ScrollOffset)> {
+        let id = StableNodeId::try_from(node).ok()?;
+        let previous = self.runtime.scroll_offset(id)?;
+        if self.runtime.scroll_metrics(id) == Some(metrics)
+            && self.runtime.clamp_scroll_offset(id, offset) == previous
+        {
+            return None;
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_metrics(id, Some(metrics));
+        mutations.set_scroll_offset(id, offset);
+        self.runtime.commit(mutations).ok()?;
+        Some((previous, self.runtime.scroll_offset(id)?))
+    }
+
+    pub(crate) fn scroll_offsets(&self) -> Vec<(u64, nana_ui_runtime::ScrollOffset)> {
+        let document =
+            nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero");
+        self.runtime
+            .document_order(document)
+            .into_iter()
+            .filter_map(|id| {
+                let offset = self.runtime.scroll_offset(id)?;
+                (offset.x != 0.0 || offset.y != 0.0).then_some((id.get(), offset))
+            })
+            .collect()
     }
 
     pub(crate) fn text_input_state(&self, node: NodeHandle) -> Option<TextInputState> {
@@ -550,11 +620,42 @@ impl NanaTreeDocument {
         )
     }
 
+    pub(crate) fn take_accessibility_update(&mut self) -> Option<AccessibilityUpdate> {
+        if self.accessibility_full_required {
+            self.accessibility_full_required = false;
+            self.pending_accessibility_updated.clear();
+            self.pending_accessibility_removed.clear();
+            return Some(AccessibilityUpdate::Full {
+                generation: Some(self.pending_accessibility_generation),
+                nodes: self.accessibility_snapshot(),
+            });
+        }
+        if self.pending_accessibility_updated.is_empty()
+            && self.pending_accessibility_removed.is_empty()
+        {
+            return None;
+        }
+        let updated = std::mem::take(&mut self.pending_accessibility_updated)
+            .into_values()
+            .collect();
+        let removed = std::mem::take(&mut self.pending_accessibility_removed)
+            .into_iter()
+            .collect();
+        Some(AccessibilityUpdate::Delta(AccessibilityDelta {
+            generation: self.pending_accessibility_generation,
+            updated,
+            removed,
+        }))
+    }
+
     pub fn sync_semantic_styles(&mut self, snapshot: &crate::SemanticSnapshot) {
         if self.synced_semantic_revision == Some(snapshot.revision) {
             return;
         }
         let mut mutations = MutationQueue::new();
+        if self.runtime.theme_mode() != snapshot.theme {
+            mutations.set_theme(snapshot.theme);
+        }
         for widget in &snapshot.widgets {
             let Some(id) = StableNodeId::new(widget.id).filter(|id| self.runtime.contains(*id))
             else {
@@ -566,6 +667,10 @@ impl NanaTreeDocument {
                     .props
                     .muted
                     .then_some(nana_ui_core::SemanticColorRole::Muted),
+                background: None,
+                border: None,
+                interaction: nana_ui_runtime::InteractionStyle::default(),
+                ..NodeStyle::default()
             };
             if self.runtime.node_style(id) != Some(&style) {
                 mutations.set_style(id, style);
@@ -609,6 +714,15 @@ impl NanaTreeDocument {
                         | crate::WidgetKind::SidebarRow
                 )
                 .then_some(widget.props.active),
+                multiline: matches!(widget.kind, crate::WidgetKind::Textarea),
+                editable: matches!(
+                    widget.kind,
+                    crate::WidgetKind::Input | crate::WidgetKind::Textarea
+                ) && !widget.props.attrs.contains_key("readonly"),
+                modal: matches!(
+                    widget.kind,
+                    crate::WidgetKind::Dialog | crate::WidgetKind::Drawer
+                ),
             };
             if self.runtime.accessibility(id) != Some(&accessibility) {
                 mutations.set_accessibility(id, accessibility);
@@ -1479,6 +1593,61 @@ impl NanaTreeDocument {
             .event_route(StableNodeId::try_from(target).ok()?)
     }
 
+    pub fn pointer_hover(&self, pointer_id: u64) -> Option<NodeHandle> {
+        self.runtime
+            .pointer_hover(
+                nana_ui_runtime::DocumentId::try_from(self.id)
+                    .expect("Vue document IDs are nonzero"),
+                pointer_id,
+            )
+            .map(NodeHandle::from)
+    }
+
+    pub fn set_pointer_hover(&mut self, pointer_id: u64, target: Option<NodeHandle>) -> bool {
+        let target = match target.map(StableNodeId::try_from).transpose() {
+            Ok(target) => target,
+            Err(_) => return false,
+        };
+        self.runtime
+            .set_pointer_hover(
+                nana_ui_runtime::DocumentId::try_from(self.id)
+                    .expect("Vue document IDs are nonzero"),
+                pointer_id,
+                target,
+            )
+            .is_ok()
+    }
+
+    pub fn press_pointer(&mut self, pointer_id: u64, target: NodeHandle) -> bool {
+        let Ok(target) = StableNodeId::try_from(target) else {
+            return false;
+        };
+        self.runtime
+            .press_pointer(
+                nana_ui_runtime::DocumentId::try_from(self.id)
+                    .expect("Vue document IDs are nonzero"),
+                pointer_id,
+                target,
+            )
+            .is_ok()
+    }
+
+    pub fn release_pointer_press(&mut self, pointer_id: u64) -> Option<NodeHandle> {
+        self.runtime
+            .release_pointer_press(
+                nana_ui_runtime::DocumentId::try_from(self.id)
+                    .expect("Vue document IDs are nonzero"),
+                pointer_id,
+            )
+            .map(NodeHandle::from)
+    }
+
+    pub fn clear_pointer_interactions(&mut self) {
+        self.runtime.clear_pointer_interactions(
+            nana_ui_runtime::DocumentId::try_from(self.id).expect("Vue document IDs are nonzero"),
+        );
+    }
+
     pub fn capture_pointer(&mut self, pointer_id: u64, target: NodeHandle) -> bool {
         let Ok(target) = StableNodeId::try_from(target) else {
             return false;
@@ -1644,6 +1813,7 @@ impl NanaTreeDocument {
             .shape_text(&work.text, &mut crate::IcedTextShaper)
             .expect("Iced shaping produces finite metrics");
         self.runtime.reconcile_focus(&work.focus_ime);
+        self.record_accessibility_delta(self.runtime.project_accessibility_delta(&work));
         if !work.input_hit_test.is_empty() {
             self.runtime.rebuild_hit_test(
                 nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
@@ -1651,6 +1821,31 @@ impl NanaTreeDocument {
         }
         let extracted = self.runtime.extract_nodes(&work.render_extraction);
         self.scene.apply_delta(extracted, work.render_removals);
+    }
+
+    fn record_accessibility_delta(&mut self, delta: AccessibilityDelta) {
+        if delta.updated.is_empty() && delta.removed.is_empty() {
+            return;
+        }
+        self.pending_accessibility_generation = delta.generation;
+        if self.accessibility_full_required {
+            return;
+        }
+        for node in delta.updated {
+            self.pending_accessibility_removed.remove(&node.id);
+            self.pending_accessibility_updated.insert(node.id, node);
+        }
+        for id in delta.removed {
+            self.pending_accessibility_updated.remove(&id);
+            self.pending_accessibility_removed.insert(id);
+        }
+        if self.pending_accessibility_updated.len() + self.pending_accessibility_removed.len()
+            > MAX_PENDING_ACCESSIBILITY_CHANGES
+        {
+            self.pending_accessibility_updated.clear();
+            self.pending_accessibility_removed.clear();
+            self.accessibility_full_required = true;
+        }
     }
 }
 
@@ -1670,6 +1865,9 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         "tablist" => return AccessibilityRole::TabList,
         "tab" => return AccessibilityRole::Tab,
         "dialog" | "alertdialog" => return AccessibilityRole::Dialog,
+        "menu" => return AccessibilityRole::Menu,
+        "menuitem" => return AccessibilityRole::MenuItem,
+        "tooltip" => return AccessibilityRole::Tooltip,
         "img" => return AccessibilityRole::Image,
         _ => {}
     }
@@ -1685,6 +1883,7 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::ListItem | crate::WidgetKind::SidebarRow => AccessibilityRole::ListItem,
         crate::WidgetKind::Tabs | crate::WidgetKind::Segmented => AccessibilityRole::TabList,
         crate::WidgetKind::Dialog => AccessibilityRole::Dialog,
+        crate::WidgetKind::ContextMenu => AccessibilityRole::Menu,
         crate::WidgetKind::Icon => AccessibilityRole::Image,
         _ => AccessibilityRole::Generic,
     }
@@ -2034,6 +2233,99 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_updates_are_incremental_and_drain_once() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let node = doc.create_element("input");
+        doc.insert(node, doc.mount_root(), None);
+        doc.apply_layout_boxes(&[(
+            node,
+            LayoutBox {
+                handle: node,
+                x: 10.0,
+                y: 20.0,
+                width: 80.0,
+                height: 30.0,
+            },
+        )]);
+
+        let Some(AccessibilityUpdate::Delta(initial)) = doc.take_accessibility_update() else {
+            panic!("initial retained work must produce a delta");
+        };
+        assert!(initial.updated.iter().any(|entry| entry.id.get() == node.0));
+        assert!(doc.take_accessibility_update().is_none());
+
+        doc.apply_layout_boxes(&[(
+            node,
+            LayoutBox {
+                handle: node,
+                x: 12.0,
+                y: 20.0,
+                width: 80.0,
+                height: 30.0,
+            },
+        )]);
+        let Some(AccessibilityUpdate::Delta(layout)) = doc.take_accessibility_update() else {
+            panic!("changed bounds must produce a delta");
+        };
+        assert_eq!(
+            layout
+                .updated
+                .iter()
+                .filter(|entry| entry.id.get() == node.0)
+                .count(),
+            1
+        );
+
+        let id = StableNodeId::try_from(node).unwrap();
+        let mut hide = MutationQueue::new();
+        hide.set_style(
+            id,
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    hidden: true,
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        doc.runtime.commit(hide).unwrap();
+        doc.flush_runtime_systems();
+        let Some(AccessibilityUpdate::Delta(hidden)) = doc.take_accessibility_update() else {
+            panic!("hidden nodes must produce a retained tombstone");
+        };
+        assert!(hidden.removed.contains(&id));
+        assert!(
+            hidden
+                .updated
+                .iter()
+                .any(|entry| entry.id.get() == doc.mount_root().0)
+        );
+
+        let mut show = MutationQueue::new();
+        show.set_style(id, NodeStyle::default());
+        doc.runtime.commit(show).unwrap();
+        doc.flush_runtime_systems();
+        let Some(AccessibilityUpdate::Delta(visible)) = doc.take_accessibility_update() else {
+            panic!("restored nodes must rebuild the retained subtree");
+        };
+        assert!(visible.removed.is_empty());
+        assert!(visible.updated.iter().any(|entry| entry.id == id));
+        assert!(
+            visible
+                .updated
+                .iter()
+                .any(|entry| entry.id.get() == doc.mount_root().0)
+        );
+
+        doc.remove(node);
+        doc.apply_layout_boxes(&[]);
+        let Some(AccessibilityUpdate::Delta(removed)) = doc.take_accessibility_update() else {
+            panic!("removed retained nodes must produce a delta");
+        };
+        assert!(removed.removed.iter().any(|id| id.get() == node.0));
+    }
+
+    #[test]
     fn gpu_slot_flows_through_runtime_extraction_and_scene_graph() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let node = doc.create_element("div");
@@ -2144,6 +2436,12 @@ mod tests {
             Some(0.5)
         );
         assert!(doc.runtime.interaction(id).unwrap().focusable);
+        assert_eq!(doc.runtime.theme_mode(), nana_ui_core::ThemeMode::Light);
+
+        snapshot.revision += 1;
+        snapshot.theme = nana_ui_core::ThemeMode::Dark;
+        doc.sync_semantic_styles(&snapshot);
+        assert_eq!(doc.runtime.theme_mode(), nana_ui_core::ThemeMode::Dark);
     }
 
     #[test]

@@ -46,6 +46,7 @@ pub struct SystemWork {
     pub input_hit_test: Vec<StableNodeId>,
     pub focus_ime: Vec<StableNodeId>,
     pub accessibility: Vec<StableNodeId>,
+    pub accessibility_removals: Vec<StableNodeId>,
     pub render_extraction: Vec<StableNodeId>,
     pub render_removals: Vec<StableNodeId>,
 }
@@ -58,6 +59,7 @@ impl SystemWork {
             && self.input_hit_test.is_empty()
             && self.focus_ime.is_empty()
             && self.accessibility.is_empty()
+            && self.accessibility_removals.is_empty()
             && self.render_extraction.is_empty()
             && self.render_removals.is_empty()
     }

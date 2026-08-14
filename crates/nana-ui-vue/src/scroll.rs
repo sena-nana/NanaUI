@@ -6,30 +6,25 @@
 //!    ([`LayoutStyle::scrolls_y`] / overflow-x).
 //! 3. Use iced/measure [`LayoutBox`] geometry to compute the delta that brings
 //!    the target into the ancestor scrollport (`block` / `inline` align).
-//! 4. Persist offsets in [`ScrollOffsetStore`], translate descendant layout
+//! 4. Commit offsets to `UiWorld`, translate only compatibility layout-probe
 //!    boxes so `getBoundingClientRect` / `layoutBox` match the scrolled frame,
 //!    and enqueue iced `scrollable` ops for hosts that drain
 //!    [`drain_pending_scroll_tasks`].
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_core::LayoutStyle;
 
 use crate::bridge::{MessageBridge, WidgetId};
-use crate::tree::{LayoutBox, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from};
+use crate::tree::{LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from};
 
 /// Absolute scroll offset for one scroll container (CSS px).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct ScrollOffset {
-    pub x: f32,
-    pub y: f32,
-}
+pub use nana_ui_runtime::ScrollOffset;
 
-/// Process-wide scroll offsets keyed by node / widget id.
+/// Compatibility command queue. Despite the historical name, authoritative
+/// offsets live in `NanaTreeDocument`'s `UiWorld`; this stores no UI state.
 #[derive(Debug, Default)]
 pub struct ScrollOffsetStore {
-    offsets: Mutex<HashMap<u64, ScrollOffset>>,
     pending: Mutex<Vec<PendingScroll>>,
 }
 
@@ -45,28 +40,7 @@ impl ScrollOffsetStore {
         Self::default()
     }
 
-    pub fn get(&self, id: WidgetId) -> ScrollOffset {
-        self.offsets
-            .lock()
-            .ok()
-            .and_then(|g| g.get(&id).copied())
-            .unwrap_or_default()
-    }
-
-    pub fn set(&self, id: WidgetId, offset: ScrollOffset) {
-        if let Ok(mut guard) = self.offsets.lock() {
-            if offset.x == 0.0 && offset.y == 0.0 {
-                guard.remove(&id);
-            } else {
-                guard.insert(id, offset);
-            }
-        }
-    }
-
     pub fn clear(&self) {
-        if let Ok(mut guard) = self.offsets.lock() {
-            guard.clear();
-        }
         if let Ok(mut guard) = self.pending.lock() {
             guard.clear();
         }
@@ -91,7 +65,7 @@ impl ScrollOffsetStore {
     }
 }
 
-/// Shared store used by host ops and iced-view scrollable ids.
+/// Shared compatibility command queue used by hosted Iced scrollable IDs.
 pub fn shared_scroll_offset_store() -> Arc<ScrollOffsetStore> {
     static STORE: OnceLock<Arc<ScrollOffsetStore>> = OnceLock::new();
     Arc::clone(STORE.get_or_init(|| Arc::new(ScrollOffsetStore::new())))
@@ -222,7 +196,7 @@ fn scroll_ancestor_to_target(
 ) -> Option<ScrollOffset> {
     let a = get_layout_box_from(layout_store, doc, ancestor)?;
     let t = get_layout_box_from(layout_store, doc, target)?;
-    let current = scroll_store.get(ancestor.0);
+    let current = doc.scroll_offset(ancestor);
 
     let dy = if scrolls_y {
         axis_delta(opts.block, t.y, t.height, a.y, a.height)
@@ -243,13 +217,15 @@ fn scroll_ancestor_to_target(
         x: (current.x + dx).max(0.0),
         y: (current.y + dy).max(0.0),
     };
+    if !doc.set_scroll_offset(ancestor, next) {
+        return None;
+    }
+    let next = doc.scroll_offset(ancestor);
     let applied_dx = next.x - current.x;
     let applied_dy = next.y - current.y;
     if applied_dx.abs() < 0.5 && applied_dy.abs() < 0.5 {
         return None;
     }
-
-    scroll_store.set(ancestor.0, next);
     scroll_store.enqueue_pending(ancestor.0, next);
     translate_descendants(doc, layout_store, ancestor, -applied_dx, -applied_dy);
     Some(next)
@@ -291,43 +267,30 @@ fn translate_descendants(
         return;
     }
     let mut stack = doc.children_of(ancestor);
-    let mut updated: Vec<(NodeHandle, LayoutBox)> = Vec::new();
     while let Some(child) = stack.pop() {
         if let Some(mut box_) = get_layout_box_from(layout_store, doc, child) {
-            box_ = layout_store.translate(child, dx, dy).unwrap_or_else(|| {
+            if layout_store.translate(child, dx, dy).is_none() {
                 box_.x += dx;
                 box_.y += dy;
-                box_
-            });
-            updated.push((child, box_));
+                layout_store.record(child, box_.x, box_.y, box_.width, box_.height);
+            }
         }
         stack.extend(doc.children_of(child));
     }
-    if !updated.is_empty() {
-        doc.apply_layout_boxes(&updated);
-    }
 }
 
-/// Re-apply stored scroll offsets onto layout boxes after iced paint writeback.
+/// Re-apply Runtime-owned scroll offsets onto compatibility layout boxes after
+/// iced paint writeback.
 ///
 /// HostedProgram does not drain iced `scrollable` Tasks, so paint boxes are
-/// unscrolled; this restores JS-visible geometry from [`ScrollOffsetStore`].
+/// unscrolled; this restores JS-visible geometry without rewriting Runtime
+/// layout.
 pub fn reapply_scroll_translations(
     doc: &mut NanaTreeDocument,
     bridge: &MessageBridge,
     layout_store: &LayoutBoxStore,
-    scroll_store: &ScrollOffsetStore,
 ) {
-    let offsets: Vec<(WidgetId, ScrollOffset)> = {
-        let Ok(guard) = scroll_store.offsets.lock() else {
-            return;
-        };
-        guard
-            .iter()
-            .filter(|(_, o)| o.x.abs() >= 0.5 || o.y.abs() >= 0.5)
-            .map(|(&id, o)| (id, *o))
-            .collect()
-    };
+    let offsets = doc.scroll_offsets();
     for (id, off) in offsets {
         if !is_scroll_container(bridge, id) {
             continue;
@@ -344,19 +307,43 @@ pub fn set_scroll_offset(
     id: WidgetId,
     next: ScrollOffset,
 ) -> ScrollOffset {
-    let prev = scroll_store.get(id);
+    let node = NodeHandle(id);
+    let prev = doc.scroll_offset(node);
     let next = ScrollOffset {
         x: next.x.max(0.0),
         y: next.y.max(0.0),
     };
+    if !doc.set_scroll_offset(node, next) {
+        return prev;
+    }
+    let next = doc.scroll_offset(node);
     let dx = next.x - prev.x;
     let dy = next.y - prev.y;
-    scroll_store.set(id, next);
     if dx.abs() >= 0.5 || dy.abs() >= 0.5 {
         scroll_store.enqueue_pending(id, next);
         translate_descendants(doc, layout_store, NodeHandle(id), -dx, -dy);
     }
     next
+}
+
+/// Accept an offset reported by the live iced viewport.
+///
+/// Unlike [`set_scroll_offset`], this must not enqueue a scroll command back to
+/// the widget. Compatibility boxes move only by the observed delta because
+/// they may already include earlier host scroll events between paint frames.
+pub(crate) fn sync_host_scroll_offset(
+    doc: &mut NanaTreeDocument,
+    layout_store: &LayoutBoxStore,
+    id: WidgetId,
+    next: ScrollOffset,
+    metrics: nana_ui_runtime::ScrollMetrics,
+) -> bool {
+    let node = NodeHandle(id);
+    let Some((prev, next)) = doc.sync_scroll_viewport(node, next, metrics) else {
+        return false;
+    };
+    translate_descendants(doc, layout_store, node, prev.x - next.x, prev.y - next.y);
+    true
 }
 
 /// Drain pending iced scroll Tasks (no-op when `iced-view` is off).
@@ -464,11 +451,57 @@ mod tests {
             },
         );
         assert!(result.scrolled.is_empty());
-        assert_eq!(scroll_store.get(scroller.0).y, 0.0);
+        assert_eq!(doc.scroll_offset(scroller).y, 0.0);
     }
 
     #[test]
-    fn set_scroll_offset_updates_store_and_pending() {
+    fn host_scroll_feedback_applies_only_the_observed_delta() {
+        let (mut doc, _bridge, layout_store, scroller, target) = seed_scroll_tree();
+        let metrics = nana_ui_runtime::ScrollMetrics {
+            viewport_width: 300.0,
+            viewport_height: 200.0,
+            content_width: 300.0,
+            content_height: 600.0,
+        };
+
+        assert!(sync_host_scroll_offset(
+            &mut doc,
+            &layout_store,
+            scroller.0,
+            ScrollOffset { x: 0.0, y: 40.0 },
+            metrics,
+        ));
+        assert_eq!(
+            get_layout_box_from(&layout_store, &doc, target)
+                .expect("target")
+                .y,
+            360.0
+        );
+        assert!(!sync_host_scroll_offset(
+            &mut doc,
+            &layout_store,
+            scroller.0,
+            ScrollOffset { x: 0.0, y: 40.0 },
+            metrics,
+        ));
+        assert!(sync_host_scroll_offset(
+            &mut doc,
+            &layout_store,
+            scroller.0,
+            ScrollOffset { x: 0.0, y: 55.0 },
+            metrics,
+        ));
+        assert_eq!(
+            get_layout_box_from(&layout_store, &doc, target)
+                .expect("target")
+                .y,
+            345.0
+        );
+        assert!(shared_scroll_offset_store().take_pending().is_empty());
+    }
+
+    #[test]
+    fn set_scroll_offset_updates_runtime_and_pending() {
         let (mut doc, _bridge, layout_store, scroller, target) = seed_scroll_tree();
         let scroll_store = ScrollOffsetStore::new();
         set_scroll_offset(
@@ -478,9 +511,14 @@ mod tests {
             scroller.0,
             ScrollOffset { x: 0.0, y: 120.0 },
         );
-        assert!((scroll_store.get(scroller.0).y - 120.0).abs() < 0.5);
+        assert!((doc.scroll_offset(scroller).y - 120.0).abs() < 0.5);
         let box_ = get_layout_box_from(&layout_store, &doc, target).expect("target");
         assert!((box_.y - 280.0).abs() < 0.5);
+        assert_eq!(
+            doc.layout_box(target).expect("runtime target box").y,
+            400.0,
+            "scroll must not rewrite authoritative unscrolled layout"
+        );
         let pending = scroll_store.take_pending();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].widget_id, scroller.0);

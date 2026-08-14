@@ -411,6 +411,12 @@ pub struct GpuTexturePrimitive {
     layer: HostTextureLayer,
 }
 
+impl GpuTexturePrimitive {
+    pub(crate) fn from_layer(layer: HostTextureLayer) -> Self {
+        Self { layer }
+    }
+}
+
 impl shader::Primitive for GpuTexturePrimitive {
     type Pipeline = GpuTexturePipeline;
 

@@ -1078,11 +1078,12 @@ fn scroll_port_height(parent_height: Option<f32>) -> Length {
     }
 }
 
-fn finalize_layout_container<'a, Message: 'a>(
+fn finalize_layout_container<'a, Message>(
     content: Element<'a, Message>,
     layout: &crate::css_map::LayoutStyle,
     parent_box: ParentBox,
     scroll_id: Option<WidgetId>,
+    map_event: impl Fn(BridgeEvent) -> Message + Clone + 'a,
 ) -> Element<'a, Message>
 where
     Message: 'a,
@@ -1095,7 +1096,27 @@ where
             .width(Length::Fill)
             .height(scroll_port_height(parent_box.height));
         if let Some(id) = scroll_id {
-            s = s.id(iced::widget::Id::from(crate::scroll::scrollable_widget_id(id)));
+            let map = map_event.clone();
+            s = s
+                .id(iced::widget::Id::from(crate::scroll::scrollable_widget_id(id)))
+                .on_scroll(move |viewport| {
+                    let offset = viewport.absolute_offset();
+                    let bounds = viewport.bounds();
+                    let content = viewport.content_bounds();
+                    map(BridgeEvent::Scroll {
+                        id,
+                        offset: crate::ScrollOffset {
+                            x: offset.x,
+                            y: offset.y,
+                        },
+                        metrics: nana_ui_runtime::ScrollMetrics {
+                            viewport_width: bounds.width,
+                            viewport_height: bounds.height,
+                            content_width: content.width,
+                            content_height: content.height,
+                        },
+                    })
+                });
         }
         el = s.into();
     }

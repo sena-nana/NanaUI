@@ -1,20 +1,34 @@
 //! Platform input / IME / clipboard abstraction plus Android MVP flags.
 
+#[cfg(feature = "clipboard")]
 mod clipboard;
+#[cfg(feature = "fetch")]
 mod fetch;
 mod ime;
+mod input;
+mod window;
 
+#[cfg(feature = "clipboard")]
 pub use clipboard::{
     ClipboardHost, MemoryClipboard, OsClipboard, SharedClipboardHost, UnsupportedClipboard,
     default_shared_clipboard, shared_clipboard,
 };
+#[cfg(feature = "fetch")]
 pub use fetch::{
     FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
     FetchResponse, NativeFetchHost, SharedFetchHost, shared_fetch_host,
 };
-pub use ime::{ImeCursorArea, ImeEvent, ImeHost, ImePurpose, ImeRequest, UnsupportedIme};
+pub use ime::ImeEvent;
+pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
+pub use window::{
+    TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId,
+    WindowRole, WindowSettings,
+};
 
-/// Capability flags described without tying to a concrete OS crate yet.
+/// Experimental Android host capability flags. They are intentionally absent
+/// from the default desktop/framework API until Android becomes a supported
+/// NanaUI product target.
+#[cfg(feature = "experimental-android")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformCapabilities {
     pub ime: bool,
@@ -37,6 +51,7 @@ pub struct PlatformCapabilities {
     pub iced_control_input: bool,
 }
 
+#[cfg(feature = "experimental-android")]
 impl PlatformCapabilities {
     /// Android ARM64 MVP: Surface + Rust JS engine + slot controls/input.
     ///
@@ -57,44 +72,21 @@ impl PlatformCapabilities {
             iced_control_input: true,
         }
     }
-
-    /// Desktop hosted path: OS clipboard plus winit/Iced IME composition.
-    pub const fn desktop() -> Self {
-        Self {
-            ime: true,
-            clipboard: true,
-            vulkan_surface: true,
-            rust_js_engine: true,
-            iced_shell: true,
-            shell_chrome_bands: false,
-            shell_chrome_fill: false,
-            iced_control_slot: false,
-            iced_control_widget: false,
-            iced_control_input: false,
-        }
-    }
-
-    /// Historical name for [`Self::desktop`].
-    pub const fn desktop_stub() -> Self {
-        Self::desktop()
-    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "experimental-android"))]
 mod tests {
     use super::*;
 
     #[test]
-    fn desktop_claims_clipboard_android_does_not() {
-        assert!(PlatformCapabilities::desktop().clipboard);
-        assert!(PlatformCapabilities::desktop().ime);
-        assert!(PlatformCapabilities::desktop_stub().clipboard);
+    fn android_capabilities_do_not_claim_unwired_native_services() {
         assert!(!PlatformCapabilities::android_mvp().ime);
         assert!(!PlatformCapabilities::android_mvp().clipboard);
     }
 }
 
-/// High-level surface lifecycle notes for mobile hosts (documentation + wiring aid).
+/// Experimental Android surface lifecycle owned by the Android host crate.
+#[cfg(feature = "experimental-android")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfacePhase {
     /// No native window yet (activity started / paused without window).
