@@ -72,7 +72,17 @@ pub struct AnimationSample {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimationFrame {
     pub samples: Vec<AnimationSample>,
+    /// Framework-owned component lifecycle updates applied at this wake.
+    /// These are already committed to retained state; applications must not
+    /// re-apply them.
+    pub component_updates: Vec<StableNodeId>,
     pub next_deadline: Option<Duration>,
+}
+
+impl AnimationFrame {
+    pub fn has_updates(&self) -> bool {
+        !self.samples.is_empty() || !self.component_updates.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]

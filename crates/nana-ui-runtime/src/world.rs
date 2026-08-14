@@ -6,7 +6,7 @@ use std::time::Duration;
 use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
-use nana_ui_core::{StyleModelRef, ThemeMode};
+use nana_ui_core::{StyleModelRef, SwitchControlPosition, ThemeMode};
 
 use crate::animation::ActiveAnimation;
 use crate::schedule::{DirtyMask, SystemWork, push_work};
@@ -490,6 +490,7 @@ impl UiWorld {
         }
         AnimationFrame {
             samples,
+            component_updates: Vec::new(),
             next_deadline: self.next_animation_deadline(),
         }
     }
@@ -635,6 +636,11 @@ impl UiWorld {
         self.world.get::<TextInputState>(entity)
     }
 
+    pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<TextMetrics>(entity).copied()
+    }
+
     pub fn ime(&self, id: StableNodeId) -> Option<&ImeComposition> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<ImeComposition>(entity)
@@ -647,7 +653,14 @@ impl UiWorld {
 
     pub fn standard_visual(&self, id: StableNodeId) -> Option<StandardVisual> {
         let entity = *self.entities.get(&id)?;
-        self.world.get::<StandardVisual>(entity).copied()
+        self.world.get::<StandardVisual>(entity).cloned()
+    }
+
+    pub fn component_geometry(&self, id: StableNodeId) -> Option<crate::ComponentGeometry> {
+        let entity = *self.entities.get(&id)?;
+        let visual = self.world.get::<StandardVisual>(entity)?;
+        let style = self.world.get::<ComputedStyle>(entity)?;
+        self.derive_component_geometry(id, visual, style)
     }
 
     pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
@@ -1357,7 +1370,7 @@ impl UiWorld {
             UiMutation::SetStandardVisual { id, visual } => {
                 let entity = self.entities[id];
                 if let Some(visual) = visual {
-                    self.world.entity_mut(entity).insert(*visual);
+                    self.world.entity_mut(entity).insert(visual.clone());
                 } else {
                     self.world.entity_mut(entity).remove::<StandardVisual>();
                 }
@@ -1589,6 +1602,27 @@ impl UiWorld {
                 .is_some_and(|text| !text.value.is_empty());
         let source_style = self.world.get::<NodeStyle>(entity)?.clone();
         let hierarchy = self.world.get::<Hierarchy>(entity)?;
+        let standard_visual = self.world.get::<StandardVisual>(entity).cloned();
+        let component_geometry = standard_visual
+            .as_ref()
+            .and_then(|visual| self.derive_component_geometry(id, visual, &style));
+        let standard_visual_foreground = standard_visual.as_ref().map(|visual| match visual {
+            StandardVisual::Icon { .. } => style
+                .color
+                .unwrap_or_else(|| self.style_model.palette.muted.as_rgba_array()),
+            StandardVisual::Checkbox { checked: true }
+            | StandardVisual::Switch { checked: true, .. } => {
+                self.style_model.palette.accent_text.as_rgba_array()
+            }
+            StandardVisual::Checkbox { checked: false }
+            | StandardVisual::Switch { checked: false, .. } => {
+                self.style_model.palette.muted.as_rgba_array()
+            }
+            StandardVisual::Slider { .. }
+            | StandardVisual::Range { .. }
+            | StandardVisual::Card { .. }
+            | StandardVisual::ListItem { .. } => self.style_model.palette.accent.as_rgba_array(),
+        });
         Some(ExtractedNode {
             id,
             kind,
@@ -1612,13 +1646,331 @@ impl UiWorld {
             focused: self.focused.get(&identity.document) == Some(&id),
             ime: self.world.get::<ImeComposition>(entity).cloned(),
             text_input: self.world.get::<TextInputState>(entity).cloned(),
-            standard_visual: self.world.get::<StandardVisual>(entity).copied(),
-            standard_visual_foreground: self
-                .world
-                .get::<StandardVisual>(entity)
-                .map(|_| self.style_model.palette.accent_text.as_rgba_array()),
+            standard_visual,
+            component_geometry,
+            standard_visual_foreground,
             custom_render: self.world.get::<CustomRenderNode>(entity).cloned(),
         })
+    }
+
+    fn derive_component_geometry(
+        &self,
+        id: StableNodeId,
+        visual: &StandardVisual,
+        style: &ComputedStyle,
+    ) -> Option<crate::ComponentGeometry> {
+        let bounds = *self.world.get::<LayoutBox>(self.entities[&id])?;
+        let source = self.world.get::<NodeStyle>(self.entities[&id])?;
+        let padding = source.layout.resolved_padding_against(Some(bounds.width));
+        let border = source.layout.resolved_border_width();
+        let content = LayoutBox {
+            x: bounds.x + border + padding.left,
+            y: bounds.y + border + padding.top,
+            width: (bounds.width - border * 2.0 - padding.left - padding.right).max(0.0),
+            height: (bounds.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
+        };
+        let text_region = |bounds, content: Arc<str>, muted: bool, size: f32, weight| {
+            crate::ComponentTextRegion {
+                bounds,
+                content,
+                color: Some(if muted {
+                    self.style_model.palette.muted.as_rgba_array()
+                } else {
+                    style
+                        .color
+                        .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array())
+                }),
+                font_size: size,
+                font_weight: weight,
+            }
+        };
+        match visual {
+            StandardVisual::Switch {
+                label,
+                hint,
+                checked,
+                control_position,
+                size,
+                invalid,
+                ..
+            } => {
+                let control = LayoutBox {
+                    x: match control_position {
+                        SwitchControlPosition::Start => content.x,
+                        SwitchControlPosition::End => content.x + (content.width - 30.0).max(0.0),
+                    },
+                    y: content.y + (content.height - 16.0) / 2.0,
+                    width: 30.0_f32.min(content.width),
+                    height: 16.0_f32.min(content.height),
+                };
+                let text_x = if *control_position == SwitchControlPosition::Start {
+                    control.x + control.width + 8.0
+                } else {
+                    content.x
+                };
+                let text_right = if *control_position == SwitchControlPosition::End {
+                    control.x - 8.0
+                } else {
+                    content.x + content.width
+                };
+                let text_width = (text_right - text_x).max(0.0);
+                let (label_bounds, hint_bounds) = if hint.is_some() {
+                    (
+                        LayoutBox {
+                            x: text_x,
+                            y: content.y,
+                            width: text_width,
+                            height: 18.0_f32.min(content.height),
+                        },
+                        Some(LayoutBox {
+                            x: text_x,
+                            y: content.y + 20.0,
+                            width: text_width,
+                            height: (content.height - 20.0).max(0.0),
+                        }),
+                    )
+                } else {
+                    (
+                        LayoutBox {
+                            x: text_x,
+                            y: content.y,
+                            width: text_width,
+                            height: content.height,
+                        },
+                        None,
+                    )
+                };
+                let palette = self.style_model.palette;
+                let hovered = self.pointer_hover.values().any(|target| *target == id);
+                let pressed = self.pointer_press.values().any(|target| *target == id);
+                let disabled = self.component::<AccessibilityState>(id).disabled;
+                let mix = |foreground: [f32; 4], background: [f32; 4], amount: f32| {
+                    let amount = amount.clamp(0.0, 1.0);
+                    std::array::from_fn(|channel| {
+                        foreground[channel] * amount + background[channel] * (1.0 - amount)
+                    })
+                };
+                let fade = |mut color: [f32; 4]| {
+                    if disabled {
+                        color[3] *= 0.55;
+                    }
+                    color
+                };
+                let track_background = if *checked {
+                    if pressed {
+                        palette.accent_strong.as_rgba_array()
+                    } else {
+                        palette.accent.as_rgba_array()
+                    }
+                } else {
+                    mix(
+                        palette.hover.as_rgba_array(),
+                        palette.background.as_rgba_array(),
+                        0.78,
+                    )
+                };
+                let track_border = if *invalid {
+                    palette.danger.as_rgba_array()
+                } else if *checked {
+                    if hovered || pressed {
+                        palette.accent_strong.as_rgba_array()
+                    } else {
+                        palette.accent.as_rgba_array()
+                    }
+                } else if hovered || pressed {
+                    mix(
+                        palette.accent.as_rgba_array(),
+                        palette.border_strong.as_rgba_array(),
+                        if pressed { 0.70 } else { 0.42 },
+                    )
+                } else {
+                    palette.border_strong.as_rgba_array()
+                };
+                let thumb_background = if *checked {
+                    palette.accent_text.as_rgba_array()
+                } else {
+                    mix(
+                        palette.faint.as_rgba_array(),
+                        palette.background.as_rgba_array(),
+                        0.70,
+                    )
+                };
+                Some(crate::ComponentGeometry::Switch {
+                    label: text_region(
+                        label_bounds,
+                        Arc::clone(label),
+                        false,
+                        size.text_size(),
+                        Some(500),
+                    ),
+                    hint: hint.as_ref().zip(hint_bounds).map(|(hint, bounds)| {
+                        text_region(
+                            bounds,
+                            Arc::clone(hint),
+                            true,
+                            (size.text_size() - 1.0).max(10.0),
+                            None,
+                        )
+                    }),
+                    control,
+                    track_background: fade(track_background),
+                    track_border: fade(track_border),
+                    thumb_background: fade(thumb_background),
+                })
+            }
+            StandardVisual::Range {
+                label,
+                value,
+                unit,
+                size,
+                ..
+            } => {
+                let gap = match size {
+                    nana_ui_core::ControlSize::Small => 6.0,
+                    nana_ui_core::ControlSize::Medium => 8.0,
+                    nana_ui_core::ControlSize::Large => 10.0,
+                };
+                let label_width = label
+                    .as_ref()
+                    .map_or(0.0, |_| 84.0_f32.min(content.width * 0.28));
+                let unit_width = unit.as_ref().map_or(0.0, |_| 32.0_f32.min(content.width));
+                let value_width = 60.0_f32.min((content.width - unit_width).max(0.0));
+                let trailing_width = value_width + unit_width;
+                let track_x = content.x + label_width + if label.is_some() { gap } else { 0.0 };
+                let track_right = content.x + content.width
+                    - trailing_width
+                    - if trailing_width > 0.0 { gap } else { 0.0 };
+                let thumb = size.icon_size();
+                let track = LayoutBox {
+                    x: track_x + thumb / 2.0,
+                    y: content.y + (content.height - thumb) / 2.0,
+                    width: (track_right - track_x - thumb).max(0.0),
+                    height: thumb.min(content.height),
+                };
+                Some(crate::ComponentGeometry::Range {
+                    label: label.as_ref().map(|label| {
+                        text_region(
+                            LayoutBox {
+                                x: content.x,
+                                y: content.y,
+                                width: label_width,
+                                height: content.height,
+                            },
+                            Arc::clone(label),
+                            false,
+                            size.text_size(),
+                            Some(500),
+                        )
+                    }),
+                    value: text_region(
+                        LayoutBox {
+                            x: content.x + content.width - value_width - unit_width,
+                            y: content.y,
+                            width: value_width,
+                            height: content.height,
+                        },
+                        Arc::clone(value),
+                        false,
+                        size.text_size(),
+                        Some(500),
+                    ),
+                    unit: unit.as_ref().map(|unit| {
+                        text_region(
+                            LayoutBox {
+                                x: content.x + content.width - unit_width,
+                                y: content.y,
+                                width: unit_width,
+                                height: content.height,
+                            },
+                            Arc::clone(unit),
+                            true,
+                            (size.text_size() - 1.0).max(10.0),
+                            None,
+                        )
+                    }),
+                    track,
+                })
+            }
+            StandardVisual::Card {
+                title,
+                kind,
+                loading,
+                ..
+            } => {
+                let shaped_title_width = self
+                    .text_metrics(id)
+                    .map_or(0.0, |metrics| metrics.width.min(content.width));
+                let title_width = (content.width - if *loading { 22.0 } else { 0.0 }).max(0.0);
+                let title_y = bounds.y + border + (padding.top - 24.0).max(0.0);
+                Some(crate::ComponentGeometry::Card {
+                    title: title.as_ref().map(|title| {
+                        text_region(
+                            LayoutBox {
+                                x: bounds.x + border + padding.left,
+                                y: title_y,
+                                width: title_width,
+                                height: 18.0,
+                            },
+                            Arc::clone(title),
+                            false,
+                            13.0,
+                            Some(600),
+                        )
+                    }),
+                    content,
+                    elevation: (*kind == nana_ui_core::CardKind::Raised).then_some(
+                        crate::ComponentElevation {
+                            color: self.style_model.palette.background.as_rgba_array(),
+                            offset_y: 4.0,
+                            blur_radius: 12.0,
+                        },
+                    ),
+                    spinner: (*loading).then_some(LayoutBox {
+                        x: (bounds.x + border + padding.left + shaped_title_width + 8.0)
+                            .min(content.x + content.width - 14.0),
+                        y: title_y + 2.0,
+                        width: 14.0,
+                        height: 14.0,
+                    }),
+                })
+            }
+            StandardVisual::ListItem {
+                leading,
+                content: content_slot,
+                trailing,
+            } => {
+                let leading = leading.and_then(|id| self.layout_box(id));
+                let trailing = trailing.and_then(|id| self.layout_box(id));
+                let fallback_x = leading.map_or(content.x, |leading| {
+                    leading.x
+                        + leading.width
+                        + source.layout.main_gap_against(
+                            nana_ui_core::FlexDirection::Row,
+                            nana_ui_core::ParentBox::from_viewport(content.width, content.height),
+                        )
+                });
+                let fallback_right = trailing.map_or(content.x + content.width, |trailing| {
+                    trailing.x
+                        - source.layout.main_gap_against(
+                            nana_ui_core::FlexDirection::Row,
+                            nana_ui_core::ParentBox::from_viewport(content.width, content.height),
+                        )
+                });
+                Some(crate::ComponentGeometry::ListItem {
+                    leading,
+                    content: content_slot.and_then(|id| self.layout_box(id)).or_else(|| {
+                        Some(LayoutBox {
+                            x: fallback_x,
+                            y: content.y,
+                            width: (fallback_right - fallback_x).max(0.0),
+                            height: content.height,
+                        })
+                    }),
+                    trailing,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn project_accessibility_node(&self, id: StableNodeId) -> Option<AccessibilityNode> {
@@ -1680,6 +2032,12 @@ impl UiWorld {
                 .get::<TextInputState>(entity)
                 .map(|input| input.selection),
             modal: state.modal,
+            busy: state.busy,
+            invalid: state.invalid,
+            numeric_minimum: state.numeric_minimum,
+            numeric_maximum: state.numeric_maximum,
+            numeric_step: state.numeric_step,
+            numeric_value: state.numeric_value,
             focused: self.focused.get(&identity.document) == Some(&id),
             bounds: *self.world.get::<LayoutBox>(entity)?,
         })
@@ -3379,6 +3737,7 @@ mod tests {
                 multiline: false,
                 editable: false,
                 modal: false,
+                ..AccessibilityState::default()
             },
         );
         queue.write_layout(

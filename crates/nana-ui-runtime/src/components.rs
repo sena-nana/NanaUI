@@ -1,7 +1,10 @@
 use std::sync::{Arc, LazyLock};
 
 use bevy_ecs::component::Component;
-use nana_ui_core::{LayoutStyle, LineHeightSpec, SemanticColorRole, UI_BASE_TEXT_SIZE};
+use nana_ui_core::{
+    CardKind, ControlSize, Icon, LayoutStyle, LineHeightSpec, SemanticColorRole,
+    SwitchControlPosition, UI_BASE_TEXT_SIZE,
+};
 
 use crate::{NodeKind, StableNodeId};
 
@@ -40,11 +43,100 @@ pub struct InteractionStyle {
     pub disabled: SemanticPaint,
 }
 
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TooltipVisual {
+    pub label: Arc<str>,
+    pub config: nana_ui_core::TooltipConfig,
+    pub open: bool,
+}
+
+#[derive(Component, Debug, Clone, PartialEq)]
 pub enum StandardVisual {
-    Checkbox { checked: bool },
-    Switch { checked: bool },
-    Slider { ratio: f32 },
+    Checkbox {
+        checked: bool,
+    },
+    Icon {
+        icon: Icon,
+        size: f32,
+        tooltip: Option<TooltipVisual>,
+    },
+    Switch {
+        label: Arc<str>,
+        hint: Option<Arc<str>>,
+        checked: bool,
+        control_position: SwitchControlPosition,
+        size: ControlSize,
+        loading: bool,
+        loading_phase: f32,
+        invalid: bool,
+    },
+    Slider {
+        ratio: f32,
+    },
+    Range {
+        label: Option<Arc<str>>,
+        value: Arc<str>,
+        unit: Option<Arc<str>>,
+        size: ControlSize,
+        ratio: f32,
+        invalid: bool,
+    },
+    Card {
+        title: Option<Arc<str>>,
+        kind: CardKind,
+        loading: bool,
+        loading_phase: f32,
+    },
+    ListItem {
+        leading: Option<StableNodeId>,
+        content: Option<StableNodeId>,
+        trailing: Option<StableNodeId>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentTextRegion {
+    pub bounds: LayoutBox,
+    pub content: Arc<str>,
+    pub color: Option<[f32; 4]>,
+    pub font_size: f32,
+    pub font_weight: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComponentElevation {
+    pub color: [f32; 4],
+    pub offset_y: f32,
+    pub blur_radius: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComponentGeometry {
+    Switch {
+        label: ComponentTextRegion,
+        hint: Option<ComponentTextRegion>,
+        control: LayoutBox,
+        track_background: [f32; 4],
+        track_border: [f32; 4],
+        thumb_background: [f32; 4],
+    },
+    Range {
+        label: Option<ComponentTextRegion>,
+        value: ComponentTextRegion,
+        unit: Option<ComponentTextRegion>,
+        track: LayoutBox,
+    },
+    Card {
+        title: Option<ComponentTextRegion>,
+        content: LayoutBox,
+        elevation: Option<ComponentElevation>,
+        spinner: Option<LayoutBox>,
+    },
+    ListItem {
+        leading: Option<LayoutBox>,
+        content: Option<LayoutBox>,
+        trailing: Option<LayoutBox>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -273,7 +365,7 @@ pub enum AccessibilityRole {
     Generic,
 }
 
-#[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Component, Debug, Clone, PartialEq, Default)]
 pub struct AccessibilityState {
     pub role: AccessibilityRole,
     pub label: Option<Arc<str>>,
@@ -284,6 +376,12 @@ pub struct AccessibilityState {
     pub multiline: bool,
     pub editable: bool,
     pub modal: bool,
+    pub busy: bool,
+    pub invalid: bool,
+    pub numeric_minimum: Option<f64>,
+    pub numeric_maximum: Option<f64>,
+    pub numeric_step: Option<f64>,
+    pub numeric_value: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -301,6 +399,12 @@ pub struct AccessibilityNode {
     pub editable: bool,
     pub selection: Option<TextSelection>,
     pub modal: bool,
+    pub busy: bool,
+    pub invalid: bool,
+    pub numeric_minimum: Option<f64>,
+    pub numeric_maximum: Option<f64>,
+    pub numeric_step: Option<f64>,
+    pub numeric_value: Option<f64>,
     pub focused: bool,
     pub bounds: LayoutBox,
 }
@@ -495,6 +599,7 @@ pub struct ExtractedNode {
     pub ime: Option<ImeComposition>,
     pub text_input: Option<TextInputState>,
     pub standard_visual: Option<StandardVisual>,
+    pub component_geometry: Option<ComponentGeometry>,
     pub standard_visual_foreground: Option<[f32; 4]>,
     pub custom_render: Option<CustomRenderNode>,
 }

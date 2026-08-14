@@ -5,25 +5,29 @@ use std::future::Future;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_core::Stream;
 use nana_ui_core::{
-    ActionId, ContextPredicate, KeyContext, ThemeMode, VirtualListLayout,
-    VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
+    ActionId, ContextPredicate, KeyContext, LengthSpec, ThemeMode, TooltipPlacement,
+    VirtualListLayout, VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow,
 };
 
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, Activate, AnimationFrame, Button, Checkbox,
-    ComponentView, Dialog, DocumentId, IconButton, List, ListItem, MenuItem, MutationQueue,
-    NodeKind, OverlayChanged, OverlayHost, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset,
-    ScrollView, Slider, SliderChanged, StableNodeId, Switch, Tab, TabList, TabSelected, Table,
-    TableCell, TableRow, TextArea, TextChanged, TextInput, TextInputState, TextSelection,
-    ToggleChanged, UiWorld, UiWorldError,
+    ComponentView, Dialog, DocumentId, IconButton, List, ListItem, ListItemSlots, MenuItem,
+    MutationQueue, NodeKind, OverlayChanged, OverlayHost, RangeAdjustment, RangeChanged,
+    RangeField, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, Slider,
+    SliderChanged, StableNodeId, Switch, Tab, TabList, TabSelected, Table, TableCell, TableRow,
+    TextArea, TextChanged, TextInput, TextInputState, TextSelection, ToggleChanged, Tooltip,
+    UiWorld, UiWorldError,
 };
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
+const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const LOADING_CYCLE: Duration = Duration::from_millis(800);
 
 pub trait View: Send + 'static {}
 
@@ -113,6 +117,28 @@ struct RegisteredAction {
     handler: ActionHandler,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadingComponent {
+    Switch,
+    Card,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TooltipLifecycle {
+    overlay: StableNodeId,
+    show_at: Option<Duration>,
+    open: bool,
+}
+
+#[derive(Default)]
+struct ComponentLifecycle {
+    now: Duration,
+    viewports: HashMap<DocumentId, crate::LayoutViewport>,
+    tooltips: HashMap<StableNodeId, TooltipLifecycle>,
+    loading: HashMap<StableNodeId, LoadingComponent>,
+    next_loading_frame: Option<Duration>,
+}
+
 #[derive(Default)]
 pub struct ExtensionRegistrar {
     actions: HashMap<ActionId, RegisteredAction>,
@@ -180,6 +206,10 @@ pub enum FrameworkError {
         parent: StableNodeId,
         child: StableNodeId,
     },
+    InvalidListItemSlots {
+        item: StableNodeId,
+        slot: Option<StableNodeId>,
+    },
     FrameDidNotSettle,
 }
 
@@ -223,6 +253,19 @@ impl fmt::Display for FrameworkError {
                 child.get(),
                 parent.get()
             ),
+            Self::InvalidListItemSlots { item, slot } => match slot {
+                Some(slot) => write!(
+                    formatter,
+                    "view {} has an invalid list-item slot {}",
+                    item.get(),
+                    slot.get()
+                ),
+                None => write!(
+                    formatter,
+                    "view {} has duplicate list-item slots",
+                    item.get()
+                ),
+            },
             Self::FrameDidNotSettle => {
                 formatter.write_str("runtime frame did not settle within the bounded pass limit")
             }
@@ -245,6 +288,7 @@ pub struct AppContext {
     event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>>,
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
+    component_lifecycle: ComponentLifecycle,
     next_id: u64,
 }
 
@@ -335,6 +379,7 @@ impl AppContext {
             event_handlers: HashMap::new(),
             actions: HashMap::new(),
             extensions: HashSet::new(),
+            component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
         }
     }
@@ -401,6 +446,10 @@ impl AppContext {
         document: DocumentId,
         viewport: crate::LayoutViewport,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        self.component_lifecycle
+            .viewports
+            .insert(document, viewport);
+        self.position_open_tooltips(document)?;
         let layouts =
             crate::RuntimeLayoutEngine.layout_document(&self.world, document, viewport)?;
         let mut mutations = MutationQueue::new();
@@ -419,11 +468,72 @@ impl AppContext {
     }
 
     pub fn next_animation_deadline(&self) -> Option<Duration> {
-        self.world.next_animation_deadline()
+        self.world
+            .next_animation_deadline()
+            .into_iter()
+            .chain(self.component_lifecycle.next_loading_frame)
+            .chain(
+                self.component_lifecycle
+                    .tooltips
+                    .values()
+                    .filter_map(|tooltip| tooltip.show_at),
+            )
+            .min()
     }
 
     pub fn advance_animations(&mut self, now: Duration) -> AnimationFrame {
-        self.world.advance_animations(now)
+        self.component_lifecycle.now = now;
+        let mut frame = self.world.advance_animations(now);
+        let tooltip_targets = self
+            .component_lifecycle
+            .tooltips
+            .iter()
+            .filter_map(|(&target, tooltip)| {
+                tooltip.show_at.filter(|deadline| *deadline <= now)?;
+                Some(target)
+            })
+            .collect::<Vec<_>>();
+        for target in tooltip_targets {
+            if self.open_tooltip(target).unwrap_or(false) {
+                frame.component_updates.push(target);
+            }
+        }
+        if self
+            .component_lifecycle
+            .next_loading_frame
+            .is_some_and(|deadline| deadline <= now)
+        {
+            let phase = (now.as_secs_f32() / LOADING_CYCLE.as_secs_f32()).rem_euclid(1.0);
+            let loading = self
+                .component_lifecycle
+                .loading
+                .iter()
+                .map(|(&target, &kind)| (target, kind))
+                .collect::<Vec<_>>();
+            for (target, kind) in loading {
+                let changed = match kind {
+                    LoadingComponent::Switch => self
+                        .update_component(Entity::<Switch>::from_stable_id(target), |switch, _| {
+                            switch.loading_phase = phase;
+                        })
+                        .is_ok(),
+                    LoadingComponent::Card => self
+                        .update_component(
+                            Entity::<crate::Card>::from_stable_id(target),
+                            |card, _| {
+                                card.loading_phase = phase;
+                            },
+                        )
+                        .is_ok(),
+                };
+                if changed {
+                    frame.component_updates.push(target);
+                }
+            }
+            self.component_lifecycle.next_loading_frame = now.checked_add(COMPONENT_FRAME_INTERVAL);
+        }
+        frame.next_deadline = self.next_animation_deadline();
+        frame
     }
 
     pub fn focused_text_input(
@@ -471,6 +581,7 @@ impl AppContext {
         component.project(id, &self.world, &mut queue);
         self.world.commit(queue)?;
         self.views.insert(id, Box::new(component));
+        self.sync_component_lifecycle(id)?;
         Ok(Entity::from_stable_id(id))
     }
 
@@ -995,6 +1106,12 @@ impl AppContext {
         Ok(false)
     }
 
+    pub fn is_range_field(&self, id: StableNodeId) -> bool {
+        self.views
+            .get(&id)
+            .is_some_and(|view| view.is::<RangeField>())
+    }
+
     pub fn pointer_target(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
         self.world.hit_test(document, x, y)
     }
@@ -1005,7 +1122,410 @@ impl AppContext {
         pointer_id: u64,
         target: Option<StableNodeId>,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
-        Ok(self.world.set_pointer_hover(document, pointer_id, target)?)
+        self.set_pointer_hover_at(document, pointer_id, target, self.component_lifecycle.now)
+    }
+
+    pub fn set_pointer_hover_at(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: Option<StableNodeId>,
+        now: Duration,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        self.component_lifecycle.now = now;
+        let previous = self.world.set_pointer_hover(document, pointer_id, target)?;
+        if previous != target {
+            if let Some(previous) = previous {
+                self.leave_tooltip(previous)?;
+            }
+            if let Some(target) = target {
+                self.enter_tooltip(target, now)?;
+            }
+        }
+        Ok(previous)
+    }
+
+    pub fn icon_button_tooltip(
+        &self,
+        entity: Entity<IconButton>,
+    ) -> Result<Option<Entity<Tooltip>>, FrameworkError> {
+        self.read(entity, |_| ())?;
+        Ok(self
+            .component_lifecycle
+            .tooltips
+            .get(&entity.id)
+            .map(|tooltip| Entity::from_stable_id(tooltip.overlay)))
+    }
+
+    /// Atomically attach and order a ListItem's typed direct-child slots.
+    /// Every existing child must be named exactly once; arbitrary nested or
+    /// duplicate slot identities are rejected before retained state changes.
+    pub fn set_list_item_slots(
+        &mut self,
+        item: Entity<ListItem>,
+        slots: ListItemSlots,
+    ) -> Result<bool, FrameworkError> {
+        self.read(item, |_| ())?;
+        let ordered = [slots.leading, slots.content, slots.trailing]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let unique = ordered.iter().copied().collect::<HashSet<_>>();
+        if unique.len() != ordered.len() {
+            return Err(FrameworkError::InvalidListItemSlots {
+                item: item.id,
+                slot: None,
+            });
+        }
+        let item_node = self
+            .world
+            .node(item.id)
+            .ok_or(FrameworkError::MissingView(item.id))?;
+        if item_node
+            .children
+            .iter()
+            .any(|child| !unique.contains(child))
+        {
+            return Err(FrameworkError::InvalidListItemSlots {
+                item: item.id,
+                slot: item_node
+                    .children
+                    .iter()
+                    .find(|child| !unique.contains(child))
+                    .copied(),
+            });
+        }
+        for &slot in &ordered {
+            let Some(node) = self.world.node(slot) else {
+                return Err(FrameworkError::InvalidListItemSlots {
+                    item: item.id,
+                    slot: Some(slot),
+                });
+            };
+            if node.document != item_node.document
+                || node.parent.is_some_and(|parent| parent != item.id)
+            {
+                return Err(FrameworkError::InvalidListItemSlots {
+                    item: item.id,
+                    slot: Some(slot),
+                });
+            }
+        }
+        let changed =
+            item_node.children != ordered || self.read(item, |item| item.slots != slots)?;
+        if !changed {
+            return Ok(false);
+        }
+        let item_id = item.id;
+        self.update_component(item, |item, cx| {
+            item.slots = slots;
+            for slot in &ordered {
+                cx.mutations().insert(item_id, *slot, None);
+            }
+        })?;
+        Ok(true)
+    }
+
+    fn sync_component_lifecycle(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        let tooltip = self
+            .views
+            .get(&id)
+            .and_then(|view| view.downcast_ref::<IconButton>())
+            .and_then(|button| (!button.disabled).then(|| button.tooltip.clone()).flatten());
+        match (tooltip, self.component_lifecycle.tooltips.get(&id).copied()) {
+            (Some(configured), None) => {
+                let document = self
+                    .world
+                    .node(id)
+                    .ok_or(FrameworkError::MissingView(id))?
+                    .document;
+                let overlay = self.allocate_id();
+                let tooltip =
+                    Tooltip::with_config(Arc::clone(&configured.label), configured.config);
+                let mut mutations = MutationQueue::new();
+                mutations.create(overlay, document, tooltip.node_kind());
+                tooltip.project(overlay, &self.world, &mut mutations);
+                mutations.insert(id, overlay, None);
+                mutations.set_overlay_host(id, crate::OverlayHostState::default());
+                self.world.commit(mutations)?;
+                self.views.insert(overlay, Box::new(tooltip));
+                self.component_lifecycle.tooltips.insert(
+                    id,
+                    TooltipLifecycle {
+                        overlay,
+                        show_at: None,
+                        open: false,
+                    },
+                );
+            }
+            (Some(configured), Some(existing)) => {
+                self.update_component(
+                    Entity::<Tooltip>::from_stable_id(existing.overlay),
+                    |tooltip, _| {
+                        if tooltip.label != configured.label || tooltip.config != configured.config
+                        {
+                            *tooltip = Tooltip::with_config(
+                                Arc::clone(&configured.label),
+                                configured.config,
+                            );
+                        }
+                    },
+                )?;
+            }
+            (None, Some(existing)) => {
+                let mut mutations = MutationQueue::new();
+                mutations.set_overlay_host(id, crate::OverlayHostState::default());
+                mutations.despawn_subtree(existing.overlay);
+                self.world.commit(mutations)?;
+                self.views.remove(&existing.overlay);
+                self.component_lifecycle.tooltips.remove(&id);
+            }
+            (None, None) => {}
+        }
+
+        let desired_loading = self.views.get(&id).and_then(|view| {
+            if view
+                .downcast_ref::<Switch>()
+                .is_some_and(|switch| switch.loading)
+            {
+                Some(LoadingComponent::Switch)
+            } else if view
+                .downcast_ref::<crate::Card>()
+                .is_some_and(|card| card.loading)
+            {
+                Some(LoadingComponent::Card)
+            } else {
+                None
+            }
+        });
+        match desired_loading {
+            Some(kind) => {
+                let was_idle = self.component_lifecycle.loading.is_empty();
+                self.component_lifecycle.loading.insert(id, kind);
+                if was_idle {
+                    self.component_lifecycle.next_loading_frame =
+                        Some(self.component_lifecycle.now);
+                }
+            }
+            None => {
+                self.component_lifecycle.loading.remove(&id);
+                if self.component_lifecycle.loading.is_empty() {
+                    self.component_lifecycle.next_loading_frame = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn enter_tooltip(&mut self, target: StableNodeId, now: Duration) -> Result<(), FrameworkError> {
+        let Some(button) = self
+            .views
+            .get(&target)
+            .and_then(|view| view.downcast_ref::<IconButton>())
+        else {
+            return Ok(());
+        };
+        let Some(configured) = button.tooltip.as_ref() else {
+            return Ok(());
+        };
+        let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) else {
+            return Ok(());
+        };
+        lifecycle.show_at = now.checked_add(Duration::from_millis(configured.config.delay_ms));
+        if lifecycle.show_at == Some(now) {
+            self.open_tooltip(target)?;
+        }
+        Ok(())
+    }
+
+    fn leave_tooltip(&mut self, target: StableNodeId) -> Result<(), FrameworkError> {
+        let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) else {
+            return Ok(());
+        };
+        lifecycle.show_at = None;
+        if !lifecycle.open {
+            return Ok(());
+        }
+        lifecycle.open = false;
+        self.update_component(
+            Entity::<IconButton>::from_stable_id(target),
+            |button, cx| {
+                button.tooltip_open = false;
+                cx.mutations()
+                    .set_overlay_host(target, crate::OverlayHostState::default());
+            },
+        )?;
+        Ok(())
+    }
+
+    fn open_tooltip(&mut self, target: StableNodeId) -> Result<bool, FrameworkError> {
+        let Some(lifecycle) = self.component_lifecycle.tooltips.get(&target).copied() else {
+            return Ok(false);
+        };
+        if lifecycle.open {
+            return Ok(false);
+        }
+        self.position_tooltip(target, lifecycle.overlay)?;
+        if let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) {
+            lifecycle.show_at = None;
+            lifecycle.open = true;
+        }
+        self.update_component(
+            Entity::<IconButton>::from_stable_id(target),
+            |button, cx| {
+                button.tooltip_open = true;
+                cx.mutations().set_overlay_host(
+                    target,
+                    crate::OverlayHostState {
+                        active: Some(lifecycle.overlay),
+                        restore_focus: None,
+                    },
+                );
+            },
+        )?;
+        Ok(true)
+    }
+
+    fn position_open_tooltips(&mut self, document: DocumentId) -> Result<(), FrameworkError> {
+        let targets = self
+            .component_lifecycle
+            .tooltips
+            .iter()
+            .filter_map(|(&target, tooltip)| {
+                (tooltip.open
+                    && self
+                        .world
+                        .node(target)
+                        .is_some_and(|node| node.document == document))
+                .then_some((target, tooltip.overlay))
+            })
+            .collect::<Vec<_>>();
+        for (target, overlay) in targets {
+            self.position_tooltip(target, overlay)?;
+        }
+        Ok(())
+    }
+
+    fn position_tooltip(
+        &mut self,
+        target: StableNodeId,
+        overlay: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        let anchor = self
+            .world
+            .layout_box(target)
+            .ok_or(FrameworkError::MissingView(target))?;
+        let document = self
+            .world
+            .node(target)
+            .ok_or(FrameworkError::MissingView(target))?
+            .document;
+        let Some(viewport) = self.component_lifecycle.viewports.get(&document).copied() else {
+            return Ok(());
+        };
+        let metrics = self.world.text_metrics(overlay).unwrap_or_default();
+        let (config, mut style) = self
+            .read(Entity::<Tooltip>::from_stable_id(overlay), |tooltip| {
+                (tooltip.config, tooltip.style.clone())
+            })?;
+        let padding_x = nana_ui_core::UI_METRICS.panel_padding_x;
+        let padding_y = nana_ui_core::UI_METRICS.panel_padding_y;
+        let desired_width = (metrics.width + padding_x * 2.0 + 2.0)
+            .min(config.max_width)
+            .max(0.0);
+        let height = (metrics.height + padding_y * 2.0 + 2.0).max(0.0);
+        let padding = config.viewport_padding.max(0.0);
+        let left_available = (anchor.x - config.gap - padding).max(0.0);
+        let right_available =
+            (viewport.width - padding - (anchor.x + anchor.width + config.gap)).max(0.0);
+        let (width, horizontal_side) = match config.placement {
+            TooltipPlacement::Left => {
+                let side = if left_available >= desired_width
+                    || (left_available >= right_available && right_available < desired_width)
+                {
+                    TooltipPlacement::Left
+                } else {
+                    TooltipPlacement::Right
+                };
+                let available = if side == TooltipPlacement::Left {
+                    left_available
+                } else {
+                    right_available
+                };
+                (desired_width.min(available), Some(side))
+            }
+            TooltipPlacement::Right => {
+                let side = if right_available >= desired_width
+                    || (right_available >= left_available && left_available < desired_width)
+                {
+                    TooltipPlacement::Right
+                } else {
+                    TooltipPlacement::Left
+                };
+                let available = if side == TooltipPlacement::Left {
+                    left_available
+                } else {
+                    right_available
+                };
+                (desired_width.min(available), Some(side))
+            }
+            TooltipPlacement::Top | TooltipPlacement::Bottom => (desired_width, None),
+        };
+        let top = (
+            anchor.x + (anchor.width - width) / 2.0,
+            anchor.y - config.gap - height,
+        );
+        let right = (
+            anchor.x + anchor.width + config.gap,
+            anchor.y + (anchor.height - height) / 2.0,
+        );
+        let bottom = (
+            anchor.x + (anchor.width - width) / 2.0,
+            anchor.y + anchor.height + config.gap,
+        );
+        let left = (
+            anchor.x - config.gap - width,
+            anchor.y + (anchor.height - height) / 2.0,
+        );
+        let fits = |(x, y): (f32, f32)| {
+            x >= padding
+                && y >= padding
+                && x + width <= viewport.width - padding
+                && y + height <= viewport.height - padding
+        };
+        let preferred = match config.placement {
+            TooltipPlacement::Top => top,
+            TooltipPlacement::Right => right,
+            TooltipPlacement::Bottom => bottom,
+            TooltipPlacement::Left => left,
+        };
+        let opposite = match config.placement {
+            TooltipPlacement::Top => bottom,
+            TooltipPlacement::Right => left,
+            TooltipPlacement::Bottom => top,
+            TooltipPlacement::Left => right,
+        };
+        let (x, y) = if let Some(side) = horizontal_side {
+            match side {
+                TooltipPlacement::Left => left,
+                TooltipPlacement::Right => right,
+                TooltipPlacement::Top | TooltipPlacement::Bottom => unreachable!(),
+            }
+        } else if fits(preferred) || !fits(opposite) {
+            preferred
+        } else {
+            opposite
+        };
+        let max_x = (viewport.width - padding - width).max(padding);
+        let max_y = (viewport.height - padding - height).max(padding);
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.offset_left = Some(LengthSpec::Px(x.clamp(padding, max_x)));
+        layout.offset_top = Some(LengthSpec::Px(y.clamp(padding, max_y)));
+        layout.width = Some(LengthSpec::Px(width));
+        self.update_component(Entity::<Tooltip>::from_stable_id(overlay), |tooltip, _| {
+            tooltip.style = style;
+        })?;
+        Ok(())
     }
 
     pub fn press_pointer(
@@ -1213,15 +1733,7 @@ impl AppContext {
         }
         match request.action {
             AccessibilityAction::Click => self.activate_node(request.target),
-            AccessibilityAction::Focus => {
-                if self.world.focused(document) == Some(request.target) {
-                    return Ok(false);
-                }
-                let mut mutations = MutationQueue::new();
-                mutations.request_focus(document, Some(request.target));
-                self.world.commit(mutations)?;
-                Ok(true)
-            }
+            AccessibilityAction::Focus => self.focus_node(document, request.target),
             AccessibilityAction::SetValue(value) => {
                 if self
                     .views
@@ -1253,6 +1765,20 @@ impl AppContext {
                         .ok()
                         .map(|value| {
                             self.set_slider_value(Entity::from_stable_id(request.target), value)
+                        })
+                        .transpose()
+                        .map(|changed| changed.unwrap_or(false));
+                }
+                if self
+                    .views
+                    .get(&request.target)
+                    .is_some_and(|view| view.is::<RangeField>())
+                {
+                    return value
+                        .parse::<f64>()
+                        .ok()
+                        .map(|value| {
+                            self.set_range_value(Entity::from_stable_id(request.target), value)
                         })
                         .transpose()
                         .map(|changed| changed.unwrap_or(false));
@@ -1355,7 +1881,7 @@ impl AppContext {
     }
 
     pub fn toggle_switch(&mut self, entity: Entity<Switch>) -> Result<bool, FrameworkError> {
-        if self.read(entity, |switch| switch.disabled)? {
+        if self.read(entity, |switch| switch.disabled || switch.loading)? {
             return Ok(false);
         }
         self.update_component(entity, |switch, cx| {
@@ -1365,6 +1891,143 @@ impl AppContext {
             });
         })?;
         Ok(true)
+    }
+
+    pub fn set_range_value(
+        &mut self,
+        entity: Entity<RangeField>,
+        value: f64,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, |range| range.disabled)? {
+            return Ok(false);
+        }
+        if !value.is_finite() {
+            return Err(FrameworkError::InvalidComponentValue(entity.id));
+        }
+        self.update_component(entity, |range, cx| {
+            let value = range.quantize(value);
+            if range.value == value {
+                return false;
+            }
+            range.value = value;
+            cx.emit(RangeChanged { value });
+            true
+        })
+    }
+
+    pub fn adjust_range(
+        &mut self,
+        entity: Entity<RangeField>,
+        adjustment: RangeAdjustment,
+    ) -> Result<bool, FrameworkError> {
+        let value = self.read(entity, |range| match adjustment {
+            RangeAdjustment::Decrement => range.value - range.step,
+            RangeAdjustment::Increment => range.value + range.step,
+            RangeAdjustment::PageDecrement => range.value - range.page_step,
+            RangeAdjustment::PageIncrement => range.value + range.page_step,
+            RangeAdjustment::Minimum => range.minimum,
+            RangeAdjustment::Maximum => range.maximum,
+        })?;
+        self.set_range_value(entity, value)
+    }
+
+    pub fn adjust_focused_range(
+        &mut self,
+        document: DocumentId,
+        adjustment: RangeAdjustment,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.focused(document) else {
+            return Ok(false);
+        };
+        if !self.is_range_field(target) {
+            return Ok(false);
+        }
+        self.adjust_range(Entity::from_stable_id(target), adjustment)
+    }
+
+    pub fn begin_range_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+    ) -> Result<bool, FrameworkError> {
+        if !self.is_range_field(target) {
+            return Ok(false);
+        }
+        if self.read(Entity::<RangeField>::from_stable_id(target), |range| {
+            range.disabled
+        })? {
+            return Ok(false);
+        }
+        let initial_value = self.read(Entity::<RangeField>::from_stable_id(target), |range| {
+            range.value
+        })?;
+        self.update_component(Entity::<RangeField>::from_stable_id(target), |range, cx| {
+            range.dragging = Some(crate::RangeDragState {
+                pointer_id,
+                initial_value,
+            });
+            cx.mutations().capture_pointer(pointer_id, target);
+        })?;
+        self.update_range_drag(document, pointer_id, x)
+    }
+
+    pub fn update_range_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_range_field(target) {
+            return Ok(false);
+        }
+        let track = match self.world.component_geometry(target) {
+            Some(crate::ComponentGeometry::Range { track, .. }) => track,
+            _ => return Ok(false),
+        };
+        if track.width <= 0.0 {
+            return Ok(false);
+        }
+        let value = self.read(Entity::<RangeField>::from_stable_id(target), |range| {
+            range.minimum
+                + f64::from(((x - track.x) / track.width).clamp(0.0, 1.0))
+                    * (range.maximum - range.minimum)
+        })?;
+        self.set_range_value(Entity::from_stable_id(target), value)
+    }
+
+    pub fn end_range_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_range_field(target) {
+            return Ok(false);
+        }
+        let initial = self.read(Entity::<RangeField>::from_stable_id(target), |range| {
+            range.dragging.map(|drag| drag.initial_value)
+        })?;
+        let restored = if cancel {
+            initial
+                .map(|value| self.set_range_value(Entity::from_stable_id(target), value))
+                .transpose()?
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        self.update_component(Entity::<RangeField>::from_stable_id(target), |range, cx| {
+            range.dragging = None;
+            cx.mutations().release_pointer(pointer_id, target);
+        })?;
+        Ok(restored || initial.is_some())
     }
 
     pub fn set_slider_value(
@@ -1879,7 +2542,9 @@ impl AppContext {
         } else {
             self.views.insert(entity.id, boxed);
         }
-        commit.map(|_| result)
+        commit?;
+        self.sync_component_lifecycle(entity.id)?;
+        Ok(result)
     }
 
     fn update_inner<V: View, R>(
@@ -1940,6 +2605,16 @@ impl AppContext {
         self.world.commit(queue)?;
         let removed = subtree.iter().copied().collect::<HashSet<_>>();
         self.remove_event_handlers_for(&removed);
+        for id in &removed {
+            self.component_lifecycle.tooltips.remove(id);
+            self.component_lifecycle.loading.remove(id);
+        }
+        self.component_lifecycle
+            .tooltips
+            .retain(|_, tooltip| !removed.contains(&tooltip.overlay));
+        if self.component_lifecycle.loading.is_empty() {
+            self.component_lifecycle.next_loading_frame = None;
+        }
         let boxed = self
             .views
             .remove(&entity.id)
@@ -2233,9 +2908,10 @@ mod tests {
 
     use crate::{
         Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
-        ListItem, ScrollAxes, ScrollChanged, ScrollView, Slider, SliderChanged, StandardVisual,
-        Switch, Tab, TabList, TabSelected, Table, TableCell, TableCellFocused, TableNavigation,
-        TableRow, Text, TextChanged, TextContent, TextInput, TextSelection, ToggleChanged,
+        ListItem, NodeStyle, RangeChanged, RangeField, ScrollAxes, ScrollChanged, ScrollView,
+        Slider, SliderChanged, StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell,
+        TableCellFocused, TableNavigation, TableRow, Text, TextChanged, TextContent, TextInput,
+        TextSelection, ToggleChanged,
     };
 
     #[derive(Debug)]
@@ -2382,7 +3058,10 @@ mod tests {
             .create_component(document, Card::new().label("Build actions"))
             .unwrap();
         let icon = context
-            .create_component(document, IconButton::new("+", "Add source"))
+            .create_component(
+                document,
+                IconButton::new(nana_ui_core::Icon::Add, "Add source"),
+            )
             .unwrap();
         let item = context
             .create_component(document, ListItem::new("Camera").selected(true))
@@ -2391,7 +3070,7 @@ mod tests {
         context.append_child(card, item).unwrap();
         context
             .on(icon, |button, _event: &Activate, _cx| {
-                button.glyph = "✓".into();
+                button.selected = true;
             })
             .unwrap();
         context
@@ -2402,7 +3081,15 @@ mod tests {
 
         assert!(context.activate_icon_button(icon).unwrap());
         assert!(context.activate_list_item(item).unwrap());
-        assert_eq!(context.world().text(icon.stable_id()), Some("✓"));
+        assert_eq!(context.world().text(icon.stable_id()), Some(""));
+        assert_eq!(
+            context.world().standard_visual(icon.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: nana_ui_core::Icon::Add,
+                size: nana_ui_core::ControlSize::Medium.icon_size(),
+                tooltip: None,
+            })
+        );
         assert_eq!(context.world().text(item.stable_id()), Some("Camera"));
 
         let nodes = context.world().project_accessibility(document);
@@ -2437,7 +3124,7 @@ mod tests {
                 .layout
                 .padding_top,
             Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::UI_METRICS.panel_padding_y
+                nana_ui_core::UI_METRICS.panel_padding_y + 24.0
             ))
         );
         assert_eq!(
@@ -2592,7 +3279,16 @@ mod tests {
         );
         assert_eq!(
             context.world().standard_visual(switch.stable_id()),
-            Some(StandardVisual::Switch { checked: false })
+            Some(StandardVisual::Switch {
+                label: Arc::from("Auto build"),
+                hint: None,
+                checked: false,
+                control_position: nana_ui_core::SwitchControlPosition::End,
+                size: nana_ui_core::ControlSize::Medium,
+                loading: false,
+                loading_phase: 0.0,
+                invalid: false,
+            })
         );
         assert_eq!(
             context.world().standard_visual(slider.stable_id()),
@@ -2628,10 +3324,50 @@ mod tests {
             .extract_nodes(&[checkbox.stable_id()])
             .pop()
             .unwrap();
-        assert_eq!(
-            hovered_checked.style.background,
-            Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
+        assert_ne!(
+            hovered_checked.style.background, checkbox_paint.style.background,
+            "a selected toggle must expose a distinct hover state"
         );
+    }
+
+    #[test]
+    fn range_accessibility_set_value_uses_quantized_typed_action() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let range = context
+            .create_component(
+                document,
+                RangeField::new(0.25, 0.0, 1.0, 0.25)
+                    .unwrap()
+                    .label("Opacity")
+                    .unit("%"),
+            )
+            .unwrap();
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&values);
+        context
+            .on(range, move |_range, event: &RangeChanged, _cx| {
+                observed.lock().unwrap().push(event.value);
+            })
+            .unwrap();
+
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document,
+                    AccessibilityActionRequest {
+                        target: range.stable_id(),
+                        action: AccessibilityAction::SetValue("0.62".into()),
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(*values.lock().unwrap(), vec![0.5]);
+        let node = context.world().project_accessibility(document).remove(0);
+        assert_eq!(node.numeric_minimum, Some(0.0));
+        assert_eq!(node.numeric_maximum, Some(1.0));
+        assert_eq!(node.numeric_step, Some(0.25));
+        assert_eq!(node.numeric_value, Some(0.5));
     }
 
     #[test]
@@ -3161,6 +3897,475 @@ mod tests {
         assert_eq!(frame.samples[0].target, entity.stable_id());
         assert_eq!(frame.samples[0].progress, 0.5);
         assert_eq!(frame.next_deadline, Some(Duration::from_millis(90)));
+    }
+
+    #[test]
+    fn icon_button_tooltip_uses_hover_clock_and_real_overlay_child() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                IconButton::new(nana_ui_core::Icon::About, "Details").tooltip(
+                    "More details",
+                    nana_ui_core::TooltipConfig {
+                        placement: nana_ui_core::TooltipPlacement::Left,
+                        delay_ms: 100,
+                        gap: 6.0,
+                        viewport_padding: 4.0,
+                        max_width: 120.0,
+                    },
+                ),
+            )
+            .unwrap();
+        let tooltip = context.icon_button_tooltip(button).unwrap().unwrap();
+        assert_eq!(
+            context.world().node(tooltip.stable_id()).unwrap().parent,
+            Some(button.stable_id())
+        );
+        assert_eq!(
+            context.world().overlay_host(button.stable_id()),
+            Some(crate::OverlayHostState::default())
+        );
+        context
+            .layout_document(document, crate::LayoutViewport::new(160.0, 80.0))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            button.stable_id(),
+            crate::LayoutBox {
+                x: 20.0,
+                y: 50.0,
+                width: 28.0,
+                height: 28.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+
+        context
+            .set_pointer_hover_at(
+                document,
+                1,
+                Some(button.stable_id()),
+                Duration::from_millis(10),
+            )
+            .unwrap();
+        assert_eq!(
+            context.next_animation_deadline(),
+            Some(Duration::from_millis(110))
+        );
+        assert!(
+            !context
+                .advance_animations(Duration::from_millis(109))
+                .has_updates()
+        );
+        assert!(
+            context
+                .advance_animations(Duration::from_millis(110))
+                .component_updates
+                .contains(&button.stable_id())
+        );
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(button.stable_id())
+                .unwrap()
+                .active,
+            Some(tooltip.stable_id())
+        );
+        let tooltip_style = context.world().node_style(tooltip.stable_id()).unwrap();
+        assert!(matches!(
+            tooltip_style.layout.offset_left,
+            Some(LengthSpec::Px(x)) if (4.0..=156.0).contains(&x)
+        ));
+        assert!(matches!(
+            tooltip_style.layout.offset_top,
+            Some(LengthSpec::Px(y)) if (4.0..=76.0).contains(&y)
+        ));
+        assert!(
+            matches!(
+                tooltip_style.layout.offset_left,
+                Some(LengthSpec::Px(x)) if x >= 54.0
+            ),
+            "tooltip should flip to the anchor's right, got {:?}",
+            tooltip_style.layout.offset_left
+        );
+
+        context
+            .set_pointer_hover_at(document, 1, None, Duration::from_millis(111))
+            .unwrap();
+        assert_eq!(
+            context.world().overlay_host(button.stable_id()),
+            Some(crate::OverlayHostState::default())
+        );
+        assert_eq!(context.next_animation_deadline(), None);
+    }
+
+    #[test]
+    fn loading_components_schedule_only_while_loading() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let switch = context
+            .create_component(document, Switch::new("Sync", false).loading(true))
+            .unwrap();
+        let card = context
+            .create_component(document, crate::Card::new().loading(true))
+            .unwrap();
+        assert_eq!(context.next_animation_deadline(), Some(Duration::ZERO));
+        let frame = context.advance_animations(Duration::ZERO);
+        assert_eq!(
+            frame
+                .component_updates
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>(),
+            HashSet::from([switch.stable_id(), card.stable_id()])
+        );
+        assert_eq!(
+            context.next_animation_deadline(),
+            Some(COMPONENT_FRAME_INTERVAL)
+        );
+        context
+            .update_component(switch, |switch, _| switch.loading = false)
+            .unwrap();
+        context
+            .update_component(card, |card, _| card.loading = false)
+            .unwrap();
+        assert_eq!(context.next_animation_deadline(), None);
+        assert!(
+            !context
+                .advance_animations(Duration::from_secs(1))
+                .has_updates()
+        );
+    }
+
+    #[test]
+    fn list_item_slots_are_unique_direct_children_in_canonical_order() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let item = context
+            .create_component(document, ListItem::new("fallback"))
+            .unwrap();
+        let leading = context.create_component(document, Text::new("L")).unwrap();
+        let content = context.create_component(document, Text::new("C")).unwrap();
+        let trailing = context.create_component(document, Text::new("T")).unwrap();
+        context.append_child(item, content).unwrap();
+        context.append_child(item, trailing).unwrap();
+        context.append_child(item, leading).unwrap();
+        let slots = ListItemSlots {
+            leading: Some(leading.stable_id()),
+            content: Some(content.stable_id()),
+            trailing: Some(trailing.stable_id()),
+        };
+        assert!(context.set_list_item_slots(item, slots).unwrap());
+        assert_eq!(
+            context.world().node(item.stable_id()).unwrap().children,
+            vec![
+                leading.stable_id(),
+                content.stable_id(),
+                trailing.stable_id()
+            ]
+        );
+        assert!(!context.set_list_item_slots(item, slots).unwrap());
+
+        let duplicate = ListItemSlots {
+            leading: Some(leading.stable_id()),
+            content: Some(leading.stable_id()),
+            trailing: Some(trailing.stable_id()),
+        };
+        assert!(matches!(
+            context.set_list_item_slots(item, duplicate),
+            Err(FrameworkError::InvalidListItemSlots {
+                item: invalid,
+                slot: None
+            }) if invalid == item.stable_id()
+        ));
+    }
+
+    #[test]
+    fn composite_geometry_separates_text_controls_and_range_drag_axis() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let sized = |width, height| {
+            let mut style = NodeStyle::default();
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(LengthSpec::Px(width));
+            layout.height = Some(LengthSpec::Px(height));
+            style
+        };
+        let switch = context
+            .create_component(
+                document,
+                Switch::new("Automatic updates", false)
+                    .hint("Runs in the background")
+                    .style(sized(380.0, 52.0)),
+            )
+            .unwrap();
+        let range = context
+            .create_component(
+                document,
+                RangeField::new(50.0, 0.0, 100.0, 1.0)
+                    .unwrap()
+                    .label("Volume")
+                    .unit("%")
+                    .style(sized(300.0, 58.0)),
+            )
+            .unwrap();
+        let card = context
+            .create_component(
+                document,
+                Card::new().title("Overview").padding(28.0).height(120.0),
+            )
+            .unwrap();
+        let body = context
+            .create_component(document, Text::new("Body"))
+            .unwrap();
+        context.append_child(card, body).unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
+            .unwrap();
+
+        let crate::ComponentGeometry::Switch {
+            label,
+            hint: Some(hint),
+            control,
+            ..
+        } = context
+            .world()
+            .component_geometry(switch.stable_id())
+            .unwrap()
+        else {
+            panic!("switch geometry must include label, hint, and control");
+        };
+        assert!(label.bounds.x + label.bounds.width <= control.x);
+        assert!(label.bounds.y + label.bounds.height <= hint.bounds.y);
+
+        let crate::ComponentGeometry::Card {
+            title: Some(title),
+            content,
+            ..
+        } = context
+            .world()
+            .component_geometry(card.stable_id())
+            .unwrap()
+        else {
+            panic!("card geometry must include title and content");
+        };
+        assert!(title.bounds.y + title.bounds.height <= content.y);
+        assert!(title.bounds.width >= content.width - 0.01);
+        assert!(context.world().layout_box(body.stable_id()).unwrap().y >= content.y);
+        let card_layout = context
+            .world()
+            .node_style(card.stable_id())
+            .unwrap()
+            .layout
+            .as_ref();
+        assert_eq!(card_layout.padding_top, Some(LengthSpec::Px(52.0)));
+        assert_eq!(card_layout.padding_bottom, Some(LengthSpec::Px(28.0)));
+
+        let crate::ComponentGeometry::Range { track, .. } = context
+            .world()
+            .component_geometry(range.stable_id())
+            .unwrap()
+        else {
+            panic!("range geometry must expose the interaction axis");
+        };
+        assert!(track.x > context.world().layout_box(range.stable_id()).unwrap().x);
+        context
+            .begin_range_drag(document, 7, range.stable_id(), track.x)
+            .unwrap();
+        assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
+        context
+            .update_range_drag(document, 7, track.x + track.width)
+            .unwrap();
+        assert_eq!(context.read(range, |range| range.value).unwrap(), 100.0);
+    }
+
+    #[test]
+    fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
+        for size in [
+            nana_ui_core::ControlSize::Small,
+            nana_ui_core::ControlSize::Medium,
+            nana_ui_core::ControlSize::Large,
+        ] {
+            let mut context = AppContext::new();
+            let document = DocumentId::new(1).unwrap();
+            let switch = context
+                .create_component(
+                    document,
+                    Switch::new("Automatic updates", false)
+                        .hint("Runs in the background")
+                        .size(size),
+                )
+                .unwrap();
+            let range = context
+                .create_component(
+                    document,
+                    RangeField::new(0.7, 0.0, 1.0, 0.1)
+                        .unwrap()
+                        .label("Opacity")
+                        .unit("%")
+                        .size(size),
+                )
+                .unwrap();
+            context
+                .layout_document(document, crate::LayoutViewport::new(380.0, 120.0))
+                .unwrap();
+            assert_eq!(
+                context
+                    .world()
+                    .layout_box(switch.stable_id())
+                    .unwrap()
+                    .width,
+                380.0
+            );
+            let crate::ComponentGeometry::Switch { label, control, .. } = context
+                .world()
+                .component_geometry(switch.stable_id())
+                .unwrap()
+            else {
+                panic!("switch geometry expected");
+            };
+            assert_eq!(label.font_size, size.text_size());
+            assert!(label.bounds.x + label.bounds.width <= control.x);
+            let switch_interaction = context
+                .world()
+                .node_style(switch.stable_id())
+                .unwrap()
+                .interaction;
+            assert_ne!(switch_interaction.hovered, switch_interaction.pressed);
+            assert_ne!(switch_interaction.pressed, switch_interaction.focused);
+            let crate::ComponentGeometry::Range {
+                label: Some(label),
+                value,
+                unit: Some(unit),
+                track,
+            } = context
+                .world()
+                .component_geometry(range.stable_id())
+                .unwrap()
+            else {
+                panic!("range geometry expected");
+            };
+            assert_eq!(label.font_size, size.text_size());
+            assert!(label.bounds.x + label.bounds.width <= track.x);
+            assert!(track.x + track.width <= value.bounds.x);
+            assert!(value.bounds.x + value.bounds.width <= unit.bounds.x + 0.01);
+            assert_eq!(
+                context.world().standard_visual(range.stable_id()),
+                Some(StandardVisual::Range {
+                    label: Some(Arc::from("Opacity")),
+                    value: Arc::from("0.7"),
+                    unit: Some(Arc::from("%")),
+                    size,
+                    ratio: 0.7,
+                    invalid: false,
+                })
+            );
+        }
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        for kind in [
+            nana_ui_core::CardKind::Surface,
+            nana_ui_core::CardKind::Outlined,
+            nana_ui_core::CardKind::Raised,
+            nana_ui_core::CardKind::Flat,
+            nana_ui_core::CardKind::Selected,
+        ] {
+            let card = context
+                .create_component(document, Card::new().kind(kind))
+                .unwrap();
+            let background = context
+                .world()
+                .node_style(card.stable_id())
+                .unwrap()
+                .background;
+            let expected_elevation = kind == nana_ui_core::CardKind::Raised;
+            context
+                .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
+                .unwrap();
+            let crate::ComponentGeometry::Card { elevation, .. } = context
+                .world()
+                .component_geometry(card.stable_id())
+                .unwrap()
+            else {
+                panic!("card geometry expected");
+            };
+            assert_eq!(elevation.is_some(), expected_elevation);
+            assert_eq!(
+                background,
+                match kind {
+                    nana_ui_core::CardKind::Surface | nana_ui_core::CardKind::Raised => {
+                        Some(nana_ui_core::SemanticColorRole::Surface)
+                    }
+                    nana_ui_core::CardKind::Selected => {
+                        Some(nana_ui_core::SemanticColorRole::Selected)
+                    }
+                    nana_ui_core::CardKind::Outlined | nana_ui_core::CardKind::Flat => None,
+                }
+            );
+        }
+
+        let item = context
+            .create_component(document, ListItem::new("Camera"))
+            .unwrap();
+        let item_interaction = context
+            .world()
+            .node_style(item.stable_id())
+            .unwrap()
+            .interaction;
+        assert_ne!(item_interaction.selected, item_interaction.selected_hovered);
+        let leading = context.create_component(document, Text::new("L")).unwrap();
+        let trailing = context.create_component(document, Text::new("T")).unwrap();
+        context.append_child(item, leading).unwrap();
+        context.append_child(item, trailing).unwrap();
+        context
+            .set_list_item_slots(
+                item,
+                ListItemSlots {
+                    leading: Some(leading.stable_id()),
+                    content: None,
+                    trailing: Some(trailing.stable_id()),
+                },
+            )
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
+            .unwrap();
+        let crate::ComponentGeometry::ListItem {
+            leading: Some(leading),
+            content: Some(content),
+            trailing: Some(trailing),
+        } = context
+            .world()
+            .component_geometry(item.stable_id())
+            .unwrap()
+        else {
+            panic!("list item fallback geometry expected");
+        };
+        assert!(leading.x + leading.width <= content.x);
+        assert!(content.x + content.width <= trailing.x);
+
+        let disabled_range = context
+            .create_component(
+                document,
+                RangeField::new(0.5, 0.0, 1.0, 0.1)
+                    .unwrap()
+                    .label("Opacity")
+                    .disabled(true),
+            )
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .node_style(disabled_range.stable_id())
+                .unwrap()
+                .interaction
+                .disabled
+                .foreground,
+            Some(nana_ui_core::SemanticColorRole::Muted)
+        );
     }
 
     #[test]

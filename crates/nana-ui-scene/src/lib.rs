@@ -5,6 +5,7 @@
 //! Iced/WGPU compatibility backend and future native backends alike.
 
 mod graph;
+mod icon;
 mod runtime_document;
 mod scene;
 
@@ -12,6 +13,7 @@ pub use graph::{
     AccessMode, CompiledRenderGraph, GraphError, PassId, RenderGraph, RenderOperation, RenderPass,
     RenderResource, ResourceAccess, ResourceId,
 };
+pub use icon::{IconGeometry, IconPathCommand, IconShape, icon_geometry};
 pub use runtime_document::{RuntimeDocument, RuntimeFrameUpdate};
 pub use scene::{
     AffineTransform, ClipRegion, PrimitiveId, SceneDelta, ScenePrimitive, ScenePrimitiveKind,
