@@ -56,7 +56,7 @@ cargo check -p nana-ui-runtime --no-default-features --locked --target x86_64-pc
 cargo check -p nana-ui-runtime --no-default-features --locked --target x86_64-unknown-linux-gnu
 ```
 
-当前 macOS 测试和 Android/Windows/Linux cross-check 均通过。cross-check 证明 Rust 依赖和代码可编译，不代替真实平台行为验收。
+当前 macOS 测试和 backend-neutral portability check 均通过。cross-check 只证明 Rust 依赖和代码可编译，不代替真实桌面平台行为验收。
 
 ## 阶段复核
 

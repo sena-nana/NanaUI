@@ -11,6 +11,7 @@
 pub mod action;
 pub mod box_layout;
 pub mod dialog;
+pub mod expansion;
 pub mod geometry;
 pub mod icon;
 pub mod layout;
@@ -19,8 +20,12 @@ pub mod overlay;
 pub mod selection;
 pub mod semantics;
 pub mod settings;
+pub mod split_pane;
 pub mod style_model;
 pub mod theme;
+pub mod virtual_list;
+pub mod virtual_table;
+pub mod workspace_model;
 
 pub use action::{ActionId, ContextPredicate, KeyContext};
 pub use box_layout::{
@@ -30,8 +35,10 @@ pub use box_layout::{
     ViewportAxis, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+pub use expansion::ExpansionState;
 pub use geometry::{
-    LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect, TITLE_BAR_HEIGHT, WorkspaceGeometry,
+    LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect, TITLE_BAR_HEIGHT,
+    WorkspaceGeometry,
 };
 pub use icon::Icon;
 pub use layout::{
@@ -50,7 +57,19 @@ pub use settings::{
     AppearanceEvent, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,
     SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode,
 };
+pub use split_pane::{SplitAxis, SplitPaneModel, SplitPaneMutation};
 pub use style_model::{
     ControlSemantics, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef,
 };
 pub use theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
+pub use virtual_list::{
+    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
+    VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+};
+pub use virtual_table::{
+    TableColumn, TableCursor, TableNavigation, VirtualTableLayout, VirtualTableMaterialization,
+    VirtualTableMaterializer, VirtualTableWindow,
+};
+pub use workspace_model::{
+    WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
+};

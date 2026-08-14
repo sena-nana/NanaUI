@@ -10,9 +10,11 @@
 - `LayoutInput` 暴露有序 hierarchy、共享 `LayoutStyle` 和真实 text metrics；当前 Iced layout 通过 `WriteLayout` 回写 painted geometry，因此不存在第二布局权威。
 - hit-test 使用按 document 构建的紧凑索引；一次 root→leaf 传播累计 transform 与 overflow clip，事件时不遍历 ECS World。同 z-index 按 document order 取最上层节点。
 - focus 与 IME 都通过同一 `MutationQueue` 提交；失去 focusability/visibility 或销毁节点时清除 composition。IME selection 校验 UTF-8 边界。
+- committed `TextInputState` 将 value 与 anchor/focus selection 绑定稳定 Entity，preedit 继续由独立 `ImeComposition` 持有；selection replacement 按 UTF-8 边界原子执行，accessibility 与 render extraction 消费同一 committed value。
+- `ScrollOffset` 与未滚动 `LayoutBox` 同属 UiWorld；scroll mutation 只让后代 input/render 失效，不触发布局重算。hit-test 按祖先 scroll offset 平移后代，同时把 scrollport 自身保持为 viewport clip。`overflow:auto|scroll` 与 hidden 一样建立 paint/input clip。
 - pointer capture 以 document + pointer ID 存在 Runtime，并由同一 mutation batch 捕获/替换/释放；subtree 销毁自动发布 lost-capture。capture/target/bubble route 直接从 Runtime hierarchy 投影，adapter 不再维护第二份 capture authority。
 - animation 以稳定 `AnimationId` 和目标 Entity 存在 Runtime；start/replace/stop 与其他 mutation 同批原子提交，目标 subtree 销毁会取消对应 deadline。Runtime 不创建线程或读取系统时钟，host 传入同一 epoch 的单调 `Duration`，并从 `AnimationFrame.next_deadline` 安排精确唤醒。
-- `ExtractedNode` 是 renderer-neutral snapshot，包含 hierarchy、源样式、computed style、geometry、text metrics、focus/IME；增量 extraction 同时输出 `render_removals`，不会遗留已销毁 primitive。
+- `ExtractedNode` 是 renderer-neutral snapshot，包含 hierarchy、源样式、computed style、geometry、text metrics、focus/IME；增量 extraction 同时输出 `render_removals`。Accessibility delta 同样包含 updated nodes 与稳定 ID removals；subtree 删除会同时更新父节点 children，renderer 或平台语义树都不会遗留幽灵节点。
 
 ## 增量调度
 
@@ -21,9 +23,10 @@
 - 改变 parent：子树重算继承样式/text/layout/input/focus/render，旧/新祖先重算 layout/render；
 - 同 parent sibling reorder：仅移动节点 input/render，祖先 layout/render，不重算未变化的后代样式；
 - style/text/interaction：按影响面传播；layout writeback 只触发 input/render，避免 layout 自激循环；
+- scroll offset：只传播 subtree input/render，canonical layout 保持未滚动坐标；
 - despawn：从 dirty set、focus、IME 和 hit index 移除，并发布 render removal。
 
-阶段复核中删除了三类冗余：每帧全 World dirty 扫描、初始化节点重复写 `ALL` dirty bits、sibling reorder 对整棵子树无条件失效。公共 system 方法对 stale ID 返回 `UiWorldError`，不依赖调用者维护内部不变量。
+阶段复核中删除了每帧全 World dirty 扫描、初始化节点重复写 `ALL` dirty bits、sibling reorder 对整棵子树无条件失效，以及通过重写 layout 模拟滚动等冗余。公共 system 方法对 stale ID 返回 `UiWorldError`，不依赖调用者维护内部不变量。
 
 ## 功能门禁
 
@@ -37,8 +40,9 @@ Runtime 功能测试覆盖：
 - 静态帧无 work、sibling reorder 精确 invalidation；
 - subtree despawn 的 renderer removal 与 stale handle 行为。
 - animation 非法时序/stop 的批次原子失败、start/replace/stop、easing、deadline、完成与 subtree 自动取消；并覆盖 `ViewContext` mutation → `AppContext` host wakeup 的实际调用链。
+- CJK committed selection replacement、非法 byte offset 原子失败，以及 focused text-input 查询；IME preedit 不能挂到没有 committed text state 的普通节点。
 
-`nana-ui-vue` 的 CJK shaping test 通过实际 Iced paragraph backend，不以字符串或日志匹配替代功能。macOS runtime test/clippy 通过；Android、Windows、Linux 的 runtime cross-check 通过。Vue/Iced 检查仅出现 `vendor/arboard` 既有 deprecated/unsafe warnings。
+`nana-ui-vue` 的 CJK shaping test 通过实际 Iced paragraph backend，不以字符串或日志匹配替代功能。macOS runtime test/clippy 通过；backend-neutral runtime portability check 通过。Vue/Iced 检查仅出现 `vendor/arboard` 既有 deprecated/unsafe warnings。
 
 ## 性能门禁
 
@@ -46,16 +50,20 @@ Runtime 功能测试覆盖：
 
 | 节点 | Initial commit P95 | Initial schedule P95 | Initial systems P95 | Reorder commit P95 | Reorder systems P95 | Idle schedule P95 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 | 0.230 ms | 0.014 ms | 0.133 ms | 0.002 ms | 0.031 ms | 0.000 ms |
-| 500 | 0.590 ms | 0.025 ms | 0.280 ms | 0.001 ms | 0.063 ms | 0.000 ms |
-| 1000 | 0.855 ms | 0.034 ms | 0.404 ms | 0.001 ms | 0.092 ms | 0.000 ms |
-| 5000 | 4.940 ms | 0.194 ms | 2.078 ms | 0.001 ms | 0.457 ms | 0.000 ms |
+| 100 | 0.226 ms | 0.017 ms | 0.150 ms | 0.002 ms | 0.032 ms | 0.000 ms |
+| 500 | 0.557 ms | 0.031 ms | 0.304 ms | 0.001 ms | 0.064 ms | 0.000 ms |
+| 1000 | 0.866 ms | 0.047 ms | 0.475 ms | 0.001 ms | 0.101 ms | 0.000 ms |
+| 5000 | 4.836 ms | 0.243 ms | 2.420 ms | 0.002 ms | 0.501 ms | 0.000 ms |
 
-`rebuild_hit_test` 在 retained order 改变时按 document 重建，因此 reorder systems 随文档大小增长；加入正确的累计 transform/clip 后曾因逐节点回溯祖先升至约 3 ms，改为单次 root→leaf 传播后 5000 节点 P95 为 0.457 ms。静态 world 的 drain 为 O(1) 空集路径。首批 5000 节点 commit + schedule + systems P95 合计 7.212 ms，低于一帧 16.67 ms；这不是最终应用帧时间承诺。
+`rebuild_hit_test` 在 retained order 改变时按 document 重建，因此 reorder systems 随文档大小增长；加入正确的累计 transform/clip 后曾因逐节点回溯祖先升至约 3 ms，改为单次 root→leaf 传播后 5000 节点 P95 为 0.501 ms。静态 world 的 drain 为 O(1) 空集路径。首批 5000 节点 commit + schedule + systems P95 合计 7.499 ms，低于一帧 16.67 ms；这不是最终应用帧时间承诺。
 
-报告 schema v4 另加入 leaf paint-only mutation，并在每个样本断言只有 1 个 style/render work node、layout/input work 均为空。100–5000 节点的 commit P95 均不高于 0.001 ms，systems P95 均不高于 0.002 ms，证明该路径不随文档大小做全树无效工作。此前所有 `SetStyle` 无条件失效 subtree layout 的冗余已按 inherited text/paint、visibility、transform/stacking、layout semantics 分类消除；分类使用只读字段比较，不克隆含 String/Vec 的完整 style。
+报告 schema v6 另加入 leaf paint-only mutation，并在每个样本断言只有 1 个 style/render work node、layout/input work 均为空。100–5000 节点的 commit P95 均不高于 0.001 ms，systems P95 均不高于 0.003 ms，证明该路径不随文档大小做全树无效工作。此前所有 `SetStyle` 无条件失效 subtree layout 的冗余已按 inherited text/paint、visibility、transform/stacking、layout semantics 分类消除；分类使用只读字段比较，不克隆含 String/Vec 的完整 style。
 
-同一报告还测量 animation 独立 cadence：100–5000 节点、零 active animation 的 deadline 查询 P95 都是 0.000 ms；仅 1 个 active animation 的 due sample P95 都是 0.000 ms（100 节点 P99 0.001 ms）。这证明动画路径不随 retained node 数扫描 World。当前 compatibility components 仍有 Iced-local animation；把它们逐个迁移到此 authority 属于 component/backend parity 缺口，不能因 Runtime contract 已完成而宣称整项 Epic 已完成。
+同一 schema 测量 Runtime-owned per-pointer hover 在两个带 interaction style 的 leaf 间交替：100–5000 节点 transition P95 均为 0.000 ms，并逐样本断言只调度 old/new 两个 style/render node。没有 interaction paint 的节点仍记录 hover/press authority供事件语义使用，但不产生无价值的 style work。
+
+同一报告还测量 animation 独立 cadence：deadline 由按 `(deadline, AnimationId)` 排序的索引维护，start/replace/stop/cancel 为 O(log n)，最近 deadline 为 O(1)，advance 只遍历 due 项。每个 case 注册与节点数相同的 100–5000 个 animation，但仅 1 个在采样时刻 due；最近 deadline 查询与该次稀疏采样 P95 均为 0.000 ms（100 节点 P99 0.001 ms），并断言完成后下一 deadline 来自其余 future animation。由此不再以“只有 1 个 active animation”的弱场景推断扩展性。后续 Workspace/Sidebar/Dock 复核已移除 `nana-ui` 中最后的 Iced `Animation` 状态，但完整 component/backend parity 仍取决于 painter、平台 adapter 与 gallery 迁移，不能因 animation contract 完成而宣称整项 Epic 完成。
+
+`nana-ui::RuntimeAnimationClock` 已将 Runtime monotonic `Duration` epoch 接到 hosted event-loop `Instant`：`next_wakeup` 可与 GPU/Web/Live2D deadline 取最小值，`wake` 只采样 due animation，既不创建 timer 也不替 host 请求 redraw。后续 Workspace 复核又把 layout、viewport、resize 与 collapse transition 下沉到 backend-neutral `nana-ui-core::WorkspaceModel`；Sidebar expansion 和 Dock dwell 也只保存 `Duration`。Iced controller 仅转换 host subscription/clock，不再持有动画权威。
 
 复测命令：
 

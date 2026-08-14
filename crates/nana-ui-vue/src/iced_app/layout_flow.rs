@@ -186,7 +186,13 @@ where
             c = push_justified(c, line_els, justify, main_gap);
             r = r.push(c);
         }
-        return finalize_layout_container(r.into(), layout, parent_box, Some(widget.id));
+        return finalize_layout_container(
+            r.into(),
+            layout,
+            parent_box,
+            Some(widget.id),
+            map_event,
+        );
     }
 
     let mut col = column![].spacing(item_spacing).width(width).align_x(align);
@@ -213,11 +219,17 @@ where
         layout,
         editors,
         menus,
-        map_event,
+        map_event.clone(),
     );
     col = push_justified(col, children, justify, main_gap);
     col = pin_flex_container_main_length(col, height, layout, parent_box, true);
-    finalize_layout_container(col.into(), layout, parent_box, Some(widget.id))
+    finalize_layout_container(
+        col.into(),
+        layout,
+        parent_box,
+        Some(widget.id),
+        map_event,
+    )
 }
 
 fn layout_row<'a, Message>(
@@ -282,7 +294,13 @@ where
             r = push_justified_row(r, line_els, justify, main_gap);
             col = col.push(r);
         }
-        return finalize_layout_container(col.into(), layout, parent_box, Some(widget.id));
+        return finalize_layout_container(
+            col.into(),
+            layout,
+            parent_box,
+            Some(widget.id),
+            map_event,
+        );
     }
 
     let mut r = row![].spacing(item_spacing).width(width).align_y(align);
@@ -306,12 +324,18 @@ where
         layout,
         editors,
         menus,
-        map_event,
+        map_event.clone(),
     );
     r = push_justified_row(r, children, justify, main_gap);
     let row_height = resolve_container_height(layout, parent_box);
     r = pin_flex_row_cross_or_main_height(r, row_height, layout);
-    finalize_layout_container(r.into(), layout, parent_box, Some(widget.id))
+    finalize_layout_container(
+        r.into(),
+        layout,
+        parent_box,
+        Some(widget.id),
+        map_event,
+    )
 }
 
 fn wrap_layout_owned<Message>(
@@ -600,7 +624,13 @@ where
                 c = push_justified(c, line_els, justify, main_gap);
                 r = r.push(c);
             }
-            return finalize_layout_container(r.into(), layout, parent_box, scroll_id);
+            return finalize_layout_container(
+                r.into(),
+                layout,
+                parent_box,
+                scroll_id,
+                map_event,
+            );
         }
 
         let mut col = column![].spacing(item_spacing).width(width).align_x(align);
@@ -618,7 +648,13 @@ where
         // height:auto → Fill (no iced Shrink compression). Children with
         // height:auto are pinned Shrink so they do not steal the main axis.
         col = pin_flex_container_main_length(col, height, layout, parent_box, true);
-        return finalize_layout_container(col.into(), layout, parent_box, scroll_id);
+        return finalize_layout_container(
+            col.into(),
+            layout,
+            parent_box,
+            scroll_id,
+            map_event,
+        );
     }
 
     // flex-wrap: Wrap → column of rows. Align with measure.rs: when the row
@@ -667,7 +703,13 @@ where
             r = push_justified_row(r, line_els, justify, main_gap);
             col = col.push(r);
         }
-        return finalize_layout_container(col.into(), layout, parent_box, scroll_id);
+        return finalize_layout_container(
+            col.into(),
+            layout,
+            parent_box,
+            scroll_id,
+            map_event,
+        );
     }
 
     let mut r = row![].spacing(item_spacing).width(width).align_y(align);
@@ -685,7 +727,7 @@ where
     // that would stretch auto-height headings inside Fill columns.
     let row_height = resolve_container_height(layout, parent_box);
     r = pin_flex_row_cross_or_main_height(r, row_height, layout);
-    finalize_layout_container(r.into(), layout, parent_box, scroll_id)
+    finalize_layout_container(r.into(), layout, parent_box, scroll_id, map_event)
 }
 
 /// Available main-axis width for row flex-wrap, matching measure's use of parent
@@ -1276,14 +1318,12 @@ fn gpu_preview_placeholder<Message: 'static>(
     snap: &SemanticSnapshot,
     tokens: ThemeTokens,
 ) -> Element<'static, Message> {
-    let scene_layer = active_scene_custom(id);
-    let slot = scene_layer
-        .as_ref()
-        .map(|layer| layer.resource.as_str())
-        .or_else(|| props.attrs.get("data-nana-gpu").map(String::as_str));
-    if let Some(slot) = slot
-        && let Some(binding) = active_host_texture(slot)
-    {
+    let scene_binding = active_scene_host_texture(id);
+    let fallback_binding = props
+        .attrs
+        .get("data-nana-gpu")
+        .and_then(|slot| active_host_texture(slot));
+    if let Some(binding) = scene_binding.or(fallback_binding) {
         let aspect_ratio = binding.aspect_ratio();
         return nana_ui::GpuTextureView::new(binding.texture)
             // Compatibility painting still applies ancestor opacity/transform

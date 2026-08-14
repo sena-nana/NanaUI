@@ -1,0 +1,47 @@
+{
+  "platform": "macos",
+  "adapter": "Apple M4",
+  "backend": "Metal",
+  "live2d_revision": "71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033",
+  "workload": "synthetic 36-drawable live2d-wgpu renderer workload composed as a NanaUI HostTexture",
+  "viewport": [900, 640],
+  "live2d_target": [512, 512],
+  "warmup_iterations": 20,
+  "measured_iterations": 80,
+  "ui_only": {
+    "p50": {
+      "cpu_ms": 0.051459,
+      "submit_to_complete_ms": 0.494458,
+      "total_ms": 0.545125
+    },
+    "p95": {
+      "cpu_ms": 0.079042,
+      "submit_to_complete_ms": 2.431666,
+      "total_ms": 2.475375
+    },
+    "p99": {
+      "cpu_ms": 0.083042,
+      "submit_to_complete_ms": 3.307125,
+      "total_ms": 3.370625
+    }
+  },
+  "ui_live2d_composed": {
+    "p50": {
+      "cpu_ms": 0.150875,
+      "submit_to_complete_ms": 0.985542,
+      "total_ms": 1.031667
+    },
+    "p95": {
+      "cpu_ms": 0.188458,
+      "submit_to_complete_ms": 3.607166,
+      "total_ms": 3.656
+    },
+    "p99": {
+      "cpu_ms": 0.221583,
+      "submit_to_complete_ms": 4.1775,
+      "total_ms": 4.22725
+    }
+  },
+  "screenshot_checksum": 5769744322949528797,
+  "screenshot_distinct_colors": 408
+}

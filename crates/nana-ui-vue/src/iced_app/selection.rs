@@ -108,6 +108,7 @@ where
     let Some(store) = editors else {
         let map = map_event;
         return Input::new(placeholder, widget.props.value.as_str())
+            .id(hosted_text_widget_id(id))
             .size(widget.props.size)
             .disabled(widget.props.disabled)
             .on_input(move |value| map(BridgeEvent::Input { id, value }))
@@ -116,6 +117,7 @@ where
     let Some(content) = store.get(id) else {
         let map = map_event;
         return Input::new(placeholder, widget.props.value.as_str())
+            .id(hosted_text_widget_id(id))
             .size(widget.props.size)
             .disabled(widget.props.disabled)
             .on_input(move |value| map(BridgeEvent::Input { id, value }))
@@ -123,6 +125,7 @@ where
     };
     let map = map_event;
     let mut editor = Textarea::new(content)
+        .id(hosted_text_widget_id(id))
         .placeholder(placeholder)
         .disabled(widget.props.disabled)
         .invalid(widget.props.invalid)
@@ -152,6 +155,7 @@ where
     let Some(store) = editors else {
         let map = map_event;
         return Input::new(placeholder, props.value.clone())
+            .id(hosted_text_widget_id(id))
             .size(props.size)
             .disabled(props.disabled)
             .on_input(move |value| map(BridgeEvent::Input { id, value }))
@@ -160,6 +164,7 @@ where
     let Some(content) = store.content_static(id) else {
         let map = map_event;
         return Input::new(placeholder, props.value.clone())
+            .id(hosted_text_widget_id(id))
             .size(props.size)
             .disabled(props.disabled)
             .on_input(move |value| map(BridgeEvent::Input { id, value }))
@@ -167,6 +172,7 @@ where
     };
     let map = map_event;
     let mut editor = Textarea::new(content)
+        .id(hosted_text_widget_id(id))
         .placeholder(placeholder)
         .disabled(props.disabled)
         .invalid(props.invalid)

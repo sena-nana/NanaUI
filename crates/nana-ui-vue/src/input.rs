@@ -4,8 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use nana_js_engine::HostValue;
 
-use crate::NodeHandle;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HostedInputResult {
     pub targeted: bool,
@@ -295,32 +293,10 @@ impl CompositionInput {
 
 #[derive(Debug, Default)]
 pub(crate) struct InputState {
-    pressed: BTreeMap<u64, NodeHandle>,
-    hover: BTreeMap<u64, NodeHandle>,
     pressed_keys: BTreeSet<String>,
 }
 
 impl InputState {
-    pub fn set_pressed(&mut self, pointer_id: u64, node: NodeHandle) {
-        self.pressed.insert(pointer_id, node);
-    }
-
-    pub fn take_pressed(&mut self, pointer_id: u64) -> Option<NodeHandle> {
-        self.pressed.remove(&pointer_id)
-    }
-
-    pub fn hover_target(&self, pointer_id: u64) -> Option<NodeHandle> {
-        self.hover.get(&pointer_id).copied()
-    }
-
-    pub fn set_hover(&mut self, pointer_id: u64, node: Option<NodeHandle>) {
-        if let Some(node) = node {
-            self.hover.insert(pointer_id, node);
-        } else {
-            self.hover.remove(&pointer_id);
-        }
-    }
-
     pub fn note_key(&mut self, code: &str, pressed: bool) -> bool {
         if pressed {
             !self.pressed_keys.insert(code.to_string())
@@ -331,8 +307,6 @@ impl InputState {
     }
 
     pub fn clear(&mut self) {
-        self.pressed.clear();
-        self.hover.clear();
         self.pressed_keys.clear();
     }
 }

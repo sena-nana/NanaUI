@@ -10,21 +10,36 @@ mod components;
 mod framework;
 mod mutation;
 mod schedule;
+mod view_components;
 mod world;
 
 pub use animation::{AnimationFrame, AnimationId, AnimationSample, AnimationSpec, Easing};
 pub use components::{
-    AccessibilityNode, AccessibilityRole, AccessibilityState, ComputedStyle, CustomRenderNode,
-    EventRoute, ExtractedNode, ImeComposition, InteractionState, LayoutBox, LayoutInput, NodeStyle,
-    PointerCaptureChange, TextContent, TextInputState, TextMetrics, TextSelection, TextShaper,
+    AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
+    AccessibilityRole, AccessibilityState, AccessibilityUpdate, ComputedStyle, CustomRenderNode,
+    EventRoute, ExtractedNode, ImeComposition, InteractionState, InteractionStyle, LayoutBox,
+    LayoutInput, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
+    SemanticPaint, StandardVisual, TextContent, TextHorizontalAlignment, TextInputState,
+    TextMetrics, TextSelection, TextShaper, TextVerticalAlignment,
 };
 pub use framework::{
     AppContext, Entity, ExtensionRegistrar, FrameworkError, Subscription, Task, UiExtension, View,
-    ViewContext,
+    ViewContext, VirtualListItems, VirtualTableItems,
 };
 pub use mutation::{MutationQueue, UiMutation};
-pub use nana_ui_core::{ActionId, ContextPredicate, KeyContext};
+pub use nana_ui_core::{
+    ActionId, ContextPredicate, KeyContext, TableCursor, TableNavigation, ThemeMode,
+    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
+    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualTableLayout,
+    VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+};
 pub use schedule::SystemWork;
+pub use view_components::{
+    Activate, Button, Card, Checkbox, ComponentView, Dialog, IconButton, List, ListItem, Menu,
+    MenuItem, OverlayChanged, OverlayHost, ScrollAxes, ScrollChanged, ScrollView, Slider,
+    SliderChanged, SliderError, Switch, Tab, TabList, TabSelected, Table, TableCell,
+    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, ToggleChanged, Tooltip,
+};
 pub use world::{
     CommitReport, DocumentId, NodeKind, NodeSnapshot, StableNodeId, UiWorld, UiWorldError,
 };

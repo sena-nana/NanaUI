@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
@@ -8,8 +9,8 @@ use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Shell, mouse, overlay};
 use iced::widget::{button, column, container, row, scrollable, space, stack, text, tooltip};
 use iced::{
-    Alignment, Animation, Border, Color, Element, Event, Length, Padding, Point, Rectangle, Shadow,
-    Size, Subscription, Theme, font,
+    Alignment, Border, Color, Element, Event, Length, Padding, Point, Rectangle, Shadow, Size,
+    Subscription, Theme, font,
 };
 
 use crate::components::ControlSize;
@@ -26,7 +27,7 @@ const ROW_PADDING_LEFT: f32 = 8.0;
 const ROW_ICON_SLOT_WIDTH: f32 = 16.0;
 const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
 const ROW_TREE_DEPTH_STEP: f32 = 12.0;
-const SECTION_ANIMATION_DURATION: iced::time::Duration = iced::time::Duration::from_millis(160);
+const SECTION_ANIMATION_DURATION: Duration = Duration::from_millis(160);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SidebarRowState {
@@ -48,41 +49,39 @@ pub enum SidebarRowTone {
 /// Persistent expansion state and frame subscription for a sidebar section.
 #[derive(Debug, Clone)]
 pub struct SidebarSectionState {
-    expanded: bool,
-    expansion: Animation<bool>,
+    expansion: nana_ui_core::ExpansionState,
+    clock_origin: Instant,
 }
 
 impl SidebarSectionState {
     pub fn new(expanded: bool) -> Self {
         Self {
-            expanded,
-            expansion: Animation::new(expanded)
-                .duration(SECTION_ANIMATION_DURATION)
-                .easing(iced::animation::Easing::EaseOutCubic),
+            expansion: nana_ui_core::ExpansionState::new(expanded, SECTION_ANIMATION_DURATION),
+            clock_origin: Instant::now(),
         }
     }
 
     pub fn expanded(&self) -> bool {
-        self.expanded
+        self.expansion.expanded()
     }
 
     pub fn set_expanded(&mut self, expanded: bool) -> bool {
-        self.set_expanded_at(expanded, iced::time::Instant::now())
+        self.set_expanded_at(expanded, self.clock_origin.elapsed())
     }
 
     pub fn toggle(&mut self) -> bool {
-        self.set_expanded(!self.expanded)
+        self.expansion.toggle(self.clock_origin.elapsed())
     }
 
     pub fn is_animating(&self) -> bool {
-        self.expansion.is_animating(iced::time::Instant::now())
+        self.expansion.is_animating_at(self.clock_origin.elapsed())
     }
 
     pub fn expansion(&self) -> f32 {
-        self.expansion_at(iced::time::Instant::now())
+        self.expansion_at(self.clock_origin.elapsed())
     }
 
-    pub fn subscription(&self) -> Subscription<iced::time::Instant> {
+    pub fn subscription(&self) -> Subscription<Instant> {
         if self.is_animating() {
             iced::window::frames()
         } else {
@@ -90,17 +89,12 @@ impl SidebarSectionState {
         }
     }
 
-    fn set_expanded_at(&mut self, expanded: bool, at: iced::time::Instant) -> bool {
-        if self.expanded == expanded {
-            return false;
-        }
-        self.expanded = expanded;
-        self.expansion.go_mut(expanded, at);
-        true
+    fn set_expanded_at(&mut self, expanded: bool, at: Duration) -> bool {
+        self.expansion.set_expanded(expanded, at)
     }
 
-    fn expansion_at(&self, at: iced::time::Instant) -> f32 {
-        self.expansion.interpolate(0.0, 1.0, at)
+    fn expansion_at(&self, at: Duration) -> f32 {
+        self.expansion.value_at(at)
     }
 }
 
@@ -1262,22 +1256,22 @@ mod tests {
 
     #[test]
     fn section_state_animates_and_reverses_expansion() {
-        let started = iced::time::Instant::now();
+        let started = std::time::Duration::from_millis(100);
         let mut state = SidebarSectionState::new(true);
 
         assert!(state.set_expanded_at(false, started));
         assert!(!state.expanded());
-        let middle = state.expansion_at(started + iced::time::Duration::from_millis(80));
+        let middle = state.expansion_at(started + std::time::Duration::from_millis(80));
         assert!(middle > 0.0 && middle < 1.0);
         assert_eq!(
-            state.expansion_at(started + iced::time::Duration::from_millis(200)),
+            state.expansion_at(started + std::time::Duration::from_millis(200)),
             0.0
         );
 
-        assert!(state.set_expanded_at(true, started + iced::time::Duration::from_millis(80)));
+        assert!(state.set_expanded_at(true, started + std::time::Duration::from_millis(80)));
         assert!(state.expanded());
         assert_eq!(
-            state.expansion_at(started + iced::time::Duration::from_millis(280)),
+            state.expansion_at(started + std::time::Duration::from_millis(280)),
             1.0
         );
     }

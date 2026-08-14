@@ -10,6 +10,8 @@
 //! the reusable workspace contract.
 
 pub mod absolute;
+#[cfg(feature = "hosted")]
+mod accessibility;
 mod async_runtime;
 pub mod command;
 pub mod components;
@@ -35,7 +37,11 @@ pub mod layout_probe;
 pub mod menu;
 pub mod overlay;
 pub mod pane;
-mod resize_drag;
+mod runtime_animation;
+#[cfg(feature = "hosted")]
+mod runtime_host;
+mod runtime_input;
+mod scene_view;
 pub mod selection;
 pub mod settings;
 mod shell;
@@ -49,6 +55,16 @@ pub mod window_chrome;
 #[cfg(all(feature = "hosted", target_os = "windows"))]
 mod windows_pen;
 pub mod workspace;
+
+/// Canonical backend-neutral Nana framework API.
+///
+/// New applications should build retained state through this module. The
+/// top-level Iced-shaped component exports remain migration compatibility
+/// adapters and are not the framework's stable extension contract.
+pub mod runtime {
+    pub use nana_ui_runtime::*;
+    pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
+}
 
 pub use absolute::{Absolute, absolute_content_max};
 pub use async_runtime::{run_subscription, run_task};
@@ -132,11 +148,12 @@ pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,
     DockDropTarget, DockDropZone, DockError, DockHostEffect, DockId, DockItemSpec, DockLayout,
-    DockNode, DockSurfaceId, DockUpdate, FloatingDock, dock_window_workspace, dock_workspace,
+    DockMutation, DockNode, DockSurfaceId, DockUpdate, FloatingDock, dock_window_workspace,
+    dock_workspace,
 };
 #[cfg(feature = "hosted")]
 pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};
-pub use geometry::{LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
+pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{
     GpuTextureView, HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureLayer,
@@ -168,9 +185,10 @@ pub use hosted_runtime::{
     HostedDisplayArea, HostedFrameMetrics, HostedInputDisposition, HostedInputEvent,
     HostedInputModifiers, HostedPointerPhase, HostedPointerType, HostedProgram,
     HostedProgramContext, HostedProgramUpdate, HostedRedraw, HostedRunError, HostedRuntimeEvent,
-    HostedTitleBarMode, HostedUiCommand, HostedWindowAction, HostedWindowCaptureId,
-    HostedWindowCommand, HostedWindowEvent, HostedWindowGeometry, HostedWindowId,
-    HostedWindowPlacement, HostedWindowRole, HostedWindowSettings, run_hosted, run_hosted_with,
+    HostedTextPosition, HostedTitleBarMode, HostedUiCommand, HostedWindowAction,
+    HostedWindowCaptureId, HostedWindowCommand, HostedWindowEvent, HostedWindowGeometry,
+    HostedWindowId, HostedWindowPlacement, HostedWindowRole, HostedWindowSettings, run_hosted,
+    run_hosted_with,
 };
 pub use icons::{Icon, disclosure_icon, icon, spinner_icon, status_indicator};
 pub use layout::{
@@ -179,6 +197,15 @@ pub use layout::{
 };
 pub use layout_probe::{LayoutBounds, LayoutProbe};
 pub use menu::{MenuConfirmation, MenuSelection};
+pub use nana_ui_core::{
+    ExpansionState, SplitPaneModel, SplitPaneMutation, WORKSPACE_REGION_TRANSITION_DURATION,
+    WorkspaceModel, WorkspaceMutation,
+};
+#[cfg(feature = "hosted")]
+pub use nana_ui_platform::ImeEvent;
+pub use nana_ui_runtime::{
+    AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
+};
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
 pub use nana_window::{
@@ -190,6 +217,14 @@ pub use overlay::ExclusiveOverlay;
 pub use pane::{
     PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, ratio_pane_split,
 };
+pub use runtime_animation::RuntimeAnimationClock;
+#[cfg(feature = "hosted")]
+pub use runtime_host::{
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError,
+    RuntimeWindowSettings, run_runtime,
+};
+pub use runtime_input::RuntimeInputAdapter;
+pub use scene_view::{HostTextureSceneResolver, IcedSceneView, ScenePaintError};
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
     AppearanceSettings, BackdropTarget, SettingsCard, SettingsError, SettingsModel, SettingsRow,
@@ -210,7 +245,11 @@ pub use theme::{
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};
 pub use tooltip::{TooltipConfig, TooltipPlacement};
-pub use virtual_list::{VirtualListLayout, VirtualListWindow};
+pub use virtual_list::{
+    TableColumn, TableCursor, TableNavigation, VirtualListLayout, VirtualListMaterialization,
+    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+};
 pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
 pub use window_chrome::{
     WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,

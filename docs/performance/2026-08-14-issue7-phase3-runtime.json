@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 6,
   "profile": "release",
   "storage": "bevy_ecs 0.19.1 (default features disabled, std only)",
   "warmup_iterations": 10,
@@ -9,23 +9,23 @@
       "nodes": 100,
       "enqueue_ms": {
         "p50": 0.004,
-        "p95": 0.006,
-        "p99": 0.006
+        "p95": 0.005,
+        "p99": 0.005
       },
       "initial_commit_ms": {
-        "p50": 0.176,
-        "p95": 0.23,
-        "p99": 0.239
+        "p50": 0.179,
+        "p95": 0.226,
+        "p99": 0.233
       },
       "initial_schedule_ms": {
-        "p50": 0.01,
-        "p95": 0.014,
-        "p99": 0.016
+        "p50": 0.012,
+        "p95": 0.017,
+        "p99": 0.017
       },
       "initial_systems_ms": {
-        "p50": 0.094,
-        "p95": 0.133,
-        "p99": 0.141
+        "p50": 0.108,
+        "p95": 0.15,
+        "p99": 0.153
       },
       "steady_reorder_commit_ms": {
         "p50": 0.002,
@@ -38,14 +38,96 @@
         "p99": 0.001
       },
       "steady_systems_ms": {
-        "p50": 0.022,
-        "p95": 0.031,
+        "p50": 0.024,
+        "p95": 0.032,
         "p99": 0.032
       },
       "local_paint_commit_ms": {
         "p50": 0.001,
         "p95": 0.001,
+        "p99": 0.001
+      },
+      "local_paint_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_systems_ms": {
+        "p50": 0.002,
+        "p95": 0.003,
+        "p99": 0.004
+      },
+      "local_paint_work_nodes": 1,
+      "idle_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "idle_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "scheduled_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "sparse_animation_sample_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.001
+      },
+      "scheduled_animations": 100,
+      "due_animation_samples": 1,
+      "pointer_hover_transition_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "pointer_hover_work_nodes": 2
+    },
+    {
+      "nodes": 500,
+      "enqueue_ms": {
+        "p50": 0.007,
+        "p95": 0.009,
+        "p99": 0.01
+      },
+      "initial_commit_ms": {
+        "p50": 0.448,
+        "p95": 0.557,
+        "p99": 0.593
+      },
+      "initial_schedule_ms": {
+        "p50": 0.025,
+        "p95": 0.031,
+        "p99": 0.033
+      },
+      "initial_systems_ms": {
+        "p50": 0.248,
+        "p95": 0.304,
+        "p99": 0.328
+      },
+      "steady_reorder_commit_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
         "p99": 0.002
+      },
+      "steady_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "steady_systems_ms": {
+        "p50": 0.054,
+        "p95": 0.064,
+        "p99": 0.068
+      },
+      "local_paint_commit_ms": {
+        "p50": 0.0,
+        "p95": 0.001,
+        "p99": 0.001
       },
       "local_paint_schedule_ms": {
         "p50": 0.0,
@@ -55,6 +137,170 @@
       "local_paint_systems_ms": {
         "p50": 0.002,
         "p95": 0.002,
+        "p99": 0.002
+      },
+      "local_paint_work_nodes": 1,
+      "idle_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "idle_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "scheduled_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "sparse_animation_sample_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "scheduled_animations": 500,
+      "due_animation_samples": 1,
+      "pointer_hover_transition_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "pointer_hover_work_nodes": 2
+    },
+    {
+      "nodes": 1000,
+      "enqueue_ms": {
+        "p50": 0.012,
+        "p95": 0.013,
+        "p99": 0.014
+      },
+      "initial_commit_ms": {
+        "p50": 0.815,
+        "p95": 0.866,
+        "p99": 0.878
+      },
+      "initial_schedule_ms": {
+        "p50": 0.043,
+        "p95": 0.047,
+        "p99": 0.054
+      },
+      "initial_systems_ms": {
+        "p50": 0.44,
+        "p95": 0.475,
+        "p99": 0.482
+      },
+      "steady_reorder_commit_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.001
+      },
+      "steady_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "steady_systems_ms": {
+        "p50": 0.092,
+        "p95": 0.101,
+        "p99": 0.102
+      },
+      "local_paint_commit_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.001
+      },
+      "local_paint_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_systems_ms": {
+        "p50": 0.002,
+        "p95": 0.002,
+        "p99": 0.002
+      },
+      "local_paint_work_nodes": 1,
+      "idle_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "idle_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "scheduled_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "sparse_animation_sample_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "scheduled_animations": 1000,
+      "due_animation_samples": 1,
+      "pointer_hover_transition_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "pointer_hover_work_nodes": 2
+    },
+    {
+      "nodes": 5000,
+      "enqueue_ms": {
+        "p50": 0.06,
+        "p95": 0.073,
+        "p99": 0.074
+      },
+      "initial_commit_ms": {
+        "p50": 4.749,
+        "p95": 4.836,
+        "p99": 4.887
+      },
+      "initial_schedule_ms": {
+        "p50": 0.229,
+        "p95": 0.243,
+        "p99": 0.251
+      },
+      "initial_systems_ms": {
+        "p50": 2.351,
+        "p95": 2.42,
+        "p99": 2.496
+      },
+      "steady_reorder_commit_ms": {
+        "p50": 0.001,
+        "p95": 0.002,
+        "p99": 0.002
+      },
+      "steady_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "steady_systems_ms": {
+        "p50": 0.475,
+        "p95": 0.501,
+        "p99": 0.512
+      },
+      "local_paint_commit_ms": {
+        "p50": 0.0,
+        "p95": 0.001,
+        "p99": 0.001
+      },
+      "local_paint_schedule_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "local_paint_systems_ms": {
+        "p50": 0.002,
+        "p95": 0.003,
         "p99": 0.003
       },
       "local_paint_work_nodes": 1,
@@ -68,222 +314,24 @@
         "p95": 0.0,
         "p99": 0.0
       },
-      "active_animation_sample_ms": {
+      "scheduled_animation_deadline_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "sparse_animation_sample_ms": {
         "p50": 0.0,
         "p95": 0.0,
         "p99": 0.001
       },
-      "active_animation_samples": 1
-    },
-    {
-      "nodes": 500,
-      "enqueue_ms": {
-        "p50": 0.008,
-        "p95": 0.01,
-        "p99": 0.01
-      },
-      "initial_commit_ms": {
-        "p50": 0.477,
-        "p95": 0.59,
-        "p99": 0.593
-      },
-      "initial_schedule_ms": {
-        "p50": 0.02,
-        "p95": 0.025,
-        "p99": 0.025
-      },
-      "initial_systems_ms": {
-        "p50": 0.224,
-        "p95": 0.28,
-        "p99": 0.282
-      },
-      "steady_reorder_commit_ms": {
-        "p50": 0.001,
-        "p95": 0.001,
-        "p99": 0.001
-      },
-      "steady_schedule_ms": {
+      "scheduled_animations": 5000,
+      "due_animation_samples": 1,
+      "pointer_hover_transition_ms": {
         "p50": 0.0,
         "p95": 0.0,
         "p99": 0.0
       },
-      "steady_systems_ms": {
-        "p50": 0.051,
-        "p95": 0.063,
-        "p99": 0.063
-      },
-      "local_paint_commit_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.001
-      },
-      "local_paint_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "local_paint_systems_ms": {
-        "p50": 0.001,
-        "p95": 0.002,
-        "p99": 0.002
-      },
-      "local_paint_work_nodes": 1,
-      "idle_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "idle_animation_deadline_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "active_animation_sample_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "active_animation_samples": 1
-    },
-    {
-      "nodes": 1000,
-      "enqueue_ms": {
-        "p50": 0.012,
-        "p95": 0.014,
-        "p99": 0.014
-      },
-      "initial_commit_ms": {
-        "p50": 0.843,
-        "p95": 0.855,
-        "p99": 0.856
-      },
-      "initial_schedule_ms": {
-        "p50": 0.034,
-        "p95": 0.034,
-        "p99": 0.035
-      },
-      "initial_systems_ms": {
-        "p50": 0.387,
-        "p95": 0.404,
-        "p99": 0.405
-      },
-      "steady_reorder_commit_ms": {
-        "p50": 0.001,
-        "p95": 0.001,
-        "p99": 0.001
-      },
-      "steady_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "steady_systems_ms": {
-        "p50": 0.088,
-        "p95": 0.092,
-        "p99": 0.093
-      },
-      "local_paint_commit_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "local_paint_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "local_paint_systems_ms": {
-        "p50": 0.001,
-        "p95": 0.001,
-        "p99": 0.001
-      },
-      "local_paint_work_nodes": 1,
-      "idle_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "idle_animation_deadline_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "active_animation_sample_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "active_animation_samples": 1
-    },
-    {
-      "nodes": 5000,
-      "enqueue_ms": {
-        "p50": 0.072,
-        "p95": 0.082,
-        "p99": 0.084
-      },
-      "initial_commit_ms": {
-        "p50": 4.83,
-        "p95": 4.94,
-        "p99": 4.95
-      },
-      "initial_schedule_ms": {
-        "p50": 0.183,
-        "p95": 0.194,
-        "p99": 0.197
-      },
-      "initial_systems_ms": {
-        "p50": 2.049,
-        "p95": 2.078,
-        "p99": 2.08
-      },
-      "steady_reorder_commit_ms": {
-        "p50": 0.001,
-        "p95": 0.001,
-        "p99": 0.002
-      },
-      "steady_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "steady_systems_ms": {
-        "p50": 0.447,
-        "p95": 0.457,
-        "p99": 0.459
-      },
-      "local_paint_commit_ms": {
-        "p50": 0.0,
-        "p95": 0.001,
-        "p99": 0.001
-      },
-      "local_paint_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "local_paint_systems_ms": {
-        "p50": 0.002,
-        "p95": 0.002,
-        "p99": 0.002
-      },
-      "local_paint_work_nodes": 1,
-      "idle_schedule_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "idle_animation_deadline_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "active_animation_sample_ms": {
-        "p50": 0.0,
-        "p95": 0.0,
-        "p99": 0.0
-      },
-      "active_animation_samples": 1
+      "pointer_hover_work_nodes": 2
     }
   ]
 }

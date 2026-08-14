@@ -17,8 +17,11 @@ use crate::scroll::{
     ScrollIntoViewOptions, ScrollOffset, scroll_into_view, set_scroll_offset,
     shared_scroll_offset_store,
 };
+#[cfg(test)]
+use crate::tree::get_layout_box;
 use crate::tree::{
-    ElementNamespace, NanaTreeDocument, NodeHandle, get_layout_box, shared_layout_box_store,
+    ElementNamespace, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from,
+    shared_layout_box_store,
 };
 
 /// Shared handles used by DOM + semantic bridge host ops.
@@ -27,6 +30,7 @@ pub struct HostDocs {
     pub document: Arc<Mutex<NanaTreeDocument>>,
     pub bridge: Arc<Mutex<MessageBridge>>,
     pub web_api: SharedWebApiState,
+    pub layout_boxes: Arc<LayoutBoxStore>,
     #[cfg(feature = "iced-view")]
     pub components: Option<NativeComponentRegistry>,
 }
@@ -44,10 +48,27 @@ pub fn register_dom_host_ops_with_bridge(
     bridge: Arc<Mutex<MessageBridge>>,
     web_api: SharedWebApiState,
 ) {
+    register_dom_host_ops_with_bridge_and_layout(
+        api,
+        doc,
+        bridge,
+        web_api,
+        shared_layout_box_store(),
+    );
+}
+
+pub(crate) fn register_dom_host_ops_with_bridge_and_layout(
+    api: &mut HostApiRegistry,
+    doc: Arc<Mutex<NanaTreeDocument>>,
+    bridge: Arc<Mutex<MessageBridge>>,
+    web_api: SharedWebApiState,
+    layout_boxes: Arc<LayoutBoxStore>,
+) {
     let host = HostDocs {
         document: doc,
         bridge,
         web_api,
+        layout_boxes,
         #[cfg(feature = "iced-view")]
         components: None,
     };
@@ -62,12 +83,32 @@ pub fn register_dom_host_ops_with_components(
     web_api: SharedWebApiState,
     components: NativeComponentRegistry,
 ) {
+    register_dom_host_ops_with_components_and_layout(
+        api,
+        doc,
+        bridge,
+        web_api,
+        components,
+        shared_layout_box_store(),
+    );
+}
+
+#[cfg(feature = "iced-view")]
+pub(crate) fn register_dom_host_ops_with_components_and_layout(
+    api: &mut HostApiRegistry,
+    doc: Arc<Mutex<NanaTreeDocument>>,
+    bridge: Arc<Mutex<MessageBridge>>,
+    web_api: SharedWebApiState,
+    components: NativeComponentRegistry,
+    layout_boxes: Arc<LayoutBoxStore>,
+) {
     register_all(
         api,
         HostDocs {
             document: doc,
             bridge,
             web_api,
+            layout_boxes,
             components: Some(components),
         },
     );
@@ -720,7 +761,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let el = arg_handle(args, 0)?;
             let guard = lock_doc(&host.document)?;
             // Prefer iced paint writeback so getBoundingClientRect matches drawing.
-            Ok(match get_layout_box(&guard, el) {
+            Ok(match get_layout_box_from(&host.layout_boxes, &guard, el) {
                 Some(b) => HostValue::Object(
                     [
                         ("x".into(), HostValue::Number(b.x as f64)),
@@ -753,9 +794,11 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         });
     }
     {
+        let host = host.clone();
         api.register("getScrollOffset", move |args| {
             let el = arg_handle(args, 0)?;
-            let off = shared_scroll_offset_store().get(widget_id(el));
+            let guard = lock_doc(&host.document)?;
+            let off = guard.scroll_offset(el);
             Ok(HostValue::Object(
                 [
                     ("x".into(), HostValue::Number(off.x as f64)),
@@ -777,7 +820,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut guard = lock_doc(&host.document)?;
             let next = set_scroll_offset(
                 &mut guard,
-                &shared_layout_box_store(),
+                &host.layout_boxes,
                 &shared_scroll_offset_store(),
                 widget_id(el),
                 ScrollOffset { x, y },
@@ -804,7 +847,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let result = scroll_into_view(
                 &mut guard,
                 &bridge,
-                &shared_layout_box_store(),
+                &host.layout_boxes,
                 &shared_scroll_offset_store(),
                 el,
                 opts,
