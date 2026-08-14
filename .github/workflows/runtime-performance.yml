@@ -1,0 +1,52 @@
+name: Runtime performance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * 1"
+
+jobs:
+  cpu-runtime-scene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run release Runtime and Scene workloads
+        run: |
+          mkdir -p target/performance
+          cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark > target/performance/runtime.json
+          cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark > target/performance/framework.json
+          cargo run --quiet --release --locked -p nana-ui-vue --features benchmark --bin nana-vue-runtime-benchmark > target/performance/vue.json
+          cargo run --quiet --release --locked -p nana-ui-scene --features benchmark --bin nana-scene-benchmark -- --output target/performance/scene.json
+      - name: Enforce incremental and latency gates
+        run: |
+          python3 scripts/validate-runtime-performance.py \
+            --runtime target/performance/runtime.json \
+            --framework target/performance/framework.json \
+            --vue target/performance/vue.json \
+            --scene target/performance/scene.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-scene-performance
+          path: target/performance
+
+  macos-composition:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run real WGPU UI and Live2D composition workload
+        run: |
+          mkdir -p target/performance
+          cargo run --release --locked -p component-gallery \
+            --features live2d-acceptance --bin ui-live2d-acceptance -- \
+            --output target/performance/ui-live2d.json \
+            --screenshot target/performance/ui-live2d.png
+      - name: Enforce real GPU frame gates
+        run: python3 scripts/validate-runtime-performance.py --gpu target/performance/ui-live2d.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-ui-live2d-performance
+          path: target/performance

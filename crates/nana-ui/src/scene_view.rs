@@ -25,7 +25,11 @@ use nana_ui_scene::{
 };
 
 use crate::gpu_texture::GpuTexturePrimitive;
-use crate::{HostTextureBinding, HostTextureLayer, HostTextureRegistry};
+use crate::scene_gpu::SceneGpuPrimitive;
+use crate::{
+    HostTextureBinding, HostTextureLayer, HostTextureRegistry, SceneGpuNode,
+    SceneGpuRendererRegistry,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenePaintError {
@@ -133,6 +137,8 @@ impl HostTextureSceneResolver {
 pub struct IcedSceneView<'scene> {
     scene: SceneSource<'scene>,
     host_textures: Option<HostTextureRegistry>,
+    gpu_renderers: Option<SceneGpuRendererRegistry>,
+    operations: Arc<[RenderOperation]>,
     size: Size,
 }
 
@@ -153,12 +159,7 @@ impl SceneSource<'_> {
 
 impl<'scene> IcedSceneView<'scene> {
     pub fn new(scene: &'scene UiScene, size: Size) -> Result<Self, ScenePaintError> {
-        validate_scene(scene, None)?;
-        Ok(Self {
-            scene: SceneSource::Borrowed(scene),
-            host_textures: None,
-            size,
-        })
+        Self::borrowed(scene, None, None, size)
     }
 
     pub fn with_host_textures(
@@ -166,12 +167,24 @@ impl<'scene> IcedSceneView<'scene> {
         host_textures: HostTextureRegistry,
         size: Size,
     ) -> Result<Self, ScenePaintError> {
-        validate_scene(scene, Some(&host_textures))?;
-        Ok(Self {
-            scene: SceneSource::Borrowed(scene),
-            host_textures: Some(host_textures),
-            size,
-        })
+        Self::borrowed(scene, Some(host_textures), None, size)
+    }
+
+    pub fn with_gpu_renderers(
+        scene: &'scene UiScene,
+        gpu_renderers: SceneGpuRendererRegistry,
+        size: Size,
+    ) -> Result<Self, ScenePaintError> {
+        Self::borrowed(scene, None, Some(gpu_renderers), size)
+    }
+
+    pub fn with_gpu_resources(
+        scene: &'scene UiScene,
+        host_textures: Option<HostTextureRegistry>,
+        gpu_renderers: Option<SceneGpuRendererRegistry>,
+        size: Size,
+    ) -> Result<Self, ScenePaintError> {
+        Self::borrowed(scene, host_textures, gpu_renderers, size)
     }
 
     pub fn from_shared(
@@ -179,10 +192,21 @@ impl<'scene> IcedSceneView<'scene> {
         host_textures: Option<HostTextureRegistry>,
         size: Size,
     ) -> Result<IcedSceneView<'static>, ScenePaintError> {
-        validate_scene(&scene, host_textures.as_ref())?;
+        Self::from_shared_with_renderers(scene, host_textures, None, size)
+    }
+
+    pub fn from_shared_with_renderers(
+        scene: Arc<UiScene>,
+        host_textures: Option<HostTextureRegistry>,
+        gpu_renderers: Option<SceneGpuRendererRegistry>,
+        size: Size,
+    ) -> Result<IcedSceneView<'static>, ScenePaintError> {
+        let operations = validate_scene(&scene, host_textures.as_ref(), gpu_renderers.as_ref())?;
         Ok(IcedSceneView {
             scene: SceneSource::Shared(scene),
             host_textures,
+            gpu_renderers,
+            operations,
             size,
         })
     }
@@ -190,22 +214,46 @@ impl<'scene> IcedSceneView<'scene> {
     pub fn scene(&self) -> &UiScene {
         self.scene.get()
     }
+
+    fn borrowed(
+        scene: &'scene UiScene,
+        host_textures: Option<HostTextureRegistry>,
+        gpu_renderers: Option<SceneGpuRendererRegistry>,
+        size: Size,
+    ) -> Result<Self, ScenePaintError> {
+        let operations = validate_scene(scene, host_textures.as_ref(), gpu_renderers.as_ref())?;
+        Ok(Self {
+            scene: SceneSource::Borrowed(scene),
+            host_textures,
+            gpu_renderers,
+            operations,
+            size,
+        })
+    }
 }
 
 fn validate_scene(
     scene: &UiScene,
     host_textures: Option<&HostTextureRegistry>,
-) -> Result<(), ScenePaintError> {
+    gpu_renderers: Option<&SceneGpuRendererRegistry>,
+) -> Result<Arc<[RenderOperation]>, ScenePaintError> {
+    let graph = scene
+        .frame_graph(ResourceId(1))
+        .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
     for primitive in scene.primitives() {
         if let ScenePrimitiveKind::Custom(custom) = &primitive.kind {
-            if custom.renderer.as_ref() != "nana.host-texture" {
+            if custom.renderer.as_ref() == "nana.host-texture" {
+                let Some(host_textures) = host_textures else {
+                    return Err(ScenePaintError::CustomPrimitive(primitive.id));
+                };
+                if host_textures.get(custom.resource.as_ref()).is_none() {
+                    return Err(ScenePaintError::MissingCustomResource(primitive.id));
+                }
+            } else if gpu_renderers
+                .and_then(|renderers| renderers.get(custom.renderer.as_ref()))
+                .is_none()
+            {
                 return Err(ScenePaintError::UnsupportedCustomRenderer(primitive.id));
-            }
-            let Some(host_textures) = host_textures else {
-                return Err(ScenePaintError::CustomPrimitive(primitive.id));
-            };
-            if host_textures.get(custom.resource.as_ref()).is_none() {
-                return Err(ScenePaintError::MissingCustomResource(primitive.id));
             }
         }
         if !is_translation(primitive.transform.0) {
@@ -228,7 +276,13 @@ fn validate_scene(
             return Err(ScenePaintError::UnsupportedTextStyle(primitive.id));
         }
     }
-    Ok(())
+    Ok(graph
+        .passes
+        .into_iter()
+        .flat_map(|pass| pass.operations)
+        .filter(|operation| !matches!(operation, RenderOperation::PrepareExternal(_)))
+        .collect::<Vec<_>>()
+        .into())
 }
 
 impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
@@ -263,7 +317,14 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
         viewport: &Rectangle,
     ) {
         let origin = layout.bounds().position();
-        for primitive in self.scene().primitives() {
+        for operation in self.operations.iter() {
+            let id = match operation {
+                RenderOperation::PrepareExternal(_) => continue,
+                RenderOperation::Draw(id) | RenderOperation::InvokeCustom(id) => *id,
+            };
+            let Some(primitive) = self.scene().primitive(id) else {
+                continue;
+            };
             let clip = primitive.clips.iter().try_fold(*viewport, |visible, clip| {
                 visible.intersection(&translated_rect(clip.bounds, clip.transform.0, origin))
             });
@@ -272,20 +333,38 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
             };
             renderer.with_layer(clip, |renderer| match &primitive.kind {
                 ScenePrimitiveKind::Custom(custom) => {
-                    let Some(binding) = self
-                        .host_textures
-                        .as_ref()
-                        .and_then(|registry| registry.get(custom.resource.as_ref()))
-                    else {
-                        return;
-                    };
                     let bounds = translated_rect(primitive.bounds, primitive.transform.0, origin);
-                    renderer.draw_primitive(
-                        bounds,
-                        GpuTexturePrimitive::from_layer(
-                            HostTextureLayer::new(binding.texture).with_opacity(primitive.opacity),
-                        ),
-                    );
+                    if custom.renderer.as_ref() == "nana.host-texture" {
+                        let binding = self
+                            .host_textures
+                            .as_ref()
+                            .and_then(|registry| registry.get(custom.resource.as_ref()))
+                            .expect("validated host texture remains registered");
+                        renderer.draw_primitive(
+                            bounds,
+                            GpuTexturePrimitive::from_layer(
+                                HostTextureLayer::new(binding.texture)
+                                    .with_opacity(primitive.opacity),
+                            ),
+                        );
+                    } else {
+                        let gpu_renderer = self
+                            .gpu_renderers
+                            .as_ref()
+                            .and_then(|registry| registry.get(custom.renderer.as_ref()))
+                            .expect("validated scene GPU renderer remains registered");
+                        renderer.draw_primitive(
+                            bounds,
+                            SceneGpuPrimitive::new(
+                                SceneGpuNode {
+                                    id: primitive.id,
+                                    custom: custom.clone(),
+                                    opacity: primitive.opacity,
+                                },
+                                gpu_renderer,
+                            ),
+                        );
+                    }
                 }
                 _ => paint_primitive(renderer, primitive, origin, clip),
             });
@@ -461,6 +540,20 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug)]
+    struct NoopSceneRenderer;
+
+    impl crate::SceneGpuRenderer for NoopSceneRenderer {
+        fn prepare(
+            &self,
+            _node: &crate::SceneGpuNode,
+            _context: crate::SceneGpuPrepareContext<'_>,
+        ) {
+        }
+
+        fn render(&self, _node: &crate::SceneGpuNode, _context: crate::SceneGpuRenderContext<'_>) {}
+    }
+
     #[test]
     fn runtime_button_reaches_standard_painter_and_custom_content_is_explicit() {
         let mut context = AppContext::new();
@@ -515,5 +608,51 @@ mod tests {
             ),
             Err(ScenePaintError::MissingCustomResource(_))
         ));
+    }
+
+    #[test]
+    fn registered_custom_renderer_is_an_executable_scene_operation() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(document, RuntimeButton::new("Preview"))
+            .unwrap();
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            button.stable_id(),
+            LayoutBox {
+                x: 4.0,
+                y: 8.0,
+                width: 120.0,
+                height: 60.0,
+            },
+        );
+        mutations.set_custom_render(
+            button.stable_id(),
+            Some(CustomRenderNode {
+                renderer: "live2d.direct".into(),
+                resource: "model".into(),
+                revision: 7,
+            }),
+        );
+        context.commit_mutations(mutations).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            context.world().extract_nodes(&work.render_extraction),
+            work.render_removals,
+        );
+        let mut renderers = SceneGpuRendererRegistry::new();
+        renderers.insert("live2d.direct", Arc::new(NoopSceneRenderer));
+        let view =
+            IcedSceneView::with_gpu_renderers(&scene, renderers, Size::new(160.0, 100.0)).unwrap();
+        assert!(view.operations.iter().any(|operation| matches!(
+            operation,
+            RenderOperation::InvokeCustom(id) if *id == PrimitiveId {
+                node: button.stable_id(),
+                slot: 1,
+            }
+        )));
     }
 }

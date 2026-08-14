@@ -3,7 +3,9 @@
 //! This binary intentionally lives outside NanaUI's public API. Live2D owns
 //! model evaluation and rendering; NanaUI only samples a host-owned texture.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::widget::{column, container, row, space, stack, text};
@@ -20,15 +22,16 @@ use live2d_core::{
 use live2d_test_support::{DrawableBuilder, SnapshotBuilder};
 use live2d_wgpu::{
     RegistrationRequest, RenderTarget, RenderView, Renderer as Live2dRenderer, RendererOptions,
-    SubmissionBatch,
+    SubmissionBatch, SubmissionToken,
 };
 use nana_ui::runtime::{
     Card as RuntimeCard, CustomRenderNode, DocumentId, LayoutBox, MutationQueue, NodeKind,
-    RuntimeDocument, Text as RuntimeText,
+    RuntimeDocument, Text as RuntimeText, UiScene,
 };
 use nana_ui::widgets::{ButtonKind, panel_style};
 use nana_ui::{
-    Button, HostTexture, HostTextureAlphaMode, HostTextureRegistry, IcedSceneView, ThemeMode,
+    Button, HostTexture, HostTextureAlphaMode, HostTextureRegistry, IcedSceneView,
+    SceneResourceEncodeContext, SceneResourceProducer, SceneResourceProducerRegistry, ThemeMode,
     ThemeModeExt, UI_BASE_TEXT_SIZE, ui_font, ui_font_sources,
 };
 use serde::Serialize;
@@ -69,10 +72,161 @@ struct Report {
     warmup_iterations: usize,
     measured_iterations: usize,
     ui_only: Distribution,
+    live2d_only: Distribution,
     ui_live2d_composed: Distribution,
     screenshot: String,
     screenshot_checksum: u64,
     screenshot_distinct_colors: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Workload {
+    Ui,
+    Live2d,
+    Composed,
+}
+
+struct PendingLive2dSubmission {
+    token: SubmissionToken,
+    total_started: Instant,
+    submit_started: Instant,
+    cpu_ms: f64,
+}
+
+struct Live2dProducerState {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    renderer: Live2dRenderer,
+    handle: live2d_wgpu::ModelHandle,
+    static_model: ModelStaticData,
+    dynamic: ModelDynamicFrame,
+    geometry: ModelGeometryFrame,
+    sequence: usize,
+    pending: Option<PendingLive2dSubmission>,
+}
+
+struct Live2dSceneProducer {
+    state: Mutex<Live2dProducerState>,
+    host_texture: HostTexture,
+}
+
+impl fmt::Debug for Live2dSceneProducer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Live2dSceneProducer").finish()
+    }
+}
+
+impl Live2dSceneProducer {
+    fn complete(&self, device: &wgpu::Device, submission: wgpu::SubmissionIndex) -> Sample {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
+            .expect("Scene-managed Live2D GPU frame completes");
+        let mut state = self.state.lock().expect("Live2D producer state");
+        let pending = state.pending.take().expect("submitted Live2D frame");
+        let submit_to_complete = pending.submit_started.elapsed();
+        state
+            .renderer
+            .complete_submission(
+                SubmissionBatch::from_token(pending.token),
+                submit_to_complete,
+            )
+            .expect("release Scene-managed Live2D submission");
+        self.host_texture.invalidate();
+        Sample {
+            cpu_ms: pending.cpu_ms,
+            submit_to_complete_ms: duration_ms(submit_to_complete),
+            total_ms: elapsed_ms(pending.total_started),
+        }
+    }
+}
+
+impl SceneResourceProducer for Live2dSceneProducer {
+    fn encode(
+        &self,
+        _node: &CustomRenderNode,
+        context: SceneResourceEncodeContext<'_>,
+    ) -> Result<(), String> {
+        let total_started = Instant::now();
+        let cpu_started = Instant::now();
+        let mut state = self.state.lock().map_err(|_| "producer lock poisoned")?;
+        if state.pending.is_some() {
+            return Err("previous Live2D submission is still pending".into());
+        }
+        let Live2dProducerState {
+            texture,
+            view,
+            renderer,
+            handle,
+            static_model,
+            dynamic,
+            geometry,
+            sequence,
+            pending,
+        } = &mut *state;
+        let drawable_index = *sequence % dynamic.drawables.len();
+        dynamic.drawables[drawable_index].opacity = 0.72 + (*sequence % 8) as f32 * 0.035;
+        let frame = RuntimeFrame {
+            sequence: *sequence as u64 + 1,
+            static_model,
+            dynamic,
+            geometry,
+            dirty: FrameDirtyFlags {
+                dynamic: true,
+                opacity: true,
+                ..FrameDirtyFlags::default()
+            },
+        };
+        renderer
+            .update_model(context.queue, *handle, &frame)
+            .map_err(|error| error.to_string())?;
+        let prepared = renderer
+            .prepare_model(
+                context.device,
+                context.queue,
+                context.encoder,
+                *handle,
+                RenderView::full_target(
+                    [LIVE2D_SIZE, LIVE2D_SIZE],
+                    glam::Mat4::IDENTITY,
+                    glam::Mat4::IDENTITY,
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+        let encoded = renderer
+            .encode_model(
+                context.device,
+                context.queue,
+                context.encoder,
+                RenderTarget::clear(texture, view, wgpu::Color::TRANSPARENT),
+                &prepared,
+            )
+            .map_err(|error| error.to_string())?;
+        *sequence += 1;
+        *pending = Some(PendingLive2dSubmission {
+            token: encoded.submission,
+            total_started,
+            submit_started: Instant::now(),
+            cpu_ms: elapsed_ms(cpu_started),
+        });
+        Ok(())
+    }
+
+    fn submitted(
+        &self,
+        _node: &CustomRenderNode,
+        _device: &wgpu::Device,
+        _submission: wgpu::SubmissionIndex,
+    ) {
+        let mut state = self.state.lock().expect("Live2D producer state");
+        let pending = state
+            .pending
+            .as_mut()
+            .expect("Live2D producer encoded a submission");
+        pending.submit_started = Instant::now();
+    }
 }
 
 fn main() {
@@ -191,7 +345,7 @@ fn run(screenshot_path: &Path) -> Report {
 
     let snapshot = synthetic_model();
     let static_model = ModelStaticData::from_snapshot(&snapshot);
-    let mut dynamic = ModelDynamicFrame::from_snapshot(&snapshot);
+    let dynamic = ModelDynamicFrame::from_snapshot(&snapshot);
     let geometry = ModelGeometryFrame::from_snapshot(&snapshot);
     let mut live2d_renderer =
         Live2dRenderer::new(&device, RendererOptions::sdr(format)).expect("create Live2D renderer");
@@ -199,99 +353,103 @@ fn run(screenshot_path: &Path) -> Report {
         .register(&device, &queue, RegistrationRequest::new(&static_model))
         .expect("register synthetic acceptance model")
         .handle;
+    let producer = Arc::new(Live2dSceneProducer {
+        state: Mutex::new(Live2dProducerState {
+            texture: live2d_texture,
+            view: live2d_view,
+            renderer: live2d_renderer,
+            handle,
+            static_model,
+            dynamic,
+            geometry,
+            sequence: 0,
+            pending: None,
+        }),
+        host_texture: host_texture.clone(),
+    });
+    let mut resource_producers = SceneResourceProducerRegistry::new();
+    resource_producers.insert("live2d", producer.clone());
+    let resource_scene = live2d_resource_scene(host_texture.version());
 
     let mut ui_only_cache = user_interface::Cache::new();
     let mut composed_cache = user_interface::Cache::new();
     let mut ui_only = Vec::with_capacity(ITERATIONS);
+    let mut live2d_only = Vec::with_capacity(ITERATIONS);
     let mut composed = Vec::with_capacity(ITERATIONS);
 
     for iteration in 0..(WARMUP + ITERATIONS) {
-        let composed_first = iteration.is_multiple_of(2);
-        let (composed_next, composed_sample, ui_next, ui_sample) = if composed_first {
-            let (cache, sample) = render_live2d(
-                iteration,
-                &device,
-                &queue,
-                &live2d_texture,
-                &live2d_view,
-                &mut live2d_renderer,
-                handle,
-                &static_model,
-                &mut dynamic,
-                &geometry,
-                &host_texture,
-                &mut ui_renderer,
-                &viewport,
-                &ui_target_view,
-                format,
-                std::mem::take(&mut composed_cache),
-            );
-            let (ui_cache, ui_sample) = render_ui(
-                None,
-                &device,
-                &mut ui_renderer,
-                &viewport,
-                &ui_target_view,
-                format,
-                std::mem::take(&mut ui_only_cache),
-            );
-            (cache, sample, ui_cache, ui_sample)
-        } else {
-            let (ui_cache, ui_sample) = render_ui(
-                None,
-                &device,
-                &mut ui_renderer,
-                &viewport,
-                &ui_target_view,
-                format,
-                std::mem::take(&mut ui_only_cache),
-            );
-            let (cache, sample) = render_live2d(
-                iteration,
-                &device,
-                &queue,
-                &live2d_texture,
-                &live2d_view,
-                &mut live2d_renderer,
-                handle,
-                &static_model,
-                &mut dynamic,
-                &geometry,
-                &host_texture,
-                &mut ui_renderer,
-                &viewport,
-                &ui_target_view,
-                format,
-                std::mem::take(&mut composed_cache),
-            );
-            (cache, sample, ui_cache, ui_sample)
+        let order = match iteration % 3 {
+            0 => [Workload::Live2d, Workload::Composed, Workload::Ui],
+            1 => [Workload::Composed, Workload::Ui, Workload::Live2d],
+            _ => [Workload::Ui, Workload::Live2d, Workload::Composed],
         };
-        composed_cache = composed_next;
-        ui_only_cache = ui_next;
+        let mut ui_sample = None;
+        let mut live2d_sample = None;
+        let mut composed_sample = None;
+        for workload in order {
+            match workload {
+                Workload::Ui => {
+                    let (cache, sample) = render_ui(
+                        None,
+                        &device,
+                        &mut ui_renderer,
+                        &viewport,
+                        &ui_target_view,
+                        format,
+                        std::mem::take(&mut ui_only_cache),
+                    );
+                    ui_only_cache = cache;
+                    ui_sample = Some(sample);
+                }
+                Workload::Live2d => {
+                    let submission = resource_producers
+                        .encode_scene(&resource_scene, &device, &queue)
+                        .expect("encode graph-managed Live2D resource")
+                        .expect("Live2D resource producer is registered");
+                    live2d_sample = Some(producer.complete(&device, submission));
+                }
+                Workload::Composed => {
+                    resource_producers
+                        .encode_scene(&resource_scene, &device, &queue)
+                        .expect("encode graph-managed composed Live2D resource")
+                        .expect("Live2D resource producer is registered");
+                    let ui_cpu_started = Instant::now();
+                    let (cache, submission) = draw_ui(
+                        Some(host_texture.clone()),
+                        &mut ui_renderer,
+                        &viewport,
+                        &ui_target_view,
+                        format,
+                        std::mem::take(&mut composed_cache),
+                    );
+                    let ui_cpu_ms = elapsed_ms(ui_cpu_started);
+                    let mut sample = producer.complete(&device, submission);
+                    sample.cpu_ms += ui_cpu_ms;
+                    composed_cache = cache;
+                    composed_sample = Some(sample);
+                }
+            }
+        }
         if iteration >= WARMUP {
-            composed.push(composed_sample);
-            ui_only.push(ui_sample);
+            ui_only.push(ui_sample.expect("UI workload sampled"));
+            live2d_only.push(live2d_sample.expect("Live2D workload sampled"));
+            composed.push(composed_sample.expect("composed workload sampled"));
         }
     }
 
-    render_live2d(
-        WARMUP + ITERATIONS,
-        &device,
-        &queue,
-        &live2d_texture,
-        &live2d_view,
-        &mut live2d_renderer,
-        handle,
-        &static_model,
-        &mut dynamic,
-        &geometry,
-        &host_texture,
+    resource_producers
+        .encode_scene(&resource_scene, &device, &queue)
+        .expect("encode final graph-managed Live2D resource")
+        .expect("Live2D resource producer is registered");
+    let (_, final_submission) = draw_ui(
+        Some(host_texture.clone()),
         &mut ui_renderer,
         &viewport,
         &ui_target_view,
         format,
         composed_cache,
     );
+    let _ = producer.complete(&device, final_submission);
     let pixels = screenshot_ui(host_texture.clone(), &mut ui_renderer, &viewport);
     write::png(screenshot_path, Size::new(WIDTH, HEIGHT), &pixels).expect("write screenshot");
     let distinct_colors = distinct_colors(&pixels);
@@ -311,6 +469,7 @@ fn run(screenshot_path: &Path) -> Report {
         warmup_iterations: WARMUP,
         measured_iterations: ITERATIONS,
         ui_only: distribution(&ui_only),
+        live2d_only: distribution(&live2d_only),
         ui_live2d_composed: distribution(&composed),
         screenshot: screenshot_path.display().to_string(),
         screenshot_checksum: pixels.iter().fold(0_u64, |sum, byte| {
@@ -318,103 +477,6 @@ fn run(screenshot_path: &Path) -> Report {
         }),
         screenshot_distinct_colors: distinct_colors,
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_live2d(
-    sequence: usize,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    texture_view: &wgpu::TextureView,
-    live2d: &mut Live2dRenderer,
-    handle: live2d_wgpu::ModelHandle,
-    static_model: &ModelStaticData,
-    dynamic: &mut ModelDynamicFrame,
-    geometry: &ModelGeometryFrame,
-    host_texture: &HostTexture,
-    ui_renderer: &mut IcedRenderer,
-    viewport: &Viewport,
-    ui_target: &wgpu::TextureView,
-    format: wgpu::TextureFormat,
-    cache: user_interface::Cache,
-) -> (user_interface::Cache, Sample) {
-    let total_started = Instant::now();
-    let drawable_index = sequence % dynamic.drawables.len();
-    dynamic.drawables[drawable_index].opacity = 0.72 + (sequence % 8) as f32 * 0.035;
-    let frame = RuntimeFrame {
-        sequence: sequence as u64 + 1,
-        static_model,
-        dynamic,
-        geometry,
-        dirty: FrameDirtyFlags {
-            dynamic: true,
-            opacity: true,
-            ..FrameDirtyFlags::default()
-        },
-    };
-    let cpu_started = Instant::now();
-    live2d
-        .update_model(queue, handle, &frame)
-        .expect("update Live2D frame");
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Live2D acceptance encoder"),
-    });
-    let prepared = live2d
-        .prepare_model(
-            device,
-            queue,
-            &mut encoder,
-            handle,
-            RenderView::full_target(
-                [LIVE2D_SIZE, LIVE2D_SIZE],
-                glam::Mat4::IDENTITY,
-                glam::Mat4::IDENTITY,
-            ),
-        )
-        .expect("prepare Live2D frame");
-    let encoded = live2d
-        .encode_model(
-            device,
-            queue,
-            &mut encoder,
-            RenderTarget::clear(texture, texture_view, wgpu::Color::TRANSPARENT),
-            &prepared,
-        )
-        .expect("encode Live2D frame");
-    let submit_started = Instant::now();
-    queue.submit([encoder.finish()]);
-    host_texture.invalidate();
-    let (cache, submission) = draw_ui(
-        Some(host_texture.clone()),
-        ui_renderer,
-        viewport,
-        ui_target,
-        format,
-        cache,
-    );
-    let cpu_ms = elapsed_ms(cpu_started);
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: None,
-        })
-        .expect("composed GPU frame completes");
-    let submit_to_complete = submit_started.elapsed();
-    live2d
-        .complete_submission(
-            SubmissionBatch::from_token(encoded.submission),
-            submit_to_complete,
-        )
-        .expect("release Live2D submission");
-    (
-        cache,
-        Sample {
-            cpu_ms,
-            submit_to_complete_ms: duration_ms(submit_to_complete),
-            total_ms: elapsed_ms(total_started),
-        },
-    )
 }
 
 fn render_ui(
@@ -675,6 +737,50 @@ fn runtime_preview(texture: Option<HostTexture>) -> Element<'static, (), Theme, 
     IcedSceneView::from_shared(document.shared_scene(), registry, Size::new(512.0, 512.0))
         .expect("runtime preview scene must be paintable")
         .into()
+}
+
+fn live2d_resource_scene(revision: u64) -> Arc<UiScene> {
+    #[derive(Debug)]
+    struct ResourceNode;
+
+    let document_id = DocumentId::new(2).expect("producer document");
+    let mut document = RuntimeDocument::new(document_id);
+    let node = document
+        .context_mut()
+        .create_view(
+            document_id,
+            NodeKind::Element {
+                tag: "live2d-resource".into(),
+            },
+            ResourceNode,
+        )
+        .expect("producer resource node");
+    let mut mutations = MutationQueue::new();
+    mutations.write_layout(
+        node.stable_id(),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: LIVE2D_SIZE as f32,
+            height: LIVE2D_SIZE as f32,
+        },
+    );
+    mutations.set_custom_render(
+        node.stable_id(),
+        Some(CustomRenderNode {
+            renderer: "nana.host-texture".into(),
+            resource: "live2d".into(),
+            revision,
+        }),
+    );
+    document
+        .context_mut()
+        .commit_mutations(mutations)
+        .expect("commit producer resource");
+    document
+        .flush_with(|_, _| Ok(()))
+        .expect("extract producer resource scene");
+    document.shared_scene()
 }
 
 fn synthetic_model() -> live2d_core::ModelSnapshot {

@@ -257,6 +257,46 @@ pub struct DockLayout {
     pub locked: bool,
 }
 
+/// Renderer-neutral geometry for one visible dock item.
+///
+/// `panel` includes NanaUI-owned title/tab chrome while `content` is the exact
+/// rectangle available to application-owned content such as a Runtime tree or
+/// a host texture. Only the active member of a tab group is present here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockItemLayout {
+    pub id: DockId,
+    pub panel: DockBounds,
+    pub content: DockBounds,
+}
+
+/// Renderer-neutral geometry and ordering for one tab group.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockTabsLayout {
+    pub tabs: Vec<DockId>,
+    pub active: DockId,
+    pub bounds: DockBounds,
+    pub content: DockBounds,
+}
+
+/// Renderer-neutral hit geometry for a dock divider.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockSplitLayout {
+    pub path: Vec<usize>,
+    pub axis: DockAxis,
+    pub bounds: DockBounds,
+}
+
+/// A deterministic surface projection shared by Runtime and compatibility
+/// painters. Native windows and renderer resources remain host-owned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockSurfaceLayout {
+    pub surface: DockSurfaceId,
+    pub bounds: DockBounds,
+    pub items: Vec<DockItemLayout>,
+    pub tabs: Vec<DockTabsLayout>,
+    pub splits: Vec<DockSplitLayout>,
+}
+
 impl DockLayout {
     pub fn new(main: DockNode) -> Self {
         Self {
@@ -810,6 +850,40 @@ impl DockController {
 
     pub fn item(&self, id: &DockId) -> Option<&DockItemSpec> {
         self.specs.get(id)
+    }
+
+    /// Projects the current persisted dock tree into logical rectangles.
+    ///
+    /// This is the canonical geometry entry for retained Runtime consumers;
+    /// applications do not need to duplicate split arithmetic or title/tab
+    /// chrome offsets. Pointer interaction is fed back through
+    /// [`DockMutation`] using the reported split paths and surface identity.
+    pub fn surface_layout(&self, surface: DockSurfaceId) -> Option<DockSurfaceLayout> {
+        let root = self.surface_root(surface)?;
+        let bounds = self.surface_layout_bounds(surface);
+        let mut layout = DockSurfaceLayout {
+            surface,
+            bounds,
+            items: Vec::new(),
+            tabs: Vec::new(),
+            splits: Vec::new(),
+        };
+        let (root_bounds, root_chrome) = if surface == DockSurfaceId(0) {
+            (bounds, None)
+        } else if matches!(root, DockNode::Split { .. }) {
+            (bounds_below_chrome(bounds, WINDOW_TITLE_BAR_HEIGHT), None)
+        } else {
+            (bounds, Some(WINDOW_TITLE_BAR_HEIGHT))
+        };
+        collect_surface_layout(
+            root,
+            root_bounds,
+            &self.center,
+            &mut Vec::new(),
+            &mut layout,
+            root_chrome,
+        );
+        Some(layout)
     }
 
     pub fn is_visible(&self, id: &DockId) -> bool {
@@ -3787,6 +3861,87 @@ fn split_child_bounds(axis: DockAxis, ratio: f32, bounds: DockBounds) -> (DockBo
     }
 }
 
+fn collect_surface_layout(
+    node: &DockNode,
+    bounds: DockBounds,
+    center: &DockId,
+    path: &mut Vec<usize>,
+    output: &mut DockSurfaceLayout,
+    chrome_override: Option<f32>,
+) {
+    match node {
+        DockNode::Item { id } => {
+            let content = if id == center {
+                bounds
+            } else {
+                bounds_below_chrome(bounds, chrome_override.unwrap_or(TITLE_BAR_HEIGHT))
+            };
+            output.items.push(DockItemLayout {
+                id: id.clone(),
+                panel: bounds,
+                content,
+            });
+        }
+        DockNode::Tabs { tabs, active } => {
+            let content = bounds_below_chrome(bounds, chrome_override.unwrap_or(TITLE_BAR_HEIGHT));
+            output.tabs.push(DockTabsLayout {
+                tabs: tabs.clone(),
+                active: active.clone(),
+                bounds,
+                content,
+            });
+            output.items.push(DockItemLayout {
+                id: active.clone(),
+                panel: bounds,
+                content,
+            });
+        }
+        DockNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
+            let (first_bounds, second_bounds) = split_child_bounds(*axis, *ratio, bounds);
+            let splitter = match axis {
+                DockAxis::Horizontal => DockBounds::new(
+                    first_bounds.x + first_bounds.width,
+                    bounds.y,
+                    DIVIDER_HIT_SIZE.min(bounds.width),
+                    bounds.height,
+                ),
+                DockAxis::Vertical => DockBounds::new(
+                    bounds.x,
+                    first_bounds.y + first_bounds.height,
+                    bounds.width,
+                    DIVIDER_HIT_SIZE.min(bounds.height),
+                ),
+            };
+            output.splits.push(DockSplitLayout {
+                path: path.clone(),
+                axis: *axis,
+                bounds: splitter,
+            });
+            path.push(0);
+            collect_surface_layout(first, first_bounds, center, path, output, None);
+            path.pop();
+            path.push(1);
+            collect_surface_layout(second, second_bounds, center, path, output, None);
+            path.pop();
+        }
+    }
+}
+
+fn bounds_below_chrome(bounds: DockBounds, chrome_height: f32) -> DockBounds {
+    let chrome = chrome_height.min(bounds.height);
+    DockBounds::new(
+        bounds.x,
+        bounds.y + chrome,
+        bounds.width,
+        bounds.height - chrome,
+    )
+}
+
 fn remove_view_node(node: DockViewNode, id: &DockId) -> Option<DockViewNode> {
     match node {
         DockViewNode::Item { item } => (item.id() != id).then_some(DockViewNode::Item { item }),
@@ -4200,6 +4355,143 @@ mod tests {
             bounds: None,
         });
         controller
+    }
+
+    #[test]
+    fn surface_layout_projects_split_tabs_and_application_content_bounds() {
+        let mut controller = controller();
+        let layout = controller
+            .surface_layout(DockSurfaceId(0))
+            .expect("main surface layout");
+
+        assert_eq!(layout.bounds, DockBounds::new(0.0, 0.0, 1280.0, 800.0));
+        assert_eq!(
+            layout.splits,
+            vec![
+                DockSplitLayout {
+                    path: vec![],
+                    axis: DockAxis::Horizontal,
+                    bounds: DockBounds::new(318.0, 0.0, 8.0, 800.0),
+                },
+                DockSplitLayout {
+                    path: vec![1],
+                    axis: DockAxis::Vertical,
+                    bounds: DockBounds::new(326.0, 594.0, 954.0, 8.0),
+                },
+            ]
+        );
+        assert_eq!(layout.tabs.len(), 2);
+        assert_eq!(layout.tabs[0].active, DockId::from("scenes"));
+        assert_eq!(
+            layout.tabs[0].content,
+            DockBounds::new(0.0, 28.0, 318.0, 772.0)
+        );
+        assert_eq!(layout.tabs[1].active, DockId::from("mixer"));
+        assert_eq!(
+            layout.tabs[1].content,
+            DockBounds::new(326.0, 630.0, 954.0, 170.0)
+        );
+        assert_eq!(
+            layout
+                .items
+                .iter()
+                .find(|item| item.id == DockId::from("editor"))
+                .expect("editor")
+                .content,
+            DockBounds::new(326.0, 0.0, 954.0, 594.0)
+        );
+        assert!(
+            layout
+                .items
+                .iter()
+                .all(|item| item.id != DockId::from("sources"))
+        );
+
+        assert!(
+            controller
+                .update_mutation(DockMutation::ActivateTab(DockId::from("sources")))
+                .changed
+        );
+        let updated = controller
+            .surface_layout(DockSurfaceId(0))
+            .expect("updated main surface layout");
+        assert_eq!(updated.tabs[0].active, DockId::from("sources"));
+        assert!(
+            updated
+                .items
+                .iter()
+                .any(|item| item.id == DockId::from("sources"))
+        );
+        assert!(
+            updated
+                .items
+                .iter()
+                .all(|item| item.id != DockId::from("scenes"))
+        );
+    }
+
+    #[test]
+    fn floating_surface_layout_reserves_native_title_bar_once() {
+        let layout = DockLayout {
+            version: DOCK_LAYOUT_VERSION,
+            main: DockNode::item("editor"),
+            floating: vec![
+                FloatingDock {
+                    surface: DockSurfaceId(1),
+                    root: DockNode::item("scenes"),
+                    bounds: DockBounds::new(20.0, 30.0, 400.0, 300.0),
+                    monitor: None,
+                },
+                FloatingDock {
+                    surface: DockSurfaceId(2),
+                    root: DockNode::split(
+                        DockAxis::Horizontal,
+                        0.5,
+                        DockNode::item("sources"),
+                        DockNode::item("mixer"),
+                    ),
+                    bounds: DockBounds::new(40.0, 50.0, 500.0, 320.0),
+                    monitor: None,
+                },
+            ],
+            hidden: Vec::new(),
+            locked: false,
+        };
+        let controller = DockController::new(
+            "editor",
+            [
+                DockItemSpec::new("editor", "Editor"),
+                DockItemSpec::new("scenes", "Scenes"),
+                DockItemSpec::new("sources", "Sources"),
+                DockItemSpec::new("mixer", "Mixer"),
+            ],
+            layout,
+        )
+        .expect("valid floating layout");
+
+        let item = controller
+            .surface_layout(DockSurfaceId(1))
+            .expect("floating item");
+        assert_eq!(
+            item.items[0].content,
+            DockBounds::new(0.0, 36.0, 400.0, 264.0)
+        );
+
+        let split = controller
+            .surface_layout(DockSurfaceId(2))
+            .expect("floating split");
+        assert_eq!(
+            split.splits[0].bounds,
+            DockBounds::new(246.0, 36.0, 8.0, 284.0)
+        );
+        assert_eq!(
+            split.items[0].content,
+            DockBounds::new(0.0, 64.0, 246.0, 256.0)
+        );
+        assert_eq!(
+            split.items[1].content,
+            DockBounds::new(254.0, 64.0, 246.0, 256.0)
+        );
     }
 
     #[test]

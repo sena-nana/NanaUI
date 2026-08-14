@@ -38,6 +38,9 @@ pub struct ResourceAccess {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderOperation {
+    /// Refresh an external resource before Scene primitives sample it. Hosts
+    /// without a producer may treat this as a no-op for already-valid input.
+    PrepareExternal(PrimitiveId),
     Draw(PrimitiveId),
     InvokeCustom(PrimitiveId),
 }
@@ -58,6 +61,7 @@ pub enum GraphError {
     UnknownResource { pass: PassId, resource: ResourceId },
     UnknownDependency { pass: PassId, dependency: PassId },
     UninitializedRead { pass: PassId, resource: ResourceId },
+    ConflictingExternalResource(String),
     Cycle,
 }
 
@@ -80,6 +84,10 @@ impl fmt::Display for GraphError {
                 formatter,
                 "render pass {} reads transient resource {} before it is written",
                 pass.0, resource.0
+            ),
+            Self::ConflictingExternalResource(resource) => write!(
+                formatter,
+                "external render resource `{resource}` has conflicting scene revisions"
             ),
             Self::Cycle => formatter.write_str("render graph contains a dependency cycle"),
         }
