@@ -8,6 +8,8 @@ NanaShader/Live2D 接入。
 
 `run_runtime` 与 `RuntimeProgram` 是新 Rust 应用的推荐完整宿主入口；应用持有
 `RuntimeDocument` 并产出 UiScene，不依赖 Iced Message/Element/window identity。
+宿主按实际窗口 viewport 调用 canonical `RuntimeDocument::flush`；框架统一执行 Iced text
+shaping 与 backend-neutral flow layout，Runtime 应用不再在 frame hook 中手写 `LayoutBox`。
 `run_hosted` 与 `HostedProgram` 保留为已有 Iced consumer 的兼容入口；应用只实现业务状态、
 各窗口视图、业务消息、副作用调度，以及设备恢复后自身 GPU 资源的重建。窗口、
 Surface、唯一 Device/Queue、输入路由与合并、同帧更新与 present、系统材质、窗口
@@ -46,11 +48,20 @@ layout 收敛后直接绘制这棵已更新的 `UserInterface`。输入消息返
 
 `HostTexture` 以稳定 ID 和 generation 包装引用计数的 WGPU `TextureView`。宿主替换或 resize 纹理时递增 generation，NanaUI 只重建对应 bind group；未出现的纹理实例在帧末从 pipeline cache 清除。当前合同接收可过滤的二维 float 纹理，并使用预乘 Alpha 合成。`GpuTextureView::contain` 在布局区域内保持传入宽高比，业务无需重复实现响应式 contain 计算。
 
+需要直接参与 Scene 图的高级内容注册 `SceneGpuRenderer`。RenderGraph 为 custom resource
+建立显式 prepare/sample pass 与 hazard；direct renderer 在 Iced 当前 frame 中取得同一
+Device/Queue、CommandEncoder 和 target，不得自行 submit 或创建第二套 GPU context。
+需要 Texture 本体作为 render target 的 Live2D 等内容注册 `SceneResourceProducer`：executor
+按编译图的 `PrepareExternal` operation 调用 producer；每个 preparation pass 使用独立
+host-owned encoder，成功后立即由同一 Queue 在 UI sample 前提交并完成 submission 通知，
+从而隔离不同 producer 的失败。相同 resource 的冲突 revision 会
+拒绝整帧，不能静默选择其中一个。该路径不进行 CPU readback，也不虚称为 direct Surface pass。
+
 `GpuView` 的 `prepare` 直接取得 Iced WGPU renderer 当前的 `Device`、`Queue` 与 `Viewport`；每个实例按稳定 ID 缓存 uniform buffer/bind group。`Inline` 模式复用 Iced 当前的 RenderPass，`Standalone` 模式使用 Iced 同一帧的 CommandEncoder 与目标纹理创建独立 Pass，两者共享 RenderPipeline，但不会共享实例数据。它不创建中间纹理、不进行 CPU 回读或图片编码。未出现在下一帧的实例会从 pipeline cache 移除。
 
 `RenderSlot` 是单个内容插槽的公共几何合同：逻辑边界按 scale factor 取 floor/ceil，确保物理 viewport/scissor 覆盖完整边缘，并可裁剪到目标纹理。`WorkspaceGeometry` 则为所有稳定 Region 输出布局快照。独立 Demo crate 的 `GalleryState::subscription` 只在 loading 或布局动画实际运行时创建定时订阅；`gpu-view-demo` 只在窗口、输入或状态变化时触发重绘。
 
-当前已经覆盖复用现有 RenderPass 的简单内容路径、用同一 CommandEncoder 创建独立 Pass 的组合路径、宿主创建 `winit::Window`/`Surface`/`Device`/`Queue` 后注入 Iced renderer，以及宿主纹理直显。真实 Live2D/NanaShader 内容接入与同一复杂渲染图中的时序整合仍未完成，不能用等价渐变场景作为这些验收项的替代证据。
+当前已经覆盖复用现有 RenderPass 的简单内容路径、用同一 CommandEncoder 创建独立 Pass 的组合路径、宿主创建 `winit::Window`/`Surface`/`Device`/`Queue` 后注入 Iced renderer、宿主纹理直显，以及真实 `live2d-wgpu` 到 HostTexture 的共享上下文合成。Live2D 尚未迁移为 direct Scene pass；HostTexture 证据不能替代该迁移或具体产品模型验收。
 
 `hosted-gpu-demo` 通过 `nana-window` 接入 macOS Vibrancy 和 Windows Mica/Acrylic，并在无原生能力时切换为不透明主题背景；平台矩阵与限制见 `window-materials.md`。`transparent-window` 仍只使用 Iced 标准入口的透明/模糊设置，不作为原生材质验收证据。
 

@@ -24,7 +24,7 @@ use nana_ui_scene::RuntimeDocument;
 use crate::{
     HostTextureRegistry, HostedGpuResources, HostedProgram, HostedProgramContext,
     HostedProgramUpdate, HostedRedraw, HostedWindowCommand, HostedWindowEvent,
-    HostedWindowGeometry, HostedWindowRole, HostedWindowSettings, IcedSceneView,
+    HostedWindowGeometry, HostedWindowRole, HostedWindowSettings, IcedSceneView, IcedTextShaper,
     RuntimeAnimationClock, RuntimeInputAdapter, ThemeMode, run_hosted,
 };
 
@@ -165,15 +165,24 @@ pub trait RuntimeProgram: Sized + 'static {
         None
     }
 
-    /// Give the application a chance to commit text measurement and layout
-    /// writeback before the frame driver drains the document.
-    fn prepare_frame(
-        &mut self,
-        _id: WindowId,
-        _context: &RuntimeProgramContext<Self::Message>,
-    ) -> Result<(), FrameworkError> {
-        Ok(())
+    /// Advanced direct Scene renderers executed with NanaUI's current frame
+    /// encoder and render target. HostTexture remains available as a simpler
+    /// compatibility resource path.
+    fn scene_gpu_renderers(&self, _id: WindowId) -> Option<crate::SceneGpuRendererRegistry> {
+        None
     }
+
+    /// External texture producers encoded by the host before UiScene samples
+    /// their resources. The queue submission remains ordered ahead of Iced's
+    /// presentation submission.
+    fn scene_resource_producers(
+        &self,
+        _id: WindowId,
+    ) -> Option<crate::SceneResourceProducerRegistry> {
+        None
+    }
+
+    fn rebuild_gpu(&mut self, _context: &RuntimeProgramContext<Self::Message>) {}
 
     fn input_event(
         &mut self,
@@ -280,9 +289,10 @@ impl<Program: RuntimeProgram> RuntimeHosted<Program> {
             .document(id)
             .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0));
         let geometry = self.geometries.get(&id).copied().unwrap_or_default();
-        IcedSceneView::from_shared(
+        IcedSceneView::from_shared_with_renderers(
             document.shared_scene(),
             self.program.host_textures(id),
+            self.program.scene_gpu_renderers(id),
             Size::new(geometry.logical_size.0, geometry.logical_size.1),
         )
         .unwrap_or_else(|error| panic!("RuntimeProgram produced an unpaintable UiScene: {error}"))
@@ -346,20 +356,43 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
             .get(&id)
             .copied()
             .unwrap_or_else(|| platform_geometry(hosted.geometry()));
-        let context = Self::context(hosted, id, geometry, self.tasks.clone());
-        self.program
-            .prepare_frame(id, &context)
-            .unwrap_or_else(|error| panic!("RuntimeProgram frame preparation failed: {error}"));
+        let viewport =
+            nana_ui_runtime::LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
         let update = self
             .program
             .document_mut(id)
             .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0))
-            .flush_with(|_, _| Ok(()))
+            .flush(viewport, &mut IcedTextShaper)
             .unwrap_or_else(|error| panic!("RuntimeProgram frame did not settle: {error}"));
         if !update.accessibility.updated.is_empty() || !update.accessibility.removed.is_empty() {
             self.accessibility
                 .insert(id, AccessibilityUpdate::Delta(update.accessibility));
         }
+        if let Some(producers) = self.program.scene_resource_producers(id) {
+            let document = self
+                .program
+                .document(id)
+                .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0));
+            producers
+                .encode_scene(
+                    document.scene(),
+                    hosted.gpu().device().as_ref(),
+                    hosted.gpu().queue().as_ref(),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("RuntimeProgram resource production failed: {error}")
+                });
+        }
+    }
+
+    fn rebuild_gpu(&mut self, hosted: &HostedProgramContext<Self::Message>) {
+        let geometry = self
+            .geometries
+            .get(&WindowId::PRIMARY)
+            .copied()
+            .unwrap_or_else(|| platform_geometry(hosted.geometry()));
+        let context = Self::context(hosted, WindowId::PRIMARY, geometry, self.tasks.clone());
+        self.program.rebuild_gpu(&context);
     }
 
     fn input_event(

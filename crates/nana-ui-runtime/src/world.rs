@@ -534,6 +534,39 @@ impl UiWorld {
         work
     }
 
+    /// Restore drained work after a frame-system failure. Derived writes are
+    /// idempotent, so retrying the complete transaction is safer than losing
+    /// accessibility or render invalidations from an earlier pass.
+    pub fn restore_system_work(&mut self, work: SystemWork) {
+        for (ids, bit) in [
+            (work.style, DirtyMask::STYLE),
+            (work.text, DirtyMask::TEXT),
+            (work.layout, DirtyMask::LAYOUT),
+            (work.input_hit_test, DirtyMask::INPUT),
+            (work.focus_ime, DirtyMask::FOCUS_IME),
+            (work.accessibility, DirtyMask::ACCESSIBILITY),
+            (work.render_extraction, DirtyMask::RENDER),
+        ] {
+            for id in ids {
+                let Some(&entity) = self.entities.get(&id) else {
+                    continue;
+                };
+                self.world
+                    .get_mut::<DirtyMask>(entity)
+                    .expect("retained node must have dirty state")
+                    .insert(bit);
+                self.dirty_entities.insert(id);
+            }
+        }
+        self.pending_accessibility_removals
+            .extend(work.accessibility_removals);
+        self.pending_accessibility_removals.sort_unstable();
+        self.pending_accessibility_removals.dedup();
+        self.pending_render_removals.extend(work.render_removals);
+        self.pending_render_removals.sort_unstable();
+        self.pending_render_removals.dedup();
+    }
+
     pub fn node(&self, id: StableNodeId) -> Option<NodeSnapshot> {
         let entity = *self.entities.get(&id)?;
         let identity = self.world.get::<Identity>(entity)?;
@@ -709,20 +742,72 @@ impl UiWorld {
             }
             let text = self.component::<TextContent>(id).clone();
             let style = self.component::<ComputedStyle>(id).clone();
-            let metrics = shaper.shape(id, &text, &style);
-            if !metrics.width.is_finite()
-                || !metrics.height.is_finite()
-                || metrics.width < 0.0
-                || metrics.height < 0.0
-            {
-                return Err(UiWorldError::InvalidText(id));
-            }
+            let metrics = shaper.shape(id, &text, &style, Default::default());
+            validate_text_metrics(id, metrics)?;
             shaped.push((id, metrics));
         }
         for (id, metrics) in shaped {
             *self.component_mut::<TextMetrics>(id) = metrics;
         }
         Ok(())
+    }
+
+    /// Re-shape visible text against its resolved content box after the first
+    /// layout pass. This closes wrapping/ellipsis height measurement without
+    /// moving layout ownership into the renderer adapter.
+    pub fn shape_text_for_layout(
+        &mut self,
+        document: DocumentId,
+        shaper: &mut impl TextShaper,
+    ) -> Result<bool, UiWorldError> {
+        let mut shaped = Vec::new();
+        for id in self.document_order(document) {
+            let text = self.component::<TextContent>(id);
+            let computed = self.component::<ComputedStyle>(id);
+            if text.value.is_empty() || !computed.visible {
+                continue;
+            }
+            let source = self.component::<NodeStyle>(id);
+            let layout = *self.component::<LayoutBox>(id);
+            let padding = source.layout.resolved_padding_against(Some(layout.width));
+            let border = source.layout.resolved_border_width();
+            let leading_visual = match self.world.get::<StandardVisual>(self.entities[&id]) {
+                Some(StandardVisual::Checkbox { .. }) => 24.0,
+                Some(StandardVisual::Switch { .. }) => 38.0,
+                _ => 0.0,
+            };
+            let constraints = crate::TextShapeConstraints {
+                max_width: Some(
+                    (layout.width - padding.left - padding.right - border * 2.0 - leading_visual)
+                        .max(0.0),
+                ),
+                // Auto-height text must be allowed to grow after wrapping. Feeding the
+                // provisional intrinsic height back as a hard bound would make the first
+                // one-line measurement self-fulfilling. Only authored definite heights
+                // constrain the text backend; max-height is enforced by layout itself.
+                max_height: (source
+                    .layout
+                    .height
+                    .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+                    || source
+                        .layout
+                        .max_height
+                        .is_some_and(nana_ui_core::LengthSpec::is_definite_declared))
+                .then(|| (layout.height - padding.top - padding.bottom - border * 2.0).max(0.0)),
+                wrap: !source.layout.white_space_nowrap,
+                ellipsis: source.layout.text_overflow_ellipsis,
+            };
+            let metrics = shaper.shape(id, text, computed, constraints);
+            validate_text_metrics(id, metrics)?;
+            if *self.component::<TextMetrics>(id) != metrics {
+                shaped.push((id, metrics));
+            }
+        }
+        let changed = !shaped.is_empty();
+        for (id, metrics) in shaped {
+            *self.component_mut::<TextMetrics>(id) = metrics;
+        }
+        Ok(changed)
     }
 
     pub fn layout_inputs(&self, ids: &[StableNodeId]) -> Result<Vec<LayoutInput>, UiWorldError> {
@@ -860,13 +945,81 @@ impl UiWorld {
         if queue.is_empty() {
             return Ok(report);
         }
-        ValidationPlan::new(self).validate(queue.as_slice())?;
+        if !self.validate_simple_mutation(queue.as_slice())? {
+            ValidationPlan::new(self).validate(queue.as_slice())?;
+        }
         self.generation = self.generation.wrapping_add(1);
         report.generation = self.generation;
         for mutation in queue.as_slice() {
             self.apply(mutation, &mut report);
         }
         Ok(report)
+    }
+
+    /// Single-node creation and detached append have no staged cross-mutation
+    /// state to simulate. Validate them directly so retained DOM/component
+    /// construction does not scan the world or clone a growing child list.
+    fn validate_simple_mutation(&self, mutations: &[UiMutation]) -> Result<bool, UiWorldError> {
+        if let [UiMutation::Create { id, .. }] = mutations {
+            if self.contains(*id) {
+                return Err(UiWorldError::DuplicateNode(*id));
+            }
+            if self.is_retired(*id) {
+                return Err(UiWorldError::RetiredNode(*id));
+            }
+            return Ok(true);
+        }
+        let [
+            UiMutation::Insert {
+                parent,
+                child,
+                before: None,
+            },
+        ] = mutations
+        else {
+            return Ok(false);
+        };
+        let (parent_document, _) = self.identity_and_parent(*parent)?;
+        let (child_document, child_parent) = self.identity_and_parent(*child)?;
+        if child_parent.is_some() {
+            return Ok(false);
+        }
+        if parent_document != child_document {
+            return Err(UiWorldError::CrossDocument {
+                parent: *parent,
+                child: *child,
+            });
+        }
+        let mut ancestor = Some(*parent);
+        while let Some(id) = ancestor {
+            if id == *child {
+                return Err(UiWorldError::Cycle {
+                    parent: *parent,
+                    child: *child,
+                });
+            }
+            ancestor = self.identity_and_parent(id)?.1;
+        }
+        Ok(true)
+    }
+
+    fn identity_and_parent(
+        &self,
+        id: StableNodeId,
+    ) -> Result<(DocumentId, Option<StableNodeId>), UiWorldError> {
+        let entity = *self
+            .entities
+            .get(&id)
+            .ok_or(UiWorldError::MissingNode(id))?;
+        let identity = self
+            .world
+            .get::<Identity>(entity)
+            .ok_or(UiWorldError::MissingNode(id))?;
+        let hierarchy = self
+            .world
+            .get::<Hierarchy>(entity)
+            .ok_or(UiWorldError::MissingNode(id))?;
+        Ok((identity.document, hierarchy.parent))
     }
 
     fn apply(&mut self, mutation: &UiMutation, report: &mut CommitReport) {
@@ -902,9 +1055,9 @@ impl UiWorld {
                 before,
             } => {
                 let old_parent = self
-                    .node(*child)
+                    .identity_and_parent(*child)
                     .expect("validated child must exist")
-                    .parent;
+                    .1;
                 if old_parent == Some(*parent) && *before == Some(*child) {
                     return;
                 }
@@ -1755,7 +1908,10 @@ impl UiWorld {
     fn mark_ancestors(&mut self, start: StableNodeId, bits: u8) {
         let mut current = Some(start);
         while let Some(id) = current {
-            current = self.node(id).expect("hierarchy node must exist").parent;
+            current = self
+                .identity_and_parent(id)
+                .expect("hierarchy node must exist")
+                .1;
             if !self.mark(id, bits) {
                 break;
             }
@@ -1764,6 +1920,17 @@ impl UiWorld {
 }
 
 const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+fn validate_text_metrics(id: StableNodeId, metrics: TextMetrics) -> Result<(), UiWorldError> {
+    if !metrics.width.is_finite()
+        || !metrics.height.is_finite()
+        || metrics.width < 0.0
+        || metrics.height < 0.0
+    {
+        return Err(UiWorldError::InvalidText(id));
+    }
+    Ok(())
+}
 
 fn then_affine([a, b, c, d, e, f]: [f32; 6], rhs: [f32; 6]) -> [f32; 6] {
     let [ra, rb, rc, rd, re, rf] = rhs;
@@ -2937,6 +3104,7 @@ mod tests {
             id: StableNodeId,
             text: &TextContent,
             style: &ComputedStyle,
+            _constraints: crate::TextShapeConstraints,
         ) -> TextMetrics {
             self.calls.push(id);
             TextMetrics {

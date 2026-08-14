@@ -40,8 +40,14 @@ scope/event flags 等 compatibility metadata；`MessageBridge` 的 hierarchy 在
 
 Runtime 以 dirty component 产生确定性的 `SystemWork`，区分 style、text shaping、
 layout、input/hit-test、focus/IME、accessibility、render extraction 和 render
-removal。静止 world 返回空 work，不运行无关 system，也不要求持续 redraw。外部
-text/layout/accessibility backend 只消费显式 work，并把有限结果写回 Runtime。
+removal。静止 world 返回空 work，不运行无关 system，也不要求持续 redraw。canonical
+`RuntimeDocument::flush` 在一次 frame transaction 内调用 host text shaper，并由
+backend-neutral `RuntimeLayoutEngine` 根据 viewport、style 与 shaping metrics 写回 layout；
+应用不手写控件坐标。低层 `flush_with` 只保留给需要替换系统执行器的 backend。
+viewport 变化会在无应用 mutation 时主动触发布局；文本先进行 intrinsic shaping，再按
+resolved content box 执行 wrap/ellipsis shaping，auto-height 不会被首轮单行高度错误钳制。
+frame system 失败时，所有已消费 work 会恢复到 scheduler，Scene 与 Accessibility delta
+在 frame settle 前不发布，重试不会丢失 dirty/removal 事务。
 Accessibility 增量事务包含同 generation 的 updated nodes 与 stable-ID removals；subtree
 删除同时更新存活父节点的 children，平台 adapter 不维护另一棵权威语义树。
 Desktop hosted window 在首次 show 前创建 AccessKit adapter，并在应用处理前转发每个
@@ -77,6 +83,10 @@ Dock 的稳定状态入口是 `DockMutation` + `LogicalPoint` 与 `update_mutati
 drag/resize 内部也只保存 logical point、scalar delta 和 `Duration`。旧 `DockAction` 的
 Iced `Point`、widget/subscription/view 仅是 compatibility adapter。三套 Workspace/Split/Dock
 曾共用但现已无消费者的 Iced `ResizeDrag` 已删除，避免保留第二条 resize 规则。
+`DockController::surface_layout` 是 retained consumer 的确定性几何出口：同一份
+`DockLayout` 产生 active item content bounds、tab group 与带 stable path 的 splitter hit
+bounds，并区分主窗口 28px dock chrome 与 floating window 36px native title bar。Runtime
+或 HostTexture consumer 不得再次实现 split ratio、divider 或 chrome offset 算法。
 
 ## Application API
 
@@ -123,22 +133,28 @@ hierarchy 改变时才重算 document order。
 Vue compatibility 的 `ScrollOffsetStore` 只排队 Iced command，不保存状态；程序化滚动和 Iced `on_scroll` feedback 都提交 Runtime offset/metrics。每个 VueHost 独立拥有 `LayoutBoxStore`，它只保存该窗口 JS 查询所需的 paint-phase geometry，不得跨窗口共享或把滚动后的坐标写回 Runtime layout。
 
 `StandardVisual` 将 checkbox/switch/slider 的 indicator、track、fill、thumb 作为有限 backend-neutral render content；它与标签文本分别解析前景，不由 backend 识别 tag。`CustomRenderNode` 只有 renderer/resource/revision opaque key，不携带 backend object。
-`RenderGraph` 声明 pass dependency、resource access/hazard 和 ordered Draw/InvokeCustom
-operation；backend 负责把它映射到同一 Device/Queue/Surface。业务 GPU 内容不得 CPU
+`RenderGraph` 将 external resource preparation、连续标准 primitive 与 custom node 编译为
+独立 pass，显式注册 target/resource access，并通过 hazard dependency 保留生产、采样与 Scene
+顺序。同一 resource 在一帧出现冲突 renderer/revision 时整图拒绝编译。Iced compatibility
+executor 将 Draw 映射为标准 painter；`SceneGpuRenderer` 的 InvokeCustom 直接取得同一
+Device/Queue、当前 CommandEncoder 与 target，能够在图内编码 custom pass。
+`SceneResourceProducer` 则执行 `PrepareExternal`；每个 preparation pass 使用独立 host-owned
+encoder，成功后立即由同一 Queue 有序提交，因此后续 producer 失败不会让先前 producer
+滞留在未提交状态；`nana.host-texture` 使用这条图管理兼容路径。业务 GPU 内容不得 CPU
 readback、Base64/图片编码或额外子窗口后伪装成共享合成。
 
 ## Compatibility backend
 
 `RuntimeProgram` / `run_runtime` 是 Rust 应用的 canonical host contract：应用只提供
-`RuntimeDocument`、UiScene、平台事件处理与可选 HostTexture registry，不返回
+`RuntimeDocument`、UiScene、平台事件处理与可选 HostTexture / SceneGpu renderer registry，不返回
 `iced::Element`。内部 hosted adapter 统一执行 systems、Scene 增量、输入、Accessibility、
 任务完成消息与 redraw；原 `HostedProgram` 仅保留给迁移中的 compatibility consumer。
 
 当前 `nana-ui` 与 `nana-ui-vue` 是显式 Iced compatibility adapters。Android 不属于
 NanaUI 当前产品范围；未来移动端必须由 Android 原生组件拥有平台生命周期、IME、
 accessibility 与原生控件，NanaUI 仅作为嵌入渲染内容参与混合合成，不直接调用 Android API。
-`nana-ui::IcedSceneView` 消费 UiScene 的标准 Quad/Text/HostTexture，custom texture 按
-RenderGraph 顺序解析并在同一 WGPU context 合成；Vue compatibility 复用相同
+`nana-ui::IcedSceneView` 消费编译后的 RenderGraph operation，标准 Quad/Text/HostTexture 与
+注册的 direct custom pass 按顺序在同一 WGPU context 合成；Vue compatibility 复用相同
 `HostTextureSceneResolver`，不维护第二套 custom-node 编译路径。无法忠实表达的
 affine/text/custom primitive 显式失败。保留成熟 text/layout/IME/accessibility
 实现优先于为了“零 Iced”重写。
