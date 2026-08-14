@@ -4,7 +4,7 @@
 //! NanaUI when `--features windowed -- --window` is used; otherwise headless
 //! JS probe only.
 //!
-//! Semantic message bridge (`createWidget` → `MessageBridge` → Iced `Button`):
+//! Semantic message bridge (`createWidget` → `MessageBridge` → Runtime `UiScene`):
 //! `cargo run -p vue-counter -- counter --semantic --clicks=2`
 //!
 //! `cargo run -p vue-counter --features windowed -- --window`
@@ -326,8 +326,9 @@ mod windowed {
     use iced::widget::column;
     use iced::{Element, Length};
     use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
+    use nana_ui::compatibility::Button;
     use nana_ui::{
-        AppearanceSettings, Button, HostedInputDisposition, HostedInputEvent, HostedProgram,
+        AppearanceSettings, HostedInputDisposition, HostedInputEvent, HostedProgram,
         HostedProgramContext, HostedProgramUpdate, HostedRunError, HostedRuntimeEvent,
         HostedWindowEvent, HostedWindowId, HostedWindowSettings, ThemeMode, ThemeModeExt,
         ThemeTokens, WindowMaterialMode, run_hosted,

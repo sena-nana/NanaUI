@@ -19,10 +19,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
-    Card as RuntimeCard, ComponentView, CustomRenderNode, IconButton as RuntimeIconButton,
-    ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, ListItem as RuntimeListItem,
-    ListItemSlots, MutationQueue, NodeKind, NodeStyle, RangeField as RuntimeRangeField,
-    StableNodeId, Switch as RuntimeSwitch, TextContent, TextInputState, UiWorld,
+    Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox, ComponentView,
+    CustomRenderNode, IconButton as RuntimeIconButton, ImeComposition, InteractionState,
+    LayoutBox as RuntimeLayoutBox, ListItem as RuntimeListItem, ListItemSlots, MutationQueue,
+    NodeKind, NodeStyle, RangeField as RuntimeRangeField, StableNodeId, Switch as RuntimeSwitch,
+    TextContent, TextInput as RuntimeTextInput, TextInputState, UiWorld,
 };
 use nana_ui_scene::UiScene;
 
@@ -663,6 +664,30 @@ impl NanaTreeDocument {
             else {
                 continue;
             };
+            // Qualified components own their complete Runtime projection. Queuing
+            // a generic style/interaction/accessibility state first only to
+            // overwrite it in the same transaction doubles validation, dirty
+            // propagation and commit work for large component trees.
+            if !matches!(widget.kind, crate::WidgetKind::Input)
+                && matches!(
+                    widget.kind,
+                    crate::WidgetKind::Button
+                        | crate::WidgetKind::Checkbox
+                        | crate::WidgetKind::Switch
+                        | crate::WidgetKind::Card
+                        | crate::WidgetKind::ListItem
+                        | crate::WidgetKind::Range
+                )
+                && self.runtime.text_input(id).is_some()
+            {
+                // Queue before the new component projection: SetTextInput(None)
+                // clears the old committed value, then Button/ListItem may publish
+                // their own visible label later in the same transaction.
+                mutations.set_text_input(id, None);
+            }
+            if project_migrating_component(widget, snapshot, id, &self.runtime, &mut mutations) {
+                continue;
+            }
             let style = NodeStyle {
                 layout: Arc::new(widget.props.layout.clone()),
                 foreground: widget
@@ -750,7 +775,6 @@ impl NanaTreeDocument {
             } else if self.runtime.text_input(id).is_some() {
                 mutations.set_text_input(id, None);
             }
-            project_migrating_component(widget, snapshot, id, &self.runtime, &mut mutations);
         }
         let _ = self.runtime.commit(mutations);
         self.flush_runtime_systems();
@@ -1861,7 +1885,7 @@ fn project_migrating_component(
     id: StableNodeId,
     world: &UiWorld,
     mutations: &mut MutationQueue,
-) {
+) -> bool {
     match widget.kind {
         crate::WidgetKind::Button => {
             let icon = widget
@@ -1892,12 +1916,53 @@ fn project_migrating_component(
                     );
                 }
                 component.project(id, world, mutations);
-            } else if matches!(
-                world.standard_visual(id),
-                Some(nana_ui_runtime::StandardVisual::Icon { .. })
-            ) {
-                mutations.set_standard_visual(id, None);
+            } else {
+                RuntimeButton::new(widget.props.display_label())
+                    .layout(Arc::new(widget.props.layout.clone()))
+                    .kind(widget.props.button_kind)
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .project(id, world, mutations);
             }
+            true
+        }
+        crate::WidgetKind::Input => {
+            let mut state = world
+                .text_input(id)
+                .cloned()
+                .unwrap_or_else(|| TextInputState::new(&widget.props.value));
+            if state.value != widget.props.value {
+                state.replace_value(&widget.props.value);
+            }
+            let placeholder = if widget.props.placeholder.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.placeholder.as_str()
+            };
+            let mut component = RuntimeTextInput::new("")
+                .placeholder(Arc::<str>::from(placeholder))
+                .layout(Arc::new(widget.props.layout.clone()))
+                .size(widget.props.size)
+                .disabled(widget.props.disabled)
+                .loading(widget.props.loading)
+                .read_only(widget.props.read_only)
+                .secure(widget.props.secure)
+                .invalid(widget.props.invalid);
+            component.state = state;
+            if !widget.props.label.is_empty() {
+                component = component.label(Arc::<str>::from(widget.props.label.as_str()));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Checkbox => {
+            RuntimeCheckbox::new(widget.props.display_label(), widget.props.toggled)
+                .disabled(widget.props.disabled || widget.props.loading)
+                .invalid(widget.props.invalid)
+                .project(id, world, mutations);
+            true
         }
         crate::WidgetKind::Switch => {
             let mut component =
@@ -1911,6 +1976,7 @@ fn project_migrating_component(
                 component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
             }
             component.project(id, world, mutations);
+            true
         }
         crate::WidgetKind::Card => {
             let mut component = RuntimeCard::new()
@@ -1926,6 +1992,7 @@ fn project_migrating_component(
                 component = component.height(height);
             }
             component.project(id, world, mutations);
+            true
         }
         crate::WidgetKind::ListItem => {
             let slot = |name: &str| {
@@ -1958,6 +2025,7 @@ fn project_migrating_component(
                 .selected(widget.props.active)
                 .disabled(widget.props.disabled)
                 .project(id, world, mutations);
+            true
         }
         crate::WidgetKind::Range => {
             let minimum = f64::from(widget.props.min);
@@ -1991,12 +2059,15 @@ fn project_migrating_component(
                 component = component.unit(Arc::<str>::from(widget.props.unit.as_str()));
             }
             component.project(id, world, mutations);
+            true
         }
         _ => {
             if matches!(
                 world.standard_visual(id),
                 Some(
                     nana_ui_runtime::StandardVisual::Icon { .. }
+                        | nana_ui_runtime::StandardVisual::Button { .. }
+                        | nana_ui_runtime::StandardVisual::TextInput { .. }
                         | nana_ui_runtime::StandardVisual::Switch { .. }
                         | nana_ui_runtime::StandardVisual::Range { .. }
                         | nana_ui_runtime::StandardVisual::Card { .. }
@@ -2004,6 +2075,7 @@ fn project_migrating_component(
             ) {
                 mutations.set_standard_visual(id, None);
             }
+            false
         }
     }
 }
@@ -2584,13 +2656,55 @@ mod tests {
     }
 
     #[test]
-    fn switch_and_range_project_one_retained_visual_and_accessibility_state() {
+    fn migrated_controls_project_one_retained_visual_and_accessibility_state() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let button = doc.create_element("nana-button");
+        let input = doc.create_element("nana-input");
+        let checkbox = doc.create_element("nana-checkbox");
         let switch = doc.create_element("nana-switch");
         let range = doc.create_element("nana-range");
+        doc.insert(button, doc.mount_root(), None);
+        doc.insert(input, doc.mount_root(), None);
+        doc.insert(checkbox, doc.mount_root(), None);
         doc.insert(switch, doc.mount_root(), None);
         doc.insert(range, doc.mount_root(), None);
         let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            button.0,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                label: "Build".into(),
+                button_kind: nana_ui_core::ButtonKind::Primary,
+                size: nana_ui_core::ControlSize::Large,
+                loading: true,
+                invalid: true,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            input.0,
+            crate::WidgetKind::Input,
+            crate::WidgetProps {
+                label: "Password".into(),
+                placeholder: "Enter password".into(),
+                value: "secret".into(),
+                size: nana_ui_core::ControlSize::Large,
+                read_only: true,
+                secure: true,
+                invalid: true,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            checkbox.0,
+            crate::WidgetKind::Checkbox,
+            crate::WidgetProps {
+                label: "Notifications".into(),
+                toggled: true,
+                invalid: true,
+                ..Default::default()
+            },
+        );
         bridge.register(
             switch.0,
             crate::WidgetKind::Switch,
@@ -2623,11 +2737,41 @@ mod tests {
         doc.sync_semantic_styles(&snapshot);
         doc.apply_layout_boxes(&[
             (
+                button,
+                LayoutBox {
+                    handle: button,
+                    x: 10.0,
+                    y: 10.0,
+                    width: 220.0,
+                    height: 36.0,
+                },
+            ),
+            (
+                input,
+                LayoutBox {
+                    handle: input,
+                    x: 10.0,
+                    y: 50.0,
+                    width: 220.0,
+                    height: 36.0,
+                },
+            ),
+            (
+                checkbox,
+                LayoutBox {
+                    handle: checkbox,
+                    x: 10.0,
+                    y: 90.0,
+                    width: 220.0,
+                    height: 32.0,
+                },
+            ),
+            (
                 switch,
                 LayoutBox {
                     handle: switch,
                     x: 10.0,
-                    y: 10.0,
+                    y: 130.0,
                     width: 220.0,
                     height: 44.0,
                 },
@@ -2637,13 +2781,40 @@ mod tests {
                 LayoutBox {
                     handle: range,
                     x: 10.0,
-                    y: 70.0,
+                    y: 180.0,
                     width: 220.0,
                     height: 36.0,
                 },
             ),
         ]);
 
+        let button_id = StableNodeId::try_from(button).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(button_id),
+            Some(nana_ui_runtime::StandardVisual::Button {
+                kind: nana_ui_core::ButtonKind::Primary,
+                size: nana_ui_core::ControlSize::Large,
+                loading: true,
+                invalid: true,
+                ..
+            })
+        ));
+        let input_id = StableNodeId::try_from(input).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(input_id),
+            Some(nana_ui_runtime::StandardVisual::TextInput {
+                size: nana_ui_core::ControlSize::Large,
+                secure: true,
+                invalid: true,
+                ..
+            })
+        ));
+
+        let checkbox_id = StableNodeId::try_from(checkbox).unwrap();
+        assert_eq!(
+            doc.runtime.standard_visual(checkbox_id),
+            Some(nana_ui_runtime::StandardVisual::Checkbox { checked: true })
+        );
         let switch_id = StableNodeId::try_from(switch).unwrap();
         assert!(matches!(
             doc.runtime.standard_visual(switch_id),
@@ -2667,6 +2838,19 @@ mod tests {
                 if (ratio - 0.5).abs() < f32::EPSILON
         ));
         let accessibility = doc.accessibility_snapshot();
+        let input_accessibility = accessibility
+            .iter()
+            .find(|node| node.id == input_id)
+            .unwrap();
+        assert!(!input_accessibility.editable);
+        assert_eq!(input_accessibility.value, None);
+        assert!(input_accessibility.invalid);
+        let checkbox_accessibility = accessibility
+            .iter()
+            .find(|node| node.id == checkbox_id)
+            .unwrap();
+        assert_eq!(checkbox_accessibility.checked, Some(true));
+        assert!(checkbox_accessibility.invalid);
         let switch_accessibility = accessibility
             .iter()
             .find(|node| node.id == switch_id)
@@ -2684,6 +2868,51 @@ mod tests {
         assert_eq!(range_accessibility.numeric_value, Some(0.5));
         assert!(doc.scene().node_bounds(switch_id).is_some());
         assert!(doc.scene().node_bounds(range_id).is_some());
+    }
+
+    #[test]
+    fn migrated_kind_change_clears_input_state_before_publishing_button_label() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let node = doc.create_element("nana-input");
+        doc.insert(node, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            node.0,
+            crate::WidgetKind::Input,
+            crate::WidgetProps {
+                value: "secret".into(),
+                secure: true,
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let id = StableNodeId::try_from(node).unwrap();
+        assert!(doc.runtime.text_input(id).is_some());
+
+        bridge.register(
+            node.0,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                label: "Run".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        assert!(doc.runtime.text_input(id).is_none());
+        assert_eq!(doc.runtime.text(id), Some("Run"));
+        assert!(matches!(
+            doc.runtime.standard_visual(id),
+            Some(nana_ui_runtime::StandardVisual::Button { ref label, .. }) if &**label == "Run"
+        ));
+        let accessibility = doc
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.id == id)
+            .unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::Button);
+        assert_eq!(accessibility.label.as_deref(), Some("Run"));
+        assert_eq!(accessibility.value, None);
     }
 
     #[test]
