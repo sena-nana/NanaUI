@@ -80,6 +80,87 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn qualified_runtime_scene_route_never_falls_back_to_an_iced_widget() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Run".into(),
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+        let tokens = ThemeMode::Light.tokens();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            tokens,
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn owned_hosted_tree_builds_qualified_component_from_runtime_scene() {
+        let mut document = crate::tree::NanaTreeDocument::new(320, 200, 1.0);
+        let button = document.create_element("nana-button");
+        document.insert(button, document.mount_root(), None);
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            button.0,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Run".into(),
+                button_kind: ButtonKind::Primary,
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        document.sync_semantic_styles(&snap);
+        document.apply_layout_boxes(&[(
+            button,
+            crate::LayoutBox {
+                handle: button,
+                x: 12.0,
+                y: 12.0,
+                width: 96.0,
+                height: 32.0,
+            },
+        )]);
+        assert!(
+            document
+                .scene()
+                .node_bounds(nana_ui_runtime::StableNodeId::new(button.0).unwrap())
+                .is_some()
+        );
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(document.scene()),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
     fn definite_scroll_extent_uses_parent_or_viewport() {
         assert_eq!(
             definite_scroll_extent(Some(640.0), 800.0),
