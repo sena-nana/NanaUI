@@ -17,12 +17,13 @@ mod world;
 pub use animation::{AnimationFrame, AnimationId, AnimationSample, AnimationSpec, Easing};
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
-    AccessibilityRole, AccessibilityState, AccessibilityUpdate, ComputedStyle, CustomRenderNode,
-    EventRoute, ExtractedNode, ImeComposition, InteractionState, InteractionStyle, LayoutBox,
-    LayoutInput, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
-    SemanticPaint, StandardVisual, TextContent, TextHorizontalAlignment, TextInputState,
-    TextMetrics, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
-    TextVerticalAlignment,
+    AccessibilityRole, AccessibilityState, AccessibilityUpdate, ComponentElevation,
+    ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode, EventRoute,
+    ExtractedNode, ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput,
+    NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, SemanticPaint,
+    StandardVisual, TextContent, TextHorizontalAlignment, TextInputState, TextMetrics,
+    TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment,
+    TooltipVisual,
 };
 pub use framework::{
     AppContext, Entity, ExtensionRegistrar, FrameworkError, Subscription, Task, UiExtension, View,
@@ -39,8 +40,9 @@ pub use nana_ui_core::{
 };
 pub use schedule::SystemWork;
 pub use view_components::{
-    Activate, Button, Card, Checkbox, ComponentView, Dialog, IconButton, List, ListItem, Menu,
-    MenuItem, OverlayChanged, OverlayHost, ScrollAxes, ScrollChanged, ScrollView, Slider,
+    Activate, Button, Card, Checkbox, ComponentView, Dialog, IconButton, IconButtonTooltip, List,
+    ListItem, ListItemSlots, Menu, MenuItem, OverlayChanged, OverlayHost, RangeAdjustment,
+    RangeChanged, RangeDragState, RangeField, ScrollAxes, ScrollChanged, ScrollView, Slider,
     SliderChanged, SliderError, Switch, Tab, TabList, TabSelected, Table, TableCell,
     TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, ToggleChanged, Tooltip,
 };
