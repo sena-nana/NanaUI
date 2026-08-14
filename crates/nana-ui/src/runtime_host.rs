@@ -683,7 +683,11 @@ fn hosted_window_settings(settings: WindowSettings) -> HostedWindowSettings {
         .maximized(settings.maximized)
         .transparent(settings.transparent)
         .always_on_top(settings.always_on_top)
-        .resizable(settings.resizable);
+        .resizable(settings.resizable)
+        // RuntimeProgram does not expose a custom window-chrome contract.
+        // Keep application content inside the native client area on every
+        // platform instead of placing it beneath macOS traffic lights.
+        .native_title_bar();
     if let Some((x, y)) = settings.initial_position {
         hosted = hosted.initial_position(x, y);
     }
@@ -797,5 +801,17 @@ fn event_geometry(event: &WindowEvent) -> Option<WindowGeometry> {
         | WindowEvent::Resized { geometry, .. }
         | WindowEvent::Moved { geometry, .. } => Some(*geometry),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hosted_window_settings;
+
+    #[test]
+    fn runtime_windows_use_native_chrome_until_a_runtime_chrome_contract_exists() {
+        let hosted = hosted_window_settings(nana_ui_platform::WindowSettings::new("Runtime"));
+
+        assert_eq!(hosted.title_bar_mode, crate::HostedTitleBarMode::Native);
     }
 }
