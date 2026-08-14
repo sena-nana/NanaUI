@@ -15,7 +15,7 @@ use crate::{
     AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode,
     ImeComposition, InteractionState, LayoutBox, LayoutInput, MutationQueue, NodeStyle,
     OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
-    TextContent, TextInputState, TextMetrics, TextShaper, UiMutation,
+    TextContent, TextInputPresentation, TextInputState, TextMetrics, TextShaper, UiMutation,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -753,7 +753,11 @@ impl UiWorld {
             if !self.contains(id) {
                 return Err(UiWorldError::MissingNode(id));
             }
-            let text = self.component::<TextContent>(id).clone();
+            let presentation = self.text_input_presentation_source(id);
+            let text = presentation.as_ref().map_or_else(
+                || self.component::<TextContent>(id).clone(),
+                |source| source.text.clone(),
+            );
             let style = self.component::<ComputedStyle>(id).clone();
             let metrics = shaper.shape(
                 id,
@@ -765,10 +769,17 @@ impl UiWorld {
                 },
             );
             validate_text_metrics(id, metrics)?;
-            shaped.push((id, metrics));
+            let presentation = presentation
+                .map(|source| shape_text_input_presentation(id, source, &style, shaper));
+            shaped.push((id, metrics, presentation));
         }
-        for (id, metrics) in shaped {
+        for (id, metrics, presentation) in shaped {
             *self.component_mut::<TextMetrics>(id) = metrics;
+            if let Some(presentation) = presentation {
+                self.world
+                    .entity_mut(self.entities[&id])
+                    .insert(presentation);
+            }
         }
         Ok(())
     }
@@ -783,7 +794,11 @@ impl UiWorld {
     ) -> Result<bool, UiWorldError> {
         let mut shaped = Vec::new();
         for id in self.document_order(document) {
-            let text = self.component::<TextContent>(id);
+            let presentation = self.text_input_presentation_source(id);
+            let text = presentation.as_ref().map_or_else(
+                || self.component::<TextContent>(id).clone(),
+                |source| source.text.clone(),
+            );
             let computed = self.component::<ComputedStyle>(id);
             if text.value.is_empty() || !computed.visible {
                 continue;
@@ -819,17 +834,50 @@ impl UiWorld {
                 ellipsis: source.layout.text_overflow_ellipsis,
                 shaping: self.text_shaping(id),
             };
-            let metrics = shaper.shape(id, text, computed, constraints);
+            let metrics = shaper.shape(id, &text, computed, constraints);
             validate_text_metrics(id, metrics)?;
-            if *self.component::<TextMetrics>(id) != metrics {
-                shaped.push((id, metrics));
+            let presentation = presentation
+                .map(|source| shape_text_input_presentation(id, source, computed, shaper));
+            if *self.component::<TextMetrics>(id) != metrics
+                || presentation.as_ref().is_some_and(|value| {
+                    self.world.get::<TextInputPresentation>(self.entities[&id]) != Some(value)
+                })
+            {
+                shaped.push((id, metrics, presentation));
             }
         }
         let changed = !shaped.is_empty();
-        for (id, metrics) in shaped {
+        for (id, metrics, presentation) in shaped {
             *self.component_mut::<TextMetrics>(id) = metrics;
+            if let Some(presentation) = presentation {
+                self.world
+                    .entity_mut(self.entities[&id])
+                    .insert(presentation);
+            }
         }
         Ok(changed)
+    }
+
+    fn text_input_presentation_source(
+        &self,
+        id: StableNodeId,
+    ) -> Option<TextInputPresentationSource> {
+        let StandardVisual::TextInput {
+            placeholder,
+            secure,
+            ..
+        } = self.world.get::<StandardVisual>(self.entities[&id])?
+        else {
+            return None;
+        };
+        let state = self.world.get::<TextInputState>(self.entities[&id])?;
+        let ime = self.world.get::<ImeComposition>(self.entities[&id]);
+        Some(build_text_input_presentation_source(
+            state,
+            ime,
+            placeholder,
+            *secure,
+        ))
     }
 
     fn text_shaping(&self, id: StableNodeId) -> crate::TextShaping {
@@ -1369,12 +1417,30 @@ impl UiWorld {
             }
             UiMutation::SetStandardVisual { id, visual } => {
                 let entity = self.entities[id];
+                let text_input_presentation_changed =
+                    matches!(
+                        self.world.get::<StandardVisual>(entity),
+                        Some(StandardVisual::TextInput { .. })
+                    ) || matches!(visual, Some(StandardVisual::TextInput { .. }));
                 if let Some(visual) = visual {
                     self.world.entity_mut(entity).insert(visual.clone());
                 } else {
                     self.world.entity_mut(entity).remove::<StandardVisual>();
                 }
-                self.mark(*id, DirtyMask::RENDER);
+                if !matches!(visual, Some(StandardVisual::TextInput { .. })) {
+                    self.world
+                        .entity_mut(entity)
+                        .remove::<TextInputPresentation>();
+                }
+                self.mark(
+                    *id,
+                    DirtyMask::RENDER
+                        | if text_input_presentation_changed {
+                            DirtyMask::TEXT
+                        } else {
+                            0
+                        },
+                );
             }
             UiMutation::SetAccessibility { id, accessibility } => {
                 let previous = self.component::<AccessibilityState>(*id);
@@ -1537,7 +1603,10 @@ impl UiWorld {
                 } else {
                     self.world.entity_mut(entity).remove::<ImeComposition>();
                 }
-                self.mark(*id, DirtyMask::FOCUS_IME | DirtyMask::RENDER);
+                self.mark(
+                    *id,
+                    DirtyMask::TEXT | DirtyMask::FOCUS_IME | DirtyMask::RENDER,
+                );
             }
             UiMutation::SetTextInput { id, state } => {
                 let entity = self.entities[id];
@@ -1562,7 +1631,13 @@ impl UiWorld {
             }
             UiMutation::SetTextSelection { id, selection } => {
                 self.component_mut::<TextInputState>(*id).selection = *selection;
-                self.mark(*id, DirtyMask::FOCUS_IME | DirtyMask::ACCESSIBILITY);
+                self.mark(
+                    *id,
+                    DirtyMask::TEXT
+                        | DirtyMask::FOCUS_IME
+                        | DirtyMask::RENDER
+                        | DirtyMask::ACCESSIBILITY,
+                );
             }
             UiMutation::ReplaceTextSelection { id, text } => {
                 let (replaced, value) = {
@@ -1610,6 +1685,12 @@ impl UiWorld {
             StandardVisual::Icon { .. } => style
                 .color
                 .unwrap_or_else(|| self.style_model.palette.muted.as_rgba_array()),
+            StandardVisual::Button { .. } => style
+                .color
+                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
+            StandardVisual::TextInput { .. } => style
+                .color
+                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
             StandardVisual::Checkbox { checked: true }
             | StandardVisual::Switch { checked: true, .. } => {
                 self.style_model.palette.accent_text.as_rgba_array()
@@ -1685,6 +1766,145 @@ impl UiWorld {
             }
         };
         match visual {
+            StandardVisual::Button {
+                label,
+                size,
+                loading,
+                invalid,
+                ..
+            } => {
+                // Loading reserves 20px through symmetric intrinsic padding in
+                // the layout pass. That reservation grows the outer button; it
+                // is not additional visual padding, so return it to the inline
+                // content box before centering spinner + label.
+                let button_content = if *loading {
+                    LayoutBox {
+                        x: content.x - 10.0,
+                        width: content.width + 20.0,
+                        ..content
+                    }
+                } else {
+                    content
+                };
+                let label_width = self
+                    .text_metrics(id)
+                    .map_or(0.0, |metrics| metrics.width.min(button_content.width));
+                let spinner_extent = size.icon_size().min(button_content.height);
+                let gap = if *loading { 6.0 } else { 0.0 };
+                let group_width = (label_width + if *loading { spinner_extent + gap } else { 0.0 })
+                    .min(button_content.width);
+                let group_x = button_content.x + (button_content.width - group_width) / 2.0;
+                let spinner = (*loading).then_some(LayoutBox {
+                    x: group_x,
+                    y: button_content.y + (button_content.height - spinner_extent) / 2.0,
+                    width: spinner_extent,
+                    height: spinner_extent,
+                });
+                let label_x = group_x + if *loading { spinner_extent + gap } else { 0.0 };
+                Some(crate::ComponentGeometry::Button {
+                    label: text_region(
+                        LayoutBox {
+                            x: label_x,
+                            y: button_content.y,
+                            width: (group_x + group_width - label_x).max(0.0),
+                            height: button_content.height,
+                        },
+                        Arc::clone(label),
+                        false,
+                        size.text_size(),
+                        Some(500),
+                    ),
+                    spinner,
+                    background: style.background,
+                    border: style.border_color,
+                    border_width: if style.border_color.is_some() {
+                        source.layout.resolved_border_width()
+                    } else {
+                        0.0
+                    },
+                    focus_ring: (self.focused.get(&self.component::<Identity>(id).document)
+                        == Some(&id))
+                    .then(|| {
+                        if *invalid {
+                            self.style_model.palette.danger.as_rgba_array()
+                        } else {
+                            self.style_model.palette.accent.as_rgba_array()
+                        }
+                    }),
+                })
+            }
+            StandardVisual::TextInput { size, invalid, .. } => {
+                let presentation = self
+                    .world
+                    .get::<TextInputPresentation>(self.entities[&id])?;
+                let focused =
+                    self.focused.get(&self.component::<Identity>(id).document) == Some(&id);
+                let text_width = self.text_metrics(id).map_or(0.0, |metrics| metrics.width);
+                let scroll = (presentation.caret_x - content.width + 1.0)
+                    .max(0.0)
+                    .min((text_width - content.width).max(0.0));
+                let line_height = size.line_height().min(content.height);
+                let line_y = content.y + (content.height - line_height) / 2.0;
+                let field_x = |offset: f32| content.x + offset - scroll;
+                let selection = presentation.selection.map(|(start, end)| LayoutBox {
+                    x: field_x(start),
+                    y: line_y,
+                    width: (end - start).max(0.0),
+                    height: line_height,
+                });
+                let caret = focused.then_some(LayoutBox {
+                    x: field_x(presentation.caret_x),
+                    y: line_y,
+                    width: 1.0,
+                    height: line_height,
+                });
+                let preedit = presentation.preedit.map(|(start, end)| LayoutBox {
+                    x: field_x(start),
+                    y: line_y + line_height - 2.0,
+                    width: (end - start).max(1.0),
+                    height: 2.0,
+                });
+                Some(crate::ComponentGeometry::TextInput {
+                    text: crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: content.x - scroll,
+                            y: content.y,
+                            width: text_width.max(content.width),
+                            height: content.height,
+                        },
+                        content: Arc::from(presentation.display_value.as_str()),
+                        color: Some(if presentation.placeholder {
+                            self.style_model.palette.faint.as_rgba_array()
+                        } else {
+                            style
+                                .color
+                                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array())
+                        }),
+                        font_size: size.text_size(),
+                        font_weight: style.font_weight,
+                    },
+                    selection,
+                    caret,
+                    preedit,
+                    background: style.background,
+                    border: style.border_color,
+                    border_width: if style.border_color.is_some() {
+                        source.layout.resolved_border_width()
+                    } else {
+                        0.0
+                    },
+                    focus_ring: focused.then(|| {
+                        if *invalid {
+                            self.style_model.palette.danger.as_rgba_array()
+                        } else {
+                            self.style_model.palette.accent.as_rgba_array()
+                        }
+                    }),
+                    selection_color: self.style_model.palette.accent_soft.as_rgba_array(),
+                    caret_color: self.style_model.palette.accent.as_rgba_array(),
+                    preedit_color: self.style_model.palette.accent.as_rgba_array(),
+                })
+            }
             StandardVisual::Switch {
                 label,
                 hint,
@@ -2017,11 +2237,17 @@ impl UiWorld {
                 .collect(),
             role,
             label,
-            value: self
-                .world
-                .get::<TextInputState>(entity)
-                .map(|input| Arc::<str>::from(input.value.as_str()))
-                .or_else(|| state.value.clone()),
+            value: if matches!(
+                self.world.get::<StandardVisual>(entity),
+                Some(StandardVisual::TextInput { secure: true, .. })
+            ) {
+                None
+            } else {
+                self.world
+                    .get::<TextInputState>(entity)
+                    .map(|input| Arc::<str>::from(input.value.as_str()))
+                    .or_else(|| state.value.clone())
+            },
             disabled: state.disabled,
             checked: state.checked,
             selected: state.selected,
@@ -2299,6 +2525,114 @@ impl UiWorld {
 }
 
 const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+#[derive(Debug, Clone)]
+struct TextInputPresentationSource {
+    text: TextContent,
+    placeholder: bool,
+    selection: Option<(usize, usize)>,
+    caret: usize,
+    preedit: Option<(usize, usize)>,
+}
+
+fn build_text_input_presentation_source(
+    state: &TextInputState,
+    ime: Option<&ImeComposition>,
+    placeholder: &str,
+    secure: bool,
+) -> TextInputPresentationSource {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let mask = |value: &str| {
+        if secure {
+            "•".repeat(value.graphemes(true).count())
+        } else {
+            value.to_owned()
+        }
+    };
+    let display_offset = |value: &str, offset: usize| {
+        if secure {
+            value[..offset].graphemes(true).count() * "•".len()
+        } else {
+            offset
+        }
+    };
+    if state.value.is_empty() && ime.is_none() && !placeholder.is_empty() {
+        return TextInputPresentationSource {
+            text: TextContent {
+                value: placeholder.to_owned(),
+            },
+            placeholder: true,
+            selection: None,
+            caret: 0,
+            preedit: None,
+        };
+    }
+
+    let selection = if state.selection.is_valid_for(&state.value) {
+        state.selection
+    } else {
+        crate::TextSelection::caret(state.value.len())
+    };
+    if let Some(ime) = ime {
+        let replaced = selection.ordered();
+        let prefix = mask(&state.value[..replaced.start]);
+        let suffix = mask(&state.value[replaced.end..]);
+        let preedit_start = prefix.len();
+        let preedit_end = preedit_start + ime.text.len();
+        let ime_focus = ime
+            .selection
+            .map(|(_, focus)| focus)
+            .filter(|focus| *focus <= ime.text.len() && ime.text.is_char_boundary(*focus))
+            .unwrap_or(ime.text.len());
+        return TextInputPresentationSource {
+            text: TextContent {
+                value: format!("{prefix}{}{suffix}", ime.text),
+            },
+            placeholder: false,
+            selection: None,
+            caret: preedit_start + ime_focus,
+            preedit: Some((preedit_start, preedit_end)),
+        };
+    }
+
+    let anchor = display_offset(&state.value, selection.anchor);
+    let focus = display_offset(&state.value, selection.focus);
+    TextInputPresentationSource {
+        text: TextContent {
+            value: mask(&state.value),
+        },
+        placeholder: false,
+        selection: (anchor != focus).then_some((anchor.min(focus), anchor.max(focus))),
+        caret: focus,
+        preedit: None,
+    }
+}
+
+fn shape_text_input_presentation(
+    id: StableNodeId,
+    source: TextInputPresentationSource,
+    style: &ComputedStyle,
+    shaper: &mut impl TextShaper,
+) -> TextInputPresentation {
+    TextInputPresentation {
+        display_value: source.text.value.clone(),
+        placeholder: source.placeholder,
+        selection: source.selection.map(|(start, end)| {
+            (
+                shaper.horizontal_offset(id, &source.text, start, style),
+                shaper.horizontal_offset(id, &source.text, end, style),
+            )
+        }),
+        caret_x: shaper.horizontal_offset(id, &source.text, source.caret, style),
+        preedit: source.preedit.map(|(start, end)| {
+            (
+                shaper.horizontal_offset(id, &source.text, start, style),
+                shaper.horizontal_offset(id, &source.text, end, style),
+            )
+        }),
+    }
+}
 
 fn validate_text_metrics(id: StableNodeId, metrics: TextMetrics) -> Result<(), UiWorldError> {
     if !metrics.width.is_finite()
@@ -3067,6 +3401,34 @@ mod tests {
                 .selection,
             crate::TextSelection::caret("娜".len())
         );
+    }
+
+    #[test]
+    fn text_input_presentation_masks_graphemes_and_replaces_selection_with_preedit() {
+        let value = "A👩‍💻界";
+        let state = TextInputState {
+            value: value.into(),
+            selection: crate::TextSelection {
+                anchor: "A".len(),
+                focus: "A👩‍💻".len(),
+            },
+        };
+        let masked = build_text_input_presentation_source(&state, None, "", true);
+        assert_eq!(masked.text.value, "•••");
+        assert_eq!(masked.selection, Some(("•".len(), "••".len())));
+
+        let preedit = build_text_input_presentation_source(
+            &state,
+            Some(&ImeComposition {
+                text: "输入".into(),
+                selection: Some((0, "输".len())),
+            }),
+            "",
+            true,
+        );
+        assert_eq!(preedit.text.value, "•输入•");
+        assert_eq!(preedit.preedit, Some(("•".len(), "•输入".len())));
+        assert_eq!(preedit.caret, "•输".len());
     }
 
     #[test]

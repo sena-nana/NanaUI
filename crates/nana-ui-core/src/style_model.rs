@@ -120,7 +120,12 @@ pub enum SemanticColorRole {
     AccentText,
     Success,
     Warning,
+    WarningSoft,
+    WarningSoftHover,
+    WarningSoftPressed,
     Danger,
+    DangerSoftHover,
+    DangerSoftPressed,
 }
 
 impl SemanticColorRole {
@@ -158,7 +163,12 @@ impl SemanticColorRole {
             "accent-text" | "on-accent" => Self::AccentText,
             "success" => Self::Success,
             "warning" => Self::Warning,
+            "warning-soft" => Self::WarningSoft,
+            "warning-soft-hover" => Self::WarningSoftHover,
+            "warning-soft-pressed" => Self::WarningSoftPressed,
             "danger" | "error" => Self::Danger,
+            "danger-soft-hover" => Self::DangerSoftHover,
+            "danger-soft-pressed" => Self::DangerSoftPressed,
             _ => return None,
         })
     }
@@ -287,7 +297,27 @@ impl SemanticPalette {
             SemanticColorRole::AccentText => self.accent_text,
             SemanticColorRole::Success => self.success,
             SemanticColorRole::Warning => self.warning,
+            SemanticColorRole::WarningSoft => SemanticColor {
+                a: if self.background.r > 0.5 { 0.12 } else { 0.16 },
+                ..self.warning
+            },
+            SemanticColorRole::WarningSoftHover => SemanticColor {
+                a: 0.20,
+                ..self.warning
+            },
+            SemanticColorRole::WarningSoftPressed => SemanticColor {
+                a: 0.24,
+                ..self.warning
+            },
             SemanticColorRole::Danger => self.danger,
+            SemanticColorRole::DangerSoftHover => SemanticColor {
+                a: 0.18,
+                ..self.danger
+            },
+            SemanticColorRole::DangerSoftPressed => SemanticColor {
+                a: 0.22,
+                ..self.danger
+            },
         }
     }
 }
