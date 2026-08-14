@@ -1,9 +1,10 @@
 # Component migration contract
 
 NanaUI migrates components independently while preserving their product behavior. The public
-read-only catalog is available through `component_catalog()` and `component_support()`. It is
-diagnostic and acceptance metadata; it never chooses a renderer, appears in product UI, or creates
-parallel application state.
+read-only catalog is available through `component_catalog()` and `component_support()`. Consumers
+use it as diagnostic and acceptance metadata; it never appears in product UI or creates parallel
+application state. NanaUI derives its internal default-backend route from the same declaration so
+there is no second hand-maintained list of qualified components.
 
 ## States
 
@@ -21,11 +22,12 @@ qualified or compatibility implementation while another component advances.
 ## Promotion gate
 
 Each component promotion uses one backend-neutral fixture state. The compatibility and Runtime
-paths must produce the same behavior and satisfy the component's logical geometry contract,
-including component/text bounds, padding, baseline, wrapping, clipping and hit area. The snapshot
-runner writes the two images, a side-by-side image, a pixel-difference image, and the geometry
-report to `NANA_UI_SNAPSHOT_OUTPUT` (or `target/ui-snapshots`). These images are diagnostic evidence,
-not a pixel-similarity gate, and the runner never promotes a catalog entry automatically.
+paths are independently checked against the component's design contract, including component/text
+bounds, padding, baseline, wrapping, clipping and hit area. For each state the snapshot runner
+writes `iced.png`, `runtime.png`, `side-by-side.png`, `difference.png`, and `evidence.txt` under
+`target/ui-snapshots/component-migration/<component>/<theme>/<state>/` (or the corresponding
+`NANA_UI_SNAPSHOT_OUTPUT` root). These images are diagnostic evidence, not a pixel-similarity gate,
+and the runner never promotes a catalog entry automatically.
 
 Iced preserves migration-era product behavior and design intent, but it is not an absolute visual
 truth. Review differences against shared theme semantics, font metrics, component state contracts,
@@ -46,3 +48,14 @@ the existing idle-redraw contract.
 interaction, strict layout, rendering semantics, accessibility and human visual review all pass.
 Workspace, Dock, Sidebar, Overlay and other professional components remain `Compatibility` unless
 their individual catalog entry says otherwise.
+
+## Current second batch
+
+`IconButton`, `Switch`, `Card`, `ListItem`, and `RangeField` are `RuntimeQualified`; their root and
+aggregate public exports route to Runtime, while their Iced adapters live under
+`nana_ui::compatibility`. IconButton keeps hover, pressed, external focus and persistent selected
+feedback visually distinct. Switch separates its complete-row hover/pressed state layer from the
+track and focus ring, rather than flattening all three into one track paint. Iced output remains a
+reference rather than an oracle: an `evidence.txt` entry records the expected design result, each
+backend's observed result and verdict, and the reason for an intentional divergence. No automatic
+fallback or parallel tree is introduced.

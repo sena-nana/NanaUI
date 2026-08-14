@@ -33,6 +33,9 @@ use nana_ui_scene::UiScene;
 
 use crate::write;
 
+#[path = "render/migration_next.rs"]
+mod migration_next;
+
 const GALLERY_SIZE: Size<u32> = Size::new(1280, 800);
 
 #[derive(Clone, Copy)]
@@ -146,6 +149,9 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &output,
         ThemeMode::Dark,
     )?);
+    for theme in [ThemeMode::Dark, ThemeMode::Light] {
+        paths.extend(migration_next::generate(&mut renderer, &output, theme)?);
+    }
 
     for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
         paths.push(dock_window_merged_snapshot(
@@ -746,7 +752,7 @@ fn migration_runtime_scene(
     Ok((scene, layout))
 }
 
-fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32) -> Vec<u8> {
+pub(super) fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32) -> Vec<u8> {
     let output_width = size.width * 2 + gap;
     let mut output = vec![0; (output_width * size.height * 4) as usize];
     for y in 0..size.height as usize {
@@ -762,7 +768,7 @@ fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32) -> Vec<u8>
     output
 }
 
-fn pixel_difference(left: &[u8], right: &[u8]) -> Vec<u8> {
+pub(super) fn pixel_difference(left: &[u8], right: &[u8]) -> Vec<u8> {
     left.chunks_exact(4)
         .zip(right.chunks_exact(4))
         .flat_map(|(left, right)| {
@@ -881,8 +887,10 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
     }
     let card = context.create_component(document, RuntimeCard::new().label("Source inspector"))?;
     let card_title = context.create_component(document, RuntimeText::new("Source inspector"))?;
-    let add_source =
-        context.create_component(document, RuntimeIconButton::new("+", "Add source"))?;
+    let add_source = context.create_component(
+        document,
+        RuntimeIconButton::new(nana_ui::Icon::Add, "Add source"),
+    )?;
     let notes = context.create_component(
         document,
         RuntimeTextArea::new("Camera follows Program.\nAudio monitoring enabled.")
@@ -1661,7 +1669,7 @@ fn snapshot_with_messages<Message>(
     (pixels, messages.drain().collect())
 }
 
-fn snapshot_with_cursor<Message>(
+pub(super) fn snapshot_with_cursor<Message>(
     renderer: &mut Renderer,
     view: Element<'_, Message, Theme, Renderer>,
     theme: &Theme,
