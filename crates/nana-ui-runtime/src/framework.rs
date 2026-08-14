@@ -34,15 +34,15 @@ pub trait View: Send + 'static {}
 impl<T: Send + 'static> View for T {}
 
 trait EditableText: ComponentView {
-    fn disabled(&self) -> bool;
+    fn accepts_input(&self) -> bool;
     fn replace_selection(&mut self, text: &str) -> bool;
     fn state(&self) -> &TextInputState;
     fn state_mut(&mut self) -> &mut TextInputState;
 }
 
 impl EditableText for TextInput {
-    fn disabled(&self) -> bool {
-        self.disabled
+    fn accepts_input(&self) -> bool {
+        !self.disabled && !self.loading && !self.read_only
     }
 
     fn replace_selection(&mut self, text: &str) -> bool {
@@ -59,8 +59,8 @@ impl EditableText for TextInput {
 }
 
 impl EditableText for TextArea {
-    fn disabled(&self) -> bool {
-        self.disabled
+    fn accepts_input(&self) -> bool {
+        !self.disabled
     }
 
     fn replace_selection(&mut self, text: &str) -> bool {
@@ -119,6 +119,7 @@ struct RegisteredAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoadingComponent {
+    Button,
     Switch,
     Card,
 }
@@ -512,6 +513,11 @@ impl AppContext {
                 .collect::<Vec<_>>();
             for (target, kind) in loading {
                 let changed = match kind {
+                    LoadingComponent::Button => self
+                        .update_component(Entity::<Button>::from_stable_id(target), |button, _| {
+                            button.loading_phase = phase;
+                        })
+                        .is_ok(),
                     LoadingComponent::Switch => self
                         .update_component(Entity::<Switch>::from_stable_id(target), |switch, _| {
                             switch.loading_phase = phase;
@@ -1049,7 +1055,7 @@ impl AppContext {
     /// Dispatch a semantic activation through the component's closure-event
     /// path. Disabled buttons do not emit or mutate retained state.
     pub fn activate_button(&mut self, entity: Entity<Button>) -> Result<bool, FrameworkError> {
-        self.activate_component(entity, |button| button.disabled)
+        self.activate_component(entity, |button| button.disabled || button.loading)
     }
 
     pub fn activate_icon_button(
@@ -1285,6 +1291,11 @@ impl AppContext {
 
         let desired_loading = self.views.get(&id).and_then(|view| {
             if view
+                .downcast_ref::<Button>()
+                .is_some_and(|button| button.loading)
+            {
+                Some(LoadingComponent::Button)
+            } else if view
                 .downcast_ref::<Switch>()
                 .is_some_and(|switch| switch.loading)
             {
@@ -1573,6 +1584,13 @@ impl AppContext {
         let Some((target, _)) = self.world.focused_text_input(document) else {
             return Ok(false);
         };
+        if !self
+            .world
+            .accessibility(target)
+            .is_some_and(|state| state.editable)
+        {
+            return Ok(false);
+        }
         let composition = crate::ImeComposition { text, selection };
         if self.world.ime(target) == Some(&composition) {
             return Ok(false);
@@ -1670,7 +1688,7 @@ impl AppContext {
         &mut self,
         entity: Entity<C>,
     ) -> Result<bool, FrameworkError> {
-        if self.read(entity, EditableText::disabled)? {
+        if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
@@ -1705,7 +1723,7 @@ impl AppContext {
         entity: Entity<C>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        if self.read(entity, EditableText::disabled)? {
+        if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
@@ -1816,7 +1834,7 @@ impl AppContext {
         entity: Entity<C>,
         value: String,
     ) -> Result<bool, FrameworkError> {
-        if self.read(entity, EditableText::disabled)? {
+        if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
@@ -1837,7 +1855,7 @@ impl AppContext {
         entity: Entity<C>,
         selection: TextSelection,
     ) -> Result<bool, FrameworkError> {
-        if self.read(entity, EditableText::disabled)? {
+        if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
@@ -2261,7 +2279,7 @@ impl AppContext {
         entity: Entity<C>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        if self.read(entity, EditableText::disabled)? {
+        if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
@@ -3051,6 +3069,135 @@ mod tests {
     }
 
     #[test]
+    fn loading_button_owns_size_semantics_animation_and_activation_gate() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                Button::new("Deploy")
+                    .kind(nana_ui_core::ButtonKind::Warning)
+                    .size(nana_ui_core::ControlSize::Large)
+                    .loading(true)
+                    .invalid(true),
+            )
+            .unwrap();
+
+        assert!(!context.activate_button(button).unwrap());
+        assert_eq!(context.next_animation_deadline(), Some(Duration::ZERO));
+        assert_eq!(
+            context
+                .world()
+                .node_style(button.stable_id())
+                .unwrap()
+                .layout
+                .min_height,
+            Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::ControlSize::Large.height()
+            ))
+        );
+        let accessibility = context.world().accessibility(button.stable_id()).unwrap();
+        assert!(accessibility.disabled);
+        assert!(accessibility.busy);
+        assert!(accessibility.invalid);
+        assert!(matches!(
+            context.world().standard_visual(button.stable_id()),
+            Some(StandardVisual::Button {
+                kind: nana_ui_core::ButtonKind::Warning,
+                size: nana_ui_core::ControlSize::Large,
+                loading: true,
+                invalid: true,
+                ..
+            })
+        ));
+
+        let frame = context.advance_animations(Duration::from_millis(400));
+        assert_eq!(frame.component_updates, vec![button.stable_id()]);
+        assert_eq!(frame.next_deadline, Some(Duration::from_millis(416)));
+        assert!(matches!(
+            context.world().standard_visual(button.stable_id()),
+            Some(StandardVisual::Button {
+                loading_phase,
+                ..
+            }) if (loading_phase - 0.5).abs() < f32::EPSILON
+        ));
+
+        context
+            .update_component(button, |button, _cx| button.loading = false)
+            .unwrap();
+        assert_eq!(context.next_animation_deadline(), None);
+        assert!(context.activate_button(button).unwrap());
+    }
+
+    #[test]
+    fn text_input_owns_editability_privacy_size_and_busy_semantics() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(
+                document,
+                TextInput::new("secret")
+                    .placeholder("Password")
+                    .size(nana_ui_core::ControlSize::Large)
+                    .read_only(true)
+                    .secure(true)
+                    .invalid(true),
+            )
+            .unwrap();
+
+        assert!(context.focus_node(document, input.stable_id()).unwrap());
+        assert!(!context.replace_text_input_selection(input, "x").unwrap());
+        assert!(
+            !context
+                .set_ime_preedit(document, "输入".into(), None)
+                .unwrap()
+        );
+        let node = context
+            .world()
+            .project_accessibility(document)
+            .into_iter()
+            .find(|node| node.id == input.stable_id())
+            .unwrap();
+        assert!(node.focused);
+        assert!(!node.editable);
+        assert!(node.invalid);
+        assert_eq!(node.value, None);
+        assert_eq!(
+            context
+                .world()
+                .node_style(input.stable_id())
+                .unwrap()
+                .layout
+                .min_height,
+            Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::ControlSize::Large.height()
+            ))
+        );
+
+        context
+            .update_component(input, |input, _cx| {
+                input.read_only = false;
+                input.loading = true;
+            })
+            .unwrap();
+        let state = context.world().accessibility(input.stable_id()).unwrap();
+        assert!(state.disabled);
+        assert!(state.busy);
+        assert!(!state.editable);
+        assert!(!context.replace_text_input_selection(input, "x").unwrap());
+
+        context
+            .update_component(input, |input, _cx| input.loading = false)
+            .unwrap();
+        assert_eq!(context.world().focused(document), Some(input.stable_id()));
+        assert!(
+            context
+                .set_ime_preedit(document, "输入".into(), None)
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn card_icon_button_and_list_item_keep_visual_and_semantic_content_distinct() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -3236,7 +3383,10 @@ mod tests {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let checkbox = context
-            .create_component(document, Checkbox::new("Notifications", false))
+            .create_component(
+                document,
+                Checkbox::new("Notifications", false).invalid(true),
+            )
             .unwrap();
         let switch = context
             .create_component(document, Switch::new("Auto build", true))
@@ -3278,6 +3428,17 @@ mod tests {
             Some(StandardVisual::Checkbox { checked: true })
         );
         assert_eq!(
+            context
+                .world()
+                .node_style(checkbox.stable_id())
+                .unwrap()
+                .layout
+                .min_height,
+            Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::ControlSize::Medium.height()
+            ))
+        );
+        assert_eq!(
             context.world().standard_visual(switch.stable_id()),
             Some(StandardVisual::Switch {
                 label: Arc::from("Auto build"),
@@ -3297,6 +3458,7 @@ mod tests {
         let accessibility = context.world().project_accessibility(document);
         assert_eq!(accessibility[0].role, crate::AccessibilityRole::Checkbox);
         assert_eq!(accessibility[0].checked, Some(true));
+        assert!(accessibility[0].invalid);
         assert_eq!(accessibility[1].role, crate::AccessibilityRole::Switch);
         assert_eq!(accessibility[1].checked, Some(false));
         assert_eq!(accessibility[2].role, crate::AccessibilityRole::Slider);
@@ -3312,6 +3474,10 @@ mod tests {
         assert_eq!(
             checkbox_paint.style.background,
             Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
+        );
+        assert_eq!(
+            checkbox_paint.style.border_color,
+            Some(nana_ui_core::SemanticPalette::dark().danger.as_rgba_array())
         );
         context
             .world_mut()
@@ -3717,7 +3883,10 @@ mod tests {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let button = context
-            .create_component(document, Button::new("Build"))
+            .create_component(
+                document,
+                Button::new("Build").kind(nana_ui_core::ButtonKind::Primary),
+            )
             .unwrap();
         let work = context.world_mut().take_system_work();
         context.world_mut().resolve_styles(&work.style).unwrap();
