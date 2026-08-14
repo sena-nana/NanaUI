@@ -549,21 +549,7 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
     }
 
     fn text_input_request(&self, id: WindowId) -> Option<nana_ui_platform::TextInputRequest> {
-        let document = self.program.document(id)?;
-        let focused = document
-            .context()
-            .focused_text_input(document.document())
-            .map(|(target, _)| target);
-        let cursor_area = focused
-            .and_then(|target| document.context().world().layout_box(target))
-            .map(|layout| {
-                nana_ui_core::LogicalRect::new(layout.x, layout.y, layout.width, layout.height)
-            });
-        Some(nana_ui_platform::TextInputRequest {
-            enabled: focused.is_some(),
-            cursor_area,
-            purpose: nana_ui_platform::TextInputPurpose::Normal,
-        })
+        self.program.document(id).map(runtime_text_input_request)
     }
 
     fn accessibility_action(
@@ -641,6 +627,50 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
             }
         }
         Self::hosted_update(update)
+    }
+}
+
+fn runtime_text_input_request(document: &RuntimeDocument) -> nana_ui_platform::TextInputRequest {
+    let focused = document
+        .context()
+        .focused_text_input(document.document())
+        .map(|(target, _)| target)
+        .filter(|target| {
+            document
+                .context()
+                .world()
+                .accessibility(*target)
+                .is_some_and(|state| state.editable)
+        });
+    let cursor_area = focused
+        .and_then(
+            |target| match document.context().world().component_geometry(target) {
+                Some(nana_ui_runtime::ComponentGeometry::TextInput {
+                    caret: Some(caret), ..
+                }) => Some(caret),
+                _ => document.context().world().layout_box(target),
+            },
+        )
+        .map(|layout| {
+            nana_ui_core::LogicalRect::new(layout.x, layout.y, layout.width, layout.height)
+        });
+    let secure = focused
+        .and_then(|target| document.context().world().standard_visual(target))
+        .is_some_and(|visual| {
+            matches!(
+                visual,
+                nana_ui_runtime::StandardVisual::TextInput { secure: true, .. }
+            )
+        });
+    let purpose = if secure {
+        nana_ui_platform::TextInputPurpose::Password
+    } else {
+        nana_ui_platform::TextInputPurpose::Normal
+    };
+    nana_ui_platform::TextInputRequest {
+        enabled: focused.is_some(),
+        cursor_area,
+        purpose,
     }
 }
 
@@ -811,12 +841,46 @@ fn event_geometry(event: &WindowEvent) -> Option<WindowGeometry> {
 
 #[cfg(test)]
 mod tests {
-    use super::hosted_window_settings;
+    use super::{hosted_window_settings, runtime_text_input_request};
 
     #[test]
     fn runtime_windows_use_native_chrome_until_a_runtime_chrome_contract_exists() {
         let hosted = hosted_window_settings(nana_ui_platform::WindowSettings::new("Runtime"));
 
         assert_eq!(hosted.title_bar_mode, crate::HostedTitleBarMode::Native);
+    }
+
+    #[test]
+    fn runtime_ime_request_uses_editability_and_secure_purpose() {
+        let document_id = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let mut document = nana_ui_scene::RuntimeDocument::new(document_id);
+        let input = document
+            .context_mut()
+            .create_component(
+                document_id,
+                nana_ui_runtime::TextInput::new("secret").secure(true),
+            )
+            .unwrap();
+        assert!(
+            document
+                .context_mut()
+                .focus_node(document_id, input.stable_id())
+                .unwrap()
+        );
+
+        let request = runtime_text_input_request(&document);
+        assert!(request.enabled);
+        assert_eq!(
+            request.purpose,
+            nana_ui_platform::TextInputPurpose::Password
+        );
+
+        document
+            .context_mut()
+            .update_component(input, |input, _cx| input.read_only = true)
+            .unwrap();
+        let request = runtime_text_input_request(&document);
+        assert!(!request.enabled);
+        assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
     }
 }

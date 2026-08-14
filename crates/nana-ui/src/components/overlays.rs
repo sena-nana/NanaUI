@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use iced::widget::{button, column, container, mouse_area, row, space, text};
 use iced::{Alignment, Element, Length, Padding, font};
 
-use crate::components::{Button as UiButton, ControlSize};
+use crate::components::ControlSize;
+use crate::components::actions::Button as UiButton;
 use crate::dialog::DialogSize;
 use crate::icons::{Icon, icon};
 use crate::theme::{ThemeTokens, ui_font};
