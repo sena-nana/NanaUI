@@ -8,6 +8,7 @@
 mod animation;
 mod components;
 mod framework;
+mod layout_engine;
 mod mutation;
 mod schedule;
 mod view_components;
@@ -20,12 +21,13 @@ pub use components::{
     EventRoute, ExtractedNode, ImeComposition, InteractionState, InteractionStyle, LayoutBox,
     LayoutInput, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
     SemanticPaint, StandardVisual, TextContent, TextHorizontalAlignment, TextInputState,
-    TextMetrics, TextSelection, TextShaper, TextVerticalAlignment,
+    TextMetrics, TextSelection, TextShapeConstraints, TextShaper, TextVerticalAlignment,
 };
 pub use framework::{
     AppContext, Entity, ExtensionRegistrar, FrameworkError, Subscription, Task, UiExtension, View,
     ViewContext, VirtualListItems, VirtualTableItems,
 };
+pub use layout_engine::{LayoutViewport, RuntimeLayoutEngine};
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ContextPredicate, KeyContext, TableCursor, TableNavigation, ThemeMode,

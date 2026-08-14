@@ -363,9 +363,53 @@ impl AppContext {
         self.world.take_system_work()
     }
 
+    /// Return a drained system batch to the scheduler after a canonical frame
+    /// fails. Frame drivers should restore every consumed batch before retry.
+    pub fn restore_system_work(&mut self, work: crate::SystemWork) {
+        self.world.restore_system_work(work);
+    }
+
     /// Resolve inherited style for the supplied dirty nodes.
     pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), FrameworkError> {
         self.world.resolve_styles(ids).map_err(FrameworkError::from)
+    }
+
+    /// Shape only scheduled text through the host's real text backend.
+    pub fn shape_text(
+        &mut self,
+        ids: &[StableNodeId],
+        shaper: &mut impl crate::TextShaper,
+    ) -> Result<(), FrameworkError> {
+        self.world
+            .shape_text(ids, shaper)
+            .map_err(FrameworkError::from)
+    }
+
+    pub fn shape_text_for_layout(
+        &mut self,
+        document: DocumentId,
+        shaper: &mut impl crate::TextShaper,
+    ) -> Result<bool, FrameworkError> {
+        self.world
+            .shape_text_for_layout(document, shaper)
+            .map_err(FrameworkError::from)
+    }
+
+    /// Compute and atomically publish canonical Runtime layout for one window.
+    pub fn layout_document(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+    ) -> Result<crate::CommitReport, FrameworkError> {
+        let layouts =
+            crate::RuntimeLayoutEngine.layout_document(&self.world, document, viewport)?;
+        let mut mutations = MutationQueue::new();
+        for (id, layout) in layouts {
+            if self.world.layout_box(id) != Some(layout) {
+                mutations.write_layout(id, layout);
+            }
+        }
+        self.commit_mutations(mutations)
     }
 
     /// Rebuild the compact hit index for one document after layout or input

@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use nana_ui_runtime::{AccessibilityDelta, AppContext, DocumentId, FrameworkError, SystemWork};
+use nana_ui_runtime::{
+    AccessibilityDelta, AppContext, DocumentId, FrameworkError, LayoutViewport, SystemWork,
+    TextShaper,
+};
 
 use crate::{SceneDelta, UiScene};
 
@@ -9,13 +12,14 @@ const MAX_FRAME_PASSES: usize = 8;
 
 /// One backend-neutral retained document and its incrementally extracted scene.
 ///
-/// Platform adapters provide text/layout work through [`Self::flush_with`];
-/// this owner guarantees style, hit-test, accessibility, and render extraction
-/// are drained in the same bounded frame transaction.
+/// Canonical hosts call [`Self::flush`] with a viewport and text shaper; this
+/// owner guarantees text, layout, hit-test, accessibility, and render
+/// extraction are drained in the same bounded frame transaction.
 pub struct RuntimeDocument {
     context: AppContext,
     document: DocumentId,
     scene: Arc<UiScene>,
+    viewport: Option<LayoutViewport>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +42,7 @@ impl RuntimeDocument {
             context: AppContext::new(),
             document,
             scene: Arc::new(UiScene::new()),
+            viewport: None,
         }
     }
 
@@ -63,6 +68,36 @@ impl RuntimeDocument {
         Arc::clone(&self.scene)
     }
 
+    /// Drain one canonical Runtime frame with host-owned text shaping and
+    /// framework-owned layout. Applications do not write widget geometry.
+    pub fn flush(
+        &mut self,
+        viewport: LayoutViewport,
+        shaper: &mut impl TextShaper,
+    ) -> Result<RuntimeFrameUpdate, FrameworkError> {
+        let document = self.document;
+        let viewport_changed = self.viewport != Some(viewport);
+        if viewport_changed && self.viewport.is_some() {
+            self.context.layout_document(document, viewport)?;
+        }
+        let mut force_layout = viewport_changed;
+        let update = self.flush_with(|context, work| {
+            context.shape_text(&work.text, shaper)?;
+            if force_layout || !work.layout.is_empty() {
+                context.layout_document(document, viewport)?;
+                if context.shape_text_for_layout(document, shaper)? {
+                    context.layout_document(document, viewport)?;
+                }
+                force_layout = false;
+            }
+            Ok(())
+        })?;
+        // Publish the viewport only after the canonical frame settles. A failed
+        // frame must retry layout for the same requested viewport.
+        self.viewport = Some(viewport);
+        Ok(update)
+    }
+
     /// Drain one frame. `run_text_and_layout` may shape dirty text and commit
     /// layout writeback through the public `AppContext` mutation boundary.
     pub fn flush_with(
@@ -76,6 +111,8 @@ impl RuntimeDocument {
         let mut order_rebuilt = false;
         let mut accessibility_updated = BTreeMap::new();
         let mut accessibility_removed = BTreeSet::new();
+        let mut consumed = Vec::new();
+        let mut scene_batches = Vec::new();
 
         loop {
             let work = self.context.take_system_work();
@@ -83,12 +120,22 @@ impl RuntimeDocument {
                 break;
             }
             if passes == MAX_FRAME_PASSES {
+                consumed.push(work);
+                restore_work(&mut self.context, consumed);
                 return Err(FrameworkError::FrameDidNotSettle);
             }
             passes += 1;
 
-            self.context.resolve_styles(&work.style)?;
-            run_text_and_layout(&mut self.context, &work)?;
+            if let Err(error) = self.context.resolve_styles(&work.style) {
+                consumed.push(work);
+                restore_work(&mut self.context, consumed);
+                return Err(error);
+            }
+            if let Err(error) = run_text_and_layout(&mut self.context, &work) {
+                consumed.push(work);
+                restore_work(&mut self.context, consumed);
+                return Err(error);
+            }
             if !work.input_hit_test.is_empty() || !work.layout.is_empty() {
                 self.context.rebuild_hit_test(self.document);
             }
@@ -102,10 +149,15 @@ impl RuntimeDocument {
                 accessibility_removed.remove(&node.id);
                 accessibility_updated.insert(node.id, node);
             }
-            let scene = Arc::make_mut(&mut self.scene).apply_delta(
+            scene_batches.push((
                 self.context.world().extract_nodes(&work.render_extraction),
-                work.render_removals,
-            );
+                work.render_removals.clone(),
+            ));
+            consumed.push(work);
+        }
+
+        for (extracted, removals) in scene_batches {
+            let scene = Arc::make_mut(&mut self.scene).apply_delta(extracted, removals);
             scene_updated += scene.updated_nodes;
             scene_removed += scene.removed_nodes;
             rebuilt_primitives += scene.rebuilt_primitives;
@@ -132,9 +184,18 @@ impl RuntimeDocument {
     }
 }
 
+fn restore_work(context: &mut AppContext, consumed: Vec<SystemWork>) {
+    for work in consumed {
+        context.restore_system_work(work);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use nana_ui_runtime::{Button, LayoutBox, MutationQueue};
+    use std::sync::Arc;
+
+    use nana_ui_core::{LayoutStyle, LengthSpec};
+    use nana_ui_runtime::{Button, ComputedStyle, StableNodeId, TextContent, TextMetrics};
 
     use super::*;
 
@@ -146,26 +207,154 @@ mod tests {
             .context_mut()
             .create_component(document, Button::new("Build"))
             .unwrap();
-        let mut layout = MutationQueue::new();
-        layout.write_layout(
-            button.stable_id(),
-            LayoutBox {
-                x: 4.0,
-                y: 8.0,
-                width: 120.0,
-                height: 32.0,
-            },
-        );
-        runtime.context_mut().commit_mutations(layout).unwrap();
+        struct TestShaper;
+        impl nana_ui_runtime::TextShaper for TestShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &ComputedStyle,
+                constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                let intrinsic = text.value.len() as f32 * 8.0;
+                let width = constraints.max_width.unwrap_or(intrinsic).min(intrinsic);
+                TextMetrics {
+                    width,
+                    height: if constraints.wrap && width < intrinsic {
+                        36.0
+                    } else {
+                        18.0
+                    },
+                }
+            }
+        }
 
-        let first = runtime.flush_with(|_, _| Ok(())).unwrap();
+        let first = runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
+            .unwrap();
         assert!(!first.is_idle());
         assert_eq!(first.scene.primitive_count, 2);
+        let layout = runtime
+            .context()
+            .world()
+            .layout_box(button.stable_id())
+            .unwrap();
+        assert!(layout.width > 0.0);
+        assert_eq!(layout.height, 32.0);
         let generation = first.generation;
 
-        let idle = runtime.flush_with(|_, _| Ok(())).unwrap();
+        let idle = runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
+            .unwrap();
         assert!(idle.is_idle());
         assert_eq!(idle.generation, generation);
         assert_eq!(idle.scene.updated_nodes, 0);
+    }
+
+    #[test]
+    fn viewport_resize_and_wrapped_text_reflow_without_application_geometry() {
+        let document = DocumentId::new(1).unwrap();
+        let node = StableNodeId::new(7).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let mut mutations = nana_ui_runtime::MutationQueue::new();
+        mutations.create(node, document, nana_ui_runtime::NodeKind::Text);
+        mutations.set_text(
+            node,
+            TextContent {
+                value: "a deliberately long line".into(),
+            },
+        );
+        mutations.set_style(
+            node,
+            nana_ui_runtime::NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    ..LayoutStyle::default()
+                }),
+                ..nana_ui_runtime::NodeStyle::default()
+            },
+        );
+        runtime.context_mut().commit_mutations(mutations).unwrap();
+
+        struct WrappingShaper;
+        impl nana_ui_runtime::TextShaper for WrappingShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                let width = constraints.max_width.unwrap_or(200.0).min(200.0);
+                TextMetrics {
+                    width,
+                    height: if constraints.wrap && width < 200.0 {
+                        36.0
+                    } else {
+                        18.0
+                    },
+                }
+            }
+        }
+
+        runtime
+            .flush(LayoutViewport::new(100.0, 80.0), &mut WrappingShaper)
+            .unwrap();
+        let first = runtime.context().world().layout_box(node).unwrap();
+        assert_eq!((first.width, first.height), (100.0, 36.0));
+
+        let resized = runtime
+            .flush(LayoutViewport::new(60.0, 80.0), &mut WrappingShaper)
+            .unwrap();
+        assert!(!resized.is_idle());
+        let second = runtime.context().world().layout_box(node).unwrap();
+        assert_eq!((second.width, second.height), (60.0, 36.0));
+    }
+
+    #[test]
+    fn failed_frame_restores_dirty_work_and_does_not_publish_a_partial_scene() {
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        runtime
+            .context_mut()
+            .create_component(document, Button::new("Retry"))
+            .unwrap();
+
+        struct RetryShaper(bool);
+        impl nana_ui_runtime::TextShaper for RetryShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                if !self.0 {
+                    self.0 = true;
+                    return TextMetrics {
+                        width: f32::NAN,
+                        height: 18.0,
+                    };
+                }
+                TextMetrics {
+                    width: text.value.len() as f32 * 8.0,
+                    height: 18.0,
+                }
+            }
+        }
+
+        let mut shaper = RetryShaper(false);
+        assert!(
+            runtime
+                .flush(LayoutViewport::new(320.0, 180.0), &mut shaper)
+                .is_err()
+        );
+        assert!(runtime.scene().is_empty());
+
+        let retried = runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut shaper)
+            .unwrap();
+        assert!(!retried.is_idle());
+        assert_eq!(retried.scene.primitive_count, 2);
     }
 }
