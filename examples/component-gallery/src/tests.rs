@@ -421,7 +421,7 @@ fn split_pane_interactions_persist_the_constrained_size() {
 fn dock_gallery_mutates_the_real_layout_and_emits_host_effects() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::Dock(DockAction::Float {
-        id: DockId::from("gallery.sources"),
+        id: DockId::from("gallery.assets"),
         bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
         monitor: None,
     }));
@@ -433,12 +433,12 @@ fn dock_gallery_mutates_the_real_layout_and_emits_host_effects() {
 
     state.update(GalleryMessage::Dock(DockAction::SetLocked(true)));
     state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
-        "gallery.scenes",
+        "gallery.navigation",
     ))));
-    assert!(state.dock.is_visible(&DockId::from("gallery.scenes")));
+    assert!(state.dock.is_visible(&DockId::from("gallery.navigation")));
 
     state.update(GalleryMessage::Dock(DockAction::SetLocked(false)));
     state.update(GalleryMessage::Dock(DockAction::Reset));
     assert!(state.dock.layout().floating.is_empty());
-    assert!(state.dock.is_visible(&DockId::from("gallery.sources")));
+    assert!(state.dock.is_visible(&DockId::from("gallery.assets")));
 }

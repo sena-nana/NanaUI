@@ -7,7 +7,7 @@
 | 门禁 | 当前结果 | 证据或剩余缺口 |
 | --- | --- | --- |
 | Runtime coverage | macOS milestone 通过 | identity、hierarchy、style/theme/interaction、text、committed selection/preedit、layout/scroll、hit-test、pointer hover/press/capture/event route、focus/IME、animation/deadline、accessibility、render content 已有单一权威；canonical `RuntimeDocument::flush` 统一消费 systems，由 host text shaper 与 framework `RuntimeLayoutEngine` 完成 text/layout writeback，fixture 不再手写控件坐标。`RuntimeProgram`/`run_runtime` 是不暴露 Iced Message/Element/window ID 的 application host；`HostedProgram` 保留为 compatibility contract。 |
-| Component parity | 部分完成 | `nana_ui::runtime` 提供 Nana-native retained primitives、typed events、Runtime theme/interaction/overlay authority、UiScene extraction、标准 Quad/Text/HostTexture painter，以及 keyed list/table materializer、O(log n) geometry、platform pointer/wheel/keyboard dispatcher 与 keyboard cursor。RenderGraph 现按标准/custom segment 产生显式 resource pass，注册的 `SceneGpuRenderer` 可直接使用当前 encoder/target。Workspace、Sidebar、SplitPane 与 Dock 专业 view 仍保留为 Iced compatibility adapter，完整 NanaStudio 纯 Runtime consumer gate 未完成。 |
+| Component parity | 部分完成 | `nana_ui::runtime` 提供 Nana-native retained primitives、typed events、Runtime theme/interaction/overlay authority、UiScene extraction、标准 Quad/Text/HostTexture painter，以及 keyed list/table materializer、O(log n) geometry、platform pointer/wheel/keyboard dispatcher 与 keyboard cursor。RenderGraph 现按标准/custom segment 产生显式 resource pass，注册的 `SceneGpuRenderer` 可直接使用当前 encoder/target。Workspace、Sidebar、SplitPane 与 Dock 专业 view 仍保留为 Iced compatibility adapter，完整外部消费应用的纯 Runtime gate 未完成。 |
 | IME parity | 当前 macOS 门禁通过 | Runtime 有 backend-neutral composition/selection 生命周期及 CJK deterministic tests；macOS 26.5.2 的真实拼音 preedit、候选窗定位、commit、Vue v-model/AXValue 同步已通过。Windows/Linux 实机验收按用户要求暂缓，不阻塞当前 macOS 收口。Android 不属于 NanaUI Issue #7 的平台范围。 |
 | Accessibility parity | 当前 macOS 门禁通过 | Runtime role/state/tree/bounds/focus/committed text selection projection 与 updated/removal delta 已补齐，并由 Vue semantic props 驱动；desktop hosted window 已在首次显示前安装 AccessKit adapter，按稳定 ID 增量同步并把受支持的 Focus/Click/SetValue/SetTextSelection 动作送回同一 Runtime/Vue 事件路径。macOS Accessibility Inspector、系统 AX Focus/SetValue/SetTextSelection/Press 与 VoiceOver 读取/键盘导航/激活已通过；NVDA/Orca 验收随 Windows/Linux 一并暂缓。 |
 | Vue fixture parity | 通过 | `nana-ui-vue --features iced-view --lib` 389 项功能测试通过，UiWorld 是 retained authority；Iced wheel feedback 与程序化 scroll 共用 Runtime offset/metrics，paint geometry 按 VueHost 隔离。 |
@@ -20,7 +20,7 @@ CPU Runtime/Scene 与 macOS UI/Live2D workload 已加入每周及手动触发的
 graph 和 5000 节点 canonical layout，后者运行真实 WGPU UI-only/Live2D-only/composed
 workload并保存 JSON/截图。Live2D producer 现由 RenderGraph 的 `PrepareExternal` operation
 管理，每个 preparation pass 使用 host-owned encoder，并由同一 Queue 在 UI sample 前有序提交；这仍不是
-直接写当前 Surface target 的 `SceneGpuRenderer` pass，也不替代 NanaStudio 真实 consumer 验收。
+直接写当前 Surface target 的 `SceneGpuRenderer` pass，也不替代外部消费应用的真实验收。
 首次执行该门禁定位并修复了 single-node create/append 验证每次扫描全 world、复制增长中
 sibling list 的 O(n²) 根因；修复后本机 Vue 5000 节点 construction P95 为 3.477 ms，
 idle semantic 仍为 0。报告保留在临时目录，本轮未覆盖历史 baseline。
@@ -49,11 +49,11 @@ Workspace 阶段复核将持久 layout、viewport/scale、resize interaction 和
 
 同一阶段随后把 Sidebar disclosure 的 bool/transition 下沉到 `ExpansionState`，并把 SplitPane constraints/persistence/focus/hover/absolute resize 全部下沉到 `SplitPaneModel`。compatibility controller 不再持有第二份状态；SplitPane Reset 在默认尺寸下仍会正确报告被清除的 focus/drag 状态。
 
-Dock 的时间审计已把 insertion dwell 从 Iced `Instant` 改为 controller monotonic `Duration` epoch，并增加 deterministic entry；frame subscription 使用明确的 `AdvanceDragDwell`，不再以 `Hover(false)` 伪装时钟 tick。消费者复核确认 `DockUpdate.changed` 是 persisted `DockLayout` dirty，而非任意视觉变化，因此 dwell/preview 保持 false，避免 NanaStudio 在每次预览停留时写配置；input/frame host 仍负责该次重绘。
+Dock 的时间审计已把 insertion dwell 从 Iced `Instant` 改为 controller monotonic `Duration` epoch，并增加 deterministic entry；frame subscription 使用明确的 `AdvanceDragDwell`，不再以 `Hover(false)` 伪装时钟 tick。合同复核确认 `DockUpdate.changed` 是 persisted `DockLayout` dirty，而非任意视觉变化，因此 dwell/preview 保持 false，避免消费应用在每次预览停留时误写配置；input/frame host 仍负责该次重绘。
 
 随后加入 backend-neutral `DockMutation` / `LogicalPoint` 与 `update_mutation[_at]`：active drag、cross-surface hit-test、preview bounds 和 split resize 不再保存 Iced Point，resize 以初始 ratio + absolute scalar delta 计算并保留越界重入语义。Iced `DockAction` 只作为兼容转换层。Workspace/Split/Dock 原先共用、现在已无消费者的 Iced `ResizeDrag` 被删除；现有 resize、跨窗口 source/hover surface、Tab 与 edge placeholder 行为测试继续通过。
 
-本轮继续补充 `DockController::surface_layout`，从同一 authority 投影 main/floating surface 的 active item content bounds、tab group 和 stable splitter path/hit bounds；主 Dock chrome 与 floating native title bar 的不同高度由 controller 统一处理。该 API 消除了纯 Runtime NanaStudio 重写 split/chrome 几何的需要，但不把尚未接入的 NanaStudio consumer gate 标记为完成。
+本轮继续补充 `DockController::surface_layout`，从同一 authority 投影 main/floating surface 的 active item content bounds、tab group 和 stable splitter path/hit bounds；主 Dock chrome 与 floating native title bar 的不同高度由 controller 统一处理。该 API 消除了纯 Runtime 消费应用重写 split/chrome 几何的需要，但不把尚未完成的外部 consumer gate 标记为完成。
 
 Text input 审计补齐 committed value/selection authority：Runtime 使用 UTF-8-safe anchor/focus selection，preedit 与 committed text 分离，Vue selection replacement 不再无条件追加，native preedit selection 不再被事件 helper 丢弃。桌面 hosted adapter 继续只消费 winit 已实际提供的 Enabled/Disabled/Preedit/Commit，并保留 preedit selection；没有为未接入的平台预埋完整 editor snapshot 分支。macOS 的真实候选窗与 caret candidate rectangle 已通过，Windows/Linux 仍是平台验收缺口。
 
@@ -131,4 +131,4 @@ SetTextSelection 实机复核又暴露了 adapter 边界的第二处双权威：
 
 当前 macOS 产品范围内，macOS IME/VoiceOver、Nana-owned Runtime/UiScene、canonical `nana_ui::runtime` component API、基础 Quad/Text painter、desktop adapter 接线，以及真实 Live2D WGPU renderer 的共享纹理合成均已不再是缺口。Windows/Linux 真实 IME/辅助技术按用户要求暂缓，不计入当前 macOS 门禁，也不被误报为已通过；Android 明确排除。授权产品模型不是 framework owner 的内置资产，后续如有具体产品性能门禁，应以外部输入复跑当前 harness。
 
-因此本阶段结论为 **macOS milestone accepted / Epic OPEN / Native RHI NO-GO**：保留 Iced/WGPU compatibility backend 是 benchmark、功能和维护成本共同支持的实现选择，但应用主合同已经是 `RuntimeProgram + RuntimeDocument + UiScene`。Issue 只有在 NanaStudio 完成 Dock、Preview/Program HostTexture、输入、多窗口与 Accessibility 的纯 Runtime consumer gate，并补足原始平台验收后才可重新判断关闭；不得把本 milestone 当作 Epic complete。
+因此本阶段结论为 **macOS milestone accepted / Epic OPEN / Native RHI NO-GO**：保留 Iced/WGPU compatibility backend 是 benchmark、功能和维护成本共同支持的实现选择，但应用主合同已经是 `RuntimeProgram + RuntimeDocument + UiScene`。Issue 只有在外部消费应用完成 Dock、HostTexture、输入、多窗口与 Accessibility 的纯 Runtime gate，并补足原始平台验收后才可重新判断关闭；不得把本 milestone 当作 Epic complete。
