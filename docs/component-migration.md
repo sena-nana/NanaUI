@@ -90,9 +90,11 @@ reorder, drag, close, and cross-surface behavior stay outside this batch.
 
 `Textarea` is `RuntimeCandidate`. Its Runtime path now uses one retained editing authority for
 multiline selection, caret, IME preedit, Unicode grapheme deletion, soft wrapping, clipping and
-caret-driven scrolling. The hosted/runtime adapter routes platform IME preedit/commit into that
-same multiline state and advertises one focused input-purpose/caret request so Iced is not a
-second IME authority. Dark and light fixtures cover placeholder, multiline, focused, single- and
+caret-driven scrolling. Field states change the field border (`border` / `border-strong` /
+`danger`); focused uses `border-strong`, and invalid-focused is a `2px` danger border with no
+second ring. The hosted/runtime adapter routes platform IME preedit/commit into that same
+multiline state and advertises one focused input-purpose/caret request so Iced is not a second
+IME authority. Dark and light fixtures cover placeholder, multiline, focused, single- and
 multi-line selection, invalid, disabled, clipped and scrolled states. Candidate status does not
 change the public or Vue default route: the compatibility `Textarea` remains the default until
 real desktop Hosted IME/platform interaction and affected-consumer evidence complete the
@@ -101,13 +103,13 @@ qualification gate.
 `HostedTextarea` remains a separate `Compatibility` component and is not implied by the Runtime
 `Textarea` candidate.
 
-`Tooltip` is `RuntimeCandidate`. Runtime already owns the product contract: a label-only overlay
-with shared `TooltipConfig` placement, 350ms delay, gap, viewport padding, and no synthetic
-actions. Hover delay, open/close, and edge flip live on the existing IconButton-hosted overlay
-lifecycle; exclusive active/focus stays in UiWorld. Dark and light fixtures compare the Iced
-compatibility `Tooltip` with the Runtime overlay for open, delay-not-open, and edge placement.
-Candidate status does not change the public default: `nana_ui::Tooltip` remains the Iced adapter
-until visual and platform review complete the qualification gate.
+`Tooltip` is `RuntimeCandidate`. Runtime owns a compact label-only hover card that follows the
+pointer by default, with shared `TooltipConfig` timing and directional placements that flip at
+the viewport edge. Hover delay, open/close, cursor tracking and exclusive active/focus stay on
+the existing IconButton-hosted overlay lifecycle in UiWorld. Dark and light fixtures compare the
+Iced compatibility `Tooltip` with the Runtime overlay for follow-cursor open, delay-not-open and
+edge placement. Candidate status does not change the public default: `nana_ui::Tooltip` remains
+the Iced adapter until visual and platform review complete the qualification gate.
 
 ## Current fourth batch
 

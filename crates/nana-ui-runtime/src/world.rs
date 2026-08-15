@@ -2403,12 +2403,19 @@ impl UiWorld {
                     preedit,
                     background: style.background,
                     border: style.border_color,
-                    border_width: if style.border_color.is_some() {
-                        source.layout.resolved_border_width()
-                    } else {
-                        0.0
+                    border_width: {
+                        let width = if style.border_color.is_some() {
+                            source.layout.resolved_border_width()
+                        } else {
+                            0.0
+                        };
+                        if multiline && focused && *invalid {
+                            width.max(2.0)
+                        } else {
+                            width
+                        }
                     },
-                    focus_ring: focused.then(|| {
+                    focus_ring: (!multiline && focused).then(|| {
                         if *invalid {
                             self.style_model.palette.danger.as_rgba_array()
                         } else {

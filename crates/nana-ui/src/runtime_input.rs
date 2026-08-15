@@ -145,6 +145,7 @@ impl RuntimeInputAdapter {
                 let overlay =
                     context.route_overlay_pointer(document, *pointer_id, overlay_phase, *x, *y)?;
                 let target = overlay.target;
+                context.set_pointer_location(document, *pointer_id, Some((*x, *y)));
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
                 let component_handled = match phase {
                     PointerPhase::Move => {
