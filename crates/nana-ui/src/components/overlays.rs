@@ -365,6 +365,7 @@ where
         let aligned = match self.side {
             DrawerSide::Left => container(drawer).align_left(Length::Fill),
             DrawerSide::Right => container(drawer).align_right(Length::Fill),
+            DrawerSide::Bottom => container(drawer).align_bottom(Length::Fill),
         };
         mouse_area(
             aligned
