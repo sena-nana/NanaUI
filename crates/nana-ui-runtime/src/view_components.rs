@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::{
     AccessibilityRole, AccessibilityState, InteractionState, MutationQueue, NodeKind, NodeStyle,
-    OverlayHostState, SemanticPaint, StableNodeId, StandardVisual, TextContent,
+    OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId, StandardVisual, TextContent,
     TextHorizontalAlignment, TextInputState, TextVerticalAlignment, UiWorld,
 };
 
@@ -79,14 +79,22 @@ fn format_range_value(value: f64, step: f64) -> Arc<str> {
 fn text_field_style(multiline: bool) -> NodeStyle {
     let mut layout = (*control_layout(nana_ui_core::UI_METRICS.field_padding_x)).clone();
     layout.width = Some(nana_ui_core::LengthSpec::Percent(100.0));
-    layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
-        nana_ui_core::ControlSize::Medium.line_height(),
-    ));
+    layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
+    layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
     if multiline {
+        layout.padding_top = Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::UI_METRICS.field_padding_x,
+        ));
+        layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::UI_METRICS.field_padding_x,
+        ));
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Relative(1.45));
         layout.min_height = Some(nana_ui_core::LengthSpec::Px(96.0));
     } else {
-        layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
-        layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
+            nana_ui_core::ControlSize::Medium.line_height(),
+        ));
+        layout.white_space_nowrap = true;
     }
     NodeStyle {
         layout: Arc::new(layout),
@@ -1204,8 +1212,12 @@ impl ComponentView for TextInput {
 pub struct TextArea {
     pub state: TextInputState,
     pub label: Option<Arc<str>>,
+    pub placeholder: Arc<str>,
     pub disabled: bool,
+    pub invalid: bool,
+    pub scroll_offset: ScrollOffset,
     pub style: NodeStyle,
+    pub(crate) style_override: bool,
 }
 
 impl TextArea {
@@ -1213,8 +1225,12 @@ impl TextArea {
         Self {
             state: TextInputState::new(value),
             label: None,
+            placeholder: Arc::from(""),
             disabled: false,
+            invalid: false,
+            scroll_offset: ScrollOffset::default(),
             style: text_field_style(true),
+            style_override: false,
         }
     }
 
@@ -1228,8 +1244,38 @@ impl TextArea {
         self
     }
 
+    pub fn placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        if height.is_finite() {
+            Arc::make_mut(&mut self.style.layout).height = Some(nana_ui_core::LengthSpec::Px(
+                height.max(nana_ui_core::ControlSize::Medium.height()),
+            ));
+        }
+        self
+    }
+
+    pub fn scroll_offset(mut self, offset: ScrollOffset) -> Self {
+        if offset.x.is_finite() && offset.y.is_finite() {
+            self.scroll_offset = ScrollOffset {
+                x: offset.x.max(0.0),
+                y: offset.y.max(0.0),
+            };
+        }
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
+        self.style_override = true;
         self
     }
 
@@ -1246,6 +1292,26 @@ impl ComponentView for TextArea {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let visual = StandardVisual::TextInput {
+            placeholder: Arc::clone(&self.placeholder),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: self.invalid,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        if world.scroll_offset(id) != Some(self.scroll_offset) {
+            mutations.set_scroll_offset(id, self.scroll_offset);
+        }
+        let mut effective_style = self.style.clone();
+        if self.invalid && !self.style_override {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.hovered.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.focused.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+        }
         project_text_field(
             id,
             world,
@@ -1256,11 +1322,19 @@ impl ComponentView for TextArea {
                 disabled: self.disabled,
                 busy: false,
                 editable: !self.disabled,
-                invalid: false,
+                invalid: self.invalid,
                 multiline: true,
-                style: &self.style,
+                style: &effective_style,
             },
         );
+        // Clear composition while this node is still focused, then release focus.
+        // The world validates both transitions atomically in queue order.
+        if self.disabled
+            && let Some(node) = world.node(id)
+            && world.focused(node.document) == Some(id)
+        {
+            mutations.request_focus(node.document, None);
+        }
     }
 }
 
@@ -1300,8 +1374,11 @@ impl ComponentView for OverlayHost {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dialog {
     pub title: Arc<str>,
+    pub description: Option<Arc<str>>,
     pub size: nana_ui_core::DialogSize,
     pub close_policy: nana_ui_core::DialogClosePolicy,
+    pub initial_focus: crate::ModalInitialFocus,
+    pub slots: crate::ModalSlots,
     pub style: NodeStyle,
 }
 
@@ -1310,20 +1387,32 @@ impl Dialog {
         let size = nana_ui_core::DialogSize::default();
         Self {
             title: title.into(),
+            description: None,
             size,
             close_policy: nana_ui_core::DialogClosePolicy::default(),
-            style: overlay_surface_style(size.max_width()),
+            initial_focus: crate::ModalInitialFocus::default(),
+            slots: crate::ModalSlots::default(),
+            style: crate::overlay_surfaces::modal_root_style(),
         }
     }
 
     pub fn size(mut self, size: nana_ui_core::DialogSize) -> Self {
         self.size = size;
-        self.style = overlay_surface_style(size.max_width());
+        self
+    }
+
+    pub fn description(mut self, description: impl Into<Arc<str>>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
     pub fn close_policy(mut self, policy: nana_ui_core::DialogClosePolicy) -> Self {
         self.close_policy = policy;
+        self
+    }
+
+    pub fn initial_focus(mut self, initial_focus: crate::ModalInitialFocus) -> Self {
+        self.initial_focus = initial_focus;
         self
     }
 
@@ -1341,22 +1430,28 @@ impl ComponentView for Dialog {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_common(
+        crate::overlay_surfaces::project_modal(
             id,
             world,
             mutations,
             &self.style,
-            InteractionState {
-                pointer_events: true,
-                focusable: true,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::Dialog,
-                label: Some(Arc::clone(&self.title)),
-                modal: true,
-                ..AccessibilityState::default()
-            },
+            AccessibilityRole::Dialog,
+            &self.title,
+            self.description.as_deref(),
+            crate::ModalSurfaceKind::Dialog(self.size),
+            false,
+            false,
+            &self.slots,
         );
+    }
+}
+
+impl crate::ModalSurface for Dialog {
+    fn slots(&self) -> &crate::ModalSlots {
+        &self.slots
+    }
+    fn slots_mut(&mut self) -> &mut crate::ModalSlots {
+        &mut self.slots
     }
 }
 
@@ -2604,7 +2699,7 @@ impl ComponentView for TableCell {
     }
 }
 
-fn project_common(
+pub(crate) fn project_common(
     id: StableNodeId,
     world: &UiWorld,
     mutations: &mut MutationQueue,
