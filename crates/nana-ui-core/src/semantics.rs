@@ -153,6 +153,7 @@ pub enum DrawerSide {
     Left,
     #[default]
     Right,
+    Bottom,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

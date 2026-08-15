@@ -7,10 +7,13 @@
 
 mod animation;
 mod components;
+mod feedback;
 mod framework;
 mod layout_engine;
 mod mutation;
+mod overlay_surfaces;
 mod schedule;
+mod selection;
 mod view_components;
 mod world;
 
@@ -20,25 +23,35 @@ pub use components::{
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, ComponentElevation,
     ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode, EventRoute,
     ExtractedNode, ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput,
-    NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, SemanticPaint,
-    StandardVisual, TextContent, TextHorizontalAlignment, TextInputPresentation, TextInputState,
-    TextMetrics, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
-    TextVerticalAlignment, TooltipVisual,
+    ModalLayoutInput, MountState, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
+    ScrollOffset, SemanticPaint, StandardVisual, TextContent, TextHorizontalAlignment,
+    TextInputPresentation, TextInputState, TextMetrics, TextSelection, TextShapeConstraints,
+    TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
 };
+pub use feedback::{EmptyState, LabeledValue, StatusBadge, ValidationMessage, ValueEmphasis};
 pub use framework::{
-    AppContext, Entity, ExtensionRegistrar, FrameworkError, Subscription, Task, UiExtension, View,
-    ViewContext, VirtualListItems, VirtualTableItems,
+    ActiveRuntimeOverlay, AppContext, Entity, ExtensionRegistrar, FrameworkError, OverlayKey,
+    OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription, Task,
+    UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
 };
 pub use layout_engine::{LayoutViewport, RuntimeLayoutEngine};
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, AlignSpec, ContextPredicate, FlexDirection, JustifySpec, KeyContext, LayoutStyle,
-    LengthSpec, PositionSpec, SemanticColorRole, TableCursor, TableNavigation, ThemeMode,
-    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
-    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualTableLayout,
-    VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+    LengthSpec, PositionSpec, SemanticColorRole, StatusTone, TableCursor, TableNavigation,
+    ThemeMode, ValidationIntent, VirtualListLayout, VirtualListMaterialization,
+    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+};
+pub use overlay_surfaces::{
+    ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
+    ModalSlots, ModalSurface, ModalSurfaceKind,
 };
 pub use schedule::SystemWork;
+pub use selection::{
+    Radio, RadioGroup, RovingFocusIntent, RovingFocusPolicy, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, SelectionOrientation,
+};
 pub use view_components::{
     Activate, Button, Card, Checkbox, ComponentView, Dialog, IconButton, IconButtonTooltip, List,
     ListItem, ListItemSlots, Menu, MenuItem, OverlayChanged, OverlayHost, RangeAdjustment,

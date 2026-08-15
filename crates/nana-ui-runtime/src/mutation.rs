@@ -24,6 +24,11 @@ pub enum UiMutation {
     Remove {
         id: StableNodeId,
     },
+    /// Detach a subtree while preserving its stable identities and views.
+    /// Parked nodes do not participate in the retained document until inserted.
+    ParkSubtree {
+        root: StableNodeId,
+    },
     /// Destroy a node and all descendants. Their stable IDs cannot be reused.
     DespawnSubtree {
         root: StableNodeId,
@@ -138,6 +143,10 @@ impl MutationQueue {
 
     pub fn remove(&mut self, id: StableNodeId) {
         self.mutations.push(UiMutation::Remove { id });
+    }
+
+    pub fn park_subtree(&mut self, root: StableNodeId) {
+        self.mutations.push(UiMutation::ParkSubtree { root });
     }
 
     pub fn despawn_subtree(&mut self, root: StableNodeId) {
