@@ -139,5 +139,16 @@ typed slots). Public constructors stay Iced until visual and overlay-host review
 tone card without a timer; XYPad is a two-axis pad with Input/Change, Shift lock and keyboard
 steps; QrCode paints a scanner-safe module matrix with a four-module quiet zone.
 
-Workspace, Dock, Sidebar, overlay hosts, selects, charts, GPU views, and other professional
-components remain `Compatibility` unless their catalog entry says otherwise.
+## Current sixth batch
+
+`Select`, `Popover`, `ActionMenu`, `ActionMenuItem`, `AnchoredActionMenu`, and `ContextMenu`
+are `RuntimeCandidate`. Select is a single-value field that keeps disabled options visible in
+the opened menu. Popover and ActionMenu keep an in-flow trigger and paint the surface below
+it. ActionMenuItem is the shared menu row. AnchoredActionMenu and ContextMenu pin that
+surface to a logical point and hug their items; nested search stays on the Iced host.
+
+Public constructors stay Iced until visual and overlay-host review. Candidate status does not
+change the public or Vue default route.
+
+Workspace, Dock, Sidebar, overlay hosts, dropdown search, charts, GPU views, and other
+professional components remain `Compatibility` unless their catalog entry says otherwise.

@@ -11,11 +11,14 @@ mod feedback;
 mod form_surfaces;
 mod framework;
 mod layout_engine;
+mod menus;
 mod mutation;
 mod overlay_surfaces;
 mod placeholders;
+mod popover;
 mod qr_code;
 mod schedule;
+mod select;
 mod selection;
 mod toast;
 mod view_components;
@@ -28,8 +31,9 @@ pub use components::{
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, ComponentElevation,
     ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode, EventRoute,
     ExtractedNode, ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput,
-    ModalLayoutInput, MountState, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
-    ScrollOffset, SemanticPaint, StandardVisual, TextContent, TextHorizontalAlignment,
+    MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, OverlayHostState,
+    PointerCaptureChange, ScrollMetrics, ScrollOffset, SelectMenuGeometry, SelectOptionData,
+    SelectOptionGeometry, SemanticPaint, StandardVisual, TextContent, TextHorizontalAlignment,
     TextInputPresentation, TextInputState, TextMetrics, TextSelection, TextShapeConstraints,
     TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
 };
@@ -43,21 +47,28 @@ pub use framework::{
     UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
 };
 pub use layout_engine::{LayoutViewport, RuntimeLayoutEngine};
+pub use menus::{
+    ActionMenuItem, AnchoredActionMenu, ContextMenu, ContextMenuEvent, ContextMenuItem,
+    resolve_anchored_origin,
+};
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, AlignSpec, ContextPredicate, FlexDirection, JustifySpec, KeyContext, LayoutStyle,
-    LengthSpec, PositionSpec, SemanticColorRole, StatusTone, TableCursor, TableNavigation,
-    ThemeMode, ValidationIntent, VirtualListLayout, VirtualListMaterialization,
-    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
-    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+    LengthSpec, PopoverAlignment, PopoverPlacement, PositionSpec, SemanticColorRole, StatusTone,
+    TableCursor, TableNavigation, ThemeMode, ValidationIntent, VirtualListLayout,
+    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
+    VirtualListMount, VirtualListWindow, VirtualTableLayout, VirtualTableMaterialization,
+    VirtualTableMaterializer, VirtualTableWindow,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
     ModalSlots, ModalSurface, ModalSurfaceKind,
 };
 pub use placeholders::{LevelMeter, Skeleton};
+pub use popover::{ActionMenu, Popover, PopoverClosed, PopoverToggled, resolve_popover_origin};
 pub use qr_code::{QrCode, QrCodeError};
 pub use schedule::SystemWork;
+pub use select::{Select, SelectChanged, SelectOption};
 pub use selection::{
     Radio, RadioGroup, RovingFocusIntent, RovingFocusPolicy, SegmentedControl, SegmentedOption,
     SegmentedSelectionRequested, SelectionChrome, SelectionOrientation,

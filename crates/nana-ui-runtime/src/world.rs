@@ -2102,6 +2102,11 @@ impl UiWorld {
                 .get(status_tone_role(tone.status()))
                 .as_rgba_array(),
             StandardVisual::XYPad { .. } => self.style_model.palette.text.as_rgba_array(),
+            StandardVisual::Select { .. }
+            | StandardVisual::MenuSurface { .. }
+            | StandardVisual::ActionMenuItem { .. } => {
+                self.style_model.palette.text.as_rgba_array()
+            }
             StandardVisual::LevelMeter { tone, .. } => self
                 .style_model
                 .palette
@@ -3174,6 +3179,53 @@ impl UiWorld {
                     axis_color: self.style_model.palette.border.as_rgba_array(),
                 })
             }
+            StandardVisual::Select {
+                label,
+                placeholder,
+                size,
+                opened,
+                options,
+                highlighted,
+                ..
+            } => Some(crate::select::select_geometry(
+                bounds,
+                label,
+                *placeholder,
+                *size,
+                *opened,
+                options,
+                *highlighted,
+                style,
+                source,
+                &self.style_model.palette,
+            )),
+            StandardVisual::MenuSurface { trigger, gap, .. } => {
+                Some(crate::popover::menu_surface_geometry(
+                    bounds,
+                    trigger.as_ref(),
+                    *gap,
+                    &self.style_model.palette,
+                ))
+            }
+            StandardVisual::ActionMenuItem {
+                label,
+                hint,
+                icon,
+                danger,
+                disabled,
+                size,
+                ..
+            } => Some(crate::menus::action_menu_item_geometry(
+                bounds,
+                label,
+                hint.as_ref(),
+                *icon,
+                *danger,
+                *disabled,
+                *size,
+                style,
+                &self.style_model.palette,
+            )),
             StandardVisual::QrCode { modules, width } => {
                 let (module_size, (ox, oy)) = crate::qr_code::module_geometry(bounds, *width);
                 let quiet = crate::qr_code::QUIET_ZONE_MODULES as f32;
