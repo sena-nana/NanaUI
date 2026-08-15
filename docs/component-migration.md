@@ -65,3 +65,35 @@ track and focus ring, rather than flattening all three into one track paint. Ice
 reference rather than an oracle: an `evidence.txt` entry records the expected design result, each
 backend's observed result and verdict, and the reason for an intentional divergence. No automatic
 fallback or parallel tree is introduced.
+
+## Current candidates
+
+`Textarea` is `RuntimeCandidate`. Its Runtime path now uses one retained editing authority for
+multiline selection, caret, IME preedit, Unicode grapheme deletion, soft wrapping, clipping and
+caret-driven scrolling. Dark and light fixtures cover placeholder, multiline, focused, single- and
+multi-line selection, invalid, disabled, clipped and scrolled states. Candidate status does not
+change the public or Vue default route: the compatibility `Textarea` remains the default until
+Hosted IME/platform and affected-consumer evidence complete the qualification gate.
+
+`HostedTextarea` remains a separate `Compatibility` component and is not implied by the Runtime
+`Textarea` candidate.
+
+`SegmentedControl` is `RuntimeCandidate`. Its Runtime implementation uses backend-neutral
+RadioGroup/Radio semantics, one sequential tab stop, controlled selection requests, disabled-item
+skipping and wrapping horizontal keyboard navigation, and fixed-content intrinsic layout. Dark and
+light fixtures cover all three sizes, icons, pointer and keyboard states, focus, disabled and empty
+groups, controlled commit, accessibility activation, atomic replacement, and parked-child cleanup.
+The 44 fixture variants pass their machine gates and have completed manual semantic review. The
+compatibility component remains the public and Vue default route while consumer evidence is still
+pending; Tabs, vertical orientation, reorder, drag, close, and cross-surface behavior are outside
+this candidate.
+
+`StatusBadge`, `ValidationMessage`, `EmptyState`, and `LabeledValue` are also
+`RuntimeCandidate`. Their Runtime implementations use backend-neutral semantic geometry and the
+shared Quad/Text/Icon scene path. EmptyState owns intrinsic icon/title/message content, measures
+wrapped text through the host shaper, and accepts only an application-provided action child. The
+parked subtree contract keeps replaced actions alive without leaving render, hit-test, focus, IME,
+overlay, animation, or accessibility ghosts. Dark and light fixtures cover tones and intents,
+compact and normal layouts, long CJK/emoji wrapping, extreme clipping, emphasis, real action
+activation, replacement, removal, and remount. Their compatibility exports remain the default
+until affected-consumer evidence completes qualification.
