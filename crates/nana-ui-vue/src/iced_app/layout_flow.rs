@@ -1229,7 +1229,7 @@ fn raster_resource_view<Message: 'static>(props: &WidgetProps) -> Element<'stati
             ))
         {
             let aspect_ratio = binding.aspect_ratio();
-            return nana_ui::GpuTextureView::new(binding.texture)
+            return nana_ui::GpuTextureView::from_binding(binding)
                 .with_corner_radius(props.layout.border_radius.unwrap_or(0.0))
                 .contain(aspect_ratio);
         }
@@ -1325,7 +1325,7 @@ fn gpu_preview_placeholder<Message: 'static>(
         .and_then(|slot| active_host_texture(slot));
     if let Some(binding) = scene_binding.or(fallback_binding) {
         let aspect_ratio = binding.aspect_ratio();
-        return nana_ui::GpuTextureView::new(binding.texture)
+        return nana_ui::GpuTextureView::from_binding(binding)
             // Compatibility painting still applies ancestor opacity/transform
             // through the surrounding Iced widgets. Use only this node's local
             // value here so the composed UiScene opacity is not multiplied twice.
