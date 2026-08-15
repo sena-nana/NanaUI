@@ -160,6 +160,14 @@ pub enum PopoverPlacement {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PopoverAlignment {
+    Start,
+    #[default]
+    Center,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DrawerSide {
     Left,
     #[default]

@@ -513,6 +513,8 @@ impl UiScene {
                         | StandardVisual::ModalFrame { .. }
                         | StandardVisual::Toast { .. }
                         | StandardVisual::XYPad { .. }
+                        | StandardVisual::Select { .. }
+                        | StandardVisual::ActionMenuItem { .. }
                 )
             );
             let component_focus_ring = node.focused
@@ -554,9 +556,12 @@ impl UiScene {
                         },
                     ),
                 };
-            if style.has_surface_paint()
+            if !matches!(
+                node.standard_visual,
+                Some(StandardVisual::MenuSurface { .. })
+            ) && (style.has_surface_paint()
                 || ((node.standard_visual.is_none() || standard_visual_uses_root_surface)
-                    && (node.style.background.is_some() || node.style.border_color.is_some()))
+                    && (node.style.background.is_some() || node.style.border_color.is_some())))
             {
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 0 },
@@ -608,6 +613,9 @@ impl UiScene {
                         | ComponentGeometry::ModalFrame { .. }
                         | ComponentGeometry::Progress { .. }
                         | ComponentGeometry::FormField { .. }
+                        | ComponentGeometry::Select { .. }
+                        | ComponentGeometry::ActionMenuItem { .. }
+                        | ComponentGeometry::MenuSurface { .. }
                 )
             );
             if let Some(text) = node
@@ -1425,6 +1433,181 @@ impl UiScene {
                         ));
                     }
                 }
+                Some(ComponentGeometry::Select {
+                    label,
+                    handle,
+                    handle_color,
+                    menu,
+                    ..
+                }) => {
+                    self.insert_primitive(component_text_primitive(
+                        id,
+                        2,
+                        label,
+                        TextHorizontalAlignment::Start,
+                        false,
+                        &node,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node_order,
+                    ));
+                    paint_select_handle(
+                        self,
+                        id,
+                        handle,
+                        *handle_color,
+                        transform,
+                        &clips,
+                        opacity,
+                        node.z_index,
+                        node_order,
+                    );
+                    if let Some(menu) = menu {
+                        let menu_z = node.z_index.max(1_000);
+                        self.insert_primitive(ScenePrimitive {
+                            id: PrimitiveId { node: id, slot: 4 },
+                            node: id,
+                            bounds: scene_rect(menu.surface),
+                            transform,
+                            clips: parent_clips.to_vec(),
+                            opacity,
+                            z_index: menu_z,
+                            document_order: node_order,
+                            kind: ScenePrimitiveKind::Quad {
+                                background: Some(menu.background),
+                                border_color: Some(menu.border),
+                                border_width: 1.0,
+                                corner_radius: UI_METRICS.radius_md,
+                                shadow: Some(menu.elevation),
+                            },
+                        });
+                        for (index, option) in menu.options.iter().enumerate() {
+                            let index = u8::try_from(index).unwrap_or(u8::MAX);
+                            if let Some(background) = option.background {
+                                self.insert_primitive(visual_quad(
+                                    &VisualPrimitiveContext {
+                                        node: id,
+                                        transform,
+                                        clips: &parent_clips,
+                                        opacity,
+                                        z_index: menu_z,
+                                        document_order: node_order,
+                                    },
+                                    10u8.saturating_add(index),
+                                    scene_rect(option.bounds),
+                                    VisualQuadStyle {
+                                        background: Some(background),
+                                        border_color: None,
+                                        border_width: 0.0,
+                                        corner_radius: UI_METRICS.radius_sm,
+                                    },
+                                ));
+                            }
+                            let mut label = component_text_primitive(
+                                id,
+                                40u8.saturating_add(index),
+                                &option.label,
+                                TextHorizontalAlignment::Start,
+                                false,
+                                &node,
+                                transform,
+                                parent_clips.to_vec(),
+                                opacity,
+                                node_order,
+                            );
+                            label.z_index = menu_z;
+                            self.insert_primitive(label);
+                        }
+                    }
+                }
+                Some(ComponentGeometry::ActionMenuItem {
+                    icon, label, hint, ..
+                }) => {
+                    if let Some((icon, icon_bounds, color)) = icon {
+                        self.insert_primitive(ScenePrimitive {
+                            id: PrimitiveId { node: id, slot: 3 },
+                            node: id,
+                            bounds: scene_rect(*icon_bounds),
+                            transform,
+                            clips: clips.clone(),
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                            kind: ScenePrimitiveKind::Icon {
+                                icon: *icon,
+                                color: Some(*color),
+                            },
+                        });
+                    }
+                    self.insert_primitive(component_text_primitive(
+                        id,
+                        2,
+                        label,
+                        TextHorizontalAlignment::Start,
+                        false,
+                        &node,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node_order,
+                    ));
+                    if let Some(hint) = hint {
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            4,
+                            hint,
+                            TextHorizontalAlignment::End,
+                            false,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
+                }
+                Some(ComponentGeometry::MenuSurface {
+                    trigger,
+                    surface,
+                    elevation,
+                    background,
+                    border,
+                }) => {
+                    if let Some(trigger) = trigger {
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            2,
+                            trigger,
+                            TextHorizontalAlignment::Start,
+                            false,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
+                    if surface.height > 1.0 && surface.width > 1.0 {
+                        self.insert_primitive(ScenePrimitive {
+                            id: PrimitiveId { node: id, slot: 0 },
+                            node: id,
+                            bounds: scene_rect(*surface),
+                            transform,
+                            clips: parent_clips.to_vec(),
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                            kind: ScenePrimitiveKind::Quad {
+                                background: Some(*background),
+                                border_color: Some(*border),
+                                border_width: 1.0,
+                                corner_radius: UI_METRICS.radius_md,
+                                shadow: Some(*elevation),
+                            },
+                        });
+                    }
+                }
                 Some(ComponentGeometry::Card { title: None, .. })
                 | Some(ComponentGeometry::ListItem { .. })
                 | None => {}
@@ -1931,7 +2114,10 @@ impl UiScene {
                     | StandardVisual::FormField { .. }
                     | StandardVisual::Toast { .. }
                     | StandardVisual::XYPad { .. }
-                    | StandardVisual::QrCode { .. },
+                    | StandardVisual::QrCode { .. }
+                    | StandardVisual::Select { .. }
+                    | StandardVisual::MenuSurface { .. }
+                    | StandardVisual::ActionMenuItem { .. },
                 ) => {
                     // The row surface and fallback label are emitted above;
                     // typed slots remain ordinary retained child nodes.
@@ -2079,6 +2265,47 @@ fn scene_rect(bounds: LayoutBox) -> SceneRect {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn paint_select_handle(
+    scene: &mut UiScene,
+    id: StableNodeId,
+    handle: &LayoutBox,
+    color: [f32; 4],
+    transform: AffineTransform,
+    clips: &[ClipRegion],
+    opacity: f32,
+    z_index: i32,
+    document_order: usize,
+) {
+    let center_x = handle.x + handle.width / 2.0;
+    let center_y = handle.y + handle.height / 2.0;
+    let widths = [8.0, 6.0, 4.0, 2.0];
+    for (index, width) in widths.iter().copied().enumerate() {
+        scene.insert_primitive(visual_quad(
+            &VisualPrimitiveContext {
+                node: id,
+                transform,
+                clips,
+                opacity,
+                z_index,
+                document_order,
+            },
+            3 + index as u8,
+            SceneRect {
+                x: center_x - width / 2.0,
+                y: center_y - 1.5 + index as f32,
+                width,
+                height: 1.0,
+            },
+            VisualQuadStyle {
+                background: Some(color),
+                border_color: None,
+                border_width: 0.0,
+                corner_radius: 0.0,
+            },
+        ));
+    }
+}
+
 fn component_text_primitive(
     id: StableNodeId,
     slot: u8,

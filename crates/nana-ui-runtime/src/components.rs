@@ -209,6 +209,43 @@ pub enum StandardVisual {
         invalid: bool,
         disabled: bool,
     },
+    Select {
+        label: Arc<str>,
+        placeholder: bool,
+        size: ControlSize,
+        opened: bool,
+        invalid: bool,
+        loading: bool,
+        options: Arc<[SelectOptionData]>,
+        highlighted: Option<usize>,
+    },
+    MenuSurface {
+        kind: MenuSurfaceKind,
+        trigger: Option<Arc<str>>,
+        gap: f32,
+    },
+    ActionMenuItem {
+        label: Arc<str>,
+        hint: Option<Arc<str>>,
+        icon: Option<Icon>,
+        danger: bool,
+        active: bool,
+        disabled: bool,
+        size: ControlSize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectOptionData {
+    pub label: Arc<str>,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuSurfaceKind {
+    Popover,
+    ActionMenu,
+    ContextMenu,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -350,6 +387,46 @@ pub enum ComponentGeometry {
         thumb_color: [f32; 4],
         axis_color: [f32; 4],
     },
+    Select {
+        label: ComponentTextRegion,
+        handle: LayoutBox,
+        handle_color: [f32; 4],
+        background: Option<[f32; 4]>,
+        border: Option<[f32; 4]>,
+        border_width: f32,
+        menu: Option<SelectMenuGeometry>,
+    },
+    MenuSurface {
+        trigger: Option<ComponentTextRegion>,
+        surface: LayoutBox,
+        elevation: ComponentElevation,
+        background: [f32; 4],
+        border: [f32; 4],
+    },
+    ActionMenuItem {
+        icon: Option<(Icon, LayoutBox, [f32; 4])>,
+        label: ComponentTextRegion,
+        hint: Option<ComponentTextRegion>,
+        background: Option<[f32; 4]>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectMenuGeometry {
+    pub surface: LayoutBox,
+    pub elevation: ComponentElevation,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+    pub options: Vec<SelectOptionGeometry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectOptionGeometry {
+    pub bounds: LayoutBox,
+    pub label: ComponentTextRegion,
+    pub selected: bool,
+    pub disabled: bool,
+    pub background: Option<[f32; 4]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -18,15 +18,16 @@ use nana_ui_core::{
 #[cfg(test)]
 use crate::Dialog;
 use crate::{
-    AccessibilityAction, AccessibilityActionRequest, Activate, AnimationFrame, Button, Checkbox,
-    ComponentView, DocumentId, EmptyState, FormField, IconButton, LabeledValue, List, ListItem,
-    ListItemSlots, MenuItem, ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged,
-    OverlayHost, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
-    ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Slider, SliderChanged, StableNodeId, StandardVisual, Switch, Tab,
-    TabList, TabSelected, Table, TableCell, TableRow, TextArea, TextChanged, TextInput,
-    TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld, UiWorldError, XYPad,
-    XYPadDragState, XYPadEvent,
+    AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
+    AnimationFrame, Button, Checkbox, ComponentView, ContextMenu, ContextMenuEvent, DocumentId,
+    EmptyState, FormField, IconButton, LabeledValue, List, ListItem, ListItemSlots, MenuItem,
+    ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged, OverlayHost, Popover,
+    PopoverClosed, PopoverToggled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent,
+    ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl,
+    SegmentedOption, SegmentedSelectionRequested, Select, Slider, SliderChanged, StableNodeId,
+    StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell, TableRow, TextArea,
+    TextChanged, TextInput, TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld,
+    UiWorldError, XYPad, XYPadDragState, XYPadEvent,
 };
 
 mod overlay;
@@ -1212,6 +1213,13 @@ impl AppContext {
         self.activate_component(entity, |item| item.disabled)
     }
 
+    pub fn activate_action_menu_item(
+        &mut self,
+        entity: Entity<ActionMenuItem>,
+    ) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |item| item.disabled)
+    }
+
     pub fn activate_radio(&mut self, entity: Entity<crate::Radio>) -> Result<bool, FrameworkError> {
         self.activate_component(entity, |radio| radio.disabled || radio.checked)
     }
@@ -1247,6 +1255,21 @@ impl AppContext {
         }
         if view.is::<MenuItem>() {
             return self.activate_menu_item(Entity::from_stable_id(id));
+        }
+        if view.is::<ActionMenuItem>() {
+            return self.activate_action_menu_item(Entity::from_stable_id(id));
+        }
+        if view.is::<Select>() {
+            return self.toggle_select(Entity::from_stable_id(id));
+        }
+        if view.is::<Popover>() {
+            return self.toggle_popover(Entity::from_stable_id(id));
+        }
+        if view.is::<ActionMenu>() {
+            return self.toggle_action_menu(Entity::from_stable_id(id));
+        }
+        if view.is::<ContextMenu>() {
+            return self.dismiss_context_menu(Entity::from_stable_id(id));
         }
         if view.is::<crate::Radio>() {
             return self.activate_radio(Entity::from_stable_id(id));
@@ -3225,6 +3248,142 @@ impl AppContext {
             cx.mutations().release_pointer(pointer_id, target);
         })?;
         Ok(initial.is_some())
+    }
+
+    pub fn toggle_select(&mut self, entity: Entity<Select>) -> Result<bool, FrameworkError> {
+        if self.read(entity, Select::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |select, _| select.toggle_open())
+    }
+
+    pub fn activate_select_at(
+        &mut self,
+        entity: Entity<Select>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, Select::inactive)? {
+            return Ok(false);
+        }
+        let opened = self.read(entity, |select| select.opened)?;
+        if opened {
+            if let Some(crate::ComponentGeometry::Select {
+                menu: Some(menu), ..
+            }) = self.world.component_geometry(entity.id)
+                && let Some(index) = crate::select::select_option_at(&menu, x, y)
+            {
+                return self.update_component(entity, |select, cx| {
+                    if let Some(changed) = select.select_index(index) {
+                        cx.emit(changed);
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
+            let Some(field) = self.world.layout_box(entity.id) else {
+                return Ok(false);
+            };
+            if field.contains(x, y) {
+                return self.toggle_select(entity);
+            }
+            return self.update_component(entity, |select, _| {
+                select.close();
+                true
+            });
+        }
+        self.toggle_select(entity)
+    }
+
+    pub fn adjust_focused_select(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Select>())
+        {
+            return Ok(false);
+        }
+        let entity = Entity::<Select>::from_stable_id(target);
+        if self.read(entity, Select::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |select, _| {
+            if !select.opened {
+                select.toggle_open()
+            } else {
+                select.highlight_delta(delta)
+            }
+        })
+    }
+
+    pub fn commit_focused_select(&mut self, document: DocumentId) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Select>())
+        {
+            return Ok(false);
+        }
+        self.update_component(Entity::<Select>::from_stable_id(target), |select, cx| {
+            if let Some(changed) = select.commit_highlighted() {
+                cx.emit(changed);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn toggle_popover(&mut self, entity: Entity<Popover>) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |popover, cx| {
+            popover.open = !popover.open;
+            cx.emit(PopoverToggled { open: popover.open });
+            if !popover.open {
+                cx.emit(PopoverClosed);
+            }
+            true
+        })
+    }
+
+    pub fn toggle_action_menu(
+        &mut self,
+        entity: Entity<ActionMenu>,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, cx| {
+            menu.popover.open = !menu.popover.open;
+            cx.emit(PopoverToggled {
+                open: menu.popover.open,
+            });
+            if !menu.popover.open {
+                cx.emit(PopoverClosed);
+            }
+            true
+        })
+    }
+
+    pub fn dismiss_context_menu(
+        &mut self,
+        entity: Entity<ContextMenu>,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, cx| {
+            if !menu.open {
+                return false;
+            }
+            menu.dismiss();
+            cx.emit(ContextMenuEvent::Dismiss);
+            true
+        })
     }
 
     pub fn set_slider_value(

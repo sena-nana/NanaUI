@@ -2255,6 +2255,9 @@ fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::Toast { .. }
                         | nana_ui_runtime::StandardVisual::XYPad { .. }
                         | nana_ui_runtime::StandardVisual::QrCode { .. }
+                        | nana_ui_runtime::StandardVisual::Select { .. }
+                        | nana_ui_runtime::StandardVisual::MenuSurface { .. }
+                        | nana_ui_runtime::StandardVisual::ActionMenuItem { .. }
                 )
             ) {
                 mutations.set_standard_visual(id, None);

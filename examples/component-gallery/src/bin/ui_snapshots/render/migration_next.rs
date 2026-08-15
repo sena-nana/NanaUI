@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::advanced::widget;
-use iced::widget::{container, row, text, text_editor};
+use iced::widget::{column, container, row, text, text_editor};
 use iced::{Alignment, Element, Length, Padding, Point, Size, Theme, mouse};
 use iced_wgpu::Renderer;
 use iced_wgpu::graphics::Viewport;
@@ -20,29 +20,35 @@ use nana_ui::compatibility::{
     Switch as IcedSwitch, ValidationMessage as IcedValidationMessage,
 };
 use nana_ui::runtime::{
-    AccessibilityAction, AccessibilityActionRequest, Activate, Button as RuntimeButton,
-    Card as RuntimeCard, Checkbox as RuntimeCheckbox, ConfirmDialog as RuntimeConfirmDialog,
-    ConfirmSlots, Dialog as RuntimeDialog, DocumentId, Drawer as RuntimeDrawer,
-    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
-    IconButton as RuntimeIconButton, InteractiveCard as RuntimeInteractiveCard,
-    LabeledValue as RuntimeLabeledValue, LayoutViewport, LevelMeter as RuntimeLevelMeter,
-    List as RuntimeList, ListItem as RuntimeListItem, ListItemSlots, ModalSlots, MountState,
-    MutationQueue, NodeStyle, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
-    RangeField as RuntimeRangeField, RuntimeDocument, SegmentedControl as RuntimeSegmentedControl,
+    AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
+    ActionMenuItem as RuntimeActionMenuItem, Activate,
+    AnchoredActionMenu as RuntimeAnchoredActionMenu, Button as RuntimeButton, Card as RuntimeCard,
+    Checkbox as RuntimeCheckbox, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
+    ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem,
+    Dialog as RuntimeDialog, DocumentId, Drawer as RuntimeDrawer, EmptyState as RuntimeEmptyState,
+    Entity, FormField as RuntimeFormField, IconButton as RuntimeIconButton,
+    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue, LayoutViewport,
+    LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
+    ListItemSlots, ModalSlots, MountState, MutationQueue, NodeStyle, Popover as RuntimePopover,
+    Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
+    RuntimeDocument, SegmentedControl as RuntimeSegmentedControl,
     SegmentedOption as RuntimeSegmentedOption, SegmentedSelectionRequested,
-    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, StableNodeId,
-    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, Text as RuntimeText,
-    TextArea as RuntimeTextArea, TextHorizontalAlignment, TextInput as RuntimeTextInput,
-    TextSelection, TextVerticalAlignment, Toast as RuntimeToast,
-    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, XYPad as RuntimeXYPad,
+    Select as RuntimeSelect, SelectOption as RuntimeSelectOption, Skeleton as RuntimeSkeleton,
+    Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
+    Switch as RuntimeSwitch, Text as RuntimeText, TextArea as RuntimeTextArea,
+    TextHorizontalAlignment, TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
+    Toast as RuntimeToast, ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
+    XYPad as RuntimeXYPad,
 };
 use nana_ui::{
-    CardKind, ComponentId, ComponentMigrationState, ConfirmDialog as IcedConfirmDialog,
-    ControlSize, Dialog as IcedDialog, Drawer as IcedDrawer, IcedSceneView, IcedTextShaper, Icon,
-    QrCodeCanvas as IcedQrCode, RuntimeInputAdapter, SelectionOption as IcedSelectionOption,
-    Tabs as IcedTabs, Textarea as IcedTextarea, ThemeMode, ThemeModeExt, Toast as IcedToast,
-    Tooltip as IcedTooltip, TooltipConfig, TooltipPlacement, XYPad as IcedXYPad, XYPadValue,
-    component_catalog, component_ids, icon,
+    ActionMenu as IcedActionMenu, ActionMenuItem as IcedActionMenuItem,
+    AnchoredActionMenu as IcedAnchoredActionMenu, AnchoredMenuPosition, CardKind, ComponentId,
+    ComponentMigrationState, ConfirmDialog as IcedConfirmDialog, ControlSize, Dialog as IcedDialog,
+    Drawer as IcedDrawer, IcedSceneView, IcedTextShaper, Icon, Popover as IcedPopover,
+    QrCodeCanvas as IcedQrCode, RuntimeInputAdapter, Select as IcedSelect,
+    SelectionOption as IcedSelectionOption, Tabs as IcedTabs, Textarea as IcedTextarea, ThemeMode,
+    ThemeModeExt, Toast as IcedToast, Tooltip as IcedTooltip, TooltipConfig, TooltipPlacement,
+    XYPad as IcedXYPad, XYPadValue, component_catalog, component_ids, icon,
 };
 use nana_ui_core::{
     DialogSize, DrawerSide, LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition,
@@ -89,6 +95,12 @@ enum Component {
     Toast,
     XYPad,
     QrCode,
+    Select,
+    Popover,
+    ActionMenu,
+    ActionMenuItem,
+    AnchoredActionMenu,
+    ContextMenu,
 }
 
 impl Component {
@@ -123,6 +135,12 @@ impl Component {
             Self::Toast => component_ids::TOAST,
             Self::XYPad => component_ids::XY_PAD,
             Self::QrCode => component_ids::QR_CODE,
+            Self::Select => component_ids::SELECT,
+            Self::Popover => component_ids::POPOVER,
+            Self::ActionMenu => component_ids::ACTION_MENU,
+            Self::ActionMenuItem => component_ids::ACTION_MENU_ITEM,
+            Self::AnchoredActionMenu => component_ids::ANCHORED_ACTION_MENU,
+            Self::ContextMenu => component_ids::CONTEXT_MENU,
         }
     }
 }
@@ -1008,6 +1026,46 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "encoded",
         "qr code paints a white quiet zone and black modules",
     ),
+    f(
+        Component::Select,
+        "closed",
+        "select shows the selected label inside a field with a handle",
+    ),
+    f(
+        Component::Select,
+        "opened",
+        "opened select keeps the field and paints a surface menu of options",
+    ),
+    f(
+        Component::Select,
+        "invalid",
+        "invalid select uses a danger field border",
+    ),
+    f(
+        Component::Popover,
+        "open",
+        "popover paints an anchored surface without a scrim",
+    ),
+    f(
+        Component::ActionMenu,
+        "open",
+        "action menu uses start alignment and compact padding",
+    ),
+    f(
+        Component::ActionMenuItem,
+        "danger",
+        "danger action menu item uses danger text and an optional hint",
+    ),
+    f(
+        Component::AnchoredActionMenu,
+        "open",
+        "anchored action menu pins a menu surface to a logical point",
+    ),
+    f(
+        Component::ContextMenu,
+        "open",
+        "context menu opens at the pointer anchor",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {
@@ -1195,6 +1253,9 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::Toast, _) => Size::new(420, 88),
         (Component::XYPad, _) => Size::new(420, 88),
         (Component::QrCode, _) => Size::new(280, 280),
+        (Component::Select, "opened") => Size::new(420, 220),
+        (Component::Popover | Component::ActionMenu, _) => Size::new(420, 200),
+        (Component::AnchoredActionMenu | Component::ContextMenu, _) => Size::new(420, 220),
         _ => SIZE,
     }
 }
@@ -1595,6 +1656,59 @@ fn iced_fixture<'a>(
             .expect("fixture qr encodes")
             .size(224.0)
             .view(),
+        Component::Select => IcedSelect::new(
+            if fixture.state == "placeholder" {
+                None
+            } else {
+                Some("code")
+            },
+            [
+                IcedSelectionOption::new("code", "Code"),
+                IcedSelectionOption::new("split", "Split").disabled(true),
+                IcedSelectionOption::new("preview", "Preview"),
+            ],
+            |_| (),
+        )
+        .placeholder("Choose view")
+        .invalid(fixture.state == "invalid")
+        .view(tokens),
+        Component::Popover => IcedPopover::new(
+            text("Details"),
+            text("Inspector content"),
+            true,
+            (),
+            (),
+            tokens,
+        )
+        .view(),
+        Component::ActionMenu => IcedActionMenu::new(
+            text("Actions"),
+            column![
+                IcedActionMenuItem::new("Rename").view(tokens),
+                IcedActionMenuItem::new("Delete").danger(true).view(tokens),
+            ],
+            true,
+            (),
+            (),
+            tokens,
+        )
+        .view(),
+        Component::ActionMenuItem => IcedActionMenuItem::new("Delete")
+            .hint("⌫")
+            .danger(true)
+            .view(tokens),
+        Component::AnchoredActionMenu | Component::ContextMenu => IcedAnchoredActionMenu::new(
+            column![
+                IcedActionMenuItem::new("Rename").view(tokens),
+                IcedActionMenuItem::new("Delete").danger(true).view(tokens),
+            ],
+            AnchoredMenuPosition::new(Point::new(24.0, 36.0)),
+            Size::new(380.0, 180.0),
+            (),
+            (),
+        )
+        .menu_size(200.0, 65.0)
+        .view(tokens),
     };
     (
         container(view)
@@ -2307,6 +2421,94 @@ fn runtime_fixture(
                 )?
                 .stable_id()
         }
+        Component::Select => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeSelect::new(Some("code"))
+                    .placeholder("Choose view")
+                    .options([
+                        RuntimeSelectOption::new("code", "Code"),
+                        RuntimeSelectOption::new("split", "Split").disabled(true),
+                        RuntimeSelectOption::new("preview", "Preview"),
+                    ])
+                    .invalid(fixture.state == "invalid")
+                    .opened(fixture.state == "opened"),
+            )?
+            .stable_id(),
+        Component::Popover => {
+            let popover = document.context_mut().create_component(
+                document_id,
+                RuntimePopover::new().trigger("Details").open(true),
+            )?;
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Inspector content"))?;
+            document.context_mut().append_child(popover, body)?;
+            popover.stable_id()
+        }
+        Component::ActionMenu => {
+            let menu = document.context_mut().create_component(
+                document_id,
+                RuntimeActionMenu::new().trigger("Actions").open(true),
+            )?;
+            let rename = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
+            let delete = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").danger(true),
+            )?;
+            document.context_mut().append_child(menu, rename)?;
+            document.context_mut().append_child(menu, delete)?;
+            menu.stable_id()
+        }
+        Component::ActionMenuItem => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").hint("⌫").danger(true),
+            )?
+            .stable_id(),
+        Component::AnchoredActionMenu => {
+            let menu = document.context_mut().create_component(
+                document_id,
+                RuntimeAnchoredActionMenu::new(24.0, 36.0)
+                    .menu_size(200.0, 0.0)
+                    .open(true),
+            )?;
+            let rename = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
+            let delete = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").danger(true),
+            )?;
+            document.context_mut().append_child(menu, rename)?;
+            document.context_mut().append_child(menu, delete)?;
+            menu.stable_id()
+        }
+        Component::ContextMenu => {
+            let menu = document.context_mut().create_component(
+                document_id,
+                RuntimeContextMenu::new(24.0, 36.0)
+                    .items([
+                        RuntimeContextMenuItem::new("rename", "Rename"),
+                        RuntimeContextMenuItem::new("delete", "Delete").danger(true),
+                    ])
+                    .open(true),
+            )?;
+            let rename = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
+            let delete = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").danger(true),
+            )?;
+            document.context_mut().append_child(menu, rename)?;
+            document.context_mut().append_child(menu, delete)?;
+            menu.stable_id()
+        }
     };
     let mut hierarchy = MutationQueue::new();
     hierarchy.insert(root.stable_id(), target, None);
@@ -2894,6 +3096,7 @@ fn apply_runtime_state(
                 &pointer(PointerPhase::Move, center_x, center_y),
             )?
             .prevent_default),
+        "open" if !matches!(fixture.component, Component::Tooltip) => Ok(true),
         "tooltip-delay" | "tooltip-edge" | "open" | "edge" => {
             adapter.dispatch_at(
                 context,
@@ -3898,6 +4101,18 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             "manual-required",
             "Review the generated dark and light Iced and Runtime images; public default stays Iced until visual review",
         ),
+        (
+            Component::Select
+            | Component::Popover
+            | Component::ActionMenu
+            | Component::ActionMenuItem
+            | Component::AnchoredActionMenu
+            | Component::ContextMenu,
+            _,
+        ) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime images for select fields and anchored menus; public default stays Iced until visual review",
+        ),
         (Component::SegmentedControl, _) => (
             "pass",
             "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment, disabled fade and the 2px external focus ring",
@@ -3998,6 +4213,20 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         }
         (Component::Dialog | Component::ConfirmDialog | Component::Drawer, _) => {
             "intentional: Runtime ModalFrame owns scrim, surface and slotted children; Iced composes the same product chrome. Visual review is the qualification gate"
+        }
+        (Component::Select, "opened") => {
+            "intentional: Runtime paints the opened menu in the same leaf; Iced pick-list overlay is not captured in this snapshot"
+        }
+        (
+            Component::Select
+            | Component::Popover
+            | Component::ActionMenu
+            | Component::ActionMenuItem
+            | Component::AnchoredActionMenu
+            | Component::ContextMenu,
+            _,
+        ) => {
+            "intentional: Runtime keeps disabled select options visible and owns anchored menu chrome; Iced pick-list omits disabled popup rows. Visual review is the qualification gate"
         }
         _ => fixture.divergence,
     }
