@@ -164,7 +164,10 @@ fn intrinsic_size(
         children.width.max(text.width),
         children.height.max(text.height),
     );
-    let default_width = if flow_children.is_empty() {
+    // Fixed-content `Shrink` is intentionally a single-pass contract. Percentage/Fill children
+    // and relative gap or padding resolve against the outer available size; this is not a full
+    // CSS fit-content solver.
+    let default_width = if flow_children.is_empty() || style.width == Some(LengthSpec::Shrink) {
         content.width + chrome.width
     } else {
         available.width
@@ -247,6 +250,11 @@ fn place_node(
             height: size.height,
         },
     );
+
+    if let Some(modal) = node.modal.as_ref() {
+        place_modal_children(id, origin, size, modal, viewport, nodes, intrinsic, output);
+        return;
+    }
 
     let padding = style.resolved_padding_against(Some(size.width));
     let border = style.resolved_border_width();
@@ -364,6 +372,174 @@ fn place_node(
             child_origin,
             child_size,
             base,
+            viewport,
+            nodes,
+            intrinsic,
+            output,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_modal_children(
+    _id: StableNodeId,
+    origin: Point,
+    size: Size,
+    modal: &crate::ModalLayoutInput,
+    viewport: LayoutViewport,
+    nodes: &HashMap<StableNodeId, LayoutInput>,
+    intrinsic: &mut IntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+) {
+    let margin = 16.0_f32.min(size.width / 2.0).min(size.height / 2.0);
+    let available_width = (size.width - margin * 2.0).max(0.0);
+    let available_height = (size.height - margin * 2.0).max(0.0);
+    let horizontal = 16.0;
+    let text_height = modal.title.height
+        + modal
+            .description
+            .map_or(0.0, |metrics| 4.0 + metrics.height);
+    let header_height = (28.0 + text_height).max(56.0);
+    let has_footer = modal.slots.footer.is_some() || !modal.slots.actions.is_empty();
+    let footer_height = if has_footer { 58.0 } else { 0.0 };
+    let surface = match modal.kind {
+        crate::ModalSurfaceKind::Dialog(dialog_size)
+        | crate::ModalSurfaceKind::Confirm(dialog_size) => {
+            let width = dialog_size.max_width().min(available_width);
+            let max_height = (size.height * 0.76).min(available_height);
+            let body_available = Size::new(
+                (width - horizontal * 2.0).max(0.0),
+                (max_height - header_height - footer_height - 14.0).max(0.0),
+            );
+            let body_height =
+                modal
+                    .slots
+                    .body
+                    .filter(|id| nodes.contains_key(id))
+                    .map_or(0.0, |id| {
+                        intrinsic_size(id, body_available, viewport, nodes, intrinsic)
+                            .height
+                            .min(body_available.height)
+                    });
+            let height = (header_height + body_height + footer_height + 14.0).min(max_height);
+            LayoutBox {
+                x: origin.x + (size.width - width) / 2.0,
+                y: origin.y + size.height * 0.12,
+                width,
+                height,
+            }
+        }
+        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left) => {
+            let width = 420.0_f32.min(size.width * 0.92);
+            LayoutBox {
+                x: origin.x,
+                y: origin.y,
+                width,
+                height: size.height,
+            }
+        }
+        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Right) => {
+            let width = 420.0_f32.min(size.width * 0.92);
+            LayoutBox {
+                x: origin.x + size.width - width,
+                y: origin.y,
+                width,
+                height: size.height,
+            }
+        }
+        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Bottom) => {
+            let height = (size.height * 0.55).min(520.0).min(size.height);
+            LayoutBox {
+                x: origin.x,
+                y: origin.y + size.height - height,
+                width: size.width,
+                height,
+            }
+        }
+    };
+    let body = LayoutBox {
+        x: surface.x + horizontal,
+        y: surface.y + header_height,
+        width: (surface.width - horizontal * 2.0).max(0.0),
+        height: (surface.height - header_height - footer_height - 14.0).max(0.0),
+    };
+    if let Some(id) = modal.slots.body.filter(|id| nodes.contains_key(id)) {
+        place_node(
+            id,
+            Point {
+                x: body.x,
+                y: body.y,
+            },
+            Size::new(body.width, body.height),
+            Size::new(body.width, body.height),
+            viewport,
+            nodes,
+            intrinsic,
+            output,
+        );
+    }
+    if let Some(id) = modal.slots.close_action.filter(|id| nodes.contains_key(id)) {
+        place_node(
+            id,
+            Point {
+                x: surface.x + surface.width - 44.0,
+                y: surface.y + 12.0,
+            },
+            Size::new(28.0, 28.0),
+            Size::new(28.0, 28.0),
+            viewport,
+            nodes,
+            intrinsic,
+            output,
+        );
+    }
+    let footer_y = surface.y + surface.height - footer_height;
+    let mut action_right = surface.x + surface.width - horizontal;
+    for id in modal
+        .slots
+        .actions
+        .iter()
+        .rev()
+        .copied()
+        .filter(|id| nodes.contains_key(id))
+    {
+        let intrinsic_size = intrinsic_size(
+            id,
+            Size::new(body.width, footer_height),
+            viewport,
+            nodes,
+            intrinsic,
+        );
+        let action_size = Size::new(
+            intrinsic_size.width.min(body.width),
+            intrinsic_size.height.min(40.0),
+        );
+        action_right -= action_size.width;
+        place_node(
+            id,
+            Point {
+                x: action_right,
+                y: footer_y + (footer_height - action_size.height) / 2.0,
+            },
+            action_size,
+            Size::new(body.width, footer_height),
+            viewport,
+            nodes,
+            intrinsic,
+            output,
+        );
+        action_right -= 8.0;
+    }
+    if let Some(id) = modal.slots.footer.filter(|id| nodes.contains_key(id)) {
+        let width = (action_right - (surface.x + horizontal)).max(0.0);
+        place_node(
+            id,
+            Point {
+                x: surface.x + horizontal,
+                y: footer_y,
+            },
+            Size::new(width, footer_height),
+            Size::new(width, footer_height),
             viewport,
             nodes,
             intrinsic,
@@ -754,5 +930,227 @@ mod tests {
         assert_eq!(layouts[&id(2)].width, 280.0);
         assert_eq!(layouts[&id(3)].x, 16.0);
         assert_eq!(layouts[&id(3)].width, 264.0);
+    }
+
+    #[test]
+    fn fixed_content_shrink_accounts_for_flow_chrome_nesting_and_constraints() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        for value in 2..=15 {
+            queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+        }
+
+        for child in [id(2), id(6), id(9), id(13), id(15)] {
+            queue.insert(id(1), child, None);
+        }
+        for child in [id(3), id(4), id(5)] {
+            queue.insert(id(2), child, None);
+        }
+        for child in [id(7), id(8)] {
+            queue.insert(id(6), child, None);
+        }
+        for child in [id(10), id(12)] {
+            queue.insert(id(9), child, None);
+        }
+        queue.insert(id(10), id(11), None);
+        queue.insert(id(13), id(14), None);
+
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Shrink),
+                    direction: Some(FlexDirection::Row),
+                    gap: Some(LengthSpec::Px(3.0)),
+                    padding: Some(LengthSpec::Px(2.0)),
+                    border_width: Some(1.0),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for (node, width) in [(id(3), 20.0), (id(4), 30.0)] {
+            queue.set_style(
+                node,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(width)),
+                        height: Some(LengthSpec::Px(8.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        queue.set_style(
+            id(5),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    position: PositionSpec::Absolute,
+                    width: Some(LengthSpec::Px(200.0)),
+                    height: Some(LengthSpec::Px(8.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(6),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Shrink),
+                    direction: Some(FlexDirection::Column),
+                    padding: Some(LengthSpec::Px(1.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for (node, width) in [(id(7), 40.0), (id(8), 25.0)] {
+            queue.set_style(
+                node,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(width)),
+                        height: Some(LengthSpec::Px(8.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        queue.set_style(
+            id(9),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Shrink),
+                    direction: Some(FlexDirection::Row),
+                    gap: Some(LengthSpec::Px(2.0)),
+                    padding: Some(LengthSpec::Px(1.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(10),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Shrink),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for (node, width) in [(id(11), 35.0), (id(12), 10.0)] {
+            queue.set_style(
+                node,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(width)),
+                        height: Some(LengthSpec::Px(8.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        queue.set_style(
+            id(13),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Shrink),
+                    min_width: Some(LengthSpec::Px(50.0)),
+                    max_width: Some(LengthSpec::Px(55.0)),
+                    padding: Some(LengthSpec::Px(2.0)),
+                    border_width: Some(1.0),
+                    box_sizing: BoxSizing::ContentBox,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(14),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(20.0)),
+                    height: Some(LengthSpec::Px(8.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(15),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Shrink),
+                    max_width: Some(LengthSpec::Px(60.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text(
+            id(15),
+            TextContent {
+                value: "wide".into(),
+            },
+        );
+        world.commit(queue).unwrap();
+
+        struct WideText;
+        impl TextShaper for WideText {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: crate::TextShapeConstraints,
+            ) -> TextMetrics {
+                TextMetrics {
+                    width: 100.0,
+                    height: 8.0,
+                }
+            }
+        }
+        world.shape_text(&[id(15)], &mut WideText).unwrap();
+
+        let layout_at = |width| {
+            RuntimeLayoutEngine
+                .layout_document(&world, document, LayoutViewport::new(width, 240.0))
+                .unwrap()
+                .into_iter()
+                .collect::<HashMap<_, _>>()
+        };
+        let narrow = layout_at(320.0);
+        let wide = layout_at(640.0);
+
+        for layouts in [&narrow, &wide] {
+            assert_eq!(layouts[&id(2)].width, 59.0);
+            assert_eq!(layouts[&id(6)].width, 42.0);
+            assert_eq!(layouts[&id(9)].width, 49.0);
+            assert_eq!(layouts[&id(10)].width, 35.0);
+            assert_eq!(layouts[&id(13)].width, 50.0);
+            assert_eq!(layouts[&id(15)].width, 60.0);
+        }
+        for node in [id(2), id(6), id(9), id(10), id(13), id(15)] {
+            assert_eq!(narrow[&node].width, wide[&node].width);
+        }
     }
 }
