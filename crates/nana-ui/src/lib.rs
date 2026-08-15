@@ -82,9 +82,13 @@ pub mod compatibility {
     #[cfg(feature = "controls")]
     pub use crate::components::controls::{Checkbox, Input, RangeField, SegmentedControl, Switch};
     #[cfg(feature = "feedback")]
-    pub use crate::components::feedback::{StatusBadge, ValidationMessage};
+    pub use crate::components::feedback::{
+        LevelMeter, Progress, Skeleton, Spinner, StatusBadge, ValidationMessage,
+    };
     #[cfg(feature = "surfaces")]
-    pub use crate::components::surfaces::{Card, EmptyState, LabeledValue, ListItem};
+    pub use crate::components::surfaces::{
+        Card, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
+    };
     pub use iced::widget::Text;
 }
 
@@ -121,9 +125,7 @@ pub use components::controls::{
     Tabs, Textarea,
 };
 #[cfg(feature = "feedback")]
-pub use components::feedback::{
-    LevelMeter, Progress, Skeleton, Spinner, StatusTone, Toast, ToastTone, ValidationIntent,
-};
+pub use components::feedback::{StatusTone, Toast, ToastTone, ValidationIntent};
 #[cfg(feature = "graph-canvas")]
 pub use components::graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
 #[cfg(feature = "image-viewer")]
@@ -158,7 +160,7 @@ pub use components::settings_sections::{
     AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
 };
 #[cfg(feature = "surfaces")]
-pub use components::surfaces::{DockPanel, FormField, InteractiveCard};
+pub use components::surfaces::DockPanel;
 #[cfg(feature = "surfaces")]
 pub use components::tree_view::{
     TreeNavigation, TreeNode, TreeView, TreeViewEvent, tree_navigation_event,
@@ -230,8 +232,9 @@ pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
 pub use nana_ui_runtime::{
-    Button, Card, Checkbox, EmptyState, IconButton, LabeledValue, ListItem, RangeField,
-    SegmentedControl, StatusBadge, Switch, Text, TextInput, ValidationMessage,
+    Button, Card, Checkbox, EmptyState, FormField, IconButton, InteractiveCard, LabeledValue,
+    LevelMeter, ListItem, Progress, RangeField, SegmentedControl, Skeleton, Spinner, StatusBadge,
+    Switch, Text, TextInput, ValidationMessage,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;

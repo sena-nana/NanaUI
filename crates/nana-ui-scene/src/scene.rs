@@ -603,6 +603,7 @@ impl UiScene {
                         | ComponentGeometry::SelectionOption { .. }
                         | ComponentGeometry::ModalFrame { .. }
                         | ComponentGeometry::Progress { .. }
+                        | ComponentGeometry::FormField { .. }
                 )
             );
             if let Some(text) = node
@@ -1096,7 +1097,12 @@ impl UiScene {
                         ));
                     }
                 }
-                Some(ComponentGeometry::Progress { track, fill, label }) => {
+                Some(ComponentGeometry::Progress {
+                    track,
+                    fill,
+                    label,
+                    corner_radius,
+                }) => {
                     if let Some(label) = label {
                         self.insert_primitive(component_text_primitive(
                             id,
@@ -1126,7 +1132,7 @@ impl UiScene {
                             background: node.style.background,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 3.0,
+                            corner_radius: *corner_radius,
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -1144,9 +1150,62 @@ impl UiScene {
                             background: node.standard_visual_foreground,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 3.0,
+                            corner_radius: *corner_radius,
                         },
                     ));
+                }
+                Some(ComponentGeometry::FormField {
+                    label,
+                    support,
+                    indicator,
+                    ..
+                }) => {
+                    self.insert_primitive(component_text_primitive(
+                        id,
+                        2,
+                        label,
+                        TextHorizontalAlignment::Start,
+                        false,
+                        &node,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node_order,
+                    ));
+                    if let Some(support) = support {
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            3,
+                            support,
+                            TextHorizontalAlignment::Start,
+                            false,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
+                    if let Some((bounds, color)) = indicator {
+                        self.insert_primitive(visual_quad(
+                            &VisualPrimitiveContext {
+                                node: id,
+                                transform,
+                                clips: &clips,
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                            },
+                            4,
+                            scene_rect(*bounds),
+                            VisualQuadStyle {
+                                background: None,
+                                border_color: Some(*color),
+                                border_width: 1.0,
+                                corner_radius: 999.0,
+                            },
+                        ));
+                    }
                 }
                 Some(ComponentGeometry::Card { title: None, .. })
                 | Some(ComponentGeometry::ListItem { .. })
@@ -1649,7 +1708,9 @@ impl UiScene {
                     | StandardVisual::LabeledValue { .. }
                     | StandardVisual::SelectionOption { .. }
                     | StandardVisual::ModalFrame { .. }
-                    | StandardVisual::Progress { .. },
+                    | StandardVisual::Progress { .. }
+                    | StandardVisual::LevelMeter { .. }
+                    | StandardVisual::FormField { .. },
                 ) => {
                     // The row surface and fallback label are emitted above;
                     // typed slots remain ordinary retained child nodes.
@@ -2095,6 +2156,7 @@ mod tests {
             selected: true,
             disabled: false,
             size: ControlSize::Medium,
+            show_focus_ring: true,
         });
         option.component_geometry = Some(ComponentGeometry::SelectionOption {
             icon: Some((

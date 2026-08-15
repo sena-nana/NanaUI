@@ -52,13 +52,7 @@ fn project_accessibility(
 }
 
 fn status_foreground(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
-    match tone {
-        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
-        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
-        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
-        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
-        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
-    }
+    crate::components::status_tone_role(tone)
 }
 
 fn status_background(tone: nana_ui_core::StatusTone) -> SemanticColorRole {

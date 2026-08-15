@@ -19,10 +19,10 @@ use nana_ui_core::{
 use crate::Dialog;
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, Activate, AnimationFrame, Button, Checkbox,
-    ComponentView, DocumentId, EmptyState, IconButton, LabeledValue, List, ListItem, ListItemSlots,
-    MenuItem, ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged, OverlayHost,
-    RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged,
-    ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl, SegmentedOption,
+    ComponentView, DocumentId, EmptyState, FormField, IconButton, LabeledValue, List, ListItem,
+    ListItemSlots, MenuItem, ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged,
+    OverlayHost, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
+    ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl, SegmentedOption,
     SegmentedSelectionRequested, Slider, SliderChanged, StableNodeId, StandardVisual, Switch, Tab,
     TabList, TabSelected, Table, TableCell, TableRow, TextArea, TextChanged, TextInput,
     TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld, UiWorldError,
@@ -1353,7 +1353,9 @@ impl AppContext {
             }
         }
         let selected_id = selected.map(Entity::stable_id);
-        let size = self.read(control, |control| control.size)?;
+        let (size, chrome, fill) = self.read(control, |control| {
+            (control.size, control.chrome, control.fill)
+        })?;
         let current = self.read(control, |control| {
             (
                 control.options.clone(),
@@ -1399,7 +1401,7 @@ impl AppContext {
         for option in options {
             let mut next = self.read(option, Clone::clone)?;
             next.selected = Some(option.id) == selected_id;
-            next.synchronize_size(size);
+            next.synchronize_surface(size, chrome, fill);
             next.project(option.id, &self.world, &mut mutations);
             staged_options.push((option.id, next));
         }
@@ -1437,15 +1439,13 @@ impl AppContext {
         if next_control.size == size {
             return Ok(false);
         }
-        next_control.size = size;
-        Arc::make_mut(&mut next_control.style.layout).height =
-            Some(nana_ui_core::LengthSpec::Px(size.height()));
+        next_control.apply_size(size);
         let mut mutations = MutationQueue::new();
         let mut staged_options = Vec::new();
         for id in &next_control.options {
             let entity = Entity::<SegmentedOption>::from_stable_id(*id);
             let mut option = self.read(entity, Clone::clone)?;
-            option.synchronize_size(size);
+            option.synchronize_surface(size, next_control.chrome, next_control.fill);
             option.project(*id, &self.world, &mut mutations);
             staged_options.push((*id, option));
         }
@@ -1820,6 +1820,38 @@ impl AppContext {
             }
             if let Some(action) = action {
                 cx.mutations().insert(parent, action, None);
+            }
+        })?;
+        Ok(true)
+    }
+
+    /// Atomically validate and attach a FormField's application-owned control.
+    pub fn set_form_field_control(
+        &mut self,
+        field: Entity<FormField>,
+        control: Option<StableNodeId>,
+    ) -> Result<bool, FrameworkError> {
+        let current = self.read(field, |field| field.control)?;
+        let owned_current = self.validate_feedback_action(field.id, current, control)?;
+        let ordered = control.into_iter().collect::<Vec<_>>();
+        let changed = current != control
+            || self
+                .world
+                .node(field.id)
+                .is_some_and(|node| node.children != ordered);
+        if !changed {
+            return Ok(false);
+        }
+        let parent = field.id;
+        self.update_component(field, |field, cx| {
+            field.control = control;
+            if let Some(current) = owned_current
+                && Some(current) != control
+            {
+                cx.mutations().park_subtree(current);
+            }
+            if let Some(control) = control {
+                cx.mutations().insert(parent, control, None);
             }
         })?;
         Ok(true)

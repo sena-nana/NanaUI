@@ -12,8 +12,9 @@ use nana_ui::command::{
 };
 use nana_ui::compatibility::{
     Button as UiButton, Card as UiCard, Checkbox as UiCheckbox, IconButton as UiIconButton,
-    Input as UiInput, ListItem as UiListItem, RangeField as UiRangeField,
-    SegmentedControl as UiSegmentedControl, Switch as UiSwitch,
+    Input as UiInput, InteractiveCard as UiInteractiveCard, ListItem as UiListItem,
+    Progress as UiProgress, RangeField as UiRangeField, SegmentedControl as UiSegmentedControl,
+    Switch as UiSwitch,
 };
 use nana_ui::components::{
     AboutMetadata, AboutSection, AnchoredMenuPlacement, AnchoredMenuPosition, AppearanceEvent,
@@ -22,9 +23,8 @@ use nana_ui::components::{
     CommandPalette as UiCommandPalette, CommandPaletteEvent, CommandPaletteItem,
     ConfirmDialog as UiConfirmDialog, ContextMenuAnchor, ContextMenuEvent, ContextMenuHost,
     ContextMenuItem, ContextMenuTrigger, ControlSize, Dropdown as UiDropdown, DropdownEvent,
-    DropdownOption, ImageViewer as UiImageViewer, ImageViewerSource,
-    InteractiveCard as UiInteractiveCard, NativeMarkdown, Popover as UiPopover,
-    Progress as UiProgress, SearchDropdown as UiSearchDropdown, SearchDropdownOption,
+    DropdownOption, ImageViewer as UiImageViewer, ImageViewerSource, NativeMarkdown,
+    Popover as UiPopover, SearchDropdown as UiSearchDropdown, SearchDropdownOption,
     SearchDropdownState, SelectionOption, SettingsCollapsibleCard, Tabs as UiTabs,
     Textarea as UiTextarea, Tooltip as UiTooltip, TreeNode, TreeView as UiTreeView, TreeViewEvent,
     XYPad as UiXYPad, XYPadEvent, XYPadValue,

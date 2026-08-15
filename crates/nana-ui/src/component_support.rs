@@ -145,14 +145,14 @@ component_catalog! {
     RANGE_FIELD => { id: "range-field", name: "RangeField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SELECT => { id: "select", name: "Select", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     SEGMENTED_CONTROL => { id: "segmented-control", name: "SegmentedControl", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    TABS => { id: "tabs", name: "Tabs", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    TABS => { id: "tabs", name: "Tabs", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     REORDER_LIST => { id: "reorder-list", name: "ReorderList", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     CALENDAR_HEATMAP => { id: "calendar-heatmap", name: "CalendarHeatmap", family: Data, migration: Compatibility, feature: Some("calendar"), compiled: cfg!(feature = "calendar"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     TIME_SERIES_CHART => { id: "time-series-chart", name: "TimeSeriesChart", family: Data, migration: Compatibility, feature: Some("charts"), compiled: cfg!(feature = "charts"), capabilities: [Render, Accessibility] },
-    PROGRESS => { id: "progress", name: "Progress", family: Feedback, migration: RuntimeCandidate, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Accessibility] },
-    SPINNER => { id: "spinner", name: "Spinner", family: Feedback, migration: RuntimeCandidate, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Animation, Accessibility] },
-    SKELETON => { id: "skeleton", name: "Skeleton", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Animation] },
-    LEVEL_METER => { id: "level-meter", name: "LevelMeter", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Accessibility] },
+    PROGRESS => { id: "progress", name: "Progress", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
+    SPINNER => { id: "spinner", name: "Spinner", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Animation, Accessibility] },
+    SKELETON => { id: "skeleton", name: "Skeleton", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Animation] },
+    LEVEL_METER => { id: "level-meter", name: "LevelMeter", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     STATUS_BADGE => { id: "status-badge", name: "StatusBadge", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     VALIDATION_MESSAGE => { id: "validation-message", name: "ValidationMessage", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     TOAST => { id: "toast", name: "Toast", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
@@ -182,10 +182,10 @@ component_catalog! {
     GRAPH_CANVAS => { id: "graph-canvas", name: "GraphCanvas", family: Data, migration: Compatibility, feature: Some("graph-canvas"), compiled: cfg!(feature = "graph-canvas"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Gpu] },
     IMAGE_VIEWER => { id: "image-viewer", name: "ImageViewer", family: Media, migration: Compatibility, feature: Some("image-viewer"), compiled: cfg!(feature = "image-viewer"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: Compatibility, feature: Some("xy-pad"), compiled: cfg!(feature = "xy-pad"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    FORM_FIELD => { id: "form-field", name: "FormField", family: Control, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
+    FORM_FIELD => { id: "form-field", name: "FormField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     LABELED_VALUE => { id: "labeled-value", name: "LabeledValue", family: Data, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
-    INTERACTIVE_CARD => { id: "interactive-card", name: "InteractiveCard", family: Control, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    INTERACTIVE_CARD => { id: "interactive-card", name: "InteractiveCard", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     LIST_ITEM => { id: "list-item", name: "ListItem", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     WORKSPACE => { id: "workspace", name: "Workspace", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
@@ -257,6 +257,13 @@ mod tests {
             component_ids::VALIDATION_MESSAGE,
             component_ids::EMPTY_STATE,
             component_ids::LABELED_VALUE,
+            component_ids::PROGRESS,
+            component_ids::SPINNER,
+            component_ids::TABS,
+            component_ids::SKELETON,
+            component_ids::LEVEL_METER,
+            component_ids::FORM_FIELD,
+            component_ids::INTERACTIVE_CARD,
         ] {
             let support = component_support(id).expect("qualified component is cataloged");
             assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
@@ -266,11 +273,7 @@ mod tests {
 
     #[test]
     fn candidate_components_keep_the_compatibility_default_route() {
-        for id in [
-            component_ids::TEXTAREA,
-            component_ids::PROGRESS,
-            component_ids::SPINNER,
-        ] {
+        for id in [component_ids::TEXTAREA] {
             let support = component_support(id).expect("candidate component is cataloged");
             assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
             assert!(!component_uses_runtime(id));
@@ -315,6 +318,25 @@ mod tests {
         let _: nana_ui_runtime::LabeledValue =
             crate::components::LabeledValue::new("Revision", "42");
         let _: nana_ui_runtime::SegmentedControl = crate::components::SegmentedControl::new();
+    }
+
+    #[test]
+    fn fourth_batch_public_exports_are_runtime_components() {
+        let _: nana_ui_runtime::Progress = crate::Progress::new(1.0, 2.0);
+        let _: nana_ui_runtime::Spinner = crate::Spinner::new("Loading");
+        let _: nana_ui_runtime::Skeleton =
+            crate::Skeleton::new(nana_ui_core::LengthSpec::Fill, 16.0);
+        let _: nana_ui_runtime::LevelMeter = crate::LevelMeter::new(0.5);
+        let _: nana_ui_runtime::FormField = crate::FormField::new("Name");
+        let _: nana_ui_runtime::InteractiveCard = crate::InteractiveCard::new();
+
+        let _: nana_ui_runtime::Progress = crate::components::Progress::new(1.0, 2.0);
+        let _: nana_ui_runtime::Spinner = crate::components::Spinner::new("Loading");
+        let _: nana_ui_runtime::Skeleton =
+            crate::components::Skeleton::new(nana_ui_core::LengthSpec::Fill, 16.0);
+        let _: nana_ui_runtime::LevelMeter = crate::components::LevelMeter::new(0.5);
+        let _: nana_ui_runtime::FormField = crate::components::FormField::new("Name");
+        let _: nana_ui_runtime::InteractiveCard = crate::components::InteractiveCard::new();
     }
 
     #[test]
