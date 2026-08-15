@@ -4,8 +4,9 @@ use nana_ui_core::DialogCloseTrigger;
 
 use super::{AppContext, Entity, FrameworkError};
 use crate::{
-    ComponentView, ConfirmDialog, Dialog, DocumentId, Drawer, IconButton, ModalInitialFocus,
-    ModalSurface, MutationQueue, RangeField, ScrollOffset, ScrollView, StableNodeId,
+    CommandPalette, ComponentView, ConfirmDialog, Dialog, DocumentId, Drawer, IconButton,
+    ModalInitialFocus, ModalSurface, MutationQueue, RangeField, ScrollOffset, ScrollView,
+    StableNodeId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,6 +480,7 @@ impl AppContext {
             || view
                 .downcast_ref::<Drawer>()
                 .is_some_and(|drawer| drawer.behavior().close_policy.allows(trigger))
+            || view.downcast_ref::<CommandPalette>().is_some()
     }
 
     pub(super) fn modal_action_context(

@@ -948,6 +948,11 @@ where
         return space().width(Length::Shrink).height(Length::Shrink).into();
     };
     let parent = ParentBox::new(Some(viewport.width), Some(viewport.height));
+    match qualified_runtime_scene_view(snap, widget) {
+        QualifiedSceneRoute::Scene(view) => return view,
+        QualifiedSceneRoute::Pending => return pending_qualified_placeholder(widget),
+        QualifiedSceneRoute::Compatibility => {}
+    }
     match widget.kind {
         WidgetKind::Dialog => overlay_dialog_owned(
             snap,

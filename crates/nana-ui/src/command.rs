@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use iced::keyboard;
-pub use nana_ui_core::{ActionId, ContextPredicate, KeyContext};
+pub use nana_ui_core::{
+    ActionId, ActionPickerNavigation, CommandPaletteEvent, CommandPaletteItem, ContextPredicate,
+    KeyContext,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,27 +475,17 @@ pub struct ActionPickerSelection {
     pub restore_focus: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionPickerNavigation {
-    Previous,
-    Next,
-    First,
-    Last,
-    Confirm,
-    Dismiss,
-}
-
-impl ActionPickerNavigation {
-    pub fn from_iced_key(key: &keyboard::Key) -> Option<Self> {
-        match key.as_ref() {
-            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => Some(Self::Previous),
-            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(Self::Next),
-            keyboard::Key::Named(keyboard::key::Named::Home) => Some(Self::First),
-            keyboard::Key::Named(keyboard::key::Named::End) => Some(Self::Last),
-            keyboard::Key::Named(keyboard::key::Named::Enter) => Some(Self::Confirm),
-            keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Self::Dismiss),
-            _ => None,
+pub fn action_picker_from_iced_key(key: &keyboard::Key) -> Option<ActionPickerNavigation> {
+    match key.as_ref() {
+        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+            Some(ActionPickerNavigation::Previous)
         }
+        keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(ActionPickerNavigation::Next),
+        keyboard::Key::Named(keyboard::key::Named::Home) => Some(ActionPickerNavigation::First),
+        keyboard::Key::Named(keyboard::key::Named::End) => Some(ActionPickerNavigation::Last),
+        keyboard::Key::Named(keyboard::key::Named::Enter) => Some(ActionPickerNavigation::Confirm),
+        keyboard::Key::Named(keyboard::key::Named::Escape) => Some(ActionPickerNavigation::Dismiss),
+        _ => None,
     }
 }
 

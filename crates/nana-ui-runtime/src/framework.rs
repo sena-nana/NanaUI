@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use futures_core::Stream;
 use nana_ui_core::{
-    ActionId, ContextPredicate, KeyContext, LengthSpec, ThemeMode, TooltipConfig, TooltipPlacement,
-    VirtualListLayout, VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
+    ActionId, ActionPickerNavigation, CommandPaletteEvent, ContextPredicate, KeyContext,
+    LengthSpec, ThemeMode, TooltipConfig, TooltipPlacement, VirtualListLayout,
+    VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow,
 };
 
@@ -19,15 +20,16 @@ use nana_ui_core::{
 use crate::Dialog;
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
-    AnimationFrame, Button, Checkbox, ComponentView, ContextMenu, ContextMenuEvent, DocumentId,
-    EmptyState, FormField, IconButton, LabeledValue, List, ListItem, ListItemSlots, MenuItem,
-    ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged, OverlayHost, Popover,
-    PopoverClosed, PopoverToggled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent,
-    ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl,
-    SegmentedOption, SegmentedSelectionRequested, Select, Slider, SliderChanged, StableNodeId,
-    StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell, TableRow, TextArea,
-    TextChanged, TextInput, TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld,
-    UiWorldError, XYPad, XYPadDragState, XYPadEvent,
+    AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
+    DocumentId, Dropdown, EmptyState, FormField, IconButton, LabeledValue, List, ListItem,
+    ListItemSlots, MenuItem, ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged,
+    OverlayHost, Popover, PopoverClosed, PopoverToggled, RangeAdjustment, RangeChanged, RangeField,
+    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView,
+    SearchDropdown, SearchDropdownEvent, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, Slider, SliderChanged, StableNodeId, StandardVisual,
+    Switch, Tab, TabList, TabSelected, Table, TableCell, TableRow, TextArea, TextChanged,
+    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
+    UiWorld, UiWorldError, XYPad, XYPadDragState, XYPadEvent,
 };
 
 mod overlay;
@@ -45,13 +47,31 @@ pub trait View: Send + 'static {}
 impl<T: Send + 'static> View for T {}
 
 trait EditableText: ComponentView {
+    type Change: Send + 'static;
     fn accepts_input(&self) -> bool;
     fn replace_selection(&mut self, text: &str) -> bool;
     fn state(&self) -> &TextInputState;
     fn state_mut(&mut self) -> &mut TextInputState;
+    fn change(&self) -> Self::Change;
+    fn set_value(&mut self, value: String) -> bool {
+        if self.state().value == value {
+            return false;
+        }
+        self.state_mut().replace_value(value);
+        true
+    }
+}
+
+fn text_changed(state: &TextInputState) -> TextChanged {
+    TextChanged {
+        value: state.value.clone(),
+        selection: state.selection,
+    }
 }
 
 impl EditableText for TextInput {
+    type Change = TextChanged;
+
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.loading && !self.read_only
     }
@@ -67,9 +87,15 @@ impl EditableText for TextInput {
     fn state_mut(&mut self) -> &mut TextInputState {
         &mut self.state
     }
+
+    fn change(&self) -> TextChanged {
+        text_changed(&self.state)
+    }
 }
 
 impl EditableText for TextArea {
+    type Change = TextChanged;
+
     fn accepts_input(&self) -> bool {
         !self.disabled
     }
@@ -84,6 +110,74 @@ impl EditableText for TextArea {
 
     fn state_mut(&mut self) -> &mut TextInputState {
         &mut self.state
+    }
+
+    fn change(&self) -> TextChanged {
+        text_changed(&self.state)
+    }
+}
+
+impl EditableText for SearchDropdown {
+    type Change = SearchDropdownEvent;
+
+    fn accepts_input(&self) -> bool {
+        self.opened && !self.inactive()
+    }
+
+    fn replace_selection(&mut self, text: &str) -> bool {
+        self.replace_selection(text)
+    }
+
+    fn state(&self) -> &TextInputState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut TextInputState {
+        &mut self.state
+    }
+
+    fn change(&self) -> SearchDropdownEvent {
+        SearchDropdownEvent::Search(self.query.clone())
+    }
+
+    fn set_value(&mut self, value: String) -> bool {
+        if self.query == value {
+            return false;
+        }
+        let _ = self.set_query(value);
+        true
+    }
+}
+
+impl EditableText for CommandPalette {
+    type Change = CommandPaletteEvent;
+
+    fn accepts_input(&self) -> bool {
+        true
+    }
+
+    fn replace_selection(&mut self, text: &str) -> bool {
+        self.replace_selection(text)
+    }
+
+    fn state(&self) -> &TextInputState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut TextInputState {
+        &mut self.state
+    }
+
+    fn change(&self) -> CommandPaletteEvent {
+        CommandPaletteEvent::Search(self.query.clone())
+    }
+
+    fn set_value(&mut self, value: String) -> bool {
+        if self.query == value {
+            return false;
+        }
+        let _ = self.set_query(value);
+        true
     }
 }
 
@@ -159,6 +253,7 @@ struct ComponentLifecycle {
 #[derive(Default)]
 pub struct ExtensionRegistrar {
     actions: HashMap<ActionId, RegisteredAction>,
+    presenters: Vec<Box<dyn TextPresenter>>,
 }
 
 impl ExtensionRegistrar {
@@ -179,6 +274,25 @@ impl ExtensionRegistrar {
                 handler: Box::new(handler),
             },
         );
+        Ok(())
+    }
+
+    pub fn register_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<(), FrameworkError> {
+        let name = presenter.name().trim();
+        if name.is_empty() {
+            return Err(FrameworkError::InvalidPresenter);
+        }
+        if self
+            .presenters
+            .iter()
+            .any(|existing| existing.name() == name)
+        {
+            return Err(FrameworkError::DuplicatePresenter(name.to_owned()));
+        }
+        self.presenters.push(presenter);
         Ok(())
     }
 }
@@ -214,7 +328,9 @@ pub enum FrameworkError {
     MissingAction(ActionId),
     ActionUnavailable(ActionId),
     DuplicateExtension(String),
+    DuplicatePresenter(String),
     InvalidExtension,
+    InvalidPresenter,
     InvalidInput,
     InvalidVirtualization,
     EventOverflow(StableNodeId),
@@ -254,7 +370,11 @@ impl fmt::Display for FrameworkError {
             Self::DuplicateExtension(name) => {
                 write!(formatter, "extension `{name}` is already installed")
             }
+            Self::DuplicatePresenter(name) => {
+                write!(formatter, "presenter `{name}` is already registered")
+            }
             Self::InvalidExtension => formatter.write_str("extension name must not be empty"),
+            Self::InvalidPresenter => formatter.write_str("presenter name must not be empty"),
             Self::InvalidInput => formatter.write_str("input contains a non-finite coordinate"),
             Self::InvalidVirtualization => {
                 formatter.write_str("virtualized component state is inconsistent")
@@ -445,6 +565,18 @@ impl AppContext {
         &self.world
     }
 
+    fn view_entity<C: View>(&self, id: StableNodeId) -> Option<Entity<C>> {
+        self.views
+            .get(&id)
+            .is_some_and(|view| view.is::<C>())
+            .then(|| Entity::from_stable_id(id))
+    }
+
+    fn focused_editor<C: EditableText>(&self, document: DocumentId) -> Option<Entity<C>> {
+        let (target, _) = self.world.focused_text_input(document)?;
+        self.view_entity(target)
+    }
+
     #[cfg(test)]
     pub(crate) fn world_mut(&mut self) -> &mut UiWorld {
         &mut self.world
@@ -522,6 +654,13 @@ impl AppContext {
     /// Resolve inherited style for the supplied dirty nodes.
     pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), FrameworkError> {
         self.world.resolve_styles(ids).map_err(FrameworkError::from)
+    }
+
+    /// Derive registered text presentations for scheduled nodes.
+    pub fn resolve_presentations(&mut self, ids: &[StableNodeId]) -> Result<(), FrameworkError> {
+        self.world
+            .resolve_presentations(ids)
+            .map_err(FrameworkError::from)
     }
 
     /// Shape only scheduled text through the host's real text backend.
@@ -1261,6 +1400,12 @@ impl AppContext {
         }
         if view.is::<Select>() {
             return self.toggle_select(Entity::from_stable_id(id));
+        }
+        if view.is::<Dropdown>() {
+            return self.toggle_dropdown(Entity::from_stable_id(id));
+        }
+        if view.is::<SearchDropdown>() {
+            return self.toggle_search_dropdown(Entity::from_stable_id(id));
         }
         if view.is::<Popover>() {
             return self.toggle_popover(Entity::from_stable_id(id));
@@ -2687,22 +2832,17 @@ impl AppContext {
     }
 
     pub fn commit_ime(&mut self, document: DocumentId, text: &str) -> Result<bool, FrameworkError> {
-        let Some((target, _)) = self.world.focused_text_input(document) else {
-            return Ok(false);
-        };
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextInput>())
-        {
-            return self.commit_editable_ime(Entity::<TextInput>::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.commit_editable_ime(entity, text);
         }
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextArea>())
-        {
-            return self.commit_editable_ime(Entity::<TextArea>::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.commit_editable_ime(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.commit_editable_ime(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.commit_editable_ime(entity, text);
         }
         Ok(false)
     }
@@ -2712,22 +2852,17 @@ impl AppContext {
         document: DocumentId,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        let Some((target, _)) = self.world.focused_text_input(document) else {
-            return Ok(false);
-        };
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextInput>())
-        {
-            return self.replace_text_input_selection(Entity::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.replace_editable_selection(entity, text);
         }
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextArea>())
-        {
-            return self.replace_text_area_selection(Entity::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.replace_editable_selection(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.replace_editable_selection(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.replace_editable_selection(entity, text);
         }
         Ok(false)
     }
@@ -2736,22 +2871,17 @@ impl AppContext {
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
-        let Some((target, _)) = self.world.focused_text_input(document) else {
-            return Ok(false);
-        };
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextInput>())
-        {
-            return self.delete_editable_backward(Entity::<TextInput>::from_stable_id(target));
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.delete_editable_backward(entity);
         }
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextArea>())
-        {
-            return self.delete_editable_backward(Entity::<TextArea>::from_stable_id(target));
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.delete_editable_backward(entity);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.delete_editable_backward(entity);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.delete_editable_backward(entity);
         }
         Ok(false)
     }
@@ -2766,28 +2896,27 @@ impl AppContext {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
-            let state = editable.state_mut();
-            if state.selection.anchor == state.selection.focus {
-                let caret = state.selection.focus;
-                let Some(previous) = state.value[..caret]
-                    .grapheme_indices(true)
-                    .next_back()
-                    .map(|(index, _)| index)
-                else {
-                    return false;
-                };
-                state.selection = TextSelection {
-                    anchor: previous,
-                    focus: caret,
-                };
+            {
+                let state = editable.state_mut();
+                if state.selection.anchor == state.selection.focus {
+                    let caret = state.selection.focus;
+                    let Some(previous) = state.value[..caret]
+                        .grapheme_indices(true)
+                        .next_back()
+                        .map(|(index, _)| index)
+                    else {
+                        return false;
+                    };
+                    state.selection = TextSelection {
+                        anchor: previous,
+                        focus: caret,
+                    };
+                }
             }
-            if !state.replace_selection("") {
+            if !editable.replace_selection("") {
                 return false;
             }
-            cx.emit(TextChanged {
-                value: state.value.clone(),
-                selection: state.selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -2805,10 +2934,7 @@ impl AppContext {
             if !editable.replace_selection(text) {
                 return false;
             }
-            cx.emit(TextChanged {
-                value: editable.state().value.clone(),
-                selection: editable.state().selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -2827,25 +2953,17 @@ impl AppContext {
             AccessibilityAction::Click => self.activate_node(request.target),
             AccessibilityAction::Focus => self.focus_node(document, request.target),
             AccessibilityAction::SetValue(value) => {
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextInput>())
-                {
-                    return self.set_editable_value(
-                        Entity::<TextInput>::from_stable_id(request.target),
-                        value,
-                    );
+                if let Some(entity) = self.view_entity::<TextInput>(request.target) {
+                    return self.set_editable_value(entity, value);
                 }
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextArea>())
-                {
-                    return self.set_editable_value(
-                        Entity::<TextArea>::from_stable_id(request.target),
-                        value,
-                    );
+                if let Some(entity) = self.view_entity::<TextArea>(request.target) {
+                    return self.set_editable_value(entity, value);
+                }
+                if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
+                    return self.set_editable_value(entity, value);
+                }
+                if let Some(entity) = self.view_entity::<CommandPalette>(request.target) {
+                    return self.set_editable_value(entity, value);
                 }
                 if self
                     .views
@@ -2878,25 +2996,17 @@ impl AppContext {
                 Ok(false)
             }
             AccessibilityAction::SetSelection(selection) => {
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextInput>())
-                {
-                    return self.set_editable_selection(
-                        Entity::<TextInput>::from_stable_id(request.target),
-                        selection,
-                    );
+                if let Some(entity) = self.view_entity::<TextInput>(request.target) {
+                    return self.set_editable_selection(entity, selection);
                 }
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextArea>())
-                {
-                    return self.set_editable_selection(
-                        Entity::<TextArea>::from_stable_id(request.target),
-                        selection,
-                    );
+                if let Some(entity) = self.view_entity::<TextArea>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<CommandPalette>(request.target) {
+                    return self.set_editable_selection(entity, selection);
                 }
                 Ok(false)
             }
@@ -2912,14 +3022,10 @@ impl AppContext {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
-            if editable.state().value == value {
+            if !editable.set_value(value) {
                 return false;
             }
-            editable.state_mut().replace_value(value);
-            cx.emit(TextChanged {
-                value: editable.state().value.clone(),
-                selection: editable.state().selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -3324,6 +3430,66 @@ impl AppContext {
         })
     }
 
+    pub fn adjust_focused_dropdown(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Dropdown>())
+        {
+            return Ok(false);
+        }
+        let entity = Entity::<Dropdown>::from_stable_id(target);
+        if self.read(entity, Dropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if !dropdown.opened {
+                if let Some(event) = dropdown.toggle_open() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                dropdown.highlight_delta(delta)
+            }
+        })
+    }
+
+    pub fn commit_focused_dropdown(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Dropdown>())
+        {
+            return Ok(false);
+        }
+        self.update_component(
+            Entity::<Dropdown>::from_stable_id(target),
+            |dropdown, cx| {
+                if let Some(event) = dropdown.commit_highlighted() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
     pub fn commit_focused_select(&mut self, document: DocumentId) -> Result<bool, FrameworkError> {
         let Some(target) = self.world().focused(document) else {
             return Ok(false);
@@ -3343,6 +3509,351 @@ impl AppContext {
                 false
             }
         })
+    }
+
+    pub fn toggle_dropdown(&mut self, entity: Entity<Dropdown>) -> Result<bool, FrameworkError> {
+        if self.read(entity, Dropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) = dropdown.toggle_open() {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn toggle_search_dropdown(
+        &mut self,
+        entity: Entity<SearchDropdown>,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, SearchDropdown::inactive)? {
+            return Ok(false);
+        }
+        if self.read(entity, |dropdown| dropdown.opened)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) = dropdown.toggle_open() {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn activate_search_dropdown_at(
+        &mut self,
+        entity: Entity<SearchDropdown>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, SearchDropdown::inactive)? {
+            return Ok(false);
+        }
+        let menu = match self.world.component_geometry(entity.id) {
+            Some(crate::ComponentGeometry::Select { menu, .. }) => menu,
+            _ => None,
+        };
+        let Some(field) = self.world.layout_box(entity.id) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) = crate::search_dropdown::activate_search_dropdown_at(
+                dropdown,
+                menu.as_ref(),
+                field,
+                x,
+                y,
+            ) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn adjust_focused_search_dropdown(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<SearchDropdown>())
+        {
+            return Ok(false);
+        }
+        let entity = Entity::<SearchDropdown>::from_stable_id(target);
+        if self.read(entity, SearchDropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if !dropdown.opened {
+                if let Some(event) = dropdown.toggle_open() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                dropdown.highlight_delta(delta)
+            }
+        })
+    }
+
+    pub fn commit_focused_search_dropdown(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<SearchDropdown>())
+        {
+            return Ok(false);
+        }
+        self.update_component(
+            Entity::<SearchDropdown>::from_stable_id(target),
+            |dropdown, cx| {
+                if let Some(event) = dropdown.commit_highlighted() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
+    pub fn activate_command_palette_at(
+        &mut self,
+        entity: Entity<CommandPalette>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(crate::ComponentGeometry::CommandPalette {
+            surface,
+            input,
+            rows,
+            ..
+        }) = self.world.component_geometry(entity.id)
+        else {
+            return Ok(false);
+        };
+        self.update_component(entity, |palette, cx| {
+            if let Some(event) = crate::command_palette::activate_command_palette_at(
+                palette,
+                surface,
+                input.bounds,
+                &rows,
+                x,
+                y,
+            ) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn navigate_focused_command_palette(
+        &mut self,
+        document: DocumentId,
+        navigation: ActionPickerNavigation,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<CommandPalette>())
+        {
+            return Ok(false);
+        }
+        self.update_component(
+            Entity::<CommandPalette>::from_stable_id(target),
+            |palette, cx| {
+                if let Some(event) = palette.navigate(navigation) {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
+    pub fn activate_dropdown_at(
+        &mut self,
+        entity: Entity<Dropdown>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, Dropdown::inactive)? {
+            return Ok(false);
+        }
+        let menu = match self.world.component_geometry(entity.id) {
+            Some(crate::ComponentGeometry::Select { menu, .. }) => menu,
+            _ => None,
+        };
+        let Some(field) = self.world.layout_box(entity.id) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) =
+                crate::dropdown::activate_dropdown_at(dropdown, menu.as_ref(), field, x, y)
+            {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn activate_tree_at(
+        &mut self,
+        entity: Entity<TreeView>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(crate::ComponentGeometry::TreeView { rows }) =
+            self.world.component_geometry(entity.id)
+        else {
+            return Ok(false);
+        };
+        if let Some(index) = crate::tree_view::tree_disclosure_at(&rows, x, y) {
+            let id = Arc::clone(&rows[index].id);
+            return self.update_component(entity, |tree, cx| {
+                let event = crate::TreeViewEvent::Toggle(id);
+                if tree.apply_event(event.clone()) {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        if let Some(index) = crate::tree_view::tree_row_at(&rows, x, y) {
+            if rows[index].disabled {
+                return Ok(false);
+            }
+            let id = Arc::clone(&rows[index].id);
+            return self.update_component(entity, |tree, cx| {
+                let event = crate::TreeViewEvent::Select(id);
+                if tree.apply_event(event.clone()) {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        Ok(false)
+    }
+
+    pub fn navigate_focused_tree(
+        &mut self,
+        document: DocumentId,
+        navigation: crate::TreeNavigation,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<TreeView>())
+        {
+            return Ok(false);
+        }
+        self.update_component(Entity::<TreeView>::from_stable_id(target), |tree, cx| {
+            if let Some(event) = tree.navigate(navigation) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn activate_node_at(
+        &mut self,
+        id: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if let Some(entity) = self.view_entity::<Select>(id) {
+            return self.activate_select_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<Dropdown>(id) {
+            return self.activate_dropdown_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<SearchDropdown>(id) {
+            return self.activate_search_dropdown_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<CommandPalette>(id) {
+            return self.activate_command_palette_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<TreeView>(id) {
+            return self.activate_tree_at(entity, x, y);
+        }
+        self.activate_node(id)
+    }
+
+    pub fn dismiss_detached_menus(
+        &mut self,
+        keep: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        for id in ids {
+            if Some(id) == keep {
+                continue;
+            }
+            if let Some(entity) = self.view_entity::<Select>(id) {
+                self.update_component(entity, |select, _| {
+                    if select.opened {
+                        select.close();
+                        true
+                    } else {
+                        false
+                    }
+                })?;
+            } else if let Some(entity) = self.view_entity::<Dropdown>(id) {
+                self.update_component(entity, |dropdown, cx| {
+                    if let Some(event) = dropdown.close() {
+                        cx.emit(event);
+                        true
+                    } else {
+                        false
+                    }
+                })?;
+            } else if let Some(entity) = self.view_entity::<SearchDropdown>(id) {
+                self.update_component(entity, |dropdown, cx| {
+                    if let Some(event) = dropdown.close() {
+                        cx.emit(event);
+                        true
+                    } else {
+                        false
+                    }
+                })?;
+            }
+        }
+        Ok(())
     }
 
     pub fn toggle_popover(&mut self, entity: Entity<Popover>) -> Result<bool, FrameworkError> {
@@ -3624,10 +4135,7 @@ impl AppContext {
             if !editable.replace_selection(text) {
                 return false;
             }
-            cx.emit(TextChanged {
-                value: editable.state().value.clone(),
-                selection: editable.state().selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -4206,9 +4714,30 @@ impl AppContext {
         {
             return Err(FrameworkError::DuplicateAction(id.clone()));
         }
+        if let Some(presenter) = registrar
+            .presenters
+            .iter()
+            .find(|presenter| self.world.has_presenter(presenter.name()))
+        {
+            return Err(FrameworkError::DuplicatePresenter(
+                presenter.name().to_owned(),
+            ));
+        }
         self.actions.extend(registrar.actions);
+        for presenter in registrar.presenters {
+            self.world.register_presenter(presenter)?;
+        }
         self.extensions.insert(name);
         Ok(())
+    }
+
+    pub fn register_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<(), FrameworkError> {
+        self.world
+            .register_presenter(presenter)
+            .map_err(FrameworkError::from)
     }
 
     fn allocate_id(&mut self) -> StableNodeId {
@@ -6988,6 +7517,76 @@ mod tests {
             Err(FrameworkError::MissingAction(ActionId::new(
                 "unique.action"
             )))
+        );
+    }
+
+    #[test]
+    fn presenter_extension_installs_onto_the_world() {
+        struct Keyword;
+        impl crate::TextPresenter for Keyword {
+            fn name(&self) -> &'static str {
+                crate::HIGHLIGHT_PRESENTER
+            }
+
+            fn present(
+                &self,
+                text: &str,
+                _request: &crate::HighlightRequest,
+            ) -> Vec<crate::TextSpan> {
+                text.match_indices("fn")
+                    .map(|(start, token)| crate::TextSpan {
+                        start,
+                        end: start + token.len(),
+                        color: nana_ui_core::SemanticColorRole::Accent,
+                    })
+                    .collect()
+            }
+        }
+        struct HighlightExt;
+        impl UiExtension for HighlightExt {
+            fn name(&self) -> &'static str {
+                "test.highlight"
+            }
+
+            fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
+                registrar.register_presenter(Box::new(Keyword))
+            }
+        }
+
+        let mut context = AppContext::new();
+        context.install(&HighlightExt).unwrap();
+        assert_eq!(
+            context.install(&HighlightExt),
+            Err(FrameworkError::DuplicateExtension("test.highlight".into()))
+        );
+        assert_eq!(
+            context.register_presenter(Box::new(Keyword)),
+            Err(FrameworkError::World(UiWorldError::DuplicatePresenter(
+                crate::HIGHLIGHT_PRESENTER.into()
+            )))
+        );
+        let entity = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                TextArea::new("fn main").highlight("rs"),
+            )
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .highlight_request(entity.stable_id())
+                .map(|request| request.language.as_ref()),
+            Some("rs")
+        );
+        context
+            .resolve_presentations(&[entity.stable_id()])
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .text_presentation(entity.stable_id())
+                .map(|presentation| presentation.spans.len()),
+            Some(1)
         );
     }
 

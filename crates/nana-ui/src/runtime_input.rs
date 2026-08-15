@@ -162,6 +162,7 @@ impl RuntimeInputAdapter {
                             || target.is_some()
                     }
                     PointerPhase::Down if *is_primary && *button == 0 => {
+                        context.dismiss_detached_menus(target)?;
                         if let Some(target) = target {
                             context.focus_node(document, target)?;
                             context.press_pointer(document, *pointer_id, target)?;
@@ -187,7 +188,7 @@ impl RuntimeInputAdapter {
                         let pressed = context.release_pointer(document, *pointer_id);
                         if let Some(pressed) = pressed {
                             if Some(pressed) == target {
-                                context.activate_node(pressed)?;
+                                context.activate_node_at(pressed, *x, *y)?;
                             }
                             true
                         } else {
@@ -289,6 +290,71 @@ impl RuntimeInputAdapter {
                         prevent_default: true,
                     });
                 }
+                if !primary {
+                    let palette_nav = match key.as_str() {
+                        "ArrowUp" => Some(nana_ui_runtime::ActionPickerNavigation::Previous),
+                        "ArrowDown" => Some(nana_ui_runtime::ActionPickerNavigation::Next),
+                        "Home" => Some(nana_ui_runtime::ActionPickerNavigation::First),
+                        "End" => Some(nana_ui_runtime::ActionPickerNavigation::Last),
+                        "Enter" => Some(nana_ui_runtime::ActionPickerNavigation::Confirm),
+                        "Escape" => Some(nana_ui_runtime::ActionPickerNavigation::Dismiss),
+                        _ => None,
+                    };
+                    if let Some(navigation) = palette_nav
+                        && context.navigate_focused_command_palette(document, navigation)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    let select_delta = match key.as_str() {
+                        "ArrowUp" => Some(-1),
+                        "ArrowDown" => Some(1),
+                        _ => None,
+                    };
+                    if let Some(delta) = select_delta
+                        && (context.adjust_focused_select(document, delta)?
+                            || context.adjust_focused_dropdown(document, delta)?
+                            || context.adjust_focused_search_dropdown(document, delta)?)
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    if matches!(key.as_str(), " " | "Space" | "Enter")
+                        && (context.commit_focused_select(document)?
+                            || context.commit_focused_dropdown(document)?)
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    if matches!(key.as_str(), "Enter")
+                        && context.commit_focused_search_dropdown(document)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    let tree_nav = match key.as_str() {
+                        "ArrowUp" => Some(nana_ui_runtime::TreeNavigation::Previous),
+                        "ArrowDown" => Some(nana_ui_runtime::TreeNavigation::Next),
+                        "Home" => Some(nana_ui_runtime::TreeNavigation::First),
+                        "End" => Some(nana_ui_runtime::TreeNavigation::Last),
+                        "ArrowLeft" => Some(nana_ui_runtime::TreeNavigation::Parent),
+                        "ArrowRight" => Some(nana_ui_runtime::TreeNavigation::Child),
+                        "Enter" => Some(nana_ui_runtime::TreeNavigation::Activate),
+                        " " | "Space" => Some(nana_ui_runtime::TreeNavigation::Toggle),
+                        _ => None,
+                    };
+                    if let Some(navigation) = tree_nav
+                        && context.navigate_focused_tree(document, navigation)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                }
                 if !primary
                     && matches!(key.as_str(), " " | "Space" | "Enter")
                     && let Some(target) = context.world().focused(document)
@@ -333,7 +399,8 @@ impl RuntimeInputAdapter {
 
     /// Route platform IME into the focused Runtime editor.
     ///
-    /// Retained TextInput/TextArea state is the only editing authority. A
+    /// Retained TextInput/TextArea/SearchDropdown/CommandPalette state is the
+    /// only editing authority. A
     /// focused editable field, or a blocking overlay, consumes the event so a
     /// second Iced IME path cannot also mutate it.
     pub fn dispatch_ime(

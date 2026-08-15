@@ -25,8 +25,18 @@ code 不得反向依赖 Nana packages。`scripts/check-engine-boundary.py` 持�
 ## Retained authority
 
 `UiWorld` 是 identity、document ownership、hierarchy、node kind、canonical/computed
-style/theme、text、committed text-input selection、text metrics、未滚动 layout、scroll offset、per-pointer hover/press/capture、event route、focus/IME preedit、accessibility 和 render content 的唯一权威来源。对外只使用 `StableNodeId` / typed
+style/theme、text、committed text-input selection、text metrics、未滚动 layout、scroll offset、per-pointer hover/press/capture、event route、focus/IME preedit、accessibility、registered text presentation 和 render content 的唯一权威来源。对外只使用 `StableNodeId` / typed
 `Entity<V>`；Bevy Entity 编码不是 ABI。
+
+文本的特殊表现（高亮是第一个）分成两层：节点上的 `HighlightRequest` /
+`TextPresentation` 是 intent 与派生结果；算法是 `UiWorld` 上按名字注册的
+`TextPresenter`。扩展通过 `ExtensionRegistrar::register_presenter` 安装，因此 Vue
+`flush` 不必经过 `AppContext`。Presenter 只读 committed UTF-8；IME preedit 保持单色。
+Span 颜色是 `SemanticColorRole`，抽取时按当前 theme 解析。可选
+`syntax-highlighting` feature 提供名为 `"highlight"` 的 syntect presenter
+（`HighlightPresentation` / `TextArea::highlight`）。未知语言或未注册 presenter
+时 Scene 退回单色文本。Iced compatibility 用 paragraph spans 绘制；word wrap 由
+Iced paragraph 处理，不在 Scene 为每个 span 另占 primitive slot。
 
 所有结构或 component 变更先进入 frame-local `MutationQueue`，整批验证成功后一次
 commit。失败批次不发布局部 hierarchy/component 结果；despawn 后 ID 永久 tombstone，
@@ -94,7 +104,7 @@ bounds，并区分主窗口 28px dock chrome 与 floating window 36px native tit
 ## Application API
 
 `Entity<V>`、`View`、`AppContext` 与 `ViewContext` 提供 typed state/read/update/remove、
-closure event、typed action 和 staged extension install，不暴露 ECS World。一次 context
+closure event、typed action、registered text presenters 和 staged extension install，不暴露 ECS World。一次 context
 update 汇集为一个 mutation commit。`Task`/`Subscription` 只包装标准 Future/Stream；
 executor、waker 和取消生命周期由 host adapter 拥有。
 
@@ -107,7 +117,7 @@ Platform 的 `fetch` / `clipboard` 是默认开启但可独立关闭的 capabili
 window/input/IME contract 不应因 TLS 或系统 clipboard toolchain 无法跨目标编译。
 
 `ComponentView` 在 closure event 全部交付后把最终 state 增量投影到 UiWorld。内建
-`Text`、`Button`、`TextInput`/`TextArea`、`Checkbox`、`Switch`、`Slider`、`TabList`/`Tab`、`ScrollView`、`List`、`Table`/`Row`/`Cell`、`OverlayHost`、`Dialog`、`Menu`/`MenuItem`、`Tooltip` 与 typed events 不暴露 Iced；TextInput/TextArea 共用 committed UTF-8 selection/IME state，accessibility 显式区分 multiline；ScrollView 只拥有配置，offset 与 measured `ScrollMetrics` 只存在 Runtime；
+`Text`、`Button`、`TextInput`/`TextArea`、`Checkbox`、`Switch`、`Slider`、`TabList`/`Tab`、`ScrollView`、`List`、`Table`/`Row`/`Cell`、`OverlayHost`、`Dialog`、`Menu`/`MenuItem`、`Tooltip`、`SearchDropdown`、`CommandPalette` 与 typed events 不暴露 Iced；TextInput/TextArea/SearchDropdown/CommandPalette 共用 committed UTF-8 selection/IME state，SearchDropdown 仅在打开时持有编辑状态，CommandPalette 始终可编辑；accessibility 显式区分 multiline；ScrollView 只拥有配置，offset 与 measured `ScrollMetrics` 只存在 Runtime；
 字段未变化时不提交 mutation。它们是后续 compatibility component migration 的稳定
 入口，不代表现有完整组件 painter 已经迁移。
 OverlayHost typed view 只拥有样式；exclusive active 与 focus restore 只存在 UiWorld。切换

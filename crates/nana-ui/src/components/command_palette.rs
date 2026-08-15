@@ -8,7 +8,7 @@ use iced::{
     Alignment, Element, Event, Length, Pixels, Rectangle, Size, Theme, Vector, keyboard, widget,
 };
 
-use crate::command::{ActionId, ActionPickerNavigation};
+use crate::command::{ActionId, ActionPickerNavigation, action_picker_from_iced_key};
 use crate::components::ControlSize;
 use crate::components::overlays::Dialog;
 use crate::dialog::DialogSize;
@@ -16,54 +16,17 @@ use crate::theme::{ThemeTokens, ui_font};
 use crate::widgets::{
     ButtonKind, button_style, scrollable_style, text_input_style, vertical_scrollbar,
 };
+use nana_ui_core::{CommandPaletteEvent, CommandPaletteItem};
 
 const PALETTE_MAX_ROWS: usize = 12;
 const PALETTE_ROW_HEIGHT: f32 = 40.0;
 pub const COMMAND_PALETTE_INPUT_ID: &str = "nana-ui.command-palette.input";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandPaletteItem<'a> {
-    pub action: ActionId,
-    pub label: Cow<'a, str>,
-    pub category: Option<Cow<'a, str>>,
-    pub shortcut: Option<Cow<'a, str>>,
-}
-
-impl<'a> CommandPaletteItem<'a> {
-    pub fn new(action: impl Into<ActionId>, label: impl Into<Cow<'a, str>>) -> Self {
-        Self {
-            action: action.into(),
-            label: label.into(),
-            category: None,
-            shortcut: None,
-        }
-    }
-
-    pub fn category(mut self, category: impl Into<Cow<'a, str>>) -> Self {
-        self.category = Some(category.into());
-        self
-    }
-
-    pub fn shortcut(mut self, shortcut: impl Into<Cow<'a, str>>) -> Self {
-        self.shortcut = Some(shortcut.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandPaletteEvent {
-    Search(String),
-    Select(ActionId),
-    Navigate(ActionPickerNavigation),
-    Dismiss,
-    Interaction,
-}
-
 pub struct CommandPalette<'a, Message> {
     title: Cow<'a, str>,
     placeholder: Cow<'a, str>,
     empty_label: Cow<'a, str>,
-    items: Vec<CommandPaletteItem<'a>>,
+    items: Vec<CommandPaletteItem>,
     query: Cow<'a, str>,
     selected: usize,
     input_id: widget::Id,
@@ -77,7 +40,7 @@ where
 {
     pub fn new(
         title: impl Into<Cow<'a, str>>,
-        items: impl IntoIterator<Item = CommandPaletteItem<'a>>,
+        items: impl IntoIterator<Item = CommandPaletteItem>,
         query: impl Into<Cow<'a, str>>,
         selected: usize,
         on_event: impl Fn(CommandPaletteEvent) -> Message + 'a,
@@ -189,12 +152,10 @@ where
 
         let body = column![search, list].spacing(8).width(Length::Fill);
         let dismiss = (self.on_event)(CommandPaletteEvent::Dismiss);
-        let interaction = (self.on_event)(CommandPaletteEvent::Interaction);
         let dialog = Dialog::new(self.title, body)
             .size(DialogSize::Wide)
             .on_close(dismiss.clone())
             .on_outside(dismiss)
-            .on_interaction(interaction)
             .close_hidden(true)
             .view(self.tokens);
         Element::new(CommandPaletteLayer {
@@ -328,7 +289,7 @@ fn command_palette_key(
     key: Option<&keyboard::Key>,
     selected_action: Option<&ActionId>,
 ) -> Option<CommandPaletteEvent> {
-    let navigation = key.and_then(ActionPickerNavigation::from_iced_key)?;
+    let navigation = key.and_then(action_picker_from_iced_key)?;
     match navigation {
         ActionPickerNavigation::Confirm => {
             selected_action.cloned().map(CommandPaletteEvent::Select)

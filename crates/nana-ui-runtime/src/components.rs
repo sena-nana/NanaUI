@@ -233,12 +233,25 @@ pub enum StandardVisual {
         disabled: bool,
         size: ControlSize,
     },
+    TreeView {
+        rows: Arc<[crate::tree_view::TreeRowData]>,
+        size: ControlSize,
+    },
+    CommandPalette {
+        title: Arc<str>,
+        query: Arc<str>,
+        placeholder: Arc<str>,
+        empty: Option<Arc<str>>,
+        rows: Arc<[crate::command_palette::PaletteRowData]>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectOptionData {
     pub label: Arc<str>,
+    pub hint: Option<Arc<str>>,
     pub disabled: bool,
+    pub checked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +422,21 @@ pub enum ComponentGeometry {
         hint: Option<ComponentTextRegion>,
         background: Option<[f32; 4]>,
     },
+    TreeView {
+        rows: Vec<crate::tree_view::TreeRowGeometry>,
+    },
+    CommandPalette {
+        scrim: LayoutBox,
+        surface: LayoutBox,
+        title: ComponentTextRegion,
+        input: ComponentTextRegion,
+        empty: Option<ComponentTextRegion>,
+        rows: Vec<crate::command_palette::PaletteRowGeometry>,
+        background: [f32; 4],
+        input_background: [f32; 4],
+        input_border: [f32; 4],
+        elevation: ComponentElevation,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -425,6 +453,7 @@ pub struct SelectOptionGeometry {
     pub bounds: LayoutBox,
     pub label: ComponentTextRegion,
     pub selected: bool,
+    pub checked: bool,
     pub disabled: bool,
     pub background: Option<[f32; 4]>,
 }
@@ -1084,8 +1113,17 @@ pub struct ExtractedNode {
     pub focused: bool,
     pub ime: Option<ImeComposition>,
     pub text_input: Option<TextInputState>,
+    pub text_spans: Vec<ExtractedTextSpan>,
     pub standard_visual: Option<StandardVisual>,
     pub component_geometry: Option<ComponentGeometry>,
     pub standard_visual_foreground: Option<[f32; 4]>,
     pub custom_render: Option<CustomRenderNode>,
+}
+
+/// Theme-resolved committed-text span ready for Scene paint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtractedTextSpan {
+    pub start: usize,
+    pub end: usize,
+    pub color: [f32; 4],
 }

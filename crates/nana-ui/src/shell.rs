@@ -424,7 +424,7 @@ where
         }
         let workspace = workspace_view(&self.controller, regions, self.tokens, self.on_action);
         let base = app_shell(self.title_bar, workspace, self.tokens.colors);
-        let mut host = crate::components::OverlayHost::new(base);
+        let mut host = crate::components::menus::OverlayHost::new(base);
         for overlay in self.overlays {
             host = host.push(overlay);
         }

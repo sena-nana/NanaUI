@@ -71,7 +71,7 @@ impl Select {
             invalid: false,
             opened: false,
             highlighted: None,
-            style: field_style(ControlSize::Medium),
+            style: field_style_for_size(ControlSize::Medium),
         }
     }
 
@@ -88,7 +88,7 @@ impl Select {
 
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
-        self.style = field_style(size);
+        self.style = field_style_for_size(size);
         self
     }
 
@@ -284,7 +284,9 @@ impl crate::ComponentView for Select {
                 .iter()
                 .map(|option| SelectOptionData {
                     label: Arc::clone(&option.label),
+                    hint: None,
                     disabled: option.disabled,
+                    checked: false,
                 })
                 .collect(),
             highlighted: self.highlighted,
@@ -396,6 +398,8 @@ fn select_menu_geometry(
         width: field.width,
         height,
     };
+    let show_checks = options.iter().any(|option| option.checked);
+    let check_reserve = if show_checks { 16.0 } else { 0.0 };
     let options = options
         .iter()
         .enumerate()
@@ -412,12 +416,12 @@ fn select_menu_geometry(
                 bounds,
                 label: ComponentTextRegion {
                     bounds: LayoutBox {
-                        x: bounds.x + size.padding_x(),
+                        x: bounds.x + size.padding_x() + check_reserve,
                         y: bounds.y,
-                        width: (bounds.width - size.padding_x() * 2.0).max(0.0),
+                        width: (bounds.width - size.padding_x() * 2.0 - check_reserve).max(0.0),
                         height: bounds.height,
                     },
-                    content: Arc::clone(&option.label),
+                    content: menu_option_label(option),
                     color: Some(if option.disabled {
                         palette.faint.as_rgba_array()
                     } else {
@@ -427,6 +431,7 @@ fn select_menu_geometry(
                     font_weight: None,
                 },
                 selected,
+                checked: option.checked,
                 disabled: option.disabled,
                 background: selected.then_some(palette.selected.as_rgba_array()),
             }
@@ -445,13 +450,20 @@ fn select_menu_geometry(
     }
 }
 
+pub(crate) fn menu_option_label(option: &SelectOptionData) -> Arc<str> {
+    match option.hint.as_ref() {
+        Some(hint) if !hint.is_empty() => Arc::from(format!("{}  ·  {hint}", option.label)),
+        _ => Arc::clone(&option.label),
+    }
+}
+
 pub(crate) fn select_option_at(menu: &crate::SelectMenuGeometry, x: f32, y: f32) -> Option<usize> {
     menu.options
         .iter()
         .position(|option| !option.disabled && option.bounds.contains(x, y))
 }
 
-fn field_style(size: ControlSize) -> NodeStyle {
+pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             width: Some(LengthSpec::Fill),

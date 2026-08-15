@@ -225,6 +225,272 @@ mod tests {
         );
     }
 
+    fn select_option(value: &str, label: &str) -> crate::bridge::SelectOptionProp {
+        crate::bridge::SelectOptionProp {
+            value: value.into(),
+            label: label.into(),
+            disabled: false,
+        }
+    }
+
+    fn assert_scene_route(snap: &SemanticSnapshot, id: WidgetId, scene: &UiScene) {
+        let widget = snap.get(id).expect("widget");
+        with_active_scene(Some(scene), || {
+            assert!(
+                matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(snap, widget),
+                    QualifiedSceneRoute::Scene(_)
+                ),
+                "widget {id} must paint through Scene when bounds exist"
+            );
+        });
+    }
+
+    fn paint_overlay_scene(
+        snap: &SemanticSnapshot,
+        scene: &UiScene,
+        viewport: (f32, f32),
+    ) -> Element<'static, BridgeEvent> {
+        view_semantic_tree_static_with_scene(
+            snap,
+            ThemeMode::Light.tokens(),
+            Some(viewport),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(scene),
+            None,
+            |event| event,
+        )
+    }
+
+    #[test]
+    fn dialog_with_button_child_routes_to_scene_without_panic() {
+        let mut document = crate::tree::NanaTreeDocument::new(400, 300, 1.0);
+        let dialog = document.create_element("nana-dialog");
+        let button = document.create_element("nana-button");
+        document.insert(dialog, document.mount_root(), None);
+        document.insert(button, dialog, None);
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            dialog.0,
+            WidgetKind::Dialog,
+            WidgetProps {
+                label: "Rename".into(),
+                hint: "Choose a name".into(),
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            button.0,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Save".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(button.0, dialog.0, None);
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(dialog.0).unwrap()),
+            Some(nana_ui::component_ids::DIALOG)
+        );
+
+        document.sync_semantic_styles(&snap);
+        document.apply_layout_boxes(&[(
+            dialog,
+            crate::LayoutBox {
+                handle: dialog,
+                x: 40.0,
+                y: 32.0,
+                width: 280.0,
+                height: 180.0,
+            },
+        )]);
+        assert!(
+            document
+                .scene()
+                .node_bounds(nana_ui_runtime::StableNodeId::new(dialog.0).unwrap())
+                .is_some()
+        );
+        assert_scene_route(&snap, dialog.0, document.scene());
+        let _: Element<'static, BridgeEvent> =
+            paint_overlay_scene(&snap, document.scene(), (400.0, 300.0));
+    }
+
+    #[test]
+    fn drawer_and_popover_route_to_scene_when_qualified() {
+        let mut document = crate::tree::NanaTreeDocument::new(480, 320, 1.0);
+        let drawer = document.create_element("nana-drawer");
+        let popover = document.create_element("nana-popover");
+        document.insert(drawer, document.mount_root(), None);
+        document.insert(popover, document.mount_root(), None);
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            drawer.0,
+            WidgetKind::Drawer,
+            WidgetProps {
+                label: "Inspector".into(),
+                side: "left".into(),
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            popover.0,
+            WidgetKind::Popover,
+            WidgetProps {
+                label: "More".into(),
+                hint: "Details".into(),
+                toggled: true,
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(drawer.0).unwrap()),
+            Some(nana_ui::component_ids::DRAWER)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(popover.0).unwrap()),
+            Some(nana_ui::component_ids::POPOVER)
+        );
+
+        document.sync_semantic_styles(&snap);
+        document.apply_layout_boxes(&[
+            (
+                drawer,
+                crate::LayoutBox {
+                    handle: drawer,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 280.0,
+                    height: 320.0,
+                },
+            ),
+            (
+                popover,
+                crate::LayoutBox {
+                    handle: popover,
+                    x: 120.0,
+                    y: 48.0,
+                    width: 200.0,
+                    height: 120.0,
+                },
+            ),
+        ]);
+        assert_scene_route(&snap, drawer.0, document.scene());
+        assert_scene_route(&snap, popover.0, document.scene());
+        let _: Element<'static, BridgeEvent> =
+            paint_overlay_scene(&snap, document.scene(), (480.0, 320.0));
+    }
+
+    #[test]
+    fn searchable_context_menu_stays_on_compatibility_composer() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                options: (0..6)
+                    .map(|i| select_option(&format!("item-{i}"), &format!("Item {i}")))
+                    .collect(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                class_names: vec!["search".into()],
+                options: vec![select_option("cut", "Cut")],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                options: vec![
+                    select_option("file", "File"),
+                    select_option("file/rename", "Rename"),
+                ],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            4,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                options: vec![select_option("cut", "Cut"), select_option("copy", "Copy")],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            5,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                class_names: vec!["nana-action-menu".into()],
+                options: vec![select_option("rename", "Rename")],
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            None,
+            "6+ options must stay on ContextMenuHost"
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            None,
+            "search class must stay on ContextMenuHost"
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(3).unwrap()),
+            Some(nana_ui::component_ids::CONTEXT_MENU),
+            "nested parent/child options Scene-route through Runtime"
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(4).unwrap()),
+            Some(nana_ui::component_ids::CONTEXT_MENU)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(5).unwrap()),
+            Some(nana_ui::component_ids::ACTION_MENU)
+        );
+
+        let scene = UiScene::new();
+        with_active_scene(Some(&scene), || {
+            assert!(matches!(
+                qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(1).unwrap()),
+                QualifiedSceneRoute::Compatibility
+            ));
+            assert!(matches!(
+                qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(2).unwrap()),
+                QualifiedSceneRoute::Compatibility
+            ));
+            assert!(
+                !matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(3).unwrap()),
+                    QualifiedSceneRoute::Compatibility
+                ),
+                "nested parent/child options must not stay on ContextMenuHost"
+            );
+        });
+        let _: Element<'static, BridgeEvent> = paint_overlay_scene(&snap, &scene, (320.0, 200.0));
+    }
+
     #[test]
     fn form_field_and_interactive_card_hosts_stay_on_composer() {
         let mut bridge = MessageBridge::new();

@@ -79,16 +79,39 @@ pub mod runtime {
 /// opt into this namespace while completing their own migration.
 pub mod compatibility {
     pub use crate::components::actions::{Button, IconButton};
+    #[cfg(feature = "overlays")]
+    pub use crate::components::command_palette::CommandPalette;
     #[cfg(feature = "controls")]
-    pub use crate::components::controls::{Checkbox, Input, RangeField, SegmentedControl, Switch};
+    pub use crate::components::controls::{
+        Checkbox, Input, RangeField, SegmentedControl, Select, SelectionOption, Switch, Textarea,
+    };
     #[cfg(feature = "feedback")]
     pub use crate::components::feedback::{
-        LevelMeter, Progress, Skeleton, Spinner, StatusBadge, ValidationMessage,
+        LevelMeter, Progress, Skeleton, Spinner, StatusBadge, Toast, ValidationMessage,
+    };
+    pub use crate::components::menus::{ActionMenuItem, AnchoredActionMenu, OverlayHost};
+    #[cfg(feature = "overlays")]
+    pub use crate::components::overlays::{ConfirmDialog, Dialog, Drawer, Tooltip};
+    #[cfg(feature = "popover")]
+    pub use crate::components::popover::{ActionMenu, Popover};
+    #[cfg(feature = "qr-code")]
+    pub use crate::components::qr_code::QrCodeCanvas;
+    #[cfg(feature = "selects")]
+    pub use crate::components::selects::{
+        Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
+        SearchDropdownOption, SearchDropdownState,
     };
     #[cfg(feature = "surfaces")]
     pub use crate::components::surfaces::{
         Card, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
     };
+    #[cfg(feature = "surfaces")]
+    pub use crate::components::tree_view::{
+        TreeNavigation, TreeNode, TreeView, TreeViewEvent, tree_navigation_event,
+        tree_navigation_from_iced_key,
+    };
+    #[cfg(feature = "xy-pad")]
+    pub use crate::components::xy_pad::XYPad;
     pub use iced::widget::Text;
 }
 
@@ -98,6 +121,7 @@ pub use command::{
     ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
     ActionPickerState, ActionRegistry, ActionRegistryError, ContextPredicate, KeyBinding,
     KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch, KeymapState,
+    action_picker_from_iced_key,
 };
 pub use component_support::{
     ComponentCapability, ComponentFamily, ComponentId, ComponentMigrationState, ComponentSupport,
@@ -114,18 +138,15 @@ pub use components::calendar::{
 #[cfg(feature = "charts")]
 pub use components::charts::TimeSeriesChart;
 #[cfg(feature = "overlays")]
-pub use components::command_palette::{
-    COMMAND_PALETTE_INPUT_ID, CommandPalette, CommandPaletteEvent, CommandPaletteItem,
-};
+pub use components::command_palette::COMMAND_PALETTE_INPUT_ID;
 #[cfg(feature = "syntax-highlighting")]
 pub use components::controls::HostedSyntaxHighlighting;
 #[cfg(feature = "controls")]
 pub use components::controls::{
-    HostedTextarea, HostedTextareaState, Select, SelectionOption, TabDragGroup, TabDragSurface,
-    Tabs, Textarea,
+    HostedTextarea, HostedTextareaState, SelectionOption, TabDragGroup, TabDragSurface, Tabs,
 };
 #[cfg(feature = "feedback")]
-pub use components::feedback::{StatusTone, Toast, ToastTone, ValidationIntent};
+pub use components::feedback::{StatusTone, ToastTone, ValidationIntent};
 #[cfg(feature = "graph-canvas")]
 pub use components::graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
 #[cfg(feature = "image-viewer")]
@@ -133,16 +154,9 @@ pub use components::image_viewer::{ImageViewer, ImageViewerSource};
 pub use components::key_capture_layer::{KeyCaptureEvent, KeyCaptureLayer};
 pub use components::keymap_layer::KeymapLayer;
 pub use components::menus::{
-    ActionMenuItem, AnchoredActionMenu, AnchoredMenuPlacement, AnchoredMenuPosition,
-    ContextMenuAnchor, ContextMenuEvent, ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
-    OverlayHost,
+    AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuAnchor, ContextMenuEvent,
+    ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
 };
-#[cfg(feature = "overlays")]
-pub use components::overlays::{ConfirmDialog, Dialog, Drawer, DrawerSide, Tooltip};
-#[cfg(feature = "popover")]
-pub use components::popover::{ActionMenu, Popover, PopoverAlignment, PopoverPlacement};
-#[cfg(feature = "qr-code")]
-pub use components::qr_code::{QrCodeCanvas, QrCodeError};
 #[cfg(feature = "controls")]
 pub use components::reorder_list::{ReorderItem, ReorderList, TreeDropIntent, TreeDropPosition};
 #[cfg(feature = "rich-text")]
@@ -150,23 +164,17 @@ pub use components::rich_text::{
     MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
     MarkdownTableAlignment, NativeMarkdown, native_markdown,
 };
-#[cfg(feature = "selects")]
-pub use components::selects::{
-    Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
-    SearchDropdownOption, SearchDropdownState,
-};
+pub use nana_ui_core::{CommandPaletteEvent, CommandPaletteItem};
+
 #[cfg(feature = "settings-components")]
 pub use components::settings_sections::{
     AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
 };
 #[cfg(feature = "surfaces")]
 pub use components::surfaces::DockPanel;
-#[cfg(feature = "surfaces")]
-pub use components::tree_view::{
-    TreeNavigation, TreeNode, TreeView, TreeViewEvent, tree_navigation_event,
-};
+
 #[cfg(feature = "xy-pad")]
-pub use components::xy_pad::{XYPad, XYPadEvent, XYPadState, XYPadValue};
+pub use components::xy_pad::XYPadState;
 #[cfg(feature = "rich-text")]
 pub use components::{SelectableRichText, TextSelectionGroup, TextSelectionSnapshot};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
@@ -222,19 +230,27 @@ pub use layout::{
 };
 pub use layout_probe::{LayoutBounds, LayoutProbe};
 pub use menu::{MenuConfirmation, MenuSelection};
+pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};
 pub use nana_ui_core::{
     ExpansionState, SplitPaneModel, SplitPaneMutation, WORKSPACE_REGION_TRANSITION_DURATION,
     WorkspaceModel, WorkspaceMutation,
 };
+pub use nana_ui_core::{XYPadEvent, XYPadValue};
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::ImeEvent;
+pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
 pub use nana_ui_runtime::{
-    Button, Card, Checkbox, EmptyState, FormField, IconButton, InteractiveCard, LabeledValue,
-    LevelMeter, ListItem, Progress, RangeField, SegmentedControl, Skeleton, Spinner, StatusBadge,
-    Switch, Text, TextInput, ValidationMessage,
+    ActionMenu, ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, CommandPalette,
+    ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown, DropdownEvent, DropdownOption,
+    DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard, LabeledValue,
+    LevelMeter, ListItem, OverlayHost, Popover, Progress, QrCode, QrCodeError, RangeField,
+    SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl, Select,
+    SelectOption, Skeleton, Spinner, StatusBadge, Switch, Text, TextArea, TextInput, Toast,
+    Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad,
+    tree_navigation_event,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;

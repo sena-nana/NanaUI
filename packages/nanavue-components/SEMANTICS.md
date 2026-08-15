@@ -57,6 +57,12 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 | `nana-drawer` / sheet | Drawer | `Drawer`（`side`/`width`/`footer`） |
 | `nana-popover` | Popover | `Popover` |
 | `nana-context-menu` | ContextMenu | ActionMenuItem 列表 / MenuStore |
+| `nana-toast` | Toast | Runtime `Toast` |
+| `nana-tooltip` | Tooltip | Runtime `Tooltip`（无 StandardVisual） |
+| `nana-action-menu` | ActionMenu | Runtime `ActionMenu` |
+| `nana-action-menu-item` | ActionMenuItem | Runtime `ActionMenuItem` |
+| `nana-xy-pad` / `nana-xypad` / `xy-pad` | XYPad | Runtime `XYPad` |
+| `nana-qr-code` / `nana-qr` / `qr-code` | QrCode | Runtime `QrCode`（有 modules）或 LabeledValue 占位 |
 | `nana-form-field` / `nana-form` | FormField | Runtime `FormField`（子控件走 composer） |
 | `nana-interactive-card` | InteractiveCard | Runtime `InteractiveCard`（内容子树走 composer） |
 | `nana-skeleton` | Skeleton | Runtime `Skeleton` / Scene leaf |
@@ -112,6 +118,11 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 | `NanaContextMenu` `options` / `anchorX`/`anchorY` | `ContextMenu` + MenuStore；嵌套 `parent/child` |
 | `NanaContextMenuHost` | 绑定 Lilia `useContextMenu` → `NanaContextMenu`（禁 Teleport/`fixed`） |
 | `NanaDropdown` / `@lilia/ui/search` alias | `NanaSelect` → iced `Select`（禁 CSS fixed 菜单） |
+| `NanaToast` `title` / `description` / `tone` / `dismissible` | Runtime `Toast` |
+| `NanaTooltip` `label` | Runtime `Tooltip` |
+| `NanaActionMenu` trigger `label` + `nana-action-menu-item` | Runtime `ActionMenu` / `ActionMenuItem` |
+| `NanaXyPad` `x`/`y` / `min`/`max` | Runtime `XYPad` |
+| `NanaQrCode` `payload` / `label` | 仅载荷；不编码。有 `modules` 时 Runtime `QrCode` |
 
 浮层关闭：宿主 `Toggle false` / `SelectValue` → Vue `change` + `update:modelValue` / `update:open`。
 

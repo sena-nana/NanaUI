@@ -9,11 +9,12 @@ use crate::{
 
 const DEFAULT_LABEL: &str = "QR code";
 
-/// Why [`QrCode::from_modules`] rejected a matrix or size.
+/// Why [`QrCode::from_modules`] or [`QrCode::encode`] rejected a matrix, size, or payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QrCodeError {
     InvalidModules,
     NonFiniteSize,
+    EncodeFailed,
 }
 
 impl fmt::Display for QrCodeError {
@@ -21,15 +22,17 @@ impl fmt::Display for QrCodeError {
         match self {
             Self::InvalidModules => formatter.write_str("QR module matrix is empty or not square"),
             Self::NonFiniteSize => formatter.write_str("QR code size must be finite"),
+            Self::EncodeFailed => formatter.write_str("QR payload could not be encoded"),
         }
     }
 }
 
 impl std::error::Error for QrCodeError {}
 
-/// Scanner-safe QR display. Encoding stays outside Runtime; this holds the
-/// already-encoded square matrix and paints through the scene as an opaque
-/// white quiet zone with black modules.
+/// Scanner-safe QR display. Holds a square module matrix and paints through
+/// the scene as an opaque white quiet zone with black modules. String
+/// payloads encode here via [`QrCode::encode`]; pre-built matrices use
+/// [`QrCode::from_modules`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct QrCode {
     pub modules: Arc<[bool]>,
@@ -65,6 +68,20 @@ impl QrCode {
             size: clamp_size(size),
             label: Arc::from(DEFAULT_LABEL),
         })
+    }
+
+    /// Encode `data` with the same matrix convention as Iced `QrCodeCanvas::encode`
+    /// (`qrcode::QrCode::new`, dark modules = true), then paint via [`Self::from_modules`].
+    /// Quiet-zone modules are added at paint time, not in the matrix.
+    pub fn encode(data: impl AsRef<[u8]>, size: f32) -> Result<Self, QrCodeError> {
+        let code = qrcode::QrCode::new(data.as_ref()).map_err(|_| QrCodeError::EncodeFailed)?;
+        let width = code.width();
+        let modules: Arc<[bool]> = code
+            .to_colors()
+            .into_iter()
+            .map(|color| color == qrcode::Color::Dark)
+            .collect();
+        Self::from_modules(modules, width, size)
     }
 
     pub fn size(mut self, size: f32) -> Self {
@@ -221,6 +238,32 @@ mod tests {
             Err(QrCodeError::InvalidModules)
         );
         assert!(QrCode::from_modules(sample_modules(), 2, QrCode::DEFAULT_SIZE).is_ok());
+    }
+
+    #[test]
+    fn encode_builds_square_matrix_from_payload() {
+        let code = QrCode::encode(
+            "lilia-remote://pair?v=1&ticket=abc&challenge=def&bridge=http%3A%2F%2F10.0.0.2%3A41478",
+            QrCode::DEFAULT_SIZE,
+        )
+        .unwrap();
+        assert!(code.module_width() >= 21);
+        assert_eq!(code.modules.len(), code.width * code.width);
+        assert!(code.modules.iter().any(|module| *module));
+        assert!(code.modules.iter().any(|module| !*module));
+        assert_eq!(code.size, QrCode::DEFAULT_SIZE);
+    }
+
+    #[test]
+    fn encode_rejects_oversized_payload_and_non_finite_size() {
+        assert_eq!(
+            QrCode::encode(vec![0u8; 16_384], QrCode::DEFAULT_SIZE),
+            Err(QrCodeError::EncodeFailed)
+        );
+        assert_eq!(
+            QrCode::encode("nana://pair", f32::NAN),
+            Err(QrCodeError::NonFiniteSize)
+        );
     }
 
     #[test]

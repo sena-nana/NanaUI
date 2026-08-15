@@ -17,9 +17,10 @@ use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
     AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode,
-    ImeComposition, InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
-    OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
-    TextContent, TextInputPresentation, TextInputState, TextMetrics, TextShaper, UiMutation,
+    ExtractedTextSpan, HighlightRequest, ImeComposition, InteractionState, LayoutBox, LayoutInput,
+    MountState, MutationQueue, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
+    ScrollOffset, StandardVisual, TextContent, TextInputPresentation, TextInputState, TextMetrics,
+    TextPresentation, TextPresenter, TextShaper, UiMutation,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -159,6 +160,9 @@ pub enum UiWorldError {
     MissingAnimation(AnimationId),
     InvalidTextInput(StableNodeId),
     MissingTextInput(StableNodeId),
+    InvalidHighlightRequest(StableNodeId),
+    InvalidPresenter,
+    DuplicatePresenter(String),
 }
 
 impl fmt::Display for UiWorldError {
@@ -248,6 +252,17 @@ impl fmt::Display for UiWorldError {
             Self::MissingTextInput(id) => {
                 write!(formatter, "node {} has no text input state", id.get())
             }
+            Self::InvalidHighlightRequest(id) => {
+                write!(
+                    formatter,
+                    "node {} has an invalid highlight request",
+                    id.get()
+                )
+            }
+            Self::InvalidPresenter => formatter.write_str("presenter name must not be empty"),
+            Self::DuplicatePresenter(name) => {
+                write!(formatter, "presenter `{name}` is already registered")
+            }
         }
     }
 }
@@ -279,6 +294,7 @@ pub struct UiWorld {
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     style_model: StyleModelRef,
     generation: u64,
+    presenters: HashMap<String, Box<dyn TextPresenter>>,
 }
 
 impl Default for UiWorld {
@@ -306,6 +322,7 @@ impl UiWorld {
             animation_deadlines: BTreeSet::new(),
             style_model: StyleModelRef::default(),
             generation: 0,
+            presenters: HashMap::new(),
         }
     }
 
@@ -714,6 +731,93 @@ impl UiWorld {
         self.world.get::<TextInputPresentation>(entity)
     }
 
+    pub fn highlight_request(&self, id: StableNodeId) -> Option<&HighlightRequest> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<HighlightRequest>(entity)
+    }
+
+    pub fn text_presentation(&self, id: StableNodeId) -> Option<&TextPresentation> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<TextPresentation>(entity)
+    }
+
+    pub fn has_presenter(&self, name: &str) -> bool {
+        self.presenters.contains_key(name)
+    }
+
+    /// Install a named text presenter. Matching [`HighlightRequest`] nodes are
+    /// marked dirty so the next TEXT system can derive spans.
+    pub fn register_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<(), UiWorldError> {
+        let name = presenter.name().trim();
+        if name.is_empty() {
+            return Err(UiWorldError::InvalidPresenter);
+        }
+        if self.presenters.contains_key(name) {
+            return Err(UiWorldError::DuplicatePresenter(name.to_owned()));
+        }
+        let name = name.to_owned();
+        self.presenters.insert(name.clone(), presenter);
+        let ids = self.entities.keys().copied().collect::<Vec<_>>();
+        for id in ids {
+            if self
+                .world
+                .get::<HighlightRequest>(self.entities[&id])
+                .is_some_and(|request| request.presenter.as_ref() == name)
+            {
+                self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
+        }
+        Ok(())
+    }
+
+    /// Derive [`TextPresentation`] for scheduled text nodes. Committed text
+    /// only; IME preedit is ignored here and omitted from extraction.
+    pub fn resolve_presentations(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
+        for &id in ids {
+            if !self.contains(id) {
+                return Err(UiWorldError::MissingNode(id));
+            }
+            let entity = self.entities[&id];
+            let Some(request) = self.world.get::<HighlightRequest>(entity).cloned() else {
+                if self.world.get::<TextPresentation>(entity).is_some() {
+                    self.world.entity_mut(entity).remove::<TextPresentation>();
+                }
+                continue;
+            };
+            let text = self.committed_presentation_text(id);
+            let source = crate::presentation::presentation_source(&text, &request);
+            if self
+                .world
+                .get::<TextPresentation>(entity)
+                .is_some_and(|presentation| presentation.source == source)
+            {
+                continue;
+            }
+            let spans = self
+                .presenters
+                .get(request.presenter.as_ref())
+                .map(|presenter| {
+                    crate::presentation::sanitize_spans(&text, presenter.present(&text, &request))
+                })
+                .unwrap_or_default();
+            self.world
+                .entity_mut(entity)
+                .insert(TextPresentation { spans, source });
+        }
+        Ok(())
+    }
+
+    fn committed_presentation_text(&self, id: StableNodeId) -> String {
+        let entity = self.entities[&id];
+        self.world
+            .get::<TextInputState>(entity)
+            .map(|state| state.value.clone())
+            .unwrap_or_else(|| self.component::<TextContent>(id).value.clone())
+    }
+
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<TextMetrics>(entity).copied()
@@ -826,6 +930,7 @@ impl UiWorld {
         ids: &[StableNodeId],
         shaper: &mut impl TextShaper,
     ) -> Result<(), UiWorldError> {
+        self.resolve_presentations(ids)?;
         let mut shaped = Vec::with_capacity(ids.len());
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
@@ -1264,10 +1369,23 @@ impl UiWorld {
                     id,
                     layout,
                     transform,
-                    clips: own_clips,
+                    clips: own_clips.clone(),
                     z_index: self.stacking_z_index(id),
                     order,
                 });
+                if let Some(crate::ComponentGeometry::Select {
+                    menu: Some(menu), ..
+                }) = self.component_geometry(id)
+                {
+                    entries.push(HitEntry {
+                        id,
+                        layout: menu.surface,
+                        transform,
+                        clips: own_clips,
+                        z_index: self.stacking_z_index(id).max(1_000),
+                        order,
+                    });
+                }
             }
             order += 1;
         }
@@ -1418,7 +1536,7 @@ impl UiWorld {
                         TextMetrics::default(),
                         LayoutBox::default(),
                         ScrollOffset::default(),
-                        InteractionState::default(),
+                        initial_interaction(kind),
                         AccessibilityState::default(),
                         DirtyMask::all(),
                     ))
@@ -2019,7 +2137,48 @@ impl UiWorld {
                         | DirtyMask::ACCESSIBILITY,
                 );
             }
+            UiMutation::SetHighlightRequest { id, request } => {
+                let entity = self.entities[id];
+                if let Some(request) = request {
+                    self.world.entity_mut(entity).insert(request.clone());
+                } else {
+                    self.world.entity_mut(entity).remove::<HighlightRequest>();
+                    self.world.entity_mut(entity).remove::<TextPresentation>();
+                }
+                self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
         }
+    }
+
+    fn extracted_text_spans(&self, entity: Entity) -> Vec<ExtractedTextSpan> {
+        if self.world.get::<ImeComposition>(entity).is_some() {
+            return Vec::new();
+        }
+        if self
+            .world
+            .get::<TextInputPresentation>(entity)
+            .is_some_and(|presentation| presentation.placeholder)
+        {
+            return Vec::new();
+        }
+        if matches!(
+            self.world.get::<StandardVisual>(entity),
+            Some(StandardVisual::TextInput { secure: true, .. })
+        ) {
+            return Vec::new();
+        }
+        let Some(presentation) = self.world.get::<TextPresentation>(entity) else {
+            return Vec::new();
+        };
+        presentation
+            .spans
+            .iter()
+            .map(|span| ExtractedTextSpan {
+                start: span.start,
+                end: span.end,
+                color: self.style_model.palette.get(span.color).as_rgba_array(),
+            })
+            .collect()
     }
 
     fn component<T: Component>(&self, id: StableNodeId) -> &T {
@@ -2104,7 +2263,9 @@ impl UiWorld {
             StandardVisual::XYPad { .. } => self.style_model.palette.text.as_rgba_array(),
             StandardVisual::Select { .. }
             | StandardVisual::MenuSurface { .. }
-            | StandardVisual::ActionMenuItem { .. } => {
+            | StandardVisual::ActionMenuItem { .. }
+            | StandardVisual::TreeView { .. }
+            | StandardVisual::CommandPalette { .. } => {
                 self.style_model.palette.text.as_rgba_array()
             }
             StandardVisual::LevelMeter { tone, .. } => self
@@ -2136,6 +2297,7 @@ impl UiWorld {
             focused: self.focused.get(&identity.document) == Some(&id),
             ime: self.world.get::<ImeComposition>(entity).cloned(),
             text_input: self.world.get::<TextInputState>(entity).cloned(),
+            text_spans: self.extracted_text_spans(entity),
             standard_visual,
             component_geometry,
             standard_visual_foreground,
@@ -3226,6 +3388,27 @@ impl UiWorld {
                 style,
                 &self.style_model.palette,
             )),
+            StandardVisual::TreeView { rows, size } => Some(crate::tree_view::tree_view_geometry(
+                bounds,
+                rows,
+                *size,
+                &self.style_model.palette,
+            )),
+            StandardVisual::CommandPalette {
+                title,
+                query,
+                placeholder,
+                empty,
+                rows,
+            } => Some(crate::command_palette::command_palette_geometry(
+                bounds,
+                title,
+                query,
+                placeholder,
+                empty.as_ref(),
+                rows,
+                &self.style_model.palette,
+            )),
             StandardVisual::QrCode { modules, width } => {
                 let (module_size, (ox, oy)) = crate::qr_code::module_geometry(bounds, *width);
                 let quiet = crate::qr_code::QUIET_ZONE_MODULES as f32;
@@ -4294,6 +4477,16 @@ fn text_input_decorations(
     }
 }
 
+fn initial_interaction(kind: &NodeKind) -> InteractionState {
+    match kind {
+        NodeKind::Text | NodeKind::Comment => InteractionState {
+            pointer_events: false,
+            focusable: false,
+        },
+        NodeKind::Document | NodeKind::Element { .. } => InteractionState::default(),
+    }
+}
+
 fn validate_text_metrics(id: StableNodeId, metrics: TextMetrics) -> Result<(), UiWorldError> {
     if !metrics.width.is_finite()
         || !metrics.height.is_finite()
@@ -4685,6 +4878,15 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidTextInput(*id));
                     }
                     self.text_inputs.insert(*id, Some(state));
+                }
+                UiMutation::SetHighlightRequest { id, request } => {
+                    self.node(*id)?;
+                    if request
+                        .as_ref()
+                        .is_some_and(|request| request.presenter.trim().is_empty())
+                    {
+                        return Err(UiWorldError::InvalidHighlightRequest(*id));
+                    }
                 }
             }
         }

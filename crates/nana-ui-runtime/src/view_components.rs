@@ -2,9 +2,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::{
-    AccessibilityRole, AccessibilityState, InteractionState, MutationQueue, NodeKind, NodeStyle,
-    OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId, StandardVisual, TextContent,
-    TextHorizontalAlignment, TextInputState, TextVerticalAlignment, UiWorld,
+    AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
+    NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
+    StandardVisual, TextContent, TextHorizontalAlignment, TextInputState, TextVerticalAlignment,
+    UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -134,6 +135,7 @@ struct TextFieldProjection<'a> {
     invalid: bool,
     multiline: bool,
     style: &'a NodeStyle,
+    highlight: Option<&'a HighlightRequest>,
 }
 
 fn project_text_field(
@@ -144,6 +146,9 @@ fn project_text_field(
 ) {
     if world.text_input(id) != Some(field.state) {
         mutations.set_text_input(id, Some(field.state.clone()));
+    }
+    if world.highlight_request(id) != field.highlight {
+        mutations.set_highlight_request(id, field.highlight.cloned());
     }
     if !field.editable && world.ime(id).is_some() {
         mutations.set_ime(id, None);
@@ -1081,6 +1086,7 @@ pub struct TextInput {
     pub secure: bool,
     pub invalid: bool,
     pub style: NodeStyle,
+    pub highlight: Option<HighlightRequest>,
     pub(crate) style_override: bool,
 }
 
@@ -1097,8 +1103,15 @@ impl TextInput {
             secure: false,
             invalid: false,
             style: text_field_style(false),
+            highlight: None,
             style_override: false,
         }
+    }
+
+    /// Color committed text with the registered `"highlight"` presenter.
+    pub fn highlight(mut self, language: impl Into<Arc<str>>) -> Self {
+        self.highlight = Some(HighlightRequest::highlight(language));
+        self
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
@@ -1203,6 +1216,7 @@ impl ComponentView for TextInput {
                 invalid: self.invalid,
                 multiline: false,
                 style: &effective_style,
+                highlight: self.highlight.as_ref(),
             },
         );
     }
@@ -1217,6 +1231,7 @@ pub struct TextArea {
     pub invalid: bool,
     pub scroll_offset: ScrollOffset,
     pub style: NodeStyle,
+    pub highlight: Option<HighlightRequest>,
     pub(crate) style_override: bool,
 }
 
@@ -1230,8 +1245,15 @@ impl TextArea {
             invalid: false,
             scroll_offset: ScrollOffset::default(),
             style: text_field_style(true),
+            highlight: None,
             style_override: false,
         }
+    }
+
+    /// Color committed text with the registered `"highlight"` presenter.
+    pub fn highlight(mut self, language: impl Into<Arc<str>>) -> Self {
+        self.highlight = Some(HighlightRequest::highlight(language));
+        self
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
@@ -1325,6 +1347,7 @@ impl ComponentView for TextArea {
                 invalid: self.invalid,
                 multiline: true,
                 style: &effective_style,
+                highlight: self.highlight.as_ref(),
             },
         );
         // Clear composition while this node is still focused, then release focus.
