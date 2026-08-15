@@ -63,6 +63,10 @@ pub enum WidgetKind {
     LabeledValue,
     Progress,
     Spinner,
+    FormField,
+    InteractiveCard,
+    Skeleton,
+    LevelMeter,
     SidebarFrame,
     SidebarRow,
     SettingsRow,
@@ -108,6 +112,10 @@ impl WidgetKind {
             "labeled-value" | "labeledvalue" => Self::LabeledValue,
             "progress" => Self::Progress,
             "spinner" | "loading" => Self::Spinner,
+            "form-field" | "formfield" | "form" => Self::FormField,
+            "interactive-card" | "interactivecard" => Self::InteractiveCard,
+            "skeleton" => Self::Skeleton,
+            "level-meter" | "levelmeter" | "level" => Self::LevelMeter,
             "sidebar-frame" | "sidebarframe" | "sidebar_frame" => Self::SidebarFrame,
             "sidebar-row" | "sidebarrow" | "sidebar_row" => Self::SidebarRow,
             "settings-row" | "settingsrow" => Self::SettingsRow,
@@ -145,6 +153,10 @@ impl WidgetKind {
             Self::LabeledValue => "labeled-value",
             Self::Progress => "progress",
             Self::Spinner => "spinner",
+            Self::FormField => "form-field",
+            Self::InteractiveCard => "interactive-card",
+            Self::Skeleton => "skeleton",
+            Self::LevelMeter => "level-meter",
             Self::SidebarFrame => "sidebar-frame",
             Self::SidebarRow => "sidebar-row",
             Self::SettingsRow => "settings-row",
@@ -181,6 +193,10 @@ impl WidgetKind {
             Self::LabeledValue => "nana-labeled-value",
             Self::Progress => "nana-progress",
             Self::Spinner => "nana-spinner",
+            Self::FormField => "nana-form-field",
+            Self::InteractiveCard => "nana-interactive-card",
+            Self::Skeleton => "nana-skeleton",
+            Self::LevelMeter => "nana-level-meter",
             Self::SidebarFrame => "nana-sidebar-frame",
             Self::SidebarRow => "nana-sidebar-row",
             Self::SettingsRow => "nana-settings-row",
@@ -3157,7 +3173,7 @@ impl MessageBridge {
                 self.push_event(BridgeEvent::Press { id });
                 vec!["press", "click"]
             }
-            WidgetKind::SidebarRow | WidgetKind::ListItem => {
+            WidgetKind::SidebarRow | WidgetKind::ListItem | WidgetKind::InteractiveCard => {
                 self.push_event(BridgeEvent::Select { id });
                 vec!["select", "click"]
             }

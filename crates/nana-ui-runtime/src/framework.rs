@@ -4454,6 +4454,12 @@ mod tests {
                 .set_ime_preedit(document, "输入".into(), None)
                 .unwrap()
         );
+        assert!(context.commit_ime(document, "输入").unwrap());
+        let state = context.world().text_input(area.stable_id()).unwrap();
+        assert_eq!(state.value, "输入\n界");
+        assert_eq!(state.selection, TextSelection::caret("输入".len()));
+        assert_eq!(context.world().ime(area.stable_id()), None);
+
         context
             .update_component(area, |area, _cx| area.disabled = true)
             .unwrap();
@@ -5987,6 +5993,71 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn tooltip_default_delay_stays_closed_until_deadline_and_is_label_only() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                IconButton::new(nana_ui_core::Icon::About, "Details")
+                    .tooltip("More details", nana_ui_core::TooltipConfig::default()),
+            )
+            .unwrap();
+        let tooltip = context.icon_button_tooltip(button).unwrap().unwrap();
+        assert_eq!(
+            context.world().text(tooltip.stable_id()),
+            Some("More details")
+        );
+        let accessibility = context.world().accessibility(tooltip.stable_id()).unwrap();
+        assert_eq!(accessibility.role, crate::AccessibilityRole::Tooltip);
+        assert_eq!(accessibility.label.as_deref(), Some("More details"));
+        assert!(
+            !context
+                .world()
+                .interaction(tooltip.stable_id())
+                .unwrap()
+                .focusable
+        );
+
+        context
+            .set_pointer_hover_at(
+                document,
+                1,
+                Some(button.stable_id()),
+                Duration::from_millis(10),
+            )
+            .unwrap();
+        assert_eq!(
+            context.next_animation_deadline(),
+            Some(Duration::from_millis(360))
+        );
+        assert!(
+            !context
+                .advance_animations(Duration::from_millis(359))
+                .has_updates()
+        );
+        assert_eq!(
+            context.world().overlay_host(button.stable_id()),
+            Some(crate::OverlayHostState::default())
+        );
+        assert!(
+            context
+                .advance_animations(Duration::from_millis(360))
+                .component_updates
+                .contains(&button.stable_id())
+        );
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(button.stable_id())
+                .unwrap()
+                .active,
+            Some(tooltip.stable_id())
+        );
+        assert!(context.read(button, |button| button.tooltip_open).unwrap());
     }
 
     #[test]

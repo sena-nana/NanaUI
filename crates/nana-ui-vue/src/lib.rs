@@ -1790,7 +1790,7 @@ impl VueHost {
                 id: target.0,
                 value: quantize_range_value(&widget.props, value),
             }),
-            WidgetKind::ListItem | WidgetKind::SidebarRow => {
+            WidgetKind::ListItem | WidgetKind::SidebarRow | WidgetKind::InteractiveCard => {
                 Some(BridgeEvent::Select { id: target.0 })
             }
             WidgetKind::Button | WidgetKind::Chip => Some(BridgeEvent::Press { id: target.0 }),
@@ -2161,7 +2161,8 @@ impl VueHost {
                     WidgetKind::Button
                     | WidgetKind::Chip
                     | WidgetKind::ListItem
-                    | WidgetKind::SidebarRow => {
+                    | WidgetKind::SidebarRow
+                    | WidgetKind::InteractiveCard => {
                         !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
                     }
                     WidgetKind::Switch | WidgetKind::Checkbox => {

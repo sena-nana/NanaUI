@@ -57,6 +57,10 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 | `nana-drawer` / sheet | Drawer | `Drawer`（`side`/`width`/`footer`） |
 | `nana-popover` | Popover | `Popover` |
 | `nana-context-menu` | ContextMenu | ActionMenuItem 列表 / MenuStore |
+| `nana-form-field` / `nana-form` | FormField | Runtime `FormField`（子控件走 composer） |
+| `nana-interactive-card` | InteractiveCard | Runtime `InteractiveCard`（内容子树走 composer） |
+| `nana-skeleton` | Skeleton | Runtime `Skeleton` / Scene leaf |
+| `nana-level-meter` / `nana-level` | LevelMeter | Runtime `LevelMeter` / Scene leaf |
 
 ## NanaButton ↔ `Button`
 
@@ -112,6 +116,19 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 浮层关闭：宿主 `Toggle false` / `SelectValue` → Vue `change` + `update:modelValue` / `update:open`。
 
 Lilia `UiDialog` / `.modal`（`aria-modal`）presence → Dialog open；**不**兑现 CSS `fixed`/`sticky`。
+
+## FormField / InteractiveCard / Skeleton / LevelMeter
+
+无独立 Vue 包装组件：用 `nana-*` 标签或 class 进入 Runtime 投影。
+
+| Vue | Runtime |
+|-----|---------|
+| `nana-form-field` / `nana-form` `label` / `hint` / `invalid` / `size` | `FormField`；`invalid` 时 `hint` 为 error；控件 = 首个非 Text 或 input-like 子节点 |
+| `nana-interactive-card` `active` / `disabled` | `InteractiveCard` `selected` / `disabled` |
+| `nana-skeleton` 布局宽高 | `Skeleton` width/height |
+| `nana-level-meter` / `nana-level` `progress`/`value`（0..=1）+ `tone` | `LevelMeter` |
+
+FormField / InteractiveCard 承载子节点，不 Scene 路由。Skeleton / LevelMeter 是 Scene leaf。
 
 ## NanaSidebar* / Settings*
 

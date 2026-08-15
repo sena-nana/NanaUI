@@ -17,12 +17,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
     Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox, ComponentView,
-    CustomRenderNode, EmptyState as RuntimeEmptyState, IconButton as RuntimeIconButton,
-    ImeComposition, InteractionState, LabeledValue as RuntimeLabeledValue,
-    LayoutBox as RuntimeLayoutBox, ListItem as RuntimeListItem, ListItemSlots, MutationQueue,
-    NodeKind, NodeStyle, Progress as RuntimeProgress, RangeField as RuntimeRangeField,
-    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
-    SelectionChrome, Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
+    CustomRenderNode, EmptyState as RuntimeEmptyState, FormField as RuntimeFormField,
+    IconButton as RuntimeIconButton, ImeComposition, InteractionState,
+    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue,
+    LayoutBox as RuntimeLayoutBox, LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem,
+    ListItemSlots, MutationQueue, NodeKind, NodeStyle, Progress as RuntimeProgress,
+    RangeField as RuntimeRangeField, SegmentedControl as RuntimeSegmentedControl,
+    SegmentedOption as RuntimeSegmentedOption, SelectionChrome, Skeleton as RuntimeSkeleton,
+    Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
     Switch as RuntimeSwitch, TextContent, TextInput as RuntimeTextInput, TextInputState, UiWorld,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
 };
@@ -686,6 +688,10 @@ impl NanaTreeDocument {
                         | crate::WidgetKind::Tabs
                         | crate::WidgetKind::Progress
                         | crate::WidgetKind::Spinner
+                        | crate::WidgetKind::FormField
+                        | crate::WidgetKind::InteractiveCard
+                        | crate::WidgetKind::Skeleton
+                        | crate::WidgetKind::LevelMeter
                 )
                 && self.runtime.text_input(id).is_some()
             {
@@ -2173,6 +2179,57 @@ fn project_migrating_component(
             RuntimeSpinner::new(widget.props.display_label()).project(id, world, mutations);
             true
         }
+        crate::WidgetKind::FormField => {
+            let mut component =
+                RuntimeFormField::new(widget.props.display_label()).size(widget.props.size);
+            let (hint, error) = crate::widget_map::form_field_support(&widget.props);
+            if let Some(hint) = hint {
+                component = component.hint(Arc::<str>::from(hint));
+            }
+            if let Some(error) = error {
+                component = component.error(Arc::<str>::from(error));
+            }
+            if let Some(control) = crate::widget_map::form_field_control_child_id(snapshot, widget)
+                .and_then(StableNodeId::new)
+            {
+                component = component.control_child(control);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::InteractiveCard => {
+            RuntimeInteractiveCard::new()
+                .selected(widget.props.active)
+                .disabled(widget.props.disabled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Skeleton => {
+            let width = widget
+                .props
+                .layout
+                .width
+                .unwrap_or(nana_ui_core::LengthSpec::Fill);
+            let height = match widget.props.layout.height {
+                Some(nana_ui_core::LengthSpec::Px(h)) if h.is_finite() && h > 0.0 => h,
+                _ => 16.0,
+            };
+            RuntimeSkeleton::new(width, height).project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::LevelMeter => {
+            let mut component =
+                RuntimeLevelMeter::new(crate::widget_map::level_meter_value(&widget.props))
+                    .tone(crate::widget_map::status_tone_from_props(&widget.props));
+            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height
+                && height.is_finite()
+                && height > 0.0
+            {
+                component = component.height(height);
+            }
+            component.project(id, world, mutations);
+            true
+        }
         _ => {
             if project_aligned_segmented_option(widget, snapshot, id, world, mutations) {
                 return true;
@@ -2307,7 +2364,10 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::Switch => AccessibilityRole::Switch,
         crate::WidgetKind::Range => AccessibilityRole::Slider,
         crate::WidgetKind::Select => AccessibilityRole::ComboBox,
-        crate::WidgetKind::Progress => AccessibilityRole::ProgressIndicator,
+        crate::WidgetKind::Progress | crate::WidgetKind::LevelMeter => {
+            AccessibilityRole::ProgressIndicator
+        }
+        crate::WidgetKind::InteractiveCard => AccessibilityRole::Button,
         crate::WidgetKind::ListItem | crate::WidgetKind::SidebarRow => AccessibilityRole::ListItem,
         crate::WidgetKind::Tabs | crate::WidgetKind::Segmented => AccessibilityRole::TabList,
         crate::WidgetKind::StatusBadge | crate::WidgetKind::ValidationMessage => {
@@ -3247,6 +3307,107 @@ mod tests {
         assert!(matches!(
             doc.runtime.standard_visual(spinner_id),
             Some(nana_ui_runtime::StandardVisual::Spinner { .. })
+        ));
+    }
+
+    #[test]
+    fn qualified_surface_hosts_project_runtime_visuals() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let field = doc.create_element("nana-form-field");
+        let input = doc.create_element("nana-input");
+        let card = doc.create_element("nana-interactive-card");
+        let skeleton = doc.create_element("nana-skeleton");
+        let meter = doc.create_element("nana-level-meter");
+        doc.insert(field, doc.mount_root(), None);
+        doc.insert(input, field, None);
+        doc.insert(card, doc.mount_root(), None);
+        doc.insert(skeleton, doc.mount_root(), None);
+        doc.insert(meter, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            field.0,
+            crate::WidgetKind::FormField,
+            crate::WidgetProps {
+                label: "Email".into(),
+                hint: "Required".into(),
+                invalid: true,
+                size: nana_ui_core::ControlSize::Small,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            input.0,
+            crate::WidgetKind::Input,
+            crate::WidgetProps {
+                value: "a@b.c".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(input.0, field.0, None);
+        bridge.register(
+            card.0,
+            crate::WidgetKind::InteractiveCard,
+            crate::WidgetProps {
+                active: true,
+                disabled: true,
+                ..Default::default()
+            },
+        );
+        let mut skeleton_props = crate::WidgetProps::default();
+        skeleton_props.layout.width = Some(nana_ui_core::LengthSpec::Px(120.0));
+        skeleton_props.layout.height = Some(nana_ui_core::LengthSpec::Px(18.0));
+        bridge.register(skeleton.0, crate::WidgetKind::Skeleton, skeleton_props);
+        let mut meter_props = crate::WidgetProps {
+            progress: 0.65,
+            ..Default::default()
+        };
+        meter_props.attrs.insert("tone".into(), "warning".into());
+        meter_props.layout.height = Some(nana_ui_core::LengthSpec::Px(8.0));
+        bridge.register(meter.0, crate::WidgetKind::LevelMeter, meter_props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let field_id = StableNodeId::try_from(field).unwrap();
+        let input_id = StableNodeId::try_from(input).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(field_id),
+            Some(nana_ui_runtime::StandardVisual::FormField {
+                ref label,
+                hint: None,
+                error: Some(ref error),
+                size: nana_ui_core::ControlSize::Small,
+                control: Some(control),
+            }) if &**label == "Email" && &**error == "Required" && control == input_id
+        ));
+        let card_id = StableNodeId::try_from(card).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(card_id),
+            Some(nana_ui_runtime::StandardVisual::Card {
+                kind: nana_ui_core::CardKind::Selected,
+                title: None,
+                loading: false,
+                ..
+            })
+        ));
+        assert!(doc.runtime.accessibility(card_id).unwrap().disabled);
+        let skeleton_id = StableNodeId::try_from(skeleton).unwrap();
+        assert_eq!(doc.runtime.standard_visual(skeleton_id), None);
+        let skeleton_style = doc.runtime.node_style(skeleton_id).unwrap();
+        assert_eq!(
+            skeleton_style.layout.width,
+            Some(nana_ui_core::LengthSpec::Px(120.0))
+        );
+        assert_eq!(
+            skeleton_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Px(18.0))
+        );
+        let meter_id = StableNodeId::try_from(meter).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(meter_id),
+            Some(nana_ui_runtime::StandardVisual::LevelMeter {
+                value_ratio,
+                girth,
+                tone: nana_ui_core::StatusTone::Warning,
+            }) if (value_ratio - 0.65).abs() < 0.001 && (girth - 8.0).abs() < 0.001
         ));
     }
 
