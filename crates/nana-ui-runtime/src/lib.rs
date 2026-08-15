@@ -8,10 +8,12 @@
 mod animation;
 mod components;
 mod feedback;
+mod form_surfaces;
 mod framework;
 mod layout_engine;
 mod mutation;
 mod overlay_surfaces;
+mod placeholders;
 mod schedule;
 mod selection;
 mod view_components;
@@ -31,6 +33,7 @@ pub use components::{
 pub use feedback::{
     EmptyState, LabeledValue, Progress, Spinner, StatusBadge, ValidationMessage, ValueEmphasis,
 };
+pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, Entity, ExtensionRegistrar, FrameworkError, OverlayKey,
     OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription, Task,
@@ -49,10 +52,11 @@ pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
     ModalSlots, ModalSurface, ModalSurfaceKind,
 };
+pub use placeholders::{LevelMeter, Skeleton};
 pub use schedule::SystemWork;
 pub use selection::{
     Radio, RadioGroup, RovingFocusIntent, RovingFocusPolicy, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, SelectionOrientation,
+    SegmentedSelectionRequested, SelectionChrome, SelectionOrientation,
 };
 pub use view_components::{
     Activate, Button, Card, Checkbox, ComponentView, Dialog, IconButton, IconButtonTooltip, List,

@@ -98,8 +98,24 @@ Hosted IME/platform and affected-consumer evidence complete the qualification ga
 `HostedTextarea` remains a separate `Compatibility` component and is not implied by the Runtime
 `Textarea` candidate.
 
-`Progress` and `Spinner` are also `RuntimeCandidate`. Runtime Progress is determinate only: Nana
-theme track/fill (Subtle + Accent, 6px girth, radius 3), optional label, no cancel control.
-Runtime Spinner reuses the Scene spinner primitive; phase is host-sampled and does not create a
-timer. Public and Vue defaults stay on the Iced adapters until visual review and consumer
-evidence complete qualification. Iced `progress_bar` metrics are not a visual oracle.
+## Current fourth batch
+
+`Progress`, `Spinner`, `FormField`, `InteractiveCard`, `Skeleton`, and `LevelMeter` are
+`RuntimeQualified`; their root and aggregate public exports route to Runtime, while their Iced
+adapters live under `nana_ui::compatibility`. `Tabs` is also `RuntimeQualified` for the
+selection-strip Runtime path (`SegmentedControl::tabs()`). The public `nana_ui::Tabs` constructor
+remains the Iced adapter so reorder, drag, close, and cross-surface transfer stay available.
+
+Visual review accepted the Runtime frame. Iced differences are not defects: Tabs keep selected
+surface only and do not paint a 2px focus ring; FormField uses the shared TextInput surface
+rather than Iced's handler-less Disabled fill.
+
+Runtime Progress is determinate only: Nana theme track/fill (Subtle + Accent, 6px girth,
+radius 3), optional label, no cancel control. Runtime Spinner reuses the Scene spinner
+primitive; phase is host-sampled and does not create a timer. FormField is a non-interactive
+label/hint/error wrapper; the control remains an application-owned child. InteractiveCard is a
+selectable surface with selected/hover/pressed/disabled layers. Skeleton is a Subtle rounded
+placeholder. LevelMeter is a determinate tone-colored meter with configurable girth.
+
+Workspace, Dock, Sidebar, overlay hosts, selects, charts, GPU views, and other professional
+components remain `Compatibility` unless their catalog entry says otherwise.

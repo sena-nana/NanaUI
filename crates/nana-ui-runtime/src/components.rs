@@ -6,6 +6,16 @@ use nana_ui_core::{
     SwitchControlPosition, UI_BASE_TEXT_SIZE,
 };
 
+pub(crate) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
+    match tone {
+        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
+        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
+        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
+        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
+        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
+    }
+}
+
 use crate::{NodeKind, StableNodeId};
 
 static DEFAULT_LAYOUT_STYLE: LazyLock<Arc<LayoutStyle>> =
@@ -157,6 +167,7 @@ pub enum StandardVisual {
         selected: bool,
         disabled: bool,
         size: ControlSize,
+        show_focus_ring: bool,
     },
     Progress {
         value_ratio: f32,
@@ -166,6 +177,18 @@ pub enum StandardVisual {
         label: Arc<str>,
         size: f32,
         phase: f32,
+    },
+    LevelMeter {
+        value_ratio: f32,
+        girth: f32,
+        tone: nana_ui_core::StatusTone,
+    },
+    FormField {
+        label: Arc<str>,
+        hint: Option<Arc<str>>,
+        error: Option<Arc<str>>,
+        size: ControlSize,
+        control: Option<StableNodeId>,
     },
 }
 
@@ -277,6 +300,13 @@ pub enum ComponentGeometry {
         track: LayoutBox,
         fill: LayoutBox,
         label: Option<ComponentTextRegion>,
+        corner_radius: f32,
+    },
+    FormField {
+        label: ComponentTextRegion,
+        support: Option<ComponentTextRegion>,
+        indicator: Option<(LayoutBox, [f32; 4])>,
+        control: Option<LayoutBox>,
     },
 }
 

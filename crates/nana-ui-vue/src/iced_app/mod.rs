@@ -35,15 +35,15 @@ use iced::widget::{Space, column, container, row, scrollable, space, stack, text
 use iced::{Alignment, Background, Border, Color, Element, Event, Length, Padding, Shadow, Size};
 use iced::{Point, Rectangle, Renderer, Theme};
 use nana_ui::compatibility::{
-    Button, Card, Checkbox, EmptyState, IconButton, Input, LabeledValue, ListItem, RangeField,
-    SegmentedControl, StatusBadge, Switch, ValidationMessage,
+    Button, Card, Checkbox, EmptyState, IconButton, Input, LabeledValue, ListItem, Progress,
+    RangeField, SegmentedControl, Spinner, StatusBadge, Switch, ValidationMessage,
 };
 use nana_ui::{
     ActionMenuItem, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ConfirmDialog,
     ControlSize, Dialog, Drawer, DrawerSide, HostTextureBinding, HostTextureRegistry, Icon,
-    Popover, Progress, Select, SelectionOption, SettingsCard, SettingsRow, SidebarRow,
-    SidebarRowState, SidebarRowTone, Spinner, Tabs, Textarea, ThemeTokens, Tooltip, TooltipConfig,
-    TooltipPlacement, icon, ui_font,
+    Popover, Select, SelectionOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState,
+    SidebarRowTone, Tabs, Textarea, ThemeTokens, Tooltip, TooltipConfig, TooltipPlacement, icon,
+    ui_font,
 };
 use nana_ui::{
     AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
@@ -787,6 +787,8 @@ fn runtime_component_for_widget(
         WidgetKind::LabeledValue if first_button_child_id(snap, widget).is_none() => {
             Some(nana_ui::component_ids::LABELED_VALUE)
         }
+        WidgetKind::Progress => Some(nana_ui::component_ids::PROGRESS),
+        WidgetKind::Spinner => Some(nana_ui::component_ids::SPINNER),
         _ => None,
     }
 }

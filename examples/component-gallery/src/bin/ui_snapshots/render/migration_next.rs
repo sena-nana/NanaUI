@@ -12,27 +12,33 @@ use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::runtime::{UserInterface, user_interface};
 use nana_ui::compatibility::{
     Button as IcedButton, Card as IcedCard, Checkbox as IcedCheckbox, EmptyState as IcedEmptyState,
-    IconButton as IcedIconButton, Input as IcedInput, LabeledValue as IcedLabeledValue,
-    ListItem as IcedListItem, RangeField as IcedRangeField,
-    SegmentedControl as IcedSegmentedControl, StatusBadge as IcedStatusBadge, Switch as IcedSwitch,
-    ValidationMessage as IcedValidationMessage,
+    FormField as IcedFormField, IconButton as IcedIconButton, Input as IcedInput,
+    InteractiveCard as IcedInteractiveCard, LabeledValue as IcedLabeledValue,
+    LevelMeter as IcedLevelMeter, ListItem as IcedListItem, Progress as IcedProgress,
+    RangeField as IcedRangeField, SegmentedControl as IcedSegmentedControl,
+    Skeleton as IcedSkeleton, Spinner as IcedSpinner, StatusBadge as IcedStatusBadge,
+    Switch as IcedSwitch, ValidationMessage as IcedValidationMessage,
 };
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, Activate, Button as RuntimeButton,
     Card as RuntimeCard, Checkbox as RuntimeCheckbox, DocumentId, EmptyState as RuntimeEmptyState,
-    Entity, IconButton as RuntimeIconButton, LabeledValue as RuntimeLabeledValue, LayoutViewport,
-    List as RuntimeList, ListItem as RuntimeListItem, ListItemSlots, MountState, MutationQueue,
-    NodeStyle, RangeField as RuntimeRangeField, RuntimeDocument,
-    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
-    SegmentedSelectionRequested, StableNodeId, StatusBadge as RuntimeStatusBadge,
-    Switch as RuntimeSwitch, Text as RuntimeText, TextArea as RuntimeTextArea,
-    TextHorizontalAlignment, TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
-    ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
+    Entity, FormField as RuntimeFormField, IconButton as RuntimeIconButton,
+    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue, LayoutViewport,
+    LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
+    ListItemSlots, MountState, MutationQueue, NodeStyle, Progress as RuntimeProgress,
+    RangeField as RuntimeRangeField, RuntimeDocument, SegmentedControl as RuntimeSegmentedControl,
+    SegmentedOption as RuntimeSegmentedOption, SegmentedSelectionRequested,
+    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, StableNodeId,
+    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, Text as RuntimeText,
+    TextArea as RuntimeTextArea, TextHorizontalAlignment, TextInput as RuntimeTextInput,
+    TextSelection, TextVerticalAlignment, ValidationMessage as RuntimeValidationMessage,
+    ValueEmphasis,
 };
 use nana_ui::{
     CardKind, ComponentId, ComponentMigrationState, ControlSize, IcedSceneView, IcedTextShaper,
-    Icon, RuntimeInputAdapter, SelectionOption as IcedSelectionOption, Textarea as IcedTextarea,
-    ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement, component_catalog, component_ids,
+    Icon, RuntimeInputAdapter, SelectionOption as IcedSelectionOption, Tabs as IcedTabs,
+    Textarea as IcedTextarea, ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement,
+    component_catalog, component_ids,
 };
 use nana_ui_core::{
     LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition, ValidationIntent,
@@ -60,10 +66,17 @@ enum Component {
     ListItem,
     RangeField,
     SegmentedControl,
+    Tabs,
     StatusBadge,
     ValidationMessage,
     EmptyState,
     LabeledValue,
+    Progress,
+    Spinner,
+    Skeleton,
+    LevelMeter,
+    FormField,
+    InteractiveCard,
 }
 
 impl Component {
@@ -80,10 +93,17 @@ impl Component {
             Self::ListItem => component_ids::LIST_ITEM,
             Self::RangeField => component_ids::RANGE_FIELD,
             Self::SegmentedControl => component_ids::SEGMENTED_CONTROL,
+            Self::Tabs => component_ids::TABS,
             Self::StatusBadge => component_ids::STATUS_BADGE,
             Self::ValidationMessage => component_ids::VALIDATION_MESSAGE,
             Self::EmptyState => component_ids::EMPTY_STATE,
             Self::LabeledValue => component_ids::LABELED_VALUE,
+            Self::Progress => component_ids::PROGRESS,
+            Self::Spinner => component_ids::SPINNER,
+            Self::Skeleton => component_ids::SKELETON,
+            Self::LevelMeter => component_ids::LEVEL_METER,
+            Self::FormField => component_ids::FORM_FIELD,
+            Self::InteractiveCard => component_ids::INTERACTIVE_CARD,
         }
     }
 }
@@ -859,6 +879,51 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "action",
         "a real application-owned child action remains separate from the inert summary",
     ),
+    f(
+        Component::Progress,
+        "labeled",
+        "determinate progress keeps a Subtle track, Accent fill and optional label",
+    ),
+    f(
+        Component::Progress,
+        "empty",
+        "zero progress leaves the Accent fill collapsed on the track",
+    ),
+    f(
+        Component::Spinner,
+        "loading",
+        "spinner reuses the host-sampled Scene primitive beside a muted label",
+    ),
+    f(
+        Component::Tabs,
+        "selected",
+        "tabs share segmented selection without the bordered pill chrome",
+    ),
+    f(
+        Component::Tabs,
+        "focused",
+        "tab focus uses the same 2px external ring as segmented options",
+    ),
+    f(
+        Component::Skeleton,
+        "block",
+        "skeleton is a Subtle rounded placeholder with authored width and height",
+    ),
+    f(
+        Component::LevelMeter,
+        "success",
+        "level meter fills a compact tone-colored track without a progress label",
+    ),
+    f(
+        Component::FormField,
+        "error",
+        "form field shows the label and danger support while the control stays a child",
+    ),
+    f(
+        Component::InteractiveCard,
+        "selected",
+        "interactive card uses selected surface, border and activation semantics",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {
@@ -1023,6 +1088,8 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::EmptyState, "complete-action") => Size::new(420, 190),
         (Component::EmptyState, "narrow-cjk") => Size::new(220, 220),
         (Component::EmptyState, "extreme-clip") => Size::new(92, 180),
+        (Component::FormField, _) => Size::new(420, 160),
+        (Component::InteractiveCard, _) => Size::new(420, 140),
         _ => SIZE,
     }
 }
@@ -1327,6 +1394,41 @@ fn iced_fixture<'a>(
                 summary
             }
         }
+        Component::Progress => {
+            let value = if fixture.state == "empty" { 0.0 } else { 42.0 };
+            let mut progress = IcedProgress::new(value, 100.0);
+            if fixture.state == "labeled" {
+                progress = progress.label("Copying");
+            }
+            progress.view(tokens)
+        }
+        Component::Spinner => IcedSpinner::new("Loading", 2).view(tokens.colors),
+        Component::Tabs => IcedTabs::new(
+            "code",
+            [
+                IcedSelectionOption::new("code", "Code"),
+                IcedSelectionOption::new("split", "Split").disabled(true),
+                IcedSelectionOption::new("preview", "Preview"),
+            ],
+            |_| (),
+        )
+        .view(tokens),
+        Component::Skeleton => IcedSkeleton::new(Length::Fill, 16.0).view(tokens),
+        Component::LevelMeter => IcedLevelMeter::new(0.65)
+            .tone(StatusTone::Success)
+            .view(tokens),
+        Component::FormField => IcedFormField::new(
+            "Email",
+            IcedInput::new("name@studio.local", "name@studio.local")
+                .on_input(|_| ())
+                .view(tokens),
+        )
+        .error("Required")
+        .view(tokens),
+        Component::InteractiveCard => IcedInteractiveCard::new(text("Interactive surface"))
+            .selected(true)
+            .on_select(())
+            .view(tokens),
     };
     (
         container(view)
@@ -1433,6 +1535,49 @@ fn create_segmented_fixture(
                 .lock()
                 .expect("segmented request log")
                 .push(event.option);
+        },
+    )?;
+    Ok(SegmentedFixture {
+        control,
+        options,
+        requests,
+    })
+}
+
+fn create_tabs_fixture(
+    document: &mut RuntimeDocument,
+    fixture: Fixture,
+) -> Result<SegmentedFixture, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let control = document.context_mut().create_component(
+        document_id,
+        RuntimeSegmentedControl::tabs().label("Editor mode"),
+    )?;
+    let specs: &[(&str, bool)] = &[("Code", false), ("Split", true), ("Preview", false)];
+    let mut options = Vec::with_capacity(specs.len());
+    for (label, disabled) in specs {
+        options.push(document.context_mut().create_detached_component(
+            document_id,
+            RuntimeSegmentedOption::new(*label).disabled(*disabled),
+        )?);
+    }
+    let selected = options.first().copied();
+    document
+        .context_mut()
+        .set_segmented_options(control, options.clone(), selected)?;
+    if fixture.state == "focused" {
+        if let Some(first) = selected {
+            document
+                .context_mut()
+                .focus_node(document_id, first.stable_id())?;
+        }
+    }
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&requests);
+    document.context_mut().on(
+        control,
+        move |_control, event: &SegmentedSelectionRequested, _context| {
+            observed.lock().expect("tab request log").push(event.option);
         },
     )?;
     Ok(SegmentedFixture {
@@ -1782,6 +1927,64 @@ fn runtime_fixture(
                     .set_labeled_value_action(summary, Some(action.action.stable_id()))?;
             }
             summary.stable_id()
+        }
+        Component::Progress => {
+            let value = if fixture.state == "empty" { 0.0 } else { 42.0 };
+            let mut progress = RuntimeProgress::new(value, 100.0);
+            if fixture.state == "labeled" {
+                progress = progress.label("Copying");
+            }
+            set_full_width(&mut progress.style);
+            document
+                .context_mut()
+                .create_component(document_id, progress)?
+                .stable_id()
+        }
+        Component::Spinner => document
+            .context_mut()
+            .create_component(document_id, RuntimeSpinner::new("Loading").phase(0.25))?
+            .stable_id(),
+        Component::Tabs => {
+            let tabs = create_tabs_fixture(&mut document, fixture)?;
+            let target = tabs.control.stable_id();
+            segmented_fixture = Some(tabs);
+            target
+        }
+        Component::Skeleton => document
+            .context_mut()
+            .create_component(document_id, RuntimeSkeleton::fill_width(16.0))?
+            .stable_id(),
+        Component::LevelMeter => {
+            let mut meter = RuntimeLevelMeter::new(0.65).tone(StatusTone::Success);
+            set_full_width(&mut meter.style);
+            document
+                .context_mut()
+                .create_component(document_id, meter)?
+                .stable_id()
+        }
+        Component::FormField => {
+            let field = document.context_mut().create_component(
+                document_id,
+                RuntimeFormField::new("Email").error("Required"),
+            )?;
+            let control = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeTextInput::new("name@studio.local").placeholder("name@studio.local"),
+            )?;
+            document
+                .context_mut()
+                .set_form_field_control(field, Some(control.stable_id()))?;
+            field.stable_id()
+        }
+        Component::InteractiveCard => {
+            let card = document
+                .context_mut()
+                .create_component(document_id, RuntimeInteractiveCard::new().selected(true))?;
+            let label = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Interactive surface"))?;
+            document.context_mut().append_child(card, label)?;
+            card.stable_id()
         }
     };
     let mut hierarchy = MutationQueue::new();
@@ -3099,6 +3302,11 @@ fn write_evidence(
             | Component::ValidationMessage
             | Component::EmptyState
             | Component::LabeledValue
+            | Component::Progress
+            | Component::Spinner
+            | Component::Skeleton
+            | Component::LevelMeter
+            | Component::FormField
     ) {
         hit != Some(runtime.target)
     } else if expects_hit {
@@ -3149,6 +3357,9 @@ fn write_evidence(
             | Component::Checkbox
             | Component::IconButton
             | Component::SegmentedControl
+            | Component::Tabs
+            | Component::Spinner
+            | Component::Skeleton
     ) || geometry.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
@@ -3327,6 +3538,26 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             "pass",
             "2026-08-15 side-by-side review preferred Runtime (right): label/value hierarchy and end-aligned action child are accepted",
         ),
+        (Component::Progress | Component::Spinner, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): determinate track/fill, optional label and host-sampled spinner are accepted",
+        ),
+        (Component::Tabs, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): independent tab surface without a segmented focus ring",
+        ),
+        (Component::Skeleton | Component::LevelMeter, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): Subtle placeholder and tone-colored meter are accepted",
+        ),
+        (Component::FormField, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): enabled field, centered value and danger support with indicator",
+        ),
+        (Component::InteractiveCard, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): selected surface and centered child content",
+        ),
         _ => (
             "pass",
             "Runtime text, internal geometry, contrast, clipping and state are correct in dark and light review; pixel similarity was not used as a gate",
@@ -3347,6 +3578,9 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         }
         (Component::SegmentedControl, "focused") => {
             "intentional: Runtime keeps the 2px external focus ring; Iced focus is nearly invisible"
+        }
+        (Component::Tabs, "focused") => {
+            "intentional: Tabs keep selected surface only; they do not paint the segmented 2px focus ring"
         }
         (Component::SegmentedControl, "no-selection" | "all-disabled") => {
             "intentional: the compatibility widget requires a value while Runtime supports controlled no-selection and derives tab stops only from enabled options"

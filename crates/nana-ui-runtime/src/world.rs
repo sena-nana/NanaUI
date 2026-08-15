@@ -6,7 +6,10 @@ use std::time::Duration;
 use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
-use nana_ui_core::{SemanticColorRole, StyleModelRef, SwitchControlPosition, ThemeMode};
+use nana_ui_core::{
+    ControlSize, SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition,
+    ThemeMode,
+};
 
 use crate::animation::ActiveAnimation;
 use crate::components::{EmptyStateTextPresentation, ModalTextPresentation};
@@ -2081,7 +2084,13 @@ impl UiWorld {
             | StandardVisual::EmptyState { .. }
             | StandardVisual::LabeledValue { .. }
             | StandardVisual::Progress { .. }
-            | StandardVisual::Spinner { .. } => self.style_model.palette.accent.as_rgba_array(),
+            | StandardVisual::Spinner { .. }
+            | StandardVisual::FormField { .. } => self.style_model.palette.accent.as_rgba_array(),
+            StandardVisual::LevelMeter { tone, .. } => self
+                .style_model
+                .palette
+                .get(status_tone_role(*tone))
+                .as_rgba_array(),
         });
         Some(ExtractedNode {
             id,
@@ -2374,7 +2383,7 @@ impl UiWorld {
                             height: if multiline {
                                 metrics.height.max(content.height)
                             } else {
-                                content.height
+                                line_height
                             },
                         },
                         content: Arc::from(presentation.display_value.as_str()),
@@ -2912,7 +2921,11 @@ impl UiWorld {
                 })
             }
             StandardVisual::SelectionOption {
-                label, icon, size, ..
+                label,
+                icon,
+                size,
+                show_focus_ring,
+                ..
             } => {
                 let icon_extent = size.icon_size().min(content.height);
                 let base_padding = size.padding_x() + 2.0;
@@ -2947,54 +2960,54 @@ impl UiWorld {
                         size.text_size(),
                         Some(500),
                     ),
-                    focus_ring: (self.focused.get(&self.component::<Identity>(id).document)
-                        == Some(&id))
+                    focus_ring: (*show_focus_ring
+                        && self.focused.get(&self.component::<Identity>(id).document) == Some(&id))
                     .then(|| self.style_model.palette.accent.as_rgba_array()),
                 })
             }
-            StandardVisual::Progress { value_ratio, label } => {
-                let ratio = value_ratio.clamp(0.0, 1.0);
-                let label_region = label.as_ref().map(|label| crate::ComponentTextRegion {
-                    bounds: LayoutBox {
-                        x: bounds.x,
-                        y: bounds.y,
-                        width: bounds.width,
-                        height: 12.0_f32.min(bounds.height),
-                    },
-                    content: Arc::clone(label),
-                    color: Some(
-                        style
-                            .color
-                            .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
-                    ),
-                    font_size: 12.0,
-                    font_weight: Some(500),
-                });
-                let track = if label.is_some() {
-                    let track_y = bounds.y + 12.0 + 6.0;
-                    LayoutBox {
-                        x: bounds.x,
-                        y: track_y,
-                        width: bounds.width,
-                        height: 6.0_f32.min((bounds.y + bounds.height - track_y).max(0.0)),
-                    }
+            StandardVisual::Progress { value_ratio, label } => progress_geometry(
+                bounds,
+                style,
+                *value_ratio,
+                6.0,
+                3.0,
+                label.as_ref(),
+                self.style_model.palette.text.as_rgba_array(),
+            ),
+            StandardVisual::LevelMeter {
+                value_ratio, girth, ..
+            } => {
+                let girth = if girth.is_finite() && *girth > 0.0 {
+                    *girth
                 } else {
-                    LayoutBox {
-                        x: bounds.x,
-                        y: bounds.y + (bounds.height - 6.0).max(0.0) / 2.0,
-                        width: bounds.width,
-                        height: 6.0_f32.min(bounds.height),
-                    }
+                    4.0
                 };
-                Some(crate::ComponentGeometry::Progress {
-                    fill: LayoutBox {
-                        width: track.width * ratio,
-                        ..track
-                    },
-                    track,
-                    label: label_region,
-                })
+                progress_geometry(
+                    bounds,
+                    style,
+                    *value_ratio,
+                    girth,
+                    girth / 2.0,
+                    None,
+                    [0.0; 4],
+                )
             }
+            StandardVisual::FormField {
+                label,
+                hint,
+                error,
+                size,
+                control,
+            } => form_field_geometry(
+                bounds,
+                *size,
+                label,
+                hint.as_ref(),
+                error.as_ref(),
+                *control,
+                &|id| self.layout_box(id),
+                &self.style_model.palette,
+            ),
             _ => None,
         }
     }
@@ -3731,14 +3744,131 @@ fn modal_surface_bounds(
     }
 }
 
+fn progress_geometry(
+    bounds: LayoutBox,
+    style: &ComputedStyle,
+    value_ratio: f32,
+    girth: f32,
+    corner_radius: f32,
+    label: Option<&Arc<str>>,
+    default_label_color: [f32; 4],
+) -> Option<crate::ComponentGeometry> {
+    let ratio = value_ratio.clamp(0.0, 1.0);
+    let girth = if girth.is_finite() && girth > 0.0 {
+        girth
+    } else {
+        6.0
+    };
+    let label_region = label.map(|label| crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: 12.0_f32.min(bounds.height),
+        },
+        content: Arc::clone(label),
+        color: Some(style.color.unwrap_or(default_label_color)),
+        font_size: 12.0,
+        font_weight: Some(500),
+    });
+    let track = if label.is_some() {
+        let track_y = bounds.y + 12.0 + 6.0;
+        LayoutBox {
+            x: bounds.x,
+            y: track_y,
+            width: bounds.width,
+            height: girth.min((bounds.y + bounds.height - track_y).max(0.0)),
+        }
+    } else {
+        LayoutBox {
+            x: bounds.x,
+            y: bounds.y + (bounds.height - girth).max(0.0) / 2.0,
+            width: bounds.width,
+            height: girth.min(bounds.height),
+        }
+    };
+    Some(crate::ComponentGeometry::Progress {
+        fill: LayoutBox {
+            width: track.width * ratio,
+            ..track
+        },
+        track,
+        label: label_region,
+        corner_radius: corner_radius.max(0.0),
+    })
+}
+
+fn form_field_geometry(
+    bounds: LayoutBox,
+    size: ControlSize,
+    label: &Arc<str>,
+    hint: Option<&Arc<str>>,
+    error: Option<&Arc<str>>,
+    control: Option<crate::StableNodeId>,
+    layout_box: &dyn Fn(crate::StableNodeId) -> Option<LayoutBox>,
+    palette: &SemanticPalette,
+) -> Option<crate::ComponentGeometry> {
+    let (label_size, _gap, label_role, label_weight) =
+        crate::form_surfaces::form_field_density(size);
+    let label_height = label_size * 1.2;
+    let support = error.or(hint);
+    let support_role = if error.is_some() {
+        SemanticColorRole::Danger
+    } else {
+        SemanticColorRole::Muted
+    };
+    let support_height = 12.0_f32.min(bounds.height);
+    let support_y = (bounds.y + bounds.height - support_height).max(bounds.y);
+    let (indicator, support_x) = if error.is_some() {
+        let slot = 12.0;
+        let diameter = slot * 10.0 / 24.0;
+        (
+            Some((
+                LayoutBox {
+                    x: bounds.x + (slot - diameter) / 2.0,
+                    y: support_y + (support_height - diameter) / 2.0,
+                    width: diameter,
+                    height: diameter,
+                },
+                palette.get(support_role).as_rgba_array(),
+            )),
+            bounds.x + slot + 5.0,
+        )
+    } else {
+        (None, bounds.x)
+    };
+    Some(crate::ComponentGeometry::FormField {
+        label: crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: label_height.min(bounds.height),
+            },
+            content: Arc::clone(label),
+            color: Some(palette.get(label_role).as_rgba_array()),
+            font_size: label_size,
+            font_weight: Some(label_weight),
+        },
+        support: support.map(|message| crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: support_x,
+                y: support_y,
+                width: (bounds.x + bounds.width - support_x).max(0.0),
+                height: support_height,
+            },
+            content: Arc::clone(message),
+            color: Some(palette.get(support_role).as_rgba_array()),
+            font_size: 11.0,
+            font_weight: None,
+        }),
+        indicator,
+        control: control.and_then(|id| layout_box(id)),
+    })
+}
+
 fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
-    match tone {
-        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
-        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
-        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
-        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
-        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
-    }
+    crate::components::status_tone_role(tone)
 }
 
 #[derive(Debug, Clone)]
@@ -4194,6 +4324,9 @@ impl<'a> ValidationPlan<'a> {
                     let invalid_ratio = match visual {
                         Some(StandardVisual::Slider { ratio })
                         | Some(StandardVisual::Progress {
+                            value_ratio: ratio, ..
+                        })
+                        | Some(StandardVisual::LevelMeter {
                             value_ratio: ratio, ..
                         }) => !ratio.is_finite() || !(0.0..=1.0).contains(ratio),
                         _ => false,

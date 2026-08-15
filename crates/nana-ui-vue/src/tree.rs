@@ -20,10 +20,10 @@ use nana_ui_runtime::{
     CustomRenderNode, EmptyState as RuntimeEmptyState, IconButton as RuntimeIconButton,
     ImeComposition, InteractionState, LabeledValue as RuntimeLabeledValue,
     LayoutBox as RuntimeLayoutBox, ListItem as RuntimeListItem, ListItemSlots, MutationQueue,
-    NodeKind, NodeStyle, RangeField as RuntimeRangeField,
+    NodeKind, NodeStyle, Progress as RuntimeProgress, RangeField as RuntimeRangeField,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
-    StableNodeId, StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextContent,
-    TextInput as RuntimeTextInput, TextInputState, UiWorld,
+    SelectionChrome, Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
+    Switch as RuntimeSwitch, TextContent, TextInput as RuntimeTextInput, TextInputState, UiWorld,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
 };
 use nana_ui_scene::UiScene;
@@ -683,6 +683,9 @@ impl NanaTreeDocument {
                         | crate::WidgetKind::EmptyState
                         | crate::WidgetKind::LabeledValue
                         | crate::WidgetKind::Segmented
+                        | crate::WidgetKind::Tabs
+                        | crate::WidgetKind::Progress
+                        | crate::WidgetKind::Spinner
                 )
                 && self.runtime.text_input(id).is_some()
             {
@@ -2124,11 +2127,18 @@ fn project_migrating_component(
             component.project(id, world, mutations);
             true
         }
-        crate::WidgetKind::Segmented => {
-            let mut control = RuntimeSegmentedControl::new().size(widget.props.size);
+        crate::WidgetKind::Segmented | crate::WidgetKind::Tabs => {
+            let mut control = if widget.kind == crate::WidgetKind::Tabs {
+                RuntimeSegmentedControl::tabs()
+                    .size(widget.props.size)
+                    .fill(widget.props.fill)
+            } else {
+                RuntimeSegmentedControl::new().size(widget.props.size)
+            };
             if !widget.props.label.is_empty() {
                 control = control.label(Arc::<str>::from(widget.props.label.as_str()));
             }
+            let chrome = control.chrome_value();
             control.project(id, world, mutations);
             for (child, option) in widget.children.iter().zip(widget.props.options.iter()) {
                 let Some(child_id) = StableNodeId::new(*child) else {
@@ -2139,10 +2149,28 @@ fn project_migrating_component(
                     option,
                     option.value == widget.props.value,
                     widget.props.size,
+                    chrome,
+                    widget.kind == crate::WidgetKind::Tabs && widget.props.fill,
                     world,
                     mutations,
                 );
             }
+            true
+        }
+        crate::WidgetKind::Progress => {
+            let mut component = RuntimeProgress::new(
+                f64::from(widget.props.progress),
+                f64::from(widget.props.progress_max.max(1.0)),
+            );
+            let label = widget.props.display_label();
+            if !label.is_empty() {
+                component = component.label(Arc::<str>::from(label));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Spinner => {
+            RuntimeSpinner::new(widget.props.display_label()).project(id, world, mutations);
             true
         }
         _ => {
@@ -2163,6 +2191,10 @@ fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::EmptyState { .. }
                         | nana_ui_runtime::StandardVisual::LabeledValue { .. }
                         | nana_ui_runtime::StandardVisual::SelectionOption { .. }
+                        | nana_ui_runtime::StandardVisual::Progress { .. }
+                        | nana_ui_runtime::StandardVisual::Spinner { .. }
+                        | nana_ui_runtime::StandardVisual::LevelMeter { .. }
+                        | nana_ui_runtime::StandardVisual::FormField { .. }
                 )
             ) {
                 mutations.set_standard_visual(id, None);
@@ -2193,36 +2225,16 @@ fn project_segmented_option(
     option: &crate::SelectOptionProp,
     selected: bool,
     size: nana_ui_core::ControlSize,
+    chrome: SelectionChrome,
+    fill: bool,
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) {
     RuntimeSegmentedOption::new(Arc::<str>::from(option.label.as_str()))
         .disabled(option.disabled)
-        .size(size)
+        .with_selected(selected)
+        .surface(size, chrome, fill)
         .project(id, world, mutations);
-    if !selected {
-        return;
-    }
-    mutations.set_standard_visual(
-        id,
-        Some(nana_ui_runtime::StandardVisual::SelectionOption {
-            label: Arc::<str>::from(option.label.as_str()),
-            icon: None,
-            selected: true,
-            disabled: option.disabled,
-            size,
-        }),
-    );
-    mutations.set_accessibility(
-        id,
-        AccessibilityState {
-            role: AccessibilityRole::Radio,
-            label: Some(Arc::<str>::from(option.label.as_str())),
-            disabled: option.disabled,
-            checked: Some(true),
-            ..AccessibilityState::default()
-        },
-    );
 }
 
 fn project_aligned_segmented_option(
@@ -2235,7 +2247,10 @@ fn project_aligned_segmented_option(
     let Some(parent) = widget.parent.and_then(|parent| snapshot.get(parent)) else {
         return false;
     };
-    if parent.kind != crate::WidgetKind::Segmented {
+    if !matches!(
+        parent.kind,
+        crate::WidgetKind::Segmented | crate::WidgetKind::Tabs
+    ) {
         return false;
     }
     let Some(index) = parent.children.iter().position(|child| *child == widget.id) else {
@@ -2244,11 +2259,18 @@ fn project_aligned_segmented_option(
     let Some(option) = parent.props.options.get(index) else {
         return false;
     };
+    let chrome = if parent.kind == crate::WidgetKind::Tabs {
+        SelectionChrome::Tabs
+    } else {
+        SelectionChrome::Segmented
+    };
     project_segmented_option(
         id,
         option,
         option.value == parent.props.value,
         parent.props.size,
+        chrome,
+        parent.kind == crate::WidgetKind::Tabs && parent.props.fill,
         world,
         mutations,
     );
@@ -3101,11 +3123,15 @@ mod tests {
         let empty = doc.create_element("nana-empty-state");
         let action = doc.create_element("nana-button");
         let labeled = doc.create_element("nana-labeled-value");
+        let progress = doc.create_element("nana-progress");
+        let spinner = doc.create_element("nana-spinner");
         doc.insert(badge, doc.mount_root(), None);
         doc.insert(validation, doc.mount_root(), None);
         doc.insert(empty, doc.mount_root(), None);
         doc.insert(action, empty, None);
         doc.insert(labeled, doc.mount_root(), None);
+        doc.insert(progress, doc.mount_root(), None);
+        doc.insert(spinner, doc.mount_root(), None);
         let mut bridge = crate::MessageBridge::new();
         let mut badge_props = crate::WidgetProps {
             label: "Offline".into(),
@@ -3155,6 +3181,24 @@ mod tests {
                 ..Default::default()
             },
         );
+        bridge.register(
+            progress.0,
+            crate::WidgetKind::Progress,
+            crate::WidgetProps {
+                label: "Copying".into(),
+                progress: 40.0,
+                progress_max: 100.0,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            spinner.0,
+            crate::WidgetKind::Spinner,
+            crate::WidgetProps {
+                label: "Loading".into(),
+                ..Default::default()
+            },
+        );
         doc.sync_semantic_styles(&bridge.snapshot());
 
         let badge_id = StableNodeId::try_from(badge).unwrap();
@@ -3190,6 +3234,19 @@ mod tests {
                 value_weight: 400,
                 ..
             })
+        ));
+        let progress_id = StableNodeId::try_from(progress).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(progress_id),
+            Some(nana_ui_runtime::StandardVisual::Progress {
+                value_ratio,
+                ..
+            }) if (value_ratio - 0.4).abs() < 0.001
+        ));
+        let spinner_id = StableNodeId::try_from(spinner).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(spinner_id),
+            Some(nana_ui_runtime::StandardVisual::Spinner { .. })
         ));
     }
 
