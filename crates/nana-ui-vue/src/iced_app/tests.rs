@@ -80,8 +80,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn qualified_runtime_scene_route_never_falls_back_to_an_iced_widget() {
+    fn qualified_runtime_scene_route_does_not_panic_without_bounds() {
         let mut bridge = MessageBridge::new();
         bridge.register(
             1,
@@ -98,6 +97,119 @@ mod tests {
         let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
             &snap,
             tokens,
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn status_badge_and_validation_with_empty_scene_do_not_panic() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::StatusBadge,
+            WidgetProps {
+                label: "Live".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::ValidationMessage,
+            WidgetProps {
+                hint: "A project is required".into(),
+                invalid: true,
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn empty_state_with_button_child_is_not_swallowed_by_scene() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::EmptyState,
+            WidgetProps {
+                label: "No projects".into(),
+                hint: "Create the first project".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Create".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn scene_does_not_swallow_card_or_html_text_hosts() {
+        let mut bridge = MessageBridge::new();
+        let mut card = WidgetProps::default();
+        card.label = "Panel".into();
+        bridge.register(1, WidgetKind::Card, card);
+        let mut heading = WidgetProps::default();
+        heading.label = String::new();
+        bridge.register(2, WidgetKind::Text, heading);
+        let mut title = WidgetProps::default();
+        title.label = "Heading".into();
+        bridge.register(3, WidgetKind::Text, title);
+        let mut area = WidgetProps::default();
+        area.value = "notes".into();
+        bridge.register(4, WidgetKind::Textarea, area);
+        bridge.insert_child(2, 1, None);
+        bridge.insert_child(3, 2, None);
+        bridge.insert_child(4, 1, None);
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
             Some((320.0, 200.0)),
             None,
             None,
@@ -158,6 +270,52 @@ mod tests {
             None,
             |event| event,
         );
+    }
+
+    #[test]
+    fn missing_nodes_are_measured_without_replacing_iced_boxes() {
+        let mut document = crate::tree::NanaTreeDocument::new(320, 200, 1.0);
+        let painted = document.create_element("nana-button");
+        let fresh = document.create_element("nana-button");
+        document.insert(painted, document.mount_root(), None);
+        document.insert(fresh, document.mount_root(), None);
+        document.apply_layout_boxes(&[(
+            painted,
+            crate::LayoutBox {
+                handle: painted,
+                x: 8.0,
+                y: 8.0,
+                width: 40.0,
+                height: 28.0,
+            },
+        )]);
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            painted.0,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Painted".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            fresh.0,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Fresh".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(fresh.0, painted.0, None);
+        bridge.resolve_missing_document_layout(&mut document);
+
+        let painted_box = document.layout_box(painted).expect("iced box stays");
+        assert_eq!(
+            (painted_box.x, painted_box.y, painted_box.width, painted_box.height),
+            (8.0, 8.0, 40.0, 28.0)
+        );
+        assert!(document.layout_box(fresh).is_some());
     }
 
     #[test]

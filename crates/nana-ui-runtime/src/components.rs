@@ -158,6 +158,15 @@ pub enum StandardVisual {
         disabled: bool,
         size: ControlSize,
     },
+    Progress {
+        value_ratio: f32,
+        label: Option<Arc<str>>,
+    },
+    Spinner {
+        label: Arc<str>,
+        size: f32,
+        phase: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -263,6 +272,11 @@ pub enum ComponentGeometry {
         icon: Option<(Icon, LayoutBox, [f32; 4])>,
         label: ComponentTextRegion,
         focus_ring: Option<[f32; 4]>,
+    },
+    Progress {
+        track: LayoutBox,
+        fill: LayoutBox,
+        label: Option<ComponentTextRegion>,
     },
 }
 

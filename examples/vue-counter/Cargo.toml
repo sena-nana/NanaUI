@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 publish = false
-description = "Vue Counter/Todo JS probe + optional NanaUI Iced window (no Blitz)"
+description = "Vue Counter/Todo JS probe + optional Iced compatibility view"
 
 [[bin]]
 name = "vue-counter"

@@ -2079,9 +2079,9 @@ impl UiWorld {
             | StandardVisual::StatusBadge { .. }
             | StandardVisual::ValidationMessage { .. }
             | StandardVisual::EmptyState { .. }
-            | StandardVisual::LabeledValue { .. } => {
-                self.style_model.palette.accent.as_rgba_array()
-            }
+            | StandardVisual::LabeledValue { .. }
+            | StandardVisual::Progress { .. }
+            | StandardVisual::Spinner { .. } => self.style_model.palette.accent.as_rgba_array(),
         });
         Some(ExtractedNode {
             id,
@@ -2950,6 +2950,49 @@ impl UiWorld {
                     focus_ring: (self.focused.get(&self.component::<Identity>(id).document)
                         == Some(&id))
                     .then(|| self.style_model.palette.accent.as_rgba_array()),
+                })
+            }
+            StandardVisual::Progress { value_ratio, label } => {
+                let ratio = value_ratio.clamp(0.0, 1.0);
+                let label_region = label.as_ref().map(|label| crate::ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: bounds.width,
+                        height: 12.0_f32.min(bounds.height),
+                    },
+                    content: Arc::clone(label),
+                    color: Some(
+                        style
+                            .color
+                            .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
+                    ),
+                    font_size: 12.0,
+                    font_weight: Some(500),
+                });
+                let track = if label.is_some() {
+                    let track_y = bounds.y + 12.0 + 6.0;
+                    LayoutBox {
+                        x: bounds.x,
+                        y: track_y,
+                        width: bounds.width,
+                        height: 6.0_f32.min((bounds.y + bounds.height - track_y).max(0.0)),
+                    }
+                } else {
+                    LayoutBox {
+                        x: bounds.x,
+                        y: bounds.y + (bounds.height - 6.0).max(0.0) / 2.0,
+                        width: bounds.width,
+                        height: 6.0_f32.min(bounds.height),
+                    }
+                };
+                Some(crate::ComponentGeometry::Progress {
+                    fill: LayoutBox {
+                        width: track.width * ratio,
+                        ..track
+                    },
+                    track,
+                    label: label_region,
                 })
             }
             _ => None,
@@ -4148,8 +4191,14 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetStandardVisual { id, visual } => {
                     self.node(*id)?;
-                    if matches!(visual, Some(StandardVisual::Slider { ratio }) if !ratio.is_finite() || !(0.0..=1.0).contains(ratio))
-                    {
+                    let invalid_ratio = match visual {
+                        Some(StandardVisual::Slider { ratio })
+                        | Some(StandardVisual::Progress {
+                            value_ratio: ratio, ..
+                        }) => !ratio.is_finite() || !(0.0..=1.0).contains(ratio),
+                        _ => false,
+                    };
+                    if invalid_ratio {
                         return Err(UiWorldError::InvalidStandardVisual(*id));
                     }
                 }

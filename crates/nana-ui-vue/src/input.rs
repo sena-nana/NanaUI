@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nana_js_engine::HostValue;
+pub use nana_ui_platform::{InputModifiers, PointerType};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HostedInputResult {
@@ -13,39 +14,11 @@ pub struct HostedInputResult {
     pub consumed: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct InputModifiers {
-    pub alt: bool,
-    pub control: bool,
-    pub meta: bool,
-    pub shift: bool,
-}
-
-impl InputModifiers {
-    pub(crate) fn extend_detail(self, detail: &mut BTreeMap<String, HostValue>) {
-        detail.insert("altKey".into(), HostValue::Bool(self.alt));
-        detail.insert("ctrlKey".into(), HostValue::Bool(self.control));
-        detail.insert("metaKey".into(), HostValue::Bool(self.meta));
-        detail.insert("shiftKey".into(), HostValue::Bool(self.shift));
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PointerType {
-    #[default]
-    Mouse,
-    Touch,
-    Pen,
-}
-
-impl PointerType {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Mouse => "mouse",
-            Self::Touch => "touch",
-            Self::Pen => "pen",
-        }
-    }
+fn extend_detail(modifiers: InputModifiers, detail: &mut BTreeMap<String, HostValue>) {
+    detail.insert("altKey".into(), HostValue::Bool(modifiers.alt));
+    detail.insert("ctrlKey".into(), HostValue::Bool(modifiers.control));
+    detail.insert("metaKey".into(), HostValue::Bool(modifiers.meta));
+    detail.insert("shiftKey".into(), HostValue::Bool(modifiers.shift));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +132,7 @@ impl PointerInput {
         detail.insert("tiltX".into(), HostValue::Number(self.tilt_x as f64));
         detail.insert("tiltY".into(), HostValue::Number(self.tilt_y as f64));
         detail.insert("twist".into(), HostValue::Number(self.twist as f64));
-        self.modifiers.extend_detail(&mut detail);
+        extend_detail(self.modifiers, &mut detail);
         detail
     }
 }
@@ -203,7 +176,7 @@ impl WheelInput {
             "deltaMode".into(),
             HostValue::Number(self.delta_mode as f64),
         );
-        self.modifiers.extend_detail(&mut detail);
+        extend_detail(self.modifiers, &mut detail);
         detail
     }
 }
@@ -254,7 +227,7 @@ impl KeyboardInput {
         detail.insert("location".into(), HostValue::Number(self.location as f64));
         detail.insert("repeat".into(), HostValue::Bool(self.repeat));
         detail.insert("isComposing".into(), HostValue::Bool(self.composing));
-        self.modifiers.extend_detail(&mut detail);
+        extend_detail(self.modifiers, &mut detail);
         detail
     }
 }

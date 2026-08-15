@@ -1,8 +1,7 @@
-//! Vue Counter MVP — JS state bridge + optional NanaUI Iced window.
+//! Vue Counter MVP — JS state bridge + optional Iced compatibility view.
 //!
-//! Blitz / paint-stub / paint-vello / CustomContent paths were removed. UI is
-//! NanaUI when `--features windowed -- --window` is used; otherwise headless
-//! JS probe only.
+//! Windowed UI (`--features windowed -- --window`) is the Iced compatibility
+//! view of Runtime/UiScene; otherwise headless JS probe only.
 //!
 //! Semantic message bridge (`createWidget` → `MessageBridge` → Runtime `UiScene`):
 //! `cargo run -p vue-counter -- counter --semantic --clicks=2`

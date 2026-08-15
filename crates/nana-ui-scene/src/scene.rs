@@ -602,6 +602,7 @@ impl UiScene {
                         | ComponentGeometry::LabeledValue { .. }
                         | ComponentGeometry::SelectionOption { .. }
                         | ComponentGeometry::ModalFrame { .. }
+                        | ComponentGeometry::Progress { .. }
                 )
             );
             if let Some(text) = node
@@ -1095,6 +1096,58 @@ impl UiScene {
                         ));
                     }
                 }
+                Some(ComponentGeometry::Progress { track, fill, label }) => {
+                    if let Some(label) = label {
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            2,
+                            label,
+                            TextHorizontalAlignment::Start,
+                            true,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
+                    self.insert_primitive(visual_quad(
+                        &VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &clips,
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                        },
+                        3,
+                        scene_rect(*track),
+                        VisualQuadStyle {
+                            background: node.style.background,
+                            border_color: None,
+                            border_width: 0.0,
+                            corner_radius: 3.0,
+                        },
+                    ));
+                    self.insert_primitive(visual_quad(
+                        &VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &clips,
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                        },
+                        4,
+                        scene_rect(*fill),
+                        VisualQuadStyle {
+                            background: node.standard_visual_foreground,
+                            border_color: None,
+                            border_width: 0.0,
+                            corner_radius: 3.0,
+                        },
+                    ));
+                }
                 Some(ComponentGeometry::Card { title: None, .. })
                 | Some(ComponentGeometry::ListItem { .. })
                 | None => {}
@@ -1566,6 +1619,28 @@ impl UiScene {
                         });
                     }
                 }
+                Some(StandardVisual::Spinner { size, phase, .. }) => {
+                    let extent = size.max(0.0).min(bounds.width).min(bounds.height);
+                    self.insert_primitive(ScenePrimitive {
+                        id: PrimitiveId { node: id, slot: 3 },
+                        node: id,
+                        bounds: SceneRect {
+                            x: bounds.x,
+                            y: bounds.y + (bounds.height - extent) / 2.0,
+                            width: extent,
+                            height: extent,
+                        },
+                        transform,
+                        clips: clips.clone(),
+                        opacity,
+                        z_index: node.z_index,
+                        document_order: node_order,
+                        kind: ScenePrimitiveKind::Spinner {
+                            phase: (phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
+                            color: node.standard_visual_foreground.or(node.style.color),
+                        },
+                    });
+                }
                 Some(
                     StandardVisual::ListItem { .. }
                     | StandardVisual::StatusBadge { .. }
@@ -1573,7 +1648,8 @@ impl UiScene {
                     | StandardVisual::EmptyState { .. }
                     | StandardVisual::LabeledValue { .. }
                     | StandardVisual::SelectionOption { .. }
-                    | StandardVisual::ModalFrame { .. },
+                    | StandardVisual::ModalFrame { .. }
+                    | StandardVisual::Progress { .. },
                 ) => {
                     // The row surface and fallback label are emitted above;
                     // typed slots remain ordinary retained child nodes.

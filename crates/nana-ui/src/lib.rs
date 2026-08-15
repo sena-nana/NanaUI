@@ -1,10 +1,10 @@
-//! NanaUI's native Lilia-style application framework — **L3** Style Model entry
-//! and the **sole** Iced paint implementation.
+//! NanaUI L3 adapter and the Iced/WGPU compatibility paint of Runtime/UiScene.
 //!
-//! Styling contract: `nana_ui_core::style_model` (Tokens + Semantics + Layout).
-//! This crate adapts that model to widgets; it does **not** parse CSS/DOM/JS.
-//! L1/L2 bridges live outside (`nana-ui-vue`, `nanavue-*`) and map into the same
-//! model.
+//! Product retained/render contracts live in `nana-ui-runtime` and `nana-ui-scene`.
+//! This crate adapts Style Model (`nana_ui_core::style_model`) and Scene frames to
+//! Iced widgets for the current desktop host backend. It is not the long-term
+//! application programming model. L1/L2 Vue + JS (`nana-ui-vue`, `nanavue-*`)
+//! map into the same model.
 //!
 //! [`WorkspaceController`], [`WorkspaceSlots`], and [`workspace_view`] provide
 //! the reusable workspace contract.
@@ -80,9 +80,11 @@ pub mod runtime {
 pub mod compatibility {
     pub use crate::components::actions::{Button, IconButton};
     #[cfg(feature = "controls")]
-    pub use crate::components::controls::{Checkbox, Input, RangeField, Switch};
+    pub use crate::components::controls::{Checkbox, Input, RangeField, SegmentedControl, Switch};
+    #[cfg(feature = "feedback")]
+    pub use crate::components::feedback::{StatusBadge, ValidationMessage};
     #[cfg(feature = "surfaces")]
-    pub use crate::components::surfaces::{Card, ListItem};
+    pub use crate::components::surfaces::{Card, EmptyState, LabeledValue, ListItem};
     pub use iced::widget::Text;
 }
 
@@ -115,13 +117,12 @@ pub use components::command_palette::{
 pub use components::controls::HostedSyntaxHighlighting;
 #[cfg(feature = "controls")]
 pub use components::controls::{
-    HostedTextarea, HostedTextareaState, SegmentedControl, Select, SelectionOption, TabDragGroup,
-    TabDragSurface, Tabs, Textarea,
+    HostedTextarea, HostedTextareaState, Select, SelectionOption, TabDragGroup, TabDragSurface,
+    Tabs, Textarea,
 };
 #[cfg(feature = "feedback")]
 pub use components::feedback::{
-    LevelMeter, Progress, Skeleton, Spinner, StatusBadge, StatusTone, Toast, ToastTone,
-    ValidationIntent, ValidationMessage,
+    LevelMeter, Progress, Skeleton, Spinner, StatusTone, Toast, ToastTone, ValidationIntent,
 };
 #[cfg(feature = "graph-canvas")]
 pub use components::graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
@@ -157,7 +158,7 @@ pub use components::settings_sections::{
     AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
 };
 #[cfg(feature = "surfaces")]
-pub use components::surfaces::{DockPanel, EmptyState, FormField, InteractiveCard, LabeledValue};
+pub use components::surfaces::{DockPanel, FormField, InteractiveCard};
 #[cfg(feature = "surfaces")]
 pub use components::tree_view::{
     TreeNavigation, TreeNode, TreeView, TreeViewEvent, tree_navigation_event,
@@ -229,7 +230,8 @@ pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
 pub use nana_ui_runtime::{
-    Button, Card, Checkbox, IconButton, ListItem, RangeField, Switch, Text, TextInput,
+    Button, Card, Checkbox, EmptyState, IconButton, LabeledValue, ListItem, RangeField,
+    SegmentedControl, StatusBadge, Switch, Text, TextInput, ValidationMessage,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
