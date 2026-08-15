@@ -152,7 +152,11 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         ThemeMode::Dark,
     )?);
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
-        paths.extend(migration_next::generate(&mut renderer, &output, theme)?);
+        paths.extend(migration_next::generate_registered(
+            &mut renderer,
+            &output,
+            theme,
+        )?);
     }
 
     for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
