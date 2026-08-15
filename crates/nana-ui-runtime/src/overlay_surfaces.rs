@@ -111,7 +111,7 @@ impl ConfirmDialog {
         Self {
             title: title.into(),
             message: message.into(),
-            size: DialogSize::Compact,
+            size: DialogSize::Default,
             danger: false,
             busy: false,
             behavior: ModalBehavior::default(),
@@ -168,7 +168,8 @@ impl ComponentView for ConfirmDialog {
             &self.style,
             AccessibilityRole::AlertDialog,
             &self.title,
-            Some(&self.message),
+            None,
+            Some(self.message.as_ref()),
             ModalSurfaceKind::Confirm(self.size),
             self.busy,
             self.danger,
@@ -248,6 +249,7 @@ impl ComponentView for Drawer {
             AccessibilityRole::Dialog,
             &self.title,
             self.description.as_deref(),
+            None,
             ModalSurfaceKind::Drawer(self.side),
             false,
             false,
@@ -264,6 +266,7 @@ pub(crate) fn project_modal(
     role: AccessibilityRole,
     title: &Arc<str>,
     description: Option<&str>,
+    body_text: Option<&str>,
     kind: ModalSurfaceKind,
     busy: bool,
     danger: bool,
@@ -272,6 +275,7 @@ pub(crate) fn project_modal(
     let visual = StandardVisual::ModalFrame {
         title: Arc::clone(title),
         description: description.map(Arc::from),
+        body_text: body_text.map(Arc::from),
         kind,
         busy,
         danger,
@@ -292,7 +296,7 @@ pub(crate) fn project_modal(
         AccessibilityState {
             role,
             label: Some(Arc::clone(title)),
-            description: description.map(Arc::from),
+            description: description.or(body_text).map(Arc::from),
             modal: true,
             busy,
             ..Default::default()
@@ -310,6 +314,176 @@ pub(crate) fn modal_root_style() -> NodeStyle {
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()
+    }
+}
+
+pub(crate) const DRAWER_WIDTH: f32 = 360.0;
+pub(crate) const MODAL_PAD_X: f32 = 16.0;
+pub(crate) const MODAL_HEADER_PAD_TOP: f32 = 14.0;
+pub(crate) const MODAL_HEADER_PAD_BOTTOM: f32 = 8.0;
+pub(crate) const DRAWER_HEADER_PAD_Y: f32 = 14.0;
+pub(crate) const MODAL_BODY_PAD_TOP: f32 = 8.0;
+pub(crate) const MODAL_BODY_PAD_BOTTOM_WITH_FOOTER: f32 = 10.0;
+pub(crate) const MODAL_BODY_PAD_BOTTOM_NO_FOOTER: f32 = 16.0;
+pub(crate) const MODAL_FOOTER_PAD_BOTTOM: f32 = 14.0;
+pub(crate) const DRAWER_FOOTER_PAD_Y: f32 = 12.0;
+pub(crate) const MODAL_TITLE_DESC_GAP: f32 = 4.0;
+pub(crate) const MODAL_CLOSE_SIZE: f32 = 28.0;
+pub(crate) const MODAL_CLOSE_GAP: f32 = 12.0;
+pub(crate) const DRAWER_CLOSE_GAP: f32 = 10.0;
+pub(crate) const MODAL_ACTION_GAP: f32 = 8.0;
+pub(crate) const MODAL_ACTION_HEIGHT: f32 = 32.0;
+pub(crate) const MODAL_BODY_TEXT_SIZE: f32 = 13.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ModalChrome {
+    pub header_height: f32,
+    pub footer_height: f32,
+    pub body_pad_top: f32,
+    pub body_pad_bottom: f32,
+    pub pad_x: f32,
+}
+
+impl ModalChrome {
+    pub fn measure(
+        kind: ModalSurfaceKind,
+        title: crate::TextMetrics,
+        description: Option<crate::TextMetrics>,
+        has_close: bool,
+        has_footer: bool,
+    ) -> Self {
+        let text_height =
+            title.height + description.map_or(0.0, |metrics| MODAL_TITLE_DESC_GAP + metrics.height);
+        let (header_pad_top, header_pad_bottom) = match kind {
+            ModalSurfaceKind::Drawer(_) => (DRAWER_HEADER_PAD_Y, DRAWER_HEADER_PAD_Y),
+            _ => (MODAL_HEADER_PAD_TOP, MODAL_HEADER_PAD_BOTTOM),
+        };
+        let header_content = match kind {
+            ModalSurfaceKind::Drawer(_) if has_close => text_height.max(MODAL_CLOSE_SIZE),
+            _ => text_height,
+        };
+        let header_height = header_pad_top + header_content + header_pad_bottom;
+        let footer_height = if !has_footer {
+            0.0
+        } else if matches!(kind, ModalSurfaceKind::Drawer(_)) {
+            DRAWER_FOOTER_PAD_Y * 2.0 + MODAL_ACTION_HEIGHT
+        } else {
+            MODAL_ACTION_HEIGHT + MODAL_FOOTER_PAD_BOTTOM
+        };
+        let body_pad_bottom = match kind {
+            ModalSurfaceKind::Drawer(_) => MODAL_BODY_PAD_TOP,
+            _ if has_footer => MODAL_BODY_PAD_BOTTOM_WITH_FOOTER,
+            _ => MODAL_BODY_PAD_BOTTOM_NO_FOOTER,
+        };
+        Self {
+            header_height,
+            footer_height,
+            body_pad_top: MODAL_BODY_PAD_TOP,
+            body_pad_bottom,
+            pad_x: MODAL_PAD_X,
+        }
+    }
+
+    pub fn text_width(self, surface_width: f32, kind: ModalSurfaceKind, has_close: bool) -> f32 {
+        let close_reserve = if !has_close {
+            0.0
+        } else if matches!(kind, ModalSurfaceKind::Drawer(_)) {
+            DRAWER_CLOSE_GAP + MODAL_CLOSE_SIZE
+        } else {
+            MODAL_CLOSE_GAP + MODAL_CLOSE_SIZE
+        };
+        (surface_width - self.pad_x * 2.0 - close_reserve).max(0.0)
+    }
+
+    pub fn chrome_height(self, body_content: f32) -> f32 {
+        self.header_height
+            + self.body_pad_top
+            + body_content
+            + self.body_pad_bottom
+            + self.footer_height
+    }
+
+    pub fn body_box(self, surface: crate::LayoutBox) -> crate::LayoutBox {
+        crate::LayoutBox {
+            x: surface.x + self.pad_x,
+            y: surface.y + self.header_height + self.body_pad_top,
+            width: (surface.width - self.pad_x * 2.0).max(0.0),
+            height: (surface.height
+                - self.header_height
+                - self.body_pad_top
+                - self.body_pad_bottom
+                - self.footer_height)
+                .max(0.0),
+        }
+    }
+
+    pub fn close_box(self, surface: crate::LayoutBox, kind: ModalSurfaceKind) -> crate::LayoutBox {
+        let y = match kind {
+            ModalSurfaceKind::Drawer(_) => {
+                surface.y + (self.header_height - MODAL_CLOSE_SIZE) / 2.0
+            }
+            _ => surface.y + MODAL_HEADER_PAD_TOP,
+        };
+        crate::LayoutBox {
+            x: surface.x + surface.width - self.pad_x - MODAL_CLOSE_SIZE,
+            y,
+            width: MODAL_CLOSE_SIZE,
+            height: MODAL_CLOSE_SIZE,
+        }
+    }
+}
+
+pub(crate) fn drawer_width(viewport_width: f32) -> f32 {
+    DRAWER_WIDTH.min(viewport_width * 0.92)
+}
+
+pub(crate) fn modal_surface_bounds(
+    bounds: crate::LayoutBox,
+    kind: ModalSurfaceKind,
+    intrinsic_height: Option<f32>,
+) -> crate::LayoutBox {
+    let margin = 16.0_f32.min(bounds.width / 2.0).min(bounds.height / 2.0);
+    let available_width = (bounds.width - margin * 2.0).max(0.0);
+    let available_height = (bounds.height - margin * 2.0).max(0.0);
+    match kind {
+        ModalSurfaceKind::Dialog(size) | ModalSurfaceKind::Confirm(size) => {
+            let width = size.max_width().min(available_width);
+            let max_height = (bounds.height * 0.76).min(available_height);
+            let height = intrinsic_height.unwrap_or(max_height).min(max_height);
+            crate::LayoutBox {
+                x: bounds.x + (bounds.width - width) / 2.0,
+                y: bounds.y + 90.0_f32.min(bounds.height).min(available_height),
+                width,
+                height,
+            }
+        }
+        ModalSurfaceKind::Drawer(DrawerSide::Left) => {
+            let width = drawer_width(bounds.width);
+            crate::LayoutBox {
+                x: bounds.x,
+                y: bounds.y,
+                width,
+                height: bounds.height,
+            }
+        }
+        ModalSurfaceKind::Drawer(DrawerSide::Right) => {
+            let width = drawer_width(bounds.width);
+            crate::LayoutBox {
+                x: bounds.x + bounds.width - width,
+                y: bounds.y,
+                width,
+                height: bounds.height,
+            }
+        }
+        ModalSurfaceKind::Drawer(DrawerSide::Bottom) => {
+            let height = (bounds.height * 0.55).min(520.0).min(bounds.height);
+            crate::LayoutBox {
+                x: bounds.x,
+                y: bounds.y + bounds.height - height,
+                width: bounds.width,
+                height,
+            }
+        }
     }
 }
 
@@ -652,17 +826,21 @@ mod tests {
             else {
                 panic!("drawer geometry")
             };
-            assert_eq!(surface.width, 420.0);
+            assert_eq!(surface.width, DRAWER_WIDTH);
             assert_eq!(surface.height, 600.0);
             assert_eq!(
                 surface.x,
-                if side == DrawerSide::Left { 0.0 } else { 380.0 }
+                if side == DrawerSide::Left {
+                    0.0
+                } else {
+                    800.0 - DRAWER_WIDTH
+                }
             );
         }
     }
 
     #[test]
-    fn dialog_wraps_against_final_surface_width_and_settles_at_twelve_vh() {
+    fn dialog_wraps_against_final_surface_width_and_settles_at_iced_top_inset() {
         let mut cx = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let dialog = cx
@@ -693,13 +871,108 @@ mod tests {
         else {
             panic!("dialog geometry")
         };
-        assert_eq!(surface.y, 72.0);
+        assert_eq!(surface.y, 90.0);
         assert!(surface.height <= 456.0);
         assert!(title.bounds.height > 14.0 * 1.2);
         assert!(description.bounds.height > 12.0 * 1.2);
         assert!(title.bounds.width <= surface.width - 32.0);
         assert!(description.bounds.width <= surface.width - 32.0);
         assert!(description.bounds.y + description.bounds.height <= body.y);
+    }
+
+    #[test]
+    fn confirm_message_is_body_copy_below_the_title() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let confirm = cx
+            .create_component(
+                document,
+                ConfirmDialog::new("Delete take", "This cannot be undone."),
+            )
+            .unwrap();
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        let mut shaper = WrappingShaper;
+        cx.shape_text(&work.text, &mut shaper).unwrap();
+        cx.layout_document(document, crate::LayoutViewport::new(560.0, 280.0))
+            .unwrap();
+        let crate::ComponentGeometry::ModalFrame {
+            surface,
+            title,
+            description,
+            body_text: Some(message),
+            border,
+            ..
+        } = cx.world().component_geometry(confirm.stable_id()).unwrap()
+        else {
+            panic!("confirm geometry")
+        };
+        assert!(description.is_none());
+        assert_eq!(message.font_size, MODAL_BODY_TEXT_SIZE);
+        assert!(message.bounds.y >= title.bounds.y + title.bounds.height);
+        assert!(surface.width <= DialogSize::Default.max_width());
+        assert_eq!(border, [0.0; 4]);
+    }
+
+    #[test]
+    fn confirm_close_does_not_change_title_to_body_rhythm() {
+        fn message_gap(has_close: bool) -> f32 {
+            let mut cx = AppContext::new();
+            let document = DocumentId::new(1).unwrap();
+            let confirm = cx
+                .create_component(
+                    document,
+                    ConfirmDialog::new("Delete take", "This cannot be undone."),
+                )
+                .unwrap();
+            let cancel = cx
+                .create_detached_component(document, Button::new("取消"))
+                .unwrap();
+            let accept = cx
+                .create_detached_component(document, Button::new("确认"))
+                .unwrap();
+            let close = has_close.then(|| {
+                cx.create_detached_component(
+                    document,
+                    crate::IconButton::new(nana_ui_core::Icon::Close, "Close"),
+                )
+                .unwrap()
+            });
+            cx.set_confirm_slots(
+                confirm,
+                ConfirmSlots {
+                    body: None,
+                    close_action: close.map(|close| close.stable_id()),
+                    cancel: cancel.stable_id(),
+                    secondary: None,
+                    confirm: accept.stable_id(),
+                },
+            )
+            .unwrap();
+            let work = cx.take_system_work();
+            cx.resolve_styles(&work.style).unwrap();
+            let mut shaper = WrappingShaper;
+            cx.shape_text(&work.text, &mut shaper).unwrap();
+            cx.layout_document(document, crate::LayoutViewport::new(560.0, 280.0))
+                .unwrap();
+            let crate::ComponentGeometry::ModalFrame {
+                title,
+                body_text: Some(message),
+                ..
+            } = cx.world().component_geometry(confirm.stable_id()).unwrap()
+            else {
+                panic!("confirm geometry")
+            };
+            message.bounds.y - (title.bounds.y + title.bounds.height)
+        }
+
+        let open = message_gap(true);
+        let busy = message_gap(false);
+        assert!(
+            (open - busy).abs() < 0.01,
+            "close slot must not change title-to-body gap: open={open} busy={busy}"
+        );
+        assert!((open - (MODAL_HEADER_PAD_BOTTOM + MODAL_BODY_PAD_TOP)).abs() < 0.01);
     }
 
     #[test]

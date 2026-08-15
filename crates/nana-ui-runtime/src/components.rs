@@ -77,6 +77,7 @@ pub enum StandardVisual {
     ModalFrame {
         title: Arc<str>,
         description: Option<Arc<str>>,
+        body_text: Option<Arc<str>>,
         kind: crate::ModalSurfaceKind,
         busy: bool,
         danger: bool,
@@ -190,6 +191,24 @@ pub enum StandardVisual {
         size: ControlSize,
         control: Option<StableNodeId>,
     },
+    QrCode {
+        modules: Arc<[bool]>,
+        width: usize,
+    },
+    Toast {
+        title: Arc<str>,
+        description: Option<Arc<str>>,
+        tone: nana_ui_core::ToastTone,
+        dismissible: bool,
+    },
+    XYPad {
+        value: nana_ui_core::XYPadValue,
+        nx: f32,
+        ny: f32,
+        size: ControlSize,
+        invalid: bool,
+        disabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +235,7 @@ pub enum ComponentGeometry {
         body: LayoutBox,
         title: ComponentTextRegion,
         description: Option<ComponentTextRegion>,
+        body_text: Option<ComponentTextRegion>,
         background: [f32; 4],
         border: [f32; 4],
         elevation: ComponentElevation,
@@ -307,6 +327,28 @@ pub enum ComponentGeometry {
         support: Option<ComponentTextRegion>,
         indicator: Option<(LayoutBox, [f32; 4])>,
         control: Option<LayoutBox>,
+    },
+    QrCode {
+        field: LayoutBox,
+        module_size: f32,
+        dark: Vec<LayoutBox>,
+    },
+    Toast {
+        indicator: LayoutBox,
+        title: ComponentTextRegion,
+        description: Option<ComponentTextRegion>,
+        dismiss: Option<LayoutBox>,
+    },
+    XYPad {
+        pad: LayoutBox,
+        thumb: LayoutBox,
+        h_axis: LayoutBox,
+        v_axis: LayoutBox,
+        background: Option<[f32; 4]>,
+        border: Option<[f32; 4]>,
+        border_width: f32,
+        thumb_color: [f32; 4],
+        axis_color: [f32; 4],
     },
 }
 
@@ -419,6 +461,7 @@ pub(crate) struct EmptyStateTextPresentation {
 pub(crate) struct ModalTextPresentation {
     pub title: TextMetrics,
     pub description: Option<TextMetrics>,
+    pub body: Option<TextMetrics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -618,6 +661,7 @@ pub struct ModalLayoutInput {
     pub slots: crate::ModalSlots,
     pub title: TextMetrics,
     pub description: Option<TextMetrics>,
+    pub body_text: Option<TextMetrics>,
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]

@@ -155,11 +155,11 @@ component_catalog! {
     LEVEL_METER => { id: "level-meter", name: "LevelMeter", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     STATUS_BADGE => { id: "status-badge", name: "StatusBadge", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     VALIDATION_MESSAGE => { id: "validation-message", name: "ValidationMessage", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
-    TOAST => { id: "toast", name: "Toast", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    TOAST => { id: "toast", name: "Toast", family: Feedback, migration: RuntimeCandidate, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     COMMAND_PALETTE => { id: "command-palette", name: "CommandPalette", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    DIALOG => { id: "dialog", name: "Dialog", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    CONFIRM_DIALOG => { id: "confirm-dialog", name: "ConfirmDialog", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    DRAWER => { id: "drawer", name: "Drawer", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    DIALOG => { id: "dialog", name: "Dialog", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    CONFIRM_DIALOG => { id: "confirm-dialog", name: "ConfirmDialog", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    DRAWER => { id: "drawer", name: "Drawer", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     TOOLTIP => { id: "tooltip", name: "Tooltip", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Accessibility, Overlay] },
     POPOVER => { id: "popover", name: "Popover", family: Overlay, migration: Compatibility, feature: Some("popover"), compiled: cfg!(feature = "popover"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     ACTION_MENU => { id: "action-menu", name: "ActionMenu", family: Overlay, migration: Compatibility, feature: Some("popover"), compiled: cfg!(feature = "popover"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
@@ -178,10 +178,10 @@ component_catalog! {
     KEYMAP_LAYER => { id: "keymap-layer", name: "KeymapLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus] },
     NATIVE_MARKDOWN => { id: "native-markdown", name: "NativeMarkdown", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SELECTABLE_RICH_TEXT => { id: "selectable-rich-text", name: "SelectableRichText", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    QR_CODE => { id: "qr-code", name: "QrCodeCanvas", family: Data, migration: Compatibility, feature: Some("qr-code"), compiled: cfg!(feature = "qr-code"), capabilities: [Render, Accessibility] },
+    QR_CODE => { id: "qr-code", name: "QrCodeCanvas", family: Data, migration: RuntimeCandidate, feature: Some("qr-code"), compiled: cfg!(feature = "qr-code"), capabilities: [Render, Accessibility] },
     GRAPH_CANVAS => { id: "graph-canvas", name: "GraphCanvas", family: Data, migration: Compatibility, feature: Some("graph-canvas"), compiled: cfg!(feature = "graph-canvas"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Gpu] },
     IMAGE_VIEWER => { id: "image-viewer", name: "ImageViewer", family: Media, migration: Compatibility, feature: Some("image-viewer"), compiled: cfg!(feature = "image-viewer"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: Compatibility, feature: Some("xy-pad"), compiled: cfg!(feature = "xy-pad"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: RuntimeCandidate, feature: Some("xy-pad"), compiled: cfg!(feature = "xy-pad"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     FORM_FIELD => { id: "form-field", name: "FormField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     LABELED_VALUE => { id: "labeled-value", name: "LabeledValue", family: Data, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
@@ -273,7 +273,16 @@ mod tests {
 
     #[test]
     fn candidate_components_keep_the_compatibility_default_route() {
-        for id in [component_ids::TEXTAREA, component_ids::TOOLTIP] {
+        for id in [
+            component_ids::TEXTAREA,
+            component_ids::TOOLTIP,
+            component_ids::DIALOG,
+            component_ids::CONFIRM_DIALOG,
+            component_ids::DRAWER,
+            component_ids::TOAST,
+            component_ids::XY_PAD,
+            component_ids::QR_CODE,
+        ] {
             let support = component_support(id).expect("candidate component is cataloged");
             assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
             assert!(!component_uses_runtime(id));

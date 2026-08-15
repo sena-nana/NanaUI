@@ -391,27 +391,42 @@ fn place_modal_children(
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
 ) {
-    let margin = 16.0_f32.min(size.width / 2.0).min(size.height / 2.0);
-    let available_width = (size.width - margin * 2.0).max(0.0);
-    let available_height = (size.height - margin * 2.0).max(0.0);
-    let horizontal = 16.0;
-    let text_height = modal.title.height
-        + modal
-            .description
-            .map_or(0.0, |metrics| 4.0 + metrics.height);
-    let header_height = (28.0 + text_height).max(56.0);
+    let has_close = modal.slots.close_action.is_some();
     let has_footer = modal.slots.footer.is_some() || !modal.slots.actions.is_empty();
-    let footer_height = if has_footer { 58.0 } else { 0.0 };
+    let chrome = crate::overlay_surfaces::ModalChrome::measure(
+        modal.kind,
+        modal.title,
+        modal.description,
+        has_close,
+        has_footer,
+    );
+    let body_copy = modal.body_text.map_or(0.0, |metrics| metrics.height);
+    let body_gap = if body_copy > 0.0 && modal.slots.body.is_some() {
+        8.0
+    } else {
+        0.0
+    };
+    let root = LayoutBox {
+        x: origin.x,
+        y: origin.y,
+        width: size.width,
+        height: size.height,
+    };
     let surface = match modal.kind {
-        crate::ModalSurfaceKind::Dialog(dialog_size)
-        | crate::ModalSurfaceKind::Confirm(dialog_size) => {
-            let width = dialog_size.max_width().min(available_width);
-            let max_height = (size.height * 0.76).min(available_height);
+        crate::ModalSurfaceKind::Dialog(_) | crate::ModalSurfaceKind::Confirm(_) => {
+            let provisional = crate::overlay_surfaces::modal_surface_bounds(root, modal.kind, None);
             let body_available = Size::new(
-                (width - horizontal * 2.0).max(0.0),
-                (max_height - header_height - footer_height - 14.0).max(0.0),
+                (provisional.width - chrome.pad_x * 2.0).max(0.0),
+                (provisional.height
+                    - chrome.header_height
+                    - chrome.body_pad_top
+                    - chrome.body_pad_bottom
+                    - chrome.footer_height
+                    - body_copy
+                    - body_gap)
+                    .max(0.0),
             );
-            let body_height =
+            let body_slot =
                 modal
                     .slots
                     .body
@@ -421,57 +436,31 @@ fn place_modal_children(
                             .height
                             .min(body_available.height)
                     });
-            let height = (header_height + body_height + footer_height + 14.0).min(max_height);
-            LayoutBox {
-                x: origin.x + (size.width - width) / 2.0,
-                y: origin.y + size.height * 0.12,
-                width,
-                height,
-            }
+            crate::overlay_surfaces::modal_surface_bounds(
+                root,
+                modal.kind,
+                Some(chrome.chrome_height(body_copy + body_gap + body_slot)),
+            )
         }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left) => {
-            let width = 420.0_f32.min(size.width * 0.92);
-            LayoutBox {
-                x: origin.x,
-                y: origin.y,
-                width,
-                height: size.height,
-            }
-        }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Right) => {
-            let width = 420.0_f32.min(size.width * 0.92);
-            LayoutBox {
-                x: origin.x + size.width - width,
-                y: origin.y,
-                width,
-                height: size.height,
-            }
-        }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Bottom) => {
-            let height = (size.height * 0.55).min(520.0).min(size.height);
-            LayoutBox {
-                x: origin.x,
-                y: origin.y + size.height - height,
-                width: size.width,
-                height,
-            }
-        }
+        _ => crate::overlay_surfaces::modal_surface_bounds(root, modal.kind, None),
     };
-    let body = LayoutBox {
-        x: surface.x + horizontal,
-        y: surface.y + header_height,
-        width: (surface.width - horizontal * 2.0).max(0.0),
-        height: (surface.height - header_height - footer_height - 14.0).max(0.0),
-    };
+    let body = chrome.body_box(surface);
+    let slot_y = body.y
+        + if body_copy > 0.0 {
+            body_copy + body_gap
+        } else {
+            0.0
+        };
+    let slot_height = (body.y + body.height - slot_y).max(0.0);
     if let Some(id) = modal.slots.body.filter(|id| nodes.contains_key(id)) {
         place_node(
             id,
             Point {
                 x: body.x,
-                y: body.y,
+                y: slot_y,
             },
-            Size::new(body.width, body.height),
-            Size::new(body.width, body.height),
+            Size::new(body.width, slot_height),
+            Size::new(body.width, slot_height),
             viewport,
             nodes,
             intrinsic,
@@ -479,22 +468,27 @@ fn place_modal_children(
         );
     }
     if let Some(id) = modal.slots.close_action.filter(|id| nodes.contains_key(id)) {
+        let close = chrome.close_box(surface, modal.kind);
         place_node(
             id,
             Point {
-                x: surface.x + surface.width - 44.0,
-                y: surface.y + 12.0,
+                x: close.x,
+                y: close.y,
             },
-            Size::new(28.0, 28.0),
-            Size::new(28.0, 28.0),
+            Size::new(close.width, close.height),
+            Size::new(close.width, close.height),
             viewport,
             nodes,
             intrinsic,
             output,
         );
     }
-    let footer_y = surface.y + surface.height - footer_height;
-    let mut action_right = surface.x + surface.width - horizontal;
+    let footer_y = surface.y + surface.height - chrome.footer_height;
+    let action_band = match modal.kind {
+        crate::ModalSurfaceKind::Drawer(_) => crate::overlay_surfaces::DRAWER_FOOTER_PAD_Y,
+        _ => 0.0,
+    };
+    let mut action_right = surface.x + surface.width - chrome.pad_x;
     for id in modal
         .slots
         .actions
@@ -503,43 +497,45 @@ fn place_modal_children(
         .copied()
         .filter(|id| nodes.contains_key(id))
     {
-        let intrinsic_size = intrinsic_size(
+        let measured = intrinsic_size(
             id,
-            Size::new(body.width, footer_height),
+            Size::new(body.width, crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
             viewport,
             nodes,
             intrinsic,
         );
         let action_size = Size::new(
-            intrinsic_size.width.min(body.width),
-            intrinsic_size.height.min(40.0),
+            measured.width.min(body.width),
+            measured
+                .height
+                .min(crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
         );
         action_right -= action_size.width;
         place_node(
             id,
             Point {
                 x: action_right,
-                y: footer_y + (footer_height - action_size.height) / 2.0,
+                y: footer_y + action_band,
             },
             action_size,
-            Size::new(body.width, footer_height),
+            Size::new(body.width, chrome.footer_height),
             viewport,
             nodes,
             intrinsic,
             output,
         );
-        action_right -= 8.0;
+        action_right -= crate::overlay_surfaces::MODAL_ACTION_GAP;
     }
     if let Some(id) = modal.slots.footer.filter(|id| nodes.contains_key(id)) {
-        let width = (action_right - (surface.x + horizontal)).max(0.0);
+        let width = (action_right - (surface.x + chrome.pad_x)).max(0.0);
         place_node(
             id,
             Point {
-                x: surface.x + horizontal,
+                x: surface.x + chrome.pad_x,
                 y: footer_y,
             },
-            Size::new(width, footer_height),
-            Size::new(width, footer_height),
+            Size::new(width, chrome.footer_height),
+            Size::new(width, chrome.footer_height),
             viewport,
             nodes,
             intrinsic,

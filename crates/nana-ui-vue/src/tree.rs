@@ -2252,6 +2252,9 @@ fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::Spinner { .. }
                         | nana_ui_runtime::StandardVisual::LevelMeter { .. }
                         | nana_ui_runtime::StandardVisual::FormField { .. }
+                        | nana_ui_runtime::StandardVisual::Toast { .. }
+                        | nana_ui_runtime::StandardVisual::XYPad { .. }
+                        | nana_ui_runtime::StandardVisual::QrCode { .. }
                 )
             ) {
                 mutations.set_standard_visual(id, None);
