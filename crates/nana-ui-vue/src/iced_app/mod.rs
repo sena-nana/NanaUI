@@ -35,8 +35,9 @@ use iced::widget::{Space, column, container, row, scrollable, space, stack, text
 use iced::{Alignment, Background, Border, Color, Element, Event, Length, Padding, Shadow, Size};
 use iced::{Point, Rectangle, Renderer, Theme};
 use nana_ui::compatibility::{
-    Button, Card, Checkbox, EmptyState, IconButton, Input, LabeledValue, ListItem, Progress,
-    RangeField, SegmentedControl, Spinner, StatusBadge, Switch, ValidationMessage,
+    Button, Card, Checkbox, EmptyState, FormField, IconButton, Input, InteractiveCard,
+    LabeledValue, LevelMeter, ListItem, Progress, RangeField, SegmentedControl, Skeleton, Spinner,
+    StatusBadge, Switch, ValidationMessage,
 };
 use nana_ui::{
     ActionMenuItem, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ConfirmDialog,
@@ -62,7 +63,10 @@ use crate::editor_store::EditorStore;
 use crate::menu_store::MenuStore;
 use crate::native_component::NativeComponentRegistry;
 use crate::tree::{LayoutBoxStore, NodeHandle, shared_layout_box_store};
-use crate::widget_map::{first_button_child_id, labeled_value_caption, validation_message_text};
+use crate::widget_map::{
+    first_button_child_id, form_field_control_child_id, form_field_support, labeled_value_caption,
+    level_meter_value, validation_message_text,
+};
 
 pub(crate) fn hosted_text_widget_id(id: WidgetId) -> String {
     format!("nana-vue-text-{id}")
@@ -787,9 +791,29 @@ fn runtime_component_for_widget(
         WidgetKind::LabeledValue if first_button_child_id(snap, widget).is_none() => {
             Some(nana_ui::component_ids::LABELED_VALUE)
         }
+        WidgetKind::EmptyState if first_button_child_id(snap, widget).is_none() => {
+            Some(nana_ui::component_ids::EMPTY_STATE)
+        }
         WidgetKind::Progress => Some(nana_ui::component_ids::PROGRESS),
         WidgetKind::Spinner => Some(nana_ui::component_ids::SPINNER),
+        WidgetKind::Skeleton => Some(nana_ui::component_ids::SKELETON),
+        WidgetKind::LevelMeter => Some(nana_ui::component_ids::LEVEL_METER),
         _ => None,
+    }
+}
+
+fn skeleton_iced_width(layout: &crate::css_map::LayoutStyle) -> Length {
+    match layout.width {
+        Some(LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => Length::Fixed(px),
+        Some(LengthSpec::Shrink) => Length::Shrink,
+        _ => Length::Fill,
+    }
+}
+
+fn skeleton_height(layout: &crate::css_map::LayoutStyle) -> f32 {
+    match layout.height {
+        Some(LengthSpec::Px(h)) if h.is_finite() && h > 0.0 => h,
+        _ => 16.0,
     }
 }
 
@@ -1219,6 +1243,61 @@ where
             }
             WidgetKind::Spinner => {
                 Spinner::new(widget.props.display_label(), 0).view(tokens.colors)
+            }
+            WidgetKind::FormField => {
+                let control = if let Some(child) = form_field_control_child_id(snap, widget) {
+                    view_widget(
+                        snap,
+                        child,
+                        tokens,
+                        parent_box,
+                        parent_direction,
+                        parent_align_items,
+                        editors,
+                        menus,
+                        main_override,
+                        map_event,
+                    )
+                } else {
+                    space().width(Length::Fill).height(Length::Shrink).into()
+                };
+                let mut field =
+                    FormField::new(widget.props.display_label(), control).size(widget.props.size);
+                let (hint, error) = form_field_support(&widget.props);
+                if let Some(hint) = hint {
+                    field = field.hint(hint);
+                }
+                if let Some(error) = error {
+                    field = field.error(error);
+                }
+                field.view(tokens)
+            }
+            WidgetKind::InteractiveCard => {
+                let id = widget.id;
+                let map = map_event.clone();
+                let body =
+                    layout_column(snap, widget, tokens, parent_box, editors, menus, map_event);
+                InteractiveCard::new(body)
+                    .selected(widget.props.active)
+                    .disabled(widget.props.disabled)
+                    .on_select(map(BridgeEvent::Select { id }))
+                    .view(tokens)
+            }
+            WidgetKind::Skeleton => Skeleton::new(
+                skeleton_iced_width(&widget.props.layout),
+                skeleton_height(&widget.props.layout),
+            )
+            .view(tokens),
+            WidgetKind::LevelMeter => {
+                let mut meter = LevelMeter::new(level_meter_value(&widget.props))
+                    .tone(crate::widget_map::status_tone_from_props(&widget.props));
+                if let Some(LengthSpec::Px(height)) = widget.props.layout.height
+                    && height.is_finite()
+                    && height > 0.0
+                {
+                    meter = meter.height(height);
+                }
+                meter.view(tokens)
             }
         }
     });
@@ -2059,6 +2138,72 @@ where
             progress.view(tokens)
         }
         WidgetKind::Spinner => Spinner::new(owned_display(&props), 0).view(tokens.colors),
+        WidgetKind::FormField => {
+            let control = if let Some(child) = form_field_control_child_id(snap, widget) {
+                view_widget_owned(
+                    snap,
+                    child,
+                    tokens,
+                    parent_box,
+                    parent_direction,
+                    parent_align_items,
+                    editors,
+                    menus,
+                    viewport,
+                    main_override,
+                    map_event,
+                )
+            } else {
+                space().width(Length::Fill).height(Length::Shrink).into()
+            };
+            let mut field = FormField::new(owned_display(&props), control).size(props.size);
+            let (hint, error) = form_field_support(&props);
+            if let Some(hint) = hint {
+                field = field.hint(hint.to_string());
+            }
+            if let Some(error) = error {
+                field = field.error(error.to_string());
+            }
+            field.view(tokens)
+        }
+        WidgetKind::InteractiveCard => {
+            let map = map_event.clone();
+            let body = wrap_layout_owned(
+                true,
+                &props,
+                children,
+                snap,
+                tokens,
+                parent_box,
+                parent_direction,
+                editors,
+                menus,
+                viewport,
+                Some(wid),
+                map_event,
+            );
+            InteractiveCard::new(body)
+                .selected(props.active)
+                .disabled(props.disabled)
+                .on_select(map(BridgeEvent::Select { id: wid }))
+                .view(tokens)
+        }
+        WidgetKind::Skeleton => Skeleton::new(
+            skeleton_iced_width(&props.layout),
+            skeleton_height(&props.layout),
+        )
+        .view(tokens),
+        WidgetKind::LevelMeter => {
+            let mut meter = LevelMeter::new(level_meter_value(&props))
+                .tone(crate::widget_map::status_tone_from_props(&props));
+            if let Some(LengthSpec::Px(height)) = props.layout.height
+                && height.is_finite()
+                && height > 0.0
+            {
+                meter = meter.height(height);
+            }
+            meter.view(tokens)
+        }
     };
     finish(content)
 }

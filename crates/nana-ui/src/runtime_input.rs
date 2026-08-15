@@ -1,7 +1,7 @@
 //! Stable platform-input routing for Nana-native Runtime components.
 
 use nana_ui_core::TableNavigation;
-use nana_ui_platform::{InputDisposition, InputEvent, PointerPhase};
+use nana_ui_platform::{ImeEvent, InputDisposition, InputEvent, PointerPhase};
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameworkError, RangeAdjustment, RovingFocusIntent, ScrollOffset,
 };
@@ -298,17 +298,50 @@ impl RuntimeInputAdapter {
             prevent_default: handled || keyboard_barrier,
         })
     }
+
+    /// Route platform IME into the focused Runtime editor.
+    ///
+    /// Retained TextInput/TextArea state is the only editing authority. A
+    /// focused editable field, or a blocking overlay, consumes the event so a
+    /// second Iced IME path cannot also mutate it.
+    pub fn dispatch_ime(
+        self,
+        context: &mut AppContext,
+        document: DocumentId,
+        event: &ImeEvent,
+    ) -> Result<InputDisposition, FrameworkError> {
+        let overlay_blocks = context.has_blocking_runtime_overlay(document);
+        let owns_ime = context
+            .focused_text_input(document)
+            .is_some_and(|(target, _)| {
+                context
+                    .world()
+                    .accessibility(target)
+                    .is_some_and(|state| state.editable)
+            });
+        let handled = match event {
+            ImeEvent::Enabled => false,
+            ImeEvent::Disabled => context.clear_ime(document)?,
+            ImeEvent::Preedit { text, selection } => {
+                context.set_ime_preedit(document, text.clone(), *selection)?
+            }
+            ImeEvent::Commit(text) => context.commit_ime(document, text)?,
+        };
+        Ok(InputDisposition {
+            prevent_default: handled || owns_ime || overlay_blocks,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui_platform::{InputModifiers, PointerType};
+    use nana_ui_platform::{ImeEvent, InputModifiers, PointerType};
     use nana_ui_runtime::{
         Activate, Button, Dialog, LayoutBox, Menu, MenuItem, ModalSlots, MutationQueue,
         OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView,
         SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow,
-        TextInput,
+        TextArea, TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -627,12 +660,33 @@ mod tests {
         );
         assert_eq!(context.world().text(input.stable_id()), Some("NanaU"));
         assert!(
-            context
-                .set_ime_preedit(document, "你".into(), None)
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "你".into(),
+                        selection: None,
+                    },
+                )
                 .unwrap()
+                .prevent_default
         );
-        assert!(context.commit_ime(document, "你").unwrap());
+        assert_eq!(
+            context
+                .world()
+                .ime(input.stable_id())
+                .map(|ime| ime.text.as_str()),
+            Some("你")
+        );
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Commit("你".into()))
+                .unwrap()
+                .prevent_default
+        );
         assert_eq!(context.world().text(input.stable_id()), Some("NanaU你"));
+        assert_eq!(context.world().ime(input.stable_id()), None);
         assert!(
             adapter
                 .dispatch(&mut context, document, &key("Backspace"))
@@ -640,6 +694,72 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(input.stable_id()), Some("NanaU"));
+    }
+
+    #[test]
+    fn focused_runtime_textarea_ime_updates_multiline_state() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("第一行\n"))
+            .unwrap();
+        assert!(context.focus_node(document, area.stable_id()).unwrap());
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "第二".into(),
+                        selection: Some((0, "第".len())),
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        let composition = context
+            .world()
+            .ime(area.stable_id())
+            .expect("focused textarea keeps preedit on retained state");
+        assert_eq!(composition.text, "第二");
+        assert_eq!(composition.selection, Some((0, "第".len())));
+        assert_eq!(context.world().text(area.stable_id()), Some("第一行\n"));
+
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Commit("第二行".into()))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.world().text(area.stable_id()),
+            Some("第一行\n第二行")
+        );
+        assert_eq!(context.world().ime(area.stable_id()), None);
+
+        context
+            .update_component(area, |area, _cx| area.disabled = true)
+            .unwrap();
+        assert!(
+            !adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "三".into(),
+                        selection: None,
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.world().text(area.stable_id()),
+            Some("第一行\n第二行")
+        );
+        assert_eq!(context.world().ime(area.stable_id()), None);
     }
 
     #[test]

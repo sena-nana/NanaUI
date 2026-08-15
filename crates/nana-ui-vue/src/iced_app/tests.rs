@@ -187,6 +187,102 @@ mod tests {
     }
 
     #[test]
+    fn empty_state_without_button_and_placeholder_leaves_do_not_panic() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::EmptyState,
+            WidgetProps {
+                label: "No projects".into(),
+                hint: "Create the first project".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(2, WidgetKind::Skeleton, WidgetProps::default());
+        bridge.register(
+            3,
+            WidgetKind::LevelMeter,
+            WidgetProps {
+                progress: 0.4,
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn form_field_and_interactive_card_hosts_stay_on_composer() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::FormField,
+            WidgetProps {
+                label: "Email".into(),
+                hint: "Required".into(),
+                invalid: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Input,
+            WidgetProps {
+                value: "a@b.c".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.register(
+            3,
+            WidgetKind::InteractiveCard,
+            WidgetProps {
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            4,
+            WidgetKind::Text,
+            WidgetProps {
+                label: "Surface".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(4, 3, None);
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
     fn scene_does_not_swallow_card_or_html_text_hosts() {
         let mut bridge = MessageBridge::new();
         let mut card = WidgetProps::default();

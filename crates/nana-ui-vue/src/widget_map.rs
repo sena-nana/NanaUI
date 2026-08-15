@@ -208,6 +208,10 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-labeled-value" => WidgetKind::LabeledValue,
         "nana-progress" | "ui-progress" => WidgetKind::Progress,
         "nana-spinner" | "ui-spinner" => WidgetKind::Spinner,
+        "nana-form-field" | "nana-form" => WidgetKind::FormField,
+        "nana-interactive-card" => WidgetKind::InteractiveCard,
+        "nana-skeleton" => WidgetKind::Skeleton,
+        "nana-level-meter" | "nana-level" => WidgetKind::LevelMeter,
         "nana-column" | "vstack" => WidgetKind::Column,
         "nana-row" | "hstack" | "flex-row" => WidgetKind::Row,
         // Documented overlay contracts (`nana-*` + generic HTML names).
@@ -235,6 +239,59 @@ pub(crate) fn first_button_child_id(
             .get(id)
             .is_some_and(|child| child.kind == WidgetKind::Button)
     })
+}
+
+fn is_input_like_kind(kind: WidgetKind) -> bool {
+    matches!(
+        kind,
+        WidgetKind::Input
+            | WidgetKind::Textarea
+            | WidgetKind::Select
+            | WidgetKind::Checkbox
+            | WidgetKind::Switch
+            | WidgetKind::Range
+    )
+}
+
+pub(crate) fn form_field_control_child_id(
+    snapshot: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> Option<WidgetId> {
+    let mut first_non_text = None;
+    let mut first_input_like = None;
+    for &id in &widget.children {
+        let Some(child) = snapshot.get(id) else {
+            continue;
+        };
+        if first_non_text.is_none() && child.kind != WidgetKind::Text {
+            first_non_text = Some(id);
+        }
+        if first_input_like.is_none() && is_input_like_kind(child.kind) {
+            first_input_like = Some(id);
+        }
+    }
+    first_non_text.or(first_input_like)
+}
+
+pub(crate) fn form_field_support(props: &WidgetProps) -> (Option<&str>, Option<&str>) {
+    if props.hint.is_empty() {
+        return (None, None);
+    }
+    if props.invalid {
+        (None, Some(props.hint.as_str()))
+    } else {
+        (Some(props.hint.as_str()), None)
+    }
+}
+
+pub(crate) fn level_meter_value(props: &WidgetProps) -> f32 {
+    if props.progress.is_finite() && props.progress != 0.0 {
+        props.progress
+    } else if props.number.is_finite() {
+        props.number
+    } else {
+        0.0
+    }
 }
 
 pub(crate) fn labeled_value_caption(
@@ -479,6 +536,35 @@ mod tests {
             Some(WidgetKind::LabeledValue)
         );
         assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-form-field"), None, None),
+            Some(WidgetKind::FormField)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-form", None, None, None),
+            Some(WidgetKind::FormField)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("form", None, None, None),
+            Some(WidgetKind::Column),
+            "HTML form stays a layout box"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-interactive-card"), None, None),
+            Some(WidgetKind::InteractiveCard)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-skeleton"), None, None),
+            Some(WidgetKind::Skeleton)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-level-meter"), None, None),
+            Some(WidgetKind::LevelMeter)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-level", None, None, None),
+            Some(WidgetKind::LevelMeter)
+        );
+        assert_eq!(
             resolve_kind_from_hints("span", None, None, None),
             Some(WidgetKind::Text)
         );
@@ -486,5 +572,23 @@ mod tests {
             resolve_kind_from_hints("output", None, None, None),
             Some(WidgetKind::Text)
         );
+    }
+
+    #[test]
+    fn form_field_support_promotes_hint_to_error_when_invalid() {
+        let mut props = WidgetProps::default();
+        props.hint = "Required".into();
+        assert_eq!(form_field_support(&props), (Some("Required"), None));
+        props.invalid = true;
+        assert_eq!(form_field_support(&props), (None, Some("Required")));
+    }
+
+    #[test]
+    fn level_meter_value_prefers_progress_then_number() {
+        let mut props = WidgetProps::default();
+        props.number = 0.25;
+        assert!((level_meter_value(&props) - 0.25).abs() < f32::EPSILON);
+        props.progress = 0.8;
+        assert!((level_meter_value(&props) - 0.8).abs() < f32::EPSILON);
     }
 }

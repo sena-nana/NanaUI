@@ -160,7 +160,7 @@ component_catalog! {
     DIALOG => { id: "dialog", name: "Dialog", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     CONFIRM_DIALOG => { id: "confirm-dialog", name: "ConfirmDialog", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     DRAWER => { id: "drawer", name: "Drawer", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    TOOLTIP => { id: "tooltip", name: "Tooltip", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Accessibility, Overlay] },
+    TOOLTIP => { id: "tooltip", name: "Tooltip", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Accessibility, Overlay] },
     POPOVER => { id: "popover", name: "Popover", family: Overlay, migration: Compatibility, feature: Some("popover"), compiled: cfg!(feature = "popover"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     ACTION_MENU => { id: "action-menu", name: "ActionMenu", family: Overlay, migration: Compatibility, feature: Some("popover"), compiled: cfg!(feature = "popover"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     CONTEXT_MENU => { id: "context-menu", name: "ContextMenu", family: Overlay, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn candidate_components_keep_the_compatibility_default_route() {
-        for id in [component_ids::TEXTAREA] {
+        for id in [component_ids::TEXTAREA, component_ids::TOOLTIP] {
             let support = component_support(id).expect("candidate component is cataloged");
             assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
             assert!(!component_uses_runtime(id));

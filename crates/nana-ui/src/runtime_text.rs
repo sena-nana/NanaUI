@@ -546,4 +546,84 @@ mod tests {
         assert!(text.bounds.y < layout.y);
         assert!(caret.y >= layout.y && caret.y + caret.height <= layout.y + layout.height);
     }
+
+    #[test]
+    fn runtime_textarea_ime_preedit_and_commit_update_shaped_state() {
+        let document_id = DocumentId::new(1).unwrap();
+        let mut document = RuntimeDocument::new(document_id);
+        let area = document
+            .context_mut()
+            .create_component(document_id, TextArea::new("甲\n乙").height(96.0))
+            .unwrap();
+        document
+            .context_mut()
+            .focus_node(document_id, area.stable_id())
+            .unwrap();
+        document
+            .context_mut()
+            .apply_accessibility_action(
+                document_id,
+                AccessibilityActionRequest {
+                    target: area.stable_id(),
+                    action: AccessibilityAction::SetSelection(TextSelection::caret("甲\n".len())),
+                },
+            )
+            .unwrap();
+        assert!(
+            document
+                .context_mut()
+                .set_ime_preedit(document_id, "你".into(), None)
+                .unwrap()
+        );
+        document
+            .flush(LayoutViewport::new(160.0, 120.0), &mut IcedTextShaper)
+            .unwrap();
+
+        let ComponentGeometry::TextInput {
+            multiline,
+            text,
+            preedit,
+            caret: Some(_),
+            ..
+        } = document
+            .context()
+            .world()
+            .component_geometry(area.stable_id())
+            .unwrap()
+        else {
+            panic!("focused textarea must produce text and caret geometry");
+        };
+        assert!(multiline);
+        assert_eq!(text.content.as_ref(), "甲\n你乙");
+        assert!(!preedit.is_empty());
+
+        assert!(
+            document
+                .context_mut()
+                .commit_ime(document_id, "你")
+                .unwrap()
+        );
+        document
+            .flush(LayoutViewport::new(160.0, 120.0), &mut IcedTextShaper)
+            .unwrap();
+
+        let state = document
+            .context()
+            .world()
+            .text_input(area.stable_id())
+            .unwrap();
+        assert_eq!(state.value, "甲\n你乙");
+        assert_eq!(state.selection, TextSelection::caret("甲\n你".len()));
+        assert_eq!(document.context().world().ime(area.stable_id()), None);
+        let ComponentGeometry::TextInput { text, preedit, .. } = document
+            .context()
+            .world()
+            .component_geometry(area.stable_id())
+            .unwrap()
+        else {
+            panic!("committed textarea must keep text geometry");
+        };
+        assert_eq!(text.content.as_ref(), "甲\n你乙");
+        assert!(preedit.is_empty());
+    }
 }

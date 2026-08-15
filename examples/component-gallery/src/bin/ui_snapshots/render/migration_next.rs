@@ -37,8 +37,8 @@ use nana_ui::runtime::{
 use nana_ui::{
     CardKind, ComponentId, ComponentMigrationState, ControlSize, IcedSceneView, IcedTextShaper,
     Icon, RuntimeInputAdapter, SelectionOption as IcedSelectionOption, Tabs as IcedTabs,
-    Textarea as IcedTextarea, ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement,
-    component_catalog, component_ids,
+    Textarea as IcedTextarea, ThemeMode, ThemeModeExt, Tooltip as IcedTooltip, TooltipConfig,
+    TooltipPlacement, component_catalog, component_ids, icon,
 };
 use nana_ui_core::{
     LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition, ValidationIntent,
@@ -77,6 +77,7 @@ enum Component {
     LevelMeter,
     FormField,
     InteractiveCard,
+    Tooltip,
 }
 
 impl Component {
@@ -104,6 +105,7 @@ impl Component {
             Self::LevelMeter => component_ids::LEVEL_METER,
             Self::FormField => component_ids::FORM_FIELD,
             Self::InteractiveCard => component_ids::INTERACTIVE_CARD,
+            Self::Tooltip => component_ids::TOOLTIP,
         }
     }
 }
@@ -924,6 +926,21 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "selected",
         "interactive card uses selected surface, border and activation semantics",
     ),
+    f(
+        Component::Tooltip,
+        "open",
+        "zero-delay hover opens a label-only tooltip",
+    ),
+    f(
+        Component::Tooltip,
+        "delay",
+        "hover before the delay leaves the tooltip closed",
+    ),
+    f(
+        Component::Tooltip,
+        "edge",
+        "tooltip stays inside the viewport near an edge",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {
@@ -935,6 +952,20 @@ const fn f(component: Component, state: &'static str, expected: &'static str) ->
         iced_contract: "reference rendered; interaction semantics may be incomplete",
         runtime_contract: "canonical frame must settle with layout, hit-test, accessibility and scene",
         divergence: "none unless recorded by the observed verdict",
+    }
+}
+
+fn tooltip_fixture_config(state: &str) -> TooltipConfig {
+    TooltipConfig {
+        placement: if matches!(state, "edge" | "tooltip-edge") {
+            TooltipPlacement::Left
+        } else {
+            TooltipPlacement::Bottom
+        },
+        delay_ms: if state == "delay" { 350 } else { 0 },
+        gap: 6.0,
+        viewport_padding: 4.0,
+        max_width: 280.0,
     }
 }
 
@@ -1090,6 +1121,7 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::EmptyState, "extreme-clip") => Size::new(92, 180),
         (Component::FormField, _) => Size::new(420, 160),
         (Component::InteractiveCard, _) => Size::new(420, 140),
+        (Component::Tooltip, _) => Size::new(420, 140),
         _ => SIZE,
     }
 }
@@ -1185,7 +1217,7 @@ fn iced_fixture<'a>(
     let tokens = theme.tokens();
     let hovered = matches!(
         fixture.state,
-        "hover" | "selected-hover" | "tooltip-delay" | "tooltip-edge"
+        "hover" | "selected-hover" | "tooltip-delay" | "tooltip-edge" | "open" | "delay" | "edge"
     );
     let cursor = if hovered {
         mouse::Cursor::Available(Point::new(
@@ -1429,6 +1461,16 @@ fn iced_fixture<'a>(
             .selected(true)
             .on_select(())
             .view(tokens),
+        Component::Tooltip => {
+            let trigger = container(icon(Icon::Add, 14.0, tokens.colors.muted))
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center);
+            IcedTooltip::new(trigger, text("Add source").size(11))
+                .config(tooltip_fixture_config(fixture.state))
+                .view(tokens)
+        }
     };
     (
         container(view)
@@ -1985,6 +2027,14 @@ fn runtime_fixture(
                 .create_detached_component(document_id, RuntimeText::new("Interactive surface"))?;
             document.context_mut().append_child(card, label)?;
             card.stable_id()
+        }
+        Component::Tooltip => {
+            let component = RuntimeIconButton::new(Icon::Add, "Add source")
+                .tooltip("Add source", tooltip_fixture_config(fixture.state));
+            document
+                .context_mut()
+                .create_component(document_id, component)?
+                .stable_id()
         }
     };
     let mut hierarchy = MutationQueue::new();
@@ -2573,7 +2623,7 @@ fn apply_runtime_state(
                 &pointer(PointerPhase::Move, center_x, center_y),
             )?
             .prevent_default),
-        "tooltip-delay" | "tooltip-edge" => {
+        "tooltip-delay" | "tooltip-edge" | "open" | "edge" => {
             adapter.dispatch_at(
                 context,
                 document_id,
@@ -2584,7 +2634,27 @@ fn apply_runtime_state(
             if let Some(deadline) = deadline {
                 context.advance_animations(deadline);
             }
-            Ok(deadline.is_some())
+            Ok(if matches!(fixture.state, "open" | "edge") {
+                context
+                    .world()
+                    .overlay_host(target)
+                    .is_some_and(|host| host.active.is_some())
+            } else {
+                deadline.is_some()
+            })
+        }
+        "delay" if fixture.component == Component::Tooltip => {
+            adapter.dispatch_at(
+                context,
+                document_id,
+                &pointer(PointerPhase::Move, center_x, center_y),
+                Duration::ZERO,
+            )?;
+            Ok(context.next_animation_deadline().is_some()
+                && context
+                    .world()
+                    .overlay_host(target)
+                    .is_some_and(|host| host.active.is_none()))
         }
         "pressed" | "selected-pressed" => Ok(adapter
             .dispatch(
@@ -3261,17 +3331,20 @@ fn write_evidence(
                 | Component::LabeledValue
         ),
     };
-    let tooltip = (fixture.component == Component::IconButton)
-        .then(|| {
-            runtime
-                .document
-                .context()
-                .icon_button_tooltip(Entity::<RuntimeIconButton>::from_stable_id(runtime.target))
-                .ok()
-                .flatten()
-                .map(|tooltip| tooltip.stable_id())
-        })
-        .flatten();
+    let tooltip = matches!(
+        fixture.component,
+        Component::IconButton | Component::Tooltip
+    )
+    .then(|| {
+        runtime
+            .document
+            .context()
+            .icon_button_tooltip(Entity::<RuntimeIconButton>::from_stable_id(runtime.target))
+            .ok()
+            .flatten()
+            .map(|tooltip| tooltip.stable_id())
+    })
+    .flatten();
     let active_overlay = world
         .overlay_host(runtime.target)
         .and_then(|host| host.active);
@@ -3331,6 +3404,9 @@ fn write_evidence(
                 | "keyboard-activation"
                 | "tooltip-delay"
                 | "tooltip-edge"
+                | "open"
+                | "delay"
+                | "edge"
                 | "pointer-toggle"
                 | "space-toggle"
                 | "accessibility-toggle"
@@ -3356,6 +3432,7 @@ fn write_evidence(
             | Component::Textarea
             | Component::Checkbox
             | Component::IconButton
+            | Component::Tooltip
             | Component::SegmentedControl
             | Component::Tabs
             | Component::Spinner
@@ -3433,8 +3510,30 @@ fn write_evidence(
                     }
                     _ => true,
                 }))
-        && (!matches!(fixture.state, "tooltip-delay" | "tooltip-edge")
-            || (tooltip.is_some() && tooltip == active_overlay));
+        && match (fixture.component, fixture.state) {
+            (Component::Tooltip, "delay") => {
+                tooltip.is_some()
+                    && active_overlay.is_none()
+                    && runtime.next_deadline.is_some()
+                    && tooltip.is_some_and(|id| {
+                        world.accessibility(id).is_some_and(|node| {
+                            node.role == nana_ui::runtime::AccessibilityRole::Tooltip
+                                && node.label.as_deref() == Some("Add source")
+                        })
+                    })
+            }
+            (Component::Tooltip, "open" | "edge") | (_, "tooltip-delay" | "tooltip-edge") => {
+                tooltip.is_some()
+                    && tooltip == active_overlay
+                    && tooltip.is_some_and(|id| {
+                        world.accessibility(id).is_some_and(|node| {
+                            node.role == nana_ui::runtime::AccessibilityRole::Tooltip
+                                && node.label.as_deref() == Some("Add source")
+                        })
+                    })
+            }
+            _ => true,
+        };
     let iced_verdict =
         if fixture.component == Component::Textarea && textarea_is_focused(fixture.state) {
             "deterministic compatibility content and focus state rendered for manual review"
@@ -3501,6 +3600,10 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         (Component::Textarea, _) => (
             "manual-required",
             "Review the generated dark and light compatibility and Runtime images for placeholder, multiline, focus, selection, invalid, disabled, clipping and scrolling semantics; IME remains a real Hosted gate",
+        ),
+        (Component::Tooltip, _) => (
+            "manual-required",
+            "Review the generated dark and light Iced Tooltip and Runtime overlay images for open, delay-not-open and edge placement; public default stays Iced until visual and platform review",
         ),
         (Component::SegmentedControl, _) => (
             "pass",
@@ -3596,6 +3699,9 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         }
         (Component::Card, _) => {
             "intentional: Runtime preserves the authored title casing while Iced uppercases its compatibility heading"
+        }
+        (Component::Tooltip, _) => {
+            "intentional: Runtime Tooltip is a label-only overlay hosted by the trigger; Iced wraps arbitrary content. Visual review is the qualification gate"
         }
         _ => fixture.divergence,
     }
