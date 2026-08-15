@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use accesskit::{
-    Action, ActionData, Invalid, Node, NodeId, Rect, Role, TextPosition,
+    Action, ActionData, Invalid, Node, NodeId, Orientation, Rect, Role, TextPosition,
     TextSelection as AccessKitTextSelection, Toggled, Tree, TreeId, TreeUpdate,
 };
 use nana_ui_runtime::{
@@ -470,6 +470,9 @@ fn project_node(
     if let Some(value) = &node.value {
         projected.set_value(value.to_string());
     }
+    if let Some(description) = &node.description {
+        projected.set_description(description.to_string());
+    }
     let mut children = node
         .children
         .iter()
@@ -521,6 +524,9 @@ fn project_node(
             Toggled::False
         });
     }
+    if node.role == AccessibilityRole::RadioGroup {
+        projected.set_orientation(Orientation::Horizontal);
+    }
     if interactive && !node.disabled && supports_click(node.role) {
         projected.add_action(Action::Click);
     }
@@ -561,6 +567,7 @@ const fn supports_click(role: AccessibilityRole) -> bool {
             | AccessibilityRole::Switch
             | AccessibilityRole::Tab
             | AccessibilityRole::MenuItem
+            | AccessibilityRole::Radio
     )
 }
 
@@ -575,6 +582,7 @@ const fn supports_focus(role: AccessibilityRole) -> bool {
             | AccessibilityRole::ComboBox
             | AccessibilityRole::Tab
             | AccessibilityRole::MenuItem
+            | AccessibilityRole::Radio
     )
 }
 
@@ -642,7 +650,10 @@ const fn project_role(role: AccessibilityRole, multiline: bool) -> Role {
         AccessibilityRole::ColumnHeader => Role::ColumnHeader,
         AccessibilityRole::TabList => Role::TabList,
         AccessibilityRole::Tab => Role::Tab,
+        AccessibilityRole::RadioGroup => Role::RadioGroup,
+        AccessibilityRole::Radio => Role::RadioButton,
         AccessibilityRole::Dialog => Role::Dialog,
+        AccessibilityRole::AlertDialog => Role::AlertDialog,
         AccessibilityRole::Menu => Role::Menu,
         AccessibilityRole::MenuItem => Role::MenuItem,
         AccessibilityRole::Tooltip => Role::Tooltip,
@@ -667,6 +678,7 @@ mod tests {
                 .collect(),
             role: AccessibilityRole::Generic,
             label: None,
+            description: None,
             value: None,
             disabled: false,
             checked: None,
@@ -694,6 +706,7 @@ mod tests {
         input.multiline = true;
         input.focused = true;
         input.label = Some("Message".into());
+        input.description = Some("Required details".into());
         input.value = Some("hello".into());
         input.bounds = LayoutBox {
             x: 10.0,
@@ -713,6 +726,7 @@ mod tests {
             .unwrap();
         assert_eq!(input.role(), Role::MultilineTextInput);
         assert_eq!(input.label(), Some("Message"));
+        assert_eq!(input.description(), Some("Required details"));
         assert_eq!(input.value(), Some("hello"));
         assert_eq!(input.bounds().unwrap().x1, 110.0);
     }
@@ -974,6 +988,28 @@ mod tests {
         assert_eq!(range.max_numeric_value(), Some(1.0));
         assert_eq!(range.numeric_value_step(), Some(0.25));
         assert_eq!(range.numeric_value(), Some(0.5));
+
+        let mut group = node(8, Some(1), &[9]);
+        group.role = AccessibilityRole::RadioGroup;
+        let (_, group) = project_node(&group, None, true, 1.0)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(group.role(), Role::RadioGroup);
+        assert_eq!(group.orientation(), Some(Orientation::Horizontal));
+        assert!(!group.supports_action(Action::Click));
+
+        let mut radio = node(9, Some(8), &[]);
+        radio.role = AccessibilityRole::Radio;
+        radio.checked = Some(true);
+        let (_, radio) = project_node(&radio, None, true, 1.0)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(radio.role(), Role::RadioButton);
+        assert_eq!(radio.toggled(), Some(Toggled::True));
+        assert!(radio.supports_action(Action::Click));
+        assert!(radio.supports_action(Action::Focus));
     }
 
     #[cfg(not(target_os = "android"))]

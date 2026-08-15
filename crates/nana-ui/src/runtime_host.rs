@@ -30,6 +30,29 @@ use crate::{
 
 pub use nana_ui_platform::WindowSettings as RuntimeWindowSettings;
 
+fn gated_runtime_input_update(
+    disposition: InputDisposition,
+    id: WindowId,
+    raw_input: impl FnOnce() -> Result<RuntimeProgramUpdate, FrameworkError>,
+) -> RuntimeProgramUpdate {
+    if disposition.prevent_default {
+        RuntimeProgramUpdate::redraw(id)
+    } else {
+        raw_input().unwrap_or_else(|error| panic!("RuntimeProgram input handler failed: {error}"))
+    }
+}
+
+fn gated_runtime_window_update(
+    prevent_raw: bool,
+    raw_event: impl FnOnce() -> RuntimeProgramUpdate,
+) -> RuntimeProgramUpdate {
+    if prevent_raw {
+        RuntimeProgramUpdate::default()
+    } else {
+        raw_event()
+    }
+}
+
 /// Host services that are safe to retain or invoke from application code.
 /// Native window and Iced identities intentionally do not cross this boundary.
 #[derive(Clone)]
@@ -465,13 +488,9 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
             .transpose()
             .unwrap_or_else(|error| panic!("RuntimeProgram input dispatch failed: {error}"))
             .unwrap_or_default();
-        let mut update = self
-            .program
-            .input_event(id, &event, &context)
-            .unwrap_or_else(|error| panic!("RuntimeProgram input handler failed: {error}"));
-        if disposition.prevent_default {
-            update = update.merge(RuntimeProgramUpdate::redraw(id));
-        }
+        let update = gated_runtime_input_update(disposition, id, || {
+            self.program.input_event(id, &event, &context)
+        });
         (disposition, Self::hosted_update(update))
     }
 
@@ -493,10 +512,12 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
         }
         let geometry = self.geometries.get(&id).copied().unwrap_or_default();
         let context = Self::context(hosted, id, geometry, self.tasks.clone());
+        let mut runtime_ime_owned = false;
         let ime_changed = if let WindowEvent::Ime { event, .. } = &event {
             self.program
                 .document_mut(id)
                 .map(|document| {
+                    runtime_ime_owned = true;
                     let document_id = document.document();
                     match event {
                         nana_ui_platform::ImeEvent::Enabled => Ok(false),
@@ -517,7 +538,15 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
         } else {
             false
         };
-        let mut update = self.program.window_event(event, &context);
+        let modal_blocks_ime = matches!(event, WindowEvent::Ime { .. })
+            && self.program.document(id).is_some_and(|document| {
+                document
+                    .context()
+                    .has_blocking_runtime_overlay(document.document())
+            });
+        let mut update = gated_runtime_window_update(runtime_ime_owned || modal_blocks_ime, || {
+            self.program.window_event(event, &context)
+        });
         if ime_changed {
             update = update.merge(RuntimeProgramUpdate::redraw(id));
         }
@@ -841,7 +870,12 @@ fn event_geometry(event: &WindowEvent) -> Option<WindowGeometry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{hosted_window_settings, runtime_text_input_request};
+    use super::{
+        gated_runtime_input_update, gated_runtime_window_update, hosted_window_settings,
+        runtime_text_input_request,
+    };
+    use nana_ui_platform::{InputDisposition, InputEvent, InputModifiers, WindowId};
+    use nana_ui_runtime::{AppContext, Dialog, DocumentId, OverlayHost};
 
     #[test]
     fn runtime_windows_use_native_chrome_until_a_runtime_chrome_contract_exists() {
@@ -882,5 +916,87 @@ mod tests {
         let request = runtime_text_input_request(&document);
         assert!(!request.enabled);
         assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
+    }
+
+    #[test]
+    fn consumed_runtime_input_never_reaches_the_raw_program_handler() {
+        let mut called = false;
+        let _ = gated_runtime_input_update(
+            InputDisposition {
+                prevent_default: true,
+            },
+            WindowId::PRIMARY,
+            || {
+                called = true;
+                Ok(super::RuntimeProgramUpdate::default())
+            },
+        );
+        assert!(!called);
+
+        let _ = gated_runtime_input_update(
+            InputDisposition {
+                prevent_default: false,
+            },
+            WindowId::PRIMARY,
+            || {
+                called = true;
+                Ok(super::RuntimeProgramUpdate::default())
+            },
+        );
+        assert!(called);
+    }
+
+    #[test]
+    fn blocking_overlay_primary_tab_never_reaches_the_raw_program_handler() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let dialog = context
+            .create_component(document, Dialog::new("Settings"))
+            .unwrap();
+        context.append_child(host, dialog).unwrap();
+        context.activate_overlay(host, dialog).unwrap();
+        let disposition = crate::RuntimeInputAdapter::default()
+            .dispatch(
+                &mut context,
+                document,
+                &InputEvent::Keyboard {
+                    pressed: true,
+                    key: "Tab".into(),
+                    text: None,
+                    code: "Tab".into(),
+                    repeat: false,
+                    modifiers: InputModifiers {
+                        control: true,
+                        ..InputModifiers::default()
+                    },
+                },
+            )
+            .unwrap();
+
+        let mut calls = 0;
+        let _ = gated_runtime_input_update(disposition, WindowId::PRIMARY, || {
+            calls += 1;
+            Ok(super::RuntimeProgramUpdate::default())
+        });
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn runtime_owned_or_modal_ime_never_reaches_the_raw_window_handler() {
+        let mut calls = 0;
+        let _ = gated_runtime_window_update(true, || {
+            calls += 1;
+            super::RuntimeProgramUpdate::default()
+        });
+        assert_eq!(calls, 0);
+
+        let _ = gated_runtime_window_update(false, || {
+            calls += 1;
+            super::RuntimeProgramUpdate::default()
+        });
+        assert_eq!(calls, 1);
     }
 }

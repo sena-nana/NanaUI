@@ -140,11 +140,11 @@ component_catalog! {
     ICON_BUTTON => { id: "icon-button", name: "IconButton", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     CARD => { id: "card", name: "Card", family: Primitive, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility, Animation] },
     SWITCH => { id: "switch", name: "Switch", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
-    TEXTAREA => { id: "textarea", name: "Textarea", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
+    TEXTAREA => { id: "textarea", name: "Textarea", family: Control, migration: RuntimeCandidate, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     HOSTED_TEXTAREA => { id: "hosted-textarea", name: "HostedTextarea", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     RANGE_FIELD => { id: "range-field", name: "RangeField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SELECT => { id: "select", name: "Select", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    SEGMENTED_CONTROL => { id: "segmented-control", name: "SegmentedControl", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    SEGMENTED_CONTROL => { id: "segmented-control", name: "SegmentedControl", family: Control, migration: RuntimeCandidate, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     TABS => { id: "tabs", name: "Tabs", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     REORDER_LIST => { id: "reorder-list", name: "ReorderList", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     CALENDAR_HEATMAP => { id: "calendar-heatmap", name: "CalendarHeatmap", family: Data, migration: Compatibility, feature: Some("calendar"), compiled: cfg!(feature = "calendar"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
@@ -153,8 +153,8 @@ component_catalog! {
     SPINNER => { id: "spinner", name: "Spinner", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Animation, Accessibility] },
     SKELETON => { id: "skeleton", name: "Skeleton", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Animation] },
     LEVEL_METER => { id: "level-meter", name: "LevelMeter", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Accessibility] },
-    STATUS_BADGE => { id: "status-badge", name: "StatusBadge", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Accessibility] },
-    VALIDATION_MESSAGE => { id: "validation-message", name: "ValidationMessage", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Accessibility] },
+    STATUS_BADGE => { id: "status-badge", name: "StatusBadge", family: Feedback, migration: RuntimeCandidate, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Accessibility] },
+    VALIDATION_MESSAGE => { id: "validation-message", name: "ValidationMessage", family: Feedback, migration: RuntimeCandidate, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Accessibility] },
     TOAST => { id: "toast", name: "Toast", family: Feedback, migration: Compatibility, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     COMMAND_PALETTE => { id: "command-palette", name: "CommandPalette", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     DIALOG => { id: "dialog", name: "Dialog", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
@@ -183,8 +183,8 @@ component_catalog! {
     IMAGE_VIEWER => { id: "image-viewer", name: "ImageViewer", family: Media, migration: Compatibility, feature: Some("image-viewer"), compiled: cfg!(feature = "image-viewer"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: Compatibility, feature: Some("xy-pad"), compiled: cfg!(feature = "xy-pad"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     FORM_FIELD => { id: "form-field", name: "FormField", family: Control, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
-    LABELED_VALUE => { id: "labeled-value", name: "LabeledValue", family: Data, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
-    EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
+    LABELED_VALUE => { id: "labeled-value", name: "LabeledValue", family: Data, migration: RuntimeCandidate, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
+    EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: RuntimeCandidate, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Accessibility] },
     INTERACTIVE_CARD => { id: "interactive-card", name: "InteractiveCard", family: Control, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     LIST_ITEM => { id: "list-item", name: "ListItem", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
@@ -257,6 +257,27 @@ mod tests {
             assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
             assert_eq!(component_uses_runtime(id), support.compiled);
         }
+    }
+
+    #[test]
+    fn candidate_components_keep_the_compatibility_default_route() {
+        for id in [
+            component_ids::TEXTAREA,
+            component_ids::SEGMENTED_CONTROL,
+            component_ids::STATUS_BADGE,
+            component_ids::VALIDATION_MESSAGE,
+            component_ids::EMPTY_STATE,
+            component_ids::LABELED_VALUE,
+        ] {
+            let support = component_support(id).expect("candidate component is cataloged");
+            assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
+            assert!(!component_uses_runtime(id));
+        }
+
+        let hosted = component_support(component_ids::HOSTED_TEXTAREA)
+            .expect("hosted textarea is cataloged");
+        assert_eq!(hosted.migration, ComponentMigrationState::Compatibility);
+        assert!(!component_uses_runtime(component_ids::HOSTED_TEXTAREA));
     }
 
     #[test]

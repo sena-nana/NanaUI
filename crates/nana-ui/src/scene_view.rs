@@ -399,8 +399,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
                             .expect("validated host texture remains registered");
                         renderer.draw_primitive(
                             bounds,
-                            GpuTexturePrimitive::from_layer(
-                                HostTextureLayer::new(binding.texture)
+                            GpuTexturePrimitive::from_scene(
+                                primitive.id.node.get(),
+                                primitive.id.slot,
+                                HostTextureLayer::from_binding(binding)
                                     .with_opacity(primitive.opacity),
                             ),
                         );
@@ -449,28 +451,37 @@ fn paint_primitive(
             border_width,
             corner_radius,
             shadow,
-        } => renderer.fill_quad(
-            renderer::Quad {
-                bounds,
-                border: Border::default()
-                    .color(color_with_opacity(
-                        border_color.unwrap_or([0.0, 0.0, 0.0, 0.0]),
-                        primitive.opacity,
-                    ))
-                    .width(*border_width)
-                    .rounded(*corner_radius),
-                shadow: shadow.map_or_else(Shadow::default, |shadow| Shadow {
-                    color: color_with_opacity(shadow.color, primitive.opacity),
-                    offset: Vector::new(0.0, shadow.offset_y),
-                    blur_radius: shadow.blur_radius,
-                }),
-                ..renderer::Quad::default()
-            },
-            Background::Color(color_with_opacity(
-                background.unwrap_or([0.0, 0.0, 0.0, 0.0]),
-                primitive.opacity,
-            )),
+        } => paint_quad(
+            renderer,
+            bounds,
+            *background,
+            *border_color,
+            *border_width,
+            *corner_radius,
+            *shadow,
+            primitive.opacity,
         ),
+        ScenePrimitiveKind::QuadBatch {
+            bounds,
+            background,
+            border_color,
+            border_width,
+            corner_radius,
+            shadow,
+        } => {
+            for bounds in bounds {
+                paint_quad(
+                    renderer,
+                    translated_rect(*bounds, primitive.transform.0, origin),
+                    *background,
+                    *border_color,
+                    *border_width,
+                    *corner_radius,
+                    *shadow,
+                    primitive.opacity,
+                );
+            }
+        }
         ScenePrimitiveKind::Text {
             content,
             color,
@@ -580,6 +591,41 @@ fn paint_primitive(
             unreachable!("custom primitives are rejected by IcedSceneView::new")
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_quad(
+    renderer: &mut iced::Renderer,
+    bounds: Rectangle,
+    background: Option<[f32; 4]>,
+    border_color: Option<[f32; 4]>,
+    border_width: f32,
+    corner_radius: f32,
+    shadow: Option<nana_ui_runtime::ComponentElevation>,
+    opacity: f32,
+) {
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds,
+            border: Border::default()
+                .color(color_with_opacity(
+                    border_color.unwrap_or([0.0, 0.0, 0.0, 0.0]),
+                    opacity,
+                ))
+                .width(border_width)
+                .rounded(corner_radius),
+            shadow: shadow.map_or_else(Shadow::default, |shadow| Shadow {
+                color: color_with_opacity(shadow.color, opacity),
+                offset: Vector::new(0.0, shadow.offset_y),
+                blur_radius: shadow.blur_radius,
+            }),
+            ..renderer::Quad::default()
+        },
+        Background::Color(color_with_opacity(
+            background.unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            opacity,
+        )),
+    );
 }
 
 fn translated_rect(bounds: SceneRect, transform: [f32; 6], origin: Point) -> Rectangle {
