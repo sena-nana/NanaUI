@@ -19,6 +19,8 @@ var source_sampler: sampler;
 struct LayerUniform {
     // opacity, corner radius (logical px), width, height
     params: vec4<f32>,
+    // x is 1 for an opaque source and 0 for premultiplied alpha.
+    source: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -51,9 +53,14 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let distance = length(max(corner, vec2<f32>(0.0)))
         + min(max(corner.x, corner.y), 0.0) - radius;
     let coverage = select(1.0, clamp(0.5 - distance / max(fwidth(distance), 0.0001), 0.0, 1.0), radius > 0.0);
-    return textureSample(source, source_sampler, input.uv) * layer.params.x * coverage;
+    let sampled = textureSample(source, source_sampler, input.uv);
+    let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
+    return vec4<f32>(sampled.rgb, source_alpha) * layer.params.x * coverage;
 }
 "#;
+
+static NEXT_PRESENTATION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_HOST_TEXTURE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A stable handle to a host-owned, filterable 2D WGPU texture.
 ///
@@ -68,16 +75,65 @@ pub struct HostTexture {
 #[derive(Debug)]
 struct HostTextureState {
     id: u64,
-    generation: AtomicU64,
+    instance_identity: u64,
     version: AtomicU64,
-    view: RwLock<wgpu::TextureView>,
+    view: VersionedResource<wgpu::TextureView>,
 }
 
 #[derive(Debug)]
 struct HostTextureSnapshot {
     id: u64,
     generation: u64,
+    instance_identity: u64,
     view: wgpu::TextureView,
+}
+
+#[derive(Debug)]
+struct VersionedResource<T> {
+    state: RwLock<VersionedResourceState<T>>,
+}
+
+#[derive(Debug)]
+struct VersionedResourceState<T> {
+    generation: u64,
+    resource: T,
+}
+
+impl<T> VersionedResource<T> {
+    fn new(generation: u64, resource: T) -> Self {
+        Self {
+            state: RwLock::new(VersionedResourceState {
+                generation,
+                resource,
+            }),
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.state
+            .read()
+            .expect("versioned resource lock")
+            .generation
+    }
+
+    fn replace(&self, resource: T) -> u64 {
+        self.replace_with(|_| resource)
+    }
+
+    fn replace_with(&self, resource: impl FnOnce(u64) -> T) -> u64 {
+        let mut state = self.state.write().expect("versioned resource lock");
+        let generation = state.generation.saturating_add(1);
+        state.resource = resource(generation);
+        state.generation = generation;
+        generation
+    }
+}
+
+impl<T: Clone> VersionedResource<T> {
+    fn snapshot(&self) -> (u64, T) {
+        let state = self.state.read().expect("versioned resource lock");
+        (state.generation, state.resource.clone())
+    }
 }
 
 impl HostTexture {
@@ -85,9 +141,9 @@ impl HostTexture {
         Self {
             state: Arc::new(HostTextureState {
                 id,
-                generation: AtomicU64::new(generation),
+                instance_identity: next_host_texture_instance_id(),
                 version: AtomicU64::new(generation),
-                view: RwLock::new(view),
+                view: VersionedResource::new(generation, view),
             }),
         }
     }
@@ -97,7 +153,7 @@ impl HostTexture {
     }
 
     pub fn generation(&self) -> u64 {
-        self.state.generation.load(Ordering::Acquire)
+        self.state.view.generation()
     }
 
     /// Returns the monotonically increasing content version.
@@ -115,22 +171,22 @@ impl HostTexture {
     /// The stable handle is intentionally retained so an existing Iced tree
     /// observes the replacement without rebuilding its widgets or layout.
     pub fn replace_view(&self, view: wgpu::TextureView) -> u64 {
-        *self.state.view.write().expect("host texture view lock") = view;
-        self.state.generation.fetch_add(1, Ordering::AcqRel);
+        self.state.view.replace(view);
         self.invalidate()
     }
 
     fn snapshot(&self) -> HostTextureSnapshot {
+        let (generation, view) = self.state.view.snapshot();
         HostTextureSnapshot {
             id: self.id(),
-            generation: self.generation(),
-            view: self
-                .state
-                .view
-                .read()
-                .expect("host texture view lock")
-                .clone(),
+            generation,
+            instance_identity: self.state.instance_identity,
+            view,
         }
+    }
+
+    fn same_handle(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
     }
 }
 
@@ -174,8 +230,36 @@ impl HostTextureBinding {
 /// remains with the hosted renderer.
 #[derive(Debug, Clone, Default)]
 pub struct HostTextureRegistry {
-    bindings: Arc<RwLock<HashMap<String, HostTextureBinding>>>,
+    bindings: Arc<RwLock<HashMap<String, RegisteredHostTextureBinding>>>,
     revision: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone)]
+struct RegisteredHostTextureBinding {
+    binding: HostTextureBinding,
+    generation: u64,
+    version: u64,
+}
+
+impl RegisteredHostTextureBinding {
+    fn new(binding: HostTextureBinding) -> Self {
+        let generation = binding.texture.generation();
+        let version = binding.texture.version();
+        Self {
+            binding,
+            generation,
+            version,
+        }
+    }
+
+    fn matches(&self, binding: &HostTextureBinding) -> bool {
+        self.binding.texture.same_handle(&binding.texture)
+            && self.generation == binding.texture.generation()
+            && self.version == binding.texture.version()
+            && self.binding.width == binding.width
+            && self.binding.height == binding.height
+            && self.binding.alpha_mode == binding.alpha_mode
+    }
 }
 
 impl HostTextureRegistry {
@@ -199,10 +283,13 @@ impl HostTextureRegistry {
             height: height.max(1),
             alpha_mode,
         };
-        self.bindings
-            .write()
-            .expect("host texture registry")
-            .insert(slot, binding.clone());
+        let mut bindings = self.bindings.write().expect("host texture registry");
+        if let Some(current) = bindings.get(&slot)
+            && current.matches(&binding)
+        {
+            return current.binding.clone();
+        }
+        bindings.insert(slot, RegisteredHostTextureBinding::new(binding.clone()));
         self.revision.fetch_add(1, Ordering::AcqRel);
         binding
     }
@@ -211,11 +298,16 @@ impl HostTextureRegistry {
         self.bindings
             .read()
             .ok()
-            .and_then(|bindings| bindings.get(slot).cloned())
+            .and_then(|bindings| bindings.get(slot).map(|entry| entry.binding.clone()))
     }
 
     pub fn remove(&self, slot: &str) -> Option<HostTextureBinding> {
-        let removed = self.bindings.write().ok()?.remove(slot);
+        let removed = self
+            .bindings
+            .write()
+            .ok()?
+            .remove(slot)
+            .map(|entry| entry.binding);
         if removed.is_some() {
             self.revision.fetch_add(1, Ordering::AcqRel);
         }
@@ -225,7 +317,11 @@ impl HostTextureRegistry {
     /// Marks a slot's content as changed while retaining its texture view.
     /// Consumers can compare [`Self::revision`] to schedule the next frame.
     pub fn invalidate(&self, slot: &str) -> Option<u64> {
-        let version = self.get(slot)?.texture.invalidate();
+        let mut bindings = self.bindings.write().ok()?;
+        let binding = bindings.get_mut(slot)?;
+        let version = binding.binding.texture.invalidate();
+        binding.generation = binding.binding.texture.generation();
+        binding.version = version;
         self.revision.fetch_add(1, Ordering::AcqRel);
         Some(version)
     }
@@ -270,6 +366,7 @@ pub struct HostTextureLayer {
     opacity: f32,
     corner_radius: f32,
     clip: Option<LogicalRect>,
+    alpha_mode: Option<HostTextureAlphaMode>,
 }
 
 impl HostTextureLayer {
@@ -279,6 +376,17 @@ impl HostTextureLayer {
             opacity: 1.0,
             corner_radius: 0.0,
             clip: None,
+            alpha_mode: None,
+        }
+    }
+
+    pub fn from_binding(binding: HostTextureBinding) -> Self {
+        Self {
+            texture: binding.texture,
+            opacity: 1.0,
+            corner_radius: 0.0,
+            clip: None,
+            alpha_mode: Some(binding.alpha_mode),
         }
     }
 
@@ -303,6 +411,11 @@ impl HostTextureLayer {
         self
     }
 
+    pub const fn with_alpha_mode(mut self, alpha_mode: HostTextureAlphaMode) -> Self {
+        self.alpha_mode = Some(alpha_mode);
+        self
+    }
+
     pub const fn texture(&self) -> &HostTexture {
         &self.texture
     }
@@ -317,6 +430,11 @@ impl HostTextureLayer {
 
     pub const fn corner_radius(&self) -> f32 {
         self.corner_radius
+    }
+
+    pub fn alpha_mode(&self) -> HostTextureAlphaMode {
+        self.alpha_mode
+            .unwrap_or(HostTextureAlphaMode::Premultiplied)
     }
 }
 
@@ -335,6 +453,10 @@ impl GpuTextureView {
 
     pub fn from_layer(layer: HostTextureLayer) -> Self {
         Self { layer }
+    }
+
+    pub fn from_binding(binding: HostTextureBinding) -> Self {
+        Self::from_layer(HostTextureLayer::from_binding(binding))
     }
 
     pub fn with_opacity(mut self, opacity: f32) -> Self {
@@ -389,18 +511,35 @@ fn contain_size(width: f32, height: f32, aspect_ratio: f32) -> (f32, f32) {
     }
 }
 
+/// Renderer-owned state that gives each mounted texture widget a stable
+/// presentation identity. Applications do not need to allocate IDs.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct GpuTextureViewState {
+    presentation_id: u64,
+}
+
+impl Default for GpuTextureViewState {
+    fn default() -> Self {
+        Self {
+            presentation_id: next_presentation_id(),
+        }
+    }
+}
+
 impl<Message> shader::Program<Message> for GpuTextureView {
-    type State = ();
+    type State = GpuTextureViewState;
     type Primitive = GpuTexturePrimitive;
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         _cursor: iced::mouse::Cursor,
         _bounds: Rectangle,
     ) -> Self::Primitive {
         GpuTexturePrimitive {
             layer: self.layer.clone(),
+            presentation: PresentationIdentity::Widget(state.presentation_id),
         }
     }
 }
@@ -409,11 +548,15 @@ impl<Message> shader::Program<Message> for GpuTextureView {
 #[derive(Debug, Clone)]
 pub struct GpuTexturePrimitive {
     layer: HostTextureLayer,
+    presentation: PresentationIdentity,
 }
 
 impl GpuTexturePrimitive {
-    pub(crate) fn from_layer(layer: HostTextureLayer) -> Self {
-        Self { layer }
+    pub(crate) fn from_scene(node: u64, slot: u8, layer: HostTextureLayer) -> Self {
+        Self {
+            layer,
+            presentation: PresentationIdentity::Scene { node, slot },
+        }
     }
 }
 
@@ -429,16 +572,19 @@ impl shader::Primitive for GpuTexturePrimitive {
         viewport: &shader::Viewport,
     ) {
         let texture = self.layer.texture.snapshot();
-        let key = TextureKey::new(&self.layer);
+        let key = TextureKey::new(self.presentation, texture.id);
         let (slot, viewport_rect) = slot_for_bounds(texture.id, bounds, viewport.scale_factor());
         let clip = self
             .layer
             .clip
             .map(|clip| RenderSlot::new(texture.id, clip, viewport.scale_factor()).physical);
-        let needs_rebind = pipeline
-            .textures
-            .get(&key)
-            .is_none_or(|prepared| prepared.generation != texture.generation);
+        let needs_rebind = texture_needs_rebind(
+            pipeline
+                .textures
+                .get(&key)
+                .map(PreparedTexture::fingerprint),
+            &texture,
+        );
 
         if needs_rebind {
             let layer_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -450,14 +596,7 @@ impl shader::Primitive for GpuTexturePrimitive {
             queue.write_buffer(
                 &layer_uniform,
                 0,
-                bytemuck::bytes_of(&LayerUniform {
-                    params: [
-                        self.layer.opacity,
-                        self.layer.corner_radius,
-                        bounds.width.max(0.0),
-                        bounds.height.max(0.0),
-                    ],
-                }),
+                bytemuck::bytes_of(&make_layer_uniform(&self.layer, bounds)),
             );
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nana-ui host texture bind group"),
@@ -480,6 +619,7 @@ impl shader::Primitive for GpuTexturePrimitive {
             pipeline.textures.insert(
                 key,
                 PreparedTexture {
+                    instance_identity: texture.instance_identity,
                     generation: texture.generation,
                     bind_group,
                     slot,
@@ -493,14 +633,7 @@ impl shader::Primitive for GpuTexturePrimitive {
             queue.write_buffer(
                 &prepared.layer_uniform,
                 0,
-                bytemuck::bytes_of(&LayerUniform {
-                    params: [
-                        self.layer.opacity,
-                        self.layer.corner_radius,
-                        bounds.width.max(0.0),
-                        bounds.height.max(0.0),
-                    ],
-                }),
+                bytemuck::bytes_of(&make_layer_uniform(&self.layer, bounds)),
             );
             prepared.slot = slot;
             prepared.viewport = viewport_rect;
@@ -520,7 +653,7 @@ impl shader::Primitive for GpuTexturePrimitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        let key = TextureKey::new(&self.layer);
+        let key = TextureKey::new(self.presentation, self.layer.texture.id());
         let Some(texture) = pipeline.textures.get(&key) else {
             return;
         };
@@ -655,15 +788,12 @@ impl shader::Pipeline for GpuTexturePipeline {
     }
 
     fn trim(&mut self) {
-        self.textures.retain(|_, texture| {
-            let retain = texture.used;
-            texture.used = false;
-            retain
-        });
+        trim_unused(&mut self.textures, |texture| &mut texture.used);
     }
 }
 
 struct PreparedTexture {
+    instance_identity: u64,
     generation: u64,
     bind_group: wgpu::BindGroup,
     slot: RenderSlot,
@@ -673,28 +803,38 @@ struct PreparedTexture {
     used: bool,
 }
 
+impl PreparedTexture {
+    const fn fingerprint(&self) -> TextureFingerprint {
+        TextureFingerprint {
+            instance_identity: self.instance_identity,
+            generation: self.generation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextureFingerprint {
+    instance_identity: u64,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PresentationIdentity {
+    Widget(u64),
+    Scene { node: u64, slot: u8 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TextureKey {
-    id: u64,
-    opacity: u32,
-    corner_radius: u32,
-    clip: Option<[u32; 4]>,
+    presentation: PresentationIdentity,
+    texture_id: u64,
 }
 
 impl TextureKey {
-    fn new(layer: &HostTextureLayer) -> Self {
+    const fn new(presentation: PresentationIdentity, texture_id: u64) -> Self {
         Self {
-            id: layer.texture.id(),
-            opacity: layer.opacity.to_bits(),
-            corner_radius: layer.corner_radius.to_bits(),
-            clip: layer.clip.map(|clip| {
-                [
-                    clip.x.to_bits(),
-                    clip.y.to_bits(),
-                    clip.width.to_bits(),
-                    clip.height.to_bits(),
-                ]
-            }),
+            presentation,
+            texture_id,
         }
     }
 }
@@ -703,6 +843,64 @@ impl TextureKey {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LayerUniform {
     params: [f32; 4],
+    source: [f32; 4],
+}
+
+fn make_layer_uniform(layer: &HostTextureLayer, bounds: &Rectangle) -> LayerUniform {
+    LayerUniform {
+        params: [
+            layer.opacity,
+            layer.corner_radius,
+            bounds.width.max(0.0),
+            bounds.height.max(0.0),
+        ],
+        source: [
+            if layer.alpha_mode() == HostTextureAlphaMode::Opaque {
+                1.0
+            } else {
+                0.0
+            },
+            0.0,
+            0.0,
+            0.0,
+        ],
+    }
+}
+
+fn next_presentation_id() -> u64 {
+    NEXT_PRESENTATION_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn next_host_texture_instance_id() -> u64 {
+    // Zero is never issued, and exhaustion fails closed instead of reusing an
+    // identity that may still exist in a renderer cache.
+    NEXT_HOST_TEXTURE_INSTANCE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .expect("host texture instance identity space exhausted")
+}
+
+fn texture_needs_rebind(
+    prepared: Option<TextureFingerprint>,
+    texture: &HostTextureSnapshot,
+) -> bool {
+    prepared.is_none_or(|prepared| {
+        prepared.instance_identity != texture.instance_identity
+            || prepared.generation != texture.generation
+    })
+}
+
+fn trim_unused<K: Eq + std::hash::Hash, V>(
+    entries: &mut HashMap<K, V>,
+    mut used: impl FnMut(&mut V) -> &mut bool,
+) {
+    entries.retain(|_, entry| {
+        let used = used(entry);
+        let retain = *used;
+        *used = false;
+        retain
+    });
 }
 
 fn finite_opacity(opacity: f32) -> f32 {
@@ -737,12 +935,209 @@ fn intersect_physical(
 
 #[cfg(test)]
 mod tests {
-    use super::{contain_size, finite_aspect};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::thread;
+
+    use iced::futures::executor::block_on;
+    use iced::wgpu;
+    use iced::widget::shader::Pipeline as _;
+
+    use super::{
+        GpuTexturePipeline, GpuTextureViewState, HostTexture, HostTextureAlphaMode,
+        HostTextureLayer, HostTextureRegistry, PresentationIdentity, TextureFingerprint,
+        TextureKey, VersionedResource, contain_size, finite_aspect, make_layer_uniform,
+        texture_needs_rebind, trim_unused,
+    };
+    use iced::Rectangle;
 
     #[test]
     fn contain_preserves_aspect_inside_wide_and_tall_regions() {
         assert_eq!(contain_size(800.0, 800.0, 16.0 / 9.0), (800.0, 450.0));
         assert_eq!(contain_size(1920.0, 540.0, 16.0 / 9.0), (960.0, 540.0));
         assert_eq!(finite_aspect(f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn presentation_identity_separates_the_same_texture_in_two_widget_instances() {
+        let first = GpuTextureViewState::default();
+        let second = GpuTextureViewState::default();
+
+        assert_ne!(first.presentation_id, second.presentation_id);
+        assert_ne!(
+            TextureKey::new(PresentationIdentity::Widget(first.presentation_id), 7),
+            TextureKey::new(PresentationIdentity::Widget(second.presentation_id), 7)
+        );
+    }
+
+    #[test]
+    fn scene_identity_is_stable_across_frames_and_distinct_across_primitives() {
+        let first_frame = TextureKey::new(PresentationIdentity::Scene { node: 9, slot: 2 }, 7);
+        let next_frame = TextureKey::new(PresentationIdentity::Scene { node: 9, slot: 2 }, 7);
+        let sibling = TextureKey::new(PresentationIdentity::Scene { node: 10, slot: 2 }, 7);
+
+        assert_eq!(first_frame, next_frame);
+        assert_ne!(first_frame, sibling);
+    }
+
+    #[test]
+    fn replacing_a_dropped_handle_with_the_same_public_identity_always_rebinds() {
+        let (device, _) = test_device();
+        let old = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+        let old_snapshot = old.snapshot();
+        let old_fingerprint = TextureFingerprint {
+            instance_identity: old_snapshot.instance_identity,
+            generation: old_snapshot.generation,
+        };
+        drop(old);
+
+        let replacement = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+        let replacement_snapshot = replacement.snapshot();
+        assert_ne!(
+            old_snapshot.instance_identity,
+            replacement_snapshot.instance_identity
+        );
+        assert_eq!(old_snapshot.id, replacement_snapshot.id);
+        assert_eq!(old_snapshot.generation, replacement_snapshot.generation);
+
+        for presentation in [
+            PresentationIdentity::Widget(11),
+            PresentationIdentity::Scene { node: 9, slot: 2 },
+        ] {
+            assert_eq!(
+                TextureKey::new(presentation, old_snapshot.id),
+                TextureKey::new(presentation, replacement_snapshot.id)
+            );
+            assert!(texture_needs_rebind(
+                Some(old_fingerprint),
+                &replacement_snapshot
+            ));
+        }
+    }
+
+    #[test]
+    fn versioned_resource_snapshots_generation_and_resource_atomically() {
+        let resource = Arc::new(VersionedResource::new(0, 0));
+        let writer = Arc::clone(&resource);
+        let writer = thread::spawn(move || {
+            for _ in 0..1_000 {
+                writer.replace_with(|generation| generation);
+            }
+        });
+        for _ in 0..1_000 {
+            let (generation, value) = resource.snapshot();
+            assert_eq!(generation, value);
+        }
+        writer.join().unwrap();
+        assert_eq!(resource.snapshot(), (1_000, 1_000));
+    }
+
+    #[test]
+    fn replacing_a_host_view_advances_generation_and_version_together() {
+        let (device, _) = test_device();
+        let texture = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+
+        assert_eq!(texture.replace_view(test_texture_view(&device)), 4);
+        let snapshot = texture.snapshot();
+        assert_eq!(snapshot.generation, 4);
+        assert_eq!(texture.version(), 4);
+    }
+
+    #[test]
+    fn trim_keeps_only_entries_used_in_the_previous_frame_and_resets_them() {
+        let mut entries = HashMap::from([(1, true), (2, false)]);
+        trim_unused(&mut entries, |used| used);
+        assert_eq!(entries, HashMap::from([(1, false)]));
+        trim_unused(&mut entries, |used| used);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn alpha_mode_is_per_binding_and_exact_reregistration_is_a_noop() {
+        let texture = test_host_texture(7, 3);
+        let registry = HostTextureRegistry::new();
+        let premultiplied = registry.register(
+            "premultiplied",
+            texture.clone(),
+            320,
+            180,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let opaque = registry.register(
+            "opaque",
+            texture.clone(),
+            320,
+            180,
+            HostTextureAlphaMode::Opaque,
+        );
+        let revision = registry.revision();
+        registry.register(
+            "premultiplied",
+            texture.clone(),
+            320,
+            180,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        assert_eq!(registry.revision(), revision);
+
+        let bounds = Rectangle::new(iced::Point::ORIGIN, iced::Size::new(320.0, 180.0));
+        let premultiplied_uniform =
+            make_layer_uniform(&HostTextureLayer::from_binding(premultiplied), &bounds);
+        let opaque_uniform = make_layer_uniform(
+            &HostTextureLayer::from_binding(opaque),
+            &Rectangle::new(iced::Point::ORIGIN, iced::Size::new(320.0, 180.0)),
+        );
+        assert_eq!(premultiplied_uniform.source[0], 0.0);
+        assert_eq!(opaque_uniform.source[0], 1.0);
+    }
+
+    #[test]
+    fn opaque_shader_pipeline_builds_on_the_host_device() {
+        let (device, queue) = test_device();
+        let _pipeline = GpuTexturePipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    }
+
+    fn test_host_texture(id: u64, generation: u64) -> HostTexture {
+        let (device, _) = test_device();
+        HostTexture::from_wgpu(id, generation, test_texture_view(&device))
+    }
+
+    fn test_texture_view(device: &wgpu::Device) -> wgpu::TextureView {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("NanaUI GPU texture lifecycle test texture"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    fn test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = block_on(wgpu::util::initialize_adapter_from_env_or_default(
+            &instance, None,
+        ))
+        .expect("GPU texture lifecycle test requires a WGPU adapter");
+        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("NanaUI GPU texture lifecycle test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        }))
+        .expect("GPU texture lifecycle test requires a WGPU device");
+        (device, queue)
     }
 }

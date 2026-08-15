@@ -2,7 +2,10 @@
 
 use nana_ui_core::TableNavigation;
 use nana_ui_platform::{InputDisposition, InputEvent, PointerPhase};
-use nana_ui_runtime::{AppContext, DocumentId, FrameworkError, RangeAdjustment, ScrollOffset};
+use nana_ui_runtime::{
+    AppContext, DocumentId, FrameworkError, RangeAdjustment, RovingFocusIntent, ScrollOffset,
+};
+use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
 use std::time::Duration;
 
 const DEFAULT_LINE_SCROLL_EXTENT: f32 = 60.0;
@@ -44,6 +47,80 @@ impl RuntimeInputAdapter {
         event: &InputEvent,
         now: Duration,
     ) -> Result<InputDisposition, FrameworkError> {
+        let keyboard_barrier = matches!(event, InputEvent::Keyboard { .. })
+            && context.has_blocking_runtime_overlay(document);
+        if let InputEvent::Keyboard {
+            pressed: true,
+            key,
+            repeat,
+            modifiers,
+            ..
+        } = event
+            && !modifiers.alt
+            && !modifiers.control
+            && !modifiers.meta
+        {
+            let overlay_key = match key.as_str() {
+                "Escape" if !repeat => Some(OverlayKey::Escape),
+                "Tab" => Some(OverlayKey::Tab {
+                    reverse: modifiers.shift,
+                }),
+                _ => None,
+            };
+            if let Some(key) = overlay_key
+                && context.route_overlay_key(document, key)?
+            {
+                return Ok(InputDisposition {
+                    prevent_default: true,
+                });
+            }
+        }
+        if let InputEvent::Keyboard {
+            pressed: true,
+            key,
+            repeat,
+            modifiers,
+            ..
+        } = event
+        {
+            if key == "Tab"
+                && !modifiers.alt
+                && !modifiers.control
+                && !modifiers.meta
+                && context.navigate_sequential_focus(document, modifiers.shift)?
+            {
+                return Ok(InputDisposition {
+                    prevent_default: true,
+                });
+            }
+            if !modifiers.alt && !modifiers.control && !modifiers.meta && !modifiers.shift {
+                let segmented_navigation = match key.as_str() {
+                    "ArrowLeft" => Some(RovingFocusIntent::Previous),
+                    "ArrowRight" => Some(RovingFocusIntent::Next),
+                    "Home" => Some(RovingFocusIntent::First),
+                    "End" => Some(RovingFocusIntent::Last),
+                    _ => None,
+                };
+                if let Some(intent) = segmented_navigation
+                    && context.navigate_focused_segmented(document, intent)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+                if matches!(key.as_str(), " " | "Space" | "Enter")
+                    && let Some(target) = context.world().focused(document)
+                    && context.is_segmented_option_node(target)
+                {
+                    if !repeat {
+                        context.activate_node(target)?;
+                    }
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+            }
+        }
         let handled = match event {
             InputEvent::Pointer {
                 phase,
@@ -54,9 +131,22 @@ impl RuntimeInputAdapter {
                 is_primary,
                 ..
             } => {
-                let target = context.pointer_target(document, *x, *y);
+                let overlay_phase = match phase {
+                    PointerPhase::Move => OverlayPointerPhase::Move,
+                    PointerPhase::Down if *is_primary && *button == 0 => {
+                        OverlayPointerPhase::PrimaryDown
+                    }
+                    PointerPhase::Up if *is_primary && *button == 0 => {
+                        OverlayPointerPhase::PrimaryUp
+                    }
+                    PointerPhase::Cancel => OverlayPointerPhase::Cancel,
+                    PointerPhase::Down | PointerPhase::Up => OverlayPointerPhase::Move,
+                };
+                let overlay =
+                    context.route_overlay_pointer(document, *pointer_id, overlay_phase, *x, *y)?;
+                let target = overlay.target;
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
-                match phase {
+                let component_handled = match phase {
                     PointerPhase::Move => {
                         context.update_range_drag(document, *pointer_id, *x)? || target.is_some()
                     }
@@ -80,11 +170,14 @@ impl RuntimeInputAdapter {
                             });
                         }
                         let pressed = context.release_pointer(document, *pointer_id);
-                        pressed == target
-                            && target
-                                .map(|target| context.activate_node(target))
-                                .transpose()?
-                                .unwrap_or(false)
+                        if let Some(pressed) = pressed {
+                            if Some(pressed) == target {
+                                context.activate_node(pressed)?;
+                            }
+                            true
+                        } else {
+                            false
+                        }
                     }
                     PointerPhase::Cancel => {
                         let range = context.end_range_drag(document, *pointer_id, true)?;
@@ -93,7 +186,8 @@ impl RuntimeInputAdapter {
                         range || pressed
                     }
                     _ => false,
-                }
+                };
+                overlay.prevent_default || component_handled
             }
             InputEvent::Wheel {
                 x,
@@ -113,17 +207,28 @@ impl RuntimeInputAdapter {
                 } else {
                     1.0
                 };
-                context
-                    .scroll_at(
-                        document,
-                        *x,
-                        *y,
-                        ScrollOffset {
-                            x: -dx * scale,
-                            y: -dy * scale,
-                        },
-                    )?
-                    .is_some()
+                let delta = ScrollOffset {
+                    x: -dx * scale,
+                    y: -dy * scale,
+                };
+                let overlay = context.route_overlay_pointer(
+                    document,
+                    0,
+                    OverlayPointerPhase::Wheel,
+                    *x,
+                    *y,
+                )?;
+                let scrolled = if overlay.prevent_default {
+                    overlay
+                        .target
+                        .map(|target| context.scroll_overlay_from(document, target, delta))
+                        .transpose()?
+                        .flatten()
+                        .is_some()
+                } else {
+                    context.scroll_at(document, *x, *y, delta)?.is_some()
+                };
+                overlay.prevent_default || scrolled
             }
             InputEvent::Keyboard {
                 pressed,
@@ -190,7 +295,7 @@ impl RuntimeInputAdapter {
             _ => false,
         };
         Ok(InputDisposition {
-            prevent_default: handled,
+            prevent_default: handled || keyboard_barrier,
         })
     }
 }
@@ -200,9 +305,12 @@ mod tests {
     use super::*;
     use nana_ui_platform::{InputModifiers, PointerType};
     use nana_ui_runtime::{
-        Activate, Button, LayoutBox, MutationQueue, RangeField, ScrollAxes, ScrollMetrics,
-        ScrollView, Table, TableCell, TableRow, TextInput,
+        Activate, Button, Dialog, LayoutBox, Menu, MenuItem, ModalSlots, MutationQueue,
+        OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView,
+        SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow,
+        TextInput,
     };
+    use std::sync::{Arc, Mutex};
 
     fn wheel(x: f32, y: f32, delta_y: f32) -> InputEvent {
         InputEvent::Wheel {
@@ -284,6 +392,213 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(button.stable_id()), Some("Running"));
+    }
+
+    #[test]
+    fn segmented_pointer_lease_consumes_release_and_only_requests_on_inside_up() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let control = context
+            .create_component(document, SegmentedControl::new())
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, second], Some(first))
+            .unwrap();
+        let requests = Arc::new(Mutex::new(0));
+        let observed = Arc::clone(&requests);
+        context
+            .on(
+                control,
+                move |_control, _event: &SegmentedSelectionRequested, _cx| {
+                    *observed.lock().unwrap() += 1;
+                },
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            control.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 180.0,
+                height: 32.0,
+            },
+        );
+        layout.write_layout(
+            first.stable_id(),
+            LayoutBox {
+                x: 4.0,
+                y: 3.0,
+                width: 70.0,
+                height: 26.0,
+            },
+        );
+        layout.write_layout(
+            second.stable_id(),
+            LayoutBox {
+                x: 76.0,
+                y: 3.0,
+                width: 70.0,
+                height: 26.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.rebuild_hit_test(document);
+        let adapter = RuntimeInputAdapter::default();
+
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 90.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().focused(document), Some(second.stable_id()));
+        assert_eq!(
+            context
+                .read(control, SegmentedControl::focus_target)
+                .unwrap(),
+            Some(second.stable_id())
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Cancel, 90.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(*requests.lock().unwrap(), 0);
+
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 20.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Up, 140.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(*requests.lock().unwrap(), 0);
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 20.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Up, 20.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(*requests.lock().unwrap(), 1);
+        assert!(context.read(first, SegmentedOption::selected).unwrap());
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 20.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Cancel, 20.0, 12.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(*requests.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn document_tab_order_uses_one_roving_entry_and_wraps_both_directions() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let before = context
+            .create_component(document, Button::new("Before"))
+            .unwrap();
+        let control = context
+            .create_component(document, SegmentedControl::new())
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        let after = context
+            .create_component(document, Button::new("After"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, second], Some(first))
+            .unwrap();
+        context.focus_node(document, before.stable_id()).unwrap();
+        let tab = |shift| InputEvent::Keyboard {
+            pressed: true,
+            key: "Tab".into(),
+            text: None,
+            code: "Tab".into(),
+            repeat: false,
+            modifiers: InputModifiers {
+                shift,
+                ..InputModifiers::default()
+            },
+        };
+        let adapter = RuntimeInputAdapter::default();
+        for expected in [first.stable_id(), after.stable_id(), before.stable_id()] {
+            assert!(
+                adapter
+                    .dispatch(&mut context, document, &tab(false))
+                    .unwrap()
+                    .prevent_default
+            );
+            assert_eq!(context.world().focused(document), Some(expected));
+        }
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &tab(true))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().focused(document), Some(after.stable_id()));
+        assert!(context.focus_node(document, second.stable_id()).unwrap());
     }
 
     #[test]
@@ -469,6 +784,141 @@ mod tests {
     }
 
     #[test]
+    fn segmented_keyboard_routing_precedes_generic_navigation_and_activation() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let control = context
+            .create_component(document, SegmentedControl::new())
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let disabled = context
+            .create_detached_component(document, SegmentedOption::new("Split").disabled(true))
+            .unwrap();
+        let last = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, disabled, last], Some(first))
+            .unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&requests);
+        context
+            .on(
+                control,
+                move |_control, event: &SegmentedSelectionRequested, _cx| {
+                    observed.lock().unwrap().push(event.option);
+                },
+            )
+            .unwrap();
+        context.focus_node(document, first.stable_id()).unwrap();
+        let key = |key: &str, repeat: bool, modifiers: InputModifiers| InputEvent::Keyboard {
+            pressed: true,
+            key: key.into(),
+            text: None,
+            code: key.into(),
+            repeat,
+            modifiers,
+        };
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &key("ArrowRight", false, InputModifiers::default()),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().focused(document), Some(last.stable_id()));
+        assert_eq!(
+            context.read(control, SegmentedControl::selected).unwrap(),
+            Some(first.stable_id())
+        );
+        assert_eq!(&*requests.lock().unwrap(), &[last.stable_id()]);
+        for modifiers in [
+            InputModifiers {
+                alt: true,
+                ..InputModifiers::default()
+            },
+            InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
+            InputModifiers {
+                shift: true,
+                ..InputModifiers::default()
+            },
+            InputModifiers {
+                meta: true,
+                ..InputModifiers::default()
+            },
+        ] {
+            assert!(
+                !adapter
+                    .dispatch(&mut context, document, &key("Home", true, modifiers))
+                    .unwrap()
+                    .prevent_default
+            );
+        }
+        assert_eq!(context.world().focused(document), Some(last.stable_id()));
+        assert_eq!(requests.lock().unwrap().as_slice(), [last.stable_id()]);
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &key("Home", true, InputModifiers::default()),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().focused(document), Some(first.stable_id()));
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [last.stable_id(), first.stable_id()]
+        );
+        let count = requests.lock().unwrap().len();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &key("Space", true, InputModifiers::default()),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(requests.lock().unwrap().len(), count);
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &key("Enter", false, InputModifiers::default()),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(requests.lock().unwrap().last(), Some(&first.stable_id()));
+        assert_eq!(
+            context.read(control, SegmentedControl::selected).unwrap(),
+            Some(first.stable_id())
+        );
+        assert!(
+            context
+                .set_segmented_selection(control, Some(last))
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(control, SegmentedControl::selected).unwrap(),
+            Some(last.stable_id())
+        );
+    }
+
+    #[test]
     fn range_field_quantizes_keyboard_and_cancels_captured_drag() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -541,5 +991,275 @@ mod tests {
         );
         assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
         assert_eq!(context.world().pointer_capture(document, 1), None);
+    }
+
+    #[test]
+    fn overlay_pointer_sequence_never_activates_the_underlay() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let underlay = context
+            .create_component(document, Button::new("Underlay"))
+            .unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let dialog = context
+            .create_component(document, Dialog::new("Dialog"))
+            .unwrap();
+        context.append_child(host, dialog).unwrap();
+        let activations = Arc::new(Mutex::new(0));
+        let observed = Arc::clone(&activations);
+        context
+            .on(underlay, move |_button, _event: &Activate, _cx| {
+                *observed.lock().unwrap() += 1;
+            })
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            underlay.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 300.0,
+                height: 300.0,
+            },
+        );
+        layout.write_layout(
+            dialog.stable_id(),
+            LayoutBox {
+                x: 100.0,
+                y: 100.0,
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.activate_overlay(host, dialog).unwrap();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 20.0, 20.0),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Up, 20.0, 20.0),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(*activations.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn menu_item_can_close_during_activation_without_releasing_input_or_wheel_barrier() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let background = context
+            .create_component(document, ScrollView::new(ScrollAxes::Vertical))
+            .unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let menu = context.create_component(document, Menu::new()).unwrap();
+        let item = context
+            .create_component(document, MenuItem::new("Build"))
+            .unwrap();
+        context.append_child(background, host).unwrap();
+        context.append_child(host, menu).unwrap();
+        context.append_child(menu, item).unwrap();
+        let host_id = host.stable_id();
+        context
+            .on(item, move |_item, _event: &Activate, cx| {
+                cx.mutations()
+                    .set_overlay_host(host_id, OverlayHostState::default());
+            })
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        for (id, x, y, width, height) in [
+            (background.stable_id(), 0.0, 0.0, 300.0, 300.0),
+            (menu.stable_id(), 100.0, 100.0, 100.0, 100.0),
+            (item.stable_id(), 110.0, 110.0, 80.0, 32.0),
+        ] {
+            layout.write_layout(
+                id,
+                LayoutBox {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+            );
+        }
+        context.commit_mutations(layout).unwrap();
+        context
+            .set_scroll_metrics(
+                background,
+                ScrollMetrics {
+                    viewport_width: 300.0,
+                    viewport_height: 300.0,
+                    content_width: 300.0,
+                    content_height: 900.0,
+                },
+            )
+            .unwrap();
+        context.activate_overlay(host, menu).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        context.rebuild_hit_test(document);
+        let adapter = RuntimeInputAdapter::default();
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &wheel(20.0, 20.0, -1.0))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context
+                .world()
+                .scroll_offset(background.stable_id())
+                .unwrap()
+                .y,
+            0.0
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 120.0, 120.0),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Up, 120.0, 120.0),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(host.stable_id())
+                .unwrap()
+                .active,
+            None
+        );
+    }
+
+    #[test]
+    fn overlay_keyboard_ignores_primary_tab_and_repeated_escape() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let dialog = context
+            .create_component(document, Dialog::new("Settings"))
+            .unwrap();
+        let button = context
+            .create_detached_component(document, Button::new("Save"))
+            .unwrap();
+        context.append_child(host, dialog).unwrap();
+        context
+            .set_modal_slots(
+                dialog,
+                ModalSlots {
+                    actions: vec![button.stable_id()],
+                    ..ModalSlots::default()
+                },
+            )
+            .unwrap();
+        context.activate_overlay(host, dialog).unwrap();
+        let adapter = RuntimeInputAdapter::default();
+        let key = |key: &str, repeat: bool, modifiers: InputModifiers| InputEvent::Keyboard {
+            pressed: true,
+            key: key.into(),
+            text: None,
+            code: key.into(),
+            repeat,
+            modifiers,
+        };
+
+        let primary_tab = key(
+            "Tab",
+            false,
+            InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary_tab)
+                .unwrap()
+                .prevent_default
+        );
+        let repeat_escape = key("Escape", true, InputModifiers::default());
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &repeat_escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(host.stable_id())
+                .unwrap()
+                .active,
+            Some(dialog.stable_id())
+        );
+        let key_release = InputEvent::Keyboard {
+            pressed: false,
+            key: "a".into(),
+            text: None,
+            code: "KeyA".into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &key_release)
+                .unwrap()
+                .prevent_default
+        );
+        let escape = key("Escape", false, InputModifiers::default());
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(host.stable_id())
+                .unwrap()
+                .active,
+            None
+        );
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &primary_tab)
+                .unwrap()
+                .prevent_default
+        );
     }
 }
