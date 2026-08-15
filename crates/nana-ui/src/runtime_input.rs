@@ -4,6 +4,7 @@ use nana_ui_core::TableNavigation;
 use nana_ui_platform::{ImeEvent, InputDisposition, InputEvent, PointerPhase};
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameworkError, RangeAdjustment, RovingFocusIntent, ScrollOffset,
+    XYPadAdjustment,
 };
 use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
 use std::time::Duration;
@@ -129,6 +130,7 @@ impl RuntimeInputAdapter {
                 y,
                 button,
                 is_primary,
+                modifiers,
                 ..
             } => {
                 let overlay_phase = match phase {
@@ -149,7 +151,15 @@ impl RuntimeInputAdapter {
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
                 let component_handled = match phase {
                     PointerPhase::Move => {
-                        context.update_range_drag(document, *pointer_id, *x)? || target.is_some()
+                        context.update_range_drag(document, *pointer_id, *x)?
+                            || context.update_xy_pad_drag(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                modifiers.shift,
+                            )?
+                            || target.is_some()
                     }
                     PointerPhase::Down if *is_primary && *button == 0 => {
                         if let Some(target) = target {
@@ -157,6 +167,8 @@ impl RuntimeInputAdapter {
                             context.press_pointer(document, *pointer_id, target)?;
                             if context.is_range_field(target) {
                                 context.begin_range_drag(document, *pointer_id, target, *x)?;
+                            } else if context.is_xy_pad(target) {
+                                context.begin_xy_pad_drag(document, *pointer_id, target, *x, *y)?;
                             }
                             true
                         } else {
@@ -164,7 +176,9 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Up if *is_primary && *button == 0 => {
-                        if context.end_range_drag(document, *pointer_id, false)? {
+                        if context.end_range_drag(document, *pointer_id, false)?
+                            || context.end_xy_pad_drag(document, *pointer_id, false)?
+                        {
                             context.release_pointer(document, *pointer_id);
                             return Ok(InputDisposition {
                                 prevent_default: true,
@@ -182,9 +196,10 @@ impl RuntimeInputAdapter {
                     }
                     PointerPhase::Cancel => {
                         let range = context.end_range_drag(document, *pointer_id, true)?;
+                        let xy_pad = context.end_xy_pad_drag(document, *pointer_id, true)?;
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
                         context.set_pointer_hover_at(document, *pointer_id, None, now)?;
-                        range || pressed
+                        range || xy_pad || pressed
                     }
                     _ => false,
                 };
@@ -253,6 +268,22 @@ impl RuntimeInputAdapter {
                     .flatten();
                 if let Some(adjustment) = range_adjustment
                     && context.adjust_focused_range(document, adjustment)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+                let xy_adjustment = (!primary)
+                    .then_some(match key.as_str() {
+                        "ArrowLeft" => Some(XYPadAdjustment::Left),
+                        "ArrowRight" => Some(XYPadAdjustment::Right),
+                        "ArrowUp" => Some(XYPadAdjustment::Up),
+                        "ArrowDown" => Some(XYPadAdjustment::Down),
+                        _ => None,
+                    })
+                    .flatten();
+                if let Some(adjustment) = xy_adjustment
+                    && context.adjust_focused_xy_pad(document, adjustment)?
                 {
                     return Ok(InputDisposition {
                         prevent_default: true,

@@ -21,27 +21,32 @@ use nana_ui::compatibility::{
 };
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, Activate, Button as RuntimeButton,
-    Card as RuntimeCard, Checkbox as RuntimeCheckbox, DocumentId, EmptyState as RuntimeEmptyState,
-    Entity, FormField as RuntimeFormField, IconButton as RuntimeIconButton,
-    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue, LayoutViewport,
-    LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
-    ListItemSlots, MountState, MutationQueue, NodeStyle, Progress as RuntimeProgress,
+    Card as RuntimeCard, Checkbox as RuntimeCheckbox, ConfirmDialog as RuntimeConfirmDialog,
+    ConfirmSlots, Dialog as RuntimeDialog, DocumentId, Drawer as RuntimeDrawer,
+    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
+    IconButton as RuntimeIconButton, InteractiveCard as RuntimeInteractiveCard,
+    LabeledValue as RuntimeLabeledValue, LayoutViewport, LevelMeter as RuntimeLevelMeter,
+    List as RuntimeList, ListItem as RuntimeListItem, ListItemSlots, ModalSlots, MountState,
+    MutationQueue, NodeStyle, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
     RangeField as RuntimeRangeField, RuntimeDocument, SegmentedControl as RuntimeSegmentedControl,
     SegmentedOption as RuntimeSegmentedOption, SegmentedSelectionRequested,
     Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, StableNodeId,
     StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, Text as RuntimeText,
     TextArea as RuntimeTextArea, TextHorizontalAlignment, TextInput as RuntimeTextInput,
-    TextSelection, TextVerticalAlignment, ValidationMessage as RuntimeValidationMessage,
-    ValueEmphasis,
+    TextSelection, TextVerticalAlignment, Toast as RuntimeToast,
+    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
-    CardKind, ComponentId, ComponentMigrationState, ControlSize, IcedSceneView, IcedTextShaper,
-    Icon, RuntimeInputAdapter, SelectionOption as IcedSelectionOption, Tabs as IcedTabs,
-    Textarea as IcedTextarea, ThemeMode, ThemeModeExt, Tooltip as IcedTooltip, TooltipConfig,
-    TooltipPlacement, component_catalog, component_ids, icon,
+    CardKind, ComponentId, ComponentMigrationState, ConfirmDialog as IcedConfirmDialog,
+    ControlSize, Dialog as IcedDialog, Drawer as IcedDrawer, IcedSceneView, IcedTextShaper, Icon,
+    QrCodeCanvas as IcedQrCode, RuntimeInputAdapter, SelectionOption as IcedSelectionOption,
+    Tabs as IcedTabs, Textarea as IcedTextarea, ThemeMode, ThemeModeExt, Toast as IcedToast,
+    Tooltip as IcedTooltip, TooltipConfig, TooltipPlacement, XYPad as IcedXYPad, XYPadValue,
+    component_catalog, component_ids, icon,
 };
 use nana_ui_core::{
-    LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition, ValidationIntent,
+    DialogSize, DrawerSide, LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition,
+    ToastTone, ValidationIntent,
 };
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 use nana_ui_scene::ScenePrimitiveKind;
@@ -78,6 +83,12 @@ enum Component {
     FormField,
     InteractiveCard,
     Tooltip,
+    Dialog,
+    ConfirmDialog,
+    Drawer,
+    Toast,
+    XYPad,
+    QrCode,
 }
 
 impl Component {
@@ -106,6 +117,12 @@ impl Component {
             Self::FormField => component_ids::FORM_FIELD,
             Self::InteractiveCard => component_ids::INTERACTIVE_CARD,
             Self::Tooltip => component_ids::TOOLTIP,
+            Self::Dialog => component_ids::DIALOG,
+            Self::ConfirmDialog => component_ids::CONFIRM_DIALOG,
+            Self::Drawer => component_ids::DRAWER,
+            Self::Toast => component_ids::TOAST,
+            Self::XYPad => component_ids::XY_PAD,
+            Self::QrCode => component_ids::QR_CODE,
         }
     }
 }
@@ -941,6 +958,56 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "edge",
         "tooltip stays inside the viewport near an edge",
     ),
+    f(
+        Component::Dialog,
+        "titled",
+        "dialog paints a scrim, titled surface and application-owned body",
+    ),
+    f(
+        Component::ConfirmDialog,
+        "danger",
+        "confirm dialog keeps cancel and danger confirm actions",
+    ),
+    f(
+        Component::ConfirmDialog,
+        "busy",
+        "busy confirm dialog disables dismiss and shows a loading confirm",
+    ),
+    f(
+        Component::Drawer,
+        "right",
+        "right drawer docks to the viewport edge over a scrim",
+    ),
+    f(
+        Component::Drawer,
+        "left",
+        "left drawer docks to the start edge over a scrim",
+    ),
+    f(
+        Component::Toast,
+        "info",
+        "info toast is an outlined tone card with a title",
+    ),
+    f(
+        Component::Toast,
+        "dismissible",
+        "dismissible toast keeps a real dismiss affordance",
+    ),
+    f(
+        Component::XYPad,
+        "rest",
+        "xy pad shows the two-axis value inside a field border",
+    ),
+    f(
+        Component::XYPad,
+        "invalid",
+        "invalid xy pad uses a danger field border",
+    ),
+    f(
+        Component::QrCode,
+        "encoded",
+        "qr code paints a white quiet zone and black modules",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {
@@ -1122,6 +1189,12 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::FormField, _) => Size::new(420, 160),
         (Component::InteractiveCard, _) => Size::new(420, 140),
         (Component::Tooltip, _) => Size::new(420, 140),
+        (Component::Dialog, _) => Size::new(560, 280),
+        (Component::ConfirmDialog, _) => Size::new(560, 260),
+        (Component::Drawer, _) => Size::new(420, 240),
+        (Component::Toast, _) => Size::new(420, 88),
+        (Component::XYPad, _) => Size::new(420, 88),
+        (Component::QrCode, _) => Size::new(280, 280),
         _ => SIZE,
     }
 }
@@ -1471,19 +1544,77 @@ fn iced_fixture<'a>(
                 .config(tooltip_fixture_config(fixture.state))
                 .view(tokens)
         }
+        Component::Dialog => IcedDialog::new("Rename scene", text("Camera A"))
+            .description("This updates the workspace label.")
+            .on_close(())
+            .on_outside(())
+            .view(tokens),
+        Component::ConfirmDialog => {
+            let mut dialog =
+                IcedConfirmDialog::new("Delete take", "This cannot be undone.", (), (), ())
+                    .danger(fixture.state == "danger");
+            if fixture.state == "busy" {
+                dialog = dialog.busy(true, "处理中", 3);
+            }
+            dialog.view(tokens)
+        }
+        Component::Drawer => IcedDrawer::new("Inspector", text("Properties"), (), ())
+            .side(if fixture.state == "left" {
+                DrawerSide::Left
+            } else {
+                DrawerSide::Right
+            })
+            .view(tokens),
+        Component::Toast => {
+            let mut toast = IcedToast::new(
+                if fixture.state == "dismissible" {
+                    "Export complete"
+                } else {
+                    "Listening"
+                },
+                if fixture.state == "dismissible" {
+                    ToastTone::Success
+                } else {
+                    ToastTone::Info
+                },
+            )
+            .description(if fixture.state == "dismissible" {
+                "Master sent to disk."
+            } else {
+                "Program follow is armed."
+            });
+            if fixture.state == "dismissible" {
+                toast = toast.on_dismiss(());
+            }
+            toast.view(tokens)
+        }
+        Component::XYPad => IcedXYPad::new(XYPadValue::new(0.35, 0.7), |_| (), tokens)
+            .invalid(fixture.state == "invalid")
+            .view(),
+        Component::QrCode => IcedQrCode::encode("nana-ui://pair")
+            .expect("fixture qr encodes")
+            .size(224.0)
+            .view(),
     };
     (
         container(view)
-            .padding(if fixture.component == Component::Textarea {
-                Padding {
-                    top: 12.0,
-                    right: 20.0,
-                    bottom: 12.0,
-                    left: 20.0,
-                }
-            } else {
-                Padding::from(20)
-            })
+            .padding(
+                if matches!(
+                    fixture.component,
+                    Component::Dialog | Component::ConfirmDialog | Component::Drawer
+                ) {
+                    Padding::ZERO
+                } else if fixture.component == Component::Textarea {
+                    Padding {
+                        top: 12.0,
+                        right: 20.0,
+                        bottom: 12.0,
+                        left: 20.0,
+                    }
+                } else {
+                    Padding::from(20)
+                },
+            )
             .width(Length::Fill)
             .height(Length::Fill)
             .into(),
@@ -2034,6 +2165,146 @@ fn runtime_fixture(
             document
                 .context_mut()
                 .create_component(document_id, component)?
+                .stable_id()
+        }
+        Component::Dialog => {
+            let dialog = document.context_mut().create_component(
+                document_id,
+                RuntimeDialog::new("Rename scene")
+                    .description("This updates the workspace label.")
+                    .size(DialogSize::Default),
+            )?;
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Camera A"))?;
+            let close = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeIconButton::new(Icon::Close, "Close"),
+            )?;
+            document.context_mut().set_modal_slots(
+                dialog,
+                ModalSlots {
+                    body: Some(body.stable_id()),
+                    close_action: Some(close.stable_id()),
+                    ..ModalSlots::default()
+                },
+            )?;
+            dialog.stable_id()
+        }
+        Component::ConfirmDialog => {
+            let mut confirm = RuntimeConfirmDialog::new("Delete take", "This cannot be undone.");
+            confirm.danger = fixture.state == "danger";
+            confirm.busy = fixture.state == "busy";
+            let confirm = document
+                .context_mut()
+                .create_component(document_id, confirm)?;
+            let cancel = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeButton::new("取消"))?;
+            let accept = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeButton::new(if fixture.state == "busy" {
+                    "处理中"
+                } else {
+                    "确认"
+                })
+                .kind(if fixture.state == "danger" {
+                    nana_ui::ButtonKind::Danger
+                } else {
+                    nana_ui::ButtonKind::Primary
+                })
+                .loading(fixture.state == "busy"),
+            )?;
+            let close = (fixture.state != "busy")
+                .then(|| {
+                    document.context_mut().create_detached_component(
+                        document_id,
+                        RuntimeIconButton::new(Icon::Close, "Close"),
+                    )
+                })
+                .transpose()?;
+            document.context_mut().set_confirm_slots(
+                confirm,
+                ConfirmSlots {
+                    body: None,
+                    close_action: close.map(|close| close.stable_id()),
+                    cancel: cancel.stable_id(),
+                    secondary: None,
+                    confirm: accept.stable_id(),
+                },
+            )?;
+            confirm.stable_id()
+        }
+        Component::Drawer => {
+            let drawer = document.context_mut().create_component(
+                document_id,
+                RuntimeDrawer::new("Inspector").side(if fixture.state == "left" {
+                    DrawerSide::Left
+                } else {
+                    DrawerSide::Right
+                }),
+            )?;
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Properties"))?;
+            let close = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeIconButton::new(Icon::Close, "Close"),
+            )?;
+            document.context_mut().set_modal_slots(
+                drawer,
+                ModalSlots {
+                    body: Some(body.stable_id()),
+                    close_action: Some(close.stable_id()),
+                    ..ModalSlots::default()
+                },
+            )?;
+            drawer.stable_id()
+        }
+        Component::Toast => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeToast::new(
+                    if fixture.state == "dismissible" {
+                        "Export complete"
+                    } else {
+                        "Listening"
+                    },
+                    if fixture.state == "dismissible" {
+                        ToastTone::Success
+                    } else {
+                        ToastTone::Info
+                    },
+                )
+                .description(if fixture.state == "dismissible" {
+                    "Master sent to disk."
+                } else {
+                    "Program follow is armed."
+                })
+                .dismissible(fixture.state == "dismissible"),
+            )?
+            .stable_id(),
+        Component::XYPad => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeXYPad::new(XYPadValue::new(0.35, 0.7)).invalid(fixture.state == "invalid"),
+            )?
+            .stable_id(),
+        Component::QrCode => {
+            let encoded = IcedQrCode::encode("nana-ui://pair").expect("fixture qr encodes");
+            document
+                .context_mut()
+                .create_component(
+                    document_id,
+                    RuntimeQrCode::from_modules(
+                        encoded.modules().to_vec(),
+                        encoded.module_width(),
+                        224.0,
+                    )
+                    .expect("runtime qr accepts encoded modules"),
+                )?
                 .stable_id()
         }
     };
@@ -3466,6 +3737,12 @@ fn write_evidence(
             (bounds.height - segmented_control_size(fixture.state).height()).abs() < 0.01
         }
         Component::Checkbox => bounds.height >= ControlSize::Medium.height(),
+        Component::Dialog | Component::ConfirmDialog | Component::Drawer => {
+            matches!(
+                geometry,
+                Some(nana_ui::runtime::ComponentGeometry::ModalFrame { .. })
+            )
+        }
         _ => true,
     });
     let runtime_ok = bounds.is_some()
@@ -3613,6 +3890,14 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             "manual-required",
             "Review the generated dark and light Iced Tooltip and Runtime overlay images for open, delay-not-open and edge placement; public default stays Iced until visual and platform review",
         ),
+        (Component::Dialog | Component::ConfirmDialog | Component::Drawer, _) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime modal images for scrim, surface, title and slotted body or actions; public default stays Iced until overlay-host review",
+        ),
+        (Component::Toast | Component::XYPad | Component::QrCode, _) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime images; public default stays Iced until visual review",
+        ),
         (Component::SegmentedControl, _) => (
             "pass",
             "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment, disabled fade and the 2px external focus ring",
@@ -3710,6 +3995,9 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         }
         (Component::Tooltip, _) => {
             "intentional: Runtime Tooltip is a compact pointer-bound hover card hosted by the trigger; Iced wraps arbitrary content. Visual review is the qualification gate"
+        }
+        (Component::Dialog | Component::ConfirmDialog | Component::Drawer, _) => {
+            "intentional: Runtime ModalFrame owns scrim, surface and slotted children; Iced composes the same product chrome. Visual review is the qualification gate"
         }
         _ => fixture.divergence,
     }

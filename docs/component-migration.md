@@ -130,5 +130,14 @@ label/hint/error wrapper; the control remains an application-owned child. Intera
 selectable surface with selected/hover/pressed/disabled layers. Skeleton is a Subtle rounded
 placeholder. LevelMeter is a determinate tone-colored meter with configurable girth.
 
+## Current fifth batch
+
+`Dialog`, `ConfirmDialog`, and `Drawer` are `RuntimeCandidate`. Runtime already owns the modal
+surface contract (`ModalFrame` scrim/surface/body, exclusive overlay lifecycle, close policy and
+typed slots). Public constructors stay Iced until visual and overlay-host review. `Toast`,
+`XYPad`, and `QrCode` join the same candidate batch as new Runtime leaves: Toast is an outlined
+tone card without a timer; XYPad is a two-axis pad with Input/Change, Shift lock and keyboard
+steps; QrCode paints a scanner-safe module matrix with a four-module quiet zone.
+
 Workspace, Dock, Sidebar, overlay hosts, selects, charts, GPU views, and other professional
 components remain `Compatibility` unless their catalog entry says otherwise.

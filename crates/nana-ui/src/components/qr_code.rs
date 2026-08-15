@@ -43,6 +43,10 @@ impl QrCodeCanvas {
         self.width
     }
 
+    pub fn modules(&self) -> &[bool] {
+        &self.modules
+    }
+
     pub fn view<Message: 'static>(self) -> Element<'static, Message> {
         let size = self.size;
         canvas(self)

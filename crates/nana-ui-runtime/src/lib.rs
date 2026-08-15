@@ -14,10 +14,13 @@ mod layout_engine;
 mod mutation;
 mod overlay_surfaces;
 mod placeholders;
+mod qr_code;
 mod schedule;
 mod selection;
+mod toast;
 mod view_components;
 mod world;
+mod xy_pad;
 
 pub use animation::{AnimationFrame, AnimationId, AnimationSample, AnimationSpec, Easing};
 pub use components::{
@@ -53,11 +56,13 @@ pub use overlay_surfaces::{
     ModalSlots, ModalSurface, ModalSurfaceKind,
 };
 pub use placeholders::{LevelMeter, Skeleton};
+pub use qr_code::{QrCode, QrCodeError};
 pub use schedule::SystemWork;
 pub use selection::{
     Radio, RadioGroup, RovingFocusIntent, RovingFocusPolicy, SegmentedControl, SegmentedOption,
     SegmentedSelectionRequested, SelectionChrome, SelectionOrientation,
 };
+pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use view_components::{
     Activate, Button, Card, Checkbox, ComponentView, Dialog, IconButton, IconButtonTooltip, List,
     ListItem, ListItemSlots, Menu, MenuItem, OverlayChanged, OverlayHost, RangeAdjustment,
@@ -67,4 +72,7 @@ pub use view_components::{
 };
 pub use world::{
     CommitReport, DocumentId, NodeKind, NodeSnapshot, StableNodeId, UiWorld, UiWorldError,
+};
+pub use xy_pad::{
+    XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadValue, xy_pad_height,
 };

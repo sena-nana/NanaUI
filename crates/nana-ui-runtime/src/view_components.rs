@@ -1438,6 +1438,7 @@ impl ComponentView for Dialog {
             AccessibilityRole::Dialog,
             &self.title,
             self.description.as_deref(),
+            None,
             crate::ModalSurfaceKind::Dialog(self.size),
             false,
             false,

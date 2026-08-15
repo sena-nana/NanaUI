@@ -25,7 +25,8 @@ use crate::{
     ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl, SegmentedOption,
     SegmentedSelectionRequested, Slider, SliderChanged, StableNodeId, StandardVisual, Switch, Tab,
     TabList, TabSelected, Table, TableCell, TableRow, TextArea, TextChanged, TextInput,
-    TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld, UiWorldError,
+    TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld, UiWorldError, XYPad,
+    XYPadDragState, XYPadEvent,
 };
 
 mod overlay;
@@ -1679,6 +1680,10 @@ impl AppContext {
             .is_some_and(|view| view.is::<RangeField>())
     }
 
+    pub fn is_xy_pad(&self, id: StableNodeId) -> bool {
+        self.views.get(&id).is_some_and(|view| view.is::<XYPad>())
+    }
+
     pub fn pointer_target(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
         self.world.hit_test(document, x, y)
     }
@@ -3113,6 +3118,113 @@ impl AppContext {
             cx.mutations().release_pointer(pointer_id, target);
         })?;
         Ok(restored || initial.is_some())
+    }
+
+    pub fn begin_xy_pad_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if !self.is_xy_pad(target) {
+            return Ok(false);
+        }
+        if self.read(Entity::<XYPad>::from_stable_id(target), XYPad::inactive)? {
+            return Ok(false);
+        }
+        let Some(bounds) = self.world.layout_box(target) else {
+            return Ok(false);
+        };
+        self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
+            pad.dragging = Some(XYPadDragState {
+                pointer_id,
+                origin_x: x - bounds.x,
+                origin_y: y - bounds.y,
+                axis_lock: None,
+                initial: pad.value,
+            });
+            cx.mutations().capture_pointer(pointer_id, target);
+        })?;
+        self.update_xy_pad_drag(document, pointer_id, x, y, false)
+    }
+
+    pub fn update_xy_pad_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+        shift: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_xy_pad(target) {
+            return Ok(false);
+        }
+        let Some(bounds) = self.world.layout_box(target) else {
+            return Ok(false);
+        };
+        self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
+            if pad.inactive() {
+                return false;
+            }
+            if let Some(drag) = pad.dragging.as_mut() {
+                if shift && drag.axis_lock.is_none() {
+                    let local_x = x - bounds.x;
+                    let local_y = y - bounds.y;
+                    let dx = (local_x - drag.origin_x).abs() / bounds.width.max(1.0);
+                    let dy = (local_y - drag.origin_y).abs() / bounds.height.max(1.0);
+                    drag.axis_lock = Some(if dx >= dy {
+                        crate::XYPadAxisLock::Horizontal
+                    } else {
+                        crate::XYPadAxisLock::Vertical
+                    });
+                } else if !shift {
+                    drag.axis_lock = None;
+                }
+            } else {
+                return false;
+            }
+            let locked = pad
+                .dragging
+                .and_then(|drag| drag.axis_lock.map(|axis| (axis, pad.value)));
+            let value = pad.value_from_point(x, y, bounds, locked);
+            pad.value = value;
+            cx.emit(XYPadEvent::Input(value));
+            true
+        })
+    }
+
+    pub fn end_xy_pad_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_xy_pad(target) {
+            return Ok(false);
+        }
+        let initial = self.read(Entity::<XYPad>::from_stable_id(target), |pad| {
+            pad.dragging.map(|drag| drag.initial)
+        })?;
+        self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
+            if cancel {
+                if let Some(value) = initial {
+                    pad.value = value;
+                }
+            } else if initial.is_some() {
+                cx.emit(XYPadEvent::Change(pad.value));
+            }
+            pad.dragging = None;
+            cx.mutations().release_pointer(pointer_id, target);
+        })?;
+        Ok(initial.is_some())
     }
 
     pub fn set_slider_value(

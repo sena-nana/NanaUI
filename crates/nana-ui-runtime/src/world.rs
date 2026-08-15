@@ -857,6 +857,9 @@ impl UiWorld {
                 if let Some(description) = intrinsic.description {
                     validate_text_metrics(id, description)?;
                 }
+                if let Some(body) = intrinsic.body {
+                    validate_text_metrics(id, body)?;
+                }
                 modal_shaped.push((id, intrinsic));
             }
             let metrics = shaper.shape(
@@ -943,22 +946,29 @@ impl UiWorld {
                 }
                 continue;
             }
-            if let Some(visual @ StandardVisual::ModalFrame { kind, .. }) =
+            if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) =
                 self.world.get::<StandardVisual>(self.entities[&id])
             {
                 if computed.visible {
                     let root = *self.component::<LayoutBox>(id);
-                    let surface = modal_surface_bounds(root, *kind, None);
-                    let intrinsic = shape_modal_text(
-                        id,
-                        visual,
-                        computed,
-                        Some((surface.width - 64.0).max(0.0)),
-                        shaper,
+                    let surface = crate::overlay_surfaces::modal_surface_bounds(root, *kind, None);
+                    let chrome = crate::overlay_surfaces::ModalChrome::measure(
+                        *kind,
+                        crate::TextMetrics::default(),
+                        None,
+                        slots.close_action.is_some(),
+                        slots.footer.is_some() || !slots.actions.is_empty(),
                     );
+                    let wrap_width =
+                        chrome.text_width(surface.width, *kind, slots.close_action.is_some());
+                    let intrinsic =
+                        shape_modal_text(id, visual, computed, Some(wrap_width), shaper);
                     validate_text_metrics(id, intrinsic.title)?;
                     if let Some(description) = intrinsic.description {
                         validate_text_metrics(id, description)?;
+                    }
+                    if let Some(body) = intrinsic.body {
+                        validate_text_metrics(id, body)?;
                     }
                     if self.world.get::<ModalTextPresentation>(self.entities[&id])
                         != Some(&intrinsic)
@@ -1168,6 +1178,7 @@ impl UiWorld {
                                 slots: slots.clone(),
                                 title: presentation.title,
                                 description: presentation.description,
+                                body_text: presentation.body,
                             })
                         }),
                 })
@@ -1254,7 +1265,7 @@ impl UiWorld {
                     layout,
                     transform,
                     clips: own_clips,
-                    z_index: node_style.z_index.unwrap_or_default(),
+                    z_index: self.stacking_z_index(id),
                     order,
                 });
             }
@@ -2034,10 +2045,8 @@ impl UiWorld {
         let hierarchy = self.world.get::<Hierarchy>(entity)?;
         let mut standard_visual = self.world.get::<StandardVisual>(entity).cloned();
         if let Some((busy, danger, is_confirm)) = self.confirm_action_effect(id) {
-            if busy {
-                style.color = Some(self.style_model.palette.faint.as_rgba_array());
-                style.background = Some(self.style_model.palette.subtle.as_rgba_array());
-                style.border_color = Some(self.style_model.palette.border.as_rgba_array());
+            if busy && !is_confirm {
+                style.color = Some(self.style_model.palette.muted.as_rgba_array());
             }
             if is_confirm
                 && let Some(StandardVisual::Button { kind, loading, .. }) = standard_visual.as_mut()
@@ -2086,6 +2095,13 @@ impl UiWorld {
             | StandardVisual::Progress { .. }
             | StandardVisual::Spinner { .. }
             | StandardVisual::FormField { .. } => self.style_model.palette.accent.as_rgba_array(),
+            StandardVisual::QrCode { .. } => [0.0, 0.0, 0.0, 1.0],
+            StandardVisual::Toast { tone, .. } => self
+                .style_model
+                .palette
+                .get(status_tone_role(tone.status()))
+                .as_rgba_array(),
+            StandardVisual::XYPad { .. } => self.style_model.palette.text.as_rgba_array(),
             StandardVisual::LevelMeter { tone, .. } => self
                 .style_model
                 .palette
@@ -2099,7 +2115,7 @@ impl UiWorld {
             children: hierarchy.children.clone(),
             layout: *self.world.get::<LayoutBox>(entity)?,
             scroll_offset: *self.world.get::<ScrollOffset>(entity)?,
-            z_index: source_style.layout.z_index.unwrap_or_default(),
+            z_index: self.stacking_z_index(id),
             source_style,
             style,
             text: if has_text {
@@ -2120,6 +2136,24 @@ impl UiWorld {
             standard_visual_foreground,
             custom_render: self.world.get::<CustomRenderNode>(entity).cloned(),
         })
+    }
+
+    fn stacking_z_index(&self, id: StableNodeId) -> i32 {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if let Some(z_index) = self
+                .world
+                .get::<NodeStyle>(self.entities[&id])
+                .and_then(|style| style.layout.z_index)
+            {
+                return z_index;
+            }
+            current = self
+                .world
+                .get::<Hierarchy>(self.entities[&id])
+                .and_then(|hierarchy| hierarchy.parent);
+        }
+        0
     }
 
     fn derive_component_geometry(
@@ -2157,49 +2191,58 @@ impl UiWorld {
             StandardVisual::ModalFrame {
                 title,
                 description,
+                body_text,
                 kind,
                 slots,
                 ..
             } => {
-                let provisional = modal_surface_bounds(bounds, *kind, None);
                 let presentation = self
                     .world
                     .get::<ModalTextPresentation>(self.entities[&id])
                     .copied()
                     .unwrap_or_default();
-                let header_height = (28.0
-                    + presentation.title.height
-                    + presentation
-                        .description
-                        .map_or(0.0, |metrics| 4.0 + metrics.height))
-                .max(56.0);
-                let mut intrinsic_height = header_height + 14.0;
-                if let Some(body) = slots.body.and_then(|id| self.layout_box(id)) {
-                    intrinsic_height =
-                        intrinsic_height.max(body.y + body.height - provisional.y + 14.0);
-                }
-                if let Some(footer) = slots.footer.and_then(|id| self.layout_box(id)) {
-                    intrinsic_height =
-                        intrinsic_height.max(footer.y + footer.height - provisional.y);
-                }
-                for action in slots.actions.iter().filter_map(|id| self.layout_box(*id)) {
-                    intrinsic_height = intrinsic_height.max(
-                        action.y + action.height + (58.0 - action.height) / 2.0 - provisional.y,
-                    );
-                }
-                let surface = modal_surface_bounds(bounds, *kind, Some(intrinsic_height));
-                let LayoutBox { x, y, width, .. } = surface;
-                let text_width = (width - 64.0).max(0.0);
-                let footer_height = if slots.footer.is_some() || !slots.actions.is_empty() {
-                    58.0
+                let has_close = slots.close_action.is_some();
+                let has_footer = slots.footer.is_some() || !slots.actions.is_empty();
+                let chrome = crate::overlay_surfaces::ModalChrome::measure(
+                    *kind,
+                    presentation.title,
+                    presentation.description,
+                    has_close,
+                    has_footer,
+                );
+                let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
+                let body_slot = slots
+                    .body
+                    .and_then(|id| self.layout_box(id))
+                    .map_or(0.0, |region| region.height);
+                let body_gap = if body_copy > 0.0 && body_slot > 0.0 {
+                    8.0
                 } else {
                     0.0
                 };
-                let body = LayoutBox {
-                    x: x + 16.0,
-                    y: y + header_height,
-                    width: (width - 32.0).max(0.0),
-                    height: (surface.height - header_height - footer_height - 14.0).max(0.0),
+                let intrinsic_height = chrome.chrome_height(body_copy + body_gap + body_slot);
+                let surface = crate::overlay_surfaces::modal_surface_bounds(
+                    bounds,
+                    *kind,
+                    Some(intrinsic_height),
+                );
+                let LayoutBox { x, y, width, .. } = surface;
+                let text_width = chrome.text_width(width, *kind, has_close);
+                let body = chrome.body_box(surface);
+                let text_block = presentation.title.height
+                    + presentation.description.map_or(0.0, |metrics| {
+                        crate::overlay_surfaces::MODAL_TITLE_DESC_GAP + metrics.height
+                    });
+                let title_y = match kind {
+                    crate::ModalSurfaceKind::Drawer(_) => {
+                        y + (chrome.header_height - text_block) / 2.0
+                    }
+                    _ => y + crate::overlay_surfaces::MODAL_HEADER_PAD_TOP,
+                };
+                let shadow_alpha = if self.style_model.palette.background.as_rgba_array()[0] > 0.5 {
+                    0.28
+                } else {
+                    0.45
                 };
                 Some(crate::ComponentGeometry::ModalFrame {
                     scrim: bounds,
@@ -2207,8 +2250,8 @@ impl UiWorld {
                     body,
                     title: text_region(
                         LayoutBox {
-                            x: x + 16.0,
-                            y: y + 14.0,
+                            x: x + chrome.pad_x,
+                            y: title_y,
                             width: text_width,
                             height: presentation.title.height,
                         },
@@ -2220,8 +2263,10 @@ impl UiWorld {
                     description: description.as_ref().map(|description| {
                         text_region(
                             LayoutBox {
-                                x: x + 16.0,
-                                y: y + 14.0 + presentation.title.height + 4.0,
+                                x: x + chrome.pad_x,
+                                y: title_y
+                                    + presentation.title.height
+                                    + crate::overlay_surfaces::MODAL_TITLE_DESC_GAP,
                                 width: text_width,
                                 height: presentation.description.unwrap_or_default().height,
                             },
@@ -2231,12 +2276,26 @@ impl UiWorld {
                             None,
                         )
                     }),
+                    body_text: body_text.as_ref().map(|message| {
+                        text_region(
+                            LayoutBox {
+                                x: body.x,
+                                y: body.y,
+                                width: body.width,
+                                height: presentation.body.unwrap_or_default().height,
+                            },
+                            Arc::clone(message),
+                            false,
+                            crate::overlay_surfaces::MODAL_BODY_TEXT_SIZE,
+                            None,
+                        )
+                    }),
                     background: self.style_model.palette.surface.as_rgba_array(),
-                    border: self.style_model.palette.border_strong.as_rgba_array(),
+                    border: [0.0; 4],
                     elevation: crate::ComponentElevation {
-                        color: [0.0, 0.0, 0.0, 0.24],
-                        offset_y: 8.0,
-                        blur_radius: 24.0,
+                        color: [0.0, 0.0, 0.0, shadow_alpha],
+                        offset_y: 14.0,
+                        blur_radius: 30.0,
                     },
                 })
             }
@@ -3015,6 +3074,135 @@ impl UiWorld {
                 &|id| self.layout_box(id),
                 &self.style_model.palette,
             ),
+            StandardVisual::Toast {
+                title,
+                description,
+                dismissible,
+                ..
+            } => {
+                let pad_x = 12.0;
+                let pad_y = 10.0;
+                let indicator = 7.0;
+                let gap = 8.0;
+                let dismiss = if *dismissible { 28.0 } else { 0.0 };
+                let copy_x = bounds.x + pad_x + indicator + gap;
+                let copy_right =
+                    bounds.x + bounds.width - pad_x - if *dismissible { dismiss } else { 0.0 };
+                let copy_width = (copy_right - copy_x).max(0.0);
+                let title_height = 12.0;
+                let desc_height = 11.0;
+                let has_desc = description.is_some();
+                let title_y = if has_desc {
+                    bounds.y + pad_y
+                } else {
+                    bounds.y + (bounds.height - title_height) / 2.0
+                };
+                Some(crate::ComponentGeometry::Toast {
+                    indicator: LayoutBox {
+                        x: bounds.x + pad_x,
+                        y: bounds.y + (bounds.height - indicator) / 2.0,
+                        width: indicator,
+                        height: indicator,
+                    },
+                    title: crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: copy_x,
+                            y: title_y,
+                            width: copy_width,
+                            height: title_height,
+                        },
+                        content: Arc::clone(title),
+                        color: Some(self.style_model.palette.text.as_rgba_array()),
+                        font_size: 12.0,
+                        font_weight: Some(600),
+                    },
+                    description: description.as_ref().map(|description| {
+                        crate::ComponentTextRegion {
+                            bounds: LayoutBox {
+                                x: copy_x,
+                                y: title_y + title_height + 2.0,
+                                width: copy_width,
+                                height: desc_height,
+                            },
+                            content: Arc::clone(description),
+                            color: Some(self.style_model.palette.muted.as_rgba_array()),
+                            font_size: 11.0,
+                            font_weight: None,
+                        }
+                    }),
+                    dismiss: dismissible.then(|| LayoutBox {
+                        x: bounds.x + bounds.width - pad_x - dismiss,
+                        y: bounds.y + (bounds.height - dismiss) / 2.0,
+                        width: dismiss,
+                        height: dismiss,
+                    }),
+                })
+            }
+            StandardVisual::XYPad { nx, ny, .. } => {
+                let pad = bounds;
+                let thumb = 8.0;
+                let nx = nx.clamp(0.0, 1.0);
+                let ny = ny.clamp(0.0, 1.0);
+                Some(crate::ComponentGeometry::XYPad {
+                    pad,
+                    thumb: LayoutBox {
+                        x: pad.x + nx * pad.width - thumb / 2.0,
+                        y: pad.y + ny * pad.height - thumb / 2.0,
+                        width: thumb,
+                        height: thumb,
+                    },
+                    h_axis: LayoutBox {
+                        x: pad.x,
+                        y: pad.y + pad.height / 2.0 - 0.5,
+                        width: pad.width,
+                        height: 1.0,
+                    },
+                    v_axis: LayoutBox {
+                        x: pad.x + pad.width / 2.0 - 0.5,
+                        y: pad.y,
+                        width: 1.0,
+                        height: pad.height,
+                    },
+                    background: style.background,
+                    border: style.border_color,
+                    border_width: if style.border_color.is_some() {
+                        source.layout.resolved_border_width()
+                    } else {
+                        0.0
+                    },
+                    thumb_color: self.style_model.palette.accent.as_rgba_array(),
+                    axis_color: self.style_model.palette.border.as_rgba_array(),
+                })
+            }
+            StandardVisual::QrCode { modules, width } => {
+                let (module_size, (ox, oy)) = crate::qr_code::module_geometry(bounds, *width);
+                let quiet = crate::qr_code::QUIET_ZONE_MODULES as f32;
+                let dark = modules
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, dark)| **dark)
+                    .map(|(index, _)| {
+                        let x = index % *width;
+                        let y = index / *width;
+                        LayoutBox {
+                            x: bounds.x + ox + (x as f32 + quiet) * module_size,
+                            y: bounds.y + oy + (y as f32 + quiet) * module_size,
+                            width: module_size,
+                            height: module_size,
+                        }
+                    })
+                    .collect();
+                Some(crate::ComponentGeometry::QrCode {
+                    field: LayoutBox {
+                        x: bounds.x + ox,
+                        y: bounds.y + oy,
+                        width: module_size * (*width as f32 + quiet * 2.0),
+                        height: module_size * (*width as f32 + quiet * 2.0),
+                    },
+                    module_size,
+                    dark,
+                })
+            }
             _ => None,
         }
     }
@@ -3373,7 +3561,7 @@ impl UiWorld {
         if self.focused.get(&identity.document) == Some(&id) {
             paint = paint.overlay(local.interaction.focused);
         }
-        if accessibility.disabled {
+        if accessibility.disabled && !accessibility.busy {
             paint = paint.overlay(local.interaction.disabled);
         }
         let foreground = paint.foreground.unwrap_or(inherited.foreground);
@@ -3660,7 +3848,10 @@ fn shape_modal_text(
     shaper: &mut impl TextShaper,
 ) -> ModalTextPresentation {
     let StandardVisual::ModalFrame {
-        title, description, ..
+        title,
+        description,
+        body_text,
+        ..
     } = visual
     else {
         return ModalTextPresentation::default();
@@ -3679,6 +3870,10 @@ fn shape_modal_text(
     description_style.font_size = 12.0;
     description_style.font_weight = None;
     description_style.line_height = None;
+    let mut body_style = inherited.clone();
+    body_style.font_size = crate::overlay_surfaces::MODAL_BODY_TEXT_SIZE;
+    body_style.font_weight = None;
+    body_style.line_height = None;
     ModalTextPresentation {
         title: shaper.shape(
             id,
@@ -3698,56 +3893,16 @@ fn shape_modal_text(
                 constraints,
             )
         }),
-    }
-}
-
-fn modal_surface_bounds(
-    bounds: LayoutBox,
-    kind: crate::ModalSurfaceKind,
-    intrinsic_height: Option<f32>,
-) -> LayoutBox {
-    let margin = 16.0_f32.min(bounds.width / 2.0).min(bounds.height / 2.0);
-    let available_width = (bounds.width - margin * 2.0).max(0.0);
-    let available_height = (bounds.height - margin * 2.0).max(0.0);
-    match kind {
-        crate::ModalSurfaceKind::Dialog(size) | crate::ModalSurfaceKind::Confirm(size) => {
-            let width = size.max_width().min(available_width);
-            let max_height = (bounds.height * 0.76).min(available_height);
-            let height = intrinsic_height.unwrap_or(max_height).min(max_height);
-            LayoutBox {
-                x: bounds.x + (bounds.width - width) / 2.0,
-                y: bounds.y + bounds.height * 0.12,
-                width,
-                height,
-            }
-        }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left) => {
-            let width = 420.0_f32.min(bounds.width * 0.92);
-            LayoutBox {
-                x: bounds.x,
-                y: bounds.y,
-                width,
-                height: bounds.height,
-            }
-        }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Right) => {
-            let width = 420.0_f32.min(bounds.width * 0.92);
-            LayoutBox {
-                x: bounds.x + bounds.width - width,
-                y: bounds.y,
-                width,
-                height: bounds.height,
-            }
-        }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Bottom) => {
-            let height = (bounds.height * 0.55).min(520.0).min(bounds.height);
-            LayoutBox {
-                x: bounds.x,
-                y: bounds.y + bounds.height - height,
-                width: bounds.width,
-                height,
-            }
-        }
+        body: body_text.as_ref().map(|value| {
+            shaper.shape(
+                id,
+                &TextContent {
+                    value: value.to_string(),
+                },
+                &body_style,
+                constraints,
+            )
+        }),
     }
 }
 
