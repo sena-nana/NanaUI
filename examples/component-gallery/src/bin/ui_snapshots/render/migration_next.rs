@@ -338,7 +338,7 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
     f(
         Component::Textarea,
         "invalid-focused",
-        "focused invalid textarea retains the semantic danger border",
+        "focused invalid textarea uses a 2px danger field border without a second ring",
     ),
     f(
         Component::Textarea,
@@ -929,7 +929,7 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
     f(
         Component::Tooltip,
         "open",
-        "zero-delay hover opens a label-only tooltip",
+        "zero-delay hover opens a compact label-only tooltip bound to the pointer",
     ),
     f(
         Component::Tooltip,
@@ -960,7 +960,7 @@ fn tooltip_fixture_config(state: &str) -> TooltipConfig {
         placement: if matches!(state, "edge" | "tooltip-edge") {
             TooltipPlacement::Left
         } else {
-            TooltipPlacement::Bottom
+            TooltipPlacement::FollowCursor
         },
         delay_ms: if state == "delay" { 350 } else { 0 },
         gap: 6.0,
@@ -1797,7 +1797,7 @@ fn runtime_fixture(
                 placement: if fixture.state == "tooltip-edge" {
                     TooltipPlacement::Left
                 } else {
-                    TooltipPlacement::Bottom
+                    TooltipPlacement::FollowCursor
                 },
                 ..TooltipConfig::default()
             };
@@ -2954,6 +2954,8 @@ fn write_evidence(
                     caret,
                     preedit,
                     focus_ring,
+                    border,
+                    border_width,
                     ..
                 }),
             ) => {
@@ -2978,12 +2980,17 @@ fn write_evidence(
                             has_own_clip(primitive)
                                 && matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
                         })
-                        && focus_ring.is_some()
-                        && primitive(7).is_some_and(|primitive| {
-                            matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
-                        })
+                        && focus_ring.is_none()
+                        && primitive(7).is_none()
                 } else {
                     caret.is_none() && primitive(4).is_none() && focus_ring.is_none()
+                };
+                let border_ok = match fixture.state {
+                    "invalid-focused" => {
+                        focus_ring.is_none() && border.is_some() && *border_width >= 2.0
+                    }
+                    "disabled" => focus_ring.is_none(),
+                    _ => focus_ring.is_none() && (*border_width - 1.0).abs() < 0.01,
                 };
                 let selection_count_ok = match fixture.state {
                     "selection" => selection.len() == 1,
@@ -3028,6 +3035,7 @@ fn write_evidence(
                     && selection_count_ok
                     && selection_scene_ok
                     && caret_scene_ok
+                    && border_ok
                     && preedit.is_empty()
                     && primitive(5).is_none()
                     && clipped_ok
@@ -3701,7 +3709,7 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
             "intentional: Runtime preserves the authored title casing while Iced uppercases its compatibility heading"
         }
         (Component::Tooltip, _) => {
-            "intentional: Runtime Tooltip is a label-only overlay hosted by the trigger; Iced wraps arbitrary content. Visual review is the qualification gate"
+            "intentional: Runtime Tooltip is a compact pointer-bound hover card hosted by the trigger; Iced wraps arbitrary content. Visual review is the qualification gate"
         }
         _ => fixture.divergence,
     }

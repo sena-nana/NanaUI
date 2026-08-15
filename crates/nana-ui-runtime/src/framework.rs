@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use futures_core::Stream;
 use nana_ui_core::{
-    ActionId, ContextPredicate, KeyContext, LengthSpec, ThemeMode, TooltipPlacement,
+    ActionId, ContextPredicate, KeyContext, LengthSpec, ThemeMode, TooltipConfig, TooltipPlacement,
     VirtualListLayout, VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow,
 };
@@ -144,6 +144,7 @@ struct TooltipLifecycle {
 struct ComponentLifecycle {
     now: Duration,
     viewports: HashMap<DocumentId, crate::LayoutViewport>,
+    pointer_positions: HashMap<(DocumentId, u64), (f32, f32)>,
     tooltips: HashMap<StableNodeId, TooltipLifecycle>,
     loading: HashMap<StableNodeId, LoadingComponent>,
     next_loading_frame: Option<Duration>,
@@ -1691,6 +1692,22 @@ impl AppContext {
         self.set_pointer_hover_at(document, pointer_id, target, self.component_lifecycle.now)
     }
 
+    pub fn set_pointer_location(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        position: Option<(f32, f32)>,
+    ) {
+        let key = (document, pointer_id);
+        if let Some(position) = position {
+            self.component_lifecycle
+                .pointer_positions
+                .insert(key, position);
+        } else {
+            self.component_lifecycle.pointer_positions.remove(&key);
+        }
+    }
+
     pub fn set_pointer_hover_at(
         &mut self,
         document: DocumentId,
@@ -1707,6 +1724,8 @@ impl AppContext {
             if let Some(target) = target {
                 self.enter_tooltip(target, now)?;
             }
+        } else if let Some(target) = target {
+            self.reposition_follow_cursor_tooltip(target)?;
         }
         Ok(previous)
     }
@@ -2376,6 +2395,38 @@ impl AppContext {
         Ok(())
     }
 
+    fn pointer_location_on(&self, target: StableNodeId) -> Option<(f32, f32)> {
+        let document = self.world.node(target)?.document;
+        self.component_lifecycle.pointer_positions.iter().find_map(
+            |(&(owner, pointer_id), &position)| {
+                (owner == document && self.world.pointer_hover(owner, pointer_id) == Some(target))
+                    .then_some(position)
+            },
+        )
+    }
+
+    fn reposition_follow_cursor_tooltip(
+        &mut self,
+        target: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        let Some(lifecycle) = self.component_lifecycle.tooltips.get(&target).copied() else {
+            return Ok(());
+        };
+        if !lifecycle.open {
+            return Ok(());
+        }
+        let follows = self
+            .read(
+                Entity::<Tooltip>::from_stable_id(lifecycle.overlay),
+                |tooltip| tooltip.config.placement == TooltipPlacement::FollowCursor,
+            )
+            .unwrap_or(false);
+        if follows {
+            self.position_tooltip(target, lifecycle.overlay)?;
+        }
+        Ok(())
+    }
+
     fn position_tooltip(
         &mut self,
         target: StableNodeId,
@@ -2398,8 +2449,8 @@ impl AppContext {
             .read(Entity::<Tooltip>::from_stable_id(overlay), |tooltip| {
                 (tooltip.config, tooltip.style.clone())
             })?;
-        let padding_x = nana_ui_core::UI_METRICS.panel_padding_x;
-        let padding_y = nana_ui_core::UI_METRICS.panel_padding_y;
+        let padding_x = TooltipConfig::PADDING_X;
+        let padding_y = TooltipConfig::PADDING_Y;
         let desired_width = (metrics.width + padding_x * 2.0 + 2.0)
             .min(config.max_width)
             .max(0.0);
@@ -2408,6 +2459,10 @@ impl AppContext {
         let left_available = (anchor.x - config.gap - padding).max(0.0);
         let right_available =
             (viewport.width - padding - (anchor.x + anchor.width + config.gap)).max(0.0);
+        let cursor = self.pointer_location_on(target).unwrap_or((
+            anchor.x + anchor.width / 2.0,
+            anchor.y + anchor.height / 2.0,
+        ));
         let (width, horizontal_side) = match config.placement {
             TooltipPlacement::Left => {
                 let side = if left_available >= desired_width
@@ -2439,7 +2494,9 @@ impl AppContext {
                 };
                 (desired_width.min(available), Some(side))
             }
-            TooltipPlacement::Top | TooltipPlacement::Bottom => (desired_width, None),
+            TooltipPlacement::Top | TooltipPlacement::Bottom | TooltipPlacement::FollowCursor => {
+                (desired_width, None)
+            }
         };
         let top = (
             anchor.x + (anchor.width - width) / 2.0,
@@ -2457,6 +2514,8 @@ impl AppContext {
             anchor.x - config.gap - width,
             anchor.y + (anchor.height - height) / 2.0,
         );
+        let follow_above = (cursor.0, cursor.1 - height - config.gap);
+        let follow_below = (cursor.0, cursor.1 + config.gap);
         let fits = |(x, y): (f32, f32)| {
             x >= padding
                 && y >= padding
@@ -2468,18 +2527,22 @@ impl AppContext {
             TooltipPlacement::Right => right,
             TooltipPlacement::Bottom => bottom,
             TooltipPlacement::Left => left,
+            TooltipPlacement::FollowCursor => follow_above,
         };
         let opposite = match config.placement {
             TooltipPlacement::Top => bottom,
             TooltipPlacement::Right => left,
             TooltipPlacement::Bottom => top,
             TooltipPlacement::Left => right,
+            TooltipPlacement::FollowCursor => follow_below,
         };
         let (x, y) = if let Some(side) = horizontal_side {
             match side {
                 TooltipPlacement::Left => left,
                 TooltipPlacement::Right => right,
-                TooltipPlacement::Top | TooltipPlacement::Bottom => unreachable!(),
+                TooltipPlacement::Top
+                | TooltipPlacement::Bottom
+                | TooltipPlacement::FollowCursor => unreachable!(),
             }
         } else if fits(preferred) || !fits(opposite) {
             preferred
@@ -6058,6 +6121,86 @@ mod tests {
             Some(tooltip.stable_id())
         );
         assert!(context.read(button, |button| button.tooltip_open).unwrap());
+    }
+
+    #[test]
+    fn tooltip_default_follows_pointer_as_a_compact_card() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                IconButton::new(nana_ui_core::Icon::About, "Details").tooltip(
+                    "More details",
+                    nana_ui_core::TooltipConfig {
+                        delay_ms: 0,
+                        ..nana_ui_core::TooltipConfig::default()
+                    },
+                ),
+            )
+            .unwrap();
+        let tooltip = context.icon_button_tooltip(button).unwrap().unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            button.stable_id(),
+            crate::LayoutBox {
+                x: 20.0,
+                y: 50.0,
+                width: 28.0,
+                height: 28.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+
+        context.set_pointer_location(document, 1, Some((48.0, 72.0)));
+        context
+            .set_pointer_hover_at(document, 1, Some(button.stable_id()), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(button.stable_id())
+                .unwrap()
+                .active,
+            Some(tooltip.stable_id())
+        );
+
+        let tooltip_style = context.world().node_style(tooltip.stable_id()).unwrap();
+        assert_eq!(
+            tooltip_style.layout.padding_left,
+            Some(LengthSpec::Px(TooltipConfig::PADDING_X))
+        );
+        assert_eq!(
+            tooltip_style.layout.padding_top,
+            Some(LengthSpec::Px(TooltipConfig::PADDING_Y))
+        );
+        assert_eq!(
+            tooltip_style.layout.border_radius,
+            Some(TooltipConfig::RADIUS)
+        );
+        assert_eq!(
+            tooltip_style.border,
+            Some(nana_ui_core::SemanticColorRole::BorderSoft)
+        );
+        assert!(
+            matches!(
+                tooltip_style.layout.offset_left,
+                Some(LengthSpec::Px(x)) if (x - 48.0).abs() < 0.01
+            ),
+            "default tooltip should bind to the pointer x, got {:?}",
+            tooltip_style.layout.offset_left
+        );
+        assert!(
+            matches!(
+                tooltip_style.layout.offset_top,
+                Some(LengthSpec::Px(y)) if y < 72.0 - TooltipConfig::PADDING_Y
+            ),
+            "tooltip should sit above the pointer, got {:?}",
+            tooltip_style.layout.offset_top
+        );
     }
 
     #[test]

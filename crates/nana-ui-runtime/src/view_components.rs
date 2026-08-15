@@ -106,7 +106,7 @@ fn text_field_style(multiline: bool) -> NodeStyle {
                 ..SemanticPaint::default()
             },
             focused: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::BorderSoft),
+                border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
                 ..SemanticPaint::default()
             },
             disabled: SemanticPaint {
@@ -1582,7 +1582,7 @@ impl Tooltip {
     }
 
     pub fn with_config(label: impl Into<Arc<str>>, config: nana_ui_core::TooltipConfig) -> Self {
-        let mut style = overlay_surface_style(config.max_width.max(0.0));
+        let mut style = tooltip_surface_style(config.max_width.max(0.0));
         Arc::make_mut(&mut style.layout).max_width =
             Some(nana_ui_core::LengthSpec::Px(config.max_width.max(0.0)));
         Self {
@@ -1648,6 +1648,36 @@ fn overlay_surface_style(max_width: f32) -> NodeStyle {
         }),
         background: Some(nana_ui_core::SemanticColorRole::Surface),
         border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
+        ..NodeStyle::default()
+    }
+}
+
+fn tooltip_surface_style(max_width: f32) -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            position: nana_ui_core::PositionSpec::Fixed,
+            max_width: Some(nana_ui_core::LengthSpec::Px(max_width)),
+            padding_left: Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::TooltipConfig::PADDING_X,
+            )),
+            padding_right: Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::TooltipConfig::PADDING_X,
+            )),
+            padding_top: Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::TooltipConfig::PADDING_Y,
+            )),
+            padding_bottom: Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::TooltipConfig::PADDING_Y,
+            )),
+            border_width: Some(1.0),
+            border_radius: Some(nana_ui_core::TooltipConfig::RADIUS),
+            font_size: Some(nana_ui_core::TooltipConfig::FONT_SIZE),
+            z_index: Some(1_000),
+            ..nana_ui_core::LayoutStyle::default()
+        }),
+        background: Some(nana_ui_core::SemanticColorRole::Surface),
+        border: Some(nana_ui_core::SemanticColorRole::BorderSoft),
+        foreground: Some(nana_ui_core::SemanticColorRole::Text),
         ..NodeStyle::default()
     }
 }

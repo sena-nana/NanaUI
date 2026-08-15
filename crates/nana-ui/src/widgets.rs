@@ -257,7 +257,7 @@ pub fn text_input_style(
         } else {
             match status {
                 text_input::Status::Hovered => colors.border_strong,
-                text_input::Status::Focused { .. } => colors.border_soft,
+                text_input::Status::Focused { .. } => colors.border_strong,
                 text_input::Status::Disabled => colors.border_soft,
                 text_input::Status::Active => colors.border,
             }
@@ -295,7 +295,7 @@ pub fn text_editor_style(
         } else {
             match status {
                 text_editor::Status::Hovered => colors.border_strong,
-                text_editor::Status::Focused { .. } => colors.border_soft,
+                text_editor::Status::Focused { .. } => colors.border_strong,
                 text_editor::Status::Disabled => colors.border_soft,
                 text_editor::Status::Active => colors.border,
             }
@@ -887,7 +887,7 @@ mod tests {
             text_input::Status::Focused { is_hovered: false },
         );
         assert_eq!(focused.background, colors.background.into());
-        assert_eq!(focused.border.color, colors.border_soft);
+        assert_eq!(focused.border.color, colors.border_strong);
         assert_eq!(focused.border.width, 1.0);
 
         let focused_editor = text_editor_style(colors, false)(
@@ -895,7 +895,7 @@ mod tests {
             text_editor::Status::Focused { is_hovered: false },
         );
         assert_eq!(focused_editor.background, colors.background.into());
-        assert_eq!(focused_editor.border.color, colors.border_soft);
+        assert_eq!(focused_editor.border.color, colors.border_strong);
         assert_eq!(focused_editor.border.width, 1.0);
 
         let opened =
