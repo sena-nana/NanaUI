@@ -66,6 +66,26 @@ reference rather than an oracle: an `evidence.txt` entry records the expected de
 backend's observed result and verdict, and the reason for an intentional divergence. No automatic
 fallback or parallel tree is introduced.
 
+## Current third batch
+
+`StatusBadge`, `ValidationMessage`, `EmptyState`, `LabeledValue`, and `SegmentedControl` are
+`RuntimeQualified`; their root and aggregate public exports route to Runtime, while their Iced
+adapters live under `nana_ui::compatibility`. Iced is a migration-era reference, not a visual
+oracle. Qualification is design-correctness of behavior, layout, rendering semantics, and
+human-reviewed visuals; SSIM or pixel equality with Iced is not required.
+
+Visual review accepted the Runtime frame for this batch. Iced differences are not
+defects: weaker EmptyState Primary, nearly invisible Segmented focus, and a
+LabeledValue action beside the value instead of the trailing edge.
+
+SegmentedControl keeps RadioGroup/Radio semantics, one sequential tab stop, controlled selection,
+disabled-item skipping, wrapping horizontal keyboard navigation, and fixed-content intrinsic
+layout. StatusBadge and ValidationMessage keep tone/intent geometry on the shared Quad/Text/Icon
+path. EmptyState owns intrinsic icon/title/message content, measures wrapped text through the host
+shaper, and accepts only an application-provided action child. LabeledValue remains a
+non-interactive summary with an optional mounted action child. Tabs, vertical orientation,
+reorder, drag, close, and cross-surface behavior stay outside this batch.
+
 ## Current candidates
 
 `Textarea` is `RuntimeCandidate`. Its Runtime path now uses one retained editing authority for
@@ -78,22 +98,8 @@ Hosted IME/platform and affected-consumer evidence complete the qualification ga
 `HostedTextarea` remains a separate `Compatibility` component and is not implied by the Runtime
 `Textarea` candidate.
 
-`SegmentedControl` is `RuntimeCandidate`. Its Runtime implementation uses backend-neutral
-RadioGroup/Radio semantics, one sequential tab stop, controlled selection requests, disabled-item
-skipping and wrapping horizontal keyboard navigation, and fixed-content intrinsic layout. Dark and
-light fixtures cover all three sizes, icons, pointer and keyboard states, focus, disabled and empty
-groups, controlled commit, accessibility activation, atomic replacement, and parked-child cleanup.
-The 44 fixture variants pass their machine gates and have completed manual semantic review. The
-compatibility component remains the public and Vue default route while consumer evidence is still
-pending; Tabs, vertical orientation, reorder, drag, close, and cross-surface behavior are outside
-this candidate.
-
-`StatusBadge`, `ValidationMessage`, `EmptyState`, and `LabeledValue` are also
-`RuntimeCandidate`. Their Runtime implementations use backend-neutral semantic geometry and the
-shared Quad/Text/Icon scene path. EmptyState owns intrinsic icon/title/message content, measures
-wrapped text through the host shaper, and accepts only an application-provided action child. The
-parked subtree contract keeps replaced actions alive without leaving render, hit-test, focus, IME,
-overlay, animation, or accessibility ghosts. Dark and light fixtures cover tones and intents,
-compact and normal layouts, long CJK/emoji wrapping, extreme clipping, emphasis, real action
-activation, replacement, removal, and remount. Their compatibility exports remain the default
-until affected-consumer evidence completes qualification.
+`Progress` and `Spinner` are also `RuntimeCandidate`. Runtime Progress is determinate only: Nana
+theme track/fill (Subtle + Accent, 6px girth, radius 3), optional label, no cancel control.
+Runtime Spinner reuses the Scene spinner primitive; phase is host-sampled and does not create a
+timer. Public and Vue defaults stay on the Iced adapters until visual review and consumer
+evidence complete qualification. Iced `progress_bar` metrics are not a visual oracle.

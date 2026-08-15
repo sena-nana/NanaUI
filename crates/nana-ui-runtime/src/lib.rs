@@ -28,7 +28,9 @@ pub use components::{
     TextInputPresentation, TextInputState, TextMetrics, TextSelection, TextShapeConstraints,
     TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
 };
-pub use feedback::{EmptyState, LabeledValue, StatusBadge, ValidationMessage, ValueEmphasis};
+pub use feedback::{
+    EmptyState, LabeledValue, Progress, Spinner, StatusBadge, ValidationMessage, ValueEmphasis,
+};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, Entity, ExtensionRegistrar, FrameworkError, OverlayKey,
     OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription, Task,

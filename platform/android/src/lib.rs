@@ -1,7 +1,8 @@
-//! Minimal Android ARM64 host — no System WebView.
+//! Experimental, frozen Android ARM64 host — not a current NanaUI product target.
 //!
-//! Lifecycle + `ANativeWindow` Surface + QuickJS (wgpu 30 / Vulkan; no Blitz).
-//! Desktop builds of this crate expose [`smoke_engine_only`] for CI without NDK UI.
+//! NativeActivity + `ANativeWindow` Surface + QuickJS (wgpu 30 / Vulkan). Desktop
+//! builds expose [`smoke_engine_only`] for host-side compile/smoke without NDK UI.
+//! Resume only after desktop Runtime/Vue stabilize. Do not migrate this crate to Runtime.
 
 #![cfg_attr(target_os = "android", allow(clippy::unnecessary_wraps))]
 

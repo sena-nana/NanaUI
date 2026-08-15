@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 publish = false
-description = "Minimal Android ARM64 host: NativeActivity + wgpu/Vulkan + QuickJS (no WebView, no Blitz)"
+description = "Experimental frozen Android ARM64 host (not a current NanaUI product target)"
 license = "MIT OR Apache-2.0"
 
 [lib]

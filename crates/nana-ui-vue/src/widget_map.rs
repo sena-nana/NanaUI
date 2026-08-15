@@ -12,7 +12,7 @@
 //! Overlay / layout kinds come from documented `nana-*` contracts, HTML tags, and
 //! ARIA `role` — not product kit BEM (`ui-dialog`, `ctx-menu`, `dd__menu`, …).
 
-use crate::bridge::WidgetKind;
+use crate::bridge::{SemanticSnapshot, SemanticWidget, WidgetId, WidgetKind, WidgetProps};
 
 /// Downlevel HTML / role / class hints onto Nana foundations.
 pub fn resolve_kind_from_hints(
@@ -203,6 +203,9 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-settings-row" | "settings-row" => WidgetKind::SettingsRow,
         "nana-settings-card" | "settings-card" => WidgetKind::SettingsCard,
         "nana-empty" | "empty-state" => WidgetKind::EmptyState,
+        "nana-status" | "nana-status-badge" => WidgetKind::StatusBadge,
+        "nana-validation" | "nana-validation-message" => WidgetKind::ValidationMessage,
+        "nana-labeled-value" => WidgetKind::LabeledValue,
         "nana-progress" | "ui-progress" => WidgetKind::Progress,
         "nana-spinner" | "ui-spinner" => WidgetKind::Spinner,
         "nana-column" | "vstack" => WidgetKind::Column,
@@ -221,6 +224,108 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         // shells (and blocks flex-direction → Row) into Card.
         _ => return None,
     })
+}
+
+pub(crate) fn first_button_child_id(
+    snapshot: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> Option<WidgetId> {
+    widget.children.iter().copied().find(|&id| {
+        snapshot
+            .get(id)
+            .is_some_and(|child| child.kind == WidgetKind::Button)
+    })
+}
+
+pub(crate) fn labeled_value_caption(
+    snapshot: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> String {
+    if !widget.props.label.is_empty() {
+        return widget.props.label.clone();
+    }
+    widget
+        .children
+        .iter()
+        .filter_map(|id| snapshot.get(*id))
+        .find(|child| child.kind == WidgetKind::Text)
+        .map(|child| child.props.display_label().to_string())
+        .filter(|label| !label.is_empty())
+        .unwrap_or_default()
+}
+
+pub(crate) fn validation_message_text(props: &WidgetProps) -> String {
+    if !props.hint.is_empty() {
+        props.hint.clone()
+    } else {
+        props.display_label().to_string()
+    }
+}
+
+pub(crate) fn class_has_compact(props: &WidgetProps) -> bool {
+    props
+        .class_names
+        .iter()
+        .any(|class| class.contains("compact"))
+}
+
+pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&'a str> {
+    for name in names {
+        if let Some(value) = props.attrs.get(*name) {
+            return Some(value.as_str());
+        }
+        if let Some((_, value)) = props
+            .attrs
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        {
+            return Some(value.as_str());
+        }
+    }
+    None
+}
+
+pub(crate) fn parse_status_tone(raw: &str) -> Option<nana_ui_core::StatusTone> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "neutral" => Some(nana_ui_core::StatusTone::Neutral),
+        "info" => Some(nana_ui_core::StatusTone::Info),
+        "success" => Some(nana_ui_core::StatusTone::Success),
+        "warning" | "warn" => Some(nana_ui_core::StatusTone::Warning),
+        "danger" | "error" => Some(nana_ui_core::StatusTone::Danger),
+        _ => None,
+    }
+}
+
+pub(crate) fn status_tone_from_props(props: &WidgetProps) -> nana_ui_core::StatusTone {
+    if let Some(tone) = attr_value(props, &["tone", "data-tone"]).and_then(parse_status_tone) {
+        return tone;
+    }
+    for class in &props.class_names {
+        if let Some(suffix) = class.rsplit_once("--").map(|(_, suffix)| suffix)
+            && let Some(tone) = parse_status_tone(suffix)
+        {
+            return tone;
+        }
+    }
+    nana_ui_core::StatusTone::Neutral
+}
+
+pub(crate) fn parse_validation_intent(raw: &str) -> Option<nana_ui_core::ValidationIntent> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "danger" | "error" => Some(nana_ui_core::ValidationIntent::Danger),
+        "warning" | "warn" => Some(nana_ui_core::ValidationIntent::Warning),
+        _ => None,
+    }
+}
+
+pub(crate) fn validation_intent_from_props(props: &WidgetProps) -> nana_ui_core::ValidationIntent {
+    if props.invalid {
+        return nana_ui_core::ValidationIntent::Danger;
+    }
+    match attr_value(props, &["intent", "data-intent"]).and_then(parse_validation_intent) {
+        Some(nana_ui_core::ValidationIntent::Danger) => nana_ui_core::ValidationIntent::Danger,
+        _ => nana_ui_core::ValidationIntent::Warning,
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +448,43 @@ mod tests {
         assert_eq!(
             resolve_kind_from_hints("div", Some("dd__menu"), None, None),
             Some(WidgetKind::Column)
+        );
+    }
+
+    #[test]
+    fn documented_feedback_classes_map_without_promoting_html_text() {
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-status"), None, None),
+            Some(WidgetKind::StatusBadge)
+        );
+        assert_eq!(
+            resolve_kind_from_hints(
+                "div",
+                Some("nana-status-badge nana-status--danger"),
+                None,
+                None
+            ),
+            Some(WidgetKind::StatusBadge)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-validation"), None, None),
+            Some(WidgetKind::ValidationMessage)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-validation-message"), None, None),
+            Some(WidgetKind::ValidationMessage)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-labeled-value"), None, None),
+            Some(WidgetKind::LabeledValue)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("span", None, None, None),
+            Some(WidgetKind::Text)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("output", None, None, None),
+            Some(WidgetKind::Text)
         );
     }
 }

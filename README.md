@@ -1,7 +1,10 @@
 # NanaUI
 
-NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。当前基座为 Iced
-`0.15.0-dev` 与 WGPU `30.0.0`，不依赖 WebView、DOM、CSS 或 JavaScript。
+NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。产品保留与渲染合同是
+Runtime（`nana-ui-runtime`）和 UiScene（`nana-ui-scene`）。Iced/WGPU
+（`engine/iced`、`nana-ui` 适配器）是当前兼容绘制与桌面宿主后端，不是长期应用
+编程模型。Vue + JS 是一等 L1/L2 消费方。不把 WebView 作为产品 UI 路径。宿主拥有
+Window、Surface、Device 与 Queue，并保持单一 WGPU 主版本。
 
 ## 工作区框架
 

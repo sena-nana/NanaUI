@@ -1,18 +1,25 @@
-# Phase 3 evidence — Vue Custom Renderer + blitz-dom + paint-stub
+# HISTORICAL — Phase 3 evidence — Vue Custom Renderer + blitz-dom + paint-stub
 
 Date: 2026-08-06
+
+This is a 2026-08-06 evidence log for the removed Blitz / paint-stub path. It is
+not current architecture. Product retained/render is now Runtime/UiScene; Iced is
+the compatibility view.
 
 ## Commands
 
 ```bash
+# NOT RUNNABLE: crate `nana-ui-blitz` was deleted
 cargo test -p nana-ui-blitz --features layout --lib
 cargo test -p nana-js-quickjs --lib
 cargo run -p vue-counter -- counter --clicks=2
 cargo run -p vue-counter -- todo
 cargo run -p vue-counter --features evidence-png -- counter --clicks=1 \
   --png=docs/performance/vue-counter-quickjs.png
+# NOT RUNNABLE: feature `paint-stub` was deleted
 cargo run -p vue-counter --no-default-features --features engine-v8,paint-stub,evidence-png -- \
   counter --clicks=1 --png=docs/performance/vue-counter-v8.png
+# NOT RUNNABLE: feature `paint-stub` was deleted
 cargo run -p vue-counter --no-default-features --features engine-v8,paint-stub -- todo
 cargo check -p vue-counter --features windowed
 ```

@@ -1,15 +1,16 @@
 #![recursion_limit = "256"]
 
-//! Vue backend host coordination — L1/L2 bridge into Nana Style Model → Iced.
+//! Vue backend host coordination — first-class L1/L2 consumer of Runtime/UiScene.
 //!
 //! ## Three-layer compatibility
 //!
 //! ```text
 //! L1 CSS 子集 ──► Nana Style Model（Tokens + Semantics + Layout）
 //! L2 Vue props ─► 同一套 Model
-//! L3 Rust API ──► 同一套 Model（nana-ui）
+//! L3 Rust API ──► 同一套 Model（nana-ui 适配器）
 //!                  ▼
-//!            唯一绘制：nana-ui widgets
+//!            保留权威：UiWorld / UiScene
+//!            兼容绘制：iced_app → nana-ui → Iced
 //! ```
 //!
 //! ## Internal pipeline (adapter only — not a second paint core)
@@ -30,9 +31,9 @@
 //!
 //! Cascade SoT for `LayoutStyle` is [`MessageBridge`] stylesheet rules.
 //! `NanaTreeDocument::stylesheets` is diagnostics-only (count for host ops).
-//! Product geometry SoT after paint is iced [`LayoutBoxStore`]; `measure` is
-//! the pre-paint fallback + `nana-css-parity` harness. There is no separate
-//! synthetic layout branch. See
+//! Retained geometry lives in UiWorld/UiScene; iced [`LayoutBoxStore`] is the
+//! compatibility view after paint. `measure` is the pre-paint fallback +
+//! `nana-css-parity` harness. There is no separate synthetic layout branch. See
 //! [`docs/css-layout-engine-boundary.md`](../../../docs/css-layout-engine-boundary.md).
 //!
 //! This crate is the **L1/L2 adapter** (not the paint core):
@@ -43,7 +44,7 @@
 //! - `style` → L1 paint value parsing only（不拥有 layout / hit-test）
 //! - `widget_map` → Semantics (`WidgetKind` + props)
 //! - `layout_map` → Layout direction / Column·Row defaults
-//! - `iced_app` → L3 NanaUI widgets (feature `iced-view`)
+//! - `iced_app` → Iced compatibility view of Runtime/Scene (feature `iced-view`)
 //! - Theme tiers → Tokens via `nana-ui` / core（arbitrary CSS hex ≠ token factory）
 //!
 //! Dependency direction:
@@ -54,17 +55,15 @@
 //!      ├────────► renderer / tree     (Custom Renderer hostOps)
 //!      ├────────► widget_map / layout_map / css_map / shell_contract / css_cascade / measure
 //!      ├────────► MessageBridge                       ← L1+L2 同树
-//!      ├────────► iced_app            (→ NanaUI widgets → Iced)  ← L3 绘制
+//!      ├────────► iced_app            (Iced compatibility view of Runtime/Scene)
 //!      └────────► nana-ui-web-api     ← L1 Web API 兼容（非 WebView）
 //! ```
 //!
 //! See [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
 //!
-//! **All visible UI draws through NanaUI foundations** (layout primitives + base
-//! controls and their variants). Vue may compose custom components and drive
-//! logic, but those compose Nana kinds — not a separate paint engine.
-//! CustomContent / CPU raster paint has been removed. Do not restore Blitz/stylo
-//! or open a WebView paint path. L1 SVG/`path` chart handling in `svg_icon` /
+//! Unique retained authority is UiWorld/UiScene. `iced_app` (feature `iced-view`)
+//! is the Iced compatibility view of that Scene, including Runtime Scene leaves.
+//! WebView is not the product UI path. L1 SVG/`path` handling in `svg_icon` /
 //! `iced_app` is a temporary adapter exception — prefer sinking to L3 widgets.
 //!
 //! Applications choose one JS engine:
@@ -1157,7 +1156,7 @@ impl VueHost {
     ) -> Result<(), JsEngineError> {
         self.event_window_id = None;
         self.fire_event = Some(engine.resolve_function("__nanaFireEvent")?);
-        // Drain helper is optional for Phase 3 Counter (shim may still install it).
+        // Drain helper is optional (counter fixture / shim may still install it).
         self.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
         self.drain_fetch = engine.resolve_function("__nanaDrainFetch").ok();
         self.apply_theme = engine.resolve_function("__nanaApplyTheme").ok();
@@ -1191,18 +1190,18 @@ impl VueHost {
     }
 
     pub fn resolve_layout(&mut self) {
-        // After iced has painted, writeback is authoritative (chrome/scroll offsets).
         let iced = self.layout_boxes.snapshot();
-        if !iced.is_empty() {
-            let bridge = self.bridge.lock().expect("vue bridge");
+        if iced.is_empty() {
+            let mut bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
-            doc.apply_layout_boxes(&iced);
-            reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
+            bridge.resolve_document_layout(&mut doc);
             return;
         }
         let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
-        bridge.resolve_document_layout(&mut doc);
+        doc.apply_layout_boxes(&iced);
+        reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
+        bridge.resolve_missing_document_layout(&mut doc);
     }
 
     /// Copy iced paint boxes into the document cache (call after a frame draws).
@@ -1214,10 +1213,11 @@ impl VueHost {
         if iced.is_empty() {
             return;
         }
-        let bridge = self.bridge.lock().expect("vue bridge");
+        let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
         doc.apply_layout_boxes(&iced);
         reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
+        bridge.resolve_missing_document_layout(&mut doc);
     }
 
     /// Shared iced layout writeback buffer (same as probes / `layoutBox`).
@@ -1353,8 +1353,8 @@ impl VueHost {
 
     /// Pump a host window lifecycle event into the shim EventTarget surface.
     ///
-    /// No-op (returns `Ok(false)`) when `__nanaPumpLifecycle` is absent (e.g. Phase 3
-    /// counter without web-api shim). After dispatch, runs microtasks so listeners
+    /// No-op (returns `Ok(false)`) when `__nanaPumpLifecycle` is absent (e.g. counter
+    /// fixture without web-api shim). After dispatch, runs microtasks so listeners
     /// scheduled via `queueMicrotask` / promises settle.
     pub fn pump_lifecycle<E: JsEngine + ?Sized>(
         &mut self,

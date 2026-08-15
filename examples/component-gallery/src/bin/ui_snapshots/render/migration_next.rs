@@ -11,9 +11,11 @@ use iced_winit::core::time::Instant;
 use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::runtime::{UserInterface, user_interface};
 use nana_ui::compatibility::{
-    Button as IcedButton, Card as IcedCard, Checkbox as IcedCheckbox, IconButton as IcedIconButton,
-    Input as IcedInput, ListItem as IcedListItem, RangeField as IcedRangeField,
-    Switch as IcedSwitch,
+    Button as IcedButton, Card as IcedCard, Checkbox as IcedCheckbox, EmptyState as IcedEmptyState,
+    IconButton as IcedIconButton, Input as IcedInput, LabeledValue as IcedLabeledValue,
+    ListItem as IcedListItem, RangeField as IcedRangeField,
+    SegmentedControl as IcedSegmentedControl, StatusBadge as IcedStatusBadge, Switch as IcedSwitch,
+    ValidationMessage as IcedValidationMessage,
 };
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, Activate, Button as RuntimeButton,
@@ -28,12 +30,9 @@ use nana_ui::runtime::{
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
 };
 use nana_ui::{
-    CardKind, ComponentId, ComponentMigrationState, ControlSize, EmptyState as IcedEmptyState,
-    IcedSceneView, IcedTextShaper, Icon, LabeledValue as IcedLabeledValue, RuntimeInputAdapter,
-    SegmentedControl as IcedSegmentedControl, SelectionOption as IcedSelectionOption,
-    StatusBadge as IcedStatusBadge, Textarea as IcedTextarea, ThemeMode, ThemeModeExt,
-    TooltipConfig, TooltipPlacement, ValidationMessage as IcedValidationMessage, component_catalog,
-    component_ids,
+    CardKind, ComponentId, ComponentMigrationState, ControlSize, IcedSceneView, IcedTextShaper,
+    Icon, RuntimeInputAdapter, SelectionOption as IcedSelectionOption, Textarea as IcedTextarea,
+    ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement, component_catalog, component_ids,
 };
 use nana_ui_core::{
     LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition, ValidationIntent,
@@ -3293,8 +3292,8 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             "Review the generated dark and light compatibility and Runtime images for placeholder, multiline, focus, selection, invalid, disabled, clipping and scrolling semantics; IME remains a real Hosted gate",
         ),
         (Component::SegmentedControl, _) => (
-            "manual-required",
-            "Review the generated dark and light compatibility and Runtime images for density, icon alignment, selected interaction layers, external focus outline, disabled checked state and empty geometry; behavior and accessibility remain machine-gated",
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment, disabled fade and the 2px external focus ring",
         ),
         (Component::Text, _) => (
             "pass",
@@ -3314,19 +3313,19 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ),
         (Component::StatusBadge, _) => (
             "pass",
-            "Fresh dark and light review confirms all five semantic tones, compact pill geometry, indicator spacing and readable medium-weight labels",
+            "2026-08-15 side-by-side review preferred Runtime (right): five tones, compact pill and indicator contrast are accepted without Iced pixel match",
         ),
         (Component::ValidationMessage, _) => (
             "pass",
-            "Fresh dark and light review confirms warning and danger contrast, outlined indicators, regular text weight and stable inline spacing",
+            "2026-08-15 side-by-side review preferred Runtime (right): warning and danger contrast and inline spacing are accepted",
         ),
         (Component::EmptyState, _) => (
             "pass",
-            "Fresh dark and light review confirms normal and compact alignment, intrinsic icon/title/message order, an idle real action, CJK and emoji wrapping, and intentional extreme-width clipping without overflow",
+            "2026-08-15 side-by-side review preferred Runtime (right): icon/title/message order, compact layout, CJK wrap and solid Primary action are accepted",
         ),
         (Component::LabeledValue, _) => (
             "pass",
-            "Fresh dark and light review confirms label/value hierarchy, normal versus strong weight, aligned real action content and no parent interaction chrome",
+            "2026-08-15 side-by-side review preferred Runtime (right): label/value hierarchy and end-aligned action child are accepted",
         ),
         _ => (
             "pass",
@@ -3346,8 +3345,20 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         (Component::RangeField, _) => {
             "intentional: Runtime reserves dedicated label, value and track regions instead of copying the Iced inline geometry"
         }
+        (Component::SegmentedControl, "focused") => {
+            "intentional: Runtime keeps the 2px external focus ring; Iced focus is nearly invisible"
+        }
         (Component::SegmentedControl, "no-selection" | "all-disabled") => {
             "intentional: the compatibility widget requires a value while Runtime supports controlled no-selection and derives tab stops only from enabled options"
+        }
+        (Component::SegmentedControl, _) => {
+            "intentional: Runtime selected pill and option contrast are the accepted visual; Iced is reference only"
+        }
+        (Component::EmptyState, "complete-action") => {
+            "intentional: Runtime paints a solid Primary action; Iced renders a weaker outlined control"
+        }
+        (Component::LabeledValue, "action") => {
+            "intentional: Runtime end-aligns the action child; Iced places it beside the value"
         }
         (Component::Card, _) => {
             "intentional: Runtime preserves the authored title casing while Iced uppercases its compatibility heading"

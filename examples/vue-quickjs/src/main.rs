@@ -1,9 +1,9 @@
-//! Phase 2: QuickJS-only Vue `runtime-core` probe.
+//! QuickJS-only Vue `runtime-core` probe.
 //!
 //! Mutually exclusive with `examples/vue-v8` — this binary never links V8.
 //!
-//! Phase 3 will replace the stub host renderer ops with Rust DOM + Blitz paint;
-//! this example intentionally stops at JS execution + HostApiRegistry callbacks.
+//! Stops at JS execution + HostApiRegistry callbacks. Product retained/render is
+//! Runtime/UiScene; Iced (`iced-view`) is the compatibility view used by windowed apps.
 
 use std::env;
 use std::time::{Duration, Instant};

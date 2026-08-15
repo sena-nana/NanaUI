@@ -5,14 +5,11 @@
 //! focus, style, interaction, and layout live in `nana_ui_runtime::UiWorld`;
 //! this module retains only Vue compatibility metadata.
 //!
-//! Headless geometry is measured from the same [`crate::MessageBridge`] Style
-//! Model consumed by iced-view. After iced paints, `LayoutProbe` writes the
-//! resulting viewport boxes back to Runtime; [`LayoutBoxStore`] is only the
-//! transform-aware hit-test projection of those boxes.
-//!
-//! There are exactly two geometry phases: Style-Model measurement before paint,
-//! then iced layout writeback after paint. Neither phase introduces another
-//! retained tree or layout algorithm.
+//! Vue mixed-tree layout writers are Style-Model [`crate::measure_layout`]
+//! (pre-paint / first insert) and Iced `LayoutProbe` writeback after paint.
+//! [`LayoutBoxStore`] is the JS paint projection. Those boxes are adapted into
+//! `UiWorld` for Scene extraction and hit-test. `RuntimeLayoutEngine` is the
+//! writer for `run_runtime` documents and is not run on Vue trees.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,10 +17,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
     Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox, ComponentView,
-    CustomRenderNode, IconButton as RuntimeIconButton, ImeComposition, InteractionState,
+    CustomRenderNode, EmptyState as RuntimeEmptyState, IconButton as RuntimeIconButton,
+    ImeComposition, InteractionState, LabeledValue as RuntimeLabeledValue,
     LayoutBox as RuntimeLayoutBox, ListItem as RuntimeListItem, ListItemSlots, MutationQueue,
-    NodeKind, NodeStyle, RangeField as RuntimeRangeField, StableNodeId, Switch as RuntimeSwitch,
-    TextContent, TextInput as RuntimeTextInput, TextInputState, UiWorld,
+    NodeKind, NodeStyle, RangeField as RuntimeRangeField,
+    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
+    StableNodeId, StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextContent,
+    TextInput as RuntimeTextInput, TextInputState, UiWorld,
+    ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
 };
 use nana_ui_scene::UiScene;
 
@@ -51,7 +52,7 @@ impl From<nana_ui_runtime::StableNodeId> for NodeHandle {
     }
 }
 
-/// Stable document id for diagnostics (not a Blitz id).
+/// Vue window document id for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentId(pub u64);
 
@@ -677,6 +678,11 @@ impl NanaTreeDocument {
                         | crate::WidgetKind::Card
                         | crate::WidgetKind::ListItem
                         | crate::WidgetKind::Range
+                        | crate::WidgetKind::StatusBadge
+                        | crate::WidgetKind::ValidationMessage
+                        | crate::WidgetKind::EmptyState
+                        | crate::WidgetKind::LabeledValue
+                        | crate::WidgetKind::Segmented
                 )
                 && self.runtime.text_input(id).is_some()
             {
@@ -2061,7 +2067,88 @@ fn project_migrating_component(
             component.project(id, world, mutations);
             true
         }
+        crate::WidgetKind::StatusBadge => {
+            RuntimeStatusBadge::new(
+                widget.props.display_label(),
+                crate::widget_map::status_tone_from_props(&widget.props),
+            )
+            .compact(crate::widget_map::class_has_compact(&widget.props))
+            .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::ValidationMessage => {
+            let message = if !widget.props.hint.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.display_label()
+            };
+            RuntimeValidationMessage::new(
+                message,
+                crate::widget_map::validation_intent_from_props(&widget.props),
+            )
+            .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::EmptyState => {
+            let mut component = RuntimeEmptyState::new(widget.props.display_label());
+            if !widget.props.hint.is_empty() {
+                component = component.message(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            if let Some(icon) = empty_state_icon(widget, snapshot) {
+                component = component.icon(icon);
+            }
+            component = component.compact(crate::widget_map::class_has_compact(&widget.props));
+            if let Some(action) = crate::widget_map::first_button_child_id(snapshot, widget)
+                .and_then(StableNodeId::new)
+            {
+                component = component.action_child(action);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::LabeledValue => {
+            let label = crate::widget_map::labeled_value_caption(snapshot, widget);
+            let emphasis = if widget.props.muted {
+                ValueEmphasis::Muted
+            } else {
+                ValueEmphasis::Strong
+            };
+            let mut component = RuntimeLabeledValue::new(label, widget.props.value.as_str())
+                .emphasis(emphasis)
+                .compact(crate::widget_map::class_has_compact(&widget.props));
+            if let Some(action) = crate::widget_map::first_button_child_id(snapshot, widget)
+                .and_then(StableNodeId::new)
+            {
+                component = component.action_child(action);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Segmented => {
+            let mut control = RuntimeSegmentedControl::new().size(widget.props.size);
+            if !widget.props.label.is_empty() {
+                control = control.label(Arc::<str>::from(widget.props.label.as_str()));
+            }
+            control.project(id, world, mutations);
+            for (child, option) in widget.children.iter().zip(widget.props.options.iter()) {
+                let Some(child_id) = StableNodeId::new(*child) else {
+                    continue;
+                };
+                project_segmented_option(
+                    child_id,
+                    option,
+                    option.value == widget.props.value,
+                    widget.props.size,
+                    world,
+                    mutations,
+                );
+            }
+            true
+        }
         _ => {
+            if project_aligned_segmented_option(widget, snapshot, id, world, mutations) {
+                return true;
+            }
             if matches!(
                 world.standard_visual(id),
                 Some(
@@ -2071,6 +2158,11 @@ fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::Switch { .. }
                         | nana_ui_runtime::StandardVisual::Range { .. }
                         | nana_ui_runtime::StandardVisual::Card { .. }
+                        | nana_ui_runtime::StandardVisual::StatusBadge { .. }
+                        | nana_ui_runtime::StandardVisual::ValidationMessage { .. }
+                        | nana_ui_runtime::StandardVisual::EmptyState { .. }
+                        | nana_ui_runtime::StandardVisual::LabeledValue { .. }
+                        | nana_ui_runtime::StandardVisual::SelectionOption { .. }
                 )
             ) {
                 mutations.set_standard_visual(id, None);
@@ -2078,6 +2170,89 @@ fn project_migrating_component(
             false
         }
     }
+}
+
+fn empty_state_icon(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Option<nana_ui_core::Icon> {
+    widget
+        .children
+        .iter()
+        .filter_map(|child| snapshot.get(*child))
+        .find(|child| child.kind == crate::WidgetKind::Icon)
+        .and_then(|child| {
+            nana_ui_core::Icon::parse_name(child.props.display_label())
+                .or_else(|| nana_ui_core::Icon::parse_name(&child.props.value))
+        })
+        .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value))
+}
+
+fn project_segmented_option(
+    id: StableNodeId,
+    option: &crate::SelectOptionProp,
+    selected: bool,
+    size: nana_ui_core::ControlSize,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) {
+    RuntimeSegmentedOption::new(Arc::<str>::from(option.label.as_str()))
+        .disabled(option.disabled)
+        .size(size)
+        .project(id, world, mutations);
+    if !selected {
+        return;
+    }
+    mutations.set_standard_visual(
+        id,
+        Some(nana_ui_runtime::StandardVisual::SelectionOption {
+            label: Arc::<str>::from(option.label.as_str()),
+            icon: None,
+            selected: true,
+            disabled: option.disabled,
+            size,
+        }),
+    );
+    mutations.set_accessibility(
+        id,
+        AccessibilityState {
+            role: AccessibilityRole::Radio,
+            label: Some(Arc::<str>::from(option.label.as_str())),
+            disabled: option.disabled,
+            checked: Some(true),
+            ..AccessibilityState::default()
+        },
+    );
+}
+
+fn project_aligned_segmented_option(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    id: StableNodeId,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) -> bool {
+    let Some(parent) = widget.parent.and_then(|parent| snapshot.get(parent)) else {
+        return false;
+    };
+    if parent.kind != crate::WidgetKind::Segmented {
+        return false;
+    }
+    let Some(index) = parent.children.iter().position(|child| *child == widget.id) else {
+        return false;
+    };
+    let Some(option) = parent.props.options.get(index) else {
+        return false;
+    };
+    project_segmented_option(
+        id,
+        option,
+        option.value == parent.props.value,
+        parent.props.size,
+        world,
+        mutations,
+    );
+    true
 }
 
 fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> AccessibilityRole {
@@ -2113,6 +2288,9 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::Progress => AccessibilityRole::ProgressIndicator,
         crate::WidgetKind::ListItem | crate::WidgetKind::SidebarRow => AccessibilityRole::ListItem,
         crate::WidgetKind::Tabs | crate::WidgetKind::Segmented => AccessibilityRole::TabList,
+        crate::WidgetKind::StatusBadge | crate::WidgetKind::ValidationMessage => {
+            AccessibilityRole::Text
+        }
         crate::WidgetKind::Dialog => AccessibilityRole::Dialog,
         crate::WidgetKind::ContextMenu => AccessibilityRole::Menu,
         crate::WidgetKind::Icon => AccessibilityRole::Image,
@@ -2913,6 +3091,106 @@ mod tests {
         assert_eq!(accessibility.role, AccessibilityRole::Button);
         assert_eq!(accessibility.label.as_deref(), Some("Run"));
         assert_eq!(accessibility.value, None);
+    }
+
+    #[test]
+    fn feedback_hosts_project_retained_visuals_including_action_children() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let badge = doc.create_element("nana-status");
+        let validation = doc.create_element("nana-validation");
+        let empty = doc.create_element("nana-empty-state");
+        let action = doc.create_element("nana-button");
+        let labeled = doc.create_element("nana-labeled-value");
+        doc.insert(badge, doc.mount_root(), None);
+        doc.insert(validation, doc.mount_root(), None);
+        doc.insert(empty, doc.mount_root(), None);
+        doc.insert(action, empty, None);
+        doc.insert(labeled, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut badge_props = crate::WidgetProps {
+            label: "Offline".into(),
+            class_names: vec![
+                "nana-status".into(),
+                "nana-status--danger".into(),
+                "compact".into(),
+            ],
+            ..Default::default()
+        };
+        badge_props.attrs.insert("tone".into(), "danger".into());
+        bridge.register(badge.0, crate::WidgetKind::StatusBadge, badge_props);
+        bridge.register(
+            validation.0,
+            crate::WidgetKind::ValidationMessage,
+            crate::WidgetProps {
+                hint: "A project is required".into(),
+                invalid: true,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            empty.0,
+            crate::WidgetKind::EmptyState,
+            crate::WidgetProps {
+                label: "No projects".into(),
+                hint: "Create the first project".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            action.0,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                label: "Create".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(action.0, empty.0, None);
+        bridge.register(
+            labeled.0,
+            crate::WidgetKind::LabeledValue,
+            crate::WidgetProps {
+                label: "Revision".into(),
+                value: "42".into(),
+                muted: true,
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let badge_id = StableNodeId::try_from(badge).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(badge_id),
+            Some(nana_ui_runtime::StandardVisual::StatusBadge {
+                tone: nana_ui_core::StatusTone::Danger,
+                compact: true,
+                ..
+            })
+        ));
+        let validation_id = StableNodeId::try_from(validation).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(validation_id),
+            Some(nana_ui_runtime::StandardVisual::ValidationMessage {
+                intent: nana_ui_core::ValidationIntent::Danger,
+                ..
+            })
+        ));
+        let empty_id = StableNodeId::try_from(empty).unwrap();
+        let action_id = StableNodeId::try_from(action).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(empty_id),
+            Some(nana_ui_runtime::StandardVisual::EmptyState {
+                action: Some(id),
+                ..
+            }) if id == action_id
+        ));
+        let labeled_id = StableNodeId::try_from(labeled).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(labeled_id),
+            Some(nana_ui_runtime::StandardVisual::LabeledValue {
+                value_weight: 400,
+                ..
+            })
+        ));
     }
 
     #[test]

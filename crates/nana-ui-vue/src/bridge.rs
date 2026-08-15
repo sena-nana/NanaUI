@@ -58,6 +58,9 @@ pub enum WidgetKind {
     Card,
     ListItem,
     EmptyState,
+    StatusBadge,
+    ValidationMessage,
+    LabeledValue,
     Progress,
     Spinner,
     SidebarFrame,
@@ -100,6 +103,9 @@ impl WidgetKind {
             "card" => Self::Card,
             "list-item" | "listitem" | "li" => Self::ListItem,
             "empty" | "empty-state" | "emptystate" => Self::EmptyState,
+            "status" | "status-badge" | "statusbadge" => Self::StatusBadge,
+            "validation" | "validation-message" | "validationmessage" => Self::ValidationMessage,
+            "labeled-value" | "labeledvalue" => Self::LabeledValue,
             "progress" => Self::Progress,
             "spinner" | "loading" => Self::Spinner,
             "sidebar-frame" | "sidebarframe" | "sidebar_frame" => Self::SidebarFrame,
@@ -134,6 +140,9 @@ impl WidgetKind {
             Self::Card => "card",
             Self::ListItem => "list-item",
             Self::EmptyState => "empty-state",
+            Self::StatusBadge => "status-badge",
+            Self::ValidationMessage => "validation-message",
+            Self::LabeledValue => "labeled-value",
             Self::Progress => "progress",
             Self::Spinner => "spinner",
             Self::SidebarFrame => "sidebar-frame",
@@ -167,6 +176,9 @@ impl WidgetKind {
             Self::Card => "nana-card",
             Self::ListItem => "nana-list-item",
             Self::EmptyState => "nana-empty-state",
+            Self::StatusBadge => "nana-status-badge",
+            Self::ValidationMessage => "nana-validation-message",
+            Self::LabeledValue => "nana-labeled-value",
             Self::Progress => "nana-progress",
             Self::Spinner => "nana-spinner",
             Self::SidebarFrame => "nana-sidebar-frame",
@@ -499,6 +511,20 @@ impl WidgetProps {
             }
             "muted" => self.muted = host_truthy(value),
             "invalid" => self.invalid = host_truthy(value),
+            "tone" | "data-tone" => {
+                let s = host_string(value);
+                self.attrs.insert("tone".into(), s.clone());
+                if key == "data-tone" {
+                    self.attrs.insert("data-tone".into(), s);
+                }
+            }
+            "intent" | "data-intent" => {
+                let s = host_string(value);
+                self.attrs.insert("intent".into(), s.clone());
+                if key == "data-intent" {
+                    self.attrs.insert("data-intent".into(), s);
+                }
+            }
             "fill" => {
                 // SVG `fill="…color…"` vs flex `fill` truthy flag.
                 let s = host_string(value);
@@ -2528,8 +2554,8 @@ impl MessageBridge {
 
     /// Resolve the pre-paint document geometry from the canonical semantic tree.
     ///
-    /// This is the only headless layout entry used by Vue host ops. Iced layout
-    /// writeback replaces these boxes after paint.
+    /// Headless entry for first insert and for nodes Iced has not painted yet.
+    /// Painted Iced probe boxes stay authoritative for those nodes.
     pub(crate) fn resolve_document_layout(&mut self, doc: &mut crate::tree::NanaTreeDocument) {
         let (logical_w, logical_h) = doc.logical_size();
         self.reparent_orphans();
@@ -2537,6 +2563,25 @@ impl MessageBridge {
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
         let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
         doc.apply_layout_boxes(&boxes);
+    }
+
+    /// Measure only nodes that still have no Runtime layout box.
+    pub(crate) fn resolve_missing_document_layout(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
+        let (logical_w, logical_h) = doc.logical_size();
+        self.reparent_orphans();
+        self.sync_sidebar_footer_into_document(doc);
+        self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
+        let missing: Vec<_> = boxes
+            .into_iter()
+            .filter(|(handle, _)| doc.layout_box(*handle).is_none())
+            .collect();
+        if !missing.is_empty() {
+            doc.apply_layout_boxes(&missing);
+        }
     }
 
     fn write_containing_block(
