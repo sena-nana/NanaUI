@@ -11,6 +11,18 @@ use crate::{NodeKind, StableNodeId};
 static DEFAULT_LAYOUT_STYLE: LazyLock<Arc<LayoutStyle>> =
     LazyLock::new(|| Arc::new(LayoutStyle::default()));
 
+/// Effective retained-document presence for a node.
+///
+/// Parked nodes keep their stable identity and application-owned view state,
+/// but are excluded from layout, rendering, input, focus and accessibility
+/// until the same subtree is inserted again.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MountState {
+    #[default]
+    Mounted,
+    Parked,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SemanticPaint {
     pub foreground: Option<SemanticColorRole>,
@@ -52,6 +64,14 @@ pub struct TooltipVisual {
 
 #[derive(Component, Debug, Clone, PartialEq)]
 pub enum StandardVisual {
+    ModalFrame {
+        title: Arc<str>,
+        description: Option<Arc<str>>,
+        kind: crate::ModalSurfaceKind,
+        busy: bool,
+        danger: bool,
+        slots: crate::ModalSlots,
+    },
     Button {
         label: Arc<str>,
         kind: nana_ui_core::ButtonKind,
@@ -106,6 +126,38 @@ pub enum StandardVisual {
         content: Option<StableNodeId>,
         trailing: Option<StableNodeId>,
     },
+    StatusBadge {
+        label: Arc<str>,
+        tone: nana_ui_core::StatusTone,
+        compact: bool,
+    },
+    ValidationMessage {
+        message: Arc<str>,
+        intent: nana_ui_core::ValidationIntent,
+        compact: bool,
+    },
+    EmptyState {
+        title: Arc<str>,
+        message: Option<Arc<str>>,
+        icon: Option<Icon>,
+        compact: bool,
+        action: Option<StableNodeId>,
+    },
+    LabeledValue {
+        label: Arc<str>,
+        value: Arc<str>,
+        value_role: SemanticColorRole,
+        value_weight: u16,
+        compact: bool,
+        action: Option<StableNodeId>,
+    },
+    SelectionOption {
+        label: Arc<str>,
+        icon: Option<Icon>,
+        selected: bool,
+        disabled: bool,
+        size: ControlSize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,6 +178,16 @@ pub struct ComponentElevation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentGeometry {
+    ModalFrame {
+        scrim: LayoutBox,
+        surface: LayoutBox,
+        body: LayoutBox,
+        title: ComponentTextRegion,
+        description: Option<ComponentTextRegion>,
+        background: [f32; 4],
+        border: [f32; 4],
+        elevation: ComponentElevation,
+    },
     Button {
         label: ComponentTextRegion,
         spinner: Option<LayoutBox>,
@@ -136,9 +198,10 @@ pub enum ComponentGeometry {
     },
     TextInput {
         text: ComponentTextRegion,
-        selection: Option<LayoutBox>,
+        multiline: bool,
+        selection: Vec<LayoutBox>,
         caret: Option<LayoutBox>,
-        preedit: Option<LayoutBox>,
+        preedit: Vec<LayoutBox>,
         background: Option<[f32; 4]>,
         border: Option<[f32; 4]>,
         border_width: f32,
@@ -171,6 +234,35 @@ pub enum ComponentGeometry {
         leading: Option<LayoutBox>,
         content: Option<LayoutBox>,
         trailing: Option<LayoutBox>,
+    },
+    StatusBadge {
+        indicator: LayoutBox,
+        label: ComponentTextRegion,
+        background: [f32; 4],
+        foreground: [f32; 4],
+    },
+    ValidationMessage {
+        indicator: LayoutBox,
+        label: ComponentTextRegion,
+        foreground: [f32; 4],
+    },
+    EmptyState {
+        root_clip: LayoutBox,
+        content_clip: LayoutBox,
+        icon: Option<(Icon, LayoutBox, [f32; 4])>,
+        title: ComponentTextRegion,
+        message: Option<ComponentTextRegion>,
+        action: Option<LayoutBox>,
+    },
+    LabeledValue {
+        label: ComponentTextRegion,
+        value: ComponentTextRegion,
+        action: Option<LayoutBox>,
+    },
+    SelectionOption {
+        icon: Option<(Icon, LayoutBox, [f32; 4])>,
+        label: ComponentTextRegion,
+        focus_ring: Option<[f32; 4]>,
     },
 }
 
@@ -271,6 +363,20 @@ pub struct TextMetrics {
     pub height: f32,
 }
 
+/// Shaped intrinsic text owned by an EmptyState rather than application child
+/// nodes. Runtime layout and every renderer consume the same measured runs.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct EmptyStateTextPresentation {
+    pub title: TextMetrics,
+    pub message: Option<TextMetrics>,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct ModalTextPresentation {
+    pub title: TextMetrics,
+    pub description: Option<TextMetrics>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TextShapeConstraints {
     pub max_width: Option<f32>,
@@ -322,17 +428,134 @@ pub trait TextShaper {
         )
         .width
     }
+
+    /// Return the visual origin of a UTF-8 boundary in multiline text.
+    ///
+    /// The backend-neutral fallback handles explicit line breaks and delegates
+    /// each line's horizontal shaping to [`Self::horizontal_offset`]. Backends
+    /// with paragraph-level wrapping information may override this method.
+    fn text_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        style: &ComputedStyle,
+        _constraints: TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        if byte_offset > text.value.len()
+            || !text.value.is_char_boundary(byte_offset)
+            || !is_grapheme_boundary(&text.value, byte_offset)
+        {
+            return (0.0, 0.0, 0.0);
+        }
+        let (line, line_start, line_end) = explicit_line_at(&text.value, byte_offset);
+        let line_height = resolved_text_line_height(style);
+        let line_text = TextContent {
+            value: text.value[line_start..line_end].to_owned(),
+        };
+        (
+            self.horizontal_offset(id, &line_text, byte_offset - line_start, style),
+            line as f32 * line_height,
+            line_height,
+        )
+    }
+
+    /// Return highlight rectangles in paragraph-local coordinates.
+    ///
+    /// The default preserves the backend-neutral explicit-newline behavior.
+    /// Paragraph backends should override this to split ranges at their real
+    /// visual wrapping boundaries.
+    fn text_highlights(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        selection: (usize, usize),
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Vec<LayoutBox> {
+        let (start, end) = selection;
+        if start >= end
+            || end > text.value.len()
+            || !text.value.is_char_boundary(start)
+            || !text.value.is_char_boundary(end)
+            || !is_grapheme_boundary(&text.value, start)
+            || !is_grapheme_boundary(&text.value, end)
+        {
+            return Vec::new();
+        }
+        let mut highlights = Vec::new();
+        for (line_start, line_end, next_line_start) in explicit_lines(&text.value) {
+            let segment_start = start.max(line_start).min(line_end);
+            let segment_end = end.min(line_end).max(line_start);
+            let includes_line_break =
+                next_line_start > line_end && start <= line_end && end >= next_line_start;
+            if segment_start < segment_end || includes_line_break {
+                let (from_x, from_y, line_height) =
+                    self.text_position(id, text, segment_start, style, constraints);
+                let (to_x, _, _) = self.text_position(id, text, segment_end, style, constraints);
+                highlights.push(LayoutBox {
+                    x: from_x,
+                    y: from_y,
+                    width: (to_x - from_x).max(if includes_line_break { 1.0 } else { 0.0 }),
+                    height: line_height,
+                });
+            }
+            if line_end == text.value.len() || line_end >= end {
+                break;
+            }
+        }
+        highlights
+    }
 }
 
-/// Shaped single-line editing presentation. The committed value remains in
+fn explicit_lines(value: &str) -> Vec<(usize, usize, usize)> {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (index, grapheme) in value.grapheme_indices(true) {
+        if matches!(grapheme, "\n" | "\r" | "\r\n" | "\n\r") {
+            lines.push((start, index, index + grapheme.len()));
+            start = index + grapheme.len();
+        }
+    }
+    lines.push((start, value.len(), value.len()));
+    lines
+}
+
+fn explicit_line_at(value: &str, offset: usize) -> (usize, usize, usize) {
+    let lines = explicit_lines(value);
+    let last_line = lines.len().saturating_sub(1);
+    lines
+        .into_iter()
+        .enumerate()
+        .find_map(|(line, (start, end, next))| {
+            (offset <= end || offset < next).then_some((line, start, end))
+        })
+        .unwrap_or((last_line, value.len(), value.len()))
+}
+
+fn resolved_text_line_height(style: &ComputedStyle) -> f32 {
+    match style.line_height {
+        Some(LineHeightSpec::Absolute(value)) => value.max(0.0),
+        Some(LineHeightSpec::Relative(value)) => style.font_size * value.max(0.0),
+        None => style.font_size * 1.2,
+    }
+}
+
+/// Shaped editing presentation. The committed value remains in
 /// [`TextInputState`]; this derived component only carries renderer geometry.
 #[derive(Component, Debug, Clone, PartialEq, Default)]
 pub struct TextInputPresentation {
     pub display_value: String,
     pub placeholder: bool,
     pub selection: Option<(f32, f32)>,
+    pub selection_lines: Vec<LayoutBox>,
     pub caret_x: f32,
+    pub caret_y: f32,
+    pub line_height: f32,
     pub preedit: Option<(f32, f32)>,
+    pub preedit_lines: Vec<LayoutBox>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -342,6 +565,15 @@ pub struct LayoutInput {
     pub children: Vec<StableNodeId>,
     pub style: Arc<LayoutStyle>,
     pub text_metrics: Option<TextMetrics>,
+    pub modal: Option<ModalLayoutInput>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModalLayoutInput {
+    pub kind: crate::ModalSurfaceKind,
+    pub slots: crate::ModalSlots,
+    pub title: TextMetrics,
+    pub description: Option<TextMetrics>,
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
@@ -429,7 +661,10 @@ pub enum AccessibilityRole {
     ColumnHeader,
     TabList,
     Tab,
+    RadioGroup,
+    Radio,
     Dialog,
+    AlertDialog,
     Menu,
     MenuItem,
     Tooltip,
@@ -443,6 +678,7 @@ pub struct AccessibilityState {
     pub role: AccessibilityRole,
     pub label: Option<Arc<str>>,
     pub value: Option<Arc<str>>,
+    pub description: Option<Arc<str>>,
     pub disabled: bool,
     pub checked: Option<bool>,
     pub selected: Option<bool>,
@@ -465,6 +701,7 @@ pub struct AccessibilityNode {
     pub role: AccessibilityRole,
     pub label: Option<Arc<str>>,
     pub value: Option<Arc<str>>,
+    pub description: Option<Arc<str>>,
     pub disabled: bool,
     pub checked: Option<bool>,
     pub selected: Option<bool>,
@@ -573,7 +810,18 @@ impl TextSelection {
             && self.focus <= value.len()
             && value.is_char_boundary(self.anchor)
             && value.is_char_boundary(self.focus)
+            && is_grapheme_boundary(value, self.anchor)
+            && is_grapheme_boundary(value, self.focus)
     }
+}
+
+fn is_grapheme_boundary(value: &str, offset: usize) -> bool {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    offset == value.len()
+        || value
+            .grapheme_indices(true)
+            .any(|(boundary, _)| boundary == offset)
 }
 
 /// Committed editable text and its selection. IME preedit remains separate in

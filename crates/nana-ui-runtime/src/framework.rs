@@ -15,14 +15,23 @@ use nana_ui_core::{
     VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow,
 };
 
+#[cfg(test)]
+use crate::Dialog;
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, Activate, AnimationFrame, Button, Checkbox,
-    ComponentView, Dialog, DocumentId, IconButton, List, ListItem, ListItemSlots, MenuItem,
-    MutationQueue, NodeKind, OverlayChanged, OverlayHost, RangeAdjustment, RangeChanged,
-    RangeField, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, Slider,
-    SliderChanged, StableNodeId, Switch, Tab, TabList, TabSelected, Table, TableCell, TableRow,
-    TextArea, TextChanged, TextInput, TextInputState, TextSelection, ToggleChanged, Tooltip,
-    UiWorld, UiWorldError,
+    ComponentView, DocumentId, EmptyState, IconButton, LabeledValue, List, ListItem, ListItemSlots,
+    MenuItem, ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged, OverlayHost,
+    RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged,
+    ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Slider, SliderChanged, StableNodeId, StandardVisual, Switch, Tab,
+    TabList, TabSelected, Table, TableCell, TableRow, TextArea, TextChanged, TextInput,
+    TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld, UiWorldError,
+};
+
+mod overlay;
+pub use overlay::{
+    ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
+    RuntimeOverlayKind,
 };
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
@@ -138,6 +147,10 @@ struct ComponentLifecycle {
     tooltips: HashMap<StableNodeId, TooltipLifecycle>,
     loading: HashMap<StableNodeId, LoadingComponent>,
     next_loading_frame: Option<Duration>,
+    overlay_pointer_sequences: HashSet<(DocumentId, u64)>,
+    overlay_outside_presses: HashMap<(DocumentId, u64), (StableNodeId, u64)>,
+    overlay_activation_tokens: HashMap<StableNodeId, u64>,
+    next_overlay_activation_token: u64,
 }
 
 #[derive(Default)]
@@ -211,6 +224,15 @@ pub enum FrameworkError {
         item: StableNodeId,
         slot: Option<StableNodeId>,
     },
+    InvalidFeedbackSlots {
+        parent: StableNodeId,
+        slot: Option<StableNodeId>,
+    },
+    InvalidModalSlots {
+        parent: StableNodeId,
+        slot: Option<StableNodeId>,
+    },
+    OverlayActivationTokenExhausted(StableNodeId),
     FrameDidNotSettle,
 }
 
@@ -267,6 +289,37 @@ impl fmt::Display for FrameworkError {
                     item.get()
                 ),
             },
+            Self::InvalidFeedbackSlots { parent, slot } => match slot {
+                Some(slot) => write!(
+                    formatter,
+                    "view {} has an invalid feedback child slot {}",
+                    parent.get(),
+                    slot.get()
+                ),
+                None => write!(
+                    formatter,
+                    "view {} has duplicate feedback child slots",
+                    parent.get()
+                ),
+            },
+            Self::InvalidModalSlots { parent, slot } => match slot {
+                Some(slot) => write!(
+                    formatter,
+                    "view {} has an invalid modal child slot {}",
+                    parent.get(),
+                    slot.get()
+                ),
+                None => write!(
+                    formatter,
+                    "view {} has duplicate modal child slots",
+                    parent.get()
+                ),
+            },
+            Self::OverlayActivationTokenExhausted(host) => write!(
+                formatter,
+                "overlay activation identity for host {} is exhausted",
+                host.get()
+            ),
             Self::FrameDidNotSettle => {
                 formatter.write_str("runtime frame did not settle within the bounded pass limit")
             }
@@ -399,9 +452,57 @@ impl AppContext {
     /// for layout writeback and platform state projection.
     pub fn commit_mutations(
         &mut self,
-        mutations: MutationQueue,
+        mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
-        self.world.commit(mutations).map_err(FrameworkError::from)
+        let parked = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::ParkSubtree { root } => Some(*root),
+                _ => None,
+            })
+            .flat_map(|root| self.retained_subtree(root))
+            .collect::<HashSet<_>>();
+        for id in &parked {
+            let Some(StandardVisual::Icon {
+                icon,
+                size,
+                tooltip: Some(mut tooltip),
+            }) = self.world.standard_visual(*id)
+            else {
+                continue;
+            };
+            if tooltip.open {
+                tooltip.open = false;
+                mutations.set_standard_visual(
+                    *id,
+                    Some(StandardVisual::Icon {
+                        icon,
+                        size,
+                        tooltip: Some(tooltip),
+                    }),
+                );
+            }
+        }
+        let inserted = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::Insert { child, .. } => Some(*child),
+                _ => None,
+            })
+            .flat_map(|root| self.retained_subtree(root))
+            .collect::<HashSet<_>>();
+        let report = self.world.commit(mutations).map_err(FrameworkError::from)?;
+        for id in parked {
+            self.suspend_component_lifecycle(id);
+        }
+        for id in inserted {
+            if self.world.is_mounted(id) {
+                self.resume_component_lifecycle(id);
+            }
+        }
+        Ok(report)
     }
 
     /// Drain deterministic work scheduled since the previous frame.
@@ -469,15 +570,23 @@ impl AppContext {
     }
 
     pub fn next_animation_deadline(&self) -> Option<Duration> {
+        let loading_deadline = self
+            .component_lifecycle
+            .loading
+            .keys()
+            .any(|target| self.world.is_mounted(*target))
+            .then_some(self.component_lifecycle.next_loading_frame)
+            .flatten();
         self.world
             .next_animation_deadline()
             .into_iter()
-            .chain(self.component_lifecycle.next_loading_frame)
+            .chain(loading_deadline)
             .chain(
                 self.component_lifecycle
                     .tooltips
-                    .values()
-                    .filter_map(|tooltip| tooltip.show_at),
+                    .iter()
+                    .filter(|(target, _)| self.world.is_mounted(**target))
+                    .filter_map(|(_, tooltip)| tooltip.show_at),
             )
             .min()
     }
@@ -490,6 +599,9 @@ impl AppContext {
             .tooltips
             .iter()
             .filter_map(|(&target, tooltip)| {
+                if !self.world.is_mounted(target) {
+                    return None;
+                }
                 tooltip.show_at.filter(|deadline| *deadline <= now)?;
                 Some(target)
             })
@@ -509,6 +621,7 @@ impl AppContext {
                 .component_lifecycle
                 .loading
                 .iter()
+                .filter(|(target, _)| self.world.is_mounted(**target))
                 .map(|(&target, &kind)| (target, kind))
                 .collect::<Vec<_>>();
             for (target, kind) in loading {
@@ -536,7 +649,13 @@ impl AppContext {
                     frame.component_updates.push(target);
                 }
             }
-            self.component_lifecycle.next_loading_frame = now.checked_add(COMPONENT_FRAME_INTERVAL);
+            self.component_lifecycle.next_loading_frame = self
+                .component_lifecycle
+                .loading
+                .keys()
+                .any(|target| self.world.is_mounted(*target))
+                .then(|| now.checked_add(COMPONENT_FRAME_INTERVAL))
+                .flatten();
         }
         frame.next_deadline = self.next_animation_deadline();
         frame
@@ -591,6 +710,24 @@ impl AppContext {
         Ok(Entity::from_stable_id(id))
     }
 
+    /// Create a component whose view and handlers are retained without making
+    /// it a document root. Inserting the entity mounts the complete subtree.
+    pub fn create_detached_component<C: ComponentView>(
+        &mut self,
+        document: DocumentId,
+        component: C,
+    ) -> Result<Entity<C>, FrameworkError> {
+        let id = self.allocate_id();
+        let mut queue = MutationQueue::new();
+        queue.create(id, document, component.node_kind());
+        component.project(id, &self.world, &mut queue);
+        queue.park_subtree(id);
+        self.world.commit(queue)?;
+        self.views.insert(id, Box::new(component));
+        self.sync_component_lifecycle(id)?;
+        Ok(Entity::from_stable_id(id))
+    }
+
     pub fn append_child<P: View, C: View>(
         &mut self,
         parent: Entity<P>,
@@ -600,7 +737,7 @@ impl AppContext {
         self.read(child, |_| ())?;
         let mut queue = MutationQueue::new();
         queue.insert(parent.id, child.id, None);
-        self.world.commit(queue)?;
+        self.commit_mutations(queue)?;
         Ok(())
     }
 
@@ -1073,9 +1210,27 @@ impl AppContext {
         self.activate_component(entity, |item| item.disabled)
     }
 
+    pub fn activate_radio(&mut self, entity: Entity<crate::Radio>) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |radio| radio.disabled || radio.checked)
+    }
+
     /// Activate a retained component selected by hit testing without exposing
     /// its concrete Rust type to a platform adapter.
     pub fn activate_node(&mut self, id: StableNodeId) -> Result<bool, FrameworkError> {
+        if let Some((root, close_action, busy, _)) = self.modal_action_context(id) {
+            if busy {
+                return Ok(false);
+            }
+            if close_action == Some(id) {
+                let Some(host) = self.world.node(root).and_then(|node| node.parent) else {
+                    return Ok(false);
+                };
+                return self.request_dialog_close(
+                    Entity::from_stable_id(host),
+                    nana_ui_core::DialogCloseTrigger::CloseButton,
+                );
+            }
+        }
         let Some(view) = self.views.get(&id) else {
             return Ok(false);
         };
@@ -1090,6 +1245,9 @@ impl AppContext {
         }
         if view.is::<MenuItem>() {
             return self.activate_menu_item(Entity::from_stable_id(id));
+        }
+        if view.is::<crate::Radio>() {
+            return self.activate_radio(Entity::from_stable_id(id));
         }
         if view.is::<Checkbox>() {
             return self.toggle_checkbox(Entity::from_stable_id(id));
@@ -1109,7 +1267,409 @@ impl AppContext {
                 return self.select_tab(Entity::from_stable_id(parent), Entity::from_stable_id(id));
             }
         }
+        if view.is::<SegmentedOption>() {
+            let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
+                return Ok(false);
+            };
+            if self
+                .views
+                .get(&parent)
+                .is_some_and(|view| view.is::<SegmentedControl>())
+            {
+                return self.request_segmented_selection(
+                    Entity::from_stable_id(parent),
+                    Entity::from_stable_id(id),
+                );
+            }
+        }
         Ok(false)
+    }
+
+    /// Reconcile the complete ordered option set and its controlled selection
+    /// in one retained transaction. Removed options are parked, preserving
+    /// their typed state and application-owned event handlers.
+    pub fn set_segmented_options(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        options: Vec<Entity<SegmentedOption>>,
+        selected: Option<Entity<SegmentedOption>>,
+    ) -> Result<bool, FrameworkError> {
+        self.set_segmented_options_inner(control, options, selected)
+    }
+
+    fn set_segmented_options_inner(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        options: Vec<Entity<SegmentedOption>>,
+        selected: Option<Entity<SegmentedOption>>,
+    ) -> Result<bool, FrameworkError> {
+        self.read(control, |_| ())?;
+        let option_ids = options.iter().map(|option| option.id).collect::<Vec<_>>();
+        let unique = option_ids.iter().copied().collect::<HashSet<_>>();
+        if unique.len() != option_ids.len()
+            || selected.is_some_and(|selected| !unique.contains(&selected.id))
+        {
+            return Err(FrameworkError::InvalidComponentValue(control.id));
+        }
+        let control_node = self
+            .world
+            .node(control.id)
+            .ok_or(FrameworkError::MissingView(control.id))?;
+        if control_node.children.iter().any(|child| {
+            !self
+                .views
+                .get(child)
+                .is_some_and(|view| view.is::<SegmentedOption>())
+        }) {
+            return Err(FrameworkError::InvalidComponentHierarchy {
+                parent: control.id,
+                child: *control_node
+                    .children
+                    .iter()
+                    .find(|child| {
+                        !self
+                            .views
+                            .get(child)
+                            .is_some_and(|view| view.is::<SegmentedOption>())
+                    })
+                    .unwrap(),
+            });
+        }
+        for option in &options {
+            self.read(*option, |_| ())?;
+            let node = self
+                .world
+                .node(option.id)
+                .ok_or(FrameworkError::MissingView(option.id))?;
+            if node.document != control_node.document
+                || node.parent.is_some_and(|parent| parent != control.id)
+                || (node.parent.is_none()
+                    && self.world.mount_state(option.id) != Some(crate::MountState::Parked))
+            {
+                return Err(FrameworkError::InvalidComponentHierarchy {
+                    parent: control.id,
+                    child: option.id,
+                });
+            }
+        }
+        let selected_id = selected.map(Entity::stable_id);
+        let size = self.read(control, |control| control.size)?;
+        let current = self.read(control, |control| {
+            (
+                control.options.clone(),
+                control.selected,
+                control.focus_target,
+            )
+        })?;
+        let mut enabled = Vec::new();
+        for entity in &options {
+            if !self.read(*entity, |option| option.disabled)? {
+                enabled.push(entity.id);
+            }
+        }
+        let focus_target = self
+            .world
+            .focused(control_node.document)
+            .filter(|id| unique.contains(id) && enabled.contains(id))
+            .or_else(|| {
+                selected_id
+                    .filter(|id| enabled.contains(id))
+                    .or_else(|| enabled.first().copied())
+            });
+        if current == (option_ids.clone(), selected_id, focus_target)
+            && control_node.children == option_ids
+        {
+            return Ok(false);
+        }
+
+        let mut mutations = MutationQueue::new();
+        let removed = control_node
+            .children
+            .iter()
+            .copied()
+            .filter(|id| !unique.contains(id))
+            .collect::<Vec<_>>();
+        for id in &removed {
+            mutations.park_subtree(*id);
+        }
+        for id in &option_ids {
+            mutations.insert(control.id, *id, None);
+        }
+        let mut staged_options = Vec::new();
+        for option in options {
+            let mut next = self.read(option, Clone::clone)?;
+            next.selected = Some(option.id) == selected_id;
+            next.synchronize_size(size);
+            next.project(option.id, &self.world, &mut mutations);
+            staged_options.push((option.id, next));
+        }
+        let mut next_control = self.read(control, Clone::clone)?;
+        next_control.options = option_ids;
+        next_control.selected = selected_id;
+        next_control.focus_target = focus_target;
+        next_control.project(control.id, &self.world, &mut mutations);
+        self.commit_mutations(mutations)?;
+        for (id, option) in staged_options {
+            self.views.insert(id, Box::new(option));
+        }
+        self.views.insert(control.id, Box::new(next_control));
+        Ok(true)
+    }
+
+    /// Publish controlled selection without replacing the option identities.
+    pub fn set_segmented_selection(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        selected: Option<Entity<SegmentedOption>>,
+    ) -> Result<bool, FrameworkError> {
+        let ids = self.read(control, |control| control.options.clone())?;
+        let options = ids.into_iter().map(Entity::from_stable_id).collect();
+        self.set_segmented_options(control, options, selected)
+    }
+
+    /// Update the control density and every retained option in one commit.
+    pub fn set_segmented_size(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        size: nana_ui_core::ControlSize,
+    ) -> Result<bool, FrameworkError> {
+        let mut next_control = self.read(control, Clone::clone)?;
+        if next_control.size == size {
+            return Ok(false);
+        }
+        next_control.size = size;
+        Arc::make_mut(&mut next_control.style.layout).height =
+            Some(nana_ui_core::LengthSpec::Px(size.height()));
+        let mut mutations = MutationQueue::new();
+        let mut staged_options = Vec::new();
+        for id in &next_control.options {
+            let entity = Entity::<SegmentedOption>::from_stable_id(*id);
+            let mut option = self.read(entity, Clone::clone)?;
+            option.synchronize_size(size);
+            option.project(*id, &self.world, &mut mutations);
+            staged_options.push((*id, option));
+        }
+        next_control.project(control.id, &self.world, &mut mutations);
+        self.commit_mutations(mutations)?;
+        for (id, option) in staged_options {
+            self.views.insert(id, Box::new(option));
+        }
+        self.views.insert(control.id, Box::new(next_control));
+        Ok(true)
+    }
+
+    /// Change one option's availability while preserving controlled checked
+    /// state and atomically repairing the group's sequential tab stop.
+    pub fn set_segmented_option_disabled(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        option: Entity<SegmentedOption>,
+        disabled: bool,
+    ) -> Result<bool, FrameworkError> {
+        let control_node = self
+            .world
+            .node(control.id)
+            .ok_or(FrameworkError::MissingView(control.id))?;
+        if !control_node.children.contains(&option.id) {
+            return Err(FrameworkError::InvalidComponentHierarchy {
+                parent: control.id,
+                child: option.id,
+            });
+        }
+        let mut next_option = self.read(option, Clone::clone)?;
+        if next_option.disabled == disabled {
+            return Ok(false);
+        }
+        next_option.disabled = disabled;
+        let mut next_control = self.read(control, Clone::clone)?;
+        let mut enabled = Vec::new();
+        for id in &next_control.options {
+            let is_enabled = if *id == option.id {
+                !disabled
+            } else {
+                !self.read(Entity::<SegmentedOption>::from_stable_id(*id), |option| {
+                    option.disabled
+                })?
+            };
+            if is_enabled {
+                enabled.push(*id);
+            }
+        }
+        next_control.focus_target = self
+            .world
+            .focused(control_node.document)
+            .filter(|focused| next_control.options.contains(focused) && enabled.contains(focused))
+            .or_else(|| {
+                next_control
+                    .selected
+                    .filter(|selected| enabled.contains(selected))
+                    .or_else(|| enabled.first().copied())
+            });
+        let document = control_node.document;
+        let repair_focus = disabled && self.world.focused(document) == Some(option.id);
+        let mut mutations = MutationQueue::new();
+        next_option.project(option.id, &self.world, &mut mutations);
+        next_control.project(control.id, &self.world, &mut mutations);
+        if repair_focus {
+            mutations.request_focus(document, next_control.focus_target);
+        }
+        self.commit_mutations(mutations)?;
+        self.views.insert(option.id, Box::new(next_option));
+        self.views.insert(control.id, Box::new(next_control));
+        Ok(true)
+    }
+
+    pub fn request_segmented_selection(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        requested: Entity<SegmentedOption>,
+    ) -> Result<bool, FrameworkError> {
+        let is_child = self
+            .world
+            .node(control.id)
+            .map(|node| node.children.contains(&requested.id))
+            .ok_or(FrameworkError::MissingView(control.id))?;
+        if !is_child {
+            return Err(FrameworkError::InvalidComponentHierarchy {
+                parent: control.id,
+                child: requested.id,
+            });
+        }
+        if self.read(requested, |option| option.disabled)? {
+            return Ok(false);
+        }
+        let document = self.world.node(control.id).unwrap().document;
+        self.update_component(control, |control, cx| {
+            control.focus_target = Some(requested.id);
+            cx.mutations().request_focus(document, Some(requested.id));
+            cx.emit(SegmentedSelectionRequested {
+                option: requested.id,
+            });
+            true
+        })
+    }
+
+    /// Handle horizontal roving focus before range/table/text key routing.
+    pub fn navigate_focused_segmented(
+        &mut self,
+        document: DocumentId,
+        intent: RovingFocusIntent,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.world.focused(document) else {
+            return Ok(false);
+        };
+        let Some(parent) = self.world.node(focused).and_then(|node| node.parent) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&parent)
+            .is_some_and(|view| view.is::<SegmentedControl>())
+        {
+            return Ok(false);
+        }
+        let control = Entity::<SegmentedControl>::from_stable_id(parent);
+        let (ids, policy) = self.read(control, |control| {
+            (control.options.clone(), control.roving_focus)
+        })?;
+        let items = ids
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    self.views
+                        .get(id)
+                        .and_then(|view| view.downcast_ref::<SegmentedOption>())
+                        .is_some_and(|option| !option.disabled),
+                )
+            })
+            .collect::<Vec<_>>();
+        let Some(target) = policy.resolve(&items, Some(focused), intent) else {
+            return Ok(false);
+        };
+        self.request_segmented_selection(control, Entity::from_stable_id(target))
+    }
+
+    pub(super) fn is_roving_tab_stop(&self, id: StableNodeId) -> bool {
+        if !self
+            .views
+            .get(&id)
+            .is_some_and(|view| view.is::<SegmentedOption>())
+        {
+            return true;
+        }
+        let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
+            return false;
+        };
+        self.views
+            .get(&parent)
+            .and_then(|view| view.downcast_ref::<SegmentedControl>())
+            .is_some_and(|control| control.focus_target == Some(id))
+    }
+
+    pub fn is_segmented_option_node(&self, id: StableNodeId) -> bool {
+        self.views
+            .get(&id)
+            .is_some_and(|view| view.is::<SegmentedOption>())
+    }
+
+    pub(super) fn sequential_focus_candidate(
+        &self,
+        document: DocumentId,
+        id: StableNodeId,
+    ) -> bool {
+        self.world.is_mounted(id)
+            && self
+                .world
+                .node(id)
+                .is_some_and(|node| node.document == document)
+            && self
+                .world
+                .interaction(id)
+                .is_some_and(|interaction| interaction.focusable)
+            && self.is_roving_tab_stop(id)
+            && !self.confirm_busy_action_subtree(id)
+    }
+
+    pub(super) fn sequential_focus_candidates(&self, document: DocumentId) -> Vec<StableNodeId> {
+        self.world
+            .document_order(document)
+            .into_iter()
+            .filter(|id| {
+                self.sequential_focus_candidate(document, *id)
+                    && self.world.is_overlay_reachable(*id)
+            })
+            .collect()
+    }
+
+    /// Move through the backend-neutral sequential focus order. Roving groups
+    /// contribute exactly their current tab stop while retaining programmatic
+    /// focusability for every enabled option.
+    pub fn navigate_sequential_focus(
+        &mut self,
+        document: DocumentId,
+        reverse: bool,
+    ) -> Result<bool, FrameworkError> {
+        let candidates = self.sequential_focus_candidates(document);
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        let next = self
+            .world
+            .focused(document)
+            .and_then(|current| candidates.iter().position(|id| *id == current))
+            .map(|index| {
+                if reverse {
+                    (index + candidates.len() - 1) % candidates.len()
+                } else {
+                    (index + 1) % candidates.len()
+                }
+            })
+            .unwrap_or_else(|| if reverse { candidates.len() - 1 } else { 0 });
+        if self.world.focused(document) != Some(candidates[next]) {
+            self.focus_node(document, candidates[next])?;
+        }
+        Ok(true)
     }
 
     pub fn is_range_field(&self, id: StableNodeId) -> bool {
@@ -1232,6 +1792,323 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Atomically validate and attach an EmptyState's application-owned action.
+    /// Intrinsic icon and message content remain fields of EmptyState.
+    pub fn set_empty_state_action(
+        &mut self,
+        empty: Entity<EmptyState>,
+        action: Option<StableNodeId>,
+    ) -> Result<bool, FrameworkError> {
+        let current = self.read(empty, |empty| empty.action)?;
+        let owned_current = self.validate_feedback_action(empty.id, current, action)?;
+        let ordered = action.into_iter().collect::<Vec<_>>();
+        let changed = current != action
+            || self
+                .world
+                .node(empty.id)
+                .is_some_and(|node| node.children != ordered);
+        if !changed {
+            return Ok(false);
+        }
+        let parent = empty.id;
+        self.update_component(empty, |empty, cx| {
+            empty.action = action;
+            if let Some(current) = owned_current
+                && Some(current) != action
+            {
+                cx.mutations().park_subtree(current);
+            }
+            if let Some(action) = action {
+                cx.mutations().insert(parent, action, None);
+            }
+        })?;
+        Ok(true)
+    }
+
+    /// Atomically replaces a modal's application-owned direct children.
+    /// Removed children remain alive and parked so their view state and handlers
+    /// can be remounted by identity.
+    pub fn set_modal_slots<C: ModalSurface>(
+        &mut self,
+        modal: Entity<C>,
+        slots: ModalSlots,
+    ) -> Result<bool, FrameworkError> {
+        let current = self.read(modal, |modal| modal.slots().clone())?;
+        let current_order = current.ordered();
+        let ordered = slots.ordered();
+        let unique = ordered.iter().copied().collect::<HashSet<_>>();
+        if unique.len() != ordered.len() {
+            return Err(FrameworkError::InvalidModalSlots {
+                parent: modal.id,
+                slot: None,
+            });
+        }
+        let parent_node = self
+            .world
+            .node(modal.id)
+            .ok_or(FrameworkError::MissingView(modal.id))?;
+        // The view field is public API, but never trusted as ownership proof.
+        // A builder-declared first mount is the only field/tree mismatch allowed.
+        if parent_node.children != current_order
+            && !(parent_node.children.is_empty() && current_order == ordered)
+        {
+            return Err(FrameworkError::InvalidModalSlots {
+                parent: modal.id,
+                slot: parent_node
+                    .children
+                    .first()
+                    .copied()
+                    .or(current_order.first().copied()),
+            });
+        }
+        for slot in &ordered {
+            let Some(node) = self.world.node(*slot) else {
+                return Err(FrameworkError::InvalidModalSlots {
+                    parent: modal.id,
+                    slot: Some(*slot),
+                });
+            };
+            if *slot == modal.id
+                || node.document != parent_node.document
+                || node.parent.is_some_and(|owner| owner != modal.id)
+                || (node.parent.is_none()
+                    && self.world.mount_state(*slot) != Some(crate::MountState::Parked))
+            {
+                return Err(FrameworkError::InvalidModalSlots {
+                    parent: modal.id,
+                    slot: Some(*slot),
+                });
+            }
+        }
+        if current == slots && parent_node.children == ordered {
+            return Ok(false);
+        }
+        let removed = parent_node
+            .children
+            .iter()
+            .copied()
+            .filter(|child| !unique.contains(child))
+            .collect::<Vec<_>>();
+        let parent = modal.id;
+        self.update_component(modal, |modal, cx| {
+            *modal.slots_mut() = slots;
+            for child in removed {
+                cx.mutations().park_subtree(child);
+            }
+            for child in ordered {
+                cx.mutations().insert(parent, child, None);
+            }
+        })?;
+        Ok(true)
+    }
+
+    pub fn set_confirm_slots(
+        &mut self,
+        confirm: Entity<crate::ConfirmDialog>,
+        slots: crate::ConfirmSlots,
+    ) -> Result<bool, FrameworkError> {
+        let modal_slots = slots.modal_slots();
+        let current = self.read(confirm, |confirm| confirm.slots().clone())?;
+        let ordered = modal_slots.ordered();
+        let unique = ordered.iter().copied().collect::<HashSet<_>>();
+        let parent_node = self
+            .world
+            .node(confirm.id)
+            .ok_or(FrameworkError::MissingView(confirm.id))?;
+        if unique.len() != ordered.len()
+            || (parent_node.children != current.ordered()
+                && !(parent_node.children.is_empty() && current.ordered() == ordered))
+        {
+            return Err(FrameworkError::InvalidModalSlots {
+                parent: confirm.id,
+                slot: None,
+            });
+        }
+        for slot in &ordered {
+            let node = self
+                .world
+                .node(*slot)
+                .ok_or(FrameworkError::InvalidModalSlots {
+                    parent: confirm.id,
+                    slot: Some(*slot),
+                })?;
+            if node.document != parent_node.document
+                || node.parent.is_some_and(|owner| owner != confirm.id)
+                || (node.parent.is_none()
+                    && self.world.mount_state(*slot) != Some(crate::MountState::Parked))
+            {
+                return Err(FrameworkError::InvalidModalSlots {
+                    parent: confirm.id,
+                    slot: Some(*slot),
+                });
+            }
+        }
+        let typed_changed =
+            self.read(confirm, |confirm| confirm.confirm_slots() != Some(&slots))?;
+        if current == modal_slots && parent_node.children == ordered && !typed_changed {
+            return Ok(false);
+        }
+        let removed = parent_node
+            .children
+            .iter()
+            .copied()
+            .filter(|child| !unique.contains(child))
+            .collect::<Vec<_>>();
+        let parent = confirm.id;
+        self.update_component(confirm, |confirm, cx| {
+            *confirm.slots_mut() = modal_slots;
+            confirm.set_confirm_slots_state(slots);
+            for child in removed {
+                cx.mutations().park_subtree(child);
+            }
+            for child in ordered {
+                cx.mutations().insert(parent, child, None);
+            }
+        })?;
+        Ok(true)
+    }
+
+    pub fn set_confirm_state(
+        &mut self,
+        confirm: Entity<crate::ConfirmDialog>,
+        busy: bool,
+        danger: bool,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(confirm, |confirm| {
+            confirm.busy == busy && confirm.danger == danger
+        })? {
+            return Ok(false);
+        }
+        let node = self
+            .world
+            .node(confirm.id)
+            .ok_or(FrameworkError::MissingView(confirm.id))?;
+        let document = node.document;
+        let action_roots = self.read(confirm, |confirm| {
+            confirm
+                .slots()
+                .close_action
+                .into_iter()
+                .chain(confirm.slots().actions.iter().copied())
+                .collect::<HashSet<_>>()
+        })?;
+        let release_focus = busy
+            && self.world.focused(document).is_some_and(|id| {
+                action_roots
+                    .iter()
+                    .any(|root| self.overlay_descendant(*root, id))
+            });
+        let root = confirm.id;
+        self.update_component(confirm, |confirm, cx| {
+            confirm.busy = busy;
+            confirm.danger = danger;
+            if release_focus {
+                cx.mutations().request_focus(document, Some(root));
+            }
+        })?;
+        Ok(true)
+    }
+
+    /// Atomically validate and attach a LabeledValue's optional action child.
+    /// The child retains its own activation handler; the summary never becomes
+    /// an implicit action target.
+    pub fn set_labeled_value_action(
+        &mut self,
+        summary: Entity<LabeledValue>,
+        action: Option<StableNodeId>,
+    ) -> Result<bool, FrameworkError> {
+        let current = self.read(summary, |summary| summary.action)?;
+        let owned_current = self.validate_feedback_action(summary.id, current, action)?;
+        let ordered = action.into_iter().collect::<Vec<_>>();
+        let changed = current != action
+            || self
+                .world
+                .node(summary.id)
+                .is_some_and(|node| node.children != ordered);
+        if !changed {
+            return Ok(false);
+        }
+        let parent = summary.id;
+        self.update_component(summary, |summary, cx| {
+            summary.action = action;
+            if let Some(current) = owned_current
+                && Some(current) != action
+            {
+                cx.mutations().park_subtree(current);
+            }
+            if let Some(action) = action {
+                cx.mutations().insert(parent, action, None);
+            }
+        })?;
+        Ok(true)
+    }
+
+    fn validate_feedback_action(
+        &self,
+        parent: StableNodeId,
+        current: Option<StableNodeId>,
+        action: Option<StableNodeId>,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        let parent_node = self
+            .world
+            .node(parent)
+            .ok_or(FrameworkError::MissingView(parent))?;
+        if parent_node.children.len() > 1 {
+            return Err(FrameworkError::InvalidFeedbackSlots {
+                parent,
+                slot: parent_node.children.get(1).copied(),
+            });
+        }
+        let owned_current = parent_node.children.first().copied();
+        match (current, owned_current) {
+            (None, None) => {}
+            (Some(declared), Some(owned)) if declared == owned => {}
+            // A builder may declare one detached action before its first
+            // explicit mount. Only the same requested identity may complete
+            // that declaration; it is never treated as an owned child to park.
+            (Some(declared), None) if action == Some(declared) => {}
+            (declared, owned) => {
+                return Err(FrameworkError::InvalidFeedbackSlots {
+                    parent,
+                    slot: declared.or(owned),
+                });
+            }
+        }
+        if let Some(owned) = owned_current {
+            let node = self
+                .world
+                .node(owned)
+                .ok_or(FrameworkError::InvalidFeedbackSlots {
+                    parent,
+                    slot: Some(owned),
+                })?;
+            if node.document != parent_node.document || node.parent != Some(parent) {
+                return Err(FrameworkError::InvalidFeedbackSlots {
+                    parent,
+                    slot: Some(owned),
+                });
+            }
+        }
+        if let Some(slot) = action {
+            let Some(node) = self.world.node(slot) else {
+                return Err(FrameworkError::InvalidFeedbackSlots {
+                    parent,
+                    slot: Some(slot),
+                });
+            };
+            if slot == parent
+                || node.document != parent_node.document
+                || node.parent.is_some_and(|owner| owner != parent)
+            {
+                return Err(FrameworkError::InvalidFeedbackSlots {
+                    parent,
+                    slot: Some(slot),
+                });
+            }
+        }
+        Ok(owned_current)
+    }
+
     fn sync_component_lifecycle(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
         let tooltip = self
             .views
@@ -1311,21 +2188,71 @@ impl AppContext {
         });
         match desired_loading {
             Some(kind) => {
-                let was_idle = self.component_lifecycle.loading.is_empty();
                 self.component_lifecycle.loading.insert(id, kind);
-                if was_idle {
+                if self.world.is_mounted(id)
+                    && self.component_lifecycle.next_loading_frame.is_none()
+                {
                     self.component_lifecycle.next_loading_frame =
                         Some(self.component_lifecycle.now);
                 }
             }
             None => {
                 self.component_lifecycle.loading.remove(&id);
-                if self.component_lifecycle.loading.is_empty() {
+                if !self
+                    .component_lifecycle
+                    .loading
+                    .keys()
+                    .any(|target| self.world.is_mounted(*target))
+                {
                     self.component_lifecycle.next_loading_frame = None;
                 }
             }
         }
         Ok(())
+    }
+
+    fn retained_subtree(&self, root: StableNodeId) -> Vec<StableNodeId> {
+        let mut subtree = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.world.node(id) else {
+                continue;
+            };
+            stack.extend(node.children.iter().rev().copied());
+            subtree.push(id);
+        }
+        subtree
+    }
+
+    fn suspend_component_lifecycle(&mut self, id: StableNodeId) {
+        if let Some(button) = self
+            .views
+            .get_mut(&id)
+            .and_then(|view| view.downcast_mut::<IconButton>())
+        {
+            button.tooltip_open = false;
+        }
+        if let Some(tooltip) = self.component_lifecycle.tooltips.get_mut(&id) {
+            tooltip.show_at = None;
+            tooltip.open = false;
+        }
+        if !self
+            .component_lifecycle
+            .loading
+            .keys()
+            .any(|target| self.world.is_mounted(*target))
+        {
+            self.component_lifecycle.next_loading_frame = None;
+        }
+    }
+
+    fn resume_component_lifecycle(&mut self, id: StableNodeId) {
+        if self.world.is_mounted(id)
+            && self.component_lifecycle.loading.contains_key(&id)
+            && self.component_lifecycle.next_loading_frame.is_none()
+        {
+            self.component_lifecycle.next_loading_frame = Some(self.component_lifecycle.now);
+        }
     }
 
     fn enter_tooltip(&mut self, target: StableNodeId, now: Duration) -> Result<(), FrameworkError> {
@@ -1565,8 +2492,30 @@ impl AppContext {
             .world
             .interaction(target)
             .is_some_and(|interaction| interaction.focusable)
-            || self.world.focused(document) == Some(target)
+            || self.confirm_busy_action_subtree(target)
         {
+            return Ok(false);
+        }
+        if self.is_segmented_option_node(target) {
+            let Some(parent) = self.world.node(target).and_then(|node| node.parent) else {
+                return Ok(false);
+            };
+            let control = Entity::<SegmentedControl>::from_stable_id(parent);
+            let mut next = self.read(control, Clone::clone)?;
+            let target_changed = next.focus_target != Some(target);
+            let focus_changed = self.world.focused(document) != Some(target);
+            if !target_changed && !focus_changed {
+                return Ok(false);
+            }
+            next.focus_target = Some(target);
+            let mut mutations = MutationQueue::new();
+            next.project(parent, &self.world, &mut mutations);
+            mutations.request_focus(document, Some(target));
+            self.commit_mutations(mutations)?;
+            self.views.insert(parent, Box::new(next));
+            return Ok(true);
+        }
+        if self.world.focused(document) == Some(target) {
             return Ok(false);
         }
         let mut mutations = MutationQueue::new();
@@ -1688,6 +2637,8 @@ impl AppContext {
         &mut self,
         entity: Entity<C>,
     ) -> Result<bool, FrameworkError> {
+        use unicode_segmentation::UnicodeSegmentation;
+
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
@@ -1696,7 +2647,7 @@ impl AppContext {
             if state.selection.anchor == state.selection.focus {
                 let caret = state.selection.focus;
                 let Some(previous) = state.value[..caret]
-                    .char_indices()
+                    .grapheme_indices(true)
                     .next_back()
                     .map(|(index, _)| index)
                 else {
@@ -1878,6 +2829,27 @@ impl AppContext {
         entity: Entity<C>,
         disabled: impl FnOnce(&C) -> bool,
     ) -> Result<bool, FrameworkError> {
+        if let Some((root, close_action, busy, intent)) = self.modal_action_context(entity.id) {
+            if busy {
+                return Ok(false);
+            }
+            if close_action == Some(entity.id) {
+                let Some(host) = self.world.node(root).and_then(|node| node.parent) else {
+                    return Ok(false);
+                };
+                return self.request_dialog_close(
+                    Entity::from_stable_id(host),
+                    nana_ui_core::DialogCloseTrigger::CloseButton,
+                );
+            }
+            if let Some(intent) = intent {
+                self.update_component(
+                    Entity::<crate::ConfirmDialog>::from_stable_id(root),
+                    |_confirm, cx| cx.emit(intent),
+                )?;
+                return Ok(true);
+            }
+        }
         if self.read(entity, disabled)? {
             return Ok(false);
         }
@@ -2323,14 +3295,92 @@ impl AppContext {
         if previous.active == Some(overlay.id) {
             return Ok(false);
         }
-        let restore_focus = previous
-            .restore_focus
-            .or_else(|| self.world.focused(overlay_node.document));
+        if self.runtime_overlay_kind(overlay.id).is_none() {
+            return Err(FrameworkError::ViewType(overlay.id));
+        }
+        let activation_focus = self.modal_initial_focus(overlay_node.document, overlay.id)?;
+        self.validate_modal_slots_for_activation(overlay.id)?;
+        let previous_focus = self.world.focused(overlay_node.document);
+        let restore_focus = previous.restore_focus.or(previous_focus);
         let next = crate::OverlayHostState {
             active: Some(overlay.id),
             restore_focus,
         };
-        self.update_overlay_host(host, next, overlay_node.document, None)?;
+        let activation_token = self
+            .component_lifecycle
+            .next_overlay_activation_token
+            .checked_add(1)
+            .ok_or(FrameworkError::OverlayActivationTokenExhausted(host.id))?;
+        self.update_overlay_host(host, next, overlay_node.document, None, activation_focus)?;
+        let Some(final_active) = self
+            .world
+            .overlay_host(host.id)
+            .and_then(|state| state.active)
+        else {
+            return Ok(false);
+        };
+        let final_validation = self
+            .world
+            .is_overlay_reachable(final_active)
+            .then_some(())
+            .ok_or(FrameworkError::InvalidComponentValue(final_active))
+            .and_then(|_| {
+                self.world
+                    .node(final_active)
+                    .ok_or(FrameworkError::MissingView(final_active))
+            })
+            .and_then(|node| {
+                if node.parent == Some(host.id) && node.document == overlay_node.document {
+                    Ok(node)
+                } else {
+                    Err(FrameworkError::InvalidComponentHierarchy {
+                        parent: host.id,
+                        child: final_active,
+                    })
+                }
+            })
+            .and_then(|_| {
+                self.runtime_overlay_kind(final_active)
+                    .ok_or(FrameworkError::ViewType(final_active))
+            })
+            .and_then(|kind| {
+                self.validate_modal_slots_for_activation(final_active)?;
+                Ok(kind)
+            });
+        let final_kind = match final_validation {
+            Ok(kind) => kind,
+            Err(error) => {
+                let rollback_active = previous.active.filter(|active| {
+                    self.world.node(*active).is_some_and(|node| {
+                        node.parent == Some(host.id)
+                            && node.document == overlay_node.document
+                            && self.world.is_mounted(*active)
+                    })
+                });
+                let rollback_state = crate::OverlayHostState {
+                    active: rollback_active,
+                    restore_focus: rollback_active.and(previous.restore_focus),
+                };
+                let rollback_focus = previous_focus.filter(|focus| {
+                    self.sequential_focus_candidate(overlay_node.document, *focus)
+                        && rollback_active
+                            .is_none_or(|root| self.overlay_reachable_within(root, *focus))
+                });
+                let mut rollback = MutationQueue::new();
+                rollback.set_overlay_host(host.id, rollback_state);
+                rollback.request_focus(overlay_node.document, rollback_focus);
+                self.commit_mutations(rollback)?;
+                return Err(error);
+            }
+        };
+        if !final_kind.blocks_pointer() {
+            return Ok(true);
+        }
+        self.component_lifecycle.next_overlay_activation_token = activation_token;
+        self.component_lifecycle
+            .overlay_activation_tokens
+            .insert(host.id, activation_token);
+        self.prepare_blocking_overlay_activation(overlay_node.document, final_active);
         Ok(true)
     }
 
@@ -2353,6 +3403,7 @@ impl AppContext {
             crate::OverlayHostState::default(),
             document,
             previous.restore_focus,
+            None,
         )?;
         Ok(true)
     }
@@ -2370,12 +3421,26 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        let dialog = self
-            .views
-            .get(&active)
-            .and_then(|view| view.downcast_ref::<Dialog>())
-            .ok_or(FrameworkError::ViewType(active))?;
-        if !dialog.close_policy.allows(trigger) {
+        if self.runtime_overlay_kind(active) != Some(RuntimeOverlayKind::Dialog) {
+            return Err(FrameworkError::ViewType(active));
+        }
+        self.request_dialog_close(host, trigger)
+    }
+
+    pub fn request_dialog_close(
+        &mut self,
+        host: Entity<OverlayHost>,
+        trigger: nana_ui_core::DialogCloseTrigger,
+    ) -> Result<bool, FrameworkError> {
+        self.read(host, |_| ())?;
+        let Some(active) = self
+            .world
+            .overlay_host(host.id)
+            .and_then(|state| state.active)
+        else {
+            return Ok(false);
+        };
+        if !self.dialog_allows(active, trigger) {
             return Ok(false);
         }
         self.dismiss_overlay(host)
@@ -2387,18 +3452,17 @@ impl AppContext {
         next: crate::OverlayHostState,
         document: DocumentId,
         dismiss_restore: Option<StableNodeId>,
+        activation_focus: Option<StableNodeId>,
     ) -> Result<(), FrameworkError> {
-        let focus = next
-            .active
-            .and_then(|active| Self::first_focusable_in_subtree(&self.world, active))
+        let focus = activation_focus
             .or_else(|| {
-                next.restore_focus.or(dismiss_restore).filter(|id| {
-                    self.world.contains(*id)
-                        && self
-                            .world
-                            .interaction(*id)
-                            .is_some_and(|interaction| interaction.focusable)
-                })
+                next.active
+                    .and_then(|active| self.first_overlay_focusable(document, active))
+            })
+            .or_else(|| {
+                next.restore_focus
+                    .or(dismiss_restore)
+                    .filter(|id| self.overlay_focus_candidate(document, *id))
             });
         let host_id = host.id;
         self.update_component(host, |_host, cx| {
@@ -2408,20 +3472,6 @@ impl AppContext {
                 active: next.active,
             });
         })
-    }
-
-    fn first_focusable_in_subtree(world: &UiWorld, root: StableNodeId) -> Option<StableNodeId> {
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            if world
-                .interaction(id)
-                .is_some_and(|interaction| interaction.focusable)
-            {
-                return Some(id);
-            }
-            stack.extend(world.node(id)?.children.into_iter().rev());
-        }
-        None
     }
 
     /// Move table focus using backend-neutral navigation intent. The retained
@@ -2549,18 +3599,16 @@ impl AppContext {
         if delivered.is_ok() {
             staged.project(entity.id, &self.world, &mut mutations);
         }
-        let commit = delivered.and_then(|()| {
-            self.world
-                .commit(mutations)
-                .map(|_| ())
-                .map_err(FrameworkError::from)
-        });
+        let commit = delivered.and_then(|()| self.commit_mutations(mutations).map(|_| ()));
         if commit.is_ok() {
             self.views.insert(entity.id, Box::new(staged));
         } else {
             self.views.insert(entity.id, boxed);
         }
         commit?;
+        if !self.world.is_mounted(entity.id) {
+            self.suspend_component_lifecycle(entity.id);
+        }
         self.sync_component_lifecycle(entity.id)?;
         Ok(result)
     }
@@ -2599,13 +3647,11 @@ impl AppContext {
         if delivered.is_ok() {
             project(view, &self.world, &mut mutations);
         }
-        let commit = delivered.and_then(|()| {
-            self.world
-                .commit(mutations)
-                .map(|_| ())
-                .map_err(FrameworkError::from)
-        });
+        let commit = delivered.and_then(|()| self.commit_mutations(mutations).map(|_| ()));
         self.views.insert(entity.id, boxed);
+        if commit.is_ok() && !self.world.is_mounted(entity.id) {
+            self.suspend_component_lifecycle(entity.id);
+        }
         commit.map(|_| result)
     }
 
@@ -2926,8 +3972,9 @@ mod tests {
 
     use crate::{
         Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
-        ListItem, NodeStyle, RangeChanged, RangeField, ScrollAxes, ScrollChanged, ScrollView,
-        Slider, SliderChanged, StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell,
+        ListItem, NodeStyle, Radio, RangeChanged, RangeField, ScrollAxes, ScrollChanged,
+        ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Slider,
+        SliderChanged, StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell,
         TableCellFocused, TableNavigation, TableRow, Text, TextChanged, TextContent, TextInput,
         TextSelection, ToggleChanged,
     };
@@ -3314,6 +4361,76 @@ mod tests {
         assert_eq!(accessibility[0].label.as_deref(), Some("Notes"));
         assert!(accessibility[0].multiline);
         assert_eq!(accessibility[0].value.as_deref(), Some("第一段落\nsecond"));
+    }
+
+    #[test]
+    fn text_area_projects_visual_state_and_deletes_a_whole_grapheme() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let emoji = "👩‍💻";
+        let area = context
+            .create_component(
+                document,
+                TextArea::new(format!("{emoji}\n界"))
+                    .placeholder("Write notes")
+                    .invalid(true)
+                    .height(144.0)
+                    .scroll_offset(ScrollOffset { x: 4.0, y: 12.0 }),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            context.world().standard_visual(area.stable_id()),
+            Some(StandardVisual::TextInput {
+                placeholder,
+                secure: false,
+                invalid: true,
+                ..
+            }) if placeholder.as_ref() == "Write notes"
+        ));
+        assert_eq!(
+            context.world().node_style(area.stable_id()).unwrap().border,
+            Some(nana_ui_core::SemanticColorRole::Danger)
+        );
+        assert_eq!(
+            context.world().scroll_offset(area.stable_id()),
+            Some(ScrollOffset { x: 4.0, y: 12.0 })
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(area.stable_id())
+                .unwrap()
+                .layout
+                .height,
+            Some(LengthSpec::Px(144.0))
+        );
+
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(emoji.len());
+            })
+            .unwrap();
+        assert!(context.focus_node(document, area.stable_id()).unwrap());
+        assert!(context.delete_focused_text_backward(document).unwrap());
+        let state = context.world().text_input(area.stable_id()).unwrap();
+        assert_eq!(state.value, "\n界");
+        assert_eq!(state.selection, TextSelection::caret(0));
+
+        assert!(
+            context
+                .set_ime_preedit(document, "输入".into(), None)
+                .unwrap()
+        );
+        context
+            .update_component(area, |area, _cx| area.disabled = true)
+            .unwrap();
+        assert_eq!(context.world().focused(document), None);
+        assert_eq!(context.world().ime(area.stable_id()), None);
+        let accessibility = context.world().accessibility(area.stable_id()).unwrap();
+        assert!(accessibility.disabled);
+        assert!(accessibility.invalid);
+        assert!(accessibility.multiline);
     }
 
     #[test]
@@ -3770,6 +4887,550 @@ mod tests {
     }
 
     #[test]
+    fn segmented_options_reconcile_atomically_and_roving_selection_skips_disabled() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let control = context
+            .create_component(document, SegmentedControl::new().label("Preview mode"))
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let disabled = context
+            .create_detached_component(document, SegmentedOption::new("Split").disabled(true))
+            .unwrap();
+        let last = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        assert!(
+            context
+                .set_segmented_options(control, vec![first, disabled, last], Some(first))
+                .unwrap()
+        );
+
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let selected = Arc::clone(&observed);
+        context
+            .on(
+                control,
+                move |_control, event: &SegmentedSelectionRequested, _cx| {
+                    selected.lock().unwrap().push(event.option);
+                },
+            )
+            .unwrap();
+        context.focus_node(document, first.stable_id()).unwrap();
+        assert!(
+            context
+                .navigate_focused_segmented(document, RovingFocusIntent::Next)
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(last.stable_id()));
+        assert_eq!(
+            context.read(control, |control| control.selected).unwrap(),
+            Some(first.stable_id())
+        );
+        assert!(context.read(first, |option| option.selected).unwrap());
+        assert!(!context.read(last, |option| option.selected).unwrap());
+        assert_eq!(&*observed.lock().unwrap(), &[last.stable_id()]);
+        assert!(context.activate_node(last.stable_id()).unwrap());
+        assert_eq!(
+            &*observed.lock().unwrap(),
+            &[last.stable_id(), last.stable_id()]
+        );
+        assert!(!context.activate_node(disabled.stable_id()).unwrap());
+        let generation = context.world().generation();
+        assert!(
+            context
+                .set_segmented_selection(control, Some(last))
+                .unwrap()
+        );
+        assert_eq!(context.world().generation(), generation + 1);
+        assert!(!context.read(first, |option| option.selected).unwrap());
+        assert!(context.read(last, |option| option.selected).unwrap());
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document,
+                    AccessibilityActionRequest {
+                        target: last.stable_id(),
+                        action: AccessibilityAction::Click,
+                    },
+                )
+                .unwrap()
+        );
+        assert!(context.read(last, |option| option.selected).unwrap());
+        assert!(
+            context
+                .navigate_focused_segmented(document, RovingFocusIntent::Next)
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(first.stable_id()));
+        assert_eq!(
+            context.read(control, |control| control.selected).unwrap(),
+            Some(last.stable_id())
+        );
+
+        let generation = context.world().generation();
+        assert_eq!(
+            context.set_segmented_options(control, vec![first, first], Some(first)),
+            Err(FrameworkError::InvalidComponentValue(control.stable_id()))
+        );
+        assert_eq!(context.world().generation(), generation);
+
+        assert!(
+            context
+                .set_segmented_options(control, vec![first, last], Some(first))
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().mount_state(disabled.stable_id()),
+            Some(crate::MountState::Parked)
+        );
+        assert!(
+            !context
+                .world()
+                .project_accessibility(document)
+                .iter()
+                .any(|node| node.id == disabled.stable_id())
+        );
+        let accessibility = context.world().project_accessibility(document);
+        assert_eq!(accessibility[0].role, crate::AccessibilityRole::RadioGroup);
+        assert_eq!(accessibility[1].role, crate::AccessibilityRole::Radio);
+        assert_eq!(accessibility[1].checked, Some(true));
+        assert_eq!(accessibility[2].checked, Some(false));
+        assert_eq!(context.next_animation_deadline(), None);
+    }
+
+    #[test]
+    fn segmented_size_disabled_and_sequential_focus_share_one_authority() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let before = context
+            .create_component(document, Button::new("Before"))
+            .unwrap();
+        let control = context
+            .create_component(document, SegmentedControl::new())
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        let after = context
+            .create_component(document, Button::new("After"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, second], Some(first))
+            .unwrap();
+
+        let generation = context.world().generation();
+        assert!(
+            context
+                .set_segmented_size(control, nana_ui_core::ControlSize::Large)
+                .unwrap()
+        );
+        assert_eq!(context.world().generation(), generation + 1);
+        assert_eq!(
+            context.read(control, |control| control.size).unwrap(),
+            nana_ui_core::ControlSize::Large
+        );
+        assert_eq!(
+            context.read(first, |option| option.size).unwrap(),
+            nana_ui_core::ControlSize::Large
+        );
+        assert_eq!(
+            context.read(second, |option| option.size).unwrap(),
+            nana_ui_core::ControlSize::Large
+        );
+        let radius = context.world().theme_metrics().radius_md;
+        assert_eq!(
+            context
+                .world()
+                .node_style(control.stable_id())
+                .unwrap()
+                .layout
+                .border_radius,
+            Some(radius)
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(first.stable_id())
+                .unwrap()
+                .layout
+                .border_radius,
+            Some((radius - 3.0).max(0.0))
+        );
+
+        context.focus_node(document, before.stable_id()).unwrap();
+        assert!(context.navigate_sequential_focus(document, false).unwrap());
+        assert_eq!(context.world().focused(document), Some(first.stable_id()));
+        assert!(context.navigate_sequential_focus(document, false).unwrap());
+        assert_eq!(context.world().focused(document), Some(after.stable_id()));
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document,
+                    AccessibilityActionRequest {
+                        target: second.stable_id(),
+                        action: AccessibilityAction::Focus,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(second.stable_id()));
+        assert_eq!(
+            context
+                .read(control, |control| control.focus_target)
+                .unwrap(),
+            Some(second.stable_id())
+        );
+        assert!(
+            context
+                .set_segmented_selection(control, Some(second))
+                .unwrap()
+        );
+        assert!(
+            context
+                .set_segmented_selection(control, Some(first))
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(second.stable_id()));
+        assert_eq!(
+            context
+                .read(control, |control| control.focus_target)
+                .unwrap(),
+            Some(second.stable_id())
+        );
+        assert!(context.navigate_sequential_focus(document, false).unwrap());
+        assert_eq!(context.world().focused(document), Some(after.stable_id()));
+
+        context.focus_node(document, first.stable_id()).unwrap();
+        assert!(
+            context
+                .set_segmented_option_disabled(control, first, true)
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(second.stable_id()));
+        assert_eq!(
+            context
+                .read(control, |control| control.focus_target)
+                .unwrap(),
+            Some(second.stable_id())
+        );
+        assert_eq!(
+            context.read(control, |control| control.selected).unwrap(),
+            Some(first.stable_id())
+        );
+        assert!(context.read(first, |option| option.selected).unwrap());
+        assert!(context.read(first, |option| option.disabled).unwrap());
+        assert_eq!(
+            context
+                .world()
+                .project_accessibility(document)
+                .into_iter()
+                .find(|node| node.id == first.stable_id())
+                .unwrap()
+                .checked,
+            Some(true)
+        );
+        assert!(
+            context
+                .set_segmented_option_disabled(control, first, false)
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(second.stable_id()));
+        assert_eq!(
+            context
+                .read(control, |control| control.focus_target)
+                .unwrap(),
+            Some(second.stable_id())
+        );
+    }
+
+    #[test]
+    fn segmented_intrinsic_width_is_stable_across_viewports_sizes_icons_and_empty_groups() {
+        struct FixedShaper;
+        impl crate::TextShaper for FixedShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &crate::ComputedStyle,
+                _constraints: crate::TextShapeConstraints,
+            ) -> crate::TextMetrics {
+                crate::TextMetrics {
+                    width: text.value.chars().count() as f32 * 7.0,
+                    height: 16.0,
+                }
+            }
+        }
+
+        for (index, size) in [
+            nana_ui_core::ControlSize::Small,
+            nana_ui_core::ControlSize::Medium,
+            nana_ui_core::ControlSize::Large,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut context = AppContext::new();
+            let document = DocumentId::new(index as u64 + 1).unwrap();
+            let control = context
+                .create_component(document, SegmentedControl::new().size(size))
+                .unwrap();
+            let icon = context
+                .create_detached_component(
+                    document,
+                    SegmentedOption::new("Code").icon(nana_ui_core::Icon::File),
+                )
+                .unwrap();
+            let plain = context
+                .create_detached_component(document, SegmentedOption::new("Code"))
+                .unwrap();
+            context
+                .set_segmented_options(control, vec![icon, plain], Some(icon))
+                .unwrap();
+            let mut shaper = FixedShaper;
+            while context
+                .shape_text_for_layout(document, &mut shaper)
+                .unwrap()
+            {}
+            context
+                .layout_document(document, crate::LayoutViewport::new(320.0, 100.0))
+                .unwrap();
+            let narrow = context.world().layout_box(control.stable_id()).unwrap();
+            let icon_bounds = context.world().layout_box(icon.stable_id()).unwrap();
+            let plain_bounds = context.world().layout_box(plain.stable_id()).unwrap();
+            assert_eq!(narrow.height, size.height());
+            assert!(icon_bounds.width > plain_bounds.width);
+            assert!((narrow.width - (icon_bounds.width + plain_bounds.width + 8.0)).abs() < 0.01);
+
+            context
+                .layout_document(document, crate::LayoutViewport::new(640.0, 100.0))
+                .unwrap();
+            assert_eq!(
+                context.world().layout_box(control.stable_id()),
+                Some(narrow)
+            );
+        }
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(9).unwrap();
+        let empty = context
+            .create_component(document, SegmentedControl::new())
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(640.0, 100.0))
+            .unwrap();
+        let empty = context.world().layout_box(empty.stable_id()).unwrap();
+        assert_eq!(empty.width, 6.0);
+        assert_eq!(empty.height, nana_ui_core::ControlSize::Medium.height());
+    }
+
+    #[test]
+    fn radio_activation_is_shared_by_semantic_input_and_rejects_checked_or_disabled() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let radio = context
+            .create_component(document, Radio::new("Code"))
+            .unwrap();
+        let activations = Arc::new(Mutex::new(0));
+        let observed = Arc::clone(&activations);
+        context
+            .on(radio, move |_radio, _event: &Activate, _cx| {
+                *observed.lock().unwrap() += 1
+            })
+            .unwrap();
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document,
+                    AccessibilityActionRequest {
+                        target: radio.stable_id(),
+                        action: AccessibilityAction::Click
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(*activations.lock().unwrap(), 1);
+        context
+            .update_component(radio, |radio, _cx| radio.checked = true)
+            .unwrap();
+        assert!(!context.activate_node(radio.stable_id()).unwrap());
+        context
+            .update_component(radio, |radio, _cx| {
+                radio.checked = false;
+                radio.disabled = true;
+            })
+            .unwrap();
+        assert!(!context.activate_node(radio.stable_id()).unwrap());
+        assert_eq!(*activations.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn segmented_request_focus_and_event_roll_back_together_when_focus_is_blocked() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let control = context
+            .create_component(document, SegmentedControl::new())
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, second], Some(first))
+            .unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let dialog = context
+            .create_component(document, Dialog::new("Settings"))
+            .unwrap();
+        context.append_child(host, dialog).unwrap();
+        context.activate_overlay(host, dialog).unwrap();
+        let generation = context.world().generation();
+
+        assert!(matches!(
+            context.request_segmented_selection(control, second),
+            Err(FrameworkError::World(crate::UiWorldError::NotFocusable(id)))
+                if id == second.stable_id()
+        ));
+        assert_eq!(context.world().generation(), generation);
+        assert!(context.read(first, |option| option.selected).unwrap());
+        assert!(!context.read(second, |option| option.selected).unwrap());
+        assert_eq!(
+            context
+                .read(control, |control| control.focus_target)
+                .unwrap(),
+            Some(first.stable_id())
+        );
+        assert_eq!(
+            context.read(control, |control| control.selected).unwrap(),
+            Some(first.stable_id())
+        );
+    }
+
+    #[test]
+    fn segmented_request_rolls_back_focus_when_an_event_handler_mutation_is_invalid() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let foreign_document = DocumentId::new(2).unwrap();
+        let control = context
+            .create_component(document, SegmentedControl::new())
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        let foreign = context
+            .create_component(foreign_document, Button::new("Foreign"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, second], Some(first))
+            .unwrap();
+        context.focus_node(document, first.stable_id()).unwrap();
+        context
+            .on(
+                control,
+                move |_control, _event: &SegmentedSelectionRequested, cx| {
+                    cx.mutations()
+                        .insert(foreign.stable_id(), second.stable_id(), None);
+                },
+            )
+            .unwrap();
+        let generation = context.world().generation();
+
+        assert!(
+            context
+                .request_segmented_selection(control, second)
+                .is_err()
+        );
+        assert_eq!(context.world().generation(), generation);
+        assert_eq!(context.world().focused(document), Some(first.stable_id()));
+        assert_eq!(
+            context
+                .read(control, SegmentedControl::focus_target)
+                .unwrap(),
+            Some(first.stable_id())
+        );
+        assert_eq!(
+            context.read(control, SegmentedControl::selected).unwrap(),
+            Some(first.stable_id())
+        );
+        assert!(context.read(first, SegmentedOption::selected).unwrap());
+        assert!(!context.read(second, SegmentedOption::selected).unwrap());
+    }
+
+    #[test]
+    fn overlay_tab_trap_reuses_segmented_sequential_focus_authority() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let dialog = context
+            .create_component(
+                document,
+                Dialog::new("Settings").initial_focus(crate::ModalInitialFocus::Surface),
+            )
+            .unwrap();
+        let control = context
+            .create_detached_component(document, SegmentedControl::new())
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        let action = context
+            .create_detached_component(document, Button::new("Save"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, second], Some(first))
+            .unwrap();
+        context.append_child(host, dialog).unwrap();
+        context
+            .set_modal_slots(
+                dialog,
+                ModalSlots {
+                    body: Some(control.stable_id()),
+                    actions: vec![action.stable_id()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        context.activate_overlay(host, dialog).unwrap();
+        assert_eq!(context.world().focused(document), Some(dialog.stable_id()));
+        assert!(
+            context
+                .route_overlay_key(document, OverlayKey::Tab { reverse: false })
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(first.stable_id()));
+        assert!(
+            context
+                .route_overlay_key(document, OverlayKey::Tab { reverse: false })
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(action.stable_id()));
+        assert!(
+            context
+                .route_overlay_key(document, OverlayKey::Tab { reverse: false })
+                .unwrap()
+        );
+        assert_eq!(context.world().focused(document), Some(first.stable_id()));
+        assert!(context.focus_node(document, second.stable_id()).unwrap());
+    }
+
+    #[test]
     fn native_scroll_view_projects_axes_and_typed_runtime_offset() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -4069,6 +5730,45 @@ mod tests {
     }
 
     #[test]
+    fn remount_resumes_loading_lifecycle_in_a_retained_descendant() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, Button::new("Host"))
+            .unwrap();
+        let parent = context
+            .create_component(document, Button::new("Parent"))
+            .unwrap();
+        let loading = context
+            .create_detached_component(document, Button::new("Loading").loading(true))
+            .unwrap();
+
+        assert_eq!(context.next_animation_deadline(), None);
+        context.append_child(parent, loading).unwrap();
+        assert_eq!(context.next_animation_deadline(), Some(Duration::ZERO));
+
+        let mut park = MutationQueue::new();
+        park.park_subtree(parent.stable_id());
+        context.commit_mutations(park).unwrap();
+        assert_eq!(context.next_animation_deadline(), None);
+
+        let mut remount = MutationQueue::new();
+        remount.insert(host.stable_id(), parent.stable_id(), None);
+        context.commit_mutations(remount).unwrap();
+        assert_eq!(context.next_animation_deadline(), Some(Duration::ZERO));
+
+        let frame = context.advance_animations(Duration::from_millis(400));
+        assert!(frame.component_updates.contains(&loading.stable_id()));
+        assert_eq!(
+            context
+                .read(loading, |button| button.loading_phase)
+                .unwrap(),
+            0.5
+        );
+        assert!(context.next_animation_deadline().is_some());
+    }
+
+    #[test]
     fn icon_button_tooltip_uses_hover_clock_and_real_overlay_child() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -4168,6 +5868,93 @@ mod tests {
             Some(crate::OverlayHostState::default())
         );
         assert_eq!(context.next_animation_deadline(), None);
+    }
+
+    #[test]
+    fn parked_icon_button_closes_tooltip_projection_and_does_not_reopen_on_remount() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, Button::new("Host"))
+            .unwrap();
+        let button = context
+            .create_component(
+                document,
+                IconButton::new(nana_ui_core::Icon::About, "Details").tooltip(
+                    "More details",
+                    nana_ui_core::TooltipConfig {
+                        delay_ms: 0,
+                        ..nana_ui_core::TooltipConfig::default()
+                    },
+                ),
+            )
+            .unwrap();
+
+        context
+            .set_pointer_hover_at(document, 1, Some(button.stable_id()), Duration::ZERO)
+            .unwrap();
+        assert!(context.read(button, |button| button.tooltip_open).unwrap());
+        assert!(matches!(
+            context.world().standard_visual(button.stable_id()),
+            Some(StandardVisual::Icon {
+                tooltip: Some(crate::TooltipVisual { open: true, .. }),
+                ..
+            })
+        ));
+
+        let mut park = MutationQueue::new();
+        park.park_subtree(button.stable_id());
+        context.commit_mutations(park).unwrap();
+        assert!(!context.read(button, |button| button.tooltip_open).unwrap());
+        assert!(matches!(
+            context.world().standard_visual(button.stable_id()),
+            Some(StandardVisual::Icon {
+                tooltip: Some(crate::TooltipVisual { open: false, .. }),
+                ..
+            })
+        ));
+        assert_eq!(
+            context.world().overlay_host(button.stable_id()),
+            Some(crate::OverlayHostState::default())
+        );
+        assert_eq!(context.next_animation_deadline(), None);
+
+        let mut remount = MutationQueue::new();
+        remount.insert(host.stable_id(), button.stable_id(), None);
+        context.commit_mutations(remount).unwrap();
+        assert!(
+            !context
+                .advance_animations(Duration::from_secs(1))
+                .has_updates()
+        );
+        assert!(!context.read(button, |button| button.tooltip_open).unwrap());
+        assert_eq!(
+            context.world().overlay_host(button.stable_id()),
+            Some(crate::OverlayHostState::default())
+        );
+
+        context
+            .set_pointer_hover_at(
+                document,
+                2,
+                Some(button.stable_id()),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        assert!(context.read(button, |button| button.tooltip_open).unwrap());
+        context
+            .update_component(button, |_button, cx| {
+                cx.mutations().park_subtree(button.stable_id());
+            })
+            .unwrap();
+        assert!(!context.read(button, |button| button.tooltip_open).unwrap());
+        assert!(matches!(
+            context.world().standard_visual(button.stable_id()),
+            Some(StandardVisual::Icon {
+                tooltip: Some(crate::TooltipVisual { open: false, .. }),
+                ..
+            })
+        ));
     }
 
     #[test]

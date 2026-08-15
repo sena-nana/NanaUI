@@ -6,14 +6,15 @@ use std::time::Duration;
 use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
-use nana_ui_core::{StyleModelRef, SwitchControlPosition, ThemeMode};
+use nana_ui_core::{SemanticColorRole, StyleModelRef, SwitchControlPosition, ThemeMode};
 
 use crate::animation::ActiveAnimation;
+use crate::components::{EmptyStateTextPresentation, ModalTextPresentation};
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
     AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode,
-    ImeComposition, InteractionState, LayoutBox, LayoutInput, MutationQueue, NodeStyle,
+    ImeComposition, InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
     OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
     TextContent, TextInputPresentation, TextInputState, TextMetrics, TextShaper, UiMutation,
 };
@@ -317,6 +318,21 @@ impl UiWorld {
         self.entities.contains_key(&id)
     }
 
+    /// Whether a retained node currently participates in its document.
+    pub fn is_mounted(&self, id: StableNodeId) -> bool {
+        let Some(&entity) = self.entities.get(&id) else {
+            return false;
+        };
+        self.world
+            .get::<MountState>(entity)
+            .is_some_and(|state| *state == MountState::Mounted)
+    }
+
+    pub fn mount_state(&self, id: StableNodeId) -> Option<MountState> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<MountState>(entity).copied()
+    }
+
     pub fn is_retired(&self, id: StableNodeId) -> bool {
         self.retired.contains(&id)
     }
@@ -329,7 +345,14 @@ impl UiWorld {
         self.style_model.theme_mode
     }
 
+    pub fn theme_metrics(&self) -> nana_ui_core::ThemeMetrics {
+        self.style_model.metrics
+    }
+
     pub fn event_route(&self, target: StableNodeId) -> Option<EventRoute> {
+        if !self.is_mounted(target) {
+            return None;
+        }
         let mut bubble = Vec::new();
         let mut current = self.node(target)?.parent;
         while let Some(id) = current {
@@ -523,8 +546,16 @@ impl UiWorld {
                 .get_mut::<DirtyMask>(entity)
                 .expect("entity must have dirty component")
                 .take();
+            if !self.is_mounted(id) {
+                continue;
+            }
             let has_text = matches!(self.component::<Kind>(id).0, NodeKind::Text)
-                || !self.component::<TextContent>(id).value.is_empty();
+                || !self.component::<TextContent>(id).value.is_empty()
+                || matches!(
+                    self.world.get::<StandardVisual>(entity),
+                    Some(StandardVisual::EmptyState { .. })
+                        | Some(StandardVisual::ModalFrame { .. })
+                );
             let bits = if has_text {
                 bits
             } else {
@@ -626,6 +657,45 @@ impl UiWorld {
         self.world.get::<NodeStyle>(entity)
     }
 
+    pub fn computed_style(&self, id: StableNodeId) -> Option<&ComputedStyle> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<ComputedStyle>(entity)
+    }
+
+    /// Whether a mounted node is visible through every retained overlay branch.
+    /// Dirty computed styles are derived from the local hierarchy instead of
+    /// treating the previous frame's visibility as current authority.
+    pub fn is_overlay_reachable(&self, id: StableNodeId) -> bool {
+        let mut child = id;
+        let mut current = Some(id);
+        while let Some(candidate) = current {
+            if !self.is_mounted(candidate)
+                || self.node_style(candidate).is_some_and(|style| {
+                    style.layout.hidden
+                        || matches!(style.layout.display, Some(nana_ui_core::DisplaySpec::None))
+                })
+                || (!self.dirty_entities.contains(&candidate)
+                    && self
+                        .computed_style(candidate)
+                        .is_some_and(|style| !style.visible))
+            {
+                return false;
+            }
+            let parent = self.node(candidate).and_then(|node| node.parent);
+            if let Some(parent) = parent {
+                if self
+                    .overlay_host(parent)
+                    .is_some_and(|state| state.active != Some(child))
+                {
+                    return false;
+                }
+                child = parent;
+            }
+            current = parent;
+        }
+        true
+    }
+
     pub fn interaction(&self, id: StableNodeId) -> Option<InteractionState> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<InteractionState>(entity).copied()
@@ -634,6 +704,11 @@ impl UiWorld {
     pub fn text_input(&self, id: StableNodeId) -> Option<&TextInputState> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<TextInputState>(entity)
+    }
+
+    pub fn text_input_presentation(&self, id: StableNodeId) -> Option<&TextInputPresentation> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<TextInputPresentation>(entity)
     }
 
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
@@ -749,6 +824,8 @@ impl UiWorld {
         shaper: &mut impl TextShaper,
     ) -> Result<(), UiWorldError> {
         let mut shaped = Vec::with_capacity(ids.len());
+        let mut empty_shaped = Vec::new();
+        let mut modal_shaped = Vec::new();
         for &id in ids {
             if !self.contains(id) {
                 return Err(UiWorldError::MissingNode(id));
@@ -759,6 +836,26 @@ impl UiWorld {
                 |source| source.text.clone(),
             );
             let style = self.component::<ComputedStyle>(id).clone();
+            if let Some(visual @ StandardVisual::EmptyState { .. }) =
+                self.world.get::<StandardVisual>(self.entities[&id])
+            {
+                let intrinsic = shape_empty_state_text(id, visual, &style, None, shaper);
+                validate_text_metrics(id, intrinsic.title)?;
+                if let Some(message) = intrinsic.message {
+                    validate_text_metrics(id, message)?;
+                }
+                empty_shaped.push((id, intrinsic));
+            }
+            if let Some(visual @ StandardVisual::ModalFrame { .. }) =
+                self.world.get::<StandardVisual>(self.entities[&id])
+            {
+                let intrinsic = shape_modal_text(id, visual, &style, None, shaper);
+                validate_text_metrics(id, intrinsic.title)?;
+                if let Some(description) = intrinsic.description {
+                    validate_text_metrics(id, description)?;
+                }
+                modal_shaped.push((id, intrinsic));
+            }
             let metrics = shaper.shape(
                 id,
                 &text,
@@ -769,8 +866,18 @@ impl UiWorld {
                 },
             );
             validate_text_metrics(id, metrics)?;
-            let presentation = presentation
-                .map(|source| shape_text_input_presentation(id, source, &style, shaper));
+            let presentation = presentation.map(|source| {
+                shape_text_input_presentation(
+                    id,
+                    source,
+                    &style,
+                    crate::TextShapeConstraints {
+                        shaping: self.text_shaping(id),
+                        ..crate::TextShapeConstraints::default()
+                    },
+                    shaper,
+                )
+            });
             shaped.push((id, metrics, presentation));
         }
         for (id, metrics, presentation) in shaped {
@@ -780,6 +887,14 @@ impl UiWorld {
                     .entity_mut(self.entities[&id])
                     .insert(presentation);
             }
+        }
+        for (id, presentation) in empty_shaped {
+            self.apply_empty_state_text_presentation(id, presentation);
+        }
+        for (id, presentation) in modal_shaped {
+            self.world
+                .entity_mut(self.entities[&id])
+                .insert(presentation);
         }
         Ok(())
     }
@@ -793,6 +908,8 @@ impl UiWorld {
         shaper: &mut impl TextShaper,
     ) -> Result<bool, UiWorldError> {
         let mut shaped = Vec::new();
+        let mut empty_shaped = Vec::new();
+        let mut modal_shaped = Vec::new();
         for id in self.document_order(document) {
             let presentation = self.text_input_presentation_source(id);
             let text = presentation.as_ref().map_or_else(
@@ -800,6 +917,54 @@ impl UiWorld {
                 |source| source.text.clone(),
             );
             let computed = self.component::<ComputedStyle>(id);
+            if let Some(visual @ StandardVisual::EmptyState { compact, .. }) =
+                self.world.get::<StandardVisual>(self.entities[&id])
+            {
+                if computed.visible {
+                    let layout = *self.component::<LayoutBox>(id);
+                    let horizontal = if *compact { 6.0 } else { 16.0 };
+                    let width = (layout.width - horizontal * 2.0).max(0.0);
+                    let intrinsic =
+                        shape_empty_state_text(id, visual, computed, Some(width), shaper);
+                    validate_text_metrics(id, intrinsic.title)?;
+                    if let Some(message) = intrinsic.message {
+                        validate_text_metrics(id, message)?;
+                    }
+                    if self
+                        .world
+                        .get::<EmptyStateTextPresentation>(self.entities[&id])
+                        != Some(&intrinsic)
+                    {
+                        empty_shaped.push((id, intrinsic));
+                    }
+                }
+                continue;
+            }
+            if let Some(visual @ StandardVisual::ModalFrame { kind, .. }) =
+                self.world.get::<StandardVisual>(self.entities[&id])
+            {
+                if computed.visible {
+                    let root = *self.component::<LayoutBox>(id);
+                    let surface = modal_surface_bounds(root, *kind, None);
+                    let intrinsic = shape_modal_text(
+                        id,
+                        visual,
+                        computed,
+                        Some((surface.width - 64.0).max(0.0)),
+                        shaper,
+                    );
+                    validate_text_metrics(id, intrinsic.title)?;
+                    if let Some(description) = intrinsic.description {
+                        validate_text_metrics(id, description)?;
+                    }
+                    if self.world.get::<ModalTextPresentation>(self.entities[&id])
+                        != Some(&intrinsic)
+                    {
+                        modal_shaped.push((id, intrinsic));
+                    }
+                }
+                continue;
+            }
             if text.value.is_empty() || !computed.visible {
                 continue;
             }
@@ -812,32 +977,48 @@ impl UiWorld {
                 Some(StandardVisual::Switch { .. }) => 38.0,
                 _ => 0.0,
             };
+            let text_input_multiline = presentation.as_ref().is_some_and(|source| source.multiline);
+            let is_text_input = presentation.is_some();
             let constraints = crate::TextShapeConstraints {
-                max_width: Some(
-                    (layout.width - padding.left - padding.right - border * 2.0 - leading_visual)
-                        .max(0.0),
-                ),
+                max_width: if is_text_input && !text_input_multiline {
+                    None
+                } else {
+                    Some(
+                        (layout.width
+                            - padding.left
+                            - padding.right
+                            - border * 2.0
+                            - leading_visual)
+                            .max(0.0),
+                    )
+                },
                 // Auto-height text must be allowed to grow after wrapping. Feeding the
                 // provisional intrinsic height back as a hard bound would make the first
                 // one-line measurement self-fulfilling. Only authored definite heights
                 // constrain the text backend; max-height is enforced by layout itself.
-                max_height: (source
-                    .layout
-                    .height
-                    .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
-                    || source
+                max_height: (!is_text_input
+                    && (source
                         .layout
-                        .max_height
-                        .is_some_and(nana_ui_core::LengthSpec::is_definite_declared))
+                        .height
+                        .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+                        || source
+                            .layout
+                            .max_height
+                            .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)))
                 .then(|| (layout.height - padding.top - padding.bottom - border * 2.0).max(0.0)),
-                wrap: !source.layout.white_space_nowrap,
-                ellipsis: source.layout.text_overflow_ellipsis,
+                wrap: if is_text_input {
+                    text_input_multiline && !source.layout.white_space_nowrap
+                } else {
+                    !source.layout.white_space_nowrap
+                },
+                ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
                 shaping: self.text_shaping(id),
             };
             let metrics = shaper.shape(id, &text, computed, constraints);
             validate_text_metrics(id, metrics)?;
-            let presentation = presentation
-                .map(|source| shape_text_input_presentation(id, source, computed, shaper));
+            let presentation = presentation.map(|source| {
+                shape_text_input_presentation(id, source, computed, constraints, shaper)
+            });
             if *self.component::<TextMetrics>(id) != metrics
                 || presentation.as_ref().is_some_and(|value| {
                     self.world.get::<TextInputPresentation>(self.entities[&id]) != Some(value)
@@ -846,7 +1027,7 @@ impl UiWorld {
                 shaped.push((id, metrics, presentation));
             }
         }
-        let changed = !shaped.is_empty();
+        let changed = !shaped.is_empty() || !empty_shaped.is_empty() || !modal_shaped.is_empty();
         for (id, metrics, presentation) in shaped {
             *self.component_mut::<TextMetrics>(id) = metrics;
             if let Some(presentation) = presentation {
@@ -855,7 +1036,57 @@ impl UiWorld {
                     .insert(presentation);
             }
         }
+        for (id, presentation) in empty_shaped {
+            self.apply_empty_state_text_presentation(id, presentation);
+        }
+        for (id, presentation) in modal_shaped {
+            self.world
+                .entity_mut(self.entities[&id])
+                .insert(presentation);
+            self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+        }
         Ok(changed)
+    }
+
+    fn apply_empty_state_text_presentation(
+        &mut self,
+        id: StableNodeId,
+        presentation: EmptyStateTextPresentation,
+    ) {
+        self.world
+            .entity_mut(self.entities[&id])
+            .insert(presentation);
+        let Some(StandardVisual::EmptyState {
+            icon,
+            compact,
+            action,
+            ..
+        }) = self.world.get::<StandardVisual>(self.entities[&id])
+        else {
+            return;
+        };
+        let spacing = if *compact { 2.0 } else { 6.0 };
+        let vertical = if *compact { 8.0 } else { 24.0 };
+        let mut height = presentation.title.height;
+        if icon.is_some() {
+            height += 22.0 + spacing;
+        }
+        if let Some(message) = presentation.message {
+            height += spacing + message.height;
+        }
+        if action.is_some() {
+            height += spacing + 4.0;
+        }
+        let padding_top = nana_ui_core::LengthSpec::Px(vertical + height);
+        let mut style = self.component::<NodeStyle>(id).clone();
+        if style.layout.padding_top != Some(padding_top) {
+            Arc::make_mut(&mut style.layout).padding_top = Some(padding_top);
+            *self.component_mut::<NodeStyle>(id) = style;
+            self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+            if let Some(parent) = self.node(id).and_then(|node| node.parent) {
+                self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
+            }
+        }
     }
 
     fn text_input_presentation_source(
@@ -872,11 +1103,16 @@ impl UiWorld {
         };
         let state = self.world.get::<TextInputState>(self.entities[&id])?;
         let ime = self.world.get::<ImeComposition>(self.entities[&id]);
+        let multiline = self
+            .world
+            .get::<AccessibilityState>(self.entities[&id])
+            .is_some_and(|state| state.multiline);
         Some(build_text_input_presentation_source(
             state,
             ime,
             placeholder,
             *secure,
+            multiline,
         ))
     }
 
@@ -903,7 +1139,7 @@ impl UiWorld {
                 let has_text = matches!(self.component::<Kind>(id).0, NodeKind::Text)
                     || !self.component::<TextContent>(id).value.is_empty();
                 let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
-                if !self.overlay_branch_active(id) {
+                if !self.is_mounted(id) || !self.overlay_branch_active(id) {
                     Arc::make_mut(&mut style).hidden = true;
                 }
                 Ok(LayoutInput {
@@ -912,6 +1148,25 @@ impl UiWorld {
                     children: hierarchy.children.clone(),
                     style,
                     text_metrics: has_text.then(|| *self.component::<TextMetrics>(id)),
+                    modal: self
+                        .world
+                        .get::<StandardVisual>(self.entities[&id])
+                        .and_then(|visual| {
+                            let StandardVisual::ModalFrame { kind, slots, .. } = visual else {
+                                return None;
+                            };
+                            let presentation = self
+                                .world
+                                .get::<ModalTextPresentation>(self.entities[&id])
+                                .copied()
+                                .unwrap_or_default();
+                            Some(crate::ModalLayoutInput {
+                                kind: *kind,
+                                slots: slots.clone(),
+                                title: presentation.title,
+                                description: presentation.description,
+                            })
+                        }),
                 })
             })
             .collect()
@@ -926,6 +1181,7 @@ impl UiWorld {
             .copied()
             .filter(|id| {
                 self.component::<Identity>(*id).document == document
+                    && self.is_mounted(*id)
                     && self.component::<Hierarchy>(*id).parent.is_none()
             })
             .collect::<Vec<_>>();
@@ -948,8 +1204,30 @@ impl UiWorld {
                 .unwrap_or(IDENTITY_AFFINE);
             let transform = then_affine(parent_transform, local);
             let mut child_clips = parent_clips.clone();
+            let mut own_clips = parent_clips.clone();
             if node_style.clips_overflow() {
                 child_clips.push((layout, transform));
+            }
+            if matches!(
+                self.world.get::<StandardVisual>(self.entities[&id]),
+                Some(StandardVisual::EmptyState { .. })
+            ) {
+                child_clips.push((layout, transform));
+            }
+            if let Some(crate::ComponentGeometry::ModalFrame { surface, .. }) =
+                self.component_geometry(id)
+            {
+                child_clips.push((surface, transform));
+            }
+            if let Some(parent) = self.node(id).and_then(|node| node.parent)
+                && let Some(StandardVisual::ModalFrame { slots, .. }) =
+                    self.world.get::<StandardVisual>(self.entities[&parent])
+                && slots.body == Some(id)
+                && let Some(crate::ComponentGeometry::ModalFrame { body, .. }) =
+                    self.component_geometry(parent)
+            {
+                child_clips.push((body, parent_transform));
+                own_clips.push((body, parent_transform));
             }
             let scroll = *self.component::<ScrollOffset>(id);
             let child_transform =
@@ -964,12 +1242,15 @@ impl UiWorld {
 
             let style = self.component::<ComputedStyle>(id);
             let interaction = self.component::<InteractionState>(id);
-            if style.visible && interaction.pointer_events {
+            let confirm_busy = self
+                .confirm_action_effect(id)
+                .is_some_and(|effect| effect.0);
+            if style.visible && interaction.pointer_events && !confirm_busy {
                 entries.push(HitEntry {
                     id,
                     layout,
                     transform,
-                    clips: parent_clips,
+                    clips: own_clips,
                     z_index: node_style.z_index.unwrap_or_default(),
                     order,
                 });
@@ -1116,6 +1397,7 @@ impl UiWorld {
                         },
                         Kind(kind.clone()),
                         Hierarchy::default(),
+                        MountState::default(),
                         NodeStyle::default(),
                         ComputedStyle::default(),
                         TextContent::default(),
@@ -1154,6 +1436,10 @@ impl UiWorld {
                     .unwrap_or(siblings.len());
                 siblings.insert(index, *child);
                 self.hierarchy_mut(*child).parent = Some(*parent);
+                let parent_mount = *self.component::<MountState>(*parent);
+                if *self.component::<MountState>(*child) != parent_mount {
+                    self.set_subtree_mount_state(*child, parent_mount);
+                }
                 if old_parent == Some(*parent) {
                     // Retained-order moves carry the entire subtree; descendants
                     // keep their inherited state and local geometry until layout
@@ -1213,6 +1499,25 @@ impl UiWorld {
                     );
                     report.detached += 1;
                 }
+                if *self.component::<MountState>(*id) != MountState::Mounted {
+                    self.set_subtree_mount_state(*id, MountState::Mounted);
+                }
+            }
+            UiMutation::ParkSubtree { root } => {
+                let parent = self.node(*root).expect("validated node must exist").parent;
+                if let Some(parent) = parent {
+                    self.hierarchy_mut(parent)
+                        .children
+                        .retain(|child| child != root);
+                    self.hierarchy_mut(*root).parent = None;
+                    self.mark_ancestors(
+                        parent,
+                        DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                }
+                let subtree = self.subtree_ids(*root);
+                self.set_subtree_mount_state(*root, MountState::Parked);
+                self.retire_subtree_from_document(&subtree);
             }
             UiMutation::DespawnSubtree { root } => {
                 let root_snapshot = self.node(*root).expect("validated root must exist");
@@ -1422,6 +1727,27 @@ impl UiWorld {
                         self.world.get::<StandardVisual>(entity),
                         Some(StandardVisual::TextInput { .. })
                     ) || matches!(visual, Some(StandardVisual::TextInput { .. }));
+                let empty_state_presentation_changed =
+                    matches!(
+                        self.world.get::<StandardVisual>(entity),
+                        Some(StandardVisual::EmptyState { .. })
+                    ) || matches!(visual, Some(StandardVisual::EmptyState { .. }));
+                let modal_presentation_changed =
+                    matches!(
+                        self.world.get::<StandardVisual>(entity),
+                        Some(StandardVisual::ModalFrame { .. })
+                    ) || matches!(visual, Some(StandardVisual::ModalFrame { .. }));
+                let modal_state_changed = match (self.world.get::<StandardVisual>(entity), visual) {
+                    (
+                        Some(StandardVisual::ModalFrame {
+                            busy: old_busy,
+                            danger: old_danger,
+                            ..
+                        }),
+                        Some(StandardVisual::ModalFrame { busy, danger, .. }),
+                    ) => old_busy != busy || old_danger != danger,
+                    _ => false,
+                };
                 if let Some(visual) = visual {
                     self.world.entity_mut(entity).insert(visual.clone());
                 } else {
@@ -1432,15 +1758,38 @@ impl UiWorld {
                         .entity_mut(entity)
                         .remove::<TextInputPresentation>();
                 }
+                if !matches!(visual, Some(StandardVisual::EmptyState { .. })) {
+                    self.world
+                        .entity_mut(entity)
+                        .remove::<EmptyStateTextPresentation>();
+                }
+                if !matches!(visual, Some(StandardVisual::ModalFrame { .. })) {
+                    self.world
+                        .entity_mut(entity)
+                        .remove::<ModalTextPresentation>();
+                }
                 self.mark(
                     *id,
                     DirtyMask::RENDER
-                        | if text_input_presentation_changed {
-                            DirtyMask::TEXT
+                        | if text_input_presentation_changed
+                            || empty_state_presentation_changed
+                            || modal_presentation_changed
+                        {
+                            DirtyMask::TEXT | DirtyMask::LAYOUT
                         } else {
                             0
                         },
                 );
+                if modal_state_changed {
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::STYLE
+                            | DirtyMask::INPUT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                }
             }
             UiMutation::SetAccessibility { id, accessibility } => {
                 let previous = self.component::<AccessibilityState>(*id);
@@ -1666,9 +2015,12 @@ impl UiWorld {
     }
 
     fn extract_node(&self, id: StableNodeId) -> Option<ExtractedNode> {
+        if !self.is_mounted(id) {
+            return None;
+        }
         let entity = *self.entities.get(&id)?;
         let identity = self.world.get::<Identity>(entity)?;
-        let style = self.world.get::<ComputedStyle>(entity)?.clone();
+        let mut style = self.world.get::<ComputedStyle>(entity)?.clone();
         let kind = self.world.get::<Kind>(entity)?.0.clone();
         let has_text = matches!(kind, NodeKind::Text)
             || self
@@ -1677,11 +2029,29 @@ impl UiWorld {
                 .is_some_and(|text| !text.value.is_empty());
         let source_style = self.world.get::<NodeStyle>(entity)?.clone();
         let hierarchy = self.world.get::<Hierarchy>(entity)?;
-        let standard_visual = self.world.get::<StandardVisual>(entity).cloned();
+        let mut standard_visual = self.world.get::<StandardVisual>(entity).cloned();
+        if let Some((busy, danger, is_confirm)) = self.confirm_action_effect(id) {
+            if busy {
+                style.color = Some(self.style_model.palette.faint.as_rgba_array());
+                style.background = Some(self.style_model.palette.subtle.as_rgba_array());
+                style.border_color = Some(self.style_model.palette.border.as_rgba_array());
+            }
+            if is_confirm
+                && let Some(StandardVisual::Button { kind, loading, .. }) = standard_visual.as_mut()
+            {
+                *kind = if danger {
+                    nana_ui_core::ButtonKind::Danger
+                } else {
+                    nana_ui_core::ButtonKind::Primary
+                };
+                *loading = busy;
+            }
+        }
         let component_geometry = standard_visual
             .as_ref()
             .and_then(|visual| self.derive_component_geometry(id, visual, &style));
         let standard_visual_foreground = standard_visual.as_ref().map(|visual| match visual {
+            StandardVisual::ModalFrame { .. } => self.style_model.palette.text.as_rgba_array(),
             StandardVisual::Icon { .. } => style
                 .color
                 .unwrap_or_else(|| self.style_model.palette.muted.as_rgba_array()),
@@ -1689,6 +2059,9 @@ impl UiWorld {
                 .color
                 .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
             StandardVisual::TextInput { .. } => style
+                .color
+                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
+            StandardVisual::SelectionOption { .. } => style
                 .color
                 .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
             StandardVisual::Checkbox { checked: true }
@@ -1702,7 +2075,13 @@ impl UiWorld {
             StandardVisual::Slider { .. }
             | StandardVisual::Range { .. }
             | StandardVisual::Card { .. }
-            | StandardVisual::ListItem { .. } => self.style_model.palette.accent.as_rgba_array(),
+            | StandardVisual::ListItem { .. }
+            | StandardVisual::StatusBadge { .. }
+            | StandardVisual::ValidationMessage { .. }
+            | StandardVisual::EmptyState { .. }
+            | StandardVisual::LabeledValue { .. } => {
+                self.style_model.palette.accent.as_rgba_array()
+            }
         });
         Some(ExtractedNode {
             id,
@@ -1766,6 +2145,92 @@ impl UiWorld {
             }
         };
         match visual {
+            StandardVisual::ModalFrame {
+                title,
+                description,
+                kind,
+                slots,
+                ..
+            } => {
+                let provisional = modal_surface_bounds(bounds, *kind, None);
+                let presentation = self
+                    .world
+                    .get::<ModalTextPresentation>(self.entities[&id])
+                    .copied()
+                    .unwrap_or_default();
+                let header_height = (28.0
+                    + presentation.title.height
+                    + presentation
+                        .description
+                        .map_or(0.0, |metrics| 4.0 + metrics.height))
+                .max(56.0);
+                let mut intrinsic_height = header_height + 14.0;
+                if let Some(body) = slots.body.and_then(|id| self.layout_box(id)) {
+                    intrinsic_height =
+                        intrinsic_height.max(body.y + body.height - provisional.y + 14.0);
+                }
+                if let Some(footer) = slots.footer.and_then(|id| self.layout_box(id)) {
+                    intrinsic_height =
+                        intrinsic_height.max(footer.y + footer.height - provisional.y);
+                }
+                for action in slots.actions.iter().filter_map(|id| self.layout_box(*id)) {
+                    intrinsic_height = intrinsic_height.max(
+                        action.y + action.height + (58.0 - action.height) / 2.0 - provisional.y,
+                    );
+                }
+                let surface = modal_surface_bounds(bounds, *kind, Some(intrinsic_height));
+                let LayoutBox { x, y, width, .. } = surface;
+                let text_width = (width - 64.0).max(0.0);
+                let footer_height = if slots.footer.is_some() || !slots.actions.is_empty() {
+                    58.0
+                } else {
+                    0.0
+                };
+                let body = LayoutBox {
+                    x: x + 16.0,
+                    y: y + header_height,
+                    width: (width - 32.0).max(0.0),
+                    height: (surface.height - header_height - footer_height - 14.0).max(0.0),
+                };
+                Some(crate::ComponentGeometry::ModalFrame {
+                    scrim: bounds,
+                    surface,
+                    body,
+                    title: text_region(
+                        LayoutBox {
+                            x: x + 16.0,
+                            y: y + 14.0,
+                            width: text_width,
+                            height: presentation.title.height,
+                        },
+                        Arc::clone(title),
+                        false,
+                        14.0,
+                        Some(600),
+                    ),
+                    description: description.as_ref().map(|description| {
+                        text_region(
+                            LayoutBox {
+                                x: x + 16.0,
+                                y: y + 14.0 + presentation.title.height + 4.0,
+                                width: text_width,
+                                height: presentation.description.unwrap_or_default().height,
+                            },
+                            Arc::clone(description),
+                            true,
+                            12.0,
+                            None,
+                        )
+                    }),
+                    background: self.style_model.palette.surface.as_rgba_array(),
+                    border: self.style_model.palette.border_strong.as_rgba_array(),
+                    elevation: crate::ComponentElevation {
+                        color: [0.0, 0.0, 0.0, 0.24],
+                        offset_y: 8.0,
+                        blur_radius: 24.0,
+                    },
+                })
+            }
             StandardVisual::Button {
                 label,
                 size,
@@ -1839,38 +2304,78 @@ impl UiWorld {
                     .get::<TextInputPresentation>(self.entities[&id])?;
                 let focused =
                     self.focused.get(&self.component::<Identity>(id).document) == Some(&id);
-                let text_width = self.text_metrics(id).map_or(0.0, |metrics| metrics.width);
-                let scroll = (presentation.caret_x - content.width + 1.0)
-                    .max(0.0)
-                    .min((text_width - content.width).max(0.0));
-                let line_height = size.line_height().min(content.height);
-                let line_y = content.y + (content.height - line_height) / 2.0;
-                let field_x = |offset: f32| content.x + offset - scroll;
-                let selection = presentation.selection.map(|(start, end)| LayoutBox {
-                    x: field_x(start),
-                    y: line_y,
-                    width: (end - start).max(0.0),
-                    height: line_height,
-                });
+                let metrics = self.text_metrics(id).unwrap_or_default();
+                let multiline = self
+                    .world
+                    .get::<AccessibilityState>(self.entities[&id])
+                    .is_some_and(|state| state.multiline);
+                let requested_scroll = *self.component::<ScrollOffset>(id);
+                let mut scroll_x = if multiline {
+                    requested_scroll.x
+                } else {
+                    (presentation.caret_x - content.width + 1.0).max(0.0)
+                }
+                .min((metrics.width - content.width).max(0.0));
+                let line_height = if multiline {
+                    presentation.line_height
+                } else {
+                    size.line_height()
+                }
+                .max(1.0)
+                .min(content.height.max(1.0));
+                let mut scroll_y = if multiline {
+                    requested_scroll
+                        .y
+                        .min((metrics.height - content.height).max(0.0))
+                } else {
+                    0.0
+                };
+                if multiline && focused {
+                    if presentation.caret_x < scroll_x {
+                        scroll_x = presentation.caret_x;
+                    } else if presentation.caret_x + 1.0 > scroll_x + content.width {
+                        scroll_x = presentation.caret_x + 1.0 - content.width;
+                    }
+                    if presentation.caret_y < scroll_y {
+                        scroll_y = presentation.caret_y;
+                    } else if presentation.caret_y + line_height > scroll_y + content.height {
+                        scroll_y = presentation.caret_y + line_height - content.height;
+                    }
+                }
+                scroll_x = scroll_x.clamp(0.0, (metrics.width - content.width).max(0.0));
+                scroll_y = scroll_y.clamp(0.0, (metrics.height - content.height).max(0.0));
+                let line_y = if multiline {
+                    content.y - scroll_y
+                } else {
+                    content.y + (content.height - line_height) / 2.0
+                };
+                let field_x = |offset: f32| content.x + offset - scroll_x;
+                let (selection, preedit) = text_input_decorations(
+                    presentation,
+                    multiline,
+                    content,
+                    line_y,
+                    line_height,
+                    scroll_x,
+                    scroll_y,
+                );
                 let caret = focused.then_some(LayoutBox {
                     x: field_x(presentation.caret_x),
-                    y: line_y,
+                    y: line_y + presentation.caret_y,
                     width: 1.0,
                     height: line_height,
-                });
-                let preedit = presentation.preedit.map(|(start, end)| LayoutBox {
-                    x: field_x(start),
-                    y: line_y + line_height - 2.0,
-                    width: (end - start).max(1.0),
-                    height: 2.0,
                 });
                 Some(crate::ComponentGeometry::TextInput {
                     text: crate::ComponentTextRegion {
                         bounds: LayoutBox {
-                            x: content.x - scroll,
-                            y: content.y,
-                            width: text_width.max(content.width),
-                            height: content.height,
+                            x: content.x - scroll_x,
+                            y: line_y,
+                            width: metrics.width.max(content.width),
+                            height: if multiline {
+                                metrics.height.max(content.height)
+                            } else {
+                                content.height
+                            },
                         },
                         content: Arc::from(presentation.display_value.as_str()),
                         color: Some(if presentation.placeholder {
@@ -1883,6 +2388,7 @@ impl UiWorld {
                         font_size: size.text_size(),
                         font_weight: style.font_weight,
                     },
+                    multiline,
                     selection,
                     caret,
                     preedit,
@@ -2189,11 +2695,271 @@ impl UiWorld {
                     trailing,
                 })
             }
+            StandardVisual::StatusBadge {
+                label,
+                tone,
+                compact,
+            } => {
+                let (horizontal, indicator_slot, gap, text_size) = if *compact {
+                    (7.0, 6.0, 5.0, 11.0)
+                } else {
+                    (8.0, 8.0, 6.0, 12.0)
+                };
+                let diameter = indicator_slot * 10.0 / 24.0;
+                let foreground = self
+                    .style_model
+                    .palette
+                    .get(status_tone_role(*tone))
+                    .as_rgba_array();
+                let mut background = foreground;
+                background[3] *= 0.12;
+                Some(crate::ComponentGeometry::StatusBadge {
+                    indicator: LayoutBox {
+                        x: bounds.x + horizontal + (indicator_slot - diameter) / 2.0,
+                        y: bounds.y + (bounds.height - diameter) / 2.0,
+                        width: diameter,
+                        height: diameter,
+                    },
+                    label: crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: bounds.x + horizontal + indicator_slot + gap,
+                            y: bounds.y,
+                            width: (bounds.width - horizontal * 2.0 - indicator_slot - gap)
+                                .max(0.0),
+                            height: bounds.height,
+                        },
+                        content: Arc::clone(label),
+                        color: Some(foreground),
+                        font_size: text_size,
+                        font_weight: Some(500),
+                    },
+                    background,
+                    foreground,
+                })
+            }
+            StandardVisual::ValidationMessage {
+                message,
+                intent,
+                compact,
+            } => {
+                let (indicator_slot, gap, text_size) = if *compact {
+                    (12.0, 5.0, 11.0)
+                } else {
+                    (14.0, 6.0, 12.0)
+                };
+                let diameter = indicator_slot * 10.0 / 24.0;
+                let foreground = self
+                    .style_model
+                    .palette
+                    .get(match intent {
+                        nana_ui_core::ValidationIntent::Warning => SemanticColorRole::Warning,
+                        nana_ui_core::ValidationIntent::Danger => SemanticColorRole::Danger,
+                    })
+                    .as_rgba_array();
+                Some(crate::ComponentGeometry::ValidationMessage {
+                    indicator: LayoutBox {
+                        x: bounds.x + (indicator_slot - diameter) / 2.0,
+                        y: bounds.y + (bounds.height - diameter) / 2.0,
+                        width: diameter,
+                        height: diameter,
+                    },
+                    label: crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: bounds.x + indicator_slot + gap,
+                            y: bounds.y,
+                            width: (bounds.width - indicator_slot - gap).max(0.0),
+                            height: bounds.height,
+                        },
+                        content: Arc::clone(message),
+                        color: Some(foreground),
+                        font_size: text_size,
+                        font_weight: None,
+                    },
+                    foreground,
+                })
+            }
+            StandardVisual::EmptyState {
+                title,
+                message,
+                icon,
+                compact,
+                action,
+            } => {
+                let (horizontal, vertical, title_size, message_size, spacing) = if *compact {
+                    (6.0, 8.0, 12.0, 11.0, 2.0)
+                } else {
+                    (16.0, 24.0, 13.0, 12.0, 6.0)
+                };
+                let width = (bounds.width - horizontal * 2.0).max(0.0);
+                let presentation = self
+                    .world
+                    .get::<EmptyStateTextPresentation>(self.entities[&id])
+                    .copied()
+                    .unwrap_or_default();
+                let text_bounds = |metrics: TextMetrics, y: f32| {
+                    let shaped_width = metrics.width.clamp(0.0, width);
+                    crate::LayoutBox {
+                        x: bounds.x
+                            + horizontal
+                            + if *compact {
+                                0.0
+                            } else {
+                                (width - shaped_width) / 2.0
+                            },
+                        y,
+                        width: shaped_width,
+                        height: metrics.height,
+                    }
+                };
+                let mut y = bounds.y + vertical;
+                let icon = icon.map(|icon| {
+                    let icon_width = 22.0_f32.min(width);
+                    let icon_bounds = LayoutBox {
+                        x: if *compact {
+                            bounds.x + horizontal
+                        } else {
+                            bounds.x + horizontal + (width - icon_width) / 2.0
+                        },
+                        y,
+                        width: icon_width,
+                        height: 22.0,
+                    };
+                    y += 22.0 + spacing;
+                    (
+                        icon,
+                        icon_bounds,
+                        self.style_model.palette.faint.as_rgba_array(),
+                    )
+                });
+                let title_region = crate::ComponentTextRegion {
+                    bounds: text_bounds(presentation.title, y),
+                    content: Arc::clone(title),
+                    color: Some(if *compact {
+                        self.style_model.palette.muted.as_rgba_array()
+                    } else {
+                        self.style_model.palette.text.as_rgba_array()
+                    }),
+                    font_size: title_size,
+                    font_weight: Some(600),
+                };
+                y += presentation.title.height;
+                let message = message.as_ref().map(|message| {
+                    y += spacing;
+                    let region = crate::ComponentTextRegion {
+                        bounds: text_bounds(presentation.message.unwrap_or_default(), y),
+                        content: Arc::clone(message),
+                        color: Some(self.style_model.palette.muted.as_rgba_array()),
+                        font_size: message_size,
+                        font_weight: None,
+                    };
+                    region
+                });
+                Some(crate::ComponentGeometry::EmptyState {
+                    root_clip: bounds,
+                    content_clip: LayoutBox {
+                        x: bounds.x + horizontal,
+                        y: bounds.y + vertical,
+                        width,
+                        height: (bounds.height - vertical * 2.0).max(0.0),
+                    },
+                    icon,
+                    title: title_region,
+                    message,
+                    action: action.and_then(|action| self.layout_box(action)),
+                })
+            }
+            StandardVisual::LabeledValue {
+                label,
+                value,
+                value_role,
+                value_weight,
+                compact,
+                action,
+            } => {
+                let gap = if *compact { 4.0 } else { 8.0 };
+                let right = action
+                    .and_then(|action| self.layout_box(action))
+                    .map_or(bounds.x + bounds.width, |action| action.x - gap);
+                let width = (right - bounds.x).max(0.0);
+                let label_height = 11.0 * 1.2;
+                let value_y = bounds.y + label_height + 1.0;
+                Some(crate::ComponentGeometry::LabeledValue {
+                    label: crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: bounds.x,
+                            y: bounds.y,
+                            width,
+                            height: label_height,
+                        },
+                        content: Arc::clone(label),
+                        color: Some(self.style_model.palette.faint.as_rgba_array()),
+                        font_size: 11.0,
+                        font_weight: None,
+                    },
+                    value: crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: bounds.x,
+                            y: value_y,
+                            width,
+                            height: 12.0 * 1.2,
+                        },
+                        content: Arc::clone(value),
+                        color: Some(self.style_model.palette.get(*value_role).as_rgba_array()),
+                        font_size: 12.0,
+                        font_weight: Some(*value_weight),
+                    },
+                    action: action.and_then(|action| self.layout_box(action)),
+                })
+            }
+            StandardVisual::SelectionOption {
+                label, icon, size, ..
+            } => {
+                let icon_extent = size.icon_size().min(content.height);
+                let base_padding = size.padding_x() + 2.0;
+                let icon_bounds = icon.map(|icon| {
+                    (
+                        icon,
+                        LayoutBox {
+                            x: bounds.x + base_padding,
+                            y: content.y + (content.height - icon_extent) / 2.0,
+                            width: icon_extent,
+                            height: icon_extent,
+                        },
+                        style
+                            .color
+                            .unwrap_or_else(|| self.style_model.palette.muted.as_rgba_array()),
+                    )
+                });
+                let label_x = icon_bounds
+                    .as_ref()
+                    .map_or(content.x, |(_, icon, _)| icon.x + icon.width + 5.0);
+                Some(crate::ComponentGeometry::SelectionOption {
+                    icon: icon_bounds,
+                    label: text_region(
+                        LayoutBox {
+                            x: label_x,
+                            y: content.y,
+                            width: (content.x + content.width - label_x).max(0.0),
+                            height: content.height,
+                        },
+                        Arc::clone(label),
+                        false,
+                        size.text_size(),
+                        Some(500),
+                    ),
+                    focus_ring: (self.focused.get(&self.component::<Identity>(id).document)
+                        == Some(&id))
+                    .then(|| self.style_model.palette.accent.as_rgba_array()),
+                })
+            }
             _ => None,
         }
     }
 
     fn project_accessibility_node(&self, id: StableNodeId) -> Option<AccessibilityNode> {
+        if !self.is_mounted(id) {
+            return None;
+        }
         let entity = *self.entities.get(&id)?;
         let identity = self.world.get::<Identity>(entity)?;
         let style = self.world.get::<ComputedStyle>(entity)?;
@@ -2217,6 +2983,10 @@ impl UiWorld {
                 .filter(|text| !text.value.is_empty())
                 .map(|text| Arc::<str>::from(text.value.as_str()))
         });
+        let bounds = match self.component_geometry(id) {
+            Some(crate::ComponentGeometry::ModalFrame { surface, .. }) => surface,
+            _ => self.visible_accessibility_bounds(id)?,
+        };
         Some(AccessibilityNode {
             id,
             parent: hierarchy.parent,
@@ -2225,7 +2995,8 @@ impl UiWorld {
                 .iter()
                 .copied()
                 .filter(|child| {
-                    let child = self.entities[child];
+                    let child_id = *child;
+                    let child = self.entities[&child_id];
                     self.world
                         .get::<ComputedStyle>(child)
                         .is_some_and(|style| style.visible)
@@ -2233,10 +3004,12 @@ impl UiWorld {
                             .world
                             .get::<Kind>(child)
                             .is_some_and(|kind| !matches!(kind.0, NodeKind::Comment))
+                        && self.visible_accessibility_bounds(child_id).is_some()
                 })
                 .collect(),
             role,
             label,
+            description: state.description.clone(),
             value: if matches!(
                 self.world.get::<StandardVisual>(entity),
                 Some(StandardVisual::TextInput { secure: true, .. })
@@ -2248,7 +3021,10 @@ impl UiWorld {
                     .map(|input| Arc::<str>::from(input.value.as_str()))
                     .or_else(|| state.value.clone())
             },
-            disabled: state.disabled,
+            disabled: state.disabled
+                || self
+                    .confirm_action_effect(id)
+                    .is_some_and(|effect| effect.0),
             checked: state.checked,
             selected: state.selected,
             multiline: state.multiline,
@@ -2265,8 +3041,40 @@ impl UiWorld {
             numeric_step: state.numeric_step,
             numeric_value: state.numeric_value,
             focused: self.focused.get(&identity.document) == Some(&id),
-            bounds: *self.world.get::<LayoutBox>(entity)?,
+            bounds,
         })
+    }
+
+    fn visible_accessibility_bounds(&self, id: StableNodeId) -> Option<LayoutBox> {
+        let mut bounds = *self.world.get::<LayoutBox>(*self.entities.get(&id)?)?;
+        let mut parent = self
+            .world
+            .get::<Hierarchy>(*self.entities.get(&id)?)?
+            .parent;
+        while let Some(ancestor) = parent {
+            let entity = *self.entities.get(&ancestor)?;
+            if matches!(
+                self.world.get::<StandardVisual>(entity),
+                Some(StandardVisual::EmptyState { .. })
+            ) {
+                bounds = intersect_layout_boxes(bounds, *self.world.get::<LayoutBox>(entity)?)?;
+            }
+            if let Some(crate::ComponentGeometry::ModalFrame { surface, body, .. }) =
+                self.component_geometry(ancestor)
+            {
+                bounds = intersect_layout_boxes(bounds, surface)?;
+                if let Some(StandardVisual::ModalFrame { slots, .. }) =
+                    self.world.get::<StandardVisual>(entity)
+                    && slots
+                        .body
+                        .is_some_and(|body_root| self.is_descendant_or_self(id, body_root))
+                {
+                    bounds = intersect_layout_boxes(bounds, body)?;
+                }
+            }
+            parent = self.world.get::<Hierarchy>(entity)?.parent;
+        }
+        Some(bounds)
     }
 
     fn component_mut<T: Component<Mutability = Mutable>>(
@@ -2276,6 +3084,46 @@ impl UiWorld {
         self.world
             .get_mut::<T>(self.entities[&id])
             .expect("entity must have runtime component")
+    }
+
+    fn is_descendant_or_self(&self, id: StableNodeId, ancestor: StableNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(candidate) = current {
+            if candidate == ancestor {
+                return true;
+            }
+            current = self.node(candidate).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    fn confirm_action_effect(&self, id: StableNodeId) -> Option<(bool, bool, bool)> {
+        let mut current = self.node(id).and_then(|node| node.parent);
+        while let Some(ancestor) = current {
+            let entity = *self.entities.get(&ancestor)?;
+            if let Some(StandardVisual::ModalFrame {
+                kind: crate::ModalSurfaceKind::Confirm(_),
+                busy,
+                danger,
+                slots,
+                ..
+            }) = self.world.get::<StandardVisual>(entity)
+            {
+                let close = slots
+                    .close_action
+                    .is_some_and(|root| self.is_descendant_or_self(id, root));
+                let action = slots
+                    .actions
+                    .iter()
+                    .copied()
+                    .find(|root| self.is_descendant_or_self(id, *root));
+                if close || action.is_some() {
+                    return Some((*busy, *danger, action == slots.actions.last().copied()));
+                }
+            }
+            current = self.node(ancestor).and_then(|node| node.parent);
+        }
+        None
     }
 
     fn validate_pointer_target(
@@ -2293,6 +3141,9 @@ impl UiWorld {
             .expect("runtime entity must have identity");
         if identity.document != document {
             return Err(UiWorldError::PointerDocument { document, target });
+        }
+        if !self.is_mounted(target) {
+            return Err(UiWorldError::NotPointerInteractive(target));
         }
         let interaction = self
             .world
@@ -2345,9 +3196,11 @@ impl UiWorld {
             let document = self.component::<Identity>(host).document;
             if let Some(restore_focus) = restore_focus.filter(|id| {
                 self.contains(*id)
+                    && self.is_mounted(*id)
                     && self.component::<Identity>(*id).document == document
                     && self.component::<InteractionState>(*id).focusable
                     && self.component::<ComputedStyle>(*id).visible
+                    && self.active_modal_allows_focus_now(document, *id)
             }) {
                 self.focused.insert(document, restore_focus);
                 self.mark(
@@ -2355,6 +3208,53 @@ impl UiWorld {
                     DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
             }
+        }
+    }
+
+    fn active_modal_allows_focus_now(&self, document: DocumentId, target: StableNodeId) -> bool {
+        let order = self.document_order(document);
+        let top = order
+            .iter()
+            .enumerate()
+            .filter_map(|(host_order, host)| {
+                let state = self.overlay_host(*host)?;
+                let active = state.active?;
+                let node = self.node(active)?;
+                if node.parent != Some(*host)
+                    || !self.is_overlay_reachable(active)
+                    || !self
+                        .accessibility(active)
+                        .is_some_and(|accessibility| accessibility.modal)
+                {
+                    return None;
+                }
+                let z = self
+                    .node_style(active)
+                    .and_then(|style| style.layout.z_index)
+                    .unwrap_or_default();
+                let active_order = order
+                    .iter()
+                    .position(|candidate| *candidate == active)
+                    .unwrap_or(host_order);
+                Some((z, active_order, active))
+            })
+            .max_by_key(|(z, active_order, _)| (*z, *active_order));
+        top.is_none_or(|(_, _, active)| self.has_ancestor_now(target, active))
+    }
+
+    fn has_ancestor_now(&self, mut id: StableNodeId, candidate: StableNodeId) -> bool {
+        let mut visited = HashSet::new();
+        loop {
+            if id == candidate {
+                return true;
+            }
+            if !visited.insert(id) {
+                return false;
+            }
+            let Some(parent) = self.node(id).and_then(|node| node.parent) else {
+                return false;
+            };
+            id = parent;
         }
     }
 
@@ -2462,7 +3362,9 @@ impl UiWorld {
             .copied()
             .filter(|id| {
                 let identity = self.component::<Identity>(*id);
-                identity.document == document && self.component::<Hierarchy>(*id).parent.is_none()
+                identity.document == document
+                    && self.is_mounted(*id)
+                    && self.component::<Hierarchy>(*id).parent.is_none()
             })
             .collect::<Vec<_>>();
         roots.sort_unstable();
@@ -2510,6 +3412,102 @@ impl UiWorld {
         }
     }
 
+    fn subtree_ids(&self, root: StableNodeId) -> Vec<StableNodeId> {
+        let mut ids = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let children = self.node(id).expect("hierarchy node must exist").children;
+            stack.extend(children.iter().rev().copied());
+            ids.push(id);
+        }
+        ids
+    }
+
+    fn set_subtree_mount_state(&mut self, root: StableNodeId, state: MountState) {
+        let ids = self.subtree_ids(root);
+        for id in &ids {
+            *self.component_mut::<MountState>(*id) = state;
+        }
+        if state == MountState::Mounted {
+            self.mark_subtree(
+                root,
+                DirtyMask::STYLE
+                    | DirtyMask::TEXT
+                    | DirtyMask::LAYOUT
+                    | DirtyMask::INPUT
+                    | DirtyMask::FOCUS_IME
+                    | DirtyMask::ACCESSIBILITY
+                    | DirtyMask::RENDER,
+            );
+        }
+    }
+
+    fn retire_subtree_from_document(&mut self, subtree: &[StableNodeId]) {
+        let parked = subtree.iter().copied().collect::<HashSet<_>>();
+        for &id in subtree {
+            let document = self.component::<Identity>(id).document;
+            if self.focused.get(&document) == Some(&id) {
+                self.focused.remove(&document);
+            }
+            self.remove_ime(id);
+            if let Some(index) = self.hit_test_index.get_mut(&document) {
+                index.retain(|entry| entry.id != id);
+            }
+            self.pending_render_removals.push(id);
+            self.pending_accessibility_removals.push(id);
+        }
+
+        let released = self
+            .pointer_captures
+            .iter()
+            .filter_map(|(&(document, pointer_id), &target)| {
+                parked
+                    .contains(&target)
+                    .then_some((document, pointer_id, target))
+            })
+            .collect::<Vec<_>>();
+        for (document, pointer_id, target) in released {
+            self.pointer_captures.remove(&(document, pointer_id));
+            self.pending_pointer_capture_changes
+                .push(PointerCaptureChange {
+                    pointer_id,
+                    target,
+                    captured: false,
+                });
+        }
+        self.pointer_hover
+            .retain(|_, target| !parked.contains(target));
+        self.pointer_press
+            .retain(|_, target| !parked.contains(target));
+
+        let cancelled = self
+            .animations
+            .iter()
+            .filter_map(|(&animation_id, animation)| {
+                parked
+                    .contains(&animation.spec.target)
+                    .then_some((animation_id, animation.next_deadline))
+            })
+            .collect::<Vec<_>>();
+        for (animation_id, deadline) in cancelled {
+            self.animations.remove(&animation_id);
+            self.animation_deadlines.remove(&(deadline, animation_id));
+        }
+
+        for &id in subtree {
+            if self.overlay_host(id).is_some() {
+                self.world
+                    .entity_mut(self.entities[&id])
+                    .insert(OverlayHostState::default());
+            }
+            self.clear_overlay_references(id);
+        }
+        self.pending_render_removals.sort_unstable();
+        self.pending_render_removals.dedup();
+        self.pending_accessibility_removals.sort_unstable();
+        self.pending_accessibility_removals.dedup();
+    }
+
     fn mark_ancestors(&mut self, start: StableNodeId, bits: u8) {
         let mut current = Some(start);
         while let Some(id) = current {
@@ -2526,6 +3524,180 @@ impl UiWorld {
 
 const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
+fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox> {
+    let x = left.x.max(right.x);
+    let y = left.y.max(right.y);
+    let right_edge = (left.x + left.width).min(right.x + right.width);
+    let bottom_edge = (left.y + left.height).min(right.y + right.height);
+    (right_edge > x && bottom_edge > y).then_some(LayoutBox {
+        x,
+        y,
+        width: right_edge - x,
+        height: bottom_edge - y,
+    })
+}
+
+fn shape_empty_state_text(
+    id: StableNodeId,
+    visual: &StandardVisual,
+    inherited: &ComputedStyle,
+    max_width: Option<f32>,
+    shaper: &mut impl TextShaper,
+) -> EmptyStateTextPresentation {
+    let StandardVisual::EmptyState {
+        title,
+        message,
+        compact,
+        ..
+    } = visual
+    else {
+        return EmptyStateTextPresentation::default();
+    };
+    let mut title_style = inherited.clone();
+    title_style.font_size = if *compact { 12.0 } else { 13.0 };
+    title_style.font_weight = Some(600);
+    title_style.line_height = None;
+    let mut message_style = inherited.clone();
+    message_style.font_size = if *compact { 11.0 } else { 12.0 };
+    message_style.font_weight = None;
+    message_style.line_height = None;
+    let constraints = crate::TextShapeConstraints {
+        max_width,
+        wrap: max_width.is_some(),
+        shaping: crate::TextShaping::Auto,
+        ..crate::TextShapeConstraints::default()
+    };
+    EmptyStateTextPresentation {
+        title: shaper.shape(
+            id,
+            &TextContent {
+                value: title.to_string(),
+            },
+            &title_style,
+            constraints,
+        ),
+        message: message.as_ref().map(|message| {
+            shaper.shape(
+                id,
+                &TextContent {
+                    value: message.to_string(),
+                },
+                &message_style,
+                constraints,
+            )
+        }),
+    }
+}
+
+fn shape_modal_text(
+    id: StableNodeId,
+    visual: &StandardVisual,
+    inherited: &ComputedStyle,
+    max_width: Option<f32>,
+    shaper: &mut impl TextShaper,
+) -> ModalTextPresentation {
+    let StandardVisual::ModalFrame {
+        title, description, ..
+    } = visual
+    else {
+        return ModalTextPresentation::default();
+    };
+    let constraints = crate::TextShapeConstraints {
+        max_width,
+        wrap: max_width.is_some(),
+        shaping: crate::TextShaping::Auto,
+        ..Default::default()
+    };
+    let mut title_style = inherited.clone();
+    title_style.font_size = 14.0;
+    title_style.font_weight = Some(600);
+    title_style.line_height = None;
+    let mut description_style = inherited.clone();
+    description_style.font_size = 12.0;
+    description_style.font_weight = None;
+    description_style.line_height = None;
+    ModalTextPresentation {
+        title: shaper.shape(
+            id,
+            &TextContent {
+                value: title.to_string(),
+            },
+            &title_style,
+            constraints,
+        ),
+        description: description.as_ref().map(|value| {
+            shaper.shape(
+                id,
+                &TextContent {
+                    value: value.to_string(),
+                },
+                &description_style,
+                constraints,
+            )
+        }),
+    }
+}
+
+fn modal_surface_bounds(
+    bounds: LayoutBox,
+    kind: crate::ModalSurfaceKind,
+    intrinsic_height: Option<f32>,
+) -> LayoutBox {
+    let margin = 16.0_f32.min(bounds.width / 2.0).min(bounds.height / 2.0);
+    let available_width = (bounds.width - margin * 2.0).max(0.0);
+    let available_height = (bounds.height - margin * 2.0).max(0.0);
+    match kind {
+        crate::ModalSurfaceKind::Dialog(size) | crate::ModalSurfaceKind::Confirm(size) => {
+            let width = size.max_width().min(available_width);
+            let max_height = (bounds.height * 0.76).min(available_height);
+            let height = intrinsic_height.unwrap_or(max_height).min(max_height);
+            LayoutBox {
+                x: bounds.x + (bounds.width - width) / 2.0,
+                y: bounds.y + bounds.height * 0.12,
+                width,
+                height,
+            }
+        }
+        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left) => {
+            let width = 420.0_f32.min(bounds.width * 0.92);
+            LayoutBox {
+                x: bounds.x,
+                y: bounds.y,
+                width,
+                height: bounds.height,
+            }
+        }
+        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Right) => {
+            let width = 420.0_f32.min(bounds.width * 0.92);
+            LayoutBox {
+                x: bounds.x + bounds.width - width,
+                y: bounds.y,
+                width,
+                height: bounds.height,
+            }
+        }
+        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Bottom) => {
+            let height = (bounds.height * 0.55).min(520.0).min(bounds.height);
+            LayoutBox {
+                x: bounds.x,
+                y: bounds.y + bounds.height - height,
+                width: bounds.width,
+                height,
+            }
+        }
+    }
+}
+
+fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
+    match tone {
+        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
+        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
+        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
+        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
+        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TextInputPresentationSource {
     text: TextContent,
@@ -2533,6 +3705,7 @@ struct TextInputPresentationSource {
     selection: Option<(usize, usize)>,
     caret: usize,
     preedit: Option<(usize, usize)>,
+    multiline: bool,
 }
 
 fn build_text_input_presentation_source(
@@ -2540,6 +3713,7 @@ fn build_text_input_presentation_source(
     ime: Option<&ImeComposition>,
     placeholder: &str,
     secure: bool,
+    multiline: bool,
 ) -> TextInputPresentationSource {
     use unicode_segmentation::UnicodeSegmentation;
 
@@ -2566,6 +3740,7 @@ fn build_text_input_presentation_source(
             selection: None,
             caret: 0,
             preedit: None,
+            multiline,
         };
     }
 
@@ -2593,6 +3768,7 @@ fn build_text_input_presentation_source(
             selection: None,
             caret: preedit_start + ime_focus,
             preedit: Some((preedit_start, preedit_end)),
+            multiline,
         };
     }
 
@@ -2606,6 +3782,7 @@ fn build_text_input_presentation_source(
         selection: (anchor != focus).then_some((anchor.min(focus), anchor.max(focus))),
         caret: focus,
         preedit: None,
+        multiline,
     }
 }
 
@@ -2613,8 +3790,36 @@ fn shape_text_input_presentation(
     id: StableNodeId,
     source: TextInputPresentationSource,
     style: &ComputedStyle,
+    constraints: crate::TextShapeConstraints,
     shaper: &mut impl TextShaper,
 ) -> TextInputPresentation {
+    // Editing geometry must remain available outside a clipped viewport so the
+    // Runtime can scroll the caret into view. Single-line fields retain their
+    // unwrapped presentation even if their authored style omits nowrap.
+    let presentation_constraints = crate::TextShapeConstraints {
+        max_width: if source.multiline {
+            constraints.max_width
+        } else {
+            None
+        },
+        max_height: None,
+        wrap: source.multiline && constraints.wrap,
+        ellipsis: false,
+        shaping: constraints.shaping,
+    };
+    let (caret_x, caret_y, line_height) = shaper.text_position(
+        id,
+        &source.text,
+        source.caret,
+        style,
+        presentation_constraints,
+    );
+    let selection_lines = source.selection.map_or_else(Vec::new, |selection| {
+        shaper.text_highlights(id, &source.text, selection, style, presentation_constraints)
+    });
+    let preedit_lines = source.preedit.map_or_else(Vec::new, |preedit| {
+        shaper.text_highlights(id, &source.text, preedit, style, presentation_constraints)
+    });
     TextInputPresentation {
         display_value: source.text.value.clone(),
         placeholder: source.placeholder,
@@ -2624,13 +3829,81 @@ fn shape_text_input_presentation(
                 shaper.horizontal_offset(id, &source.text, end, style),
             )
         }),
-        caret_x: shaper.horizontal_offset(id, &source.text, source.caret, style),
+        selection_lines: source
+            .multiline
+            .then_some(selection_lines)
+            .unwrap_or_default(),
+        caret_x,
+        caret_y: if source.multiline { caret_y } else { 0.0 },
+        line_height,
         preedit: source.preedit.map(|(start, end)| {
             (
                 shaper.horizontal_offset(id, &source.text, start, style),
                 shaper.horizontal_offset(id, &source.text, end, style),
             )
         }),
+        preedit_lines: source
+            .multiline
+            .then_some(preedit_lines)
+            .unwrap_or_default(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn text_input_decorations(
+    presentation: &TextInputPresentation,
+    multiline: bool,
+    content: LayoutBox,
+    line_y: f32,
+    line_height: f32,
+    scroll_x: f32,
+    scroll_y: f32,
+) -> (Vec<LayoutBox>, Vec<LayoutBox>) {
+    let field_x = |offset: f32| content.x + offset - scroll_x;
+    if multiline {
+        let selection = presentation
+            .selection_lines
+            .iter()
+            .map(|selection| LayoutBox {
+                x: field_x(selection.x),
+                y: content.y + selection.y - scroll_y,
+                width: selection.width,
+                height: selection.height,
+            })
+            .collect();
+        let preedit = presentation
+            .preedit_lines
+            .iter()
+            .map(|preedit| LayoutBox {
+                x: field_x(preedit.x),
+                y: content.y + preedit.y + preedit.height - scroll_y - 2.0,
+                width: preedit.width.max(1.0),
+                height: 2.0,
+            })
+            .collect();
+        (selection, preedit)
+    } else {
+        let selection = presentation
+            .selection
+            .map(|(start, end)| LayoutBox {
+                x: field_x(start),
+                y: line_y,
+                width: (end - start).max(0.0),
+                height: line_height,
+            })
+            .into_iter()
+            .collect();
+        let preedit = presentation
+            .preedit
+            .map(|(start, end)| LayoutBox {
+                x: field_x(start),
+                y: line_y + line_height - 2.0,
+                width: (end - start).max(1.0),
+                height: 2.0,
+            })
+            .into_iter()
+            .collect();
+        (selection, preedit)
     }
 }
 
@@ -2732,6 +4005,7 @@ struct ValidationPlan<'a> {
     nodes: HashMap<StableNodeId, PlannedNode>,
     removed: HashSet<StableNodeId>,
     newly_retired: HashSet<StableNodeId>,
+    parked: HashSet<StableNodeId>,
     interactions: HashMap<StableNodeId, InteractionState>,
     styles: HashMap<StableNodeId, NodeStyle>,
     focus: HashMap<DocumentId, Option<StableNodeId>>,
@@ -2749,6 +4023,12 @@ impl<'a> ValidationPlan<'a> {
             nodes: HashMap::new(),
             removed: HashSet::new(),
             newly_retired: HashSet::new(),
+            parked: source
+                .entities
+                .keys()
+                .copied()
+                .filter(|id| !source.is_mounted(*id))
+                .collect(),
             interactions: HashMap::new(),
             styles: HashMap::new(),
             focus: HashMap::new(),
@@ -2773,7 +4053,11 @@ impl<'a> ValidationPlan<'a> {
                     child,
                     before,
                 } => self.insert(*parent, *child, *before)?,
-                UiMutation::Remove { id } => self.detach(*id)?,
+                UiMutation::Remove { id } => {
+                    self.detach(*id)?;
+                    self.set_parked_subtree(*id, false)?;
+                }
+                UiMutation::ParkSubtree { root } => self.park(*root)?,
                 UiMutation::DespawnSubtree { root } => self.despawn_subtree(*root)?,
                 UiMutation::SetStyle { id, style } => {
                     self.node(*id)?;
@@ -2893,6 +4177,9 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::CapturePointer { pointer_id, target } => {
                     let document = self.node(*target)?.document;
+                    if self.parked.contains(target) {
+                        return Err(UiWorldError::NotPointerInteractive(*target));
+                    }
                     self.pointer_captures
                         .insert((document, *pointer_id), *target);
                 }
@@ -2908,7 +4195,7 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::StartAnimation { animation } => {
                     self.node(animation.target)?;
-                    if !animation.is_valid() {
+                    if !animation.is_valid() || self.parked.contains(&animation.target) {
                         return Err(UiWorldError::InvalidAnimation(animation.id));
                     }
                     self.animations.insert(animation.id, *animation);
@@ -2947,6 +4234,9 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetIme { id, composition } => {
                     let document = self.node(*id)?.document;
+                    if composition.is_some() && self.parked.contains(id) {
+                        return Err(UiWorldError::NotFocused(*id));
+                    }
                     let focused = self
                         .focus
                         .get(&document)
@@ -2965,7 +4255,12 @@ impl<'a> ValidationPlan<'a> {
                         && (start > end
                             || *end > text.len()
                             || !text.is_char_boundary(*start)
-                            || !text.is_char_boundary(*end))
+                            || !text.is_char_boundary(*end)
+                            || !crate::TextSelection {
+                                anchor: *start,
+                                focus: *end,
+                            }
+                            .is_valid_for(text))
                     {
                         return Err(UiWorldError::InvalidIme(*id));
                     }
@@ -3009,6 +4304,7 @@ impl<'a> ValidationPlan<'a> {
             return Err(UiWorldError::RetiredNode(id));
         }
         self.removed.remove(&id);
+        self.parked.remove(&id);
         self.nodes.insert(
             id,
             PlannedNode {
@@ -3049,6 +4345,59 @@ impl<'a> ValidationPlan<'a> {
             .unwrap_or(siblings.len());
         siblings.insert(index, child);
         self.node_mut(child)?.parent = Some(parent);
+        let parked = self.parked.contains(&parent);
+        self.set_parked_subtree(child, parked)?;
+        Ok(())
+    }
+
+    fn park(&mut self, root: StableNodeId) -> Result<(), UiWorldError> {
+        self.detach(root)?;
+        let subtree = self.subtree(root)?;
+        self.set_parked_subtree(root, true)?;
+        let parked = subtree.iter().copied().collect::<HashSet<_>>();
+        let documents = subtree
+            .iter()
+            .map(|id| self.node(*id).map(|node| node.document))
+            .collect::<Result<HashSet<_>, _>>()?;
+        for document in documents {
+            let focused = self
+                .focus
+                .get(&document)
+                .copied()
+                .unwrap_or_else(|| self.source.focused(document));
+            if focused.is_some_and(|target| parked.contains(&target)) {
+                self.focus.insert(document, None);
+            }
+        }
+        self.pointer_captures
+            .retain(|_, target| !parked.contains(target));
+        self.animations
+            .retain(|_, animation| !parked.contains(&animation.target));
+        for id in subtree {
+            self.clear_overlay_references(id);
+        }
+        Ok(())
+    }
+
+    fn subtree(&mut self, root: StableNodeId) -> Result<Vec<StableNodeId>, UiWorldError> {
+        let mut subtree = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let children = self.node(id)?.children.clone();
+            stack.extend(children);
+            subtree.push(id);
+        }
+        Ok(subtree)
+    }
+
+    fn set_parked_subtree(&mut self, root: StableNodeId, parked: bool) -> Result<(), UiWorldError> {
+        for id in self.subtree(root)? {
+            if parked {
+                self.parked.insert(id);
+            } else {
+                self.parked.remove(&id);
+            }
+        }
         Ok(())
     }
 
@@ -3062,6 +4411,22 @@ impl<'a> ValidationPlan<'a> {
     }
 
     fn despawn_subtree(&mut self, root: StableNodeId) -> Result<(), UiWorldError> {
+        let subtree = self.subtree(root)?;
+        let removed = subtree.iter().copied().collect::<HashSet<_>>();
+        let documents = subtree
+            .iter()
+            .map(|id| self.node(*id).map(|node| node.document))
+            .collect::<Result<HashSet<_>, _>>()?;
+        for document in documents {
+            let focused = self
+                .focus
+                .get(&document)
+                .copied()
+                .unwrap_or_else(|| self.source.focused(document));
+            if focused.is_some_and(|target| removed.contains(&target)) {
+                self.focus.insert(document, None);
+            }
+        }
         self.detach(root)?;
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
@@ -3070,6 +4435,7 @@ impl<'a> ValidationPlan<'a> {
             self.nodes.remove(&id);
             self.removed.insert(id);
             self.newly_retired.insert(id);
+            self.parked.remove(&id);
             self.pointer_captures.retain(|_, target| *target != id);
             self.animations
                 .retain(|_, animation| animation.target != id);
@@ -3136,6 +4502,21 @@ impl<'a> ValidationPlan<'a> {
             {
                 return Err(UiWorldError::InvalidOverlayHost(host));
             }
+            if let Some(active) = state.active {
+                let accessibility = self
+                    .accessibility
+                    .get(&active)
+                    .or_else(|| self.source.accessibility(active));
+                if !accessibility.is_some_and(|accessibility| match accessibility.role {
+                    AccessibilityRole::Dialog | AccessibilityRole::AlertDialog => {
+                        accessibility.modal
+                    }
+                    AccessibilityRole::Menu | AccessibilityRole::Tooltip => true,
+                    _ => false,
+                }) {
+                    return Err(UiWorldError::InvalidOverlayHost(host));
+                }
+            }
             if let Some(restore_focus) = state.restore_focus
                 && (!self.exists(restore_focus)
                     || self.node(restore_focus)?.document != host_document)
@@ -3195,16 +4576,22 @@ impl<'a> ValidationPlan<'a> {
 
     fn focus_target_visible(&mut self, mut id: StableNodeId) -> Result<bool, UiWorldError> {
         loop {
-            let hidden = self
+            if self.parked.contains(&id) {
+                return Ok(false);
+            }
+            let layout = self
                 .styles
                 .get(&id)
-                .map(|style| style.layout.hidden)
-                .unwrap_or_else(|| {
+                .map(|style| style.layout.as_ref())
+                .or_else(|| {
                     self.source
                         .node_style(id)
-                        .is_some_and(|style| style.layout.hidden)
+                        .map(|style| style.layout.as_ref())
                 });
-            if hidden || !self.overlay_branch_active(id)? {
+            if layout.is_some_and(|layout| {
+                layout.hidden || matches!(layout.display, Some(nana_ui_core::DisplaySpec::None))
+            }) || !self.overlay_branch_active(id)?
+            {
                 return Ok(false);
             }
             let Some(parent) = self.node(id)?.parent else {
@@ -3226,7 +4613,12 @@ impl<'a> ValidationPlan<'a> {
             .copied()
             .chain(self.overlay_hosts.keys().copied())
             .collect::<HashSet<_>>();
+        let order = self.planned_document_order(document)?;
+        let mut top = None;
         for host in hosts {
+            if !self.exists(host) || self.parked.contains(&host) {
+                continue;
+            }
             let Some(state) = self
                 .overlay_hosts
                 .get(&host)
@@ -3238,7 +4630,12 @@ impl<'a> ValidationPlan<'a> {
             let Some(active) = state.active else {
                 continue;
             };
-            if self.node(host)?.document != document {
+            if !self.exists(active)
+                || self.parked.contains(&active)
+                || self.node(host)?.document != document
+                || self.node(active)?.parent != Some(host)
+                || !self.focus_target_visible(active)?
+            {
                 continue;
             }
             let modal = self
@@ -3246,11 +4643,61 @@ impl<'a> ValidationPlan<'a> {
                 .get(&active)
                 .or_else(|| self.source.accessibility(active))
                 .is_some_and(|state| state.modal);
-            if modal && !self.has_ancestor(target, active)? {
-                return Ok(false);
+            if modal {
+                let z = self
+                    .styles
+                    .get(&active)
+                    .or_else(|| self.source.node_style(active))
+                    .and_then(|style| style.layout.z_index)
+                    .unwrap_or_default();
+                let document_order = order
+                    .iter()
+                    .position(|candidate| *candidate == active)
+                    .unwrap_or_default();
+                if top.is_none_or(|(top_z, top_order, _)| (z, document_order) > (top_z, top_order))
+                {
+                    top = Some((z, document_order, active));
+                }
             }
         }
-        Ok(true)
+        top.map(|(_, _, active)| self.has_ancestor(target, active))
+            .transpose()
+            .map(|allowed| allowed.unwrap_or(true))
+    }
+
+    fn planned_document_order(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<Vec<StableNodeId>, UiWorldError> {
+        let ids = self
+            .source
+            .entities
+            .keys()
+            .copied()
+            .chain(self.nodes.keys().copied())
+            .collect::<HashSet<_>>();
+        let mut roots = Vec::new();
+        for id in ids {
+            if self.exists(id)
+                && !self.parked.contains(&id)
+                && self.node(id)?.document == document
+                && self.node(id)?.parent.is_none()
+            {
+                roots.push(id);
+            }
+        }
+        roots.sort_unstable();
+        let mut order = Vec::new();
+        let mut stack = roots.into_iter().rev().collect::<Vec<_>>();
+        while let Some(id) = stack.pop() {
+            if !self.exists(id) || self.parked.contains(&id) {
+                continue;
+            }
+            order.push(id);
+            let children = self.node(id)?.children.clone();
+            stack.extend(children.into_iter().rev());
+        }
+        Ok(order)
     }
 
     fn node(&mut self, id: StableNodeId) -> Result<&PlannedNode, UiWorldError> {
@@ -3329,6 +4776,429 @@ mod tests {
         assert_eq!(world.node(node(1)).unwrap().children, vec![node(2)]);
         assert_eq!(world.node(node(2)).unwrap().children, vec![node(3)]);
         assert_eq!(world.node(node(4)).unwrap().parent, None);
+        assert_eq!(world.mount_state(node(4)), Some(MountState::Mounted));
+        assert!(world.document_order(document(1)).contains(&node(4)));
+    }
+
+    #[test]
+    fn parked_subtree_leaves_every_document_projection_and_remounts_intact() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        create.create(node(3), document(1), NodeKind::Text);
+        create.create(node(4), document(1), NodeKind::Document);
+        create.insert(node(1), node(2), None);
+        create.insert(node(2), node(3), None);
+        create.set_interaction(
+            node(2),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        create.set_text_input(node(2), Some(TextInputState::new("value")));
+        create.set_accessibility(
+            node(2),
+            AccessibilityState {
+                role: AccessibilityRole::Dialog,
+                label: Some(Arc::from("Action")),
+                modal: true,
+                ..AccessibilityState::default()
+            },
+        );
+        create.set_overlay_host(
+            node(1),
+            OverlayHostState {
+                active: Some(node(2)),
+                restore_focus: Some(node(2)),
+            },
+        );
+        create.request_focus(document(1), Some(node(2)));
+        create.set_ime(
+            node(2),
+            Some(ImeComposition {
+                text: "input".into(),
+                selection: None,
+            }),
+        );
+        create.capture_pointer(7, node(2));
+        create.start_animation(AnimationSpec {
+            id: crate::AnimationId::new(1).unwrap(),
+            target: node(2),
+            start: Duration::from_millis(10),
+            duration: Duration::from_millis(100),
+            frame_interval: Duration::from_millis(10),
+            easing: Easing::Linear,
+        });
+        world.commit(create).unwrap();
+        world.take_system_work();
+
+        let mut park = MutationQueue::new();
+        park.park_subtree(node(1));
+        world.commit(park).unwrap();
+        assert_eq!(world.mount_state(node(1)), Some(MountState::Parked));
+        assert_eq!(world.mount_state(node(2)), Some(MountState::Parked));
+        assert_eq!(world.document_order(document(1)), vec![node(4)]);
+        assert!(world.extract_nodes(&[node(1), node(2), node(3)]).is_empty());
+        assert!(
+            world
+                .project_accessibility_nodes(&[node(1), node(2), node(3)])
+                .is_empty()
+        );
+        assert!(world.event_route(node(2)).is_none());
+        assert_eq!(world.focused(document(1)), None);
+        assert_eq!(world.ime(node(2)), None);
+        assert_eq!(world.pointer_capture(document(1), 7), None);
+        assert_eq!(
+            world.set_pointer_hover(document(1), 8, Some(node(2))),
+            Err(UiWorldError::NotPointerInteractive(node(2)))
+        );
+        let mut refocus = MutationQueue::new();
+        refocus.request_focus(document(1), Some(node(2)));
+        assert_eq!(
+            world.commit(refocus),
+            Err(UiWorldError::NotFocusable(node(2)))
+        );
+        assert_eq!(world.next_animation_deadline(), None);
+        assert_eq!(
+            world.overlay_host(node(1)),
+            Some(OverlayHostState::default())
+        );
+        let work = world.take_system_work();
+        assert!(work.layout.is_empty());
+        assert!(work.render_extraction.is_empty());
+        assert_eq!(work.render_removals, vec![node(1), node(2), node(3)]);
+        assert_eq!(work.accessibility_removals, vec![node(1), node(2), node(3)]);
+
+        let mut remount = MutationQueue::new();
+        remount.insert(node(4), node(1), None);
+        world.commit(remount).unwrap();
+        assert!(world.is_mounted(node(1)));
+        assert!(world.is_mounted(node(2)));
+        assert_eq!(world.node(node(2)).unwrap().parent, Some(node(1)));
+        assert!(world.document_order(document(1)).contains(&node(3)));
+        let work = world.take_system_work();
+        assert!(work.render_extraction.contains(&node(1)));
+        assert!(work.render_extraction.contains(&node(2)));
+        assert!(work.accessibility.contains(&node(2)));
+    }
+
+    #[test]
+    fn only_the_top_reachable_modal_constrains_focus() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        for id in 1..=6 {
+            create.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+        }
+        create.insert(node(1), node(2), None);
+        create.insert(node(2), node(3), None);
+        create.insert(node(4), node(5), None);
+        create.insert(node(5), node(6), None);
+        for id in [node(3), node(6)] {
+            create.set_interaction(
+                id,
+                InteractionState {
+                    pointer_events: true,
+                    focusable: true,
+                },
+            );
+        }
+        for id in [node(2), node(5)] {
+            create.set_accessibility(
+                id,
+                AccessibilityState {
+                    role: AccessibilityRole::Dialog,
+                    modal: true,
+                    ..AccessibilityState::default()
+                },
+            );
+        }
+        let mut lower = NodeStyle::default();
+        Arc::make_mut(&mut lower.layout).z_index = Some(10);
+        create.set_style(node(2), lower);
+        let mut upper = NodeStyle::default();
+        Arc::make_mut(&mut upper.layout).z_index = Some(20);
+        create.set_style(node(5), upper);
+        create.set_overlay_host(
+            node(1),
+            OverlayHostState {
+                active: Some(node(2)),
+                restore_focus: None,
+            },
+        );
+        create.set_overlay_host(
+            node(4),
+            OverlayHostState {
+                active: Some(node(5)),
+                restore_focus: None,
+            },
+        );
+        create.request_focus(document(1), Some(node(6)));
+        world.commit(create).unwrap();
+        assert_eq!(world.focused(document(1)), Some(node(6)));
+
+        let mut lower_focus = MutationQueue::new();
+        lower_focus.request_focus(document(1), Some(node(3)));
+        assert_eq!(
+            world.commit(lower_focus),
+            Err(UiWorldError::NotFocusable(node(3)))
+        );
+
+        let mut park_upper = MutationQueue::new();
+        park_upper.park_subtree(node(5));
+        park_upper.request_focus(document(1), Some(node(3)));
+        world.commit(park_upper).unwrap();
+        assert_eq!(world.focused(document(1)), Some(node(3)));
+    }
+
+    #[test]
+    fn display_none_rejects_focus_from_staged_and_committed_styles() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "input".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.set_interaction(
+            node(2),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        world.commit(create).unwrap();
+
+        let mut hidden = NodeStyle::default();
+        Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
+        let mut hide_and_focus = MutationQueue::new();
+        hide_and_focus.set_style(node(2), hidden.clone());
+        hide_and_focus.request_focus(document(1), Some(node(2)));
+        assert_eq!(
+            world.commit(hide_and_focus),
+            Err(UiWorldError::NotFocusable(node(2)))
+        );
+        assert_eq!(world.focused(document(1)), None);
+        assert!(!matches!(
+            world.node_style(node(2)).unwrap().layout.display,
+            Some(nana_ui_core::DisplaySpec::None)
+        ));
+
+        let mut hide = MutationQueue::new();
+        hide.set_style(node(2), hidden);
+        world.commit(hide).unwrap();
+        let mut focus = MutationQueue::new();
+        focus.request_focus(document(1), Some(node(2)));
+        assert_eq!(
+            world.commit(focus),
+            Err(UiWorldError::NotFocusable(node(2)))
+        );
+    }
+
+    #[test]
+    fn overlay_host_rejects_an_active_child_without_overlay_semantics() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "custom".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.set_overlay_host(
+            node(1),
+            OverlayHostState {
+                active: Some(node(2)),
+                restore_focus: None,
+            },
+        );
+
+        assert_eq!(
+            world.commit(create),
+            Err(UiWorldError::InvalidOverlayHost(node(1)))
+        );
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn overlay_host_rejects_a_non_modal_dialog_surface() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "dialog".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.set_accessibility(
+            node(2),
+            AccessibilityState {
+                role: AccessibilityRole::Dialog,
+                modal: false,
+                ..AccessibilityState::default()
+            },
+        );
+        create.set_overlay_host(
+            node(1),
+            OverlayHostState {
+                active: Some(node(2)),
+                restore_focus: None,
+            },
+        );
+
+        assert_eq!(
+            world.commit(create),
+            Err(UiWorldError::InvalidOverlayHost(node(1)))
+        );
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn inactive_nested_and_removed_modal_hosts_do_not_block_focus() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        for id in 10..=15 {
+            create.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+        }
+        create.insert(node(10), node(11), None);
+        create.insert(node(10), node(12), None);
+        create.insert(node(11), node(15), None);
+        create.insert(node(12), node(13), None);
+        create.insert(node(13), node(14), None);
+        create.set_interaction(
+            node(15),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        create.set_accessibility(
+            node(14),
+            AccessibilityState {
+                role: AccessibilityRole::Dialog,
+                modal: true,
+                ..AccessibilityState::default()
+            },
+        );
+        create.set_accessibility(
+            node(11),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..AccessibilityState::default()
+            },
+        );
+        create.set_overlay_host(
+            node(10),
+            OverlayHostState {
+                active: Some(node(11)),
+                restore_focus: None,
+            },
+        );
+        create.set_overlay_host(
+            node(13),
+            OverlayHostState {
+                active: Some(node(14)),
+                restore_focus: None,
+            },
+        );
+        create.request_focus(document(1), Some(node(15)));
+        world.commit(create).unwrap();
+        assert_eq!(world.focused(document(1)), Some(node(15)));
+
+        let mut remove = MutationQueue::new();
+        remove.despawn_subtree(node(13));
+        world.commit(remove).unwrap();
+        assert_eq!(world.overlay_host(node(10)).unwrap().active, Some(node(11)));
+        assert!(world.is_overlay_reachable(node(15)));
+        assert!(!world.contains(node(13)));
+        assert!(!world.contains(node(14)));
+        let mut refocus = MutationQueue::new();
+        refocus.request_focus(document(1), Some(node(15)));
+        world.commit(refocus).unwrap();
+        assert_eq!(world.focused(document(1)), Some(node(15)));
+    }
+
+    #[test]
+    fn planned_park_rejects_new_ime_and_remount_does_not_restore_preedit() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "input".into(),
+            },
+        );
+        create.create(node(3), document(1), NodeKind::Document);
+        create.insert(node(1), node(2), None);
+        create.set_interaction(
+            node(2),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        create.set_text_input(node(2), Some(TextInputState::new("value")));
+        create.request_focus(document(1), Some(node(2)));
+        world.commit(create).unwrap();
+
+        let generation = world.generation();
+        let mut invalid = MutationQueue::new();
+        invalid.park_subtree(node(1));
+        invalid.set_ime(
+            node(2),
+            Some(ImeComposition {
+                text: "preedit".into(),
+                selection: None,
+            }),
+        );
+        assert_eq!(
+            world.commit(invalid),
+            Err(UiWorldError::NotFocused(node(2)))
+        );
+        assert_eq!(world.generation(), generation);
+        assert!(world.is_mounted(node(2)));
+        assert_eq!(world.focused(document(1)), Some(node(2)));
+        assert_eq!(world.ime(node(2)), None);
+
+        let mut park = MutationQueue::new();
+        park.park_subtree(node(1));
+        world.commit(park).unwrap();
+        assert_eq!(world.focused(document(1)), None);
+        assert_eq!(world.ime(node(2)), None);
+
+        let mut remount = MutationQueue::new();
+        remount.insert(node(3), node(1), None);
+        world.commit(remount).unwrap();
+        assert!(world.is_mounted(node(2)));
+        assert_eq!(world.focused(document(1)), None);
+        assert_eq!(world.ime(node(2)), None);
     }
 
     #[test]
@@ -3347,6 +5217,21 @@ mod tests {
         );
         assert!(!world.contains(node(2)));
         assert_eq!(world.len(), 1);
+
+        let mut foreign = MutationQueue::new();
+        foreign.create(node(2), document(2), NodeKind::Text);
+        world.commit(foreign).unwrap();
+        let generation = world.generation();
+        let mut invalid_park = MutationQueue::new();
+        invalid_park.park_subtree(node(1));
+        invalid_park.insert(node(1), node(2), None);
+        assert!(matches!(
+            world.commit(invalid_park),
+            Err(UiWorldError::CrossDocument { .. })
+        ));
+        assert_eq!(world.generation(), generation);
+        assert_eq!(world.mount_state(node(1)), Some(MountState::Mounted));
+        assert!(world.document_order(document(1)).contains(&node(1)));
     }
 
     #[test]
@@ -3404,6 +5289,65 @@ mod tests {
     }
 
     #[test]
+    fn text_selection_and_ime_reject_partial_graphemes_atomically() {
+        let value = "A👩‍💻e\u{301}";
+        let emoji_interior = "A👩".len();
+        let combining_interior = "A👩‍💻e".len();
+        assert!(value.is_char_boundary(emoji_interior));
+        assert!(value.is_char_boundary(combining_interior));
+        assert!(!crate::TextSelection::caret(emoji_interior).is_valid_for(value));
+        assert!(!crate::TextSelection::caret(combining_interior).is_valid_for(value));
+        assert!(crate::TextSelection::caret("A👩‍💻".len()).is_valid_for(value));
+
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        create.set_text_input(node(1), Some(TextInputState::new(value)));
+        create.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        world.commit(create).unwrap();
+
+        let generation = world.generation();
+        let mut invalid_selection = MutationQueue::new();
+        invalid_selection.set_text_selection(node(1), crate::TextSelection::caret(emoji_interior));
+        assert_eq!(
+            world.commit(invalid_selection),
+            Err(UiWorldError::InvalidTextInput(node(1)))
+        );
+        assert_eq!(world.generation(), generation);
+
+        let mut focus = MutationQueue::new();
+        focus.request_focus(document(1), Some(node(1)));
+        world.commit(focus).unwrap();
+        let generation = world.generation();
+        let mut invalid_ime = MutationQueue::new();
+        invalid_ime.set_ime(
+            node(1),
+            Some(ImeComposition {
+                text: "e\u{301}".into(),
+                selection: Some(("e".len(), "e".len())),
+            }),
+        );
+        assert_eq!(
+            world.commit(invalid_ime),
+            Err(UiWorldError::InvalidIme(node(1)))
+        );
+        assert_eq!(world.generation(), generation);
+        assert!(world.ime(node(1)).is_none());
+    }
+
+    #[test]
     fn text_input_presentation_masks_graphemes_and_replaces_selection_with_preedit() {
         let value = "A👩‍💻界";
         let state = TextInputState {
@@ -3413,7 +5357,7 @@ mod tests {
                 focus: "A👩‍💻".len(),
             },
         };
-        let masked = build_text_input_presentation_source(&state, None, "", true);
+        let masked = build_text_input_presentation_source(&state, None, "", true, false);
         assert_eq!(masked.text.value, "•••");
         assert_eq!(masked.selection, Some(("•".len(), "••".len())));
 
@@ -3425,10 +5369,230 @@ mod tests {
             }),
             "",
             true,
+            false,
         );
         assert_eq!(preedit.text.value, "•输入•");
         assert_eq!(preedit.preedit, Some(("•".len(), "•输入".len())));
         assert_eq!(preedit.caret, "•输".len());
+    }
+
+    #[test]
+    fn multiline_text_presentation_tracks_utf8_lines_selection_and_preedit() {
+        let value = "甲乙\nthird\n末";
+        let state = TextInputState {
+            value: value.into(),
+            selection: crate::TextSelection {
+                anchor: "甲".len(),
+                focus: "甲乙\nthird\n".len(),
+            },
+        };
+        let style = ComputedStyle {
+            font_size: 10.0,
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+            ..ComputedStyle::default()
+        };
+        let source = build_text_input_presentation_source(&state, None, "", false, true);
+        let mut shaper = FunctionalShaper::default();
+        let presentation = shape_text_input_presentation(
+            node(1),
+            source,
+            &style,
+            crate::TextShapeConstraints::default(),
+            &mut shaper,
+        );
+
+        assert_eq!(presentation.caret_x, 0.0);
+        assert_eq!(presentation.caret_y, 28.0);
+        assert_eq!(presentation.line_height, 14.0);
+        assert_eq!(presentation.selection_lines.len(), 2);
+        assert_eq!(
+            presentation.selection_lines[0],
+            LayoutBox {
+                x: 10.0,
+                y: 0.0,
+                width: 10.0,
+                height: 14.0,
+            }
+        );
+        assert_eq!(
+            presentation.selection_lines[1],
+            LayoutBox {
+                x: 0.0,
+                y: 14.0,
+                width: 50.0,
+                height: 14.0,
+            }
+        );
+
+        let composing = TextInputState {
+            value: "甲\n末".into(),
+            selection: crate::TextSelection::caret("甲\n".len()),
+        };
+        let source = build_text_input_presentation_source(
+            &composing,
+            Some(&ImeComposition {
+                text: "输\n入".into(),
+                selection: None,
+            }),
+            "",
+            false,
+            true,
+        );
+        let presentation = shape_text_input_presentation(
+            node(1),
+            source,
+            &style,
+            crate::TextShapeConstraints::default(),
+            &mut shaper,
+        );
+        assert_eq!(presentation.display_value, "甲\n输\n入末");
+        assert_eq!(presentation.preedit_lines.len(), 2);
+        assert_eq!(presentation.caret_y, 28.0);
+    }
+
+    #[test]
+    fn text_input_geometry_keeps_all_multiline_decorations_and_single_line_contract() {
+        let presentation = TextInputPresentation {
+            selection: Some((2.0, 9.0)),
+            selection_lines: vec![
+                LayoutBox {
+                    x: 2.0,
+                    y: 0.0,
+                    width: 18.0,
+                    height: 14.0,
+                },
+                LayoutBox {
+                    x: 0.0,
+                    y: 14.0,
+                    width: 24.0,
+                    height: 14.0,
+                },
+            ],
+            preedit: Some((4.0, 11.0)),
+            preedit_lines: vec![
+                LayoutBox {
+                    x: 4.0,
+                    y: 14.0,
+                    width: 16.0,
+                    height: 14.0,
+                },
+                LayoutBox {
+                    x: 0.0,
+                    y: 28.0,
+                    width: 8.0,
+                    height: 14.0,
+                },
+            ],
+            ..TextInputPresentation::default()
+        };
+        let content = LayoutBox {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 42.0,
+        };
+
+        let (selection, preedit) =
+            text_input_decorations(&presentation, true, content, 15.0, 14.0, 3.0, 5.0);
+        assert_eq!(selection.len(), 2);
+        assert_eq!(selection[0].x, 9.0);
+        assert_eq!(selection[1].y, 29.0);
+        assert_eq!(preedit.len(), 2);
+        assert_eq!(preedit[0].y, 41.0);
+        assert_eq!(preedit[1].y, 55.0);
+
+        let (selection, preedit) =
+            text_input_decorations(&presentation, false, content, 23.0, 14.0, 3.0, 5.0);
+        assert_eq!(
+            selection,
+            vec![LayoutBox {
+                x: 9.0,
+                y: 23.0,
+                width: 7.0,
+                height: 14.0,
+            }]
+        );
+        assert_eq!(
+            preedit,
+            vec![LayoutBox {
+                x: 11.0,
+                y: 35.0,
+                width: 7.0,
+                height: 2.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn presentation_shaping_uses_resolved_wrap_only_for_multiline_editors() {
+        #[derive(Default)]
+        struct ConstraintProbe {
+            positions: Vec<crate::TextShapeConstraints>,
+        }
+
+        impl TextShaper for ConstraintProbe {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: crate::TextShapeConstraints,
+            ) -> TextMetrics {
+                TextMetrics::default()
+            }
+
+            fn text_position(
+                &mut self,
+                _id: StableNodeId,
+                _text: &TextContent,
+                _byte_offset: usize,
+                _style: &ComputedStyle,
+                constraints: crate::TextShapeConstraints,
+            ) -> (f32, f32, f32) {
+                self.positions.push(constraints);
+                (0.0, 0.0, 14.0)
+            }
+        }
+
+        let state = TextInputState {
+            value: "wrapped value".into(),
+            selection: crate::TextSelection::caret("wrapped value".len()),
+        };
+        let resolved = crate::TextShapeConstraints {
+            max_width: Some(48.0),
+            max_height: Some(20.0),
+            wrap: true,
+            ellipsis: true,
+            shaping: crate::TextShaping::Advanced,
+        };
+        let style = ComputedStyle::default();
+        let mut probe = ConstraintProbe::default();
+
+        let multiline = build_text_input_presentation_source(&state, None, "", false, true);
+        shape_text_input_presentation(node(1), multiline, &style, resolved, &mut probe);
+        assert_eq!(
+            probe.positions.pop(),
+            Some(crate::TextShapeConstraints {
+                max_width: Some(48.0),
+                max_height: None,
+                wrap: true,
+                ellipsis: false,
+                shaping: crate::TextShaping::Advanced,
+            })
+        );
+
+        let single_line = build_text_input_presentation_source(&state, None, "", false, false);
+        shape_text_input_presentation(node(1), single_line, &style, resolved, &mut probe);
+        assert_eq!(
+            probe.positions.pop(),
+            Some(crate::TextShapeConstraints {
+                max_width: None,
+                max_height: None,
+                wrap: false,
+                ellipsis: false,
+                shaping: crate::TextShaping::Advanced,
+            })
+        );
     }
 
     #[test]
@@ -4468,5 +6632,53 @@ mod tests {
             Err(UiWorldError::InvalidScrollMetrics(node(2)))
         );
         assert_eq!(world.generation(), generation);
+    }
+
+    #[test]
+    fn backend_neutral_text_geometry_treats_crlf_and_graphemes_atomically() {
+        let text = TextContent {
+            value: "A\r\n👩‍💻 e\u{301}".into(),
+        };
+        let style = ComputedStyle {
+            font_size: 10.0,
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+            ..ComputedStyle::default()
+        };
+        let constraints = crate::TextShapeConstraints::default();
+        let mut shaper = FunctionalShaper::default();
+        let second_line = "A\r\n".len();
+
+        assert_eq!(
+            shaper.text_position(node(1), &text, second_line, &style, constraints),
+            (0.0, 14.0, 14.0)
+        );
+        assert_eq!(
+            shaper
+                .text_highlights(node(1), &text, (0, "A".len()), &style, constraints)
+                .len(),
+            1
+        );
+        assert_eq!(
+            shaper
+                .text_highlights(
+                    node(1),
+                    &text,
+                    (0, second_line + "👩‍💻".len()),
+                    &style,
+                    constraints,
+                )
+                .len(),
+            2
+        );
+        assert_eq!(
+            shaper.text_position(
+                node(1),
+                &text,
+                second_line + "👩".len(),
+                &style,
+                constraints
+            ),
+            (0.0, 0.0, 0.0)
+        );
     }
 }
