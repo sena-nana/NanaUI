@@ -309,7 +309,9 @@ pub enum ContextMenuEvent {
     Dismiss,
 }
 
-/// Pointer-anchored menu. Nested search stays on the Iced host for this batch.
+/// Pointer-anchored menu. Slash-separated values (`parent/child`) are a tree;
+/// [`Self::query`] filters the current level or matching leaves. Iced keeps
+/// the search field and two-step danger confirm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextMenu {
     pub items: Vec<ContextMenuItem>,
@@ -319,6 +321,9 @@ pub struct ContextMenu {
     pub highlighted: Option<usize>,
     pub width: f32,
     pub style: NodeStyle,
+    pub active_path: Vec<Arc<str>>,
+    pub query: Arc<str>,
+    pub searchable: bool,
 }
 
 impl ContextMenu {
@@ -331,6 +336,9 @@ impl ContextMenu {
             highlighted: None,
             width: MENU_WIDTH,
             style: menu_surface_style(MENU_WIDTH, MENU_PADDING),
+            active_path: Vec::new(),
+            query: Arc::from(""),
+            searchable: false,
         };
         menu.apply_anchor();
         menu
@@ -353,8 +361,34 @@ impl ContextMenu {
         self
     }
 
+    pub fn active_path(mut self, path: impl IntoIterator<Item = impl Into<Arc<str>>>) -> Self {
+        self.active_path = path.into_iter().map(Into::into).collect();
+        self.apply_anchor();
+        self
+    }
+
+    pub fn query(mut self, query: impl Into<Arc<str>>) -> Self {
+        self.query = query.into();
+        self.apply_anchor();
+        self
+    }
+
+    pub fn searchable(mut self, searchable: bool) -> Self {
+        self.searchable = searchable;
+        self
+    }
+
+    /// Rows at the current nested level, or matching leaves when `query` is set.
+    pub fn visible_items(&self) -> Vec<ContextMenuItem> {
+        if self.query.trim().is_empty() {
+            self.current_level_items()
+        } else {
+            self.matching_leaves()
+        }
+    }
+
     pub fn place_in(&mut self, viewport: LayoutBox) {
-        let height = context_menu_height(self.items.len());
+        let height = context_menu_height(self.visible_items().len());
         let origin = resolve_anchored_origin(
             self.anchor_x,
             self.anchor_y,
@@ -370,27 +404,97 @@ impl ContextMenu {
     }
 
     pub fn select_index(&mut self, index: usize) -> Option<ContextMenuEvent> {
-        let item = self.items.get(index)?;
+        let item = self.visible_items().get(index)?.clone();
         if item.disabled || !self.open {
             return None;
         }
-        let value = Arc::clone(&item.value);
+        if self.has_descendants(&item.value) {
+            self.active_path = value_segments(&item.value)
+                .into_iter()
+                .map(Arc::from)
+                .collect();
+            self.highlighted = None;
+            self.apply_anchor();
+            return None;
+        }
         self.open = false;
         self.highlighted = None;
-        Some(ContextMenuEvent::Select(value))
+        self.active_path.clear();
+        Some(ContextMenuEvent::Select(item.value))
+    }
+
+    /// Pop the current nested level. Returns `true` when the path changed.
+    pub fn back(&mut self) -> bool {
+        if self.active_path.pop().is_none() {
+            return false;
+        }
+        self.highlighted = None;
+        self.apply_anchor();
+        true
     }
 
     pub fn dismiss(&mut self) {
         self.open = false;
         self.highlighted = None;
+        self.active_path.clear();
     }
 
     fn apply_anchor(&mut self) {
+        let height = context_menu_height(self.visible_items().len());
         let layout = Arc::make_mut(&mut self.style.layout);
         layout.position = PositionSpec::Fixed;
         layout.offset_left = Some(LengthSpec::Px(self.anchor_x));
         layout.offset_top = Some(LengthSpec::Px(self.anchor_y));
-        layout.height = Some(LengthSpec::Px(context_menu_height(self.items.len())));
+        layout.height = Some(LengthSpec::Px(height));
+    }
+
+    fn current_level_items(&self) -> Vec<ContextMenuItem> {
+        let prefix: Vec<&str> = self.active_path.iter().map(|part| part.as_ref()).collect();
+        let mut level: Vec<(String, ContextMenuItem)> = Vec::new();
+        for item in &self.items {
+            let segments = value_segments(&item.value);
+            if segments.len() <= prefix.len() || segments[..prefix.len()] != prefix {
+                continue;
+            }
+            let next = segments[prefix.len()];
+            let next_value = if prefix.is_empty() {
+                next.to_string()
+            } else {
+                format!("{}/{next}", prefix.join("/"))
+            };
+            let is_exact = segments.len() == prefix.len() + 1;
+            if let Some((_, existing)) = level.iter_mut().find(|(key, _)| key == &next_value) {
+                if is_exact {
+                    *existing = item.clone();
+                }
+            } else if is_exact {
+                level.push((next_value, item.clone()));
+            } else {
+                level.push((
+                    next_value.clone(),
+                    ContextMenuItem::new(Arc::<str>::from(next_value), Arc::<str>::from(next)),
+                ));
+            }
+        }
+        level.into_iter().map(|(_, item)| item).collect()
+    }
+
+    fn matching_leaves(&self) -> Vec<ContextMenuItem> {
+        self.items
+            .iter()
+            .filter(|item| {
+                !self.has_descendants(&item.value) && item_matches_query(item, &self.query)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn has_descendants(&self, value: &str) -> bool {
+        let prefix = value_segments(value);
+        self.items.iter().any(|item| {
+            let segments = value_segments(&item.value);
+            segments.len() > prefix.len() && segments[..prefix.len()] == prefix
+        })
     }
 }
 
@@ -514,6 +618,27 @@ fn context_menu_height(item_count: usize) -> f32 {
     MENU_PADDING * 2.0 + count * item + (count - 1.0).max(0.0)
 }
 
+fn value_segments(value: &str) -> Vec<&str> {
+    value
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn item_matches_query(item: &ContextMenuItem, query: &str) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let query = query.to_lowercase();
+    item.label.to_lowercase().contains(&query)
+        || item.value.to_lowercase().contains(&query)
+        || item
+            .hint
+            .as_ref()
+            .is_some_and(|hint| hint.to_lowercase().contains(&query))
+}
+
 fn item_style(size: ControlSize) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -617,6 +742,126 @@ mod tests {
         assert!(!menu.open);
         menu.open = true;
         menu.dismiss();
+        assert!(!menu.open);
+        assert!(menu.active_path.is_empty());
+    }
+
+    #[test]
+    fn context_menu_opens_nested_child_and_selects_leaf() {
+        let mut menu = ContextMenu::new(24.0, 36.0).items([
+            ContextMenuItem::new("file", "File"),
+            ContextMenuItem::new("file/rename", "Rename"),
+            ContextMenuItem::new("file/delete", "Delete"),
+            ContextMenuItem::new("edit", "Edit"),
+        ]);
+        let visible: Vec<_> = menu
+            .visible_items()
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+        assert_eq!(
+            visible,
+            [Arc::<str>::from("file"), Arc::<str>::from("edit")]
+        );
+        assert_eq!(menu.select_index(0), None);
+        assert!(menu.open);
+        assert_eq!(menu.active_path.as_slice(), &[Arc::<str>::from("file")]);
+        let visible: Vec<_> = menu
+            .visible_items()
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+        assert_eq!(
+            visible,
+            [
+                Arc::<str>::from("file/rename"),
+                Arc::<str>::from("file/delete")
+            ]
+        );
+        assert_eq!(
+            menu.select_index(0),
+            Some(ContextMenuEvent::Select(Arc::from("file/rename")))
+        );
+        assert!(!menu.open);
+        assert!(menu.active_path.is_empty());
+
+        menu.open = true;
+        assert_eq!(menu.select_index(0), None);
+        assert!(menu.back());
+        assert!(menu.active_path.is_empty());
+        assert!(!menu.back());
+        assert_eq!(
+            menu.select_index(1),
+            Some(ContextMenuEvent::Select(Arc::from("edit")))
+        );
+    }
+
+    #[test]
+    fn context_menu_query_hides_non_matching_items() {
+        let menu = ContextMenu::new(24.0, 36.0)
+            .items([
+                ContextMenuItem::new("file/rename", "Rename").hint("Ctrl+R"),
+                ContextMenuItem::new("file/delete", "Delete"),
+                ContextMenuItem::new("edit", "Edit"),
+            ])
+            .searchable(true)
+            .query("REN");
+        let visible: Vec<_> = menu
+            .visible_items()
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+        assert_eq!(visible, [Arc::<str>::from("file/rename")]);
+
+        let by_hint = menu.clone().query("ctrl");
+        assert_eq!(
+            by_hint
+                .visible_items()
+                .into_iter()
+                .map(|item| item.value)
+                .collect::<Vec<_>>(),
+            [Arc::<str>::from("file/rename")]
+        );
+
+        let empty = menu.clone().query("");
+        let root: Vec<_> = empty
+            .visible_items()
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+        assert_eq!(root, [Arc::<str>::from("file"), Arc::<str>::from("edit")]);
+        assert!(matches!(
+            empty.style.layout.height,
+            Some(LengthSpec::Px(full)) if matches!(
+                menu.style.layout.height,
+                Some(LengthSpec::Px(filtered)) if filtered < full
+            )
+        ));
+    }
+
+    #[test]
+    fn context_menu_disabled_items_stay_unselectable() {
+        let mut menu = ContextMenu::new(24.0, 36.0).items([
+            ContextMenuItem::new("file", "File"),
+            ContextMenuItem::new("file/rename", "Rename").disabled(true),
+            ContextMenuItem::new("paste", "Paste").disabled(true),
+            ContextMenuItem::new("delete", "Delete").danger(true),
+        ]);
+        assert_eq!(menu.select_index(1), None);
+        assert!(menu.open);
+        assert!(menu.active_path.is_empty());
+
+        assert_eq!(menu.select_index(0), None);
+        assert_eq!(menu.active_path.as_slice(), &[Arc::<str>::from("file")]);
+        assert_eq!(menu.select_index(0), None);
+        assert!(menu.open);
+        assert_eq!(menu.active_path.as_slice(), &[Arc::<str>::from("file")]);
+        assert!(menu.back());
+
+        assert_eq!(
+            menu.select_index(2),
+            Some(ContextMenuEvent::Select(Arc::from("delete")))
+        );
         assert!(!menu.open);
     }
 

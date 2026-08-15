@@ -319,6 +319,8 @@ pub(crate) fn modal_root_style() -> NodeStyle {
 
 pub(crate) const DRAWER_WIDTH: f32 = 360.0;
 pub(crate) const MODAL_PAD_X: f32 = 16.0;
+/// Iced dialog overlay top inset. Compact scrims clamp this so the card stays inside.
+pub(crate) const MODAL_SCRIM_TOP_INSET: f32 = 90.0;
 pub(crate) const MODAL_HEADER_PAD_TOP: f32 = 14.0;
 pub(crate) const MODAL_HEADER_PAD_BOTTOM: f32 = 8.0;
 pub(crate) const DRAWER_HEADER_PAD_Y: f32 = 14.0;
@@ -450,9 +452,12 @@ pub(crate) fn modal_surface_bounds(
             let width = size.max_width().min(available_width);
             let max_height = (bounds.height * 0.76).min(available_height);
             let height = intrinsic_height.unwrap_or(max_height).min(max_height);
+            let top = MODAL_SCRIM_TOP_INSET
+                .min((bounds.height - margin - height).max(0.0))
+                .max(margin);
             crate::LayoutBox {
                 x: bounds.x + (bounds.width - width) / 2.0,
-                y: bounds.y + 90.0_f32.min(bounds.height).min(available_height),
+                y: bounds.y + top,
                 width,
                 height,
             }
@@ -840,6 +845,26 @@ mod tests {
     }
 
     #[test]
+    fn dialog_surface_stays_inside_a_compact_scrim() {
+        let scrim = crate::LayoutBox {
+            x: 100.0,
+            y: 100.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let surface = modal_surface_bounds(
+            scrim,
+            ModalSurfaceKind::Dialog(DialogSize::Default),
+            Some(46.0),
+        );
+        assert!(surface.x >= scrim.x);
+        assert!(surface.y >= scrim.y);
+        assert!(surface.x + surface.width <= scrim.x + scrim.width);
+        assert!(surface.y + surface.height <= scrim.y + scrim.height);
+        assert!(surface.contains(150.0, 150.0));
+    }
+
+    #[test]
     fn dialog_wraps_against_final_surface_width_and_settles_at_iced_top_inset() {
         let mut cx = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -871,7 +896,7 @@ mod tests {
         else {
             panic!("dialog geometry")
         };
-        assert_eq!(surface.y, 90.0);
+        assert_eq!(surface.y, MODAL_SCRIM_TOP_INSET);
         assert!(surface.height <= 456.0);
         assert!(title.bounds.height > 14.0 * 1.2);
         assert!(description.bounds.height > 12.0 * 1.2);

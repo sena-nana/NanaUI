@@ -140,10 +140,10 @@ component_catalog! {
     ICON_BUTTON => { id: "icon-button", name: "IconButton", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     CARD => { id: "card", name: "Card", family: Primitive, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility, Animation] },
     SWITCH => { id: "switch", name: "Switch", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
-    TEXTAREA => { id: "textarea", name: "Textarea", family: Control, migration: RuntimeCandidate, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
+    TEXTAREA => { id: "textarea", name: "Textarea", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     HOSTED_TEXTAREA => { id: "hosted-textarea", name: "HostedTextarea", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     RANGE_FIELD => { id: "range-field", name: "RangeField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    SELECT => { id: "select", name: "Select", family: Control, migration: RuntimeCandidate, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    SELECT => { id: "select", name: "Select", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     SEGMENTED_CONTROL => { id: "segmented-control", name: "SegmentedControl", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     TABS => { id: "tabs", name: "Tabs", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     REORDER_LIST => { id: "reorder-list", name: "ReorderList", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
@@ -155,21 +155,21 @@ component_catalog! {
     LEVEL_METER => { id: "level-meter", name: "LevelMeter", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     STATUS_BADGE => { id: "status-badge", name: "StatusBadge", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     VALIDATION_MESSAGE => { id: "validation-message", name: "ValidationMessage", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
-    TOAST => { id: "toast", name: "Toast", family: Feedback, migration: RuntimeCandidate, feature: Some("feedback"), compiled: cfg!(feature = "feedback"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    COMMAND_PALETTE => { id: "command-palette", name: "CommandPalette", family: Overlay, migration: Compatibility, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    DIALOG => { id: "dialog", name: "Dialog", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    CONFIRM_DIALOG => { id: "confirm-dialog", name: "ConfirmDialog", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    DRAWER => { id: "drawer", name: "Drawer", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    TOOLTIP => { id: "tooltip", name: "Tooltip", family: Overlay, migration: RuntimeCandidate, feature: Some("overlays"), compiled: cfg!(feature = "overlays"), capabilities: [Render, Accessibility, Overlay] },
-    POPOVER => { id: "popover", name: "Popover", family: Overlay, migration: RuntimeCandidate, feature: Some("popover"), compiled: cfg!(feature = "popover"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    ACTION_MENU => { id: "action-menu", name: "ActionMenu", family: Overlay, migration: RuntimeCandidate, feature: Some("popover"), compiled: cfg!(feature = "popover"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    CONTEXT_MENU => { id: "context-menu", name: "ContextMenu", family: Overlay, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    ACTION_MENU_ITEM => { id: "action-menu-item", name: "ActionMenuItem", family: Overlay, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    ANCHORED_ACTION_MENU => { id: "anchored-action-menu", name: "AnchoredActionMenu", family: Overlay, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    OVERLAY_HOST => { id: "overlay-host", name: "OverlayHost", family: Overlay, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    DROPDOWN => { id: "dropdown", name: "Dropdown", family: Control, migration: Compatibility, feature: Some("selects"), compiled: cfg!(feature = "selects"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
-    SEARCH_DROPDOWN => { id: "search-dropdown", name: "SearchDropdown", family: Control, migration: Compatibility, feature: Some("selects"), compiled: cfg!(feature = "selects"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility, Overlay] },
-    TREE_VIEW => { id: "tree-view", name: "TreeView", family: Navigation, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    TOAST => { id: "toast", name: "Toast", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    COMMAND_PALETTE => { id: "command-palette", name: "CommandPalette", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility, Overlay] },
+    DIALOG => { id: "dialog", name: "Dialog", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    CONFIRM_DIALOG => { id: "confirm-dialog", name: "ConfirmDialog", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    DRAWER => { id: "drawer", name: "Drawer", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    TOOLTIP => { id: "tooltip", name: "Tooltip", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility, Overlay] },
+    POPOVER => { id: "popover", name: "Popover", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    ACTION_MENU => { id: "action-menu", name: "ActionMenu", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    CONTEXT_MENU => { id: "context-menu", name: "ContextMenu", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    ACTION_MENU_ITEM => { id: "action-menu-item", name: "ActionMenuItem", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    ANCHORED_ACTION_MENU => { id: "anchored-action-menu", name: "AnchoredActionMenu", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    OVERLAY_HOST => { id: "overlay-host", name: "OverlayHost", family: Overlay, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    DROPDOWN => { id: "dropdown", name: "Dropdown", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
+    SEARCH_DROPDOWN => { id: "search-dropdown", name: "SearchDropdown", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility, Overlay] },
+    TREE_VIEW => { id: "tree-view", name: "TreeView", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SIDEBAR_FRAME => { id: "sidebar-frame", name: "SidebarFrame", family: Navigation, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     SIDEBAR_SECTION => { id: "sidebar-section", name: "SidebarSection", family: Navigation, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
     SIDEBAR_ROW => { id: "sidebar-row", name: "SidebarRow", family: Navigation, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
@@ -178,10 +178,10 @@ component_catalog! {
     KEYMAP_LAYER => { id: "keymap-layer", name: "KeymapLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus] },
     NATIVE_MARKDOWN => { id: "native-markdown", name: "NativeMarkdown", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SELECTABLE_RICH_TEXT => { id: "selectable-rich-text", name: "SelectableRichText", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    QR_CODE => { id: "qr-code", name: "QrCodeCanvas", family: Data, migration: RuntimeCandidate, feature: Some("qr-code"), compiled: cfg!(feature = "qr-code"), capabilities: [Render, Accessibility] },
+    QR_CODE => { id: "qr-code", name: "QrCodeCanvas", family: Data, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     GRAPH_CANVAS => { id: "graph-canvas", name: "GraphCanvas", family: Data, migration: Compatibility, feature: Some("graph-canvas"), compiled: cfg!(feature = "graph-canvas"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Gpu] },
     IMAGE_VIEWER => { id: "image-viewer", name: "ImageViewer", family: Media, migration: Compatibility, feature: Some("image-viewer"), compiled: cfg!(feature = "image-viewer"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: RuntimeCandidate, feature: Some("xy-pad"), compiled: cfg!(feature = "xy-pad"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     FORM_FIELD => { id: "form-field", name: "FormField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     LABELED_VALUE => { id: "labeled-value", name: "LabeledValue", family: Data, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
@@ -264,16 +264,6 @@ mod tests {
             component_ids::LEVEL_METER,
             component_ids::FORM_FIELD,
             component_ids::INTERACTIVE_CARD,
-        ] {
-            let support = component_support(id).expect("qualified component is cataloged");
-            assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
-            assert_eq!(component_uses_runtime(id), support.compiled);
-        }
-    }
-
-    #[test]
-    fn candidate_components_keep_the_compatibility_default_route() {
-        for id in [
             component_ids::TEXTAREA,
             component_ids::TOOLTIP,
             component_ids::DIALOG,
@@ -288,12 +278,20 @@ mod tests {
             component_ids::ACTION_MENU_ITEM,
             component_ids::ANCHORED_ACTION_MENU,
             component_ids::CONTEXT_MENU,
+            component_ids::OVERLAY_HOST,
+            component_ids::DROPDOWN,
+            component_ids::SEARCH_DROPDOWN,
+            component_ids::COMMAND_PALETTE,
+            component_ids::TREE_VIEW,
         ] {
-            let support = component_support(id).expect("candidate component is cataloged");
-            assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
-            assert!(!component_uses_runtime(id));
+            let support = component_support(id).expect("qualified component is cataloged");
+            assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
+            assert_eq!(component_uses_runtime(id), support.compiled);
         }
+    }
 
+    #[test]
+    fn hosted_textarea_keeps_the_compatibility_default_route() {
         let hosted = component_support(component_ids::HOSTED_TEXTAREA)
             .expect("hosted textarea is cataloged");
         assert_eq!(hosted.migration, ComponentMigrationState::Compatibility);
@@ -352,6 +350,60 @@ mod tests {
         let _: nana_ui_runtime::LevelMeter = crate::components::LevelMeter::new(0.5);
         let _: nana_ui_runtime::FormField = crate::components::FormField::new("Name");
         let _: nana_ui_runtime::InteractiveCard = crate::components::InteractiveCard::new();
+    }
+
+    #[test]
+    fn candidate_cutover_public_exports_are_runtime_components() {
+        let _: nana_ui_runtime::TextArea = crate::Textarea::new("notes");
+        let _: nana_ui_runtime::Tooltip = crate::Tooltip::new("Hint");
+        let _: nana_ui_runtime::Dialog = crate::Dialog::new("Rename");
+        let _: nana_ui_runtime::ConfirmDialog =
+            crate::ConfirmDialog::new("Delete", "This cannot be undone.");
+        let _: nana_ui_runtime::Drawer = crate::Drawer::new("Inspector");
+        let _: nana_ui_runtime::Toast =
+            crate::Toast::new("Saved", nana_ui_runtime::ToastTone::Info);
+        let _: nana_ui_runtime::XYPad = crate::XYPad::new(nana_ui_core::XYPadValue::new(0.5, 0.5));
+        let _: nana_ui_runtime::QrCode =
+            crate::QrCode::from_modules(vec![false], 1, 64.0).expect("single module encodes");
+        let _: nana_ui_runtime::Select = crate::Select::new(Some("code"));
+        let _: nana_ui_runtime::Popover = crate::Popover::new();
+        let _: nana_ui_runtime::ActionMenu = crate::ActionMenu::new();
+        let _: nana_ui_runtime::ActionMenuItem = crate::ActionMenuItem::new("Rename");
+        let _: nana_ui_runtime::AnchoredActionMenu = crate::AnchoredActionMenu::new(24.0, 36.0);
+        let _: nana_ui_runtime::ContextMenu = crate::ContextMenu::new(24.0, 36.0);
+        let _: nana_ui_runtime::OverlayHost = crate::OverlayHost::new();
+        let _: nana_ui_runtime::Dropdown = crate::Dropdown::single(Some("code"));
+        let _: nana_ui_runtime::SearchDropdown = crate::SearchDropdown::new(None::<&str>);
+        let _: nana_ui_runtime::CommandPalette = crate::CommandPalette::new("命令面板", []);
+        let _: nana_ui_runtime::TreeView = crate::TreeView::new([]);
+
+        let _: nana_ui_runtime::TextArea = crate::components::Textarea::new("notes");
+        let _: nana_ui_runtime::Tooltip = crate::components::Tooltip::new("Hint");
+        let _: nana_ui_runtime::Dialog = crate::components::Dialog::new("Rename");
+        let _: nana_ui_runtime::ConfirmDialog =
+            crate::components::ConfirmDialog::new("Delete", "This cannot be undone.");
+        let _: nana_ui_runtime::Drawer = crate::components::Drawer::new("Inspector");
+        let _: nana_ui_runtime::Toast =
+            crate::components::Toast::new("Saved", nana_ui_runtime::ToastTone::Info);
+        let _: nana_ui_runtime::XYPad =
+            crate::components::XYPad::new(nana_ui_core::XYPadValue::new(0.5, 0.5));
+        let _: nana_ui_runtime::QrCode =
+            crate::components::QrCode::from_modules(vec![false], 1, 64.0)
+                .expect("single module encodes");
+        let _: nana_ui_runtime::Select = crate::components::Select::new(Some("code"));
+        let _: nana_ui_runtime::Popover = crate::components::Popover::new();
+        let _: nana_ui_runtime::ActionMenu = crate::components::ActionMenu::new();
+        let _: nana_ui_runtime::ActionMenuItem = crate::components::ActionMenuItem::new("Rename");
+        let _: nana_ui_runtime::AnchoredActionMenu =
+            crate::components::AnchoredActionMenu::new(24.0, 36.0);
+        let _: nana_ui_runtime::ContextMenu = crate::components::ContextMenu::new(24.0, 36.0);
+        let _: nana_ui_runtime::OverlayHost = crate::components::OverlayHost::new();
+        let _: nana_ui_runtime::Dropdown = crate::components::Dropdown::single(Some("code"));
+        let _: nana_ui_runtime::SearchDropdown =
+            crate::components::SearchDropdown::new(None::<&str>);
+        let _: nana_ui_runtime::CommandPalette =
+            crate::components::CommandPalette::new("命令面板", []);
+        let _: nana_ui_runtime::TreeView = crate::components::TreeView::new([]);
     }
 
     #[test]

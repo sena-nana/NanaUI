@@ -23,11 +23,15 @@ pub mod settings;
 pub mod split_pane;
 pub mod style_model;
 pub mod theme;
+pub mod tree;
 pub mod virtual_list;
 pub mod virtual_table;
 pub mod workspace_model;
 
-pub use action::{ActionId, ContextPredicate, KeyContext};
+pub use action::{
+    ActionId, ActionPickerNavigation, CommandPaletteEvent, CommandPaletteItem, ContextPredicate,
+    KeyContext,
+};
 pub use box_layout::{
     AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,
     GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
@@ -63,6 +67,7 @@ pub use style_model::{
     ControlSemantics, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef,
 };
 pub use theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
+pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use virtual_list::{
     VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
     VirtualListMaterializer, VirtualListMount, VirtualListWindow,

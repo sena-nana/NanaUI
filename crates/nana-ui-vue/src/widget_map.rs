@@ -56,6 +56,8 @@ pub fn resolve_kind_from_hints(
             return Some(WidgetKind::Drawer);
         }
         "menu" | "menubar" => return Some(WidgetKind::ContextMenu),
+        "tooltip" => return Some(WidgetKind::Tooltip),
+        "menuitem" => return Some(WidgetKind::ActionMenuItem),
         "listbox" | "combobox" => return Some(WidgetKind::Select),
         "group" if class.contains("nana-segmented") || class.contains("segmented") => {
             return Some(WidgetKind::Segmented);
@@ -221,6 +223,12 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-drawer" | "nana-sheet" => WidgetKind::Drawer,
         "nana-popover" | "popover" => WidgetKind::Popover,
         "nana-context-menu" | "context-menu" | "contextmenu" => WidgetKind::ContextMenu,
+        "nana-toast" | "toast" => WidgetKind::Toast,
+        "nana-tooltip" | "tooltip" => WidgetKind::Tooltip,
+        "nana-action-menu" => WidgetKind::ActionMenu,
+        "nana-action-menu-item" => WidgetKind::ActionMenuItem,
+        "nana-xy-pad" | "nana-xypad" | "xy-pad" => WidgetKind::XYPad,
+        "nana-qr-code" | "nana-qr" | "qr-code" => WidgetKind::QrCode,
         "nana-dropdown" | "nana-select" | "ui-dropdown" | "dropdown" => WidgetKind::Select,
         _ if t == "lucide" || t.starts_with("lucide-") => WidgetKind::Icon,
         _ if t.contains("sidebar") && t.contains("row") => WidgetKind::SidebarRow,
@@ -373,6 +381,125 @@ pub(crate) fn parse_validation_intent(raw: &str) -> Option<nana_ui_core::Validat
         "warning" | "warn" => Some(nana_ui_core::ValidationIntent::Warning),
         _ => None,
     }
+}
+
+pub(crate) fn parse_toast_tone(raw: &str) -> Option<nana_ui_core::ToastTone> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "info" => Some(nana_ui_core::ToastTone::Info),
+        "success" => Some(nana_ui_core::ToastTone::Success),
+        "warning" | "warn" => Some(nana_ui_core::ToastTone::Warning),
+        "danger" | "error" => Some(nana_ui_core::ToastTone::Danger),
+        _ => None,
+    }
+}
+
+pub(crate) fn toast_tone_from_props(props: &WidgetProps) -> nana_ui_core::ToastTone {
+    if let Some(tone) = attr_value(props, &["tone", "data-tone"]).and_then(parse_toast_tone) {
+        return tone;
+    }
+    for class in &props.class_names {
+        if let Some(suffix) = class.rsplit_once("--").map(|(_, suffix)| suffix)
+            && let Some(tone) = parse_toast_tone(suffix)
+        {
+            return tone;
+        }
+    }
+    nana_ui_core::ToastTone::Info
+}
+
+fn attr_flag(props: &WidgetProps, names: &[&str]) -> bool {
+    for name in names {
+        let Some(value) = attr_value(props, &[name]) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty()
+            || value.eq_ignore_ascii_case("true")
+            || value == "1"
+            || value.eq_ignore_ascii_case(name)
+        {
+            return true;
+        }
+        if value.eq_ignore_ascii_case("false") || value == "0" {
+            return false;
+        }
+        return true;
+    }
+    false
+}
+
+pub(crate) fn toast_dismissible(props: &WidgetProps) -> bool {
+    if attr_flag(
+        props,
+        &[
+            "dismissible",
+            "dismiss",
+            "close",
+            "closable",
+            "data-dismissible",
+            "data-dismiss",
+            "data-close",
+            "ondismiss",
+            "on-dismiss",
+        ],
+    ) {
+        return true;
+    }
+    props.attrs.keys().any(|key| {
+        matches!(
+            key.to_ascii_lowercase().as_str(),
+            "ondismiss" | "on-dismiss" | "onclose" | "on-close"
+        )
+    }) || props.class_names.iter().any(|class| {
+        let class = class.to_ascii_lowercase();
+        class.contains("dismissible") || class.ends_with("--dismiss")
+    })
+}
+
+pub(crate) fn action_menu_item_danger(props: &WidgetProps) -> bool {
+    if matches!(props.button_kind, nana_ui_core::ButtonKind::Danger) {
+        return true;
+    }
+    if attr_flag(props, &["danger", "data-danger"]) {
+        return true;
+    }
+    if attr_value(props, &["intent", "data-intent", "data-variant"])
+        .is_some_and(|value| value.eq_ignore_ascii_case("danger"))
+    {
+        return true;
+    }
+    props.class_names.iter().any(|class| {
+        class
+            .rsplit_once("--")
+            .is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case("danger"))
+    })
+}
+
+pub(crate) fn xy_pad_value(props: &WidgetProps) -> nana_ui_core::XYPadValue {
+    let x = attr_value(props, &["x", "data-x"])
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(props.number);
+    let y = attr_value(props, &["y", "data-y"])
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(0.0);
+    nana_ui_core::XYPadValue::new(x, y)
+}
+
+pub(crate) fn xy_pad_ranges(props: &WidgetProps) -> ((f32, f32), (f32, f32)) {
+    let fallback = (props.min, props.max);
+    let x_min = attr_value(props, &["x-min", "xmin", "data-x-min"])
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(fallback.0);
+    let x_max = attr_value(props, &["x-max", "xmax", "data-x-max"])
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(fallback.1);
+    let y_min = attr_value(props, &["y-min", "ymin", "data-y-min"])
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(fallback.0);
+    let y_max = attr_value(props, &["y-max", "ymax", "data-y-max"])
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(fallback.1);
+    ((x_min, x_max), (y_min, y_max))
 }
 
 pub(crate) fn validation_intent_from_props(props: &WidgetProps) -> nana_ui_core::ValidationIntent {
@@ -563,6 +690,34 @@ mod tests {
         assert_eq!(
             resolve_kind_from_hints("nana-level", None, None, None),
             Some(WidgetKind::LevelMeter)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-toast toast"), None, None),
+            Some(WidgetKind::Toast)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-tooltip tooltip"), Some("tooltip"), None),
+            Some(WidgetKind::Tooltip)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-action-menu", None, None, None),
+            Some(WidgetKind::ActionMenu)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-action-menu-item"), Some("menuitem"), None),
+            Some(WidgetKind::ActionMenuItem)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-xy-pad nana-xypad xy-pad"), None, None),
+            Some(WidgetKind::XYPad)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-qr", None, None, None),
+            Some(WidgetKind::QrCode)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-qr-code qr-code"), None, None),
+            Some(WidgetKind::QrCode)
         );
         assert_eq!(
             resolve_kind_from_hints("span", None, None, None),

@@ -11,23 +11,25 @@ use nana_ui::command::{
     KeymapState,
 };
 use nana_ui::compatibility::{
-    Button as UiButton, Card as UiCard, Checkbox as UiCheckbox, IconButton as UiIconButton,
-    Input as UiInput, InteractiveCard as UiInteractiveCard, ListItem as UiListItem,
-    Progress as UiProgress, RangeField as UiRangeField, SegmentedControl as UiSegmentedControl,
-    Switch as UiSwitch,
+    Button as UiButton, Card as UiCard, Checkbox as UiCheckbox, ConfirmDialog as UiConfirmDialog,
+    IconButton as UiIconButton, Input as UiInput, InteractiveCard as UiInteractiveCard,
+    ListItem as UiListItem, Popover as UiPopover, Progress as UiProgress,
+    RangeField as UiRangeField, SegmentedControl as UiSegmentedControl, Switch as UiSwitch,
+    Textarea as UiTextarea, Tooltip as UiTooltip, XYPad as UiXYPad,
+};
+use nana_ui::compatibility::{
+    CommandPalette as UiCommandPalette, Dropdown as UiDropdown, DropdownOption,
+    SearchDropdown as UiSearchDropdown, SearchDropdownOption, SearchDropdownState,
+    TreeView as UiTreeView,
 };
 use nana_ui::components::{
     AboutMetadata, AboutSection, AnchoredMenuPlacement, AnchoredMenuPosition, AppearanceEvent,
     AppearanceSection, CalendarHeatmap as UiCalendarHeatmap, CalendarHeatmapActiveCell,
     CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapOptions,
-    CommandPalette as UiCommandPalette, CommandPaletteEvent, CommandPaletteItem,
-    ConfirmDialog as UiConfirmDialog, ContextMenuAnchor, ContextMenuEvent, ContextMenuHost,
-    ContextMenuItem, ContextMenuTrigger, ControlSize, Dropdown as UiDropdown, DropdownEvent,
-    DropdownOption, ImageViewer as UiImageViewer, ImageViewerSource, NativeMarkdown,
-    Popover as UiPopover, SearchDropdown as UiSearchDropdown, SearchDropdownOption,
-    SearchDropdownState, SelectionOption, SettingsCollapsibleCard, Tabs as UiTabs,
-    Textarea as UiTextarea, Tooltip as UiTooltip, TreeNode, TreeView as UiTreeView, TreeViewEvent,
-    XYPad as UiXYPad, XYPadEvent, XYPadValue,
+    CommandPaletteEvent, CommandPaletteItem, ContextMenuAnchor, ContextMenuEvent, ContextMenuHost,
+    ContextMenuItem, ContextMenuTrigger, ControlSize, DropdownEvent, ImageViewer as UiImageViewer,
+    ImageViewerSource, NativeMarkdown, SelectionOption, SettingsCollapsibleCard, Tabs as UiTabs,
+    TreeNode, TreeViewEvent, XYPadEvent, XYPadValue,
 };
 use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 use nana_ui::icons::{Icon, icon, status_indicator};
@@ -199,7 +201,7 @@ fn overlay_event(
     let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event else {
         return None;
     };
-    ActionPickerNavigation::from_iced_key(&key).map(GalleryMessage::NavigateCommandPalette)
+    nana_ui::action_picker_from_iced_key(&key).map(GalleryMessage::NavigateCommandPalette)
 }
 
 fn command_shortcut_event(
@@ -791,7 +793,7 @@ impl GalleryState {
         context
     }
 
-    fn palette_items(&self) -> Vec<CommandPaletteItem<'static>> {
+    fn palette_items(&self) -> Vec<CommandPaletteItem> {
         let context = self.action_context();
         self.action_registry
             .search(self.action_picker.query(), &context)
@@ -843,7 +845,6 @@ impl GalleryState {
                 self.action_picker.dismiss();
                 self.overlay.dismiss();
             }
-            CommandPaletteEvent::Interaction => {}
         }
     }
 

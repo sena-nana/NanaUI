@@ -16,17 +16,23 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
+    ActionMenu as RuntimeActionMenu, ActionMenuItem as RuntimeActionMenuItem,
     Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox, ComponentView,
-    CustomRenderNode, EmptyState as RuntimeEmptyState, FormField as RuntimeFormField,
+    ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
+    ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode, Dialog as RuntimeDialog,
+    Drawer as RuntimeDrawer, EmptyState as RuntimeEmptyState, FormField as RuntimeFormField,
     IconButton as RuntimeIconButton, ImeComposition, InteractionState,
     InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue,
     LayoutBox as RuntimeLayoutBox, LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem,
-    ListItemSlots, MutationQueue, NodeKind, NodeStyle, Progress as RuntimeProgress,
-    RangeField as RuntimeRangeField, SegmentedControl as RuntimeSegmentedControl,
-    SegmentedOption as RuntimeSegmentedOption, SelectionChrome, Skeleton as RuntimeSkeleton,
-    Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
-    Switch as RuntimeSwitch, TextContent, TextInput as RuntimeTextInput, TextInputState, UiWorld,
-    ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
+    ListItemSlots, ModalSurface, MutationQueue, NodeKind, NodeStyle, Popover as RuntimePopover,
+    Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
+    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
+    Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome,
+    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, StableNodeId,
+    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextArea as RuntimeTextArea,
+    TextContent, TextInput as RuntimeTextInput, TextInputState, Toast as RuntimeToast,
+    Tooltip as RuntimeTooltip, UiWorld, ValidationMessage as RuntimeValidationMessage,
+    ValueEmphasis, XYPad as RuntimeXYPad,
 };
 use nana_ui_scene::UiScene;
 
@@ -671,29 +677,41 @@ impl NanaTreeDocument {
             // a generic style/interaction/accessibility state first only to
             // overwrite it in the same transaction doubles validation, dirty
             // propagation and commit work for large component trees.
-            if !matches!(widget.kind, crate::WidgetKind::Input)
-                && matches!(
-                    widget.kind,
-                    crate::WidgetKind::Button
-                        | crate::WidgetKind::Checkbox
-                        | crate::WidgetKind::Switch
-                        | crate::WidgetKind::Card
-                        | crate::WidgetKind::ListItem
-                        | crate::WidgetKind::Range
-                        | crate::WidgetKind::StatusBadge
-                        | crate::WidgetKind::ValidationMessage
-                        | crate::WidgetKind::EmptyState
-                        | crate::WidgetKind::LabeledValue
-                        | crate::WidgetKind::Segmented
-                        | crate::WidgetKind::Tabs
-                        | crate::WidgetKind::Progress
-                        | crate::WidgetKind::Spinner
-                        | crate::WidgetKind::FormField
-                        | crate::WidgetKind::InteractiveCard
-                        | crate::WidgetKind::Skeleton
-                        | crate::WidgetKind::LevelMeter
-                )
-                && self.runtime.text_input(id).is_some()
+            if !matches!(
+                widget.kind,
+                crate::WidgetKind::Input | crate::WidgetKind::Textarea
+            ) && matches!(
+                widget.kind,
+                crate::WidgetKind::Button
+                    | crate::WidgetKind::Checkbox
+                    | crate::WidgetKind::Switch
+                    | crate::WidgetKind::Card
+                    | crate::WidgetKind::ListItem
+                    | crate::WidgetKind::Range
+                    | crate::WidgetKind::StatusBadge
+                    | crate::WidgetKind::ValidationMessage
+                    | crate::WidgetKind::EmptyState
+                    | crate::WidgetKind::LabeledValue
+                    | crate::WidgetKind::Segmented
+                    | crate::WidgetKind::Tabs
+                    | crate::WidgetKind::Progress
+                    | crate::WidgetKind::Spinner
+                    | crate::WidgetKind::FormField
+                    | crate::WidgetKind::InteractiveCard
+                    | crate::WidgetKind::Skeleton
+                    | crate::WidgetKind::LevelMeter
+                    | crate::WidgetKind::Select
+                    | crate::WidgetKind::Dialog
+                    | crate::WidgetKind::Drawer
+                    | crate::WidgetKind::Popover
+                    | crate::WidgetKind::ContextMenu
+                    | crate::WidgetKind::Toast
+                    | crate::WidgetKind::Tooltip
+                    | crate::WidgetKind::ActionMenu
+                    | crate::WidgetKind::ActionMenuItem
+                    | crate::WidgetKind::XYPad
+                    | crate::WidgetKind::QrCode
+            ) && self.runtime.text_input(id).is_some()
             {
                 // Queue before the new component projection: SetTextInput(None)
                 // clears the old committed value, then Button/ListItem may publish
@@ -1972,6 +1990,213 @@ fn project_migrating_component(
             component.project(id, world, mutations);
             true
         }
+        crate::WidgetKind::Textarea => {
+            let mut state = world
+                .text_input(id)
+                .cloned()
+                .unwrap_or_else(|| TextInputState::new(&widget.props.value));
+            if state.value != widget.props.value {
+                state.replace_value(&widget.props.value);
+            }
+            let placeholder = if widget.props.placeholder.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.placeholder.as_str()
+            };
+            let mut component = RuntimeTextArea::new("")
+                .placeholder(Arc::<str>::from(placeholder))
+                .disabled(widget.props.disabled)
+                .invalid(widget.props.invalid);
+            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
+                component = component.height(height);
+            }
+            if !widget.props.label.is_empty() {
+                component = component.label(Arc::<str>::from(widget.props.label.as_str()));
+            }
+            component.state = state;
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Select => {
+            let value = (!widget.props.value.is_empty()).then_some(widget.props.value.as_str());
+            let mut component = RuntimeSelect::new(value)
+                .options(widget.props.options.iter().map(|option| {
+                    RuntimeSelectOption::new(option.value.as_str(), option.label.as_str())
+                        .disabled(option.disabled)
+                }))
+                .size(widget.props.size)
+                .disabled(widget.props.disabled)
+                .loading(widget.props.loading)
+                .invalid(widget.props.invalid)
+                .opened(widget.props.active || widget.props.toggled);
+            let placeholder = if widget.props.placeholder.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.placeholder.as_str()
+            };
+            if !placeholder.is_empty() {
+                component = component.placeholder(Arc::<str>::from(placeholder));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Dialog => {
+            if vue_confirm_dialog(&widget.props) {
+                let message = if !widget.props.hint.is_empty() {
+                    widget.props.hint.as_str()
+                } else {
+                    widget.props.value.as_str()
+                };
+                let mut component =
+                    RuntimeConfirmDialog::new(widget.props.display_label(), message);
+                component.danger = vue_confirm_danger(&widget.props);
+                component.busy = widget.props.loading;
+                component.project(id, world, mutations);
+            } else {
+                let mut component = RuntimeDialog::new(widget.props.display_label());
+                if !widget.props.hint.is_empty() {
+                    component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
+                }
+                if let Some(body) = widget.children.first().copied().and_then(StableNodeId::new) {
+                    component.slots.body = Some(body);
+                }
+                component.project(id, world, mutations);
+            }
+            true
+        }
+        crate::WidgetKind::Drawer => {
+            let mut component = RuntimeDrawer::new(widget.props.display_label())
+                .side(vue_drawer_side(&widget.props));
+            if !widget.props.hint.is_empty() {
+                component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            if let Some(body) = widget.children.first().copied().and_then(StableNodeId::new) {
+                component.slots_mut().body = Some(body);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Popover => {
+            RuntimePopover::new()
+                .trigger(widget.props.display_label())
+                .open(widget.props.active || widget.props.toggled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::ContextMenu => {
+            let query = crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
+                .unwrap_or("");
+            let searchable = widget.props.options.len() >= 6
+                || widget
+                    .props
+                    .class_names
+                    .iter()
+                    .any(|class| class.contains("search"));
+            RuntimeContextMenu::new(widget.props.anchor_x, widget.props.anchor_y)
+                .items(widget.props.options.iter().map(|option| {
+                    RuntimeContextMenuItem::new(option.value.as_str(), option.label.as_str())
+                        .disabled(option.disabled)
+                }))
+                .query(query)
+                .searchable(searchable)
+                .open(widget.props.active || widget.props.toggled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Toast => {
+            let mut component = RuntimeToast::new(
+                widget.props.display_label(),
+                crate::widget_map::toast_tone_from_props(&widget.props),
+            )
+            .dismissible(crate::widget_map::toast_dismissible(&widget.props));
+            if !widget.props.hint.is_empty() {
+                component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Tooltip => {
+            let label = if !widget.props.display_label().is_empty() {
+                widget.props.display_label()
+            } else {
+                widget.props.hint.as_str()
+            };
+            RuntimeTooltip::new(label).project(id, world, mutations);
+            if world.standard_visual(id).is_some() {
+                mutations.set_standard_visual(id, None);
+            }
+            true
+        }
+        crate::WidgetKind::ActionMenu => {
+            RuntimeActionMenu::new()
+                .trigger(widget.props.display_label())
+                .open(widget.props.active || widget.props.toggled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::ActionMenuItem => {
+            let mut component = RuntimeActionMenuItem::new(widget.props.display_label())
+                .active(widget.props.active)
+                .danger(crate::widget_map::action_menu_item_danger(&widget.props))
+                .disabled(widget.props.disabled)
+                .size(widget.props.size);
+            if !widget.props.hint.is_empty() {
+                component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::XYPad => {
+            let ((x_min, x_max), (y_min, y_max)) = crate::widget_map::xy_pad_ranges(&widget.props);
+            let mut component = RuntimeXYPad::new(crate::widget_map::xy_pad_value(&widget.props))
+                .x_range(x_min, x_max)
+                .y_range(y_min, y_max)
+                .size(widget.props.size)
+                .disabled(widget.props.disabled)
+                .loading(widget.props.loading)
+                .invalid(widget.props.invalid);
+            if widget.props.step.is_finite() && widget.props.step > 0.0 {
+                component = component.step(widget.props.step);
+            }
+            let label = widget.props.display_label();
+            if !label.is_empty() {
+                component = component.label(Arc::<str>::from(label));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::QrCode => {
+            let label = if widget.props.display_label().is_empty() {
+                "QR code"
+            } else {
+                widget.props.display_label()
+            };
+            let size = match widget.props.layout.width {
+                Some(nana_ui_core::LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => px,
+                _ => RuntimeQrCode::DEFAULT_SIZE,
+            };
+            if let Some((modules, width)) = qr_modules_from_props(&widget.props)
+                && let Ok(component) = RuntimeQrCode::from_modules(modules, width, size)
+            {
+                component
+                    .label(Arc::<str>::from(label))
+                    .project(id, world, mutations);
+                return true;
+            }
+            let payload =
+                crate::widget_map::attr_value(&widget.props, &["payload", "data-payload", "value"])
+                    .unwrap_or(widget.props.value.as_str());
+            if !payload.is_empty()
+                && let Ok(component) = RuntimeQrCode::encode(payload, size)
+            {
+                component
+                    .label(Arc::<str>::from(label))
+                    .project(id, world, mutations);
+                return true;
+            }
+            RuntimeLabeledValue::new(label, payload).project(id, world, mutations);
+            true
+        }
         crate::WidgetKind::Checkbox => {
             RuntimeCheckbox::new(widget.props.display_label(), widget.props.toggled)
                 .disabled(widget.props.disabled || widget.props.loading)
@@ -2258,12 +2483,87 @@ fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::Select { .. }
                         | nana_ui_runtime::StandardVisual::MenuSurface { .. }
                         | nana_ui_runtime::StandardVisual::ActionMenuItem { .. }
+                        | nana_ui_runtime::StandardVisual::TreeView { .. }
+                        | nana_ui_runtime::StandardVisual::CommandPalette { .. }
+                        | nana_ui_runtime::StandardVisual::ModalFrame { .. }
                 )
             ) {
                 mutations.set_standard_visual(id, None);
             }
             false
         }
+    }
+}
+
+fn qr_modules_from_props(props: &crate::WidgetProps) -> Option<(Arc<[bool]>, usize)> {
+    let raw = crate::widget_map::attr_value(props, &["modules", "data-modules"])?;
+    let width_hint = crate::widget_map::attr_value(
+        props,
+        &["module-width", "modules-width", "data-module-width"],
+    )
+    .and_then(|raw| raw.trim().parse().ok());
+    parse_qr_module_matrix(raw, width_hint)
+}
+
+fn parse_qr_module_matrix(raw: &str, width_hint: Option<usize>) -> Option<(Arc<[bool]>, usize)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let cells: Vec<bool> = if trimmed.chars().all(|c| c == '0' || c == '1') {
+        trimmed.chars().map(|c| c == '1').collect()
+    } else {
+        trimmed
+            .split(|c: char| matches!(c, '[' | ']' | ',' | ';' | ' ' | '\n' | '\t' | '\r'))
+            .filter(|part| !part.is_empty())
+            .map(|part| match part {
+                "1" | "true" | "TRUE" => Some(true),
+                "0" | "false" | "FALSE" => Some(false),
+                _ => None,
+            })
+            .collect::<Option<_>>()?
+    };
+    if cells.is_empty() {
+        return None;
+    }
+    let width = width_hint.or_else(|| {
+        let root = (cells.len() as f64).sqrt() as usize;
+        (root > 0 && root.saturating_mul(root) == cells.len()).then_some(root)
+    })?;
+    if width == 0 || width.checked_mul(width) != Some(cells.len()) {
+        return None;
+    }
+    Some((Arc::<[bool]>::from(cells), width))
+}
+
+fn vue_confirm_dialog(props: &crate::WidgetProps) -> bool {
+    if props.role.eq_ignore_ascii_case("alertdialog") {
+        return true;
+    }
+    if matches!(props.button_kind, nana_ui_core::ButtonKind::Danger) {
+        return true;
+    }
+    if props.attrs.get("data-variant").is_some_and(|value| {
+        value.eq_ignore_ascii_case("confirm") || value.eq_ignore_ascii_case("alertdialog")
+    }) {
+        return true;
+    }
+    props.class_names.iter().any(|class| {
+        matches!(
+            class.as_str(),
+            "nana-confirm" | "nana-confirm-dialog" | "nana-alertdialog"
+        )
+    })
+}
+
+fn vue_confirm_danger(props: &crate::WidgetProps) -> bool {
+    matches!(props.button_kind, nana_ui_core::ButtonKind::Danger)
+}
+
+fn vue_drawer_side(props: &crate::WidgetProps) -> nana_ui_core::DrawerSide {
+    match props.side.to_ascii_lowercase().as_str() {
+        "left" | "start" => nana_ui_core::DrawerSide::Left,
+        _ => nana_ui_core::DrawerSide::Right,
     }
 }
 
@@ -2380,7 +2680,11 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
             AccessibilityRole::Text
         }
         crate::WidgetKind::Dialog => AccessibilityRole::Dialog,
-        crate::WidgetKind::ContextMenu => AccessibilityRole::Menu,
+        crate::WidgetKind::ContextMenu | crate::WidgetKind::ActionMenu => AccessibilityRole::Menu,
+        crate::WidgetKind::ActionMenuItem => AccessibilityRole::MenuItem,
+        crate::WidgetKind::Tooltip => AccessibilityRole::Tooltip,
+        crate::WidgetKind::XYPad => AccessibilityRole::Slider,
+        crate::WidgetKind::QrCode => AccessibilityRole::Image,
         crate::WidgetKind::Icon => AccessibilityRole::Image,
         _ => AccessibilityRole::Generic,
     }
@@ -3414,6 +3718,254 @@ mod tests {
                 girth,
                 tone: nana_ui_core::StatusTone::Warning,
             }) if (value_ratio - 0.65).abs() < 0.001 && (girth - 8.0).abs() < 0.001
+        ));
+    }
+
+    #[test]
+    fn qualified_candidate_leaves_project_runtime_visuals() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let area = doc.create_element("nana-textarea");
+        let select = doc.create_element("nana-select");
+        let dialog = doc.create_element("nana-dialog");
+        let confirm = doc.create_element("nana-confirm-dialog");
+        let drawer = doc.create_element("nana-drawer");
+        doc.insert(area, doc.mount_root(), None);
+        doc.insert(select, doc.mount_root(), None);
+        doc.insert(dialog, doc.mount_root(), None);
+        doc.insert(confirm, doc.mount_root(), None);
+        doc.insert(drawer, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            area.0,
+            crate::WidgetKind::Textarea,
+            crate::WidgetProps {
+                value: "line\nbreak".into(),
+                placeholder: "Notes".into(),
+                invalid: true,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            select.0,
+            crate::WidgetKind::Select,
+            crate::WidgetProps {
+                value: "code".into(),
+                options: vec![crate::SelectOptionProp {
+                    value: "code".into(),
+                    label: "Code".into(),
+                    disabled: false,
+                }],
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            dialog.0,
+            crate::WidgetKind::Dialog,
+            crate::WidgetProps {
+                label: "Rename".into(),
+                hint: "Choose a name".into(),
+                ..Default::default()
+            },
+        );
+        let mut confirm_props = crate::WidgetProps {
+            label: "Delete".into(),
+            hint: "This cannot be undone.".into(),
+            ..Default::default()
+        };
+        confirm_props.class_names.push("nana-confirm-dialog".into());
+        bridge.register(confirm.0, crate::WidgetKind::Dialog, confirm_props);
+        bridge.register(
+            drawer.0,
+            crate::WidgetKind::Drawer,
+            crate::WidgetProps {
+                label: "Inspector".into(),
+                side: "left".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let area_id = StableNodeId::try_from(area).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(area_id),
+            Some(nana_ui_runtime::StandardVisual::TextInput { invalid: true, .. })
+        ));
+        assert_eq!(
+            doc.runtime
+                .text_input(area_id)
+                .map(|state| state.value.as_str()),
+            Some("line\nbreak")
+        );
+        let select_id = StableNodeId::try_from(select).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(select_id),
+            Some(nana_ui_runtime::StandardVisual::Select { .. })
+        ));
+        let dialog_id = StableNodeId::try_from(dialog).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(dialog_id),
+            Some(nana_ui_runtime::StandardVisual::ModalFrame {
+                kind: nana_ui_runtime::ModalSurfaceKind::Dialog(_),
+                ..
+            })
+        ));
+        let confirm_id = StableNodeId::try_from(confirm).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(confirm_id),
+            Some(nana_ui_runtime::StandardVisual::ModalFrame {
+                kind: nana_ui_runtime::ModalSurfaceKind::Confirm(_),
+                ..
+            })
+        ));
+        let drawer_id = StableNodeId::try_from(drawer).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(drawer_id),
+            Some(nana_ui_runtime::StandardVisual::ModalFrame {
+                kind: nana_ui_runtime::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn qualified_runtime_leaves_project_toast_menu_xypad_and_qr() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let toast = doc.create_element("nana-toast");
+        let tooltip = doc.create_element("nana-tooltip");
+        let menu = doc.create_element("nana-action-menu");
+        let item = doc.create_element("nana-action-menu-item");
+        let pad = doc.create_element("nana-xy-pad");
+        let qr = doc.create_element("nana-qr-code");
+        let qr_payload = doc.create_element("nana-qr");
+        doc.insert(toast, doc.mount_root(), None);
+        doc.insert(tooltip, doc.mount_root(), None);
+        doc.insert(menu, doc.mount_root(), None);
+        doc.insert(item, menu, None);
+        doc.insert(pad, doc.mount_root(), None);
+        doc.insert(qr, doc.mount_root(), None);
+        doc.insert(qr_payload, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut toast_props = crate::WidgetProps {
+            label: "Saved".into(),
+            hint: "Project exported".into(),
+            ..Default::default()
+        };
+        toast_props.attrs.insert("tone".into(), "success".into());
+        toast_props
+            .attrs
+            .insert("dismissible".into(), String::new());
+        bridge.register(toast.0, crate::WidgetKind::Toast, toast_props);
+        bridge.register(
+            tooltip.0,
+            crate::WidgetKind::Tooltip,
+            crate::WidgetProps {
+                label: "Hint".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            menu.0,
+            crate::WidgetKind::ActionMenu,
+            crate::WidgetProps {
+                label: "Actions".into(),
+                active: true,
+                ..Default::default()
+            },
+        );
+        let mut item_props = crate::WidgetProps {
+            label: "Delete".into(),
+            hint: "⌫".into(),
+            active: true,
+            disabled: false,
+            button_kind: nana_ui_core::ButtonKind::Danger,
+            ..Default::default()
+        };
+        item_props.attrs.insert("danger".into(), String::new());
+        bridge.register(item.0, crate::WidgetKind::ActionMenuItem, item_props);
+        let mut pad_props = crate::WidgetProps {
+            number: 0.25,
+            min: 0.0,
+            max: 1.0,
+            step: 0.0,
+            invalid: true,
+            disabled: true,
+            loading: true,
+            label: "Pan".into(),
+            ..Default::default()
+        };
+        pad_props.attrs.insert("y".into(), "0.75".into());
+        bridge.register(pad.0, crate::WidgetKind::XYPad, pad_props);
+        let mut qr_props = crate::WidgetProps {
+            label: "Pairing".into(),
+            ..Default::default()
+        };
+        qr_props.attrs.insert("modules".into(), "1,0,0,1".into());
+        qr_props.attrs.insert("module-width".into(), "2".into());
+        bridge.register(qr.0, crate::WidgetKind::QrCode, qr_props);
+        let mut payload_props = crate::WidgetProps {
+            label: "Pairing".into(),
+            value: "nana://pair".into(),
+            ..Default::default()
+        };
+        payload_props
+            .attrs
+            .insert("payload".into(), "nana://pair".into());
+        bridge.register(qr_payload.0, crate::WidgetKind::QrCode, payload_props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let toast_id = StableNodeId::try_from(toast).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(toast_id),
+            Some(nana_ui_runtime::StandardVisual::Toast {
+                tone: nana_ui_core::ToastTone::Success,
+                dismissible: true,
+                ..
+            })
+        ));
+        let tooltip_id = StableNodeId::try_from(tooltip).unwrap();
+        // Runtime Tooltip is label + a11y only; no StandardVisual leaf.
+        assert_eq!(doc.runtime.standard_visual(tooltip_id), None);
+        assert_eq!(doc.runtime.text(tooltip_id), Some("Hint"));
+        assert_eq!(
+            doc.runtime.accessibility(tooltip_id).unwrap().role,
+            AccessibilityRole::Tooltip
+        );
+        let menu_id = StableNodeId::try_from(menu).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(menu_id),
+            Some(nana_ui_runtime::StandardVisual::MenuSurface {
+                kind: nana_ui_runtime::MenuSurfaceKind::ActionMenu,
+                ..
+            })
+        ));
+        let item_id = StableNodeId::try_from(item).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(item_id),
+            Some(nana_ui_runtime::StandardVisual::ActionMenuItem {
+                danger: true,
+                active: true,
+                disabled: false,
+                ..
+            })
+        ));
+        let pad_id = StableNodeId::try_from(pad).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(pad_id),
+            Some(nana_ui_runtime::StandardVisual::XYPad {
+                invalid: true,
+                disabled: true,
+                ..
+            })
+        ));
+        let qr_id = StableNodeId::try_from(qr).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(qr_id),
+            Some(nana_ui_runtime::StandardVisual::QrCode { width: 2, .. })
+        ));
+        let payload_id = StableNodeId::try_from(qr_payload).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(payload_id),
+            Some(nana_ui_runtime::StandardVisual::QrCode { width, .. }) if width >= 21
         ));
     }
 

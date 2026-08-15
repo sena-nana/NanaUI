@@ -35,6 +35,53 @@ impl From<String> for ActionId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionPickerNavigation {
+    Previous,
+    Next,
+    First,
+    Last,
+    Confirm,
+    Dismiss,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandPaletteItem {
+    pub action: ActionId,
+    pub label: String,
+    pub category: Option<String>,
+    pub shortcut: Option<String>,
+}
+
+impl CommandPaletteItem {
+    pub fn new(action: impl Into<ActionId>, label: impl Into<String>) -> Self {
+        Self {
+            action: action.into(),
+            label: label.into(),
+            category: None,
+            shortcut: None,
+        }
+    }
+
+    pub fn category(mut self, category: impl Into<String>) -> Self {
+        self.category = Some(category.into());
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandPaletteEvent {
+    Search(String),
+    Select(ActionId),
+    Navigate(ActionPickerNavigation),
+    Dismiss,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyContext {
     tags: BTreeSet<String>,

@@ -91,6 +91,8 @@ pub enum ScenePrimitiveKind {
         shaping: TextShaping,
         horizontal_alignment: TextHorizontalAlignment,
         vertical_alignment: TextVerticalAlignment,
+        /// Theme-resolved committed-text spans. Empty means solid `color`.
+        spans: Vec<SceneTextSpan>,
     },
     Icon {
         icon: Icon,
@@ -101,6 +103,14 @@ pub enum ScenePrimitiveKind {
         color: Option<[f32; 4]>,
     },
     Custom(CustomRenderNode),
+}
+
+/// One paint-ready span inside a [`ScenePrimitiveKind::Text`] primitive.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneTextSpan {
+    pub start: usize,
+    pub end: usize,
+    pub color: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -515,6 +525,8 @@ impl UiScene {
                         | StandardVisual::XYPad { .. }
                         | StandardVisual::Select { .. }
                         | StandardVisual::ActionMenuItem { .. }
+                        | StandardVisual::TreeView { .. }
+                        | StandardVisual::CommandPalette { .. }
                 )
             );
             let component_focus_ring = node.focused
@@ -616,6 +628,8 @@ impl UiScene {
                         | ComponentGeometry::Select { .. }
                         | ComponentGeometry::ActionMenuItem { .. }
                         | ComponentGeometry::MenuSurface { .. }
+                        | ComponentGeometry::TreeView { .. }
+                        | ComponentGeometry::CommandPalette { .. }
                 )
             );
             if let Some(text) = node
@@ -685,6 +699,7 @@ impl UiScene {
                         },
                         horizontal_alignment: node.source_style.text_horizontal_alignment,
                         vertical_alignment: node.source_style.text_vertical_alignment,
+                        spans: scene_text_spans(&node, &text.value),
                     },
                 });
             }
@@ -1484,6 +1499,35 @@ impl UiScene {
                         });
                         for (index, option) in menu.options.iter().enumerate() {
                             let index = u8::try_from(index).unwrap_or(u8::MAX);
+                            if option.checked {
+                                let mut mark = component_text_primitive(
+                                    id,
+                                    70u8.saturating_add(index),
+                                    &nana_ui_runtime::ComponentTextRegion {
+                                        bounds: nana_ui_runtime::LayoutBox {
+                                            x: option.bounds.x,
+                                            y: option.bounds.y,
+                                            width: 16.0,
+                                            height: option.bounds.height,
+                                        },
+                                        content: Arc::from("✓"),
+                                        color: node
+                                            .standard_visual_foreground
+                                            .or(option.label.color),
+                                        font_size: option.label.font_size,
+                                        font_weight: Some(700),
+                                    },
+                                    TextHorizontalAlignment::Center,
+                                    false,
+                                    &node,
+                                    transform,
+                                    parent_clips.to_vec(),
+                                    opacity,
+                                    node_order,
+                                );
+                                mark.z_index = menu_z;
+                                self.insert_primitive(mark);
+                            }
                             if let Some(background) = option.background {
                                 self.insert_primitive(visual_quad(
                                     &VisualPrimitiveContext {
@@ -1565,6 +1609,262 @@ impl UiScene {
                             opacity,
                             node_order,
                         ));
+                    }
+                }
+                Some(ComponentGeometry::TreeView { rows }) => {
+                    for (index, row) in rows.iter().enumerate() {
+                        let index = u8::try_from(index).unwrap_or(u8::MAX);
+                        if let Some(background) = row.background {
+                            self.insert_primitive(visual_quad(
+                                &VisualPrimitiveContext {
+                                    node: id,
+                                    transform,
+                                    clips: &clips,
+                                    opacity,
+                                    z_index: node.z_index,
+                                    document_order: node_order,
+                                },
+                                10u8.saturating_add(index),
+                                scene_rect(row.bounds),
+                                VisualQuadStyle {
+                                    background: Some(background),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: UI_METRICS.radius_sm,
+                                },
+                            ));
+                        }
+                        if let Some(disclosure) = row.disclosure {
+                            self.insert_primitive(component_text_primitive(
+                                id,
+                                40u8.saturating_add(index),
+                                &nana_ui_runtime::ComponentTextRegion {
+                                    bounds: disclosure,
+                                    content: Arc::from(if row.expanded { "▾" } else { "▸" }),
+                                    color: row.label.color,
+                                    font_size: row.label.font_size,
+                                    font_weight: None,
+                                },
+                                TextHorizontalAlignment::Center,
+                                false,
+                                &node,
+                                transform,
+                                clips.clone(),
+                                opacity,
+                                node_order,
+                            ));
+                        }
+                        if let Some((icon, icon_bounds, color)) = row.icon {
+                            self.insert_primitive(ScenePrimitive {
+                                id: PrimitiveId {
+                                    node: id,
+                                    slot: 80u8.saturating_add(index),
+                                },
+                                node: id,
+                                bounds: scene_rect(icon_bounds),
+                                transform,
+                                clips: clips.clone(),
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                                kind: ScenePrimitiveKind::Icon {
+                                    icon,
+                                    color: Some(color),
+                                },
+                            });
+                        }
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            110u8.saturating_add(index),
+                            &row.label,
+                            TextHorizontalAlignment::Start,
+                            true,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
+                }
+                Some(ComponentGeometry::CommandPalette {
+                    scrim,
+                    surface,
+                    title,
+                    input,
+                    empty,
+                    rows,
+                    background,
+                    input_background,
+                    input_border,
+                    elevation,
+                }) => {
+                    let overlay_z = node.z_index.max(1_000);
+                    self.insert_primitive(visual_quad(
+                        &VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &parent_clips,
+                            opacity,
+                            z_index: overlay_z,
+                            document_order: node_order,
+                        },
+                        10,
+                        scene_rect(*scrim),
+                        VisualQuadStyle {
+                            background: Some([0.0, 0.0, 0.0, 0.45]),
+                            border_color: None,
+                            border_width: 0.0,
+                            corner_radius: 0.0,
+                        },
+                    ));
+                    self.insert_primitive(ScenePrimitive {
+                        id: PrimitiveId { node: id, slot: 11 },
+                        node: id,
+                        bounds: scene_rect(*surface),
+                        transform,
+                        clips: parent_clips.to_vec(),
+                        opacity,
+                        z_index: overlay_z,
+                        document_order: node_order,
+                        kind: ScenePrimitiveKind::Quad {
+                            background: Some(*background),
+                            border_color: None,
+                            border_width: 0.0,
+                            corner_radius: UI_METRICS.radius_md,
+                            shadow: Some(*elevation),
+                        },
+                    });
+                    let mut title_text = component_text_primitive(
+                        id,
+                        2,
+                        title,
+                        TextHorizontalAlignment::Start,
+                        false,
+                        &node,
+                        transform,
+                        parent_clips.to_vec(),
+                        opacity,
+                        node_order,
+                    );
+                    title_text.z_index = overlay_z;
+                    self.insert_primitive(title_text);
+                    self.insert_primitive(visual_quad(
+                        &VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &parent_clips,
+                            opacity,
+                            z_index: overlay_z,
+                            document_order: node_order,
+                        },
+                        12,
+                        scene_rect(input.bounds),
+                        VisualQuadStyle {
+                            background: Some(*input_background),
+                            border_color: Some(*input_border),
+                            border_width: 1.0,
+                            corner_radius: UI_METRICS.radius_sm,
+                        },
+                    ));
+                    let mut input_text = component_text_primitive(
+                        id,
+                        3,
+                        input,
+                        TextHorizontalAlignment::Start,
+                        true,
+                        &node,
+                        transform,
+                        parent_clips.to_vec(),
+                        opacity,
+                        node_order,
+                    );
+                    input_text.z_index = overlay_z;
+                    self.insert_primitive(input_text);
+                    if let Some(empty) = empty {
+                        let mut empty_text = component_text_primitive(
+                            id,
+                            4,
+                            empty,
+                            TextHorizontalAlignment::Start,
+                            false,
+                            &node,
+                            transform,
+                            parent_clips.to_vec(),
+                            opacity,
+                            node_order,
+                        );
+                        empty_text.z_index = overlay_z;
+                        self.insert_primitive(empty_text);
+                    }
+                    for (index, row) in rows.iter().enumerate() {
+                        let index = u8::try_from(index).unwrap_or(u8::MAX);
+                        if let Some(background) = row.background {
+                            self.insert_primitive(visual_quad(
+                                &VisualPrimitiveContext {
+                                    node: id,
+                                    transform,
+                                    clips: &parent_clips,
+                                    opacity,
+                                    z_index: overlay_z,
+                                    document_order: node_order,
+                                },
+                                20u8.saturating_add(index),
+                                scene_rect(row.bounds),
+                                VisualQuadStyle {
+                                    background: Some(background),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: UI_METRICS.radius_sm,
+                                },
+                            ));
+                        }
+                        let mut label = component_text_primitive(
+                            id,
+                            40u8.saturating_add(index),
+                            &row.label,
+                            TextHorizontalAlignment::Start,
+                            true,
+                            &node,
+                            transform,
+                            parent_clips.to_vec(),
+                            opacity,
+                            node_order,
+                        );
+                        label.z_index = overlay_z;
+                        self.insert_primitive(label);
+                        if let Some(category) = &row.category {
+                            let mut category = component_text_primitive(
+                                id,
+                                70u8.saturating_add(index),
+                                category,
+                                TextHorizontalAlignment::Start,
+                                true,
+                                &node,
+                                transform,
+                                parent_clips.to_vec(),
+                                opacity,
+                                node_order,
+                            );
+                            category.z_index = overlay_z;
+                            self.insert_primitive(category);
+                        }
+                        if let Some(shortcut) = &row.shortcut {
+                            let mut shortcut = component_text_primitive(
+                                id,
+                                100u8.saturating_add(index),
+                                shortcut,
+                                TextHorizontalAlignment::End,
+                                true,
+                                &node,
+                                transform,
+                                parent_clips.to_vec(),
+                                opacity,
+                                node_order,
+                            );
+                            shortcut.z_index = overlay_z;
+                            self.insert_primitive(shortcut);
+                        }
                     }
                 }
                 Some(ComponentGeometry::MenuSurface {
@@ -1782,6 +2082,7 @@ impl UiScene {
                                 shaping: TextShaping::Auto,
                                 horizontal_alignment: TextHorizontalAlignment::Center,
                                 vertical_alignment: TextVerticalAlignment::Center,
+                                spans: Vec::new(),
                             },
                         });
                     }
@@ -2117,7 +2418,9 @@ impl UiScene {
                     | StandardVisual::QrCode { .. }
                     | StandardVisual::Select { .. }
                     | StandardVisual::MenuSurface { .. }
-                    | StandardVisual::ActionMenuItem { .. },
+                    | StandardVisual::ActionMenuItem { .. }
+                    | StandardVisual::TreeView { .. }
+                    | StandardVisual::CommandPalette { .. },
                 ) => {
                     // The row surface and fallback label are emitted above;
                     // typed slots remain ordinary retained child nodes.
@@ -2359,8 +2662,35 @@ fn component_text_primitive(
             } else {
                 TextVerticalAlignment::Center
             },
+            spans: scene_text_spans(node, region.content.as_ref()),
         },
     }
+}
+
+fn scene_text_spans(node: &ExtractedNode, content: &str) -> Vec<SceneTextSpan> {
+    if node.text_spans.is_empty() {
+        return Vec::new();
+    }
+    let Some(source) = node.text.as_ref() else {
+        return Vec::new();
+    };
+    if source.value != content {
+        return Vec::new();
+    }
+    node.text_spans
+        .iter()
+        .filter(|span| {
+            span.start < span.end
+                && span.end <= content.len()
+                && content.is_char_boundary(span.start)
+                && content.is_char_boundary(span.end)
+        })
+        .map(|span| SceneTextSpan {
+            start: span.start,
+            end: span.end,
+            color: span.color,
+        })
+        .collect()
 }
 
 struct VisualPrimitiveContext<'a> {
@@ -2489,11 +2819,49 @@ mod tests {
             focused: false,
             ime: None,
             text_input: None,
+            text_spans: Vec::new(),
             standard_visual: None,
             component_geometry: None,
             standard_visual_foreground: None,
             custom_render: None,
         }
+    }
+
+    #[test]
+    fn extracted_text_spans_travel_on_the_text_primitive() {
+        let mut labeled = node(1, None, &[]);
+        labeled.text = Some(TextContent {
+            value: "fn main".into(),
+        });
+        labeled.text_spans = vec![nana_ui_runtime::ExtractedTextSpan {
+            start: 0,
+            end: 2,
+            color: [0.2, 0.6, 1.0, 1.0],
+        }];
+        let mut scene = UiScene::new();
+        scene.apply_delta([labeled], []);
+        let Some(ScenePrimitiveKind::Text {
+            ref content,
+            ref spans,
+            ..
+        }) = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 2,
+            })
+            .map(|primitive| primitive.kind.clone())
+        else {
+            panic!("expected a text primitive");
+        };
+        assert_eq!(content, "fn main");
+        assert_eq!(
+            spans,
+            &vec![SceneTextSpan {
+                start: 0,
+                end: 2,
+                color: [0.2, 0.6, 1.0, 1.0],
+            }]
+        );
     }
 
     #[test]

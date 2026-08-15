@@ -35,19 +35,16 @@ use iced::widget::{Space, column, container, row, scrollable, space, stack, text
 use iced::{Alignment, Background, Border, Color, Element, Event, Length, Padding, Shadow, Size};
 use iced::{Point, Rectangle, Renderer, Theme};
 use nana_ui::compatibility::{
-    Button, Card, Checkbox, EmptyState, FormField, IconButton, Input, InteractiveCard,
-    LabeledValue, LevelMeter, ListItem, Progress, RangeField, SegmentedControl, Skeleton, Spinner,
-    StatusBadge, Switch, ValidationMessage,
+    ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, ConfirmDialog, Dialog, Drawer,
+    EmptyState, FormField, IconButton, Input, InteractiveCard, LabeledValue, LevelMeter, ListItem,
+    OverlayHost, Popover, Progress, RangeField, SegmentedControl, Select, Skeleton, Spinner,
+    StatusBadge, Switch, Textarea, Tooltip, ValidationMessage,
 };
 use nana_ui::{
-    ActionMenuItem, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ConfirmDialog,
-    ControlSize, Dialog, Drawer, DrawerSide, HostTextureBinding, HostTextureRegistry, Icon,
-    Popover, Select, SelectionOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState,
-    SidebarRowTone, Tabs, Textarea, ThemeTokens, Tooltip, TooltipConfig, TooltipPlacement, icon,
-    ui_font,
-};
-use nana_ui::{
-    AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
+    AnchoredMenuPlacement, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ContextMenuEvent,
+    ContextMenuHost, ControlSize, DrawerSide, HostTextureBinding, HostTextureRegistry, Icon,
+    SelectionOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Tabs,
+    ThemeTokens, TooltipConfig, TooltipPlacement, icon, ui_font,
 };
 use nana_ui_scene::UiScene;
 use nana_ui_web_api::{CanvasBitmap, SharedCanvasRuntime};
@@ -786,6 +783,30 @@ fn runtime_component_for_widget(
             )
         }
         WidgetKind::Input => Some(nana_ui::component_ids::TEXT_INPUT),
+        WidgetKind::Textarea => Some(nana_ui::component_ids::TEXTAREA),
+        WidgetKind::Select => Some(nana_ui::component_ids::SELECT),
+        // Scene paints the Runtime subtree, so Dialog/Drawer/Popover may have
+        // children. Searchable ContextMenu stays on ContextMenuHost.
+        WidgetKind::Dialog => Some(if is_confirm_dialog_props(&widget.props) {
+            nana_ui::component_ids::CONFIRM_DIALOG
+        } else {
+            nana_ui::component_ids::DIALOG
+        }),
+        WidgetKind::Drawer => Some(nana_ui::component_ids::DRAWER),
+        WidgetKind::Popover => Some(nana_ui::component_ids::POPOVER),
+        WidgetKind::ContextMenu if !context_menu_requires_iced_host(&widget.props) => {
+            Some(if is_action_menu_props(&widget.props) {
+                nana_ui::component_ids::ACTION_MENU
+            } else {
+                nana_ui::component_ids::CONTEXT_MENU
+            })
+        }
+        WidgetKind::ActionMenu => Some(nana_ui::component_ids::ACTION_MENU),
+        WidgetKind::ActionMenuItem => Some(nana_ui::component_ids::ACTION_MENU_ITEM),
+        WidgetKind::Toast => Some(nana_ui::component_ids::TOAST),
+        WidgetKind::Tooltip => Some(nana_ui::component_ids::TOOLTIP),
+        WidgetKind::XYPad => Some(nana_ui::component_ids::XY_PAD),
+        WidgetKind::QrCode => Some(nana_ui::component_ids::QR_CODE),
         WidgetKind::StatusBadge => Some(nana_ui::component_ids::STATUS_BADGE),
         WidgetKind::ValidationMessage => Some(nana_ui::component_ids::VALIDATION_MESSAGE),
         WidgetKind::LabeledValue if first_button_child_id(snap, widget).is_none() => {
@@ -1298,6 +1319,26 @@ where
                     meter = meter.height(height);
                 }
                 meter.view(tokens)
+            }
+            // Scene routing for Toast / Tooltip / ActionMenu* / XYPad / QrCode
+            // is wired separately; keep a labeled compatibility slot until then.
+            WidgetKind::Toast
+            | WidgetKind::Tooltip
+            | WidgetKind::ActionMenu
+            | WidgetKind::ActionMenuItem
+            | WidgetKind::XYPad
+            | WidgetKind::QrCode => {
+                let label = widget.props.display_label();
+                if label.is_empty() {
+                    space().width(Length::Shrink).height(Length::Shrink).into()
+                } else {
+                    label_text(
+                        label.to_string(),
+                        widget.props.size,
+                        &widget.props.layout,
+                        parent_box.width,
+                    )
+                }
             }
         }
     });
@@ -2203,6 +2244,21 @@ where
                 meter = meter.height(height);
             }
             meter.view(tokens)
+        }
+        // Scene routing for Toast / Tooltip / ActionMenu* / XYPad / QrCode
+        // is wired separately; keep a labeled compatibility slot until then.
+        WidgetKind::Toast
+        | WidgetKind::Tooltip
+        | WidgetKind::ActionMenu
+        | WidgetKind::ActionMenuItem
+        | WidgetKind::XYPad
+        | WidgetKind::QrCode => {
+            let label = owned_display(&props);
+            if label.is_empty() {
+                space().width(Length::Shrink).height(Length::Shrink).into()
+            } else {
+                label_text(label, props.size, &props.layout, parent_box.width)
+            }
         }
     };
     finish(content)

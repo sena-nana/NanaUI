@@ -82,6 +82,18 @@ pub enum WidgetKind {
     /// prepared (`anchor-x` / `anchor-y`, search when ≥6 options or `search` class;
     /// nested via `parent/child` option values). Falls back to AnchoredActionMenu.
     ContextMenu,
+    /// Outlined notification → Runtime `Toast`.
+    Toast,
+    /// Compact label-only hover card → Runtime `Tooltip`.
+    Tooltip,
+    /// Trigger-bound action menu → Runtime `ActionMenu`.
+    ActionMenu,
+    /// Selectable menu row → Runtime `ActionMenuItem`.
+    ActionMenuItem,
+    /// Two-axis pad → Runtime `XYPad`.
+    XYPad,
+    /// Scanner-safe QR matrix → Runtime `QrCode` when modules are supplied.
+    QrCode,
 }
 
 impl WidgetKind {
@@ -125,6 +137,12 @@ impl WidgetKind {
             "drawer" | "sheet" => Self::Drawer,
             "popover" => Self::Popover,
             "context-menu" | "contextmenu" => Self::ContextMenu,
+            "toast" => Self::Toast,
+            "tooltip" => Self::Tooltip,
+            "action-menu" | "actionmenu" => Self::ActionMenu,
+            "action-menu-item" | "actionmenuitem" => Self::ActionMenuItem,
+            "xy-pad" | "xypad" | "xy_pad" => Self::XYPad,
+            "qr-code" | "qr" | "qrcode" => Self::QrCode,
             _ => return None,
         })
     }
@@ -166,6 +184,12 @@ impl WidgetKind {
             Self::Drawer => "drawer",
             Self::Popover => "popover",
             Self::ContextMenu => "context-menu",
+            Self::Toast => "toast",
+            Self::Tooltip => "tooltip",
+            Self::ActionMenu => "action-menu",
+            Self::ActionMenuItem => "action-menu-item",
+            Self::XYPad => "xy-pad",
+            Self::QrCode => "qr-code",
         }
     }
 
@@ -206,6 +230,12 @@ impl WidgetKind {
             Self::Drawer => "nana-drawer",
             Self::Popover => "nana-popover",
             Self::ContextMenu => "nana-context-menu",
+            Self::Toast => "nana-toast",
+            Self::Tooltip => "nana-tooltip",
+            Self::ActionMenu => "nana-action-menu",
+            Self::ActionMenuItem => "nana-action-menu-item",
+            Self::XYPad => "nana-xy-pad",
+            Self::QrCode => "nana-qr-code",
         }
     }
 
@@ -225,7 +255,13 @@ impl WidgetKind {
     pub fn is_overlay(self) -> bool {
         matches!(
             self,
-            Self::Dialog | Self::Drawer | Self::Popover | Self::ContextMenu
+            Self::Dialog
+                | Self::Drawer
+                | Self::Popover
+                | Self::ContextMenu
+                | Self::Toast
+                | Self::Tooltip
+                | Self::ActionMenu
         )
     }
 }
@@ -527,6 +563,72 @@ impl WidgetProps {
             }
             "muted" => self.muted = host_truthy(value),
             "invalid" => self.invalid = host_truthy(value),
+            "danger" => {
+                if host_truthy(value) {
+                    self.button_kind = ButtonKind::Danger;
+                    self.attrs.insert("danger".into(), String::new());
+                } else {
+                    self.attrs.remove("danger");
+                }
+            }
+            "dismissible" | "closable" => {
+                if host_truthy(value) {
+                    self.attrs.insert(key.clone(), String::new());
+                } else {
+                    self.attrs.remove(&key);
+                }
+            }
+            "ondismiss" | "on-dismiss" => {
+                self.attrs.insert("ondismiss".into(), String::new());
+            }
+            "x" => {
+                self.number = host_f32(value, self.number);
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("x");
+                } else {
+                    self.attrs.insert("x".into(), s);
+                }
+            }
+            "y" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("y");
+                } else {
+                    self.attrs.insert("y".into(), s);
+                }
+            }
+            "x-min" | "xmin" | "x-max" | "xmax" | "y-min" | "ymin" | "y-max" | "ymax" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove(&key);
+                } else {
+                    self.attrs.insert(key, s);
+                }
+            }
+            "modules" => {
+                let encoded = encode_qr_modules_attr(value);
+                if encoded.is_empty() {
+                    self.attrs.remove("modules");
+                } else {
+                    self.attrs.insert("modules".into(), encoded);
+                }
+            }
+            "payload" => {
+                let s = host_string(value);
+                self.attrs.insert("payload".into(), s.clone());
+                if self.value.is_empty() {
+                    self.value = s;
+                }
+            }
+            "module-width" | "modules-width" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("module-width");
+                } else {
+                    self.attrs.insert("module-width".into(), s);
+                }
+            }
             "tone" | "data-tone" => {
                 let s = host_string(value);
                 self.attrs.insert("tone".into(), s.clone());
@@ -3610,6 +3712,26 @@ fn overlay_presence_implies_open(props: &WidgetProps) -> bool {
                 || open.eq_ignore_ascii_case("true")
                 || open.eq_ignore_ascii_case("open")
         })
+}
+
+fn encode_qr_modules_attr(value: &nana_js_engine::HostValue) -> String {
+    match value {
+        nana_js_engine::HostValue::Array(items) => items
+            .iter()
+            .map(|item| {
+                if matches!(item, nana_js_engine::HostValue::Number(n) if *n != 0.0)
+                    || host_truthy(item)
+                    || host_string(item) == "1"
+                {
+                    "1"
+                } else {
+                    "0"
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        _ => host_string(value),
+    }
 }
 
 fn host_f32(value: &nana_js_engine::HostValue, default: f32) -> f32 {
