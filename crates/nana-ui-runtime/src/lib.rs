@@ -6,6 +6,8 @@
 //! diagnostics, snapshots, or persisted data.
 
 mod animation;
+mod calendar;
+mod charts;
 mod command_palette;
 mod components;
 mod dock;
@@ -13,6 +15,10 @@ mod dropdown;
 mod feedback;
 mod form_surfaces;
 mod framework;
+mod gpu_slots;
+mod graph_canvas;
+mod image_viewer;
+mod key_layers;
 mod layout_engine;
 mod menus;
 mod mutation;
@@ -23,6 +29,8 @@ mod popover;
 mod presentation;
 mod qr_code;
 mod query;
+mod reorder_list;
+mod rich_text;
 mod schedule;
 mod search_dropdown;
 mod select;
@@ -40,6 +48,14 @@ mod world;
 mod xy_pad;
 
 pub use animation::{AnimationFrame, AnimationId, AnimationSample, AnimationSpec, Easing};
+pub use calendar::{
+    CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
+    CalendarHeatmapDatum, CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapLabelPaint,
+    CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions, CalendarLevelResolver,
+    CalendarLevelStrategy, CalendarMonthFormatter, CalendarTitleFormatter,
+    build_calendar_heatmap_model, calendar_cell_fill,
+};
+pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
 pub use command_palette::CommandPalette;
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
@@ -64,6 +80,24 @@ pub use framework::{
     OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription, Task,
     UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
 };
+pub use gpu_slots::{
+    GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
+    GpuViewPalette, RenderSlot, pack_gpu_revision, unpack_gpu_revision,
+};
+pub use graph_canvas::{
+    GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphEdgePaint,
+    GraphInteraction, GraphNodePaint, GraphPointerButton, GraphPortPaint, GraphScrollDelta,
+    wheel_zoom_factor,
+};
+pub use image_viewer::{
+    HOST_TEXTURE_RENDERER, ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent,
+    ImageViewerGeometry, ImageViewerHit, ImageViewerOffset, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
+};
+pub use key_layers::{
+    ActionDescriptor, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
+    KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeyModifiers, Keymap, KeymapLayer, KeymapMatch,
+    KeymapState,
+};
 pub use layout_engine::{LayoutViewport, RuntimeLayoutEngine};
 pub use menus::{
     ActionMenuItem, AnchoredActionMenu, ContextMenu, ContextMenuEvent, ContextMenuItem,
@@ -72,14 +106,18 @@ pub use menus::{
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
-    ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, JustifySpec, KeyContext,
+    ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, GRAPH_EDGE_HIT_TOLERANCE,
+    GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId, GraphEdge, GraphEdgeId,
+    GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId, GraphPoint, GraphPort,
+    GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection, GraphSize, GraphTarget,
+    GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport, JustifySpec, KeyContext,
     LayoutStyle, LengthSpec, PopoverAlignment, PopoverPlacement, PositionSpec, SemanticColorRole,
     StatusTone, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator,
     TabStripPaint, TableCursor, TableNavigation, ThemeMode, TreeNavigation, TreeNode,
     TreeViewEvent, ValidationIntent, VirtualListLayout, VirtualListMaterialization,
     VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
-    tree_navigation_event,
+    port_tangent, tree_navigation_event,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
@@ -94,6 +132,15 @@ pub use presentation::{
 #[cfg(feature = "syntax-highlighting")]
 pub use presentation::{HighlightPresentation, SyntectHighlighter};
 pub use qr_code::{QrCode, QrCodeError};
+pub use reorder_list::{
+    ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
+    TreeDropIntent, TreeDropPosition,
+};
+pub use rich_text::{
+    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
+    MarkdownTableAlignment, NativeMarkdown, RichSpan, RichTextEvent, SelectableRichText,
+    TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,
+};
 pub use schedule::SystemWork;
 pub use search_dropdown::{SearchDropdown, SearchDropdownEvent, SearchDropdownOption};
 pub use select::{Select, SelectChanged, SelectOption};
@@ -117,11 +164,12 @@ pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
 pub use view_components::{
-    Activate, Button, Card, Checkbox, ComponentView, Dialog, IconButton, IconButtonTooltip, List,
-    ListItem, ListItemSlots, Menu, MenuItem, OverlayChanged, OverlayHost, RangeAdjustment,
-    RangeChanged, RangeDragState, RangeField, ScrollAxes, ScrollChanged, ScrollView, Slider,
-    SliderChanged, SliderError, Switch, Tab, TabList, TabSelected, Table, TableCell,
-    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, ToggleChanged, Tooltip,
+    Activate, Button, Card, Checkbox, ComponentView, Dialog, HostedTextarea, IconButton,
+    IconButtonTooltip, List, ListItem, ListItemSlots, Menu, MenuItem, OverlayChanged, OverlayHost,
+    RangeAdjustment, RangeChanged, RangeDragState, RangeField, ScrollAxes, ScrollChanged,
+    ScrollView, Slider, SliderChanged, SliderError, Switch, Tab, TabList, TabSelected, Table,
+    TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, ToggleChanged,
+    Tooltip,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

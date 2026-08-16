@@ -23,6 +23,8 @@ iced-view = [
     "nana-ui/overlays",
     "nana-ui/popover",
     "nana-ui/gpu",
+    "nana-ui/syntax-highlighting",
+    "nana-ui-runtime/syntax-highlighting",
 ]
 # Direct adapter into nana-ui's existing multi-window hosted runtime.
 hosted = ["iced-view", "nana-ui/hosted"]

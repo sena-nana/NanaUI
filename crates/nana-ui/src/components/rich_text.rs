@@ -10,7 +10,10 @@ use pulldown_cmark::{
     Alignment as CmarkAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
 
-use crate::{SelectableRichText, TextSelectionGroup, TextSelectionSnapshot, ThemeTokens, ui_font};
+use crate::components::selectable_rich_text::{
+    SelectableRichText, TextSelectionGroup, TextSelectionSnapshot,
+};
+use crate::{ThemeTokens, ui_font};
 
 type VectorCache = Arc<Mutex<BTreeMap<VectorCacheKey, Option<Vec<u8>>>>>;
 

@@ -2986,6 +2986,33 @@ mod tests {
     }
 
     #[test]
+    fn textarea_language_routes_to_runtime_hosted_highlighter() {
+        let mut bridge = MessageBridge::new();
+        let mut highlighted = WidgetProps {
+            value: "fn main() {}".into(),
+            ..WidgetProps::default()
+        };
+        highlighted
+            .attrs
+            .insert("language".into(), "rs".into());
+        bridge.register(1, WidgetKind::Textarea, highlighted);
+        bridge.register(2, WidgetKind::Textarea, WidgetProps::default());
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::HOSTED_TEXTAREA)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::TEXTAREA)
+        );
+        assert_eq!(
+            crate::widget_map::highlight_language(&snap.get(1).unwrap().props),
+            Some("rs")
+        );
+    }
+
+    #[test]
     fn context_menu_uses_host_owned_menu_store() {
         use crate::menu_store::MenuStore;
 

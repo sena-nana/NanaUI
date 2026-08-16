@@ -79,17 +79,35 @@ pub mod runtime {
 /// opt into this namespace while completing their own migration.
 pub mod compatibility {
     pub use crate::components::actions::{Button, IconButton};
+    #[cfg(feature = "calendar")]
+    pub use crate::components::calendar::{
+        CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum,
+        CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapModel,
+        CalendarHeatmapMonthLabel, CalendarHeatmapOptions, CalendarHeatmapState,
+        CalendarLevelResolver, CalendarLevelStrategy, CalendarTitleFormatter,
+        build_calendar_heatmap_model,
+    };
+    #[cfg(feature = "charts")]
+    pub use crate::components::charts::TimeSeriesChart;
     #[cfg(feature = "overlays")]
     pub use crate::components::command_palette::CommandPalette;
+    #[cfg(feature = "syntax-highlighting")]
+    pub use crate::components::controls::HostedSyntaxHighlighting;
     #[cfg(feature = "controls")]
     pub use crate::components::controls::{
-        Checkbox, Input, RangeField, SegmentedControl, Select, SelectionOption, Switch, Tabs,
-        Textarea,
+        Checkbox, HostedTextarea, HostedTextareaState, Input, RangeField, SegmentedControl, Select,
+        SelectionOption, Switch, Tabs, Textarea,
     };
     #[cfg(feature = "feedback")]
     pub use crate::components::feedback::{
         LevelMeter, Progress, Skeleton, Spinner, StatusBadge, Toast, ValidationMessage,
     };
+    #[cfg(feature = "graph-canvas")]
+    pub use crate::components::graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
+    #[cfg(feature = "image-viewer")]
+    pub use crate::components::image_viewer::{ImageViewer, ImageViewerSource};
+    pub use crate::components::key_capture_layer::{KeyCaptureEvent, KeyCaptureLayer};
+    pub use crate::components::keymap_layer::KeymapLayer;
     pub use crate::components::menus::{ActionMenuItem, AnchoredActionMenu, OverlayHost};
     #[cfg(feature = "overlays")]
     pub use crate::components::overlays::{ConfirmDialog, Dialog, Drawer, Tooltip};
@@ -97,6 +115,19 @@ pub mod compatibility {
     pub use crate::components::popover::{ActionMenu, Popover};
     #[cfg(feature = "qr-code")]
     pub use crate::components::qr_code::QrCodeCanvas;
+    #[cfg(feature = "controls")]
+    pub use crate::components::reorder_list::{
+        ReorderItem, ReorderList, TreeDropIntent, TreeDropPosition,
+    };
+    #[cfg(feature = "rich-text")]
+    pub use crate::components::rich_text::{
+        MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
+        MarkdownTableAlignment, NativeMarkdown, native_markdown,
+    };
+    #[cfg(feature = "rich-text")]
+    pub use crate::components::selectable_rich_text::{
+        SelectableRichText, TextSelectionGroup, TextSelectionSnapshot,
+    };
     #[cfg(feature = "selects")]
     pub use crate::components::selects::{
         Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
@@ -119,6 +150,10 @@ pub mod compatibility {
     };
     #[cfg(feature = "xy-pad")]
     pub use crate::components::xy_pad::XYPad;
+    #[cfg(feature = "gpu")]
+    pub use crate::gpu_texture::GpuTextureView;
+    #[cfg(feature = "gpu")]
+    pub use crate::gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
     pub use crate::pane::{
         PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
     };
@@ -144,46 +179,63 @@ pub use component_support::{
     component_catalog, component_ids, component_support, component_uses_runtime,
 };
 pub use components::actions::ControlSize;
-#[cfg(feature = "calendar")]
-pub use components::calendar::{
-    CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapDatum,
-    CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapMonthLabel,
-    CalendarHeatmapOptions, CalendarHeatmapState, CalendarLevelResolver, CalendarLevelStrategy,
-    CalendarTitleFormatter, build_calendar_heatmap_model,
-};
-#[cfg(feature = "charts")]
-pub use components::charts::TimeSeriesChart;
 #[cfg(feature = "overlays")]
 pub use components::command_palette::COMMAND_PALETTE_INPUT_ID;
-#[cfg(feature = "syntax-highlighting")]
-pub use components::controls::HostedSyntaxHighlighting;
 #[cfg(feature = "controls")]
-pub use components::controls::{HostedTextarea, HostedTextareaState, SelectionOption};
+pub use components::controls::SelectionOption;
 #[cfg(feature = "feedback")]
 pub use components::feedback::{StatusTone, ToastTone, ValidationIntent};
-#[cfg(feature = "graph-canvas")]
-pub use components::graph_canvas::{GraphCanvas, GraphCanvasEvent, GraphCanvasState};
 #[cfg(feature = "image-viewer")]
-pub use components::image_viewer::{ImageViewer, ImageViewerSource};
-pub use components::key_capture_layer::{KeyCaptureEvent, KeyCaptureLayer};
-pub use components::keymap_layer::KeymapLayer;
+pub use components::image_viewer::ImageViewerSource;
 pub use components::menus::{
     AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuAnchor, ContextMenuEvent,
     ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
 };
-#[cfg(feature = "controls")]
-pub use components::reorder_list::{ReorderItem, ReorderList, TreeDropIntent, TreeDropPosition};
 #[cfg(feature = "rich-text")]
-pub use components::rich_text::{
-    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
-    MarkdownTableAlignment, NativeMarkdown, native_markdown,
-};
+pub use components::rich_text::native_markdown;
 pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
+#[cfg(feature = "charts")]
+pub use nana_ui_runtime::TimeSeriesChart;
+#[cfg(feature = "calendar")]
+pub use nana_ui_runtime::{
+    CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
+    CalendarHeatmapDatum, CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapLabelPaint,
+    CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions, CalendarLevelResolver,
+    CalendarLevelStrategy, CalendarMonthFormatter, CalendarTitleFormatter,
+    build_calendar_heatmap_model, calendar_cell_fill,
+};
+pub use nana_ui_runtime::{
+    CapturedStroke, KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeymapLayer,
+};
+#[cfg(feature = "gpu")]
+pub use nana_ui_runtime::{GpuTextureView, GpuView, GpuViewMode, GpuViewPalette};
+#[cfg(feature = "graph-canvas")]
+pub use nana_ui_runtime::{
+    GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphInteraction, GraphPointerButton,
+    GraphScrollDelta,
+};
+#[cfg(feature = "syntax-highlighting")]
+pub use nana_ui_runtime::{HIGHLIGHT_PRESENTER, HighlightPresentation, SyntectHighlighter};
+#[cfg(feature = "image-viewer")]
+pub use nana_ui_runtime::{
+    ImageViewer, ImageViewerContent, ImageViewerEvent, ImageViewerGeometry, ImageViewerHit,
+    ImageViewerOffset,
+};
+#[cfg(feature = "rich-text")]
+pub use nana_ui_runtime::{
+    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
+    MarkdownTableAlignment, NativeMarkdown, RichSpan, RichTextEvent, SelectableRichText,
+    TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,
+};
+#[cfg(feature = "controls")]
+pub use nana_ui_runtime::{
+    ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
+    TreeDropIntent, TreeDropPosition,
+};
 
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::XYPadState;
-#[cfg(feature = "rich-text")]
-pub use components::{SelectableRichText, TextSelectionGroup, TextSelectionSnapshot};
+
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,
@@ -196,11 +248,10 @@ pub use dock::{hosted_dock_update, hosted_dock_update_with_title_bar};
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{
-    GpuTextureView, HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureLayer,
-    HostTextureRegistry,
+    HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureLayer, HostTextureRegistry,
 };
 #[cfg(feature = "gpu")]
-pub use gpu_view::{GpuView, GpuViewMode, GpuViewPalette, RenderSlot};
+pub use gpu_view::RenderSlot;
 #[cfg(feature = "graph-canvas")]
 pub use graph::{
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId,
@@ -250,8 +301,8 @@ pub use nana_ui_runtime::{
     AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppShell,
     AppTitleBar, AppTitleBarControls, AppearanceSection, Button, Card, Checkbox, CommandPalette,
     ConfirmDialog, ContextMenu, Dialog, Dock, DockPanel, Drawer, Dropdown, DropdownEvent,
-    DropdownOption, DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard,
-    LabeledValue, LevelMeter, ListItem, OverlayHost, PaneChrome, PaneChromeAction,
+    DropdownOption, DropdownSelection, EmptyState, FormField, HostedTextarea, IconButton,
+    InteractiveCard, LabeledValue, LevelMeter, ListItem, OverlayHost, PaneChrome, PaneChromeAction,
     PaneChromeActionKind, PaneTree, PaneTreeNode, Popover, Progress, ProgressCancelled, QrCode,
     QrCodeError, RangeField, SearchDropdown, SearchDropdownEvent, SearchDropdownOption,
     SegmentedControl, Select, SelectOption, SettingsCard, SettingsCollapsibleCard, SettingsRow,

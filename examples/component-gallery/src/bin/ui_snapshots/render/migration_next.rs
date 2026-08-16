@@ -3,10 +3,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::advanced::widget;
-use iced::widget::{column, container, row, text, text_editor};
+use iced::widget::{column, container, row, shader, text, text_editor};
 use iced::{Alignment, Element, Length, Padding, Point, Size, Theme, mouse};
 use iced_wgpu::Renderer;
 use iced_wgpu::graphics::Viewport;
+use iced_wgpu::wgpu;
 use iced_winit::core::time::Instant;
 use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::runtime::{UserInterface, user_interface};
@@ -14,27 +15,36 @@ use nana_ui::compatibility::{
     AboutMetadata as IcedAboutMetadata, AboutSection as IcedAboutSection,
     ActionMenu as IcedActionMenu, ActionMenuItem as IcedActionMenuItem,
     AnchoredActionMenu as IcedAnchoredActionMenu, AppTitleBar as IcedAppTitleBar,
-    AppearanceSection as IcedAppearanceSection, Button as IcedButton, Card as IcedCard,
+    AppearanceSection as IcedAppearanceSection, Button as IcedButton,
+    CalendarHeatmap as IcedCalendarHeatmap, CalendarHeatmapDatum as IcedCalendarHeatmapDatum,
+    CalendarHeatmapOptions as IcedCalendarHeatmapOptions, Card as IcedCard,
     Checkbox as IcedCheckbox, CommandPalette as IcedCommandPalette,
     ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog, DockPanel as IcedDockPanel,
     Drawer as IcedDrawer, Dropdown as IcedDropdown, DropdownOption as IcedDropdownOption,
-    EmptyState as IcedEmptyState, FormField as IcedFormField, IconButton as IcedIconButton,
-    Input as IcedInput, InteractiveCard as IcedInteractiveCard, LabeledValue as IcedLabeledValue,
-    LevelMeter as IcedLevelMeter, ListItem as IcedListItem, OverlayHost as IcedOverlayHost,
+    EmptyState as IcedEmptyState, FormField as IcedFormField, GpuTextureView as IcedGpuTextureView,
+    GpuView as IcedGpuView, GpuViewPalette as IcedGpuViewPalette, GraphCanvas as IcedGraphCanvas,
+    HostedTextarea as IcedHostedTextarea, HostedTextareaState as IcedHostedTextareaState,
+    IconButton as IcedIconButton, ImageViewer as IcedImageViewer,
+    ImageViewerSource as IcedImageViewerSource, Input as IcedInput,
+    InteractiveCard as IcedInteractiveCard, KeyCaptureLayer as IcedKeyCaptureLayer,
+    KeymapLayer as IcedKeymapLayer, LabeledValue as IcedLabeledValue, LevelMeter as IcedLevelMeter,
+    ListItem as IcedListItem, NativeMarkdown as IcedNativeMarkdown, OverlayHost as IcedOverlayHost,
     PaneChrome as IcedPaneChrome, PaneChromeAction as IcedPaneChromeAction,
     PaneChromeActionKind as IcedPaneChromeActionKind, PaneTree as IcedPaneTree,
     PaneTreeNode as IcedPaneTreeNode, Popover as IcedPopover, Progress as IcedProgress,
-    QrCodeCanvas as IcedQrCode, RangeField as IcedRangeField, SearchDropdown as IcedSearchDropdown,
+    QrCodeCanvas as IcedQrCode, RangeField as IcedRangeField, ReorderItem as IcedReorderItem,
+    ReorderList as IcedReorderList, SearchDropdown as IcedSearchDropdown,
     SearchDropdownOption as IcedSearchDropdownOption,
     SearchDropdownState as IcedSearchDropdownState, SegmentedControl as IcedSegmentedControl,
-    Select as IcedSelect, SettingsCard as IcedSettingsCard,
-    SettingsCollapsibleCard as IcedSettingsCollapsibleCard, SettingsRow as IcedSettingsRow,
-    SidebarFooter as IcedSidebarFooter, SidebarFooterButton as IcedSidebarFooterButton,
-    SidebarFrame as IcedSidebarFrame, SidebarRow as IcedSidebarRow,
-    SidebarSection as IcedSidebarSection, Skeleton as IcedSkeleton, Spinner as IcedSpinner,
-    StatusBadge as IcedStatusBadge, Switch as IcedSwitch, Tabs as IcedTabs,
-    Textarea as IcedTextarea, Toast as IcedToast, Tooltip as IcedTooltip, TreeView as IcedTreeView,
-    ValidationMessage as IcedValidationMessage, XYPad as IcedXYPad,
+    Select as IcedSelect, SelectableRichText as IcedSelectableRichText,
+    SettingsCard as IcedSettingsCard, SettingsCollapsibleCard as IcedSettingsCollapsibleCard,
+    SettingsRow as IcedSettingsRow, SidebarFooter as IcedSidebarFooter,
+    SidebarFooterButton as IcedSidebarFooterButton, SidebarFrame as IcedSidebarFrame,
+    SidebarRow as IcedSidebarRow, SidebarSection as IcedSidebarSection, Skeleton as IcedSkeleton,
+    Spinner as IcedSpinner, StatusBadge as IcedStatusBadge, Switch as IcedSwitch, Tabs as IcedTabs,
+    Textarea as IcedTextarea, TimeSeriesChart as IcedTimeSeriesChart, Toast as IcedToast,
+    Tooltip as IcedTooltip, TreeView as IcedTreeView, ValidationMessage as IcedValidationMessage,
+    XYPad as IcedXYPad, build_calendar_heatmap_model as iced_build_calendar,
 };
 use nana_ui::runtime::{
     AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
@@ -42,42 +52,54 @@ use nana_ui::runtime::{
     ActionMenuItem as RuntimeActionMenuItem, Activate,
     AnchoredActionMenu as RuntimeAnchoredActionMenu, AppShell as RuntimeAppShell,
     AppTitleBar as RuntimeAppTitleBar, AppearanceSection as RuntimeAppearanceSection,
-    Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
+    Button as RuntimeButton, CalendarHeatmap as RuntimeCalendarHeatmap,
+    CalendarHeatmapDatum as RuntimeCalendarDatum, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
     CommandPalette as RuntimeCommandPalette, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
     ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem,
     Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
     DockPanel as RuntimeDockPanel, DocumentId, Drawer as RuntimeDrawer,
     Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
     EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
-    IconButton as RuntimeIconButton, InteractiveCard as RuntimeInteractiveCard,
-    LabeledValue as RuntimeLabeledValue, LayoutViewport, LevelMeter as RuntimeLevelMeter,
-    List as RuntimeList, ListItem as RuntimeListItem, ListItemSlots, ModalSlots, MountState,
-    MutationQueue, NodeStyle, OverlayHost as RuntimeOverlayHost, PaneChrome as RuntimePaneChrome,
+    GpuTextureView as RuntimeGpuTextureView, GpuView as RuntimeGpuView,
+    GpuViewPalette as RuntimeGpuViewPalette, GraphCanvas as RuntimeGraphCanvas,
+    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton,
+    ImageViewer as RuntimeImageViewer, ImageViewerContent,
+    InteractiveCard as RuntimeInteractiveCard, KeyCaptureLayer as RuntimeKeyCaptureLayer,
+    KeymapLayer as RuntimeKeymapLayer, LabeledValue as RuntimeLabeledValue, LayoutViewport,
+    LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
+    ListItemSlots, MarkdownBlock, MarkdownBlockKind, MarkdownSpan, ModalSlots, MountState,
+    MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeStyle,
+    OverlayHost as RuntimeOverlayHost, PaneChrome as RuntimePaneChrome,
     PaneTree as RuntimePaneTree, PaneTreeNode as RuntimePaneTreeNode, Popover as RuntimePopover,
     Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
+    ReorderItem as RuntimeReorderItem, ReorderList as RuntimeReorderList, RichSpan,
     RuntimeDocument, SearchDropdown as RuntimeSearchDropdown,
     SearchDropdownOption as RuntimeSearchDropdownOption,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     SegmentedSelectionRequested, Select as RuntimeSelect, SelectOption as RuntimeSelectOption,
-    SettingsCard as RuntimeSettingsCard, SettingsCollapsibleCard as RuntimeSettingsCollapsibleCard,
+    SelectableRichText as RuntimeSelectableRichText, SettingsCard as RuntimeSettingsCard,
+    SettingsCollapsibleCard as RuntimeSettingsCollapsibleCard,
     SidebarFooter as RuntimeSidebarFooter, SidebarFooterButton as RuntimeSidebarFooterButton,
     SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
     SidebarSection as RuntimeSidebarSection, Skeleton as RuntimeSkeleton,
     Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane, StableNodeId,
     StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TabOption as RuntimeTabOption,
     Tabs as RuntimeTabs, Text as RuntimeText, TextArea as RuntimeTextArea, TextHorizontalAlignment,
-    TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment, Toast as RuntimeToast,
-    TreeView as RuntimeTreeView, ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
-    Workspace as RuntimeWorkspace, WorkspaceRegionSlot, XYPad as RuntimeXYPad,
+    TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
+    TimeSeriesChart as RuntimeTimeSeriesChart, Toast as RuntimeToast, TreeView as RuntimeTreeView,
+    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
+    WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
     ActionId, AnchoredMenuPosition, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId,
     ComponentMigrationState, ControlSize, DockContents, DockController, DockId, DockItemSpec,
-    DockLayout, DockNode, DockSurfaceId, IcedSceneView, IcedTextShaper, Icon, RegionId,
-    RuntimeInputAdapter, SelectionOption as IcedSelectionOption, SplitAxis, SplitPaneController,
-    ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement, TreeNode, WindowMaterialMode,
-    WorkspaceController, WorkspaceSlots, XYPadValue, app_shell, component_catalog, component_ids,
-    dock_workspace, icon, ratio_pane_split, split_pane, workspace_view,
+    DockLayout, DockNode, DockSurfaceId, GraphEdge, GraphEndpoint, GraphModel, GraphNode,
+    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSize, GraphViewport, IcedSceneView,
+    IcedTextShaper, Icon, RegionId, RuntimeInputAdapter, SelectionOption as IcedSelectionOption,
+    SplitAxis, SplitPaneController, ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement,
+    TreeNode, WindowMaterialMode, WorkspaceController, WorkspaceSlots, XYPadValue, app_shell,
+    component_catalog, component_ids, dock_workspace, icon, ratio_pane_split, split_pane,
+    workspace_view,
 };
 use nana_ui_core::{
     DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
@@ -88,6 +110,7 @@ use nana_ui_scene::ScenePrimitiveKind;
 
 use crate::write;
 
+use super::gpu::{self, SnapshotGpu};
 use super::{pixel_difference, side_by_side, snapshot_with_cursor};
 
 const SIZE: Size<u32> = Size::new(420, 120);
@@ -100,6 +123,7 @@ enum Component {
     Button,
     TextInput,
     Textarea,
+    HostedTextarea,
     Checkbox,
     IconButton,
     Switch,
@@ -152,6 +176,17 @@ enum Component {
     PaneTree,
     AppShell,
     AppTitleBar,
+    CalendarHeatmap,
+    TimeSeriesChart,
+    ReorderList,
+    NativeMarkdown,
+    SelectableRichText,
+    ImageViewer,
+    GraphCanvas,
+    KeyCaptureLayer,
+    KeymapLayer,
+    GpuTextureView,
+    GpuView,
 }
 
 impl Component {
@@ -161,6 +196,7 @@ impl Component {
             Self::Button => component_ids::BUTTON,
             Self::TextInput => component_ids::TEXT_INPUT,
             Self::Textarea => component_ids::TEXTAREA,
+            Self::HostedTextarea => component_ids::HOSTED_TEXTAREA,
             Self::Checkbox => component_ids::CHECKBOX,
             Self::IconButton => component_ids::ICON_BUTTON,
             Self::Switch => component_ids::SWITCH,
@@ -213,6 +249,17 @@ impl Component {
             Self::PaneTree => component_ids::PANE_TREE,
             Self::AppShell => component_ids::APP_SHELL,
             Self::AppTitleBar => component_ids::APP_TITLE_BAR,
+            Self::CalendarHeatmap => component_ids::CALENDAR_HEATMAP,
+            Self::TimeSeriesChart => component_ids::TIME_SERIES_CHART,
+            Self::ReorderList => component_ids::REORDER_LIST,
+            Self::NativeMarkdown => component_ids::NATIVE_MARKDOWN,
+            Self::SelectableRichText => component_ids::SELECTABLE_RICH_TEXT,
+            Self::ImageViewer => component_ids::IMAGE_VIEWER,
+            Self::GraphCanvas => component_ids::GRAPH_CANVAS,
+            Self::KeyCaptureLayer => component_ids::KEY_CAPTURE_LAYER,
+            Self::KeymapLayer => component_ids::KEYMAP_LAYER,
+            Self::GpuTextureView => component_ids::GPU_TEXTURE_VIEW,
+            Self::GpuView => component_ids::GPU_VIEW,
         }
     }
 }
@@ -461,6 +508,76 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         Component::Textarea,
         "scroll",
         "the scrolled caret and text remain inside the content box",
+    ),
+    f(
+        Component::HostedTextarea,
+        "rust",
+        "committed rust text is colored by the Runtime highlight presenter",
+    ),
+    f(
+        Component::HostedTextarea,
+        "placeholder",
+        "empty highlighted editor paints faint placeholder text",
+    ),
+    f(
+        Component::HostedTextarea,
+        "disabled",
+        "disabled highlighted editor is visibly inert",
+    ),
+    f(
+        Component::CalendarHeatmap,
+        "weeks",
+        "week columns and level fills use theme accent, not a second canvas",
+    ),
+    f(
+        Component::TimeSeriesChart,
+        "series",
+        "grid, area and line stay inside the 148px chart box",
+    ),
+    f(
+        Component::ReorderList,
+        "rows",
+        "selected row uses the selected surface; labels stay left aligned",
+    ),
+    f(
+        Component::NativeMarkdown,
+        "blocks",
+        "heading and paragraph project as wrapped body text",
+    ),
+    f(
+        Component::SelectableRichText,
+        "plain",
+        "concatenated spans paint as selectable body text",
+    ),
+    f(
+        Component::ImageViewer,
+        "open",
+        "scrim, surface and close chrome are present without embedded pixels",
+    ),
+    f(
+        Component::GraphCanvas,
+        "nodes",
+        "two connected nodes paint as Scene quads inside the canvas",
+    ),
+    f(
+        Component::KeyCaptureLayer,
+        "recording",
+        "recording badge is visible while capture is armed",
+    ),
+    f(
+        Component::KeymapLayer,
+        "idle",
+        "keymap chrome is a non-focusable 28px badge",
+    ),
+    f(
+        Component::GpuTextureView,
+        "slot",
+        "host texture slot snapshot-gpu is sampled in the layout region",
+    ),
+    f(
+        Component::GpuView,
+        "inline",
+        "gpu-view custom renderer paints the inline slot",
     ),
     // Platform IME events cannot be injected into the compatibility widget by
     // this headless harness. Preedit remains a real Hosted acceptance gate.
@@ -1285,12 +1402,16 @@ pub(super) fn generate_registered(
     renderer: &mut Renderer,
     output: &Path,
     theme: ThemeMode,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
 
+    let colors = theme.colors();
+    let gpu = gpu::create_snapshot_gpu(device, queue, colors.background, colors.accent_strong);
     let mut paths = Vec::with_capacity(FIXTURE_REGISTRY.len() * 5);
     for fixture in FIXTURE_REGISTRY {
-        paths.extend(render_fixture(renderer, output, theme, *fixture)?);
+        paths.extend(render_fixture(renderer, output, theme, *fixture, &gpu)?);
     }
     Ok(paths)
 }
@@ -1345,6 +1466,7 @@ fn render_fixture(
     output: &Path,
     theme: ThemeMode,
     fixture: Fixture,
+    gpu: &SnapshotGpu,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let size = fixture_size(fixture);
     let theme_name = match theme {
@@ -1365,6 +1487,7 @@ fn render_fixture(
         fixture,
         iced_textarea_content.as_ref(),
         iced_focus_id.clone(),
+        gpu,
     );
     let iced_pixels =
         if fixture.component == Component::Textarea && textarea_is_focused(fixture.state) {
@@ -1391,10 +1514,17 @@ fn render_fixture(
     write::png(&iced_path, size, &iced_pixels)?;
 
     let runtime = runtime_fixture(theme, fixture, size)?;
-    let scene_view = IcedSceneView::new(
-        runtime.document.scene(),
-        Size::new(size.width as f32, size.height as f32),
-    )?;
+    let scene_size = Size::new(size.width as f32, size.height as f32);
+    let scene_view = if is_gpu_fixture(fixture) {
+        IcedSceneView::with_gpu_resources(
+            runtime.document.scene(),
+            Some(gpu.textures.clone()),
+            Some(gpu.renderers.clone()),
+            scene_size,
+        )?
+    } else {
+        IcedSceneView::new(runtime.document.scene(), scene_size)?
+    };
     let scene_view: Element<'_, (), Theme, Renderer> = scene_view.into();
     let runtime_pixels = snapshot_with_cursor(
         renderer,
@@ -1461,6 +1591,11 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::PaneTree, _) => Size::new(480, 240),
         (Component::AppShell, _) => Size::new(560, 280),
         (Component::AppTitleBar, _) => Size::new(560, 80),
+        (Component::CalendarHeatmap, _) => Size::new(280, 180),
+        (Component::TimeSeriesChart, _) => Size::new(420, 180),
+        (Component::NativeMarkdown, _) => Size::new(420, 140),
+        (Component::ImageViewer, _) => Size::new(420, 240),
+        (Component::GraphCanvas, _) => Size::new(420, 180),
         _ => SIZE,
     }
 }
@@ -1547,11 +1682,19 @@ fn snapshot_with_focus<Message>(
     pixels
 }
 
+fn is_gpu_fixture(fixture: Fixture) -> bool {
+    matches!(
+        fixture.component,
+        Component::GpuTextureView | Component::GpuView
+    )
+}
+
 fn iced_fixture<'a>(
     theme: ThemeMode,
     fixture: Fixture,
     textarea_content: Option<&'a text_editor::Content<Renderer>>,
     textarea_id: widget::Id,
+    gpu: &SnapshotGpu,
 ) -> (Element<'a, (), Theme, Renderer>, mouse::Cursor) {
     let tokens = theme.tokens();
     let hovered = matches!(
@@ -1636,6 +1779,89 @@ fn iced_fixture<'a>(
         .disabled(fixture.state == "disabled")
         .on_action(|_| ())
         .view(tokens),
+        Component::HostedTextarea => {
+            let state = IcedHostedTextareaState::with_text(hosted_textarea_value(fixture.state));
+            IcedHostedTextarea::new(&state)
+                .placeholder("fn main")
+                .syntax_highlighting("rs", iced::highlighter::Theme::Base16Ocean)
+                .height(96.0)
+                .disabled(fixture.state == "disabled")
+                .on_action(|_| ())
+                .view(tokens)
+        }
+        Component::CalendarHeatmap => {
+            let model = Box::leak(Box::new(iced_build_calendar(
+                &[
+                    IcedCalendarHeatmapDatum::<()>::new("2026-06-01", 1.0),
+                    IcedCalendarHeatmapDatum::<()>::new("2026-06-02", 4.0),
+                    IcedCalendarHeatmapDatum::<()>::new("2026-06-03", 8.0),
+                ],
+                IcedCalendarHeatmapOptions::default(),
+            )));
+            IcedCalendarHeatmap::new(model, |_| (), tokens).view()
+        }
+        Component::TimeSeriesChart => IcedTimeSeriesChart::new([2.0, 5.0, 3.0, 8.0], tokens).view(),
+        Component::ReorderList => IcedReorderList::new(
+            [
+                IcedReorderItem::new("alpha", text("Alpha")),
+                IcedReorderItem::new("beta", text("Beta")),
+                IcedReorderItem::new("gamma", text("Gamma")),
+            ],
+            |_| (),
+        )
+        .view(),
+        Component::NativeMarkdown => {
+            IcedNativeMarkdown::parse("# Title\n\nBody copy.").view(tokens, |_| ())
+        }
+        Component::SelectableRichText => IcedSelectableRichText::new(vec![
+            iced::widget::span("See "),
+            iced::widget::span("docs"),
+        ])
+        .into(),
+        Component::ImageViewer => IcedImageViewer::new(
+            IcedImageViewerSource::new(text("Preview")),
+            (),
+            (),
+            (),
+            tokens,
+        )
+        .view(),
+        Component::GraphCanvas => {
+            let model = Box::leak(Box::new(snapshot_graph()));
+            IcedGraphCanvas::new(
+                "snapshot",
+                model,
+                GraphViewport::default(),
+                None,
+                |_| (),
+                tokens,
+            )
+            .view()
+        }
+        Component::KeyCaptureLayer => IcedKeyCaptureLayer::new(text("Ready"), |_| ()).view(),
+        Component::KeymapLayer => IcedKeymapLayer::new(
+            text("Ready"),
+            nana_ui::Keymap::new([]),
+            nana_ui::KeyContext::default(),
+            nana_ui::ActionRegistry::new(),
+            |_| (),
+        )
+        .view(),
+        Component::GpuTextureView => shader(IcedGpuTextureView::new(gpu.host_texture.clone()))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        Component::GpuView => shader(IcedGpuView::new(
+            1,
+            IcedGpuViewPalette {
+                background: tokens.colors.background,
+                accent: tokens.colors.accent_strong,
+            },
+            0,
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into(),
         Component::Checkbox => IcedCheckbox::new(
             matches!(
                 fixture.state,
@@ -2447,6 +2673,98 @@ fn runtime_fixture(
                     .disabled(fixture.state == "disabled"),
             )?
             .stable_id(),
+        Component::HostedTextarea => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeHostedTextarea::new(hosted_textarea_value(fixture.state), "rs")
+                    .label("Highlighted source")
+                    .placeholder("fn main")
+                    .height(96.0)
+                    .disabled(fixture.state == "disabled"),
+            )?
+            .stable_id(),
+        Component::CalendarHeatmap => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeCalendarHeatmap::new([
+                    RuntimeCalendarDatum::<()>::new("2026-06-01", 1.0),
+                    RuntimeCalendarDatum::<()>::new("2026-06-02", 4.0),
+                    RuntimeCalendarDatum::<()>::new("2026-06-03", 8.0),
+                ]),
+            )?
+            .stable_id(),
+        Component::TimeSeriesChart => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeTimeSeriesChart::new([2.0, 5.0, 3.0, 8.0]),
+            )?
+            .stable_id(),
+        Component::ReorderList => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeReorderList::new([
+                    RuntimeReorderItem::new("alpha", "Alpha").selected(true),
+                    RuntimeReorderItem::new("beta", "Beta"),
+                    RuntimeReorderItem::new("gamma", "Gamma"),
+                ]),
+            )?
+            .stable_id(),
+        Component::NativeMarkdown => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeNativeMarkdown::from_blocks([
+                    MarkdownBlock::Text {
+                        kind: MarkdownBlockKind::Heading(1),
+                        spans: vec![MarkdownSpan::plain("Title")],
+                    },
+                    MarkdownBlock::Text {
+                        kind: MarkdownBlockKind::Paragraph,
+                        spans: vec![MarkdownSpan::plain("Body copy.")],
+                    },
+                ]),
+            )?
+            .stable_id(),
+        Component::SelectableRichText => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeSelectableRichText::new([RichSpan::plain("See "), RichSpan::plain("docs")]),
+            )?
+            .stable_id(),
+        Component::ImageViewer => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeImageViewer::new(ImageViewerContent::None).name("Preview"),
+            )?
+            .stable_id(),
+        Component::GraphCanvas => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeGraphCanvas::new("snapshot", snapshot_graph()),
+            )?
+            .stable_id(),
+        Component::KeyCaptureLayer => document
+            .context_mut()
+            .create_component(document_id, RuntimeKeyCaptureLayer::new().recording(true))?
+            .stable_id(),
+        Component::KeymapLayer => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeKeymapLayer::new(
+                    nana_ui::runtime::Keymap::new([]),
+                    nana_ui_core::KeyContext::default(),
+                    nana_ui::runtime::ActionRegistry::new(),
+                ),
+            )?
+            .stable_id(),
         Component::Checkbox => document
             .context_mut()
             .create_component(
@@ -3139,6 +3457,36 @@ fn runtime_fixture(
             .context_mut()
             .create_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?
             .stable_id(),
+        Component::GpuTextureView => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeGpuTextureView::new(gpu::SNAPSHOT_GPU_SLOT),
+            )?
+            .stable_id(),
+        Component::GpuView => {
+            let colors = theme.colors();
+            document
+                .context_mut()
+                .create_component(
+                    document_id,
+                    RuntimeGpuView::new(1).palette(RuntimeGpuViewPalette {
+                        background: [
+                            colors.background.r,
+                            colors.background.g,
+                            colors.background.b,
+                            colors.background.a,
+                        ],
+                        accent: [
+                            colors.accent_strong.r,
+                            colors.accent_strong.g,
+                            colors.accent_strong.b,
+                            colors.accent_strong.a,
+                        ],
+                    }),
+                )?
+                .stable_id()
+        }
     };
     let mut hierarchy = MutationQueue::new();
     hierarchy.insert(root.stable_id(), target, None);
@@ -4827,6 +5175,7 @@ fn write_evidence(
             | Component::PaneTree
             | Component::AppShell
             | Component::AppTitleBar
+            | Component::GpuTextureView
     ) {
         hit != Some(runtime.target)
     } else if expects_hit {
@@ -4877,6 +5226,7 @@ fn write_evidence(
             | Component::Button
             | Component::TextInput
             | Component::Textarea
+            | Component::HostedTextarea
             | Component::Checkbox
             | Component::IconButton
             | Component::Tooltip
@@ -4892,6 +5242,8 @@ fn write_evidence(
             | Component::PaneTree
             | Component::AppShell
             | Component::AppTitleBar
+            | Component::GpuTextureView
+            | Component::GpuView
     ) || geometry.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
@@ -4906,7 +5258,7 @@ fn write_evidence(
             (bounds.width - 380.0).abs() < 0.01
                 && (bounds.height - text_input_control_size(fixture.state).height()).abs() < 0.01
         }
-        Component::Textarea => {
+        Component::Textarea | Component::HostedTextarea => {
             (bounds.width - 380.0).abs() < 0.01 && (bounds.height - 96.0).abs() < 0.01
         }
         Component::SegmentedControl => {
@@ -5061,6 +5413,29 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         (Component::Textarea, _) => (
             "manual-required",
             "Review the generated dark and light compatibility and Runtime images for placeholder, multiline, focus, selection, invalid, disabled, clipping and scrolling semantics; IME remains a real Hosted gate",
+        ),
+        (Component::HostedTextarea, _) => (
+            "manual-required",
+            "Review the generated dark and light images for Runtime presenter spans on committed rust text; Iced highlighter is a leftover reference, not the product path",
+        ),
+        (
+            Component::CalendarHeatmap
+            | Component::TimeSeriesChart
+            | Component::ReorderList
+            | Component::NativeMarkdown
+            | Component::SelectableRichText
+            | Component::ImageViewer
+            | Component::GraphCanvas
+            | Component::KeyCaptureLayer
+            | Component::KeymapLayer,
+            _,
+        ) => (
+            "manual-required",
+            "Review Runtime Scene quads against design tokens; Iced canvas/widget output is a reference, not a pixel oracle",
+        ),
+        (Component::GpuTextureView | Component::GpuView, _) => (
+            "manual-required",
+            "Review host-texture sampling and gpu-view Scene paint; Iced shader output is a reference, not a pixel oracle",
         ),
         (Component::Tooltip, _) => (
             "manual-required",
@@ -5236,8 +5611,53 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         (Component::SettingsCollapsibleCard, _) => {
             "intentional: Runtime disclosure is non-interactive chrome; the card remains the single activation target"
         }
+        (Component::GraphCanvas, _) => {
+            "intentional: Runtime Scene approximates Bézier edges as quad samples and 1px grid lines; Iced strokes paths. Port discs use the Iced 4/5px radius, not the 8px hit target"
+        }
+        (Component::GpuTextureView, _) => {
+            "intentional: Iced GpuTextureView samples the same host texture as Runtime nana.host-texture; layout chrome may differ"
+        }
+        (Component::GpuView, _) => {
+            "intentional: Iced GpuView shader is inline; Runtime paints via a fixture SceneGpuRenderer using the same WGSL. CustomRenderNode does not encode palette; the snapshot renderer uses the fixture theme"
+        }
         _ => fixture.divergence,
     }
+}
+
+fn snapshot_graph() -> GraphModel {
+    let source = GraphNode::new(
+        "source",
+        "In",
+        GraphPoint::new(16.0, 36.0),
+        GraphSize::new(96.0, 48.0),
+    )
+    .with_port(GraphPort::new(
+        "out",
+        "Out",
+        GraphPortKind::Output,
+        GraphPortSide::Right,
+    ));
+    let target = GraphNode::new(
+        "target",
+        "Out",
+        GraphPoint::new(180.0, 36.0),
+        GraphSize::new(96.0, 48.0),
+    )
+    .with_port(GraphPort::new(
+        "in",
+        "In",
+        GraphPortKind::Input,
+        GraphPortSide::Left,
+    ));
+    GraphModel::new(
+        vec![source, target],
+        vec![GraphEdge::new(
+            "link",
+            GraphEndpoint::new("source", "out"),
+            GraphEndpoint::new("target", "in"),
+        )],
+    )
+    .expect("snapshot graph is valid")
 }
 
 fn set_full_width(style: &mut NodeStyle) {
@@ -5317,6 +5737,13 @@ fn textarea_value(state: &str) -> &'static str {
             "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line stays"
         }
         _ => "First line\nSecond line\nThird line",
+    }
+}
+
+fn hosted_textarea_value(state: &str) -> &'static str {
+    match state {
+        "placeholder" => "",
+        _ => "fn main() {\n    let ready = true;\n}\n",
     }
 }
 

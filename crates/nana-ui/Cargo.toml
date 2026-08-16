@@ -35,7 +35,11 @@ components = [
 calendar = []
 charts = []
 controls = []
-syntax-highlighting = ["controls", "iced/highlighter"]
+syntax-highlighting = [
+    "controls",
+    "iced/highlighter",
+    "nana-ui-runtime/syntax-highlighting",
+]
 feedback = []
 graph-canvas = []
 image-viewer = []

@@ -1361,6 +1361,131 @@ impl ComponentView for TextArea {
     }
 }
 
+/// Highlighted multiline editor on the same retained [`TextInputState`] as [`TextArea`].
+///
+/// Official syntax color is the registered `"highlight"` presenter on committed
+/// text. IME preedit stays solid. Missing presenters leave the field uncolored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostedTextarea {
+    inner: TextArea,
+}
+
+impl HostedTextarea {
+    pub fn new(value: impl Into<String>, language: impl Into<Arc<str>>) -> Self {
+        Self {
+            inner: TextArea::new(value).highlight(language),
+        }
+    }
+
+    pub fn language(&self) -> Option<&str> {
+        self.inner
+            .highlight
+            .as_ref()
+            .map(|request| request.language.as_ref())
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
+        self.inner = self.inner.placeholder(placeholder);
+        self
+    }
+
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.inner = self.inner.label(label);
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.inner = self.inner.disabled(disabled);
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.inner = self.inner.invalid(invalid);
+        self
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        self.inner = self.inner.height(height);
+        self
+    }
+
+    pub fn scroll_offset(mut self, offset: ScrollOffset) -> Self {
+        self.inner = self.inner.scroll_offset(offset);
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.inner = self.inner.style(style);
+        self
+    }
+
+    pub fn into_text_area(self) -> TextArea {
+        self.inner
+    }
+}
+
+impl std::ops::Deref for HostedTextarea {
+    type Target = TextArea;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for HostedTextarea {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl ComponentView for HostedTextarea {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "hosted-textarea".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        self.inner.project(id, world, mutations);
+    }
+}
+
+#[cfg(test)]
+mod hosted_textarea_tests {
+    use super::*;
+    use crate::{DocumentId, MutationQueue, UiWorld};
+
+    #[test]
+    fn hosted_textarea_always_requests_the_highlight_presenter() {
+        let editor = HostedTextarea::new("fn main() {}", "rs")
+            .placeholder("fn main")
+            .disabled(false);
+        assert_eq!(editor.language(), Some("rs"));
+        assert_eq!(
+            editor
+                .highlight
+                .as_ref()
+                .map(|request| request.presenter.as_ref()),
+            Some(crate::HIGHLIGHT_PRESENTER)
+        );
+
+        let mut world = UiWorld::new();
+        let id = StableNodeId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(id, DocumentId::new(1).unwrap(), editor.node_kind());
+        world.commit(queue).unwrap();
+        let mut queue = MutationQueue::new();
+        editor.project(id, &world, &mut queue);
+        world.commit(queue).unwrap();
+        assert_eq!(
+            world
+                .highlight_request(id)
+                .map(|request| (request.presenter.as_ref(), request.language.as_ref())),
+            Some((crate::HIGHLIGHT_PRESENTER, "rs"))
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OverlayHost {
     pub style: NodeStyle,

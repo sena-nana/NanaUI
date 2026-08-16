@@ -101,12 +101,16 @@ through Runtime Scene. Native IME preedit/commit updates that same Runtime state
 Vue `beforeinput`/`input`; a focused Runtime editor advertises one hosted `text_input_request`
 so winit IME is not also fed to an Iced editor. `commit_text` refuses disabled and read-only
 fields. Leftover native preedit on IME Disabled commits into the original field even if focus
-moved. `HostedTextarea` remains a separate `Compatibility` component (Iced highlighter).
-Runtime syntax color is not a second Textarea: it is a registered
-`TextPresenter` (`"highlight"`) on committed text. Enable
-`nana-ui-runtime/syntax-highlighting` and install `HighlightPresentation`, or
-call `TextArea::highlight` / `TextInput::highlight` after registering that
-presenter. IME preedit stays solid. This does not promote `HostedTextarea`.
+moved. `HostedTextarea` is `RuntimeQualified`. Public `nana_ui::HostedTextarea`
+is a Runtime `TextArea` that always carries a `"highlight"` request. Iced
+`HostedTextarea` / `HostedSyntaxHighlighting` stay under
+`nana_ui::compatibility`. Official syntax color is the registered
+`TextPresenter` (`"highlight"`) on committed text. Enabling
+`nana-ui/syntax-highlighting` (or `nana-ui-runtime/syntax-highlighting`)
+installs `HighlightPresentation` on every `AppContext::new`. Call
+`TextArea::highlight` / `TextInput::highlight` / `HostedTextarea::new(_, lang)`
+to request spans. IME preedit stays solid. Vue `nana-textarea` with
+`language` / `lang` / `syntax` projects `HostedTextarea`.
 
 Tooltip is a compact label-only hover card. Hover delay, open/close, cursor tracking and
 exclusive active/focus stay on the existing IconButton-hosted overlay lifecycle. Public
@@ -194,7 +198,8 @@ lives in `nana-ui-core`. Palette items and navigation
 `nana-ui-core`.
 
 Workspace, Dock, Sidebar, charts, GPU views, and other professional components
-remain `Compatibility` unless their catalog entry says otherwise.
+remain on their catalog state; none of the remaining leaves stay
+`Compatibility` by default.
 
 ## Current sidebar and settings cutover
 
@@ -258,5 +263,23 @@ windows and native title-bar drag stay on the Iced/hosted adapters.
 use a shared 8px content inset; Workspace/Dock/Split/AppShell chrome does not
 add that inset.
 
-GPU views, charts, heatmap, markdown, `HostedTextarea`, and key-capture layers
-remain `Compatibility`.
+`CalendarHeatmap`, `TimeSeriesChart`, `ReorderList`, `NativeMarkdown`,
+`SelectableRichText`, `ImageViewer`, `KeyCaptureLayer`, and `KeymapLayer` are
+`RuntimeQualified`. Root and `components` exports route to Runtime. Iced
+canvas/widgets stay under `nana_ui::compatibility`. Scene paints these through
+Quad/Text geometry. Iced output is a reference, not a pixel oracle.
+
+`GraphCanvas`, `GpuView`, and `GpuTextureView` are `RuntimeQualified`. The
+graph model lives once in `nana-ui-core`. Root `nana_ui::GraphCanvas`,
+`GpuView`, and `GpuTextureView` are the Runtime views. Iced canvas/shader
+widgets stay under `nana_ui::compatibility`. GraphCanvas paints Scene
+Quad/Text geometry from `StandardVisual::GraphCanvas`: background grid,
+cubic edges, node title bars, port discs and labels, hover/selected, and
+live drag or connection preview. `RuntimeInputAdapter` routes pointer,
+wheel and keyboard into the same events the Iced canvas emits. GpuTextureView
+binds the host-owned `"nana.host-texture"` slot. GpuView projects
+`CustomRenderNode` `"gpu-view"`; default `IcedSceneView::new` still requires
+the host to register that painter. Syntax highlighting is the Runtime
+`"highlight"` presenter on `HostedTextarea` / `TextArea` / `TextInput`.
+`SplitPane` handle drag applies `SplitPaneMutation` through the same
+adapter.

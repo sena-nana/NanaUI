@@ -784,7 +784,13 @@ fn runtime_component_for_widget(
             )
         }
         WidgetKind::Input => Some(nana_ui::component_ids::TEXT_INPUT),
-        WidgetKind::Textarea => Some(nana_ui::component_ids::TEXTAREA),
+        WidgetKind::Textarea => Some(
+            if crate::widget_map::highlight_language(&widget.props).is_some() {
+                nana_ui::component_ids::HOSTED_TEXTAREA
+            } else {
+                nana_ui::component_ids::TEXTAREA
+            },
+        ),
         WidgetKind::Select if is_search_dropdown(&widget.props) => {
             Some(nana_ui::component_ids::SEARCH_DROPDOWN)
         }
