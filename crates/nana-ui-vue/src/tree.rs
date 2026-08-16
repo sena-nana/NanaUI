@@ -551,7 +551,89 @@ impl NanaTreeDocument {
         }
         let mut mutations = MutationQueue::new();
         mutations.set_scroll_offset(id, offset);
-        self.runtime.commit(mutations).is_ok()
+        if self.runtime.commit(mutations).is_err() {
+            return false;
+        }
+        self.flush_runtime_systems();
+        true
+    }
+
+    /// Route a logical-pixel wheel delta to the nearest Runtime `ScrollView`.
+    ///
+    /// `is_scroll_view` identifies projected scrollports (Vue sidebar-frame
+    /// body). At a clamped edge the event bubbles to an enclosing match.
+    pub(crate) fn scroll_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta: nana_ui_runtime::ScrollOffset,
+        mut is_scroll_view: impl FnMut(NodeHandle) -> bool,
+    ) -> Option<NodeHandle> {
+        if !x.is_finite() || !y.is_finite() || !delta.x.is_finite() || !delta.y.is_finite() {
+            return None;
+        }
+        let mut current = self.hit_test(x, y);
+        while let Some(node) = current {
+            if is_scroll_view(node) && self.scroll_by(node, delta) {
+                return Some(node);
+            }
+            current = self.parent_node(node);
+        }
+        None
+    }
+
+    pub(crate) fn scroll_by(
+        &mut self,
+        node: NodeHandle,
+        delta: nana_ui_runtime::ScrollOffset,
+    ) -> bool {
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return false;
+        }
+        self.publish_scroll_metrics_from_layout(node);
+        let current = self.scroll_offset(node);
+        self.set_scroll_offset(
+            node,
+            nana_ui_runtime::ScrollOffset {
+                x: (current.x + delta.x).max(0.0),
+                y: (current.y + delta.y).max(0.0),
+            },
+        )
+    }
+
+    fn publish_scroll_metrics_from_layout(&mut self, node: NodeHandle) {
+        let Some(metrics) = self.layout_scroll_metrics(node) else {
+            return;
+        };
+        let Ok(id) = StableNodeId::try_from(node) else {
+            return;
+        };
+        if self.runtime.scroll_metrics(id) == Some(metrics) {
+            return;
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_metrics(id, Some(metrics));
+        let _ = self.runtime.commit(mutations);
+    }
+
+    fn layout_scroll_metrics(&self, node: NodeHandle) -> Option<nana_ui_runtime::ScrollMetrics> {
+        let viewport = self.layout_box(node)?;
+        let mut content_width = viewport.width;
+        let mut content_height = viewport.height;
+        let mut stack = self.children_of(node);
+        while let Some(child) = stack.pop() {
+            if let Some(box_) = self.layout_box(child) {
+                content_width = content_width.max(box_.x + box_.width - viewport.x);
+                content_height = content_height.max(box_.y + box_.height - viewport.y);
+            }
+            stack.extend(self.children_of(child));
+        }
+        Some(nana_ui_runtime::ScrollMetrics {
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
+            content_width: content_width.max(0.0),
+            content_height: content_height.max(0.0),
+        })
     }
 
     pub(crate) fn sync_scroll_viewport(
@@ -1922,12 +2004,7 @@ impl NanaTreeDocument {
 }
 
 fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
-    widget.props.attrs.get("data-slot").map(String::as_str) == Some("sidebar-body")
-        || widget
-            .props
-            .class_names
-            .iter()
-            .any(|class| class.contains("nana-sidebar-frame__body"))
+    crate::scroll::is_runtime_scroll_body(&widget.props)
 }
 
 fn project_migrating_component(

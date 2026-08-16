@@ -33,10 +33,8 @@ fn chunk_row_wrap_lines(
         return vec![visible];
     };
     // Row wrap main-axis gap = column-gap (matches measure / CSS flex).
-    let main_gap = layout.main_gap_against(
-        FlexDirection::Row,
-        ParentBox::new(Some(content_w), None),
-    );
+    let main_gap =
+        layout.main_gap_against(FlexDirection::Row, ParentBox::new(Some(content_w), None));
     let mut lines: Vec<Vec<WidgetId>> = Vec::new();
     let mut current: Vec<WidgetId> = Vec::new();
     let mut line_main = 0.0f32;
@@ -185,79 +183,102 @@ where
     );
     let fill_portion_tracks = prefer_fill_portion_grid_tracks(parent_layout, direction);
     crate::css_map::with_grid_item_stretch_cleared(|| {
-    visible
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(idx, child)| {
-            let child_parent = snap
-                .get(child)
-                .map(|w| {
-                    let mut pb = parent_box_for_flow_child(
-                        parent_layout,
-                        flow_box,
-                        scrollport_box,
-                        &w.props.layout,
-                    );
-                    pb = indefinite_axis_for_auto_track(parent_layout, direction, idx, pb);
-                    if pb.width.is_none() {
-                        pb = ParentBox::new(
-                            flow_box.width.or(scrollport_box.width),
-                            pb.height,
+        visible
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, child)| {
+                let child_parent = snap
+                    .get(child)
+                    .map(|w| {
+                        let mut pb = parent_box_for_flow_child(
+                            parent_layout,
+                            flow_box,
+                            scrollport_box,
+                            &w.props.layout,
                         );
-                    }
-                    if pb.height.is_none() && matches!(direction, FlexDirection::Row) {
-                        pb = ParentBox::new(
-                            pb.width,
-                            flow_box.height.or(scrollport_box.height),
-                        );
-                    }
-                    if let Some(px) = track_outers.as_ref().and_then(|o| o.get(idx)).copied() {
-                        if column_axis {
-                            pb = ParentBox::new(pb.width, Some(px));
-                        } else {
-                            pb = ParentBox::new(Some(px), pb.height);
+                        pb = indefinite_axis_for_auto_track(parent_layout, direction, idx, pb);
+                        if pb.width.is_none() {
+                            pb = ParentBox::new(flow_box.width.or(scrollport_box.width), pb.height);
                         }
+                        if pb.height.is_none() && matches!(direction, FlexDirection::Row) {
+                            pb =
+                                ParentBox::new(pb.width, flow_box.height.or(scrollport_box.height));
+                        }
+                        if let Some(px) = track_outers.as_ref().and_then(|o| o.get(idx)).copied() {
+                            if column_axis {
+                                pb = ParentBox::new(pb.width, Some(px));
+                            } else {
+                                pb = ParentBox::new(Some(px), pb.height);
+                            }
+                        }
+                        pb
+                    })
+                    .unwrap_or(flow_box);
+                let main_sizes =
+                    flex_main_overrides(snap, &visible, parent_layout, child_parent, direction);
+                let build_child = || {
+                    view_widget(
+                        snap,
+                        child,
+                        tokens,
+                        child_parent,
+                        direction,
+                        parent_layout.align_items,
+                        editors,
+                        menus,
+                        main_sizes.as_ref().and_then(|s| s[idx]),
+                        map_event.clone(),
+                    )
+                };
+                let mut el = if track_outers.as_ref().and_then(|o| o.get(idx)).is_some() {
+                    crate::css_map::with_grid_item_stretch_main(
+                        matches!(direction, FlexDirection::Column),
+                        build_child,
+                    )
+                } else if track_is_auto(parent_layout, direction, idx) {
+                    crate::css_map::with_intrinsic_auto_track(
+                        matches!(direction, FlexDirection::Column),
+                        build_child,
+                    )
+                } else if track_is_sized(parent_layout, direction, idx) {
+                    crate::css_map::with_grid_item_stretch_main(
+                        matches!(direction, FlexDirection::Column),
+                        build_child,
+                    )
+                } else {
+                    build_child()
+                };
+                if let Some(px) = track_outers.as_ref().and_then(|o| o.get(idx)).copied() {
+                    if fill_portion_tracks {
+                        el = apply_grid_track_width(
+                            el,
+                            parent_layout,
+                            idx,
+                            direction,
+                            child_parent
+                                .width
+                                .or(flow_box.width)
+                                .or(scrollport_box.width),
+                            &margins_x,
+                        );
+                        el = apply_grid_track_height(
+                            el,
+                            parent_layout,
+                            idx,
+                            direction,
+                            child_parent
+                                .height
+                                .or(flow_box.height)
+                                .or(scrollport_box.height),
+                            &margins_y,
+                        );
+                    } else if column_axis {
+                        el = container(el).height(Length::Fixed(px)).into()
+                    } else {
+                        el = container(el).width(Length::Fixed(px)).into()
                     }
-                    pb
-                })
-                .unwrap_or(flow_box);
-            let main_sizes =
-                flex_main_overrides(snap, &visible, parent_layout, child_parent, direction);
-            let build_child = || {
-                view_widget(
-                    snap,
-                    child,
-                    tokens,
-                    child_parent,
-                    direction,
-                    parent_layout.align_items,
-                    editors,
-                    menus,
-                    main_sizes.as_ref().and_then(|s| s[idx]),
-                    map_event.clone(),
-                )
-            };
-            let mut el = if track_outers.as_ref().and_then(|o| o.get(idx)).is_some() {
-                crate::css_map::with_grid_item_stretch_main(
-                    matches!(direction, FlexDirection::Column),
-                    build_child,
-                )
-            } else if track_is_auto(parent_layout, direction, idx) {
-                crate::css_map::with_intrinsic_auto_track(
-                    matches!(direction, FlexDirection::Column),
-                    build_child,
-                )
-            } else if track_is_sized(parent_layout, direction, idx) {
-                crate::css_map::with_grid_item_stretch_main(
-                    matches!(direction, FlexDirection::Column),
-                    build_child,
-                )
-            } else {
-                build_child()
-            };
-            if let Some(px) = track_outers.as_ref().and_then(|o| o.get(idx)).copied() {
-                if fill_portion_tracks {
+                } else {
                     el = apply_grid_track_width(
                         el,
                         parent_layout,
@@ -280,38 +301,10 @@ where
                             .or(scrollport_box.height),
                         &margins_y,
                     );
-                } else if column_axis {
-                    el = container(el).height(Length::Fixed(px)).into()
-                } else {
-                    el = container(el).width(Length::Fixed(px)).into()
                 }
-            } else {
-                el = apply_grid_track_width(
-                    el,
-                    parent_layout,
-                    idx,
-                    direction,
-                    child_parent
-                        .width
-                        .or(flow_box.width)
-                        .or(scrollport_box.width),
-                    &margins_x,
-                );
-                el = apply_grid_track_height(
-                    el,
-                    parent_layout,
-                    idx,
-                    direction,
-                    child_parent
-                        .height
-                        .or(flow_box.height)
-                        .or(scrollport_box.height),
-                    &margins_y,
-                );
-            }
-            el
-        })
-        .collect()
+                el
+            })
+            .collect()
     })
 }
 
@@ -551,7 +544,14 @@ fn flex_main_overrides(
             .iter()
             .zip(sizes)
             .map(|(style, resolved)| {
-                flex_main_override_px(style, direction, resolved, child_box.width, content_main, vp)
+                flex_main_override_px(
+                    style,
+                    direction,
+                    resolved,
+                    child_box.width,
+                    content_main,
+                    vp,
+                )
             })
             .collect(),
     )
@@ -576,9 +576,7 @@ fn flex_main_override_px(
             // Fixed(0) makes row text wrap into a ~card-tall column.
             let min = match direction {
                 FlexDirection::Row => style.resolved_min_width(margin_percent_base, viewport),
-                FlexDirection::Column => {
-                    style.resolved_min_height(Some(content_main), viewport)
-                }
+                FlexDirection::Column => style.resolved_min_height(Some(content_main), viewport),
             };
             if min > 0.0 {
                 Some(resolved.max(0.0))
@@ -702,7 +700,8 @@ fn apply_grid_track_height<'a, Message: 'a>(
     if index >= tracks.len() {
         return child;
     }
-    let gap = parent_layout.main_gap_against(FlexDirection::Column, ParentBox::new(None, content_h));
+    let gap =
+        parent_layout.main_gap_against(FlexDirection::Column, ParentBox::new(None, content_h));
     let margin_total: f32 = child_margins.iter().copied().sum();
     let child_margin_main = child_margins.get(index).copied().unwrap_or(0.0);
     // Same Auto rule as columns: Fixed outers without intrinsics collapse Auto
@@ -1083,6 +1082,7 @@ fn finalize_layout_container<'a, Message>(
     layout: &crate::css_map::LayoutStyle,
     parent_box: ParentBox,
     scroll_id: Option<WidgetId>,
+    runtime_owned_scroll: bool,
     map_event: impl Fn(BridgeEvent) -> Message + Clone + 'a,
 ) -> Element<'a, Message>
 where
@@ -1092,33 +1092,45 @@ where
     // with a stable iced Id so host scrollIntoView can drive AbsoluteOffset.
     let mut el = apply_layout_chrome(content, layout, parent_box);
     if layout.scrolls_y() {
-        let mut s = scrollable(el)
-            .width(Length::Fill)
-            .height(scroll_port_height(parent_box.height));
-        if let Some(id) = scroll_id {
-            let map = map_event.clone();
-            s = s
-                .id(iced::widget::Id::from(crate::scroll::scrollable_widget_id(id)))
-                .on_scroll(move |viewport| {
-                    let offset = viewport.absolute_offset();
-                    let bounds = viewport.bounds();
-                    let content = viewport.content_bounds();
-                    map(BridgeEvent::Scroll {
+        let height = scroll_port_height(parent_box.height);
+        if runtime_owned_scroll
+            && nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME)
+        {
+            // Qualified Scene paint owns offset/clip. Iced only pins the viewport.
+            el = container(el)
+                .width(Length::Fill)
+                .height(height)
+                .clip(true)
+                .into();
+        } else {
+            let mut s = scrollable(el).width(Length::Fill).height(height);
+            if let Some(id) = scroll_id {
+                let map = map_event.clone();
+                s = s
+                    .id(iced::widget::Id::from(crate::scroll::scrollable_widget_id(
                         id,
-                        offset: crate::ScrollOffset {
-                            x: offset.x,
-                            y: offset.y,
-                        },
-                        metrics: nana_ui_runtime::ScrollMetrics {
-                            viewport_width: bounds.width,
-                            viewport_height: bounds.height,
-                            content_width: content.width,
-                            content_height: content.height,
-                        },
-                    })
-                });
+                    )))
+                    .on_scroll(move |viewport| {
+                        let offset = viewport.absolute_offset();
+                        let bounds = viewport.bounds();
+                        let content = viewport.content_bounds();
+                        map(BridgeEvent::Scroll {
+                            id,
+                            offset: crate::ScrollOffset {
+                                x: offset.x,
+                                y: offset.y,
+                            },
+                            metrics: nana_ui_runtime::ScrollMetrics {
+                                viewport_width: bounds.width,
+                                viewport_height: bounds.height,
+                                content_width: content.width,
+                                content_height: content.height,
+                            },
+                        })
+                    });
+            }
+            el = s.into();
         }
-        el = s.into();
     }
     el
 }
@@ -1181,11 +1193,21 @@ fn apply_layout_chrome<'a, Message: 'a>(
     let width = layout
         .width
         .map(|w| length_from_spec(Some(w), parent_box.width, layout, false));
-    if !needs_pad && !needs_margin && !needs_paint && !needs_clip && height.is_none() && width.is_none()
+    if !needs_pad
+        && !needs_margin
+        && !needs_paint
+        && !needs_clip
+        && height.is_none()
+        && width.is_none()
     {
         return content;
     }
-    if needs_clip && !needs_pad && !needs_margin && !needs_paint && height.is_none() && width.is_none()
+    if needs_clip
+        && !needs_pad
+        && !needs_margin
+        && !needs_paint
+        && height.is_none()
+        && width.is_none()
     {
         // Clip without inventing Fill — used size still comes from flex/grid parents.
         return container(content).clip(true).into();

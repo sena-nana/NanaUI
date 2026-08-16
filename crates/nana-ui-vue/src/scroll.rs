@@ -15,8 +15,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_core::LayoutStyle;
 
-use crate::bridge::{MessageBridge, WidgetId};
+use crate::bridge::{MessageBridge, WidgetId, WidgetProps};
+use crate::input::WheelInput;
 use crate::tree::{LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from};
+
+/// Matches [`nana_ui::RuntimeInputAdapter`] line-wheel scale.
+const LINE_SCROLL_EXTENT: f32 = 60.0;
 
 /// Absolute scroll offset for one scroll container (CSS px).
 pub use nana_ui_runtime::ScrollOffset;
@@ -143,6 +147,51 @@ pub fn is_scroll_container(bridge: &MessageBridge, id: WidgetId) -> bool {
         .get(id)
         .map(|w| scrolls_axis(&w.props.layout))
         .unwrap_or(false)
+}
+
+/// Projected Runtime `ScrollView` used as `SidebarFrame` body.
+pub(crate) fn is_runtime_scroll_body(props: &WidgetProps) -> bool {
+    props.attrs.get("data-slot").map(String::as_str) == Some("sidebar-body")
+        || props
+            .class_names
+            .iter()
+            .any(|class| class.contains("nana-sidebar-frame__body"))
+}
+
+/// Convert a hosted/DOM wheel into a Runtime content-offset delta.
+pub(crate) fn wheel_scroll_delta(input: &WheelInput) -> ScrollOffset {
+    let (dx, dy) = if input.modifiers.shift && !cfg!(target_os = "macos") {
+        (input.delta_y, input.delta_x)
+    } else {
+        (input.delta_x, input.delta_y)
+    };
+    let scale = match input.delta_mode {
+        1 => LINE_SCROLL_EXTENT,
+        2 => LINE_SCROLL_EXTENT * 16.0,
+        _ => 1.0,
+    };
+    ScrollOffset {
+        x: -dx * scale,
+        y: -dy * scale,
+    }
+}
+
+/// Apply a hosted wheel to the nearest projected Runtime `ScrollView`.
+///
+/// Does not enqueue iced `scrollable` Tasks; Runtime `scroll_offset` is
+/// authoritative for the sidebar body.
+pub(crate) fn apply_runtime_wheel(
+    doc: &mut NanaTreeDocument,
+    bridge: &MessageBridge,
+    x: f32,
+    y: f32,
+    delta: ScrollOffset,
+) -> Option<NodeHandle> {
+    doc.scroll_at(x, y, delta, |node| {
+        bridge
+            .get(node.0)
+            .is_some_and(|widget| is_runtime_scroll_body(&widget.props))
+    })
 }
 
 fn scrolls_axis(layout: &LayoutStyle) -> bool {
@@ -497,6 +546,67 @@ mod tests {
                 .y,
             345.0
         );
+        assert!(shared_scroll_offset_store().take_pending().is_empty());
+    }
+
+    #[test]
+    fn runtime_wheel_scrolls_sidebar_body_without_iced_pending() {
+        let mut doc = NanaTreeDocument::new(400, 400, 1.0);
+        let frame = doc.create_element("nana-sidebar-frame");
+        let top = doc.create_element("nana-column");
+        let body = doc.create_element("nana-column");
+        let footer = doc.create_element("nana-column");
+        let content = doc.create_element("nana-sidebar-row");
+        doc.insert(frame, doc.mount_root(), None);
+        doc.insert(top, frame, None);
+        doc.insert(body, frame, None);
+        doc.insert(footer, frame, None);
+        doc.insert(content, body, None);
+
+        let mut bridge = MessageBridge::new();
+        let mut frame_props = WidgetProps::default();
+        frame_props.class_names = vec!["nana-sidebar-frame".into()];
+        bridge.register(frame.0, WidgetKind::SidebarFrame, frame_props);
+        let mut top_props = WidgetProps::default();
+        top_props.class_names = vec!["nana-sidebar-frame__top".into()];
+        bridge.register(top.0, WidgetKind::Column, top_props);
+        let mut body_props = WidgetProps::default();
+        body_props.class_names = vec!["nana-sidebar-frame__body".into()];
+        body_props
+            .attrs
+            .insert("data-slot".into(), "sidebar-body".into());
+        bridge.register(body.0, WidgetKind::Column, body_props);
+        let mut footer_props = WidgetProps::default();
+        footer_props.class_names = vec!["nana-sidebar-frame__footer".into()];
+        bridge.register(footer.0, WidgetKind::Column, footer_props);
+        bridge.register(content.0, WidgetKind::SidebarRow, WidgetProps::default());
+        bridge.insert_child(top.0, frame.0, None);
+        bridge.insert_child(body.0, frame.0, None);
+        bridge.insert_child(footer.0, frame.0, None);
+        bridge.insert_child(content.0, body.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let layout_store = LayoutBoxStore::new();
+        layout_store.record(frame, 0.0, 0.0, 220.0, 320.0);
+        layout_store.record(top, 0.0, 0.0, 220.0, 40.0);
+        layout_store.record(body, 0.0, 40.0, 220.0, 200.0);
+        layout_store.record(content, 0.0, 40.0, 220.0, 400.0);
+        layout_store.record(footer, 0.0, 250.0, 220.0, 40.0);
+        doc.apply_layout_boxes(&layout_store.snapshot());
+
+        let top_before = doc.layout_box(top).expect("top");
+        let footer_before = doc.layout_box(footer).expect("footer");
+        let delta = wheel_scroll_delta(&crate::WheelInput::pixels(20.0, 80.0, 0.0, -48.0));
+        assert_eq!(delta.y, 48.0);
+        assert_eq!(
+            apply_runtime_wheel(&mut doc, &bridge, 20.0, 80.0, delta),
+            Some(body)
+        );
+        assert!((doc.scroll_offset(body).y - 48.0).abs() < 0.5);
+        assert_eq!(doc.scroll_offset(top).y, 0.0);
+        assert_eq!(doc.scroll_offset(footer).y, 0.0);
+        assert_eq!(doc.layout_box(top).expect("top after"), top_before);
+        assert_eq!(doc.layout_box(footer).expect("footer after"), footer_before);
         assert!(shared_scroll_offset_store().take_pending().is_empty());
     }
 

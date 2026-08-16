@@ -797,11 +797,12 @@ fn runtime_component_for_widget(
         WidgetKind::FormField => Some(nana_ui::component_ids::FORM_FIELD),
         WidgetKind::InteractiveCard => Some(nana_ui::component_ids::INTERACTIVE_CARD),
         // SettingsRow/Card and SidebarRow compose existing Scene paint.
-        // SidebarFrame keeps the Iced independently scrolling body.
+        // SidebarFrame maps now; Scene paint waits on catalog qualification.
         WidgetKind::SettingsRow | WidgetKind::SettingsCard => {
             Some(nana_ui::component_ids::SETTINGS)
         }
         WidgetKind::SidebarRow => Some(nana_ui::component_ids::SIDEBAR_ROW),
+        WidgetKind::SidebarFrame => Some(nana_ui::component_ids::SIDEBAR_FRAME),
         // Scene paints the Runtime subtree, so Dialog/Drawer/Popover may have
         // children. Searchable ContextMenu now keeps its filter field in Runtime.
         WidgetKind::Dialog => Some(if is_confirm_dialog_props(&widget.props) {

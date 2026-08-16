@@ -148,8 +148,7 @@ where
 
     // Borrowed path must match wrap_layout_owned / measure (T-W07).
     let wrap_height = wrap_content_height(layout, child_box, parent_box);
-    if matches!(layout.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && wrap_height.is_some()
-    {
+    if matches!(layout.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && wrap_height.is_some() {
         let wrap_width = wrap_content_width(layout, child_box, parent_box);
         let lines =
             chunk_column_wrap_lines(layout, &widget.children, snap, wrap_height, wrap_width);
@@ -191,6 +190,7 @@ where
             layout,
             parent_box,
             Some(widget.id),
+            crate::scroll::is_runtime_scroll_body(&widget.props),
             map_event,
         );
     }
@@ -228,6 +228,7 @@ where
         layout,
         parent_box,
         Some(widget.id),
+        crate::scroll::is_runtime_scroll_body(&widget.props),
         map_event,
     )
 }
@@ -299,6 +300,7 @@ where
             layout,
             parent_box,
             Some(widget.id),
+            crate::scroll::is_runtime_scroll_body(&widget.props),
             map_event,
         );
     }
@@ -334,6 +336,7 @@ where
         layout,
         parent_box,
         Some(widget.id),
+        crate::scroll::is_runtime_scroll_body(&widget.props),
         map_event,
     )
 }
@@ -356,6 +359,7 @@ where
     Message: Clone + 'static,
 {
     let layout = &props.layout;
+    let runtime_owned_scroll = crate::scroll::is_runtime_scroll_body(props);
     let direction = if column_axis {
         FlexDirection::Column
     } else {
@@ -387,117 +391,149 @@ where
     // into descendants (nested height:auto must stay intrinsic).
     let child_els: Vec<Element<'static, Message>> =
         crate::css_map::with_grid_item_stretch_cleared(|| {
-        let (_, margins_x) = grid_children_axis_margins(snap, &visible, flow_box.width, true);
-        let (_, margins_y) = grid_children_axis_margins(snap, &visible, flow_box.width, false);
-        let track_outers = precompute_grid_track_outers(
-            snap,
-            &visible,
-            layout,
-            direction,
-            if column_axis {
-                flow_box.height.or(child_box.height).or(parent_box.height)
-            } else {
-                flow_box.width.or(child_box.width).or(parent_box.width)
-            },
-            if column_axis {
-                flow_box.width.or(child_box.width).or(parent_box.width)
-            } else {
-                flow_box.height.or(child_box.height).or(parent_box.height)
-            },
-            if column_axis { &margins_y } else { &margins_x },
-        );
-        let fill_portion_tracks = prefer_fill_portion_grid_tracks(layout, direction);
-        visible
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(idx, child)| {
-                let child_parent = snap
-                    .get(child)
-                    .map(|w| {
-                        let mut pb =
-                            parent_box_for_flow_child(layout, flow_box, child_box, &w.props.layout);
-                        pb = indefinite_axis_for_auto_track(layout, direction, idx, pb);
-                        // Column grid/flex: cross-axis width comes from the
-                        // parent CB even when this container's width is auto.
-                        if pb.width.is_none() {
-                            pb = ParentBox::new(
-                                flow_box
+            let (_, margins_x) = grid_children_axis_margins(snap, &visible, flow_box.width, true);
+            let (_, margins_y) = grid_children_axis_margins(snap, &visible, flow_box.width, false);
+            let track_outers = precompute_grid_track_outers(
+                snap,
+                &visible,
+                layout,
+                direction,
+                if column_axis {
+                    flow_box.height.or(child_box.height).or(parent_box.height)
+                } else {
+                    flow_box.width.or(child_box.width).or(parent_box.width)
+                },
+                if column_axis {
+                    flow_box.width.or(child_box.width).or(parent_box.width)
+                } else {
+                    flow_box.height.or(child_box.height).or(parent_box.height)
+                },
+                if column_axis { &margins_y } else { &margins_x },
+            );
+            let fill_portion_tracks = prefer_fill_portion_grid_tracks(layout, direction);
+            visible
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(idx, child)| {
+                    let child_parent = snap
+                        .get(child)
+                        .map(|w| {
+                            let mut pb = parent_box_for_flow_child(
+                                layout,
+                                flow_box,
+                                child_box,
+                                &w.props.layout,
+                            );
+                            pb = indefinite_axis_for_auto_track(layout, direction, idx, pb);
+                            // Column grid/flex: cross-axis width comes from the
+                            // parent CB even when this container's width is auto.
+                            if pb.width.is_none() {
+                                pb = ParentBox::new(
+                                    flow_box.width.or(child_box.width).or(parent_box.width),
+                                    pb.height,
+                                );
+                            }
+                            if pb.height.is_none() && matches!(direction, FlexDirection::Row) {
+                                pb = ParentBox::new(
+                                    pb.width,
+                                    flow_box.height.or(child_box.height).or(parent_box.height),
+                                );
+                            }
+                            // Precomputed track size is a definite grid area CB.
+                            if let Some(px) =
+                                track_outers.as_ref().and_then(|o| o.get(idx)).copied()
+                            {
+                                if column_axis {
+                                    pb = ParentBox::new(pb.width, Some(px));
+                                } else {
+                                    pb = ParentBox::new(Some(px), pb.height);
+                                }
+                            }
+                            pb
+                        })
+                        .unwrap_or(flow_box);
+                    let main_sizes =
+                        flex_main_overrides(snap, &visible, layout, child_parent, direction);
+                    let build_child = || {
+                        view_widget_owned(
+                            snap,
+                            child,
+                            tokens,
+                            child_parent,
+                            direction,
+                            layout.align_items,
+                            editors,
+                            menus,
+                            viewport,
+                            main_sizes.as_ref().and_then(|s| s[idx]),
+                            map_event.clone(),
+                        )
+                    };
+                    let mut el = if track_outers.as_ref().and_then(|o| o.get(idx)).is_some() {
+                        // Track size already resolved (incl. auto via measure): stretch
+                        // into the area. Intrinsic demotion would shrink nested
+                        // height:100% cards below the Fixed track.
+                        crate::css_map::with_grid_item_stretch_main(
+                            matches!(direction, FlexDirection::Column),
+                            build_child,
+                        )
+                    } else if track_is_auto(layout, direction, idx) {
+                        crate::css_map::with_intrinsic_auto_track(
+                            matches!(direction, FlexDirection::Column),
+                            build_child,
+                        )
+                    } else if track_is_sized(layout, direction, idx) {
+                        // Non-auto tracks: stretch height/width:auto items into the
+                        // grid area so nested Fill/% see a definite CB (shell 1fr,
+                        // home 1fr). Outer FillPortion alone leaves Shrink columns.
+                        crate::css_map::with_grid_item_stretch_main(
+                            matches!(direction, FlexDirection::Column),
+                            build_child,
+                        )
+                    } else {
+                        build_child()
+                    };
+                    if let Some(px) = track_outers.as_ref().and_then(|o| o.get(idx)).copied() {
+                        if fill_portion_tracks {
+                            // CB injected above; iced sizes via FillPortion weights.
+                            el = apply_grid_track_width(
+                                el,
+                                layout,
+                                idx,
+                                direction,
+                                child_parent
                                     .width
+                                    .or(flow_box.width)
                                     .or(child_box.width)
                                     .or(parent_box.width),
-                                pb.height,
+                                &margins_x,
                             );
-                        }
-                        if pb.height.is_none() && matches!(direction, FlexDirection::Row) {
-                            pb = ParentBox::new(
-                                pb.width,
-                                flow_box
+                            el = apply_grid_track_height(
+                                el,
+                                layout,
+                                idx,
+                                direction,
+                                child_parent
                                     .height
+                                    .or(flow_box.height)
                                     .or(child_box.height)
                                     .or(parent_box.height),
+                                &margins_y,
                             );
+                        } else if column_axis {
+                            el = container(el).height(Length::Fixed(px)).into();
+                        } else {
+                            el = container(el).width(Length::Fixed(px)).into();
                         }
-                        // Precomputed track size is a definite grid area CB.
-                        if let Some(px) = track_outers.as_ref().and_then(|o| o.get(idx)).copied() {
-                            if column_axis {
-                                pb = ParentBox::new(pb.width, Some(px));
-                            } else {
-                                pb = ParentBox::new(Some(px), pb.height);
-                            }
-                        }
-                        pb
-                    })
-                    .unwrap_or(flow_box);
-                let main_sizes =
-                    flex_main_overrides(snap, &visible, layout, child_parent, direction);
-                let build_child = || {
-                    view_widget_owned(
-                        snap,
-                        child,
-                        tokens,
-                        child_parent,
-                        direction,
-                        layout.align_items,
-                        editors,
-                        menus,
-                        viewport,
-                        main_sizes.as_ref().and_then(|s| s[idx]),
-                        map_event.clone(),
-                    )
-                };
-                let mut el = if track_outers.as_ref().and_then(|o| o.get(idx)).is_some() {
-                    // Track size already resolved (incl. auto via measure): stretch
-                    // into the area. Intrinsic demotion would shrink nested
-                    // height:100% cards below the Fixed track.
-                    crate::css_map::with_grid_item_stretch_main(
-                        matches!(direction, FlexDirection::Column),
-                        build_child,
-                    )
-                } else if track_is_auto(layout, direction, idx) {
-                    crate::css_map::with_intrinsic_auto_track(
-                        matches!(direction, FlexDirection::Column),
-                        build_child,
-                    )
-                } else if track_is_sized(layout, direction, idx) {
-                    // Non-auto tracks: stretch height/width:auto items into the
-                    // grid area so nested Fill/% see a definite CB (shell 1fr,
-                    // home 1fr). Outer FillPortion alone leaves Shrink columns.
-                    crate::css_map::with_grid_item_stretch_main(
-                        matches!(direction, FlexDirection::Column),
-                        build_child,
-                    )
-                } else {
-                    build_child()
-                };
-                if let Some(px) = track_outers.as_ref().and_then(|o| o.get(idx)).copied() {
-                    if fill_portion_tracks {
-                        // CB injected above; iced sizes via FillPortion weights.
+                    } else {
                         el = apply_grid_track_width(
                             el,
                             layout,
                             idx,
                             direction,
+                            // Grid items stretch to the container's CB even when the
+                            // row/column widget itself has width:auto (CSS grid default).
                             child_parent
                                 .width
                                 .or(flow_box.width)
@@ -517,42 +553,10 @@ where
                                 .or(parent_box.height),
                             &margins_y,
                         );
-                    } else if column_axis {
-                        el = container(el).height(Length::Fixed(px)).into();
-                    } else {
-                        el = container(el).width(Length::Fixed(px)).into();
                     }
-                } else {
-                    el = apply_grid_track_width(
-                        el,
-                        layout,
-                        idx,
-                        direction,
-                        // Grid items stretch to the container's CB even when the
-                        // row/column widget itself has width:auto (CSS grid default).
-                        child_parent
-                            .width
-                            .or(flow_box.width)
-                            .or(child_box.width)
-                            .or(parent_box.width),
-                        &margins_x,
-                    );
-                    el = apply_grid_track_height(
-                        el,
-                        layout,
-                        idx,
-                        direction,
-                        child_parent
-                            .height
-                            .or(flow_box.height)
-                            .or(child_box.height)
-                            .or(parent_box.height),
-                        &margins_y,
-                    );
-                }
-                el
-            })
-            .collect()
+                    el
+                })
+                .collect()
         });
 
     if column_axis {
@@ -581,8 +585,7 @@ where
             && wrap_height.is_some()
         {
             let wrap_width = wrap_content_width(layout, child_box, parent_box);
-            let lines =
-                chunk_column_wrap_lines(layout, &children, snap, wrap_height, wrap_width);
+            let lines = chunk_column_wrap_lines(layout, &children, snap, wrap_height, wrap_width);
             let mut r = row![].spacing(cross_gap).width(width).align_y(align);
             if let Some(h) = height {
                 if !layout.scrolls_y() {
@@ -608,13 +611,13 @@ where
                             tokens,
                             flow_box,
                             FlexDirection::Column,
-                        layout.align_items,
-                        editors,
-                        menus,
-                        viewport,
-                        line_sizes.as_ref().and_then(|s| s[idx]),
-                        map_event.clone(),
-                    )
+                            layout.align_items,
+                            editors,
+                            menus,
+                            viewport,
+                            line_sizes.as_ref().and_then(|s| s[idx]),
+                            map_event.clone(),
+                        )
                     })
                     .collect();
                 let mut c = column![]
@@ -629,6 +632,7 @@ where
                 layout,
                 parent_box,
                 scroll_id,
+                runtime_owned_scroll,
                 map_event,
             );
         }
@@ -653,6 +657,7 @@ where
             layout,
             parent_box,
             scroll_id,
+            runtime_owned_scroll,
             map_event,
         );
     }
@@ -675,8 +680,7 @@ where
                 Box::new(lines.into_iter())
             };
         for line in line_iter {
-            let line_sizes =
-                flex_main_overrides(snap, &line, layout, flow_box, FlexDirection::Row);
+            let line_sizes = flex_main_overrides(snap, &line, layout, flow_box, FlexDirection::Row);
             let line_els: Vec<Element<'static, Message>> = line
                 .into_iter()
                 .enumerate()
@@ -708,6 +712,7 @@ where
             layout,
             parent_box,
             scroll_id,
+            runtime_owned_scroll,
             map_event,
         );
     }
@@ -727,7 +732,14 @@ where
     // that would stretch auto-height headings inside Fill columns.
     let row_height = resolve_container_height(layout, parent_box);
     r = pin_flex_row_cross_or_main_height(r, row_height, layout);
-    finalize_layout_container(r.into(), layout, parent_box, scroll_id, map_event)
+    finalize_layout_container(
+        r.into(),
+        layout,
+        parent_box,
+        scroll_id,
+        runtime_owned_scroll,
+        map_event,
+    )
 }
 
 /// Available main-axis width for row flex-wrap, matching measure's use of parent
@@ -795,11 +807,7 @@ fn flex_item_spacing(gap: f32, justify: JustifySpec) -> f32 {
 
 /// Match measure: CSS `order` ascending (stable → source order), then `*-reverse`.
 fn sort_flex_items_by_order(snap: &SemanticSnapshot, children: &mut [WidgetId]) {
-    children.sort_by_key(|&id| {
-        snap.get(id)
-            .map(|w| w.props.layout.order)
-            .unwrap_or(0)
-    });
+    children.sort_by_key(|&id| snap.get(id).map(|w| w.props.layout.order).unwrap_or(0));
 }
 
 /// In-flow children ordered for flex layout (order → source → optional reverse).
@@ -845,7 +853,11 @@ fn text_host_column_axis(layout: &crate::css_map::LayoutStyle) -> bool {
 }
 
 /// Resolve `position:fixed` border box against the content viewport (logical px).
-fn resolve_fixed_box(layout: &crate::css_map::LayoutStyle, vw: f32, vh: f32) -> (f32, f32, f32, f32) {
+fn resolve_fixed_box(
+    layout: &crate::css_map::LayoutStyle,
+    vw: f32,
+    vh: f32,
+) -> (f32, f32, f32, f32) {
     let left = crate::css_map::LayoutStyle::resolve_inset(layout.offset_left, vw);
     let right = crate::css_map::LayoutStyle::resolve_inset(layout.offset_right, vw);
     let top = crate::css_map::LayoutStyle::resolve_inset(layout.offset_top, vh);
@@ -1134,7 +1146,10 @@ fn label_text<'a, Message: 'a>(
         // Fill+ellipsis needs a definite cross/main budget; under an indefinite
         // parent width iced resolves Fill to 0 and the label vanishes.
         if parent_width.filter(|w| *w > 0.0).is_some()
-            || matches!(layout.width, Some(LengthSpec::Fill) | Some(LengthSpec::Percent(_)))
+            || matches!(
+                layout.width,
+                Some(LengthSpec::Fill) | Some(LengthSpec::Percent(_))
+            )
             || layout.grows()
         {
             t = t.width(Length::Fill).ellipsis(Ellipsis::End);
@@ -1229,9 +1244,8 @@ fn raster_resource_view<Message: 'static>(props: &WidgetProps) -> Element<'stati
     #[cfg(feature = "hosted")]
     {
         if let Some(id) = id
-            && let Some(binding) = active_host_texture(&crate::canvas_gpu::slot(
-                nana_ui_web_api::CanvasId(id),
-            ))
+            && let Some(binding) =
+                active_host_texture(&crate::canvas_gpu::slot(nana_ui_web_api::CanvasId(id)))
         {
             let aspect_ratio = binding.aspect_ratio();
             return nana_ui::GpuTextureView::from_binding(binding)
@@ -1264,8 +1278,11 @@ fn cached_canvas_handle(bitmap: &CanvasBitmap) -> iced::widget::image::Handle {
         {
             return handle.clone();
         }
-        let handle =
-            iced::widget::image::Handle::from_rgba(bitmap.width, bitmap.height, bitmap.rgba.clone());
+        let handle = iced::widget::image::Handle::from_rgba(
+            bitmap.width,
+            bitmap.height,
+            bitmap.rgba.clone(),
+        );
         cache.insert(bitmap.id.0, (bitmap.version, handle.clone()));
         handle
     })
@@ -1373,20 +1390,20 @@ fn gpu_preview_placeholder<Message: 'static>(
         None => Space::new().width(Length::Fill).height(Length::Fill).into(),
     };
     container(body)
-    .width(Length::Fill)
-    .height(Length::Fixed(slot_h))
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(move |_t| iced::widget::container::Style {
-        background: Some(Background::Color(surface)),
-        border: Border {
-            color: border,
-            width: 1.0,
-            radius: radius.into(),
-        },
-        ..Default::default()
-    })
-    .into()
+        .width(Length::Fill)
+        .height(Length::Fixed(slot_h))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_t| iced::widget::container::Style {
+            background: Some(Background::Color(surface)),
+            border: Border {
+                color: border,
+                width: 1.0,
+                radius: radius.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 fn find_child_with_class(

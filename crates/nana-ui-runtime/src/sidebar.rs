@@ -3,15 +3,16 @@ use std::time::Duration;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
-    OverflowSpec, SemanticColorRole, TooltipConfig,
+    OverflowSpec, SemanticColorRole, SemanticPalette, TooltipConfig, UI_METRICS,
 };
 
 use crate::view_components::{
-    IconButton, ListItem, ListItemSlots, ScrollAxes, ScrollView, project_common,
+    IconButton, List, ListItem, ListItemSlots, ScrollAxes, ScrollView, Text, project_common,
 };
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, TextContent, UiWorld,
+    MutationQueue, NodeKind, NodeStyle, OverlayHostState, SemanticPaint, StableNodeId,
+    StandardVisual, TextContent, TooltipVisual, UiWorld,
 };
 
 const FRAME_PADDING_TOP: f32 = 10.0;
@@ -21,9 +22,23 @@ const FRAME_PADDING_LEFT: f32 = 12.0;
 const FRAME_GAP: f32 = 14.0;
 const ROW_PADDING_LEFT: f32 = 8.0;
 const ROW_PADDING_RIGHT: f32 = 8.0;
+const ROW_ICON_SLOT_WIDTH: f32 = 16.0;
+const ROW_ICON_SIZE: f32 = 14.0;
+const ROW_TEXT_ALPHA: f32 = 0.68;
 const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
 const ROW_TREE_DEPTH_STEP: f32 = 12.0;
 const SECTION_ANIMATION_DURATION: Duration = Duration::from_millis(160);
+const SECTION_HEADER_GAP: f32 = 5.0;
+const SECTION_HEADER_TITLE_SIZE: f32 = 11.0;
+const SECTION_HEADER_TITLE_WEIGHT: u16 = 700;
+const SECTION_DISCLOSURE_SIZE: f32 = 12.0;
+const SECTION_COUNT_SIZE: f32 = 11.0;
+const SECTION_BODY_GAP: f32 = 1.0;
+const SECTION_EMPTY_HEIGHT: f32 = 30.0;
+const SECTION_EMPTY_PADDING_Y: f32 = 6.0;
+const SECTION_EMPTY_PADDING_X: f32 = 8.0;
+const SECTION_EMPTY_FONT_SIZE: f32 = 12.0;
+const FOOTER_GAP: f32 = 2.0;
 
 /// Visual selection contract for a navigation row. This is not a generic list item.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -352,15 +367,8 @@ impl SidebarRow {
         self.state == SidebarRowState::Disabled
     }
 
-    fn effective_style(&self) -> NodeStyle {
-        let mut item = ListItem::new(self.label.as_ref())
-            .slots(self.slots)
-            .gap(self.gap)
-            .size(self.size)
-            .selected(self.selected())
-            .disabled(self.disabled());
-        item.style.layout = Arc::clone(&self.style.layout);
-        let mut style = item.style;
+    fn effective_style(&self, world: &UiWorld) -> NodeStyle {
+        let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
@@ -376,21 +384,18 @@ impl SidebarRow {
         } else {
             500
         });
+        layout.border_radius = Some(layout.border_radius.unwrap_or(UI_METRICS.radius_sm));
         style.foreground = Some(match (self.tone, self.state) {
             (SidebarRowTone::Warning, _) => SemanticColorRole::Warning,
             (SidebarRowTone::Error, _) => SemanticColorRole::Danger,
-            (_, SidebarRowState::Disabled) => SemanticColorRole::Faint,
             (_, SidebarRowState::Active | SidebarRowState::AncestorActive) => {
                 SemanticColorRole::Text
             }
-            (_, SidebarRowState::Idle) => SemanticColorRole::Muted,
+            (_, SidebarRowState::Idle | SidebarRowState::Disabled) => SemanticColorRole::Faint,
         });
-        style.background = self.selected().then_some(SemanticColorRole::Selected);
+        style.background = None;
         style.interaction = InteractionStyle {
-            selected: SemanticPaint {
-                background: Some(SemanticColorRole::Selected),
-                ..SemanticPaint::default()
-            },
+            selected: SemanticPaint::default(),
             selected_hovered: SemanticPaint {
                 background: Some(SemanticColorRole::SelectedHover),
                 ..SemanticPaint::default()
@@ -425,6 +430,15 @@ impl SidebarRow {
             },
         };
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+        if matches!(self.tone, SidebarRowTone::Default) {
+            if let Some(role) = style.foreground {
+                let mut rgba = SemanticPalette::for_mode(world.theme_mode())
+                    .get(role)
+                    .as_rgba_array();
+                rgba[3] *= ROW_TEXT_ALPHA;
+                Arc::make_mut(&mut style.layout).color = Some(rgba);
+            }
+        }
         style
     }
 }
@@ -443,9 +457,80 @@ impl ComponentView for SidebarRow {
             .size(self.size)
             .selected(self.selected())
             .disabled(self.disabled());
-        item.style = self.effective_style();
+        item.style = self.effective_style(world);
         item.project(id, world, mutations);
     }
+}
+
+/// 16×14 muted leading glyph. Not an IconButton (those force a ~28px target).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SidebarRowIcon {
+    pub icon: Icon,
+}
+
+impl SidebarRowIcon {
+    pub fn new(icon: Icon) -> Self {
+        Self { icon }
+    }
+
+    fn style() -> NodeStyle {
+        let mut style = NodeStyle::default();
+        style.foreground = Some(SemanticColorRole::Muted);
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(ROW_ICON_SLOT_WIDTH));
+        layout.height = Some(LengthSpec::Px(ROW_ICON_SIZE));
+        layout.min_width = Some(LengthSpec::Px(ROW_ICON_SLOT_WIDTH));
+        layout.min_height = Some(LengthSpec::Px(ROW_ICON_SIZE));
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        style
+    }
+}
+
+impl ComponentView for SidebarRowIcon {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "sidebar-row-icon".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        let visual = StandardVisual::Icon {
+            icon: self.icon,
+            size: ROW_ICON_SIZE,
+            tooltip: None,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &Self::style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState::default(),
+        );
+    }
+}
+
+/// Application-owned section slots. Header chrome reuses ListItem + Text + Icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SidebarSectionSlots {
+    pub header: Option<StableNodeId>,
+    pub body: Option<StableNodeId>,
+    pub tools: Option<StableNodeId>,
 }
 
 /// Titled, optionally collapsible group. Expansion is host-sampled.
@@ -460,7 +545,12 @@ pub struct SidebarSection {
     pub disabled: bool,
     pub state: SidebarSectionState,
     pub animation_progress: f32,
+    pub header: Option<StableNodeId>,
     pub body: Option<StableNodeId>,
+    pub disclosure: Option<StableNodeId>,
+    pub title_slot: Option<StableNodeId>,
+    pub count_slot: Option<StableNodeId>,
+    pub header_hovered: bool,
     pub style: NodeStyle,
 }
 
@@ -476,7 +566,12 @@ impl SidebarSection {
             disabled: false,
             state: SidebarSectionState::new(true),
             animation_progress: 1.0,
+            header: None,
             body: None,
+            disclosure: None,
+            title_slot: None,
+            count_slot: None,
+            header_hovered: false,
             style: NodeStyle::default(),
         }
     }
@@ -512,8 +607,35 @@ impl SidebarSection {
         self
     }
 
+    pub fn header(mut self, header: StableNodeId) -> Self {
+        self.header = Some(header);
+        self
+    }
+
     pub fn body(mut self, body: StableNodeId) -> Self {
         self.body = Some(body);
+        self
+    }
+
+    pub fn disclosure(mut self, disclosure: StableNodeId) -> Self {
+        self.disclosure = Some(disclosure);
+        self
+    }
+
+    pub fn title_slot(mut self, title: StableNodeId) -> Self {
+        self.title_slot = Some(title);
+        self
+    }
+
+    pub fn count_slot(mut self, count: StableNodeId) -> Self {
+        self.count_slot = Some(count);
+        self
+    }
+
+    pub fn slots(mut self, slots: SidebarSectionSlots) -> Self {
+        self.header = slots.header;
+        self.body = slots.body;
+        self.tools = slots.tools;
         self
     }
 
@@ -527,19 +649,130 @@ impl SidebarSection {
         self
     }
 
+    pub fn slot_ids(&self) -> SidebarSectionSlots {
+        SidebarSectionSlots {
+            header: self.header,
+            body: self.body,
+            tools: self.tools,
+        }
+    }
+
+    pub fn header_item(&self) -> ListItem {
+        let mut item = ListItem::new(self.header_title())
+            .gap(SECTION_HEADER_GAP)
+            .size(self.size)
+            .slots(self.header_list_slots());
+        item.style = self.header_style();
+        item
+    }
+
+    /// 12px disclosure host. Projection paints [`StandardVisual::Icon`].
+    pub fn disclosure_mark(&self) -> IconButton {
+        IconButton::new(self.disclosure_icon(), Arc::from(""))
+            .style(disclosure_host_style(self.collapsible))
+    }
+
+    fn disclosure_icon(&self) -> Icon {
+        disclosure_icon_kind(self.expansion_ratio())
+    }
+
+    pub fn title_label(&self) -> Text {
+        let mut label = Text::new(self.header_title());
+        label.style = title_slot_style();
+        label
+    }
+
+    pub fn count_label(&self) -> Text {
+        let mut label = Text::new(self.count_text());
+        label.style = count_slot_style(self.count_visible());
+        label
+    }
+
+    /// Clip port for application-owned section children.
+    pub fn body_port() -> List {
+        let mut body = List::new();
+        body.style = body_port_style(1.0, None, 0.0);
+        body
+    }
+
+    fn header_title(&self) -> String {
+        self.title.to_uppercase()
+    }
+
+    fn count_text(&self) -> String {
+        self.count
+            .map(|count| count.to_string())
+            .unwrap_or_default()
+    }
+
+    fn toggleable(&self) -> bool {
+        self.collapsible && !self.disabled
+    }
+
+    fn pointer_target(&self) -> bool {
+        !self.disabled && (self.collapsible || self.tools.is_some())
+    }
+
+    fn expansion_ratio(&self) -> f32 {
+        if self.collapsible {
+            self.animation_progress.clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+
+    fn count_visible(&self) -> bool {
+        self.count.is_some() && !(self.header_hovered && self.tools.is_some())
+    }
+
+    fn header_list_slots(&self) -> ListItemSlots {
+        ListItemSlots {
+            leading: self.disclosure.filter(|_| self.collapsible),
+            content: self.title_slot,
+            trailing: if self.header_hovered {
+                self.tools.or(self.count_slot)
+            } else {
+                self.count_slot
+            },
+        }
+    }
+
+    fn header_style(&self) -> NodeStyle {
+        let row_height = self.size.height();
+        let mut style = NodeStyle::default();
+        style.foreground = Some(SemanticColorRole::Faint);
+        style.background =
+            (self.header_hovered && self.toggleable()).then_some(SemanticColorRole::Hover);
+        style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.direction = Some(FlexDirection::Row);
+        layout.align_items = AlignSpec::Center;
+        layout.width = Some(LengthSpec::Fill);
+        layout.height = Some(LengthSpec::Px(row_height));
+        layout.min_height = Some(LengthSpec::Px(row_height));
+        layout.gap = Some(LengthSpec::Px(SECTION_HEADER_GAP));
+        layout.padding_left = Some(LengthSpec::Px(ROW_PADDING_LEFT));
+        layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_LEFT));
+        layout.font_size = Some(SECTION_HEADER_TITLE_SIZE);
+        layout.font_weight = Some(SECTION_HEADER_TITLE_WEIGHT);
+        layout.white_space_nowrap = true;
+        layout.text_overflow_ellipsis = true;
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        layout.border_radius = Some(UI_METRICS.radius_sm);
+        style
+    }
+
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Column);
         layout.width = Some(LengthSpec::Fill);
         layout.align_items = AlignSpec::Stretch;
+        layout.border_radius = Some(layout.border_radius.unwrap_or(UI_METRICS.radius_sm));
         style.foreground = Some(SemanticColorRole::Faint);
-        style.interaction = if self.collapsible && !self.disabled {
+        style.interaction = if self.toggleable() {
             InteractionStyle {
-                hovered: SemanticPaint {
-                    background: Some(SemanticColorRole::Hover),
-                    ..SemanticPaint::default()
-                },
                 pressed: SemanticPaint {
                     background: Some(SemanticColorRole::Active),
                     ..SemanticPaint::default()
@@ -555,6 +788,275 @@ impl SidebarSection {
         };
         style
     }
+
+    fn project_header(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(header) = self.header else {
+            return;
+        };
+        self.header_item().project(header, world, mutations);
+        project_common(
+            header,
+            world,
+            mutations,
+            &self.header_style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+
+    fn project_disclosure(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(id) = self.disclosure else {
+            return;
+        };
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        let visual = StandardVisual::Icon {
+            icon: self.disclosure_icon(),
+            size: SECTION_DISCLOSURE_SIZE,
+            tooltip: None,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &disclosure_host_style(self.collapsible),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState::default(),
+        );
+    }
+
+    fn project_title_slot(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(id) = self.title_slot else {
+            return;
+        };
+        let mut label = Text::new(self.header_title());
+        label.style = title_slot_style();
+        label.project(id, world, mutations);
+    }
+
+    fn project_count_slot(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(id) = self.count_slot else {
+            return;
+        };
+        let mut label = Text::new(self.count_text());
+        label.style = count_slot_style(self.count_visible());
+        label.project(id, world, mutations);
+    }
+
+    fn project_tools_visibility(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(id) = self.tools else {
+            return;
+        };
+        let Some(current) = world.node_style(id) else {
+            return;
+        };
+        let hide = !self.header_hovered;
+        if current.layout.hidden == hide {
+            return;
+        }
+        let mut style = current.clone();
+        Arc::make_mut(&mut style.layout).hidden = hide;
+        mutations.set_style(id, style);
+    }
+
+    fn project_body(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(body) = self.body else {
+            return;
+        };
+        let expansion = self.expansion_ratio();
+        let children_empty = world.node(body).is_none_or(|node| node.children.is_empty());
+        let empty = children_empty.then(|| self.empty_text.clone()).flatten();
+        let content_height = self.body_content_height(world);
+        let style = body_port_style(expansion, empty.as_deref(), content_height);
+        let text = empty.as_deref().unwrap_or("");
+        if world.text(body) != Some(text) {
+            mutations.set_text(
+                body,
+                TextContent {
+                    value: text.to_owned(),
+                },
+            );
+        }
+        if world.standard_visual(body).is_some() {
+            mutations.set_standard_visual(body, None);
+        }
+        project_common(
+            body,
+            world,
+            mutations,
+            &style,
+            InteractionState {
+                pointer_events: true,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+
+    fn body_content_height(&self, world: &UiWorld) -> f32 {
+        let Some(body) = self.body else {
+            return if self.empty_text.is_some() {
+                SECTION_EMPTY_HEIGHT
+            } else {
+                0.0
+            };
+        };
+        let children = world
+            .node(body)
+            .map(|node| node.children)
+            .unwrap_or_default();
+        let visible = children
+            .into_iter()
+            .filter(|id| {
+                world
+                    .node_style(*id)
+                    .is_none_or(|style| !style.layout.hidden)
+            })
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return if self.empty_text.is_some() {
+                SECTION_EMPTY_HEIGHT
+            } else {
+                0.0
+            };
+        }
+        let mut total = 0.0;
+        for (index, id) in visible.iter().enumerate() {
+            if index > 0 {
+                total += SECTION_BODY_GAP;
+            }
+            total += child_block_height(world, *id, self.size.height());
+        }
+        total
+    }
+}
+
+fn length_px(spec: Option<LengthSpec>) -> Option<f32> {
+    match spec {
+        Some(LengthSpec::Px(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn child_block_height(world: &UiWorld, id: StableNodeId, fallback: f32) -> f32 {
+    world
+        .node_style(id)
+        .and_then(|style| {
+            length_px(style.layout.height).or_else(|| length_px(style.layout.min_height))
+        })
+        .or_else(|| world.layout_box(id).map(|bounds| bounds.height))
+        .filter(|height| *height > 0.0)
+        .unwrap_or(fallback)
+}
+
+fn disclosure_icon_kind(expansion: f32) -> Icon {
+    if expansion < 0.5 {
+        Icon::ChevronRight
+    } else {
+        Icon::ChevronDown
+    }
+}
+
+fn disclosure_host_style(visible: bool) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(SemanticColorRole::Faint);
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.width = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
+    layout.height = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
+    layout.min_width = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
+    layout.min_height = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    layout.hidden = !visible;
+    style
+}
+
+fn title_slot_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(SemanticColorRole::Faint);
+    style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.font_size = Some(SECTION_HEADER_TITLE_SIZE);
+    layout.font_weight = Some(SECTION_HEADER_TITLE_WEIGHT);
+    layout.flex_grow = Some(1.0);
+    layout.flex_shrink = Some(1.0);
+    layout.width = Some(LengthSpec::Fill);
+    layout.white_space_nowrap = true;
+    layout.text_overflow_ellipsis = true;
+    style
+}
+
+fn count_slot_style(visible: bool) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(SemanticColorRole::Faint);
+    style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.font_size = Some(SECTION_COUNT_SIZE);
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    layout.hidden = !visible;
+    style
+}
+
+fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(SemanticColorRole::Faint);
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.direction = Some(FlexDirection::Column);
+    layout.align_items = AlignSpec::Stretch;
+    layout.width = Some(LengthSpec::Fill);
+    layout.overflow_x = OverflowSpec::Hidden;
+    layout.overflow_y = OverflowSpec::Hidden;
+    layout.gap = Some(LengthSpec::Px(SECTION_BODY_GAP));
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    if empty_text.is_some() {
+        layout.padding_top = Some(LengthSpec::Px(SECTION_EMPTY_PADDING_Y));
+        layout.padding_bottom = Some(LengthSpec::Px(SECTION_EMPTY_PADDING_Y));
+        layout.padding_left = Some(LengthSpec::Px(SECTION_EMPTY_PADDING_X));
+        layout.padding_right = Some(LengthSpec::Px(SECTION_EMPTY_PADDING_X));
+        layout.font_size = Some(SECTION_EMPTY_FONT_SIZE);
+    }
+    let clip_height = content_height * expansion.clamp(0.0, 1.0);
+    if expansion <= 0.0 || content_height <= 0.0 {
+        layout.height = Some(LengthSpec::Px(0.0));
+        layout.min_height = Some(LengthSpec::Px(0.0));
+        layout.max_height = Some(LengthSpec::Px(0.0));
+    } else if expansion < 1.0 {
+        layout.height = Some(LengthSpec::Px(clip_height));
+        layout.min_height = Some(LengthSpec::Px(0.0));
+        layout.max_height = Some(LengthSpec::Px(clip_height));
+    } else if empty_text.is_some() {
+        layout.height = Some(LengthSpec::Px(SECTION_EMPTY_HEIGHT));
+        layout.min_height = None;
+        layout.max_height = None;
+    } else {
+        layout.height = None;
+        layout.min_height = None;
+        layout.max_height = None;
+    }
+    style
 }
 
 impl ComponentView for SidebarSection {
@@ -565,26 +1067,30 @@ impl ComponentView for SidebarSection {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != Some(self.title.as_ref()) {
+        let root_text = if self.header.is_some() {
+            ""
+        } else {
+            self.title.as_ref()
+        };
+        if world.text(id) != Some(root_text) {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.title.as_ref().to_owned(),
+                    value: root_text.to_owned(),
                 },
             );
         }
         if world.standard_visual(id).is_some() {
             mutations.set_standard_visual(id, None);
         }
-        let interactive = self.collapsible && !self.disabled;
         project_common(
             id,
             world,
             mutations,
             &self.effective_style(),
             InteractionState {
-                pointer_events: interactive,
-                focusable: interactive,
+                pointer_events: self.pointer_target(),
+                focusable: self.toggleable(),
             },
             AccessibilityState {
                 role: AccessibilityRole::Button,
@@ -595,10 +1101,16 @@ impl ComponentView for SidebarSection {
                 ..AccessibilityState::default()
             },
         );
+        self.project_header(world, mutations);
+        self.project_disclosure(world, mutations);
+        self.project_title_slot(world, mutations);
+        self.project_count_slot(world, mutations);
+        self.project_tools_visibility(world, mutations);
+        self.project_body(world, mutations);
     }
 }
 
-/// Fixed footer row. Children are application-owned actions.
+/// Fixed footer row. Children stay application-owned IconButton actions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidebarFooter {
     pub style: NodeStyle,
@@ -623,9 +1135,11 @@ impl SidebarFooter {
         layout.align_items = AlignSpec::Center;
         layout.justify_content = JustifySpec::Start;
         layout.width = Some(LengthSpec::Fill);
-        layout.gap = Some(layout.gap.unwrap_or(LengthSpec::Px(2.0)));
+        layout.gap = Some(layout.gap.unwrap_or(LengthSpec::Px(FOOTER_GAP)));
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
+        layout.height = None;
+        layout.min_height = None;
         style
     }
 }
@@ -672,7 +1186,7 @@ impl ComponentView for SidebarFooter {
     }
 }
 
-/// Footer icon action. Composes IconButton paint and tooltip.
+/// Footer icon action. Paints [`StandardVisual::Icon`] with tooltip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidebarFooterButton {
     pub label: Arc<str>,
@@ -707,6 +1221,72 @@ impl SidebarFooterButton {
         self.disabled = disabled;
         self
     }
+
+    fn style(&self) -> NodeStyle {
+        footer_button_style(self.size, self.selected)
+    }
+}
+
+fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
+    let extent = size.height();
+    let mut style = NodeStyle::default();
+    style.foreground = Some(if selected {
+        SemanticColorRole::Text
+    } else {
+        SemanticColorRole::Muted
+    });
+    // Iced's selected idle fill is effectively invisible on the sidebar
+    // surface; keep selected as a brighter glyph, not a Selected plate.
+    style.background = None;
+    style.text_horizontal_alignment = crate::TextHorizontalAlignment::Center;
+    style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+    style.interaction = InteractionStyle {
+        selected: SemanticPaint {
+            foreground: Some(SemanticColorRole::Text),
+            ..SemanticPaint::default()
+        },
+        selected_hovered: SemanticPaint {
+            foreground: Some(SemanticColorRole::Text),
+            background: Some(SemanticColorRole::Hover),
+            ..SemanticPaint::default()
+        },
+        selected_pressed: SemanticPaint {
+            foreground: Some(SemanticColorRole::Text),
+            background: Some(SemanticColorRole::Active),
+            ..SemanticPaint::default()
+        },
+        hovered: SemanticPaint {
+            foreground: Some(SemanticColorRole::Text),
+            background: Some(SemanticColorRole::Hover),
+            ..SemanticPaint::default()
+        },
+        pressed: SemanticPaint {
+            foreground: Some(SemanticColorRole::Text),
+            background: Some(SemanticColorRole::Active),
+            ..SemanticPaint::default()
+        },
+        focused: SemanticPaint {
+            border: Some(SemanticColorRole::Accent),
+            ..SemanticPaint::default()
+        },
+        disabled: SemanticPaint {
+            foreground: Some(SemanticColorRole::Faint),
+            ..SemanticPaint::default()
+        },
+    };
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.width = Some(LengthSpec::Px(extent));
+    layout.height = Some(LengthSpec::Px(extent));
+    layout.min_width = Some(LengthSpec::Px(extent));
+    layout.min_height = Some(LengthSpec::Px(extent));
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    layout.padding_left = Some(LengthSpec::Px(0.0));
+    layout.padding_right = Some(LengthSpec::Px(0.0));
+    layout.padding_top = Some(LengthSpec::Px(0.0));
+    layout.padding_bottom = Some(LengthSpec::Px(0.0));
+    layout.border_radius = Some(UI_METRICS.radius_sm);
+    style
 }
 
 impl ComponentView for SidebarFooterButton {
@@ -717,19 +1297,53 @@ impl ComponentView for SidebarFooterButton {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        IconButton::new(self.icon, Arc::clone(&self.label))
-            .size(self.size)
-            .selected(self.selected)
-            .disabled(self.disabled)
-            .tooltip(Arc::clone(&self.label), TooltipConfig::default())
-            .project(id, world, mutations);
+        if world.overlay_host(id).is_none() {
+            mutations.set_overlay_host(id, OverlayHostState::default());
+        }
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        let visual = StandardVisual::Icon {
+            icon: self.icon,
+            size: self.size.icon_size(),
+            tooltip: Some(TooltipVisual {
+                label: Arc::clone(&self.label),
+                config: TooltipConfig::default(),
+                open: false,
+            }),
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style(),
+            InteractionState {
+                pointer_events: !self.disabled,
+                focusable: !self.disabled,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Button,
+                label: Some(Arc::clone(&self.label)),
+                disabled: self.disabled,
+                selected: Some(self.selected),
+                ..AccessibilityState::default()
+            },
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, DocumentId, StandardVisual};
+    use crate::{AppContext, DocumentId, Entity, IconButton, List, ListItem, StandardVisual, Text};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -950,7 +1564,7 @@ mod tests {
     fn row_select_and_disabled_project_list_item_slots() {
         let mut context = AppContext::new();
         let leading = context
-            .create_component(document(), crate::Text::new("◇"))
+            .create_component(document(), SidebarRowIcon::new(Icon::Workspace))
             .unwrap();
         let selected = context
             .create_component(
@@ -966,6 +1580,7 @@ mod tests {
                     .tone(SidebarRowTone::Warning),
             )
             .unwrap();
+        context.append_child(selected, leading).unwrap();
         let id = selected.stable_id();
         assert_eq!(
             context.world().node(id).unwrap().kind,
@@ -984,10 +1599,27 @@ mod tests {
         assert_eq!(context.world().text(id), Some("工作区"));
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.foreground, Some(SemanticColorRole::Warning));
+        assert_eq!(style.background, None);
+        assert_eq!(style.interaction.selected.background, None);
         assert_eq!(
             style.layout.padding_left,
             Some(LengthSpec::Px(sidebar_row_depth_inset(1)))
         );
+        assert_eq!(
+            context.world().standard_visual(leading.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: Icon::Workspace,
+                size: ROW_ICON_SIZE,
+                tooltip: None,
+            })
+        );
+        let icon_layout = &context
+            .world()
+            .node_style(leading.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(icon_layout.width, Some(LengthSpec::Px(ROW_ICON_SLOT_WIDTH)));
+        assert_eq!(icon_layout.height, Some(LengthSpec::Px(ROW_ICON_SIZE)));
         assert!(context.world().interaction(id).unwrap().focusable);
         assert_eq!(
             context.world().accessibility(id).unwrap().selected,
@@ -1015,23 +1647,141 @@ mod tests {
     }
 
     #[test]
-    fn section_header_toggles_when_collapsible() {
+    fn row_default_text_matches_iced_unarmed_alpha() {
         let mut context = AppContext::new();
+        let idle = context
+            .create_component(document(), SidebarRow::new("外观"))
+            .unwrap();
+        let active = context
+            .create_component(
+                document(),
+                SidebarRow::new("工作区").state(SidebarRowState::Active),
+            )
+            .unwrap();
+        let idle_style = context.world().node_style(idle.stable_id()).unwrap();
+        let active_style = context.world().node_style(active.stable_id()).unwrap();
+        assert_eq!(idle_style.foreground, Some(SemanticColorRole::Faint));
+        assert_eq!(active_style.foreground, Some(SemanticColorRole::Text));
+        let idle_color = idle_style.layout.color.expect("idle text color");
+        let active_color = active_style.layout.color.expect("active text color");
+        assert!((idle_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);
+        assert!((active_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);
+        let palette = SemanticPalette::for_mode(context.world().theme_mode());
+        assert_eq!(&idle_color[..3], &palette.faint.as_rgba_array()[..3]);
+        assert_eq!(&active_color[..3], &palette.text.as_rgba_array()[..3]);
+    }
+
+    fn mount_section(
+        context: &mut AppContext,
+        spec: SidebarSection,
+        rows: &[&str],
+        tools: Option<Entity<SidebarFooterButton>>,
+    ) -> (
+        Entity<SidebarSection>,
+        Entity<ListItem>,
+        Entity<List>,
+        Entity<IconButton>,
+        Entity<Text>,
+    ) {
+        let disclosure = context
+            .create_component(document(), spec.disclosure_mark())
+            .unwrap();
+        let title = context
+            .create_component(document(), spec.title_label())
+            .unwrap();
+        let count = context
+            .create_component(document(), spec.count_label())
+            .unwrap();
+        let spec = spec
+            .disclosure(disclosure.stable_id())
+            .title_slot(title.stable_id())
+            .count_slot(count.stable_id());
+        let spec = match tools {
+            Some(tools) => spec.tools(tools.stable_id()),
+            None => spec,
+        };
+        let header = context
+            .create_component(document(), spec.header_item())
+            .unwrap();
+        let body = context
+            .create_component(document(), SidebarSection::body_port())
+            .unwrap();
+        for label in rows {
+            let row = context
+                .create_component(document(), SidebarRow::new(*label))
+                .unwrap();
+            context.append_child(body, row).unwrap();
+        }
+        context.append_child(header, disclosure).unwrap();
+        context.append_child(header, title).unwrap();
+        context.append_child(header, count).unwrap();
+        if let Some(tools) = tools {
+            context.append_child(header, tools).unwrap();
+        }
         let section = context
             .create_component(
                 document(),
-                SidebarSection::new("资源")
-                    .count(3)
-                    .collapsible(true)
-                    .expanded(true),
+                spec.header(header.stable_id()).body(body.stable_id()),
             )
             .unwrap();
+        context.append_child(section, header).unwrap();
+        context.append_child(section, body).unwrap();
+        (section, header, body, disclosure, count)
+    }
+
+    #[test]
+    fn section_header_toggles_when_collapsible() {
+        let mut context = AppContext::new();
+        let (section, header, body, disclosure, _) = mount_section(
+            &mut context,
+            SidebarSection::new("资源")
+                .count(3)
+                .empty_text("暂无")
+                .collapsible(true)
+                .expanded(true),
+            &[],
+            None,
+        );
         let id = section.stable_id();
-        assert_eq!(context.world().text(id), Some("资源"));
+        assert_eq!(context.world().text(id), Some(""));
+        assert_eq!(context.world().text(header.stable_id()), Some(""));
+        let title_id = context
+            .read(section, |section| section.title_slot)
+            .unwrap()
+            .expect("title slot");
+        assert_eq!(context.world().text(title_id), Some("资源"));
+        assert_eq!(context.world().text(body.stable_id()), Some("暂无"));
+        assert_eq!(
+            context
+                .world()
+                .node_style(body.stable_id())
+                .unwrap()
+                .layout
+                .height,
+            Some(LengthSpec::Px(SECTION_EMPTY_HEIGHT))
+        );
+        assert_eq!(
+            context.world().standard_visual(disclosure.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: Icon::ChevronDown,
+                size: SECTION_DISCLOSURE_SIZE,
+                tooltip: None,
+            })
+        );
+        assert!(
+            context
+                .world()
+                .node_style(disclosure.stable_id())
+                .unwrap()
+                .layout
+                .transform
+                .is_none()
+        );
         assert_eq!(
             context.world().accessibility(id).unwrap().selected,
             Some(true)
         );
+        assert!(context.world().interaction(id).unwrap().focusable);
         assert!(context.activate_sidebar_section(section).unwrap());
         context
             .read(section, |section| {
@@ -1056,7 +1806,336 @@ mod tests {
                 SidebarSection::new("锁定").collapsible(true).disabled(true),
             )
             .unwrap();
+        assert!(
+            !context
+                .world()
+                .interaction(locked.stable_id())
+                .unwrap()
+                .focusable
+        );
         assert!(!context.activate_sidebar_section(locked).unwrap());
+
+        let static_section = context
+            .create_component(document(), SidebarSection::new("固定"))
+            .unwrap();
+        assert!(
+            !context
+                .world()
+                .interaction(static_section.stable_id())
+                .unwrap()
+                .focusable
+        );
+        assert!(!context.activate_sidebar_section(static_section).unwrap());
+        assert!(
+            context
+                .world()
+                .node_style(static_section.stable_id())
+                .unwrap()
+                .interaction
+                .hovered
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn section_disclosure_uses_static_chevrons() {
+        assert_eq!(disclosure_icon_kind(0.0), Icon::ChevronRight);
+        assert_eq!(disclosure_icon_kind(0.49), Icon::ChevronRight);
+        assert_eq!(disclosure_icon_kind(0.5), Icon::ChevronDown);
+        assert_eq!(disclosure_icon_kind(1.0), Icon::ChevronDown);
+
+        let mut context = AppContext::new();
+        let (_, _, _, expanded, _) = mount_section(
+            &mut context,
+            SidebarSection::new("展开").collapsible(true).expanded(true),
+            &[],
+            None,
+        );
+        assert_eq!(
+            context.world().standard_visual(expanded.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: Icon::ChevronDown,
+                size: SECTION_DISCLOSURE_SIZE,
+                tooltip: None,
+            })
+        );
+        assert!(
+            context
+                .world()
+                .node_style(expanded.stable_id())
+                .unwrap()
+                .layout
+                .transform
+                .is_none()
+        );
+
+        let (_, _, _, collapsed, _) = mount_section(
+            &mut context,
+            SidebarSection::new("折叠")
+                .collapsible(true)
+                .expanded(false),
+            &[],
+            None,
+        );
+        assert_eq!(
+            context.world().standard_visual(collapsed.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: Icon::ChevronRight,
+                size: SECTION_DISCLOSURE_SIZE,
+                tooltip: None,
+            })
+        );
+        assert!(
+            context
+                .world()
+                .node_style(collapsed.stable_id())
+                .unwrap()
+                .layout
+                .transform
+                .is_none()
+        );
+
+        let (section, _, _, disclosure, _) = mount_section(
+            &mut context,
+            SidebarSection::new("动画").collapsible(true).expanded(true),
+            &[],
+            None,
+        );
+        assert!(context.activate_sidebar_section(section).unwrap());
+        let _ = context.advance_animations(std::time::Duration::from_millis(200));
+        assert_eq!(
+            context.world().standard_visual(disclosure.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: Icon::ChevronRight,
+                size: SECTION_DISCLOSURE_SIZE,
+                tooltip: None,
+            })
+        );
+    }
+
+    #[test]
+    fn section_animation_clips_body_without_changing_frame_contract() {
+        let mut context = AppContext::new();
+        let top = context
+            .create_component(document(), SidebarRow::new("返回"))
+            .unwrap();
+        let frame_body = context
+            .create_component(document(), SidebarFrame::vertical_body_scroll())
+            .unwrap();
+        let (section, _, body, _, _) = mount_section(
+            &mut context,
+            SidebarSection::new("资源").collapsible(true).expanded(true),
+            &["外观", "工作区"],
+            None,
+        );
+        context.append_child(frame_body, section).unwrap();
+        let footer = context
+            .create_component(document(), SidebarFooter::new())
+            .unwrap();
+        let frame = context
+            .create_component(
+                document(),
+                SidebarFrame::new()
+                    .top(top.stable_id())
+                    .body(frame_body.stable_id())
+                    .footer(footer.stable_id()),
+            )
+            .unwrap();
+        context.append_child(frame, top).unwrap();
+        context.append_child(frame, frame_body).unwrap();
+        context.append_child(frame, footer).unwrap();
+
+        context
+            .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
+            .unwrap();
+        let frame_layout_before = context
+            .world()
+            .node_style(frame.stable_id())
+            .unwrap()
+            .layout
+            .clone();
+        let expanded_body = context.world().layout_box(body.stable_id()).unwrap();
+        assert!(expanded_body.height > 0.0);
+        assert_eq!(
+            context
+                .world()
+                .node_style(body.stable_id())
+                .unwrap()
+                .layout
+                .overflow_y,
+            OverflowSpec::Hidden
+        );
+
+        assert!(context.activate_sidebar_section(section).unwrap());
+        let _ = context.advance_animations(std::time::Duration::from_millis(80));
+        context
+            .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
+            .unwrap();
+        let progress = context
+            .read(section, |section| section.animation_progress)
+            .unwrap();
+        let clipped = context.world().layout_box(body.stable_id()).unwrap();
+        assert!(progress > 0.0 && progress < 1.0);
+        assert!(clipped.height < expanded_body.height);
+        assert!((clipped.height - expanded_body.height * progress).abs() < 1.0);
+        assert_eq!(
+            context
+                .world()
+                .node_style(body.stable_id())
+                .unwrap()
+                .layout
+                .overflow_y,
+            OverflowSpec::Hidden
+        );
+        let frame_layout_after = context
+            .world()
+            .node_style(frame.stable_id())
+            .unwrap()
+            .layout
+            .clone();
+        assert_eq!(
+            frame_layout_before.padding_top,
+            frame_layout_after.padding_top
+        );
+        assert_eq!(
+            frame_layout_before.padding_right,
+            frame_layout_after.padding_right
+        );
+        assert_eq!(
+            frame_layout_before.padding_bottom,
+            frame_layout_after.padding_bottom
+        );
+        assert_eq!(
+            frame_layout_before.padding_left,
+            frame_layout_after.padding_left
+        );
+        assert_eq!(frame_layout_before.gap, frame_layout_after.gap);
+        assert_eq!(
+            frame_layout_after.padding_left,
+            Some(LengthSpec::Px(FRAME_PADDING_LEFT))
+        );
+        assert_eq!(frame_layout_after.gap, Some(LengthSpec::Px(FRAME_GAP)));
+    }
+
+    #[test]
+    fn section_count_and_tools_keep_slot_identities() {
+        let mut context = AppContext::new();
+        let tools = context
+            .create_component(document(), SidebarFooterButton::new("刷新", Icon::Restore))
+            .unwrap();
+        let tools_visual = context.world().standard_visual(tools.stable_id());
+        let (section, header, _, _, count) = mount_section(
+            &mut context,
+            SidebarSection::new("资源")
+                .count(3)
+                .collapsible(true)
+                .expanded(true),
+            &[],
+            Some(tools),
+        );
+        let count_id = count.stable_id();
+        let tools_id = tools.stable_id();
+        assert_eq!(context.world().text(count_id), Some("3"));
+        assert!(!context.world().node_style(count_id).unwrap().layout.hidden);
+        assert!(context.world().node_style(tools_id).unwrap().layout.hidden);
+        assert_eq!(
+            context.world().standard_visual(header.stable_id()),
+            Some(StandardVisual::ListItem {
+                leading: context.read(section, |section| section.disclosure).unwrap(),
+                content: context.read(section, |section| section.title_slot).unwrap(),
+                trailing: Some(count_id),
+            })
+        );
+
+        context
+            .set_pointer_hover(document(), 1, Some(section.stable_id()))
+            .unwrap();
+        assert!(context.world().node_style(count_id).unwrap().layout.hidden);
+        assert!(!context.world().node_style(tools_id).unwrap().layout.hidden);
+        assert_eq!(
+            context.world().standard_visual(header.stable_id()),
+            Some(StandardVisual::ListItem {
+                leading: context.read(section, |section| section.disclosure).unwrap(),
+                content: context.read(section, |section| section.title_slot).unwrap(),
+                trailing: Some(tools_id),
+            })
+        );
+        assert_eq!(context.world().standard_visual(tools_id), tools_visual);
+        assert_eq!(
+            context.read(section, |section| section.slot_ids()).unwrap(),
+            SidebarSectionSlots {
+                header: Some(header.stable_id()),
+                body: context.read(section, |section| section.body).unwrap(),
+                tools: Some(tools_id),
+            }
+        );
+
+        context.set_pointer_hover(document(), 1, None).unwrap();
+        assert!(!context.world().node_style(count_id).unwrap().layout.hidden);
+        assert!(context.world().node_style(tools_id).unwrap().layout.hidden);
+        assert_eq!(count.stable_id(), count_id);
+        assert_eq!(tools.stable_id(), tools_id);
+    }
+
+    #[test]
+    fn footer_hugs_icon_button_children() {
+        let mut context = AppContext::new();
+        let footer = context
+            .create_component(document(), SidebarFooter::new())
+            .unwrap();
+        let settings = context
+            .create_component(document(), SidebarFooterButton::new("设置", Icon::Settings))
+            .unwrap();
+        let search = context
+            .create_component(document(), SidebarFooterButton::new("搜索", Icon::Search))
+            .unwrap();
+        context.append_child(footer, settings).unwrap();
+        context.append_child(footer, search).unwrap();
+        let layout = &context
+            .world()
+            .node_style(footer.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(layout.direction, Some(FlexDirection::Row));
+        assert_eq!(layout.align_items, AlignSpec::Center);
+        assert_eq!(layout.width, Some(LengthSpec::Fill));
+        assert_eq!(layout.gap, Some(LengthSpec::Px(FOOTER_GAP)));
+        assert_eq!(layout.flex_grow, Some(0.0));
+        assert_eq!(layout.flex_shrink, Some(0.0));
+        assert_eq!(
+            context.world().node(footer.stable_id()).unwrap().children,
+            vec![settings.stable_id(), search.stable_id()]
+        );
+        assert!(matches!(
+            context.world().standard_visual(settings.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: Icon::Settings,
+                ..
+            })
+        ));
+        assert!(matches!(
+            context.world().standard_visual(search.stable_id()),
+            Some(StandardVisual::Icon {
+                icon: Icon::Search,
+                ..
+            })
+        ));
+        assert_eq!(
+            context
+                .world()
+                .node_style(settings.stable_id())
+                .unwrap()
+                .foreground,
+            Some(SemanticColorRole::Muted)
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(settings.stable_id())
+                .unwrap()
+                .background,
+            None
+        );
     }
 
     #[test]
@@ -1093,6 +2172,43 @@ mod tests {
                 .unwrap()
                 .selected,
             Some(true)
+        );
+        let selected_id = button.stable_id();
+        assert_eq!(
+            context.world().standard_visual(selected_id),
+            Some(StandardVisual::Icon {
+                icon: Icon::Settings,
+                size: ControlSize::Small.icon_size(),
+                tooltip: Some(crate::TooltipVisual {
+                    label: Arc::from("设置"),
+                    config: TooltipConfig::default(),
+                    open: false,
+                }),
+            })
+        );
+        assert!(!matches!(
+            context.world().standard_visual(selected_id),
+            Some(StandardVisual::Button { .. })
+        ));
+        let selected_style = context.world().node_style(selected_id).unwrap();
+        assert_eq!(selected_style.foreground, Some(SemanticColorRole::Text));
+        assert_eq!(selected_style.background, None);
+        assert_ne!(
+            selected_style.foreground,
+            Some(SemanticColorRole::AccentOnSoft)
+        );
+        assert_eq!(selected_style.interaction.selected.background, None);
+        assert_eq!(
+            selected_style.interaction.selected.foreground,
+            Some(SemanticColorRole::Text)
+        );
+        assert_eq!(
+            selected_style.layout.width,
+            Some(LengthSpec::Px(ControlSize::Small.height()))
+        );
+        assert_eq!(
+            selected_style.layout.height,
+            Some(LengthSpec::Px(ControlSize::Small.height()))
         );
 
         let disabled = context

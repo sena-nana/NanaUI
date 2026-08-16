@@ -38,7 +38,10 @@ mod tests {
 
         assert_eq!(
             recorded.containers,
-            [Rectangle::new(Point::new(40.0, 10.0), Size::new(40.0, 30.0))]
+            [Rectangle::new(
+                Point::new(40.0, 10.0),
+                Size::new(40.0, 30.0)
+            )]
         );
     }
 
@@ -601,8 +604,37 @@ mod tests {
         );
         assert_eq!(
             runtime_component_for_widget(&snap, snap.get(4).unwrap()),
-            None
+            Some(nana_ui::component_ids::SIDEBAR_FRAME)
         );
+        assert!(
+            !nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME),
+            "sidebar-frame stays Candidate until catalog qualification"
+        );
+        let scene = UiScene::new();
+        with_active_scene(Some(&scene), || {
+            assert!(
+                matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(4).unwrap()),
+                    QualifiedSceneRoute::Compatibility
+                ),
+                "SidebarFrame must not Scene-paint until catalog qualifies"
+            );
+        });
+    }
+
+    #[test]
+    fn sidebar_frame_body_is_runtime_owned_scrollport() {
+        let mut body = WidgetProps::default();
+        body.class_names = vec!["nana-sidebar-frame__body".into()];
+        body.attrs.insert("data-slot".into(), "sidebar-body".into());
+        body.layout.overflow_y = OverflowSpec::Auto;
+        assert!(crate::scroll::is_runtime_scroll_body(&body));
+        assert!(body.layout.scrolls_y());
+
+        let mut generic = WidgetProps::default();
+        generic.layout.overflow_y = OverflowSpec::Auto;
+        assert!(!crate::scroll::is_runtime_scroll_body(&generic));
+        assert!(generic.layout.scrolls_y());
     }
 
     #[test]
@@ -788,7 +820,12 @@ mod tests {
 
         let painted_box = document.layout_box(painted).expect("iced box stays");
         assert_eq!(
-            (painted_box.x, painted_box.y, painted_box.width, painted_box.height),
+            (
+                painted_box.x,
+                painted_box.y,
+                painted_box.width,
+                painted_box.height
+            ),
             (8.0, 8.0, 40.0, 28.0)
         );
         assert!(document.layout_box(fresh).is_some());
@@ -801,10 +838,7 @@ mod tests {
             Length::Fixed(640.0)
         );
         // Former `> 1.0` gate treated 1px as invalid → Fill collapse.
-        assert_eq!(
-            definite_scroll_extent(Some(1.0), 800.0),
-            Length::Fixed(1.0)
-        );
+        assert_eq!(definite_scroll_extent(Some(1.0), 800.0), Length::Fixed(1.0));
         assert_eq!(
             definite_scroll_extent(Some(0.0), 800.0),
             Length::Fixed(800.0),
@@ -1014,10 +1048,7 @@ mod tests {
         assert_eq!(w, Some(130.0), "outer Fixed width must include pad+border");
         assert_eq!(h, Some(70.0), "outer Fixed height must include pad+border");
         // Same chrome as measure's content-box expansion.
-        assert_eq!(
-            content_box_outer_fixed(100.0, 10.0, 10.0, 5.0),
-            130.0
-        );
+        assert_eq!(content_box_outer_fixed(100.0, 10.0, 10.0, 5.0), 130.0);
         assert_eq!(content_box_outer_fixed(40.0, 10.0, 10.0, 5.0), 70.0);
     }
 
@@ -1041,31 +1072,17 @@ mod tests {
         );
         // Default CSS medium = 16px → content 160×40; Fixed before chrome.
         match length_from_spec(layout.width, None, &layout, false) {
-            Length::Fixed(px) => assert!(
-                (px - 160.0).abs() < 0.01,
-                "10em → Fixed(160), got {px}"
-            ),
+            Length::Fixed(px) => assert!((px - 160.0).abs() < 0.01, "10em → Fixed(160), got {px}"),
             other => panic!("expected Fixed from 10em, got {other:?}"),
         }
         match length_from_spec(layout.height, None, &layout, true) {
-            Length::Fixed(px) => assert!(
-                (px - 40.0).abs() < 0.01,
-                "2.5rem → Fixed(40), got {px}"
-            ),
+            Length::Fixed(px) => assert!((px - 40.0).abs() < 0.01, "2.5rem → Fixed(40), got {px}"),
             other => panic!("expected Fixed from 2.5rem, got {other:?}"),
         }
         let (w, h) = content_box_outer_axes(&layout, None);
         // 160×40 + pad 10×2 → border-box 180×60
-        assert_eq!(
-            w,
-            Some(180.0),
-            "content-box em Fixed must expand by pad"
-        );
-        assert_eq!(
-            h,
-            Some(60.0),
-            "content-box rem Fixed must expand by pad"
-        );
+        assert_eq!(w, Some(180.0), "content-box em Fixed must expand by pad");
+        assert_eq!(h, Some(60.0), "content-box rem Fixed must expand by pad");
     }
 
     #[test]
@@ -1272,9 +1289,7 @@ mod tests {
         let mut box_css = WidgetProps::default();
         box_css.label = "box-css".into();
         box_css.size = ControlSize::Medium;
-        box_css
-            .layout
-            .apply_css_text("font-size:18px", None, None);
+        box_css.layout.apply_css_text("font-size:18px", None, None);
         bridge.register(3, WidgetKind::Box, box_css);
 
         let snap = bridge.snapshot();
@@ -1424,8 +1439,7 @@ mod tests {
         assert_eq!(in_flow, vec![2, 4], "fixed must leave iced flow");
         assert!(snap.get(3).unwrap().props.layout.is_fixed());
         assert_eq!(collect_css_fixed_ids(&snap), vec![3]);
-        let (x, y, w, h) =
-            resolve_fixed_box(&snap.get(3).unwrap().props.layout, 200.0, 120.0);
+        let (x, y, w, h) = resolve_fixed_box(&snap.get(3).unwrap().props.layout, 200.0, 120.0);
         assert!((x - 148.0).abs() < 0.01);
         assert!((y - 8.0).abs() < 0.01);
         assert!((w - 40.0).abs() < 0.01);
@@ -1508,10 +1522,7 @@ mod tests {
             child_box.height.is_none() || child_box.height == Some(0.0),
             "auto height must stay indefinite before shrink-to-fit"
         );
-        assert_eq!(
-            layout.main_gap_against(FlexDirection::Row, child_box),
-            12.0
-        );
+        assert_eq!(layout.main_gap_against(FlexDirection::Row, child_box), 12.0);
         assert_eq!(
             layout.cross_gap_against(FlexDirection::Row, child_box),
             20.0,
@@ -1530,7 +1541,10 @@ mod tests {
         );
         assert_eq!(layout.flex_wrap, FlexWrap::WrapReverse);
         let child_box = layout.resolve_content_box(ParentBox::from_viewport(200.0, 160.0));
-        assert_eq!(layout.cross_gap_against(FlexDirection::Row, child_box), 20.0);
+        assert_eq!(
+            layout.cross_gap_against(FlexDirection::Row, child_box),
+            20.0
+        );
         assert_eq!(layout.main_gap_against(FlexDirection::Row, child_box), 12.0);
     }
 
@@ -1608,11 +1622,9 @@ mod tests {
         for (id, label) in [(2u64, "a"), (3, "b")] {
             let mut child = WidgetProps::default();
             child.label = label.into();
-            child.layout.apply_css_text(
-                "width:150px;flex-shrink:1;height:40px",
-                None,
-                None,
-            );
+            child
+                .layout
+                .apply_css_text("width:150px;flex-shrink:1;height:40px", None, None);
             bridge.register(id, WidgetKind::Box, child);
             bridge.insert_child(id, 1, None);
         }
@@ -1641,7 +1653,9 @@ mod tests {
         auto_bridge.register(11, WidgetKind::Column, title);
         auto_bridge.insert_child(11, 10, None);
         let mut actions = WidgetProps::default();
-        actions.layout.apply_css_text("flex:0 0 auto;height:auto", None, None);
+        actions
+            .layout
+            .apply_css_text("flex:0 0 auto;height:auto", None, None);
         auto_bridge.register(12, WidgetKind::Row, actions);
         auto_bridge.insert_child(12, 10, None);
         let auto_snap = auto_bridge.snapshot();
@@ -1661,7 +1675,11 @@ mod tests {
 
         // T-F19: min-width freeze → 120+80
         let mut a = snap.get(2).unwrap().props.layout.clone();
-        a.apply_css_text("width:150px;flex-shrink:1;min-width:120px;height:40px", None, None);
+        a.apply_css_text(
+            "width:150px;flex-shrink:1;min-width:120px;height:40px",
+            None,
+            None,
+        );
         let b = snap.get(3).unwrap().props.layout.clone();
         let styles = [&a, &b];
         let frozen = crate::measure::resolve_flex_children_main_sizes(
@@ -2196,8 +2214,17 @@ mod tests {
         let outers = resolve_grid_track_outers(tracks, 460.0, 12.0, 0.0, &[0.0, 0.0]);
         // budget 460, gap 12 → free split 1.3:1
         assert_eq!(outers.len(), 2);
-        assert!(outers[0] > outers[1], "1.3fr > 1fr: {} vs {}", outers[0], outers[1]);
-        assert!(outers[1] > 100.0, "second track must stay definite, got {}", outers[1]);
+        assert!(
+            outers[0] > outers[1],
+            "1.3fr > 1fr: {} vs {}",
+            outers[0],
+            outers[1]
+        );
+        assert!(
+            outers[1] > 100.0,
+            "second track must stay definite, got {}",
+            outers[1]
+        );
         let ratio = outers[0] / outers[1];
         assert!((ratio - 1.3).abs() < 0.05, "ratio={ratio}");
     }
@@ -2249,7 +2276,11 @@ mod tests {
         );
 
         let mut column = LayoutStyle::default();
-        column.apply_css_text("display:flex;flex-direction:column;align-items:center", None, None);
+        column.apply_css_text(
+            "display:flex;flex-direction:column;align-items:center",
+            None,
+            None,
+        );
         assert!(text_host_column_axis(&column));
 
         let block = LayoutStyle::default();
@@ -2265,10 +2296,7 @@ mod tests {
         // height:auto must be re-pinned to Shrink or headings eat siblings.
         let layout = LayoutStyle::default();
         let col = iced::widget::column![].width(Length::Fill);
-        let children: Vec<Element<'_, ()>> = vec![
-            text("heading").into(),
-            text("chart").into(),
-        ];
+        let children: Vec<Element<'_, ()>> = vec![text("heading").into(), text("chart").into()];
         let col = push_justified(col, children, JustifySpec::SpaceBetween, 8.0);
         let pinned = pin_flex_container_main_length(
             col,
@@ -2300,10 +2328,7 @@ mod tests {
     fn auto_height_row_stays_shrink_after_space_between_push() {
         let layout = LayoutStyle::default();
         let row = iced::widget::row![].width(Length::Fill);
-        let children: Vec<Element<'_, ()>> = vec![
-            text("left").into(),
-            text("right").into(),
-        ];
+        let children: Vec<Element<'_, ()>> = vec![text("left").into(), text("right").into()];
         let row = push_justified_row(row, children, JustifySpec::SpaceBetween, 10.0);
         let pinned = pin_flex_row_cross_or_main_height(row, None, &layout);
         assert_eq!(
@@ -2342,11 +2367,7 @@ mod tests {
             Length::FillPortion(p) => p,
             other => panic!("expected FillPortion, got {other:?}"),
         };
-        assert_eq!(
-            pct * 4,
-            fr,
-            "25% 1fr fallback ratio must be 1:4, not 1:100"
-        );
+        assert_eq!(pct * 4, fr, "25% 1fr fallback ratio must be 1:4, not 1:100");
     }
 
     #[test]
@@ -2515,7 +2536,10 @@ mod tests {
             &snap.get(2).unwrap().children,
             ThemeMode::Light.tokens(),
         );
-        assert!(leading.is_some(), "sidebar row must resolve leading SVG/glyph");
+        assert!(
+            leading.is_some(),
+            "sidebar row must resolve leading SVG/glyph"
+        );
         assert_eq!(label, "仓库名");
 
         let mut list = WidgetProps {
@@ -3019,11 +3043,9 @@ mod tests {
         props
             .layout
             .apply_css_property("background-color", "#f0f0f5", None, None);
-        props.layout.apply_css_text(
-            "border-radius:12px;padding:8px",
-            None,
-            None,
-        );
+        props
+            .layout
+            .apply_css_text("border-radius:12px;padding:8px", None, None);
         assert!(props.layout.background.is_some());
         bridge.register(2, WidgetKind::Column, props);
         bridge.insert_child(2, 1, None);
