@@ -214,7 +214,25 @@ does. `settings_page` / `settings_sidebar` remain Iced compatibility composers.
 Runtime types exist (`nana_ui::runtime::*`) with expand/collapse, press, and
 `AppearanceEvent` forwarding. Runtime `SidebarFrame` treats `body` as a vertical
 `ScrollView` so top/footer stay unscoped siblings of the scrollport. Vue projects
-`nana-sidebar-frame__body` as that `ScrollView`, but does not Scene-paint the
-frame: the hosted path still needs Iced wheel writeback. Public
-`nana_ui::SidebarFrame` remains the Iced composer. Appearance/About/Collapsible
-stay behind `settings-components` as Iced assemblers at the public root.
+`nana-sidebar-frame__body` as that `ScrollView` and maps `WidgetKind::SidebarFrame`
+to the catalog id. Hosted wheel updates Runtime `scroll_offset` without Iced
+pending tasks; Iced `scrollable` still paints the Candidate body so the
+compatibility picture keeps moving. Scene paint waits on qualification.
+
+`AppContext::assemble_appearance_section`, `assemble_about_section`, and
+`assemble_settings_collapsible_card` mount qualified SettingsRow / control
+children from the host snapshot. SidebarSection chrome is host-mounted slots
+(header, disclosure, title, count, body, tools). Public
+`nana_ui::SidebarFrame` / `SidebarSection` / `SidebarFooter` remain Iced
+composers. Appearance/About/Collapsible stay behind `settings-components` as
+Iced assemblers at the public root.
+
+2026-08-16 windowed A/B of `sidebar-frame` and `sidebar-row` **passed**.
+About and Appearance Runtime frames are the accepted design (Iced tracked
+uppercase card title and radius-without-track are Iced-side). Collapsed
+disclosure is `Icon::ChevronRight`. Vue Scene still does not assign
+`hint_slot` on `nana-settings-row`.
+
+Catalog stays Candidate. Public SidebarFrame / Section / Footer and
+Appearance / About / Collapsible assemblers stay Iced. Snapshot fixtures
+exist for this batch and the previously qualified leftovers.

@@ -95,12 +95,14 @@ pub use selection::{
     SegmentedSelectionRequested, SelectionChrome, SelectionOrientation,
 };
 pub use settings::{
-    AboutMetadata, AboutSection, AppearanceSection, SettingsCard, SettingsCollapsibleCard,
-    SettingsRow, apply_appearance_event,
+    AboutMetadata, AboutSection, AboutSectionAssembly, AppearanceSection,
+    AppearanceSectionAssembly, SettingsCard, SettingsCollapsibleCard, SettingsRow,
+    apply_appearance_event,
 };
 pub use sidebar::{
-    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
-    SidebarSection, SidebarSectionState, sidebar_row_depth_inset,
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState,
+    SidebarRowTone, SidebarSection, SidebarSectionSlots, SidebarSectionState,
+    sidebar_row_depth_inset,
 };
 pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use toast::{Toast, ToastDismissed, ToastTone};

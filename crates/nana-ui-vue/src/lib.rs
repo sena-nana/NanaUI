@@ -2087,10 +2087,30 @@ impl VueHost {
         let allowed = self.fire_dom_event(engine, target, "wheel", input.detail())?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
+        let mut consumed = !allowed;
+        if allowed {
+            let delta = crate::scroll::wheel_scroll_delta(&input);
+            let scrolled = {
+                let mut document = self.document.lock().expect("vue doc");
+                let bridge = self.bridge.lock().expect("vue bridge");
+                crate::scroll::apply_runtime_wheel(
+                    &mut document,
+                    &bridge,
+                    input.client_x,
+                    input.client_y,
+                    delta,
+                )
+                .is_some()
+            };
+            // Candidate frames still paint through Iced scrollable. Consume only
+            // after catalog qualification, when Scene owns the offset/clip.
+            consumed |=
+                scrolled && nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME);
+        }
         Ok(HostedInputResult {
             targeted: true,
             default_prevented: !allowed,
-            consumed: !allowed,
+            consumed,
         })
     }
 
@@ -3187,6 +3207,188 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    fn install_sidebar_frame(
+        host: &mut VueHost,
+    ) -> (NodeHandle, NodeHandle, NodeHandle, NodeHandle) {
+        let (frame, top, body, footer, content) = {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            let root = doc.mount_root();
+            let frame = doc.create_element("nana-sidebar-frame");
+            let top = doc.create_element("nana-column");
+            let body = doc.create_element("nana-column");
+            let footer = doc.create_element("nana-column");
+            let content = doc.create_element("nana-sidebar-row");
+            doc.set_attribute(body, "class", "nana-sidebar-frame__body");
+            doc.set_attribute(body, "data-slot", "sidebar-body");
+            doc.insert(frame, root, None);
+            doc.insert(top, frame, None);
+            doc.insert(body, frame, None);
+            doc.insert(footer, frame, None);
+            doc.insert(content, body, None);
+            (frame, top, body, footer, content)
+        };
+
+        {
+            let mut bridge = host.bridge.lock().expect("bridge");
+            let mut frame_props = WidgetProps::default();
+            frame_props.class_names = vec!["nana-sidebar-frame".into()];
+            frame_props
+                .layout
+                .apply_class_layout_hints(&frame_props.class_names);
+            bridge.register(frame.0, WidgetKind::SidebarFrame, frame_props);
+
+            let mut top_props = WidgetProps::default();
+            top_props.class_names = vec!["nana-sidebar-frame__top".into()];
+            top_props
+                .attrs
+                .insert("data-slot".into(), "sidebar-top".into());
+            top_props
+                .layout
+                .apply_class_layout_hints(&top_props.class_names);
+            bridge.register(top.0, WidgetKind::Column, top_props);
+
+            let mut body_props = WidgetProps::default();
+            body_props.class_names = vec!["nana-sidebar-frame__body".into()];
+            body_props
+                .attrs
+                .insert("data-slot".into(), "sidebar-body".into());
+            body_props
+                .layout
+                .apply_class_layout_hints(&body_props.class_names);
+            bridge.register(body.0, WidgetKind::Column, body_props);
+
+            let mut footer_props = WidgetProps::default();
+            footer_props.class_names = vec!["nana-sidebar-frame__footer".into()];
+            footer_props
+                .attrs
+                .insert("data-slot".into(), "sidebar-footer".into());
+            footer_props
+                .layout
+                .apply_class_layout_hints(&footer_props.class_names);
+            bridge.register(footer.0, WidgetKind::Column, footer_props);
+
+            let mut content_props = WidgetProps::default();
+            content_props.label = "工作区".into();
+            bridge.register(content.0, WidgetKind::SidebarRow, content_props);
+
+            bridge.insert_child(top.0, frame.0, None);
+            bridge.insert_child(body.0, frame.0, None);
+            bridge.insert_child(footer.0, frame.0, None);
+            bridge.insert_child(content.0, body.0, None);
+        }
+
+        let snapshot = host.bridge.lock().expect("bridge").snapshot();
+        let store = host.layout_box_store();
+        store.begin_frame();
+        store.record(frame, 0.0, 0.0, 220.0, 320.0);
+        store.record(top, 0.0, 0.0, 220.0, 40.0);
+        store.record(body, 0.0, 40.0, 220.0, 200.0);
+        store.record(content, 0.0, 40.0, 220.0, 400.0);
+        store.record(footer, 0.0, 250.0, 220.0, 40.0);
+        {
+            let mut doc = host.document.lock().expect("document");
+            doc.sync_semantic_styles(&snapshot);
+            doc.apply_layout_boxes(&store.snapshot());
+        }
+        (frame, top, body, footer)
+    }
+
+    #[test]
+    fn sidebar_frame_wheel_updates_runtime_body_without_moving_chrome() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (_frame, top, body, footer) = install_sidebar_frame(&mut host);
+        let mut engine = RecordingEngine::default();
+
+        let top_before = host
+            .document
+            .lock()
+            .expect("document")
+            .layout_box(top)
+            .expect("top box");
+        let footer_before = host
+            .document
+            .lock()
+            .expect("document")
+            .layout_box(footer)
+            .expect("footer box");
+        assert_eq!(
+            host.document
+                .lock()
+                .expect("document")
+                .scroll_offset(body)
+                .y,
+            0.0
+        );
+        assert_eq!(
+            host.document.lock().expect("document").scroll_offset(top).y,
+            0.0
+        );
+        assert_eq!(
+            host.document
+                .lock()
+                .expect("document")
+                .scroll_offset(footer)
+                .y,
+            0.0
+        );
+
+        let result = host
+            .dispatch_wheel_result(&mut engine, WheelInput::pixels(20.0, 80.0, 0.0, -48.0))
+            .expect("wheel");
+        assert!(result.targeted);
+        assert!(!result.default_prevented);
+        assert_eq!(
+            result.consumed,
+            nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME),
+            "consume hosted wheel only when Scene owns SidebarFrame paint"
+        );
+
+        let document = host.document.lock().expect("document");
+        assert!(
+            document.scroll_offset(body).y > 0.0,
+            "body Runtime scroll_offset must move"
+        );
+        assert_eq!(document.scroll_offset(top).y, 0.0);
+        assert_eq!(document.scroll_offset(footer).y, 0.0);
+        assert_eq!(document.layout_box(top).expect("top after"), top_before);
+        assert_eq!(
+            document.layout_box(footer).expect("footer after"),
+            footer_before
+        );
+        drop(document);
+        assert!(
+            crate::scroll::shared_scroll_offset_store()
+                .take_pending()
+                .is_empty(),
+            "sidebar body must not depend on iced pending scroll tasks"
+        );
+    }
+
+    #[test]
+    fn sidebar_frame_wheel_prevent_default_does_not_scroll_runtime() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (_frame, top, body, footer) = install_sidebar_frame(&mut host);
+        let mut engine = RecordingEngine {
+            prevent_event: Some("wheel".into()),
+            ..Default::default()
+        };
+
+        let result = host
+            .dispatch_wheel_result(&mut engine, WheelInput::pixels(20.0, 80.0, 0.0, -48.0))
+            .expect("wheel");
+        assert!(result.targeted);
+        assert!(result.default_prevented);
+        assert!(result.consumed);
+
+        let document = host.document.lock().expect("document");
+        assert_eq!(document.scroll_offset(body).y, 0.0);
+        assert_eq!(document.scroll_offset(top).y, 0.0);
+        assert_eq!(document.scroll_offset(footer).y, 0.0);
     }
 
     #[test]

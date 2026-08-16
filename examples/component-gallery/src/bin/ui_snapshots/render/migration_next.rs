@@ -13,42 +13,65 @@ use iced_winit::runtime::{UserInterface, user_interface};
 use nana_ui::compatibility::{
     ActionMenu as IcedActionMenu, ActionMenuItem as IcedActionMenuItem,
     AnchoredActionMenu as IcedAnchoredActionMenu, Button as IcedButton, Card as IcedCard,
-    Checkbox as IcedCheckbox, ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog,
-    Drawer as IcedDrawer, EmptyState as IcedEmptyState, FormField as IcedFormField,
-    IconButton as IcedIconButton, Input as IcedInput, InteractiveCard as IcedInteractiveCard,
-    LabeledValue as IcedLabeledValue, LevelMeter as IcedLevelMeter, ListItem as IcedListItem,
+    Checkbox as IcedCheckbox, CommandPalette as IcedCommandPalette,
+    ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog, Drawer as IcedDrawer,
+    Dropdown as IcedDropdown, DropdownOption as IcedDropdownOption, EmptyState as IcedEmptyState,
+    FormField as IcedFormField, IconButton as IcedIconButton, Input as IcedInput,
+    InteractiveCard as IcedInteractiveCard, LabeledValue as IcedLabeledValue,
+    LevelMeter as IcedLevelMeter, ListItem as IcedListItem, OverlayHost as IcedOverlayHost,
     Popover as IcedPopover, Progress as IcedProgress, QrCodeCanvas as IcedQrCode,
-    RangeField as IcedRangeField, SegmentedControl as IcedSegmentedControl, Select as IcedSelect,
-    Skeleton as IcedSkeleton, Spinner as IcedSpinner, StatusBadge as IcedStatusBadge,
-    Switch as IcedSwitch, Tabs as IcedTabs, Textarea as IcedTextarea, Toast as IcedToast,
-    Tooltip as IcedTooltip, ValidationMessage as IcedValidationMessage, XYPad as IcedXYPad,
+    RangeField as IcedRangeField, SearchDropdown as IcedSearchDropdown,
+    SearchDropdownOption as IcedSearchDropdownOption,
+    SearchDropdownState as IcedSearchDropdownState, SegmentedControl as IcedSegmentedControl,
+    Select as IcedSelect, SettingsCard as IcedSettingsCard, SettingsRow as IcedSettingsRow,
+    SidebarFooter as IcedSidebarFooter, SidebarFooterButton as IcedSidebarFooterButton,
+    SidebarFrame as IcedSidebarFrame, SidebarRow as IcedSidebarRow,
+    SidebarSection as IcedSidebarSection, Skeleton as IcedSkeleton, Spinner as IcedSpinner,
+    StatusBadge as IcedStatusBadge, Switch as IcedSwitch, Tabs as IcedTabs,
+    Textarea as IcedTextarea, Toast as IcedToast, Tooltip as IcedTooltip, TreeView as IcedTreeView,
+    ValidationMessage as IcedValidationMessage, XYPad as IcedXYPad,
+};
+use nana_ui::components::{
+    AboutMetadata as IcedAboutMetadata, AboutSection as IcedAboutSection,
+    AppearanceSection as IcedAppearanceSection,
+    SettingsCollapsibleCard as IcedSettingsCollapsibleCard,
 };
 use nana_ui::runtime::{
+    AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
     AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
     ActionMenuItem as RuntimeActionMenuItem, Activate,
-    AnchoredActionMenu as RuntimeAnchoredActionMenu, Button as RuntimeButton, Card as RuntimeCard,
-    Checkbox as RuntimeCheckbox, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
+    AnchoredActionMenu as RuntimeAnchoredActionMenu, AppearanceSection as RuntimeAppearanceSection,
+    Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
+    CommandPalette as RuntimeCommandPalette, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
     ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem,
-    Dialog as RuntimeDialog, DocumentId, Drawer as RuntimeDrawer, EmptyState as RuntimeEmptyState,
-    Entity, FormField as RuntimeFormField, IconButton as RuntimeIconButton,
+    Dialog as RuntimeDialog, DocumentId, Drawer as RuntimeDrawer, Dropdown as RuntimeDropdown,
+    DropdownOption as RuntimeDropdownOption, EmptyState as RuntimeEmptyState, Entity,
+    FormField as RuntimeFormField, IconButton as RuntimeIconButton,
     InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue, LayoutViewport,
     LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
-    ListItemSlots, ModalSlots, MountState, MutationQueue, NodeStyle, Popover as RuntimePopover,
-    Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
-    RuntimeDocument, SegmentedControl as RuntimeSegmentedControl,
-    SegmentedOption as RuntimeSegmentedOption, SegmentedSelectionRequested,
-    Select as RuntimeSelect, SelectOption as RuntimeSelectOption, Skeleton as RuntimeSkeleton,
+    ListItemSlots, ModalSlots, MountState, MutationQueue, NodeStyle,
+    OverlayHost as RuntimeOverlayHost, Popover as RuntimePopover, Progress as RuntimeProgress,
+    QrCode as RuntimeQrCode, RangeField as RuntimeRangeField, RuntimeDocument,
+    SearchDropdown as RuntimeSearchDropdown, SearchDropdownOption as RuntimeSearchDropdownOption,
+    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
+    SegmentedSelectionRequested, Select as RuntimeSelect, SelectOption as RuntimeSelectOption,
+    SettingsCard as RuntimeSettingsCard, SettingsCollapsibleCard as RuntimeSettingsCollapsibleCard,
+    SidebarFooter as RuntimeSidebarFooter, SidebarFooterButton as RuntimeSidebarFooterButton,
+    SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
+    SidebarSection as RuntimeSidebarSection, Skeleton as RuntimeSkeleton,
     Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
     Switch as RuntimeSwitch, TabOption as RuntimeTabOption, Tabs as RuntimeTabs,
     Text as RuntimeText, TextArea as RuntimeTextArea, TextHorizontalAlignment,
     TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment, Toast as RuntimeToast,
-    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, XYPad as RuntimeXYPad,
+    TreeView as RuntimeTreeView, ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
+    XYPad as RuntimeXYPad,
 };
 use nana_ui::{
-    AnchoredMenuPosition, CardKind, ComponentId, ComponentMigrationState, ControlSize,
-    IcedSceneView, IcedTextShaper, Icon, RuntimeInputAdapter,
+    ActionId, AnchoredMenuPosition, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId,
+    ComponentMigrationState, ControlSize, IcedSceneView, IcedTextShaper, Icon, RuntimeInputAdapter,
     SelectionOption as IcedSelectionOption, ThemeMode, ThemeModeExt, TooltipConfig,
-    TooltipPlacement, XYPadValue, component_catalog, component_ids, icon,
+    TooltipPlacement, TreeNode, WindowMaterialMode, XYPadValue, component_catalog, component_ids,
+    icon,
 };
 use nana_ui_core::{
     DialogSize, DrawerSide, LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition,
@@ -101,6 +124,19 @@ enum Component {
     ActionMenuItem,
     AnchoredActionMenu,
     ContextMenu,
+    SidebarFrame,
+    SidebarSection,
+    SidebarFooter,
+    AppearanceSection,
+    AboutSection,
+    SettingsCollapsibleCard,
+    CommandPalette,
+    OverlayHost,
+    Dropdown,
+    SearchDropdown,
+    TreeView,
+    SidebarRow,
+    Settings,
 }
 
 impl Component {
@@ -141,6 +177,19 @@ impl Component {
             Self::ActionMenuItem => component_ids::ACTION_MENU_ITEM,
             Self::AnchoredActionMenu => component_ids::ANCHORED_ACTION_MENU,
             Self::ContextMenu => component_ids::CONTEXT_MENU,
+            Self::SidebarFrame => component_ids::SIDEBAR_FRAME,
+            Self::SidebarSection => component_ids::SIDEBAR_SECTION,
+            Self::SidebarFooter => component_ids::SIDEBAR_FOOTER,
+            Self::AppearanceSection => component_ids::APPEARANCE_SECTION,
+            Self::AboutSection => component_ids::ABOUT_SECTION,
+            Self::SettingsCollapsibleCard => component_ids::SETTINGS_COLLAPSIBLE_CARD,
+            Self::CommandPalette => component_ids::COMMAND_PALETTE,
+            Self::OverlayHost => component_ids::OVERLAY_HOST,
+            Self::Dropdown => component_ids::DROPDOWN,
+            Self::SearchDropdown => component_ids::SEARCH_DROPDOWN,
+            Self::TreeView => component_ids::TREE_VIEW,
+            Self::SidebarRow => component_ids::SIDEBAR_ROW,
+            Self::Settings => component_ids::SETTINGS,
         }
     }
 }
@@ -1066,6 +1115,81 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "open",
         "context menu opens at the pointer anchor",
     ),
+    f(
+        Component::SidebarFrame,
+        "chrome",
+        "fixed top and footer stay outside the independently scrolling body",
+    ),
+    f(
+        Component::SidebarSection,
+        "expanded",
+        "section header uses uppercase faint title, count and an expanded body",
+    ),
+    f(
+        Component::SidebarSection,
+        "collapsed",
+        "collapsed section clips the body while keeping the header",
+    ),
+    f(
+        Component::SidebarFooter,
+        "actions",
+        "footer hugs small icon actions without growing",
+    ),
+    f(
+        Component::AppearanceSection,
+        "solid",
+        "appearance rows keep host-owned theme, material and radius controls",
+    ),
+    f(
+        Component::AboutSection,
+        "metadata",
+        "about section shows injected name, version and description",
+    ),
+    f(
+        Component::SettingsCollapsibleCard,
+        "expanded",
+        "collapsible card shows summary, divider and details when expanded",
+    ),
+    f(
+        Component::SettingsCollapsibleCard,
+        "collapsed",
+        "collapsed card keeps summary and hides details",
+    ),
+    f(
+        Component::CommandPalette,
+        "open",
+        "command palette shows search field and windowed rows",
+    ),
+    f(
+        Component::OverlayHost,
+        "stacked",
+        "overlay host keeps exclusive stacking order",
+    ),
+    f(
+        Component::Dropdown,
+        "closed",
+        "dropdown field shows the selected value and keeps disabled options",
+    ),
+    f(
+        Component::SearchDropdown,
+        "closed",
+        "search dropdown field shows the committed query surface",
+    ),
+    f(
+        Component::TreeView,
+        "expanded",
+        "tree view flattens visible disclosure rows",
+    ),
+    f(
+        Component::SidebarRow,
+        "active",
+        "sidebar row keeps a 14px leading icon without a selected plate",
+    ),
+    f(
+        Component::Settings,
+        "row-card",
+        "settings card groups a labeled control row",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {
@@ -1256,6 +1380,16 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::Select, "opened") => Size::new(420, 220),
         (Component::Popover | Component::ActionMenu, _) => Size::new(420, 200),
         (Component::AnchoredActionMenu | Component::ContextMenu, _) => Size::new(420, 220),
+        (Component::SidebarFrame, _) => Size::new(240, 280),
+        (Component::SidebarSection, _) => Size::new(240, 180),
+        (Component::SidebarFooter, _) => Size::new(240, 72),
+        (Component::AppearanceSection, _) => Size::new(420, 560),
+        (Component::AboutSection, _) => Size::new(420, 180),
+        (Component::SettingsCollapsibleCard, _) => Size::new(420, 160),
+        (Component::CommandPalette, _) => Size::new(560, 320),
+        (Component::OverlayHost, _) => Size::new(420, 160),
+        (Component::TreeView, _) => Size::new(280, 160),
+        (Component::Settings, _) => Size::new(420, 140),
         _ => SIZE,
     }
 }
@@ -1708,6 +1842,118 @@ fn iced_fixture<'a>(
             (),
         )
         .menu_size(200.0, 65.0)
+        .view(tokens),
+        Component::SidebarFrame => {
+            let mut body = IcedSidebarSection::new("资源").count(3);
+            for label in ["外观", "工作区", "设置", "关于", "日志", "调试"] {
+                body = body.push(IcedSidebarRow::new(label).view(tokens));
+            }
+            IcedSidebarFrame::new(body.view(tokens))
+                .top(IcedSidebarRow::new("返回").view(tokens))
+                .footer(
+                    IcedSidebarFooter::new()
+                        .push(
+                            IcedSidebarFooterButton::new("设置", Icon::Settings)
+                                .selected(true)
+                                .view(tokens),
+                        )
+                        .view(tokens.colors),
+                )
+                .view(tokens.colors)
+        }
+        Component::SidebarSection => {
+            let mut section = IcedSidebarSection::new("资源").count(3).on_toggle(());
+            if fixture.state == "collapsed" {
+                section = section.expanded(false);
+            }
+            for label in ["外观", "工作区"] {
+                section = section.push(IcedSidebarRow::new(label).view(tokens));
+            }
+            section.view(tokens)
+        }
+        Component::SidebarFooter => IcedSidebarFooter::new()
+            .push(
+                IcedSidebarFooterButton::new("设置", Icon::Settings)
+                    .selected(true)
+                    .view(tokens),
+            )
+            .push(IcedSidebarFooterButton::new("搜索", Icon::Search).view(tokens))
+            .view(tokens.colors),
+        Component::AppearanceSection => {
+            let mut appearance = AppearanceSettings::default();
+            if fixture.state != "solid" {
+                let _ = appearance.set_window_material(WindowMaterialMode::Translucent);
+            }
+            IcedAppearanceSection::new(theme, &appearance, |_| ()).view(tokens)
+        }
+        Component::AboutSection => IcedAboutSection::new(
+            IcedAboutMetadata::new("NanaUI Gallery", "0.1.0")
+                .description("Injected product metadata for the about card."),
+        )
+        .view(tokens),
+        Component::SettingsCollapsibleCard => IcedSettingsCollapsibleCard::new(
+            text("高级选项").size(13),
+            text("折叠后应隐藏这段说明。").size(12),
+            fixture.state != "collapsed",
+            (),
+        )
+        .view(tokens),
+        Component::CommandPalette => IcedCommandPalette::new(
+            "命令面板",
+            [
+                CommandPaletteItem::new(ActionId::new("rename"), "重命名"),
+                CommandPaletteItem::new(ActionId::new("delete"), "删除"),
+            ],
+            "",
+            0,
+            |_| (),
+            tokens,
+        )
+        .view(),
+        Component::OverlayHost => IcedOverlayHost::new(text("Base surface"))
+            .push(text("Stacked overlay"))
+            .view(),
+        Component::Dropdown => IcedDropdown::single(
+            Some("code"),
+            [
+                IcedDropdownOption::new("code", "Code"),
+                IcedDropdownOption::new("split", "Split").disabled(true),
+                IcedDropdownOption::new("preview", "Preview"),
+            ],
+            |_| (),
+        )
+        .view(tokens),
+        Component::SearchDropdown => {
+            IcedSearchDropdown::new(iced_search_state(), Some(&"code"), |_| ())
+                .placeholder("Search views")
+                .view(tokens)
+        }
+        Component::TreeView => IcedTreeView::new(
+            [
+                TreeNode::branch(
+                    "src",
+                    "src",
+                    true,
+                    [TreeNode::leaf("main", "main.rs").selected(true)],
+                ),
+                TreeNode::leaf("readme", "README.md"),
+            ],
+            |_| (),
+            tokens,
+        )
+        .view(),
+        Component::SidebarRow => IcedSidebarRow::new("工作区")
+            .leading(icon(Icon::Workspace, 14.0, tokens.colors.muted))
+            .state(nana_ui::compatibility::SidebarRowState::Active)
+            .view(tokens),
+        Component::Settings => IcedSettingsCard::new(
+            "外观",
+            IcedSettingsRow::new("主题", text("暗色").size(12))
+                .hint("选择应用配色，立即生效")
+                .first_in_group()
+                .last_in_group()
+                .view(tokens),
+        )
         .view(tokens),
     };
     (
@@ -2485,6 +2731,173 @@ fn runtime_fixture(
             document.context_mut().append_child(menu, delete)?;
             menu.stable_id()
         }
+        Component::SidebarFrame => mount_runtime_sidebar_frame(&mut document, fixture)?,
+        Component::SidebarSection => mount_runtime_sidebar_section(
+            &mut document,
+            fixture.state != "collapsed",
+            &["外观", "工作区"],
+            true,
+        )?,
+        Component::SidebarFooter => {
+            let footer = document
+                .context_mut()
+                .create_component(document_id, RuntimeSidebarFooter::new())?;
+            let settings = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true),
+            )?;
+            let search = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeSidebarFooterButton::new("搜索", Icon::Search),
+            )?;
+            document.context_mut().append_child(footer, settings)?;
+            document.context_mut().append_child(footer, search)?;
+            footer.stable_id()
+        }
+        Component::AppearanceSection => {
+            let mut appearance = AppearanceSettings::default();
+            if fixture.state != "solid" {
+                let _ = appearance.set_window_material(WindowMaterialMode::Translucent);
+            }
+            let section = document.context_mut().create_component(
+                document_id,
+                RuntimeAppearanceSection::new(theme, appearance),
+            )?;
+            document
+                .context_mut()
+                .assemble_appearance_section(section)?;
+            section.stable_id()
+        }
+        Component::AboutSection => {
+            let section = document.context_mut().create_component(
+                document_id,
+                RuntimeAboutSection::new(
+                    RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
+                        .description("Injected product metadata for the about card."),
+                ),
+            )?;
+            document.context_mut().assemble_about_section(section)?;
+            section.stable_id()
+        }
+        Component::SettingsCollapsibleCard => {
+            let summary = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("高级选项"))?;
+            let details = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeText::new("折叠后应隐藏这段说明。"),
+            )?;
+            let card = document.context_mut().create_component(
+                document_id,
+                RuntimeSettingsCollapsibleCard::new(fixture.state != "collapsed")
+                    .summary(summary.stable_id())
+                    .details(details.stable_id()),
+            )?;
+            document
+                .context_mut()
+                .assemble_settings_collapsible_card(card)?;
+            card.stable_id()
+        }
+        Component::CommandPalette => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeCommandPalette::new(
+                    "命令面板",
+                    [
+                        CommandPaletteItem::new(ActionId::new("rename"), "重命名"),
+                        CommandPaletteItem::new(ActionId::new("delete"), "删除"),
+                    ],
+                ),
+            )?
+            .stable_id(),
+        Component::OverlayHost => {
+            let host = document
+                .context_mut()
+                .create_component(document_id, RuntimeOverlayHost::new())?;
+            let base = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Base surface"))?;
+            document.context_mut().append_child(host, base)?;
+            host.stable_id()
+        }
+        Component::Dropdown => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeDropdown::single(Some("code"))
+                    .placeholder("Choose view")
+                    .options([
+                        RuntimeDropdownOption::new("code", "Code"),
+                        RuntimeDropdownOption::new("split", "Split").disabled(true),
+                        RuntimeDropdownOption::new("preview", "Preview"),
+                    ]),
+            )?
+            .stable_id(),
+        Component::SearchDropdown => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeSearchDropdown::new(Some("code"))
+                    .placeholder("Search views")
+                    .options([
+                        RuntimeSearchDropdownOption::new("code", "Code"),
+                        RuntimeSearchDropdownOption::new("preview", "Preview"),
+                    ]),
+            )?
+            .stable_id(),
+        Component::TreeView => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeTreeView::new([
+                    TreeNode::branch(
+                        std::sync::Arc::<str>::from("src"),
+                        "src",
+                        true,
+                        [
+                            TreeNode::leaf(std::sync::Arc::<str>::from("main"), "main.rs")
+                                .selected(true),
+                        ],
+                    ),
+                    TreeNode::leaf(std::sync::Arc::<str>::from("readme"), "README.md"),
+                ]),
+            )?
+            .stable_id(),
+        Component::SidebarRow => {
+            let leading = document.context_mut().create_detached_component(
+                document_id,
+                nana_ui::runtime::SidebarRowIcon::new(Icon::Workspace),
+            )?;
+            let row = document.context_mut().create_component(
+                document_id,
+                RuntimeSidebarRow::new("工作区")
+                    .state(nana_ui::runtime::SidebarRowState::Active)
+                    .slots(nana_ui::runtime::ListItemSlots {
+                        leading: Some(leading.stable_id()),
+                        content: None,
+                        trailing: None,
+                    }),
+            )?;
+            document.context_mut().append_child(row, leading)?;
+            row.stable_id()
+        }
+        Component::Settings => {
+            let control = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("暗色"))?;
+            let row = document.context_mut().mount_settings_leaf_row(
+                document_id,
+                "主题",
+                Some("选择应用配色，立即生效"),
+                control.stable_id(),
+            )?;
+            let card = document
+                .context_mut()
+                .create_component(document_id, RuntimeSettingsCard::new("外观"))?;
+            document.context_mut().append_child(card, row)?;
+            card.stable_id()
+        }
     };
     let mut hierarchy = MutationQueue::new();
     hierarchy.insert(root.stable_id(), target, None);
@@ -2548,6 +2961,118 @@ fn runtime_fixture(
         segmented_requests,
         next_deadline,
     })
+}
+
+fn iced_search_state() -> &'static IcedSearchDropdownState<&'static str> {
+    static STATE: std::sync::OnceLock<IcedSearchDropdownState<&'static str>> =
+        std::sync::OnceLock::new();
+    STATE.get_or_init(|| {
+        IcedSearchDropdownState::new([
+            IcedSearchDropdownOption::new("code", "Code"),
+            IcedSearchDropdownOption::new("preview", "Preview"),
+        ])
+    })
+}
+
+fn mount_runtime_sidebar_section(
+    document: &mut RuntimeDocument,
+    expanded: bool,
+    labels: &[&str],
+    collapsible: bool,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let spec = RuntimeSidebarSection::new("资源")
+        .count(3)
+        .collapsible(collapsible)
+        .expanded(expanded);
+    let disclosure = if collapsible {
+        Some(
+            document
+                .context_mut()
+                .create_detached_component(document_id, spec.disclosure_mark())?,
+        )
+    } else {
+        None
+    };
+    let title = document
+        .context_mut()
+        .create_detached_component(document_id, spec.title_label())?;
+    let count = document
+        .context_mut()
+        .create_detached_component(document_id, spec.count_label())?;
+    let spec = spec
+        .title_slot(title.stable_id())
+        .count_slot(count.stable_id());
+    let spec = match &disclosure {
+        Some(disclosure) => spec.disclosure(disclosure.stable_id()),
+        None => spec,
+    };
+    let header = document
+        .context_mut()
+        .create_detached_component(document_id, spec.header_item())?;
+    let body = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarSection::body_port())?;
+    for label in labels {
+        let row = document
+            .context_mut()
+            .create_detached_component(document_id, RuntimeSidebarRow::new(*label))?;
+        document.context_mut().append_child(body, row)?;
+    }
+    if let Some(disclosure) = disclosure {
+        document.context_mut().append_child(header, disclosure)?;
+    }
+    document.context_mut().append_child(header, title)?;
+    document.context_mut().append_child(header, count)?;
+    let section = document.context_mut().create_component(
+        document_id,
+        spec.header(header.stable_id()).body(body.stable_id()),
+    )?;
+    document.context_mut().append_child(section, header)?;
+    document.context_mut().append_child(section, body)?;
+    Ok(section.stable_id())
+}
+
+fn mount_runtime_sidebar_frame(
+    document: &mut RuntimeDocument,
+    _fixture: Fixture,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let top = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarRow::new("返回"))?;
+    let body = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarFrame::vertical_body_scroll())?;
+    let section = mount_runtime_sidebar_section(
+        document,
+        true,
+        &["外观", "工作区", "设置", "关于", "日志", "调试"],
+        false,
+    )?;
+    document.context_mut().append_child(
+        body,
+        Entity::<RuntimeSidebarSection>::from_stable_id(section),
+    )?;
+    let footer = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarFooter::new())?;
+    let settings = document.context_mut().create_detached_component(
+        document_id,
+        RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true),
+    )?;
+    document.context_mut().append_child(footer, settings)?;
+    let frame = document.context_mut().create_component(
+        document_id,
+        RuntimeSidebarFrame::new()
+            .top(top.stable_id())
+            .body(body.stable_id())
+            .footer(footer.stable_id()),
+    )?;
+    document.context_mut().append_child(frame, top)?;
+    document.context_mut().append_child(frame, body)?;
+    document.context_mut().append_child(frame, footer)?;
+    Ok(frame.stable_id())
 }
 
 fn exercise_segmented_contract(
@@ -4100,6 +4625,18 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             "manual-required",
             "Review the generated dark and light Iced and Runtime images for select fields and anchored menus; public default stays Iced until visual review",
         ),
+        (
+            Component::SidebarFrame
+            | Component::SidebarSection
+            | Component::SidebarFooter
+            | Component::AppearanceSection
+            | Component::AboutSection
+            | Component::SettingsCollapsibleCard,
+            _,
+        ) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime images for sidebar chrome and settings assemblers; public default stays Iced until visual review",
+        ),
         (Component::SegmentedControl, _) => (
             "pass",
             "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment, disabled fade and the 2px external focus ring",
@@ -4214,6 +4751,15 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
             _,
         ) => {
             "intentional: Runtime keeps disabled select options visible and owns anchored menu chrome; Iced pick-list omits disabled popup rows. Visual review is the qualification gate"
+        }
+        (Component::SidebarSection, _) => {
+            "intentional: Runtime header is ListItem chrome with a static ArrowRight; Iced paints a tracked uppercase title and a rotating canvas chevron. Scene adapter cannot paint letter-spacing or rotation"
+        }
+        (Component::AppearanceSection | Component::AboutSection, _) => {
+            "intentional: Runtime assembles qualified SettingsRow children; Iced composes the same host snapshot"
+        }
+        (Component::SettingsCollapsibleCard, _) => {
+            "intentional: Runtime disclosure is non-interactive chrome; the card remains the single activation target"
         }
         _ => fixture.divergence,
     }

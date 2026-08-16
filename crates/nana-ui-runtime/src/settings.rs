@@ -1,14 +1,20 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, AppearanceEvent, AppearanceSettings, CardKind, FlexDirection, LengthSpec,
-    SemanticColorRole, ThemeMode,
+    AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
+    ControlSize, FlexDirection, Icon, LengthSpec, SemanticColorRole, ThemeMode, UI_METRICS,
+    WindowMaterialMode,
 };
 
-use crate::view_components::{Card, project_common};
+use crate::view_components::{
+    Button, Card, RangeChanged, RangeField, Switch, Text, ToggleChanged, project_common,
+};
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, Activate, AppContext, ComponentView, Entity,
+    FrameworkError, InteractionState, InteractionStyle, MutationQueue, NodeKind, NodeStyle,
+    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, SemanticPaint, StableNodeId,
+    StandardVisual, TextContent, UiWorld,
 };
 
 const ROW_PADDING_Y: f32 = 10.0;
@@ -17,6 +23,7 @@ const ROW_STACK_GAP: f32 = 6.0;
 const ROW_STACK_GAP_LOOSE: f32 = 10.0;
 const ROW_INLINE_GAP: f32 = 8.0;
 const ROW_INLINE_GAP_LOOSE: f32 = 14.0;
+const ROW_COPY_GAP: f32 = 2.0;
 const CARD_TRAILING_GAP: f32 = 12.0;
 
 /// Non-interactive chrome wrapping an application-owned control child.
@@ -30,6 +37,9 @@ pub struct SettingsRow {
     pub first_in_group: bool,
     pub last_in_group: bool,
     pub control: Option<StableNodeId>,
+    pub label_slot: Option<StableNodeId>,
+    pub hint_slot: Option<StableNodeId>,
+    pub(crate) copy_slot: Option<StableNodeId>,
     pub style: NodeStyle,
 }
 
@@ -44,6 +54,9 @@ impl SettingsRow {
             first_in_group: false,
             last_in_group: false,
             control: None,
+            label_slot: None,
+            hint_slot: None,
+            copy_slot: None,
             style: NodeStyle::default(),
         }
     }
@@ -80,6 +93,16 @@ impl SettingsRow {
 
     pub fn control_child(mut self, control: StableNodeId) -> Self {
         self.control = Some(control);
+        self
+    }
+
+    pub fn label_slot(mut self, label: StableNodeId) -> Self {
+        self.label_slot = Some(label);
+        self
+    }
+
+    pub fn hint_slot(mut self, hint: StableNodeId) -> Self {
+        self.hint_slot = Some(hint);
         self
     }
 
@@ -141,11 +164,14 @@ impl ComponentView for SettingsRow {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        // Vue hosts already have a label child. Rust-only rows keep the label as
-        // node text so Scene can still show it without a new paint primitive.
-        let visible_label = if self.control.is_some()
-            && world.node(id).is_some_and(|node| !node.children.is_empty())
-        {
+        // Structured children/slots paint label and hint. Rust-only rows without
+        // a tree keep the label as node text so Scene can still show it.
+        let has_slots = self.label_slot.is_some()
+            || self.hint_slot.is_some()
+            || self.control.is_some()
+            || self.copy_slot.is_some();
+        let has_children = world.node(id).is_some_and(|node| !node.children.is_empty());
+        let visible_label = if has_slots || has_children {
             ""
         } else {
             self.label.as_ref()
@@ -174,6 +200,104 @@ impl ComponentView for SettingsRow {
                 role: AccessibilityRole::Generic,
                 label: Some(Arc::clone(&self.label)),
                 value: self.hint.clone(),
+                ..AccessibilityState::default()
+            },
+        );
+        self.project_slots(world, mutations);
+    }
+}
+
+impl SettingsRow {
+    fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        if let Some(copy) = self.copy_slot {
+            SettingsRowCopy {
+                stacked: self.stacked,
+            }
+            .project(copy, world, mutations);
+        }
+        if let Some(label) = self.label_slot {
+            let mut text = Text::new(self.label.as_ref());
+            text.style = label_slot_style();
+            text.project(label, world, mutations);
+        }
+        if let Some(hint) = self.hint_slot {
+            let mut text = Text::new(self.hint.as_deref().unwrap_or(""));
+            text.style = hint_slot_style(self.hint.is_none());
+            text.project(hint, world, mutations);
+        }
+    }
+}
+
+fn label_slot_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(SemanticColorRole::Text);
+    style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.font_size = Some(13.0);
+    layout.font_weight = Some(500);
+    layout.width = Some(LengthSpec::Fill);
+    layout.flex_grow = Some(1.0);
+    layout.flex_shrink = Some(1.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.white_space_nowrap = true;
+    layout.text_overflow_ellipsis = true;
+    style
+}
+
+fn hint_slot_style(hidden: bool) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(SemanticColorRole::Muted);
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.font_size = Some(12.0);
+    layout.font_weight = Some(400);
+    layout.width = Some(LengthSpec::Fill);
+    layout.flex_shrink = Some(1.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.white_space_nowrap = true;
+    layout.text_overflow_ellipsis = true;
+    layout.hidden = hidden;
+    style
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsRowCopy {
+    stacked: bool,
+}
+
+impl SettingsRowCopy {
+    fn style(&self) -> NodeStyle {
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.direction = Some(FlexDirection::Column);
+        layout.align_items = AlignSpec::Stretch;
+        layout.width = Some(LengthSpec::Fill);
+        layout.gap = Some(LengthSpec::Px(ROW_COPY_GAP));
+        layout.flex_grow = Some(if self.stacked { 0.0 } else { 1.0 });
+        layout.flex_shrink = Some(1.0);
+        layout.min_width = Some(LengthSpec::Px(0.0));
+        style
+    }
+}
+
+impl ComponentView for SettingsRowCopy {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-row-copy".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
                 ..AccessibilityState::default()
             },
         );
@@ -232,12 +356,19 @@ impl ComponentView for SettingsCard {
     }
 }
 
+const COLLAPSIBLE_HEADER_GAP: f32 = 8.0;
+const COLLAPSIBLE_BODY_GAP: f32 = 12.0;
+const DISCLOSURE_ICON_SIZE: f32 = 16.0;
+
 /// Controlled collapse. Header is keyboard-activatable; values stay host-owned.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsCollapsibleCard {
     pub summary: Option<StableNodeId>,
     pub details: Option<StableNodeId>,
     pub accessory: Option<StableNodeId>,
+    pub(crate) header: Option<StableNodeId>,
+    pub(crate) disclosure: Option<StableNodeId>,
+    pub(crate) divider: Option<StableNodeId>,
     pub expanded: bool,
     pub disabled: bool,
     pub style: NodeStyle,
@@ -249,6 +380,9 @@ impl SettingsCollapsibleCard {
             summary: None,
             details: None,
             accessory: None,
+            header: None,
+            disclosure: None,
+            divider: None,
             expanded,
             disabled: false,
             style: NodeStyle::default(),
@@ -291,7 +425,11 @@ impl SettingsCollapsibleCard {
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
         layout.direction = Some(FlexDirection::Column);
-        layout.gap = Some(LengthSpec::Px(12.0));
+        layout.gap = Some(LengthSpec::Px(COLLAPSIBLE_BODY_GAP));
+        layout.padding_left = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
+        layout.padding_right = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
+        layout.padding_top = Some(LengthSpec::Px(UI_METRICS.panel_padding_y));
+        layout.padding_bottom = Some(LengthSpec::Px(UI_METRICS.panel_padding_y));
         style.interaction = if self.disabled {
             InteractionStyle {
                 disabled: SemanticPaint {
@@ -347,8 +485,221 @@ impl ComponentView for SettingsCollapsibleCard {
                 ..AccessibilityState::default()
             },
         );
+        self.project_slots(world, mutations);
     }
 }
+
+fn project_slots_hidden(
+    id: StableNodeId,
+    hidden: bool,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) {
+    let Some(current) = world.node_style(id) else {
+        return;
+    };
+    if current.layout.hidden == hidden {
+        return;
+    }
+    let mut style = current.clone();
+    Arc::make_mut(&mut style.layout).hidden = hidden;
+    mutations.set_style(id, style);
+}
+
+fn project_summary_slot(id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+    let Some(current) = world.node_style(id) else {
+        return;
+    };
+    let layout = current.layout.as_ref();
+    let needs_width = layout.width.is_none();
+    let needs_grow = layout.flex_grow.is_none();
+    let needs_color = current.foreground != Some(SemanticColorRole::Text);
+    if !needs_width && !needs_grow && !needs_color {
+        return;
+    }
+    let mut style = current.clone();
+    if needs_color {
+        style.foreground = Some(SemanticColorRole::Text);
+    }
+    let layout = Arc::make_mut(&mut style.layout);
+    if needs_width {
+        layout.width = Some(LengthSpec::Fill);
+    }
+    if needs_grow {
+        layout.flex_grow = Some(1.0);
+    }
+    mutations.set_style(id, style);
+}
+
+fn disclosure_icon_kind(expanded: bool) -> Icon {
+    if expanded {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    }
+}
+
+impl SettingsCollapsibleCard {
+    fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        if let Some(header) = self.header {
+            SettingsCollapsibleHeader.project(header, world, mutations);
+        }
+        if let Some(summary) = self.summary {
+            project_summary_slot(summary, world, mutations);
+        }
+        if let Some(disclosure) = self.disclosure {
+            SettingsDisclosure {
+                expanded: self.expanded,
+            }
+            .project(disclosure, world, mutations);
+        }
+        if let Some(divider) = self.divider {
+            SettingsCollapsibleDivider {
+                hidden: !self.expanded,
+            }
+            .project(divider, world, mutations);
+        }
+        if let Some(details) = self.details {
+            project_slots_hidden(details, !self.expanded, world, mutations);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsCollapsibleHeader;
+
+impl SettingsCollapsibleHeader {
+    fn style() -> NodeStyle {
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.direction = Some(FlexDirection::Row);
+        layout.align_items = AlignSpec::Center;
+        layout.width = Some(LengthSpec::Fill);
+        layout.gap = Some(LengthSpec::Px(COLLAPSIBLE_HEADER_GAP));
+        style
+    }
+}
+
+impl ComponentView for SettingsCollapsibleHeader {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-collapsible-header".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &Self::style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsCollapsibleDivider {
+    hidden: bool,
+}
+
+impl SettingsCollapsibleDivider {
+    fn style(&self) -> NodeStyle {
+        let mut style = NodeStyle::default();
+        style.background = Some(SemanticColorRole::BorderSoft);
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Fill);
+        layout.height = Some(LengthSpec::Px(1.0));
+        layout.min_height = Some(LengthSpec::Px(1.0));
+        layout.hidden = self.hidden;
+        style
+    }
+}
+
+impl ComponentView for SettingsCollapsibleDivider {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-collapsible-divider".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+/// Visual chevron only. Activation stays on the card so accessory controls
+/// remain independently interactive.
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsDisclosure {
+    expanded: bool,
+}
+
+impl ComponentView for SettingsDisclosure {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-disclosure".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let visual = StandardVisual::Icon {
+            icon: disclosure_icon_kind(self.expanded),
+            size: DISCLOSURE_ICON_SIZE,
+            tooltip: None,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        let size = ControlSize::Small.height();
+        let mut style = NodeStyle::default();
+        style.foreground = Some(SemanticColorRole::Muted);
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(size));
+        layout.height = Some(LengthSpec::Px(size));
+        layout.min_width = Some(LengthSpec::Px(size));
+        layout.min_height = Some(LengthSpec::Px(size));
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        project_common(
+            id,
+            world,
+            mutations,
+            &style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                selected: Some(self.expanded),
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+const DEFAULT_PLATFORM_HINT: &str = "选择窗口使用的透明材质或实色背景。";
 
 /// Host-owned appearance snapshot. Events stay [`AppearanceEvent`]; values stay outside NanaUI.
 #[derive(Debug, Clone, PartialEq)]
@@ -357,6 +708,37 @@ pub struct AppearanceSection {
     pub appearance: AppearanceSettings,
     pub material_status: Option<Arc<str>>,
     pub platform_hint: Option<Arc<str>>,
+    pub assembly: Option<AppearanceSectionAssembly>,
+}
+
+/// Retained children created by [`AppContext::assemble_appearance_section`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AppearanceSectionAssembly {
+    pub theme_row: Option<StableNodeId>,
+    pub theme_control: Option<StableNodeId>,
+    pub theme_dark: Option<StableNodeId>,
+    pub theme_light: Option<StableNodeId>,
+    pub material_row: Option<StableNodeId>,
+    pub material_control: Option<StableNodeId>,
+    pub material_solid: Option<StableNodeId>,
+    pub material_translucent: Option<StableNodeId>,
+    pub material_status_row: Option<StableNodeId>,
+    pub material_status_value: Option<StableNodeId>,
+    pub target_row: Option<StableNodeId>,
+    pub target_control: Option<StableNodeId>,
+    pub target_sidebar: Option<StableNodeId>,
+    pub target_main: Option<StableNodeId>,
+    pub titlebar_row: Option<StableNodeId>,
+    pub titlebar_switch: Option<StableNodeId>,
+    pub opacity_row: Option<StableNodeId>,
+    pub opacity_range: Option<StableNodeId>,
+    pub opacity_text: Option<StableNodeId>,
+    pub workspace_row: Option<StableNodeId>,
+    pub workspace_switch: Option<StableNodeId>,
+    pub radius_row: Option<StableNodeId>,
+    pub radius_range: Option<StableNodeId>,
+    pub reset_row: Option<StableNodeId>,
+    pub reset_button: Option<StableNodeId>,
 }
 
 impl AppearanceSection {
@@ -366,6 +748,7 @@ impl AppearanceSection {
             appearance,
             material_status: None,
             platform_hint: None,
+            assembly: None,
         }
     }
 
@@ -418,11 +801,25 @@ impl AboutMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AboutSection {
     pub metadata: AboutMetadata,
+    pub assembly: Option<AboutSectionAssembly>,
+}
+
+/// Retained children created by [`AppContext::assemble_about_section`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AboutSectionAssembly {
+    pub name_row: Option<StableNodeId>,
+    pub name_value: Option<StableNodeId>,
+    pub version_row: Option<StableNodeId>,
+    pub version_value: Option<StableNodeId>,
+    pub description: Option<StableNodeId>,
 }
 
 impl AboutSection {
     pub fn new(metadata: AboutMetadata) -> Self {
-        Self { metadata }
+        Self {
+            metadata,
+            assembly: None,
+        }
     }
 }
 
@@ -482,10 +879,877 @@ pub fn apply_appearance_event(
     }
 }
 
+fn appearance_mode(appearance: &AppearanceSettings) -> (bool, bool) {
+    let solid = matches!(appearance.window_material(), WindowMaterialMode::Solid);
+    let titlebar_follow_disabled =
+        solid || !matches!(appearance.backdrop_target(), BackdropTarget::Sidebar);
+    (solid, titlebar_follow_disabled)
+}
+
+fn opacity_percent(appearance: &AppearanceSettings) -> f64 {
+    f64::from((appearance.backdrop_opacity() * 100.0).round())
+}
+
+fn document_of(
+    context: &AppContext,
+    id: StableNodeId,
+) -> Result<crate::DocumentId, FrameworkError> {
+    context
+        .world()
+        .node(id)
+        .map(|node| node.document)
+        .ok_or(FrameworkError::MissingView(id))
+}
+
+fn reconcile_children<C: ComponentView>(
+    context: &mut AppContext,
+    parent: Entity<C>,
+    ordered: &[StableNodeId],
+) -> Result<bool, FrameworkError> {
+    let parent_id = parent.stable_id();
+    let current = context
+        .world()
+        .node(parent_id)
+        .ok_or(FrameworkError::MissingView(parent_id))?
+        .children
+        .clone();
+    if current.as_slice() == ordered {
+        return Ok(false);
+    }
+    let keep = ordered.iter().copied().collect::<HashSet<_>>();
+    context.update_component(parent, |_, cx| {
+        for child in &current {
+            if !keep.contains(child) {
+                cx.mutations().park_subtree(*child);
+            }
+        }
+        for child in ordered {
+            cx.mutations().insert(parent_id, *child, None);
+        }
+    })?;
+    Ok(true)
+}
+
+fn styled_text(value: impl Into<String>, color: SemanticColorRole, size: f32, weight: u16) -> Text {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(color);
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.font_size = Some(size);
+    layout.font_weight = Some(weight);
+    Text::new(value).style(style)
+}
+
+fn row_label_text(label: &str) -> Text {
+    Text::new(label).style(label_slot_style())
+}
+
+fn row_hint_text(hint: &str, hidden: bool) -> Text {
+    Text::new(hint).style(hint_slot_style(hidden))
+}
+
+fn sync_text(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    slot: &mut Option<StableNodeId>,
+    next: Text,
+) -> Result<Entity<Text>, FrameworkError> {
+    if let Some(id) = *slot {
+        let entity = Entity::from_stable_id(id);
+        context.update_component(entity, |text, _| {
+            *text = next;
+        })?;
+        Ok(entity)
+    } else {
+        let entity = context.create_detached_component(document, next)?;
+        *slot = Some(entity.stable_id());
+        Ok(entity)
+    }
+}
+
+fn mount_settings_row(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    slot: &mut Option<StableNodeId>,
+    label: &str,
+    hint: Option<&str>,
+    divided: bool,
+    first: bool,
+    last: bool,
+    control: StableNodeId,
+) -> Result<Entity<SettingsRow>, FrameworkError> {
+    let mut label_slot = None;
+    let mut hint_slot = None;
+    let mut copy_slot = None;
+    if let Some(row_id) = *slot {
+        if let Ok((existing_label, existing_hint, existing_copy)) = context
+            .read(Entity::<SettingsRow>::from_stable_id(row_id), |row| {
+                (row.label_slot, row.hint_slot, row.copy_slot)
+            })
+        {
+            label_slot = existing_label;
+            hint_slot = existing_hint;
+            copy_slot = existing_copy;
+        }
+        if label_slot.is_none() {
+            if let Some(first_child) = context
+                .world()
+                .node(row_id)
+                .and_then(|node| node.children.first().copied())
+                .filter(|child| *child != control)
+            {
+                let nested = context
+                    .world()
+                    .node(first_child)
+                    .map(|node| node.children.clone())
+                    .unwrap_or_default();
+                if nested.is_empty() {
+                    label_slot = Some(first_child);
+                }
+            }
+        }
+    }
+    let label_text = sync_text(context, document, &mut label_slot, row_label_text(label))?;
+    let hint_text = if let Some(hint) = hint {
+        Some(sync_text(
+            context,
+            document,
+            &mut hint_slot,
+            row_hint_text(hint, false),
+        )?)
+    } else {
+        if let Some(id) = hint_slot {
+            context.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
+                *text = row_hint_text("", true);
+            })?;
+        }
+        None
+    };
+    let use_copy = hint_text.is_some() || copy_slot.is_some();
+    let copy = if use_copy {
+        Some(if let Some(id) = copy_slot {
+            Entity::<SettingsRowCopy>::from_stable_id(id)
+        } else {
+            let entity =
+                context.create_detached_component(document, SettingsRowCopy { stacked: false })?;
+            copy_slot = Some(entity.stable_id());
+            entity
+        })
+    } else {
+        None
+    };
+    let hint_id = hint_text
+        .as_ref()
+        .map(|text| text.stable_id())
+        .or(hint_slot);
+    let copy_id = copy.map(|entity| entity.stable_id()).or(copy_slot);
+    let apply = |row: &mut SettingsRow, _: &mut crate::ViewContext<'_, SettingsRow>| {
+        row.label = Arc::from(label);
+        row.hint = hint.map(Arc::from);
+        row.divided = divided;
+        row.first_in_group = first;
+        row.last_in_group = last;
+        row.control = Some(control);
+        row.label_slot = Some(label_text.stable_id());
+        row.hint_slot = hint_id;
+        row.copy_slot = copy_id;
+    };
+    let row = if let Some(id) = *slot {
+        let entity = Entity::<SettingsRow>::from_stable_id(id);
+        context.update_component(entity, apply)?;
+        entity
+    } else {
+        let mut row = SettingsRow::new(label)
+            .divided(divided)
+            .control_child(control)
+            .label_slot(label_text.stable_id());
+        if let Some(hint) = hint {
+            row = row.hint(hint);
+        }
+        if let Some(hint_entity) = &hint_text {
+            row = row.hint_slot(hint_entity.stable_id());
+        }
+        if first {
+            row = row.first_in_group();
+        }
+        if last {
+            row = row.last_in_group();
+        }
+        row.copy_slot = copy_slot;
+        let entity = context.create_detached_component(document, row)?;
+        *slot = Some(entity.stable_id());
+        entity
+    };
+    if let Some(copy) = copy {
+        let mut copy_children = vec![label_text.stable_id()];
+        if let Some(hint_entity) = &hint_text {
+            copy_children.push(hint_entity.stable_id());
+        }
+        reconcile_children(context, copy, &copy_children)?;
+        reconcile_children(context, row, &[copy.stable_id(), control])?;
+    } else {
+        reconcile_children(context, row, &[label_text.stable_id(), control])?;
+    }
+    Ok(row)
+}
+
+fn ensure_segmented_pair(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    control_slot: &mut Option<StableNodeId>,
+    first_slot: &mut Option<StableNodeId>,
+    second_slot: &mut Option<StableNodeId>,
+    first: SegmentedOption,
+    second: SegmentedOption,
+    selected_first: bool,
+    first_disabled: bool,
+    second_disabled: bool,
+) -> Result<
+    (
+        Entity<SegmentedControl>,
+        Entity<SegmentedOption>,
+        Entity<SegmentedOption>,
+    ),
+    FrameworkError,
+> {
+    let created = control_slot.is_none();
+    let control = if let Some(id) = *control_slot {
+        Entity::from_stable_id(id)
+    } else {
+        let entity = context.create_detached_component(document, SegmentedControl::new())?;
+        *control_slot = Some(entity.stable_id());
+        entity
+    };
+    let first_entity = if let Some(id) = *first_slot {
+        Entity::from_stable_id(id)
+    } else {
+        let entity = context.create_detached_component(document, first)?;
+        *first_slot = Some(entity.stable_id());
+        entity
+    };
+    let second_entity = if let Some(id) = *second_slot {
+        Entity::from_stable_id(id)
+    } else {
+        let entity = context.create_detached_component(document, second)?;
+        *second_slot = Some(entity.stable_id());
+        entity
+    };
+    if created {
+        context.set_segmented_options(
+            control,
+            vec![first_entity, second_entity],
+            Some(if selected_first {
+                first_entity
+            } else {
+                second_entity
+            }),
+        )?;
+    } else {
+        context.set_segmented_selection(
+            control,
+            Some(if selected_first {
+                first_entity
+            } else {
+                second_entity
+            }),
+        )?;
+    }
+    context.set_segmented_option_disabled(control, first_entity, first_disabled)?;
+    context.set_segmented_option_disabled(control, second_entity, second_disabled)?;
+    Ok((control, first_entity, second_entity))
+}
+
+fn ensure_switch(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    slot: &mut Option<StableNodeId>,
+    label: &str,
+    checked: bool,
+    disabled: bool,
+) -> Result<Entity<Switch>, FrameworkError> {
+    if let Some(id) = *slot {
+        let entity = Entity::<Switch>::from_stable_id(id);
+        context.update_component(entity, |switch, _| {
+            switch.checked = checked;
+            switch.disabled = disabled;
+        })?;
+        Ok(entity)
+    } else {
+        let entity = context
+            .create_detached_component(document, Switch::new(label, checked).disabled(disabled))?;
+        *slot = Some(entity.stable_id());
+        Ok(entity)
+    }
+}
+
+fn ensure_range(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    slot: &mut Option<StableNodeId>,
+    value: f64,
+    minimum: f64,
+    maximum: f64,
+    unit: &str,
+    parent: StableNodeId,
+) -> Result<Entity<RangeField>, FrameworkError> {
+    if let Some(id) = *slot {
+        let entity = Entity::<RangeField>::from_stable_id(id);
+        context.update_component(entity, |range, _| {
+            range.value = range.quantize(value);
+        })?;
+        Ok(entity)
+    } else {
+        let field = RangeField::new(value, minimum, maximum, 1.0)
+            .map_err(|_| FrameworkError::InvalidComponentValue(parent))?
+            .unit(unit);
+        let entity = context.create_detached_component(document, field)?;
+        *slot = Some(entity.stable_id());
+        Ok(entity)
+    }
+}
+
+impl AppContext {
+    /// Mount a settings row with painted label / optional hint / control slots.
+    pub fn mount_settings_leaf_row(
+        &mut self,
+        document: crate::DocumentId,
+        label: &str,
+        hint: Option<&str>,
+        control: StableNodeId,
+    ) -> Result<Entity<SettingsRow>, FrameworkError> {
+        let mut slot = None;
+        mount_settings_row(
+            self, document, &mut slot, label, hint, false, true, true, control,
+        )
+    }
+
+    /// Mount or refresh the Iced appearance row/control contract from the
+    /// host snapshot stored on [`AppearanceSection`].
+    ///
+    /// Child activations re-emit [`AppearanceEvent`] from the section. The
+    /// host binds `on(section, AppearanceEvent)` and applies the event with
+    /// [`apply_appearance_event`] after the interaction returns, then writes
+    /// the snapshot back and calls this method again.
+    pub fn assemble_appearance_section(
+        &mut self,
+        section: Entity<AppearanceSection>,
+    ) -> Result<bool, FrameworkError> {
+        let document = document_of(self, section.stable_id())?;
+        let snapshot = self.read(section, |section| {
+            (
+                section.theme,
+                section.appearance,
+                section.material_status.clone(),
+                section.platform_hint.clone(),
+                section.assembly.clone().unwrap_or_default(),
+            )
+        })?;
+        let (theme, appearance, material_status, platform_hint, mut assembly) = snapshot;
+        let (solid_mode, titlebar_follow_disabled) = appearance_mode(&appearance);
+        let created_theme = assembly.theme_control.is_none();
+        let created_material = assembly.material_control.is_none();
+        let created_target = assembly.target_control.is_none();
+        let created_titlebar = assembly.titlebar_switch.is_none();
+        let created_workspace = assembly.workspace_switch.is_none();
+        let created_radius = assembly.radius_range.is_none();
+        let created_reset = assembly.reset_button.is_none();
+        let mut created_opacity_range = false;
+        let (theme_control, theme_dark, theme_light) = ensure_segmented_pair(
+            self,
+            document,
+            &mut assembly.theme_control,
+            &mut assembly.theme_dark,
+            &mut assembly.theme_light,
+            SegmentedOption::new("暗色").icon(Icon::Moon),
+            SegmentedOption::new("浅色").icon(Icon::Appearance),
+            matches!(theme, ThemeMode::Dark),
+            false,
+            false,
+        )?;
+        assembly.theme_control = Some(theme_control.stable_id());
+        assembly.theme_dark = Some(theme_dark.stable_id());
+        assembly.theme_light = Some(theme_light.stable_id());
+        let theme_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.theme_row,
+            "主题",
+            Some("选择应用配色，立即生效"),
+            true,
+            true,
+            false,
+            theme_control.stable_id(),
+        )?;
+
+        let (material_control, material_solid, material_translucent) = ensure_segmented_pair(
+            self,
+            document,
+            &mut assembly.material_control,
+            &mut assembly.material_solid,
+            &mut assembly.material_translucent,
+            SegmentedOption::new("实色"),
+            SegmentedOption::new("透明"),
+            matches!(appearance.window_material(), WindowMaterialMode::Solid),
+            false,
+            false,
+        )?;
+        assembly.material_control = Some(material_control.stable_id());
+        assembly.material_solid = Some(material_solid.stable_id());
+        assembly.material_translucent = Some(material_translucent.stable_id());
+        let material_hint = platform_hint.as_deref().unwrap_or(DEFAULT_PLATFORM_HINT);
+        let material_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.material_row,
+            "窗口材质",
+            Some(material_hint),
+            true,
+            false,
+            false,
+            material_control.stable_id(),
+        )?;
+
+        let status_row = if let Some(status) = material_status.as_deref() {
+            let status_value = sync_text(
+                self,
+                document,
+                &mut assembly.material_status_value,
+                styled_text(status, SemanticColorRole::Muted, 12.0, 400),
+            )?;
+            Some(mount_settings_row(
+                self,
+                document,
+                &mut assembly.material_status_row,
+                "材质状态",
+                Some("显示窗口当前使用的外观效果。"),
+                true,
+                false,
+                false,
+                status_value.stable_id(),
+            )?)
+        } else {
+            None
+        };
+
+        let (target_control, target_sidebar, target_main) = ensure_segmented_pair(
+            self,
+            document,
+            &mut assembly.target_control,
+            &mut assembly.target_sidebar,
+            &mut assembly.target_main,
+            SegmentedOption::new("侧边栏").disabled(solid_mode),
+            SegmentedOption::new("主内容区").disabled(solid_mode),
+            matches!(appearance.backdrop_target(), BackdropTarget::Sidebar),
+            solid_mode,
+            solid_mode,
+        )?;
+        assembly.target_control = Some(target_control.stable_id());
+        assembly.target_sidebar = Some(target_sidebar.stable_id());
+        assembly.target_main = Some(target_main.stable_id());
+        let target_hint = if solid_mode {
+            "实色模式不显示透明区域；切回透明材质后会恢复当前选择。"
+        } else {
+            "选择侧边栏或主内容区显示透明材质。"
+        };
+        let target_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.target_row,
+            "透明区域",
+            Some(target_hint),
+            true,
+            false,
+            false,
+            target_control.stable_id(),
+        )?;
+
+        let titlebar_switch = ensure_switch(
+            self,
+            document,
+            &mut assembly.titlebar_switch,
+            "",
+            appearance.titlebar_follows_sidebar(),
+            titlebar_follow_disabled,
+        )?;
+        let titlebar_hint = if titlebar_follow_disabled {
+            "仅在侧边栏使用透明材质时生效；当前选择会保留。"
+        } else {
+            "侧边栏透明时，整个标题栏同步显示透明材质。"
+        };
+        let titlebar_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.titlebar_row,
+            "标题栏跟随侧边栏透明",
+            Some(titlebar_hint),
+            true,
+            false,
+            false,
+            titlebar_switch.stable_id(),
+        )?;
+
+        let opacity = opacity_percent(&appearance);
+        let opacity_control = if solid_mode {
+            sync_text(
+                self,
+                document,
+                &mut assembly.opacity_text,
+                styled_text(
+                    format!("{opacity:.0}%"),
+                    SemanticColorRole::Muted,
+                    12.0,
+                    400,
+                ),
+            )?
+            .stable_id()
+        } else {
+            created_opacity_range |= assembly.opacity_range.is_none();
+            ensure_range(
+                self,
+                document,
+                &mut assembly.opacity_range,
+                opacity,
+                f64::from(AppearanceSettings::MIN_BACKDROP_OPACITY) * 100.0,
+                f64::from(AppearanceSettings::MAX_BACKDROP_OPACITY) * 100.0,
+                "%",
+                section.stable_id(),
+            )?
+            .stable_id()
+        };
+        let opacity_hint = if solid_mode {
+            "实色模式不使用透明度；切回透明材质后会恢复当前数值。"
+        } else {
+            "调节透明区域材质的前景色覆盖程度。"
+        };
+        let opacity_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.opacity_row,
+            "材质不透明度",
+            Some(opacity_hint),
+            true,
+            false,
+            false,
+            opacity_control,
+        )?;
+
+        let workspace_switch = ensure_switch(
+            self,
+            document,
+            &mut assembly.workspace_switch,
+            "主区域圆角",
+            appearance.workspace_corners_enabled(),
+            false,
+        )?;
+        let workspace_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.workspace_row,
+            "工作区边缘",
+            None,
+            true,
+            false,
+            false,
+            workspace_switch.stable_id(),
+        )?;
+
+        let radius_range = ensure_range(
+            self,
+            document,
+            &mut assembly.radius_range,
+            f64::from(appearance.standard_radius()),
+            f64::from(AppearanceSettings::MIN_STANDARD_RADIUS),
+            f64::from(AppearanceSettings::MAX_STANDARD_RADIUS),
+            " px",
+            section.stable_id(),
+        )?;
+        let radius_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.radius_row,
+            "组件圆角半径",
+            None,
+            true,
+            false,
+            false,
+            radius_range.stable_id(),
+        )?;
+
+        let reset_button = if let Some(id) = assembly.reset_button {
+            Entity::<Button>::from_stable_id(id)
+        } else {
+            let entity = self.create_detached_component(
+                document,
+                Button::new("恢复默认")
+                    .kind(ButtonKind::Subtle)
+                    .size(ControlSize::Small),
+            )?;
+            assembly.reset_button = Some(entity.stable_id());
+            entity
+        };
+        let reset_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.reset_row,
+            "默认样式",
+            Some("恢复主题、材质与圆角默认值。"),
+            false,
+            false,
+            true,
+            reset_button.stable_id(),
+        )?;
+
+        if created_theme {
+            let dark = theme_dark.stable_id();
+            let light = theme_light.stable_id();
+            self.observe(
+                theme_control,
+                section,
+                move |_, event: &SegmentedSelectionRequested, cx| {
+                    let next = if event.option == dark {
+                        ThemeMode::Dark
+                    } else if event.option == light {
+                        ThemeMode::Light
+                    } else {
+                        return;
+                    };
+                    cx.emit(AppearanceEvent::Theme(next));
+                },
+            )?;
+        }
+        if created_material {
+            let solid = material_solid.stable_id();
+            let translucent = material_translucent.stable_id();
+            self.observe(
+                material_control,
+                section,
+                move |_, event: &SegmentedSelectionRequested, cx| {
+                    let next = if event.option == solid {
+                        WindowMaterialMode::Solid
+                    } else if event.option == translucent {
+                        WindowMaterialMode::Translucent
+                    } else {
+                        return;
+                    };
+                    cx.emit(AppearanceEvent::WindowMaterial(next));
+                },
+            )?;
+        }
+        if created_target {
+            let sidebar = target_sidebar.stable_id();
+            let main = target_main.stable_id();
+            self.observe(
+                target_control,
+                section,
+                move |_, event: &SegmentedSelectionRequested, cx| {
+                    let next = if event.option == sidebar {
+                        BackdropTarget::Sidebar
+                    } else if event.option == main {
+                        BackdropTarget::Main
+                    } else {
+                        return;
+                    };
+                    cx.emit(AppearanceEvent::BackdropTarget(next));
+                },
+            )?;
+        }
+        if created_titlebar {
+            self.observe(titlebar_switch, section, |_, event: &ToggleChanged, cx| {
+                cx.emit(AppearanceEvent::TitlebarFollowsSidebar(event.checked));
+            })?;
+        }
+        if created_opacity_range {
+            if let Some(id) = assembly.opacity_range {
+                self.observe(
+                    Entity::<RangeField>::from_stable_id(id),
+                    section,
+                    |_, event: &RangeChanged, cx| {
+                        cx.emit(AppearanceEvent::BackdropOpacity(event.value as f32 / 100.0));
+                    },
+                )?;
+            }
+        }
+        if created_workspace {
+            self.observe(workspace_switch, section, |_, event: &ToggleChanged, cx| {
+                cx.emit(AppearanceEvent::WorkspaceCorners(event.checked));
+            })?;
+        }
+        if created_radius {
+            self.observe(radius_range, section, |_, event: &RangeChanged, cx| {
+                cx.emit(AppearanceEvent::StandardRadius(event.value.round() as u8));
+            })?;
+        }
+        if created_reset {
+            self.observe(reset_button, section, |_, _: &Activate, cx| {
+                cx.emit(AppearanceEvent::Reset);
+            })?;
+        }
+
+        let mut ordered = vec![theme_row.stable_id(), material_row.stable_id()];
+        if let Some(status_row) = status_row {
+            ordered.push(status_row.stable_id());
+        }
+        ordered.extend([
+            target_row.stable_id(),
+            titlebar_row.stable_id(),
+            opacity_row.stable_id(),
+            workspace_row.stable_id(),
+            radius_row.stable_id(),
+            reset_row.stable_id(),
+        ]);
+        self.update_component(section, |section, _| {
+            section.assembly = Some(assembly);
+        })?;
+        reconcile_children(self, section, &ordered)
+    }
+
+    /// Mount or refresh name/version/description rows from injected metadata.
+    pub fn assemble_about_section(
+        &mut self,
+        section: Entity<AboutSection>,
+    ) -> Result<bool, FrameworkError> {
+        let document = document_of(self, section.stable_id())?;
+        let (metadata, mut assembly) = self.read(section, |section| {
+            (
+                section.metadata.clone(),
+                section.assembly.clone().unwrap_or_default(),
+            )
+        })?;
+        let name_value = sync_text(
+            self,
+            document,
+            &mut assembly.name_value,
+            styled_text(
+                metadata.product_title.as_ref(),
+                SemanticColorRole::Text,
+                12.0,
+                500,
+            ),
+        )?;
+        let name_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.name_row,
+            "名称",
+            None,
+            true,
+            true,
+            false,
+            name_value.stable_id(),
+        )?;
+        let version_value = sync_text(
+            self,
+            document,
+            &mut assembly.version_value,
+            styled_text(
+                metadata.version.as_ref(),
+                SemanticColorRole::Muted,
+                12.0,
+                400,
+            ),
+        )?;
+        let version_row = mount_settings_row(
+            self,
+            document,
+            &mut assembly.version_row,
+            "版本",
+            None,
+            false,
+            false,
+            true,
+            version_value.stable_id(),
+        )?;
+        let mut ordered = vec![name_row.stable_id(), version_row.stable_id()];
+        if let Some(description) = metadata.description.as_deref() {
+            let mut style = styled_text(description, SemanticColorRole::Muted, 12.0, 400).style;
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.padding_top = Some(LengthSpec::Px(8.0));
+            let description = sync_text(
+                self,
+                document,
+                &mut assembly.description,
+                styled_text(description, SemanticColorRole::Muted, 12.0, 400).style(style),
+            )?;
+            ordered.push(description.stable_id());
+        }
+        self.update_component(section, |section, _| {
+            section.assembly = Some(assembly);
+        })?;
+        reconcile_children(self, section, &ordered)
+    }
+
+    /// Mount header chrome and host slots. Details stay hidden while collapsed.
+    pub fn assemble_settings_collapsible_card(
+        &mut self,
+        card: Entity<SettingsCollapsibleCard>,
+    ) -> Result<bool, FrameworkError> {
+        let document = document_of(self, card.stable_id())?;
+        let snapshot = self.read(card, |card| {
+            (
+                card.summary,
+                card.details,
+                card.accessory,
+                card.header,
+                card.disclosure,
+                card.divider,
+                card.expanded,
+            )
+        })?;
+        let (summary, details, accessory, header, disclosure, divider, expanded) = snapshot;
+        let header = if let Some(id) = header {
+            Entity::from_stable_id(id)
+        } else {
+            self.create_detached_component(document, SettingsCollapsibleHeader)?
+        };
+        let disclosure = if let Some(id) = disclosure {
+            let entity = Entity::<SettingsDisclosure>::from_stable_id(id);
+            self.update_component(entity, |mark, _| {
+                mark.expanded = expanded;
+            })?;
+            entity
+        } else {
+            self.create_detached_component(document, SettingsDisclosure { expanded })?
+        };
+        let divider = if let Some(id) = divider {
+            let entity = Entity::<SettingsCollapsibleDivider>::from_stable_id(id);
+            self.update_component(entity, |mark, _| {
+                mark.hidden = !expanded;
+            })?;
+            entity
+        } else {
+            self.create_detached_component(
+                document,
+                SettingsCollapsibleDivider { hidden: !expanded },
+            )?
+        };
+        let mut header_children = Vec::new();
+        if let Some(summary) = summary {
+            header_children.push(summary);
+        }
+        if let Some(accessory) = accessory {
+            header_children.push(accessory);
+        }
+        header_children.push(disclosure.stable_id());
+        reconcile_children(self, header, &header_children)?;
+        self.update_component(card, |card, _| {
+            card.header = Some(header.stable_id());
+            card.disclosure = Some(disclosure.stable_id());
+            card.divider = Some(divider.stable_id());
+        })?;
+        let mut ordered = vec![header.stable_id(), divider.stable_id()];
+        if let Some(details) = details {
+            ordered.push(details);
+        }
+        reconcile_children(self, card, &ordered)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, DocumentId, StandardVisual};
+    use std::sync::{Arc, Mutex};
+
+    use crate::{AppContext, DocumentId, Entity, StandardVisual};
     use nana_ui_core::{BackdropTarget, WindowMaterialMode};
 
     fn document() -> DocumentId {
@@ -543,6 +1807,117 @@ mod tests {
                 assert_eq!(row.control, Some(control.stable_id()));
             })
             .unwrap();
+    }
+
+    fn hint_slot_of(context: &AppContext, row: StableNodeId) -> Option<StableNodeId> {
+        context
+            .read(Entity::<SettingsRow>::from_stable_id(row), |row| {
+                row.hint_slot
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn visible_hint_text(context: &AppContext, row: StableNodeId) -> Option<String> {
+        let hint = hint_slot_of(context, row)?;
+        let style = context.world().node_style(hint)?;
+        if style.layout.hidden {
+            return None;
+        }
+        let text = context.world().text(hint)?.to_owned();
+        (!text.is_empty()).then_some(text)
+    }
+
+    #[test]
+    fn settings_row_paints_muted_hint_child() {
+        let mut context = AppContext::new();
+        let control = context
+            .create_component(document(), crate::Switch::new("跟随", true))
+            .unwrap();
+        let label = context
+            .create_component(document(), row_label_text("主题"))
+            .unwrap();
+        let hint = context
+            .create_component(document(), row_hint_text("选择应用配色，立即生效", false))
+            .unwrap();
+        let row = context
+            .create_component(
+                document(),
+                SettingsRow::new("主题")
+                    .hint("选择应用配色，立即生效")
+                    .label_slot(label.stable_id())
+                    .hint_slot(hint.stable_id())
+                    .control_child(control.stable_id()),
+            )
+            .unwrap();
+        context.append_child(row, label).unwrap();
+        context.append_child(row, hint).unwrap();
+        context.append_child(row, control).unwrap();
+        context.update_component(row, |_, _| {}).unwrap();
+
+        assert_eq!(context.world().text(row.stable_id()), Some(""));
+        assert_eq!(context.world().text(label.stable_id()), Some("主题"));
+        let label_style = context.world().node_style(label.stable_id()).unwrap();
+        assert_eq!(label_style.layout.font_size, Some(13.0));
+        assert_eq!(label_style.layout.font_weight, Some(500));
+        assert_eq!(label_style.foreground, Some(SemanticColorRole::Text));
+        assert!(label_style.layout.white_space_nowrap);
+        assert!(label_style.layout.text_overflow_ellipsis);
+        assert_eq!(label_style.layout.width, Some(LengthSpec::Fill));
+
+        assert_eq!(
+            context.world().text(hint.stable_id()),
+            Some("选择应用配色，立即生效")
+        );
+        let hint_style = context.world().node_style(hint.stable_id()).unwrap();
+        assert_eq!(hint_style.layout.font_size, Some(12.0));
+        assert_eq!(hint_style.foreground, Some(SemanticColorRole::Muted));
+        assert!(hint_style.layout.white_space_nowrap);
+        assert!(hint_style.layout.text_overflow_ellipsis);
+        assert!(!hint_style.layout.hidden);
+        assert_eq!(
+            visible_hint_text(&context, row.stable_id()).as_deref(),
+            Some("选择应用配色，立即生效")
+        );
+    }
+
+    #[test]
+    fn settings_row_without_hint_has_no_visible_hint_text() {
+        let mut context = AppContext::new();
+        let control = context
+            .create_component(document(), crate::Switch::new("圆角", true))
+            .unwrap();
+        let label = context
+            .create_component(document(), row_label_text("工作区边缘"))
+            .unwrap();
+        let leftover = context
+            .create_component(document(), row_hint_text("不应显示", false))
+            .unwrap();
+        let row = context
+            .create_component(
+                document(),
+                SettingsRow::new("工作区边缘")
+                    .label_slot(label.stable_id())
+                    .hint_slot(leftover.stable_id())
+                    .control_child(control.stable_id()),
+            )
+            .unwrap();
+        context.append_child(row, label).unwrap();
+        context.append_child(row, leftover).unwrap();
+        context.append_child(row, control).unwrap();
+        context.update_component(row, |_, _| {}).unwrap();
+
+        assert_eq!(context.world().text(row.stable_id()), Some(""));
+        assert_eq!(context.world().text(leftover.stable_id()), Some(""));
+        assert!(
+            context
+                .world()
+                .node_style(leftover.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
+        assert_eq!(visible_hint_text(&context, row.stable_id()), None);
     }
 
     #[test]
@@ -664,5 +2039,382 @@ mod tests {
                 ..
             }) if title.as_deref() == Some("外观")
         ));
+    }
+
+    fn row_labels(context: &AppContext, section: Entity<AppearanceSection>) -> Vec<String> {
+        context
+            .world()
+            .node(section.stable_id())
+            .unwrap()
+            .children
+            .iter()
+            .filter_map(|id| {
+                context
+                    .read(Entity::<SettingsRow>::from_stable_id(*id), |row| {
+                        row.label.to_string()
+                    })
+                    .ok()
+            })
+            .collect()
+    }
+
+    fn assembly_of(
+        context: &AppContext,
+        section: Entity<AppearanceSection>,
+    ) -> AppearanceSectionAssembly {
+        context
+            .read(section, |section| section.assembly.clone().unwrap())
+            .unwrap()
+    }
+
+    fn option_disabled(context: &AppContext, id: Option<StableNodeId>) -> bool {
+        context
+            .read(
+                Entity::<SegmentedOption>::from_stable_id(id.unwrap()),
+                |option| option.disabled,
+            )
+            .unwrap()
+    }
+
+    fn switch_disabled(context: &AppContext, id: Option<StableNodeId>) -> bool {
+        context
+            .read(Entity::<Switch>::from_stable_id(id.unwrap()), |switch| {
+                switch.disabled
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn appearance_assemble_creates_rows_and_disabled_rules() {
+        let mut context = AppContext::new();
+        let section = context
+            .create_component(
+                document(),
+                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+            )
+            .unwrap();
+        assert!(context.assemble_appearance_section(section).unwrap());
+        assert_eq!(
+            row_labels(&context, section),
+            [
+                "主题",
+                "窗口材质",
+                "透明区域",
+                "标题栏跟随侧边栏透明",
+                "材质不透明度",
+                "工作区边缘",
+                "组件圆角半径",
+                "默认样式",
+            ]
+        );
+        let solid = assembly_of(&context, section);
+        assert_eq!(
+            visible_hint_text(&context, solid.theme_row.unwrap()).as_deref(),
+            Some("选择应用配色，立即生效")
+        );
+        let theme_hint = hint_slot_of(&context, solid.theme_row.unwrap()).unwrap();
+        let theme_hint_style = context.world().node_style(theme_hint).unwrap();
+        assert_eq!(theme_hint_style.layout.font_size, Some(12.0));
+        assert_eq!(theme_hint_style.foreground, Some(SemanticColorRole::Muted));
+        assert_eq!(
+            visible_hint_text(&context, solid.workspace_row.unwrap()),
+            None
+        );
+        assert_eq!(visible_hint_text(&context, solid.radius_row.unwrap()), None);
+        assert!(option_disabled(&context, solid.target_sidebar));
+        assert!(option_disabled(&context, solid.target_main));
+        assert!(switch_disabled(&context, solid.titlebar_switch));
+        assert!(solid.opacity_text.is_some());
+        assert!(solid.opacity_range.is_none());
+        assert!(
+            context
+                .world()
+                .text(solid.opacity_text.unwrap())
+                .unwrap()
+                .ends_with('%')
+        );
+        assert!(!switch_disabled(&context, solid.workspace_switch));
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        context
+            .on(section, move |_, event: &AppearanceEvent, _| {
+                sink.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        assert!(
+            context
+                .toggle_switch(Entity::from_stable_id(solid.workspace_switch.unwrap()))
+                .unwrap()
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![AppearanceEvent::WorkspaceCorners(false)]
+        );
+
+        let mut appearance = AppearanceSettings::default();
+        appearance.set_window_material(WindowMaterialMode::Translucent);
+        context
+            .update_component(section, |section, _| {
+                section.appearance = appearance;
+                section.material_status = Some(Arc::from("vibrancy"));
+            })
+            .unwrap();
+        context.assemble_appearance_section(section).unwrap();
+        assert_eq!(
+            row_labels(&context, section),
+            [
+                "主题",
+                "窗口材质",
+                "材质状态",
+                "透明区域",
+                "标题栏跟随侧边栏透明",
+                "材质不透明度",
+                "工作区边缘",
+                "组件圆角半径",
+                "默认样式",
+            ]
+        );
+        let translucent_sidebar = assembly_of(&context, section);
+        assert!(!option_disabled(
+            &context,
+            translucent_sidebar.target_sidebar
+        ));
+        assert!(!option_disabled(&context, translucent_sidebar.target_main));
+        assert!(!switch_disabled(
+            &context,
+            translucent_sidebar.titlebar_switch
+        ));
+        assert!(translucent_sidebar.opacity_range.is_some());
+        assert!(
+            !context
+                .world()
+                .node_style(translucent_sidebar.opacity_range.unwrap())
+                .unwrap()
+                .layout
+                .hidden
+        );
+        let range_parent = context
+            .world()
+            .node(translucent_sidebar.opacity_row.unwrap())
+            .unwrap()
+            .children
+            .last()
+            .copied();
+        assert_eq!(range_parent, translucent_sidebar.opacity_range);
+
+        appearance.set_backdrop_target(BackdropTarget::Main);
+        context
+            .update_component(section, |section, _| {
+                section.appearance = appearance;
+            })
+            .unwrap();
+        context.assemble_appearance_section(section).unwrap();
+        let translucent_main = assembly_of(&context, section);
+        assert!(!option_disabled(&context, translucent_main.target_sidebar));
+        assert!(switch_disabled(&context, translucent_main.titlebar_switch));
+    }
+
+    #[test]
+    fn about_section_shows_injected_metadata() {
+        let mut context = AppContext::new();
+        let metadata =
+            AboutMetadata::new("Fixture Product", "9.9.9").description("Host-owned blurb");
+        let section = context
+            .create_component(document(), AboutSection::new(metadata.clone()))
+            .unwrap();
+        assert!(context.assemble_about_section(section).unwrap());
+        let assembly = context
+            .read(section, |section| section.assembly.clone().unwrap())
+            .unwrap();
+        assert_eq!(
+            context.world().text(assembly.name_value.unwrap()),
+            Some("Fixture Product")
+        );
+        assert_eq!(
+            context.world().text(assembly.version_value.unwrap()),
+            Some("9.9.9")
+        );
+        assert_eq!(
+            context.world().text(assembly.description.unwrap()),
+            Some("Host-owned blurb")
+        );
+        let labels = context
+            .world()
+            .node(section.stable_id())
+            .unwrap()
+            .children
+            .iter()
+            .filter_map(|id| {
+                context
+                    .read(Entity::<SettingsRow>::from_stable_id(*id), |row| {
+                        row.label.to_string()
+                    })
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["名称", "版本"]);
+        assert_eq!(
+            visible_hint_text(&context, assembly.name_row.unwrap()),
+            None
+        );
+        assert_eq!(
+            visible_hint_text(&context, assembly.version_row.unwrap()),
+            None
+        );
+        let mut texts = Vec::new();
+        let mut stack = context
+            .world()
+            .node(section.stable_id())
+            .unwrap()
+            .children
+            .clone();
+        while let Some(id) = stack.pop() {
+            if let Some(text) = context.world().text(id) {
+                texts.push(text.to_owned());
+            }
+            if let Some(node) = context.world().node(id) {
+                stack.extend(node.children.iter().copied());
+            }
+        }
+        assert!(texts.iter().any(|text| text == "Fixture Product"));
+        assert!(texts.iter().all(|text| !text.contains("NanaUI")));
+    }
+
+    #[test]
+    fn collapsible_card_hides_details_until_expanded() {
+        let mut context = AppContext::new();
+        let summary = context
+            .create_component(document(), Text::new("高级"))
+            .unwrap();
+        let details = context
+            .create_component(document(), Text::new("明细"))
+            .unwrap();
+        let card = context
+            .create_component(
+                document(),
+                SettingsCollapsibleCard::new(false)
+                    .summary(summary.stable_id())
+                    .details(details.stable_id()),
+            )
+            .unwrap();
+        assert!(context.assemble_settings_collapsible_card(card).unwrap());
+        let (header, disclosure, divider) = context
+            .read(card, |card| (card.header, card.disclosure, card.divider))
+            .unwrap();
+        assert_eq!(
+            context.world().node(card.stable_id()).unwrap().children,
+            vec![header.unwrap(), divider.unwrap(), details.stable_id()]
+        );
+        assert_eq!(
+            context.world().node(header.unwrap()).unwrap().children,
+            vec![summary.stable_id(), disclosure.unwrap()]
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(summary.stable_id())
+                .unwrap()
+                .foreground,
+            Some(SemanticColorRole::Text)
+        );
+        assert_eq!(
+            context.world().standard_visual(disclosure.unwrap()),
+            Some(StandardVisual::Icon {
+                icon: Icon::ChevronRight,
+                size: DISCLOSURE_ICON_SIZE,
+                tooltip: None,
+            })
+        );
+        assert!(
+            context
+                .world()
+                .node_style(disclosure.unwrap())
+                .unwrap()
+                .layout
+                .transform
+                .is_none()
+        );
+        assert!(
+            context
+                .world()
+                .node_style(details.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
+        assert!(
+            context
+                .world()
+                .node_style(divider.unwrap())
+                .unwrap()
+                .layout
+                .hidden
+        );
+        assert!(context.activate_settings_collapsible_card(card).unwrap());
+        assert_eq!(
+            context.world().standard_visual(disclosure.unwrap()),
+            Some(StandardVisual::Icon {
+                icon: Icon::ChevronDown,
+                size: DISCLOSURE_ICON_SIZE,
+                tooltip: None,
+            })
+        );
+        assert!(
+            context
+                .world()
+                .node_style(disclosure.unwrap())
+                .unwrap()
+                .layout
+                .transform
+                .is_none()
+        );
+        assert!(
+            !context
+                .world()
+                .node_style(details.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
+        assert!(
+            !context
+                .world()
+                .node_style(divider.unwrap())
+                .unwrap()
+                .layout
+                .hidden
+        );
+
+        let locked_details = context
+            .create_component(document(), Text::new("锁定明细"))
+            .unwrap();
+        let locked = context
+            .create_component(
+                document(),
+                SettingsCollapsibleCard::new(true)
+                    .disabled(true)
+                    .details(locked_details.stable_id()),
+            )
+            .unwrap();
+        context.assemble_settings_collapsible_card(locked).unwrap();
+        assert!(
+            !context
+                .world()
+                .node_style(locked_details.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
+        assert!(!context.activate_settings_collapsible_card(locked).unwrap());
+        context.read(locked, |card| assert!(card.expanded)).unwrap();
+        assert!(
+            !context
+                .world()
+                .node_style(locked_details.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
     }
 }

@@ -1423,6 +1423,86 @@ impl AppContext {
         self.activate_component(entity, |button| button.disabled)
     }
 
+    fn enclosing_sidebar_section(&self, id: StableNodeId) -> Option<Entity<SidebarSection>> {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self
+                .views
+                .get(&id)
+                .is_some_and(|view| view.is::<SidebarSection>())
+            {
+                return Some(Entity::from_stable_id(id));
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        None
+    }
+
+    fn node_is_or_under(&self, root: Option<StableNodeId>, target: StableNodeId) -> bool {
+        let Some(root) = root else {
+            return false;
+        };
+        let mut current = Some(target);
+        while let Some(id) = current {
+            if id == root {
+                return true;
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    fn sidebar_section_header_hovered(
+        &self,
+        section: Entity<SidebarSection>,
+        hover: Option<StableNodeId>,
+    ) -> bool {
+        let Some(hover) = hover else {
+            return false;
+        };
+        let Ok((header, body, tools, title_slot, count_slot, disclosure)) =
+            self.read(section, |section| {
+                (
+                    section.header,
+                    section.body,
+                    section.tools,
+                    section.title_slot,
+                    section.count_slot,
+                    section.disclosure,
+                )
+            })
+        else {
+            return false;
+        };
+        if self.node_is_or_under(body, hover) {
+            return false;
+        }
+        hover == section.stable_id()
+            || self.node_is_or_under(header, hover)
+            || self.node_is_or_under(tools, hover)
+            || self.node_is_or_under(title_slot, hover)
+            || self.node_is_or_under(count_slot, hover)
+            || self.node_is_or_under(disclosure, hover)
+    }
+
+    fn sync_sidebar_section_hover(
+        &mut self,
+        node: Option<StableNodeId>,
+        hover: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        let Some(section) = node.and_then(|id| self.enclosing_sidebar_section(id)) else {
+            return Ok(());
+        };
+        let hovered = self.sidebar_section_header_hovered(section, hover);
+        if self.read(section, |section| section.header_hovered == hovered)? {
+            return Ok(());
+        }
+        self.update_component(section, |section, _| {
+            section.header_hovered = hovered;
+        })?;
+        Ok(())
+    }
+
     pub fn activate_sidebar_section(
         &mut self,
         entity: Entity<SidebarSection>,
@@ -2056,6 +2136,16 @@ impl AppContext {
             if let Some(target) = target {
                 self.enter_tooltip(target, now)?;
             }
+            let previous_section = previous
+                .and_then(|id| self.enclosing_sidebar_section(id))
+                .map(Entity::stable_id);
+            let next_section = target
+                .and_then(|id| self.enclosing_sidebar_section(id))
+                .map(Entity::stable_id);
+            if previous_section != next_section {
+                self.sync_sidebar_section_hover(previous, target)?;
+            }
+            self.sync_sidebar_section_hover(target, target)?;
         } else if let Some(target) = target {
             self.reposition_follow_cursor_tooltip(target)?;
         }

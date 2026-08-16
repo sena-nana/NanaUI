@@ -102,6 +102,16 @@ pub fn icon_geometry(icon: Icon) -> IconGeometry {
             line([13.0, 6.0], [19.0, 12.0]),
             line([19.0, 12.0], [13.0, 18.0]),
         ],
+        Icon::ChevronDown => vec![IconShape::Path(vec![
+            MoveTo([6.0, 9.0]),
+            LineTo([12.0, 15.0]),
+            LineTo([18.0, 9.0]),
+        ])],
+        Icon::ChevronRight => vec![IconShape::Path(vec![
+            MoveTo([9.0, 6.0]),
+            LineTo([15.0, 12.0]),
+            LineTo([9.0, 18.0]),
+        ])],
         Icon::Chart => vec![
             line([4.0, 20.0], [4.0, 4.0]),
             line([4.0, 20.0], [21.0, 20.0]),
@@ -252,6 +262,8 @@ mod tests {
             Icon::Appearance,
             Icon::ArrowLeft,
             Icon::ArrowRight,
+            Icon::ChevronDown,
+            Icon::ChevronRight,
             Icon::Chart,
             Icon::Close,
             Icon::Eye,
