@@ -22,6 +22,7 @@ pub mod semantics;
 pub mod settings;
 pub mod split_pane;
 pub mod style_model;
+pub mod tab_drag;
 pub mod theme;
 pub mod tree;
 pub mod virtual_list;
@@ -65,6 +66,10 @@ pub use settings::{
 pub use split_pane::{SplitAxis, SplitPaneModel, SplitPaneMutation};
 pub use style_model::{
     ControlSemantics, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef,
+};
+pub use tab_drag::{
+    TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
+    drop_before_index, reorder_changes_position, tab_at,
 };
 pub use theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
 pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};

@@ -18,6 +18,7 @@
     "./NanaCheckbox": "./src/NanaCheckbox.js",
     "./NanaSelect": "./src/NanaSelect.js",
     "./NanaDropdown": "./src/NanaDropdown.js",
+    "./NanaSearch": "./src/NanaSearch.js",
     "./NanaDialog": "./src/NanaDialog.js",
     "./NanaDrawer": "./src/NanaDrawer.js",
     "./NanaPopover": "./src/NanaPopover.js",

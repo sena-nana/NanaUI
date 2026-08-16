@@ -149,7 +149,7 @@ component_catalog! {
     REORDER_LIST => { id: "reorder-list", name: "ReorderList", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     CALENDAR_HEATMAP => { id: "calendar-heatmap", name: "CalendarHeatmap", family: Data, migration: Compatibility, feature: Some("calendar"), compiled: cfg!(feature = "calendar"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     TIME_SERIES_CHART => { id: "time-series-chart", name: "TimeSeriesChart", family: Data, migration: Compatibility, feature: Some("charts"), compiled: cfg!(feature = "charts"), capabilities: [Render, Accessibility] },
-    PROGRESS => { id: "progress", name: "Progress", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
+    PROGRESS => { id: "progress", name: "Progress", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SPINNER => { id: "spinner", name: "Spinner", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Animation, Accessibility] },
     SKELETON => { id: "skeleton", name: "Skeleton", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Animation] },
     LEVEL_METER => { id: "level-meter", name: "LevelMeter", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
@@ -170,10 +170,10 @@ component_catalog! {
     DROPDOWN => { id: "dropdown", name: "Dropdown", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     SEARCH_DROPDOWN => { id: "search-dropdown", name: "SearchDropdown", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility, Overlay] },
     TREE_VIEW => { id: "tree-view", name: "TreeView", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    SIDEBAR_FRAME => { id: "sidebar-frame", name: "SidebarFrame", family: Navigation, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Accessibility] },
-    SIDEBAR_SECTION => { id: "sidebar-section", name: "SidebarSection", family: Navigation, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
-    SIDEBAR_ROW => { id: "sidebar-row", name: "SidebarRow", family: Navigation, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    SIDEBAR_FOOTER => { id: "sidebar-footer", name: "SidebarFooter", family: Navigation, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    SIDEBAR_FRAME => { id: "sidebar-frame", name: "SidebarFrame", family: Navigation, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Accessibility] },
+    SIDEBAR_SECTION => { id: "sidebar-section", name: "SidebarSection", family: Navigation, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
+    SIDEBAR_ROW => { id: "sidebar-row", name: "SidebarRow", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    SIDEBAR_FOOTER => { id: "sidebar-footer", name: "SidebarFooter", family: Navigation, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     KEY_CAPTURE_LAYER => { id: "key-capture-layer", name: "KeyCaptureLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus, Accessibility] },
     KEYMAP_LAYER => { id: "keymap-layer", name: "KeymapLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus] },
     NATIVE_MARKDOWN => { id: "native-markdown", name: "NativeMarkdown", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
@@ -195,10 +195,10 @@ component_catalog! {
     PANE_TREE => { id: "pane-tree", name: "PaneTree", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     APP_SHELL => { id: "app-shell", name: "AppShell", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     APP_TITLE_BAR => { id: "app-title-bar", name: "AppTitleBar", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    SETTINGS => { id: "settings", name: "Settings", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    APPEARANCE_SECTION => { id: "appearance-section", name: "AppearanceSection", family: Workspace, migration: Compatibility, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    ABOUT_SECTION => { id: "about-section", name: "AboutSection", family: Workspace, migration: Compatibility, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Accessibility] },
-    SETTINGS_COLLAPSIBLE_CARD => { id: "settings-collapsible-card", name: "SettingsCollapsibleCard", family: Workspace, migration: Compatibility, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    SETTINGS => { id: "settings", name: "Settings", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    APPEARANCE_SECTION => { id: "appearance-section", name: "AppearanceSection", family: Workspace, migration: RuntimeCandidate, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    ABOUT_SECTION => { id: "about-section", name: "AboutSection", family: Workspace, migration: RuntimeCandidate, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Accessibility] },
+    SETTINGS_COLLAPSIBLE_CARD => { id: "settings-collapsible-card", name: "SettingsCollapsibleCard", family: Workspace, migration: RuntimeCandidate, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     GPU_VIEW => { id: "gpu-view", name: "GpuView", family: Gpu, migration: Compatibility, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Pointer, Gpu] },
     GPU_TEXTURE_VIEW => { id: "gpu-texture-view", name: "GpuTextureView", family: Gpu, migration: Compatibility, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Gpu] },
 }
@@ -283,6 +283,8 @@ mod tests {
             component_ids::SEARCH_DROPDOWN,
             component_ids::COMMAND_PALETTE,
             component_ids::TREE_VIEW,
+            component_ids::SIDEBAR_ROW,
+            component_ids::SETTINGS,
         ] {
             let support = component_support(id).expect("qualified component is cataloged");
             assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
@@ -342,6 +344,7 @@ mod tests {
         let _: nana_ui_runtime::LevelMeter = crate::LevelMeter::new(0.5);
         let _: nana_ui_runtime::FormField = crate::FormField::new("Name");
         let _: nana_ui_runtime::InteractiveCard = crate::InteractiveCard::new();
+        let _: nana_ui_runtime::Tabs = crate::Tabs::new("code");
 
         let _: nana_ui_runtime::Progress = crate::components::Progress::new(1.0, 2.0);
         let _: nana_ui_runtime::Spinner = crate::components::Spinner::new("Loading");
@@ -350,6 +353,7 @@ mod tests {
         let _: nana_ui_runtime::LevelMeter = crate::components::LevelMeter::new(0.5);
         let _: nana_ui_runtime::FormField = crate::components::FormField::new("Name");
         let _: nana_ui_runtime::InteractiveCard = crate::components::InteractiveCard::new();
+        let _: nana_ui_runtime::Tabs = crate::components::Tabs::new("code");
     }
 
     #[test]
@@ -407,6 +411,16 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_and_settings_leaf_exports_are_runtime_components() {
+        let _: nana_ui_runtime::SidebarRow = crate::SidebarRow::new("工作区");
+        let _: nana_ui_runtime::SettingsRow = crate::SettingsRow::new("主题");
+        let _: nana_ui_runtime::SettingsCard = crate::SettingsCard::new("外观");
+        let _: nana_ui_runtime::SidebarRow = crate::components::SidebarRow::new("工作区");
+        let _: nana_ui_runtime::SettingsRow = crate::components::SettingsRow::new("主题");
+        let _: nana_ui_runtime::SettingsCard = crate::components::SettingsCard::new("外观");
+    }
+
+    #[test]
     fn migration_state_only_allows_monotonic_promotion() {
         use ComponentMigrationState::{Compatibility, RuntimeCandidate, RuntimeQualified};
 
@@ -415,6 +429,14 @@ mod tests {
         assert!(RuntimeQualified.allows_transition_to(RuntimeQualified));
         assert!(!RuntimeQualified.allows_transition_to(RuntimeCandidate));
         assert!(!RuntimeCandidate.allows_transition_to(Compatibility));
+    }
+
+    #[test]
+    fn sidebar_frame_stays_candidate_while_vue_needs_iced_body_scroll() {
+        let support =
+            component_support(component_ids::SIDEBAR_FRAME).expect("sidebar-frame is cataloged");
+        assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
+        assert!(!component_uses_runtime(component_ids::SIDEBAR_FRAME));
     }
 
     #[test]

@@ -23,7 +23,8 @@ pub enum SelectionOrientation {
 /// Shared selection contract with two product surfaces.
 ///
 /// `Segmented` keeps the bordered pill. `Tabs` is the same RadioGroup/roving
-/// behavior on an independent tab strip (no outer chrome, no reorder/drag).
+/// behavior on an independent tab strip (no outer chrome). Professional
+/// reorder, close, and drag/lease behavior lives on [`crate::Tabs`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionChrome {
     #[default]
@@ -53,12 +54,12 @@ impl Default for RovingFocusPolicy {
 }
 
 impl RovingFocusPolicy {
-    pub fn resolve(
+    pub fn resolve<T: Copy + Eq>(
         self,
-        items: &[(StableNodeId, bool)],
-        current: Option<StableNodeId>,
+        items: &[(T, bool)],
+        current: Option<T>,
         intent: RovingFocusIntent,
-    ) -> Option<StableNodeId> {
+    ) -> Option<T> {
         let enabled = items
             .iter()
             .filter_map(|(id, enabled)| enabled.then_some(*id))
@@ -426,7 +427,11 @@ impl SegmentedOption {
     }
 }
 
-fn selection_chrome_style(chrome: SelectionChrome, size: ControlSize, fill: bool) -> NodeStyle {
+pub(crate) fn selection_chrome_style(
+    chrome: SelectionChrome,
+    size: ControlSize,
+    fill: bool,
+) -> NodeStyle {
     let (gap, padding, border_width, background, border) = match chrome {
         SelectionChrome::Segmented => (
             2.0,

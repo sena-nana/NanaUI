@@ -27,6 +27,7 @@ const L2_OVERLAY_EXPORTS = [
   "NanaQrCode",
   "NanaSelect",
   "NanaDropdown",
+  "NanaSearch",
   "NanaTextarea",
 ];
 
@@ -41,6 +42,8 @@ const HOST_TAGS = {
   NanaXyPad: "nana-xy-pad",
   NanaQrCode: "nana-qr-code",
   NanaSelect: "nana-select",
+  NanaDropdown: "nana-dropdown",
+  NanaSearch: "nana-search",
   NanaTextarea: "nana-textarea",
 };
 
@@ -55,6 +58,8 @@ const SOURCE_FILES = {
   NanaXyPad: "src/NanaXyPad.js",
   NanaQrCode: "src/NanaQrCode.js",
   NanaSelect: "src/NanaSelect.js",
+  NanaDropdown: "src/NanaDropdown.js",
+  NanaSearch: "src/NanaSearch.js",
   NanaTextarea: "src/NanaTextarea.js",
 };
 
@@ -100,6 +105,7 @@ describe("L2 overlay / form exports", () => {
       "NanaQrCode",
       "NanaSelect",
       "NanaDropdown",
+      "NanaSearch",
       "NanaTextarea",
     ]) {
       assert.ok(pkg.exports[`./${name}`], `missing exports["./${name}"]`);
@@ -120,10 +126,9 @@ describe("L2 overlay / form exports", () => {
     assert.match(src, /anchor-y/);
   });
 
-  test("NanaDropdown maps to NanaSelect not CSS fixed", () => {
+  test("NanaDropdown maps to nana-dropdown not CSS fixed", () => {
     const src = readFileSync(join(root, "src/NanaDropdown.js"), "utf8");
-    assert.match(src, /NanaSelect/);
-    assert.match(src, /nana-select|NanaSelect/);
+    assert.match(src, /nana-dropdown/);
     assert.doesNotMatch(src, /<Teleport/);
   });
 

@@ -229,7 +229,9 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-action-menu-item" => WidgetKind::ActionMenuItem,
         "nana-xy-pad" | "nana-xypad" | "xy-pad" => WidgetKind::XYPad,
         "nana-qr-code" | "nana-qr" | "qr-code" => WidgetKind::QrCode,
-        "nana-dropdown" | "nana-select" | "ui-dropdown" | "dropdown" => WidgetKind::Select,
+        "nana-select" => WidgetKind::Select,
+        "nana-dropdown" | "ui-dropdown" | "dropdown" => WidgetKind::Select,
+        "nana-search" | "nana-search-dropdown" | "search-dropdown" => WidgetKind::Select,
         _ if t == "lucide" || t.starts_with("lucide-") => WidgetKind::Icon,
         _ if t.contains("sidebar") && t.contains("row") => WidgetKind::SidebarRow,
         // Do NOT match arbitrary "*card*" substrings — that promotes layout
@@ -261,6 +263,138 @@ fn is_input_like_kind(kind: WidgetKind) -> bool {
     )
 }
 
+pub(crate) fn settings_row_control_child_id(
+    snapshot: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> Option<WidgetId> {
+    widget
+        .children
+        .iter()
+        .copied()
+        .find(|&id| {
+            snapshot.get(id).is_some_and(|child| {
+                child.props.attrs.get("data-slot").map(String::as_str) == Some("control")
+                    || child.props.class_names.iter().any(|class| {
+                        class.contains("settings-row__control")
+                            || class.contains("nana-settings-row__control")
+                    })
+            })
+        })
+        .or_else(|| {
+            widget.children.iter().rev().copied().find(|&id| {
+                snapshot.get(id).is_some_and(|child| {
+                    !child.props.class_names.iter().any(|class| {
+                        class.contains("settings-row__label")
+                            || class.contains("nana-settings-row__label")
+                    })
+                })
+            })
+        })
+}
+
+pub(crate) fn settings_row_flags(props: &WidgetProps) -> (bool, bool, bool, bool, bool) {
+    let class_has = |needles: &[&str]| {
+        props
+            .class_names
+            .iter()
+            .any(|class| needles.iter().any(|needle| class.contains(needle)))
+    };
+    let attr_true = |names: &[&str]| {
+        attr_value(props, names).is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "true" | "1" | "yes"
+            )
+        })
+    };
+    (
+        class_has(&["nana-settings-row--stacked", "settings-row--stacked"])
+            || attr_true(&["stacked"]),
+        class_has(&["nana-settings-row--divided", "settings-row--divided"])
+            || attr_true(&["divided"]),
+        class_has(&[
+            "nana-settings-row__control--loose",
+            "settings-row__control--loose",
+        ]) || attr_true(&["loose"]),
+        class_has(&["is-first"]) || attr_true(&["first-in-group", "firstInGroup"]),
+        class_has(&["is-last"]) || attr_true(&["last-in-group", "lastInGroup"]),
+    )
+}
+
+pub(crate) fn sidebar_frame_slots(
+    snapshot: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> (Option<WidgetId>, Option<WidgetId>, Option<WidgetId>) {
+    let mut top = None;
+    let mut body = None;
+    let mut footer = None;
+    for &id in &widget.children {
+        let Some(child) = snapshot.get(id) else {
+            continue;
+        };
+        let slot = child.props.attrs.get("data-slot").map(String::as_str);
+        let classes = &child.props.class_names;
+        if slot == Some("sidebar-top")
+            || classes
+                .iter()
+                .any(|class| class.contains("nana-sidebar-frame__top"))
+        {
+            top = Some(id);
+        } else if slot == Some("sidebar-body")
+            || classes
+                .iter()
+                .any(|class| class.contains("nana-sidebar-frame__body"))
+        {
+            body = Some(id);
+        } else if slot == Some("sidebar-footer")
+            || classes
+                .iter()
+                .any(|class| class.contains("nana-sidebar-frame__footer"))
+        {
+            footer = Some(id);
+        }
+    }
+    (top, body, footer)
+}
+
+pub(crate) fn sidebar_row_tone(props: &WidgetProps) -> nana_ui_runtime::SidebarRowTone {
+    let raw = attr_value(props, &["tone", "data-tone"]).unwrap_or("");
+    let class_has = |needle: &str| props.class_names.iter().any(|class| class.contains(needle));
+    if raw.eq_ignore_ascii_case("warning") || class_has("warning") {
+        nana_ui_runtime::SidebarRowTone::Warning
+    } else if raw.eq_ignore_ascii_case("error")
+        || raw.eq_ignore_ascii_case("danger")
+        || class_has("error")
+        || class_has("danger")
+    {
+        nana_ui_runtime::SidebarRowTone::Error
+    } else {
+        nana_ui_runtime::SidebarRowTone::Default
+    }
+}
+
+pub(crate) fn sidebar_row_state(props: &WidgetProps) -> nana_ui_runtime::SidebarRowState {
+    if props.disabled {
+        nana_ui_runtime::SidebarRowState::Disabled
+    } else if props
+        .class_names
+        .iter()
+        .any(|class| class.contains("ancestor"))
+    {
+        nana_ui_runtime::SidebarRowState::AncestorActive
+    } else if props.active {
+        nana_ui_runtime::SidebarRowState::Active
+    } else {
+        nana_ui_runtime::SidebarRowState::Idle
+    }
+}
+
+pub(crate) fn sidebar_row_depth(props: &WidgetProps) -> u16 {
+    attr_value(props, &["depth", "data-depth", "indent"])
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 pub(crate) fn form_field_control_child_id(
     snapshot: &SemanticSnapshot,
     widget: &SemanticWidget,
@@ -279,6 +413,38 @@ pub(crate) fn form_field_control_child_id(
         }
     }
     first_non_text.or(first_input_like)
+}
+
+pub(crate) fn progress_cancellable(props: &WidgetProps) -> bool {
+    attr_value(props, &["cancel", "cancellable", "dismissible", "closable"]).is_some()
+        || props.attrs.contains_key("ondismiss")
+        || props
+            .class_names
+            .iter()
+            .any(|class| class.contains("cancel") || class.contains("dismissible"))
+}
+
+pub(crate) fn is_search_dropdown(props: &WidgetProps) -> bool {
+    tag_or_class_contains(props, &["nana-search", "search-dropdown", "searchdropdown"])
+}
+
+pub(crate) fn is_dropdown_field(props: &WidgetProps) -> bool {
+    if is_search_dropdown(props) {
+        return false;
+    }
+    props.attrs.contains_key("multiple")
+        || tag_or_class_contains(props, &["nana-dropdown", "dropdown"])
+}
+
+fn tag_or_class_contains(props: &WidgetProps, needles: &[&str]) -> bool {
+    let tag = props.element_tag.to_ascii_lowercase();
+    needles.iter().any(|needle| {
+        tag.contains(needle)
+            || props
+                .class_names
+                .iter()
+                .any(|class| class.eq_ignore_ascii_case(needle) || class.contains(needle))
+    })
 }
 
 pub(crate) fn form_field_support(props: &WidgetProps) -> (Option<&str>, Option<&str>) {

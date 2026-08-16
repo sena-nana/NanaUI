@@ -20,8 +20,8 @@ use nana_ui::compatibility::{
     Popover as IcedPopover, Progress as IcedProgress, QrCodeCanvas as IcedQrCode,
     RangeField as IcedRangeField, SegmentedControl as IcedSegmentedControl, Select as IcedSelect,
     Skeleton as IcedSkeleton, Spinner as IcedSpinner, StatusBadge as IcedStatusBadge,
-    Switch as IcedSwitch, Textarea as IcedTextarea, Toast as IcedToast, Tooltip as IcedTooltip,
-    ValidationMessage as IcedValidationMessage, XYPad as IcedXYPad,
+    Switch as IcedSwitch, Tabs as IcedTabs, Textarea as IcedTextarea, Toast as IcedToast,
+    Tooltip as IcedTooltip, ValidationMessage as IcedValidationMessage, XYPad as IcedXYPad,
 };
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
@@ -39,16 +39,16 @@ use nana_ui::runtime::{
     SegmentedOption as RuntimeSegmentedOption, SegmentedSelectionRequested,
     Select as RuntimeSelect, SelectOption as RuntimeSelectOption, Skeleton as RuntimeSkeleton,
     Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
-    Switch as RuntimeSwitch, Text as RuntimeText, TextArea as RuntimeTextArea,
-    TextHorizontalAlignment, TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
-    Toast as RuntimeToast, ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
-    XYPad as RuntimeXYPad,
+    Switch as RuntimeSwitch, TabOption as RuntimeTabOption, Tabs as RuntimeTabs,
+    Text as RuntimeText, TextArea as RuntimeTextArea, TextHorizontalAlignment,
+    TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment, Toast as RuntimeToast,
+    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
     AnchoredMenuPosition, CardKind, ComponentId, ComponentMigrationState, ControlSize,
     IcedSceneView, IcedTextShaper, Icon, RuntimeInputAdapter,
-    SelectionOption as IcedSelectionOption, Tabs as IcedTabs, ThemeMode, ThemeModeExt,
-    TooltipConfig, TooltipPlacement, XYPadValue, component_catalog, component_ids, icon,
+    SelectionOption as IcedSelectionOption, ThemeMode, ThemeModeExt, TooltipConfig,
+    TooltipPlacement, XYPadValue, component_catalog, component_ids, icon,
 };
 use nana_ui_core::{
     DialogSize, DrawerSide, LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition,
@@ -1834,44 +1834,25 @@ fn create_segmented_fixture(
 fn create_tabs_fixture(
     document: &mut RuntimeDocument,
     fixture: Fixture,
-) -> Result<SegmentedFixture, Box<dyn std::error::Error>> {
+) -> Result<Entity<RuntimeTabs>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let control = document.context_mut().create_component(
+    let tabs = document.context_mut().create_component(
         document_id,
-        RuntimeSegmentedControl::tabs().label("Editor mode"),
+        RuntimeTabs::new("code").label("Editor mode").options([
+            RuntimeTabOption::new("code", "Code"),
+            RuntimeTabOption::new("split", "Split").disabled(true),
+            RuntimeTabOption::new("preview", "Preview"),
+        ]),
     )?;
-    let specs: &[(&str, bool)] = &[("Code", false), ("Split", true), ("Preview", false)];
-    let mut options = Vec::with_capacity(specs.len());
-    for (label, disabled) in specs {
-        options.push(document.context_mut().create_detached_component(
-            document_id,
-            RuntimeSegmentedOption::new(*label).disabled(*disabled),
-        )?);
-    }
-    let selected = options.first().copied();
-    document
-        .context_mut()
-        .set_segmented_options(control, options.clone(), selected)?;
     if fixture.state == "focused" {
-        if let Some(first) = selected {
-            document
-                .context_mut()
-                .focus_node(document_id, first.stable_id())?;
+        if let Some(first) = document
+            .context()
+            .read(tabs, |tabs| tabs.option_nodes().first().map(|(_, id)| *id))?
+        {
+            document.context_mut().focus_node(document_id, first)?;
         }
     }
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let observed = Arc::clone(&requests);
-    document.context_mut().on(
-        control,
-        move |_control, event: &SegmentedSelectionRequested, _context| {
-            observed.lock().expect("tab request log").push(event.option);
-        },
-    )?;
-    Ok(SegmentedFixture {
-        control,
-        options,
-        requests,
-    })
+    Ok(tabs)
 }
 
 fn runtime_fixture(
@@ -2231,12 +2212,7 @@ fn runtime_fixture(
             .context_mut()
             .create_component(document_id, RuntimeSpinner::new("Loading").phase(0.25))?
             .stable_id(),
-        Component::Tabs => {
-            let tabs = create_tabs_fixture(&mut document, fixture)?;
-            let target = tabs.control.stable_id();
-            segmented_fixture = Some(tabs);
-            target
-        }
+        Component::Tabs => create_tabs_fixture(&mut document, fixture)?.stable_id(),
         Component::Skeleton => document
             .context_mut()
             .create_component(document_id, RuntimeSkeleton::fill_width(16.0))?
@@ -3137,7 +3113,18 @@ fn apply_runtime_state(
                 &pointer(PointerPhase::Down, center_x, center_y),
             )?
             .prevent_default),
-        "focused" => Ok(context.focus_node(document_id, target)?),
+        "focused" => {
+            let target = if fixture.component == Component::Tabs {
+                context
+                    .world()
+                    .node(target)
+                    .and_then(|node| node.children.first().copied())
+                    .unwrap_or(target)
+            } else {
+                target
+            };
+            Ok(context.focus_node(document_id, target)?)
+        }
         "invalid" if fixture.component == Component::TextInput => {
             Ok(context.focus_node(document_id, target)?)
         }

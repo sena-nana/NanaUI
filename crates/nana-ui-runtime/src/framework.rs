@@ -22,14 +22,16 @@ use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
     DocumentId, Dropdown, EmptyState, FormField, IconButton, LabeledValue, List, ListItem,
-    ListItemSlots, MenuItem, ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged,
-    OverlayHost, Popover, PopoverClosed, PopoverToggled, RangeAdjustment, RangeChanged, RangeField,
-    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView,
-    SearchDropdown, SearchDropdownEvent, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Select, Slider, SliderChanged, StableNodeId, StandardVisual,
-    Switch, Tab, TabList, TabSelected, Table, TableCell, TableRow, TextArea, TextChanged,
-    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
-    UiWorld, UiWorldError, XYPad, XYPadDragState, XYPadEvent,
+    ListItemSlots, MenuItem, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind,
+    OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
+    ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
+    ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent,
+    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
+    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, Slider,
+    SliderChanged, StableNodeId, StandardVisual, Switch, Tab, TabList, TabSelected, Table,
+    TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter,
+    TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, XYPad, XYPadDragState,
+    XYPadEvent,
 };
 
 mod overlay;
@@ -145,6 +147,42 @@ impl EditableText for SearchDropdown {
             return false;
         }
         let _ = self.set_query(value);
+        true
+    }
+}
+
+impl EditableText for ContextMenu {
+    type Change = ContextMenuEvent;
+
+    fn accepts_input(&self) -> bool {
+        self.open && self.searchable
+    }
+
+    fn replace_selection(&mut self, text: &str) -> bool {
+        if !self.state.replace_selection(text) {
+            return false;
+        }
+        self.sync_query_from_state();
+        true
+    }
+
+    fn state(&self) -> &TextInputState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut TextInputState {
+        &mut self.state
+    }
+
+    fn change(&self) -> ContextMenuEvent {
+        ContextMenuEvent::Search(Arc::clone(&self.query))
+    }
+
+    fn set_value(&mut self, value: String) -> bool {
+        if self.query.as_ref() == value {
+            return false;
+        }
+        self.set_query(value);
         true
     }
 }
@@ -799,6 +837,29 @@ impl AppContext {
                 .then(|| now.checked_add(COMPONENT_FRAME_INTERVAL))
                 .flatten();
         }
+        let section_targets = frame
+            .samples
+            .iter()
+            .map(|sample| sample.target)
+            .filter(|target| {
+                self.views
+                    .get(target)
+                    .is_some_and(|view| view.is::<SidebarSection>())
+            })
+            .collect::<Vec<_>>();
+        for target in section_targets {
+            if self
+                .update_component(
+                    Entity::<SidebarSection>::from_stable_id(target),
+                    |section, _| {
+                        section.animation_progress = section.state.expansion(now);
+                    },
+                )
+                .is_ok()
+            {
+                frame.component_updates.push(target);
+            }
+        }
         frame.next_deadline = self.next_animation_deadline();
         frame
     }
@@ -1348,6 +1409,65 @@ impl AppContext {
         self.activate_component(entity, |item| item.disabled)
     }
 
+    pub fn activate_sidebar_row(
+        &mut self,
+        entity: Entity<SidebarRow>,
+    ) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |row| row.disabled())
+    }
+
+    pub fn activate_sidebar_footer_button(
+        &mut self,
+        entity: Entity<SidebarFooterButton>,
+    ) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |button| button.disabled)
+    }
+
+    pub fn activate_sidebar_section(
+        &mut self,
+        entity: Entity<SidebarSection>,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, |section| !section.collapsible || section.disabled)? {
+            return Ok(false);
+        }
+        let now = self.component_lifecycle.now;
+        let id = entity.id;
+        self.update_component(entity, |section, cx| {
+            section.state.toggle(now);
+            section.animation_progress = section.state.expansion(now);
+            if let Some(animation) = crate::AnimationId::new(id.get()) {
+                cx.mutations().start_animation(crate::AnimationSpec {
+                    id: animation,
+                    target: id,
+                    start: now,
+                    duration: crate::SidebarSectionState::animation_duration(),
+                    frame_interval: COMPONENT_FRAME_INTERVAL,
+                    easing: crate::Easing::EaseOutCubic,
+                });
+            }
+            cx.emit(ToggleChanged {
+                checked: section.state.expanded(),
+            });
+        })?;
+        Ok(true)
+    }
+
+    pub fn activate_settings_collapsible_card(
+        &mut self,
+        entity: Entity<SettingsCollapsibleCard>,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, |card| card.disabled)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |card, cx| {
+            card.expanded = !card.expanded;
+            cx.emit(ToggleChanged {
+                checked: card.expanded,
+            });
+        })?;
+        Ok(true)
+    }
+
     pub fn activate_menu_item(&mut self, entity: Entity<MenuItem>) -> Result<bool, FrameworkError> {
         self.activate_component(entity, |item| item.disabled)
     }
@@ -1392,6 +1512,21 @@ impl AppContext {
         if view.is::<ListItem>() {
             return self.activate_list_item(Entity::from_stable_id(id));
         }
+        if view.is::<SidebarRow>() {
+            return self.activate_sidebar_row(Entity::from_stable_id(id));
+        }
+        if view.is::<SidebarFooterButton>() {
+            return self.activate_sidebar_footer_button(Entity::from_stable_id(id));
+        }
+        if view.is::<SidebarSection>() {
+            return self.activate_sidebar_section(Entity::from_stable_id(id));
+        }
+        if view.is::<SettingsCollapsibleCard>() {
+            return self.activate_settings_collapsible_card(Entity::from_stable_id(id));
+        }
+        if view.is::<Tabs>() {
+            return self.activate_tabs(Entity::from_stable_id(id));
+        }
         if view.is::<MenuItem>() {
             return self.activate_menu_item(Entity::from_stable_id(id));
         }
@@ -1425,6 +1560,9 @@ impl AppContext {
         if view.is::<Switch>() {
             return self.toggle_switch(Entity::from_stable_id(id));
         }
+        if view.is::<Progress>() {
+            return self.cancel_progress(Entity::from_stable_id(id));
+        }
         if view.is::<Tab>() {
             let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
                 return Ok(false);
@@ -1450,6 +1588,13 @@ impl AppContext {
                     Entity::from_stable_id(parent),
                     Entity::from_stable_id(id),
                 );
+            }
+            if self
+                .views
+                .get(&parent)
+                .is_some_and(|view| view.is::<Tabs>())
+            {
+                return self.activate_tabs_option(Entity::from_stable_id(parent), id);
             }
         }
         Ok(false)
@@ -1731,6 +1876,13 @@ impl AppContext {
         let Some(parent) = self.world.node(focused).and_then(|node| node.parent) else {
             return Ok(false);
         };
+        if self
+            .views
+            .get(&parent)
+            .is_some_and(|view| view.is::<Tabs>())
+        {
+            return self.navigate_tabs(Entity::from_stable_id(parent), intent);
+        }
         if !self
             .views
             .get(&parent)
@@ -1771,10 +1923,17 @@ impl AppContext {
         let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
             return false;
         };
-        self.views
+        if let Some(control) = self
+            .views
             .get(&parent)
             .and_then(|view| view.downcast_ref::<SegmentedControl>())
-            .is_some_and(|control| control.focus_target == Some(id))
+        {
+            return control.focus_target == Some(id);
+        }
+        self.views
+            .get(&parent)
+            .and_then(|view| view.downcast_ref::<Tabs>())
+            .is_some_and(|tabs| tabs.roving_target() == Some(id))
     }
 
     pub fn is_segmented_option_node(&self, id: StableNodeId) -> bool {
@@ -2334,6 +2493,9 @@ impl AppContext {
     }
 
     fn sync_component_lifecycle(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        if self.views.get(&id).is_some_and(|view| view.is::<Tabs>()) {
+            self.sync_tabs_options(Entity::from_stable_id(id))?;
+        }
         let tooltip = self
             .views
             .get(&id)
@@ -2768,20 +2930,50 @@ impl AppContext {
             let Some(parent) = self.world.node(target).and_then(|node| node.parent) else {
                 return Ok(false);
             };
-            let control = Entity::<SegmentedControl>::from_stable_id(parent);
-            let mut next = self.read(control, Clone::clone)?;
-            let target_changed = next.focus_target != Some(target);
-            let focus_changed = self.world.focused(document) != Some(target);
-            if !target_changed && !focus_changed {
-                return Ok(false);
+            if self
+                .views
+                .get(&parent)
+                .is_some_and(|view| view.is::<SegmentedControl>())
+            {
+                let control = Entity::<SegmentedControl>::from_stable_id(parent);
+                let mut next = self.read(control, Clone::clone)?;
+                let target_changed = next.focus_target != Some(target);
+                let focus_changed = self.world.focused(document) != Some(target);
+                if !target_changed && !focus_changed {
+                    return Ok(false);
+                }
+                next.focus_target = Some(target);
+                let mut mutations = MutationQueue::new();
+                next.project(parent, &self.world, &mut mutations);
+                mutations.request_focus(document, Some(target));
+                self.commit_mutations(mutations)?;
+                self.views.insert(parent, Box::new(next));
+                return Ok(true);
             }
-            next.focus_target = Some(target);
-            let mut mutations = MutationQueue::new();
-            next.project(parent, &self.world, &mut mutations);
-            mutations.request_focus(document, Some(target));
-            self.commit_mutations(mutations)?;
-            self.views.insert(parent, Box::new(next));
-            return Ok(true);
+            if self
+                .views
+                .get(&parent)
+                .is_some_and(|view| view.is::<Tabs>())
+            {
+                let tabs = Entity::<Tabs>::from_stable_id(parent);
+                let Some(value) = self.tabs_option_value(tabs, target)? else {
+                    return Ok(false);
+                };
+                let mut next = self.read(tabs, Clone::clone)?;
+                let target_changed = next.focus.as_ref() != Some(&value);
+                let focus_changed = self.world.focused(document) != Some(target);
+                if !target_changed && !focus_changed {
+                    return Ok(false);
+                }
+                next.focus = Some(value);
+                let mut mutations = MutationQueue::new();
+                next.project(parent, &self.world, &mut mutations);
+                mutations.request_focus(document, Some(target));
+                self.commit_mutations(mutations)?;
+                self.views.insert(parent, Box::new(next));
+                return Ok(true);
+            }
+            return Ok(false);
         }
         if self.world.focused(document) == Some(target) {
             return Ok(false);
@@ -2844,6 +3036,9 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
             return self.commit_editable_ime(entity, text);
         }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.commit_editable_ime(entity, text);
+        }
         Ok(false)
     }
 
@@ -2864,6 +3059,9 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
             return self.replace_editable_selection(entity, text);
         }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.replace_editable_selection(entity, text);
+        }
         Ok(false)
     }
 
@@ -2881,6 +3079,9 @@ impl AppContext {
             return self.delete_editable_backward(entity);
         }
         if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.delete_editable_backward(entity);
+        }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
             return self.delete_editable_backward(entity);
         }
         Ok(false)
@@ -2965,6 +3166,9 @@ impl AppContext {
                 if let Some(entity) = self.view_entity::<CommandPalette>(request.target) {
                     return self.set_editable_value(entity, value);
                 }
+                if let Some(entity) = self.view_entity::<ContextMenu>(request.target) {
+                    return self.set_editable_value(entity, value);
+                }
                 if self
                     .views
                     .get(&request.target)
@@ -3006,6 +3210,9 @@ impl AppContext {
                     return self.set_editable_selection(entity, selection);
                 }
                 if let Some(entity) = self.view_entity::<CommandPalette>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<ContextMenu>(request.target) {
                     return self.set_editable_selection(entity, selection);
                 }
                 Ok(false)
@@ -3809,6 +4016,9 @@ impl AppContext {
         if let Some(entity) = self.view_entity::<CommandPalette>(id) {
             return self.activate_command_palette_at(entity, x, y);
         }
+        if let Some(entity) = self.view_entity::<ContextMenu>(id) {
+            return self.activate_context_menu_at(entity, x, y);
+        }
         if let Some(entity) = self.view_entity::<TreeView>(id) {
             return self.activate_tree_at(entity, x, y);
         }
@@ -3879,6 +4089,38 @@ impl AppContext {
             if !menu.popover.open {
                 cx.emit(PopoverClosed);
             }
+            true
+        })
+    }
+
+    pub fn activate_context_menu_at(
+        &mut self,
+        entity: Entity<ContextMenu>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(geometry) = self.world.component_geometry(entity.id) else {
+            return Ok(false);
+        };
+        let Some(index) = crate::menus::context_menu_option_at(&geometry, x, y) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |menu, cx| {
+            if let Some(event) = menu.select_index(index) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn cancel_progress(&mut self, entity: Entity<Progress>) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |progress, cx| {
+            if !progress.cancellable {
+                return false;
+            }
+            cx.emit(ProgressCancelled);
             true
         })
     }
@@ -3970,6 +4212,276 @@ impl AppContext {
             cx.emit(TabSelected { tab: selected.id });
         })?;
         Ok(true)
+    }
+
+    /// Select one professional tab by application-owned value.
+    pub fn select_tabs_value(
+        &mut self,
+        entity: Entity<Tabs>,
+        value: impl AsRef<str>,
+    ) -> Result<bool, FrameworkError> {
+        let value = value.as_ref();
+        self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.select(value) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Activate the focused or selected tab on a professional strip.
+    pub fn activate_tabs(&mut self, entity: Entity<Tabs>) -> Result<bool, FrameworkError> {
+        let value = self.read(entity, |tabs| {
+            tabs.focus.clone().or_else(|| tabs.selected.clone())
+        })?;
+        let Some(value) = value else {
+            return Ok(false);
+        };
+        self.select_tabs_value(entity, value.as_ref())
+    }
+
+    fn activate_tabs_option(
+        &mut self,
+        entity: Entity<Tabs>,
+        option: StableNodeId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(value) = self.tabs_option_value(entity, option)? else {
+            return Ok(false);
+        };
+        let changed = self.select_tabs_value(entity, value.as_ref())?;
+        let document = self
+            .world
+            .node(entity.id)
+            .ok_or(FrameworkError::MissingView(entity.id))?
+            .document;
+        let _ = self.focus_node(document, option)?;
+        Ok(changed)
+    }
+
+    fn tabs_option_value(
+        &self,
+        entity: Entity<Tabs>,
+        option: StableNodeId,
+    ) -> Result<Option<Arc<str>>, FrameworkError> {
+        self.read(entity, |tabs| {
+            tabs.option_nodes()
+                .iter()
+                .find(|(_, id)| *id == option)
+                .map(|(value, _)| Arc::clone(value))
+        })
+    }
+
+    /// Painted option boxes after layout, when every child has a real box.
+    pub fn tabs_strip_paint(
+        &self,
+        entity: Entity<Tabs>,
+    ) -> Result<Option<nana_ui_core::TabStripPaint<Arc<str>>>, FrameworkError> {
+        self.read(entity, |tabs| {
+            tabs.strip_paint_from_layout(&self.world, entity.id)
+        })
+    }
+
+    fn sync_tabs_options(&mut self, entity: Entity<Tabs>) -> Result<(), FrameworkError> {
+        let tabs = self.read(entity, Clone::clone)?;
+        let node = self
+            .world
+            .node(entity.id)
+            .ok_or(FrameworkError::MissingView(entity.id))?;
+        let document = node.document;
+        let current_children = node.children.clone();
+
+        let mut unused = HashMap::<Arc<str>, VecDeque<StableNodeId>>::new();
+        for (value, id) in tabs.option_nodes() {
+            unused.entry(Arc::clone(value)).or_default().push_back(*id);
+        }
+
+        let mut next_nodes = Vec::with_capacity(tabs.options.len());
+        let mut created = Vec::new();
+        for option in &tabs.options {
+            let reusable = unused
+                .get_mut(&option.value)
+                .and_then(|ids| ids.pop_front())
+                .filter(|id| {
+                    self.world.node(*id).is_some_and(|node| {
+                        node.document == document
+                            && (node.parent == Some(entity.id)
+                                || (node.parent.is_none()
+                                    && self.world.mount_state(*id) == Some(MountState::Parked)))
+                    }) && self
+                        .views
+                        .get(id)
+                        .is_some_and(|view| view.is::<SegmentedOption>())
+                });
+            if let Some(id) = reusable {
+                next_nodes.push((Arc::clone(&option.value), id));
+            } else {
+                let id = self.allocate_id();
+                created.push((id, crate::tabs::tab_selection_option(option, &tabs)));
+                next_nodes.push((Arc::clone(&option.value), id));
+            }
+        }
+
+        let next_ids = next_nodes.iter().map(|(_, id)| *id).collect::<Vec<_>>();
+        let stale = current_children
+            .iter()
+            .copied()
+            .filter(|id| !next_ids.contains(id))
+            .collect::<Vec<_>>();
+        let created_ids = created.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
+
+        let mut options_dirty =
+            !created.is_empty() || current_children != next_ids || !stale.is_empty();
+        if !options_dirty {
+            for (option, (_, id)) in tabs.options.iter().zip(next_nodes.iter()) {
+                let current =
+                    self.read(Entity::<SegmentedOption>::from_stable_id(*id), Clone::clone)?;
+                if current != crate::tabs::tab_selection_option(option, &tabs) {
+                    options_dirty = true;
+                    break;
+                }
+            }
+        }
+        if !options_dirty && tabs.option_nodes() == next_nodes.as_slice() {
+            return Ok(());
+        }
+
+        let stale_subtrees = stale
+            .iter()
+            .map(|id| self.retained_subtree(*id))
+            .collect::<Vec<_>>();
+        let mut mutations = MutationQueue::new();
+        for id in &stale {
+            mutations.despawn_subtree(*id);
+        }
+        for (id, option) in &created {
+            mutations.create(*id, document, option.node_kind());
+            option.project(*id, &self.world, &mut mutations);
+        }
+        for id in &next_ids {
+            mutations.insert(entity.id, *id, None);
+        }
+
+        let mut staged_options = Vec::new();
+        for (option, (_, id)) in tabs.options.iter().zip(next_nodes.iter()) {
+            if created_ids.contains(id) {
+                continue;
+            }
+            let mut current =
+                self.read(Entity::<SegmentedOption>::from_stable_id(*id), Clone::clone)?;
+            let desired = crate::tabs::tab_selection_option(option, &tabs);
+            if current != desired {
+                current = desired;
+                current.project(*id, &self.world, &mut mutations);
+                staged_options.push((*id, current));
+            }
+        }
+
+        self.commit_mutations(mutations)?;
+        let mut removed = HashSet::new();
+        for subtree in stale_subtrees {
+            for id in subtree {
+                removed.insert(id);
+                self.views.remove(&id);
+                self.component_lifecycle.tooltips.remove(&id);
+                self.component_lifecycle.loading.remove(&id);
+            }
+        }
+        self.remove_event_handlers_for(&removed);
+        for (id, option) in created {
+            self.views.insert(id, Box::new(option));
+        }
+        for (id, option) in staged_options {
+            self.views.insert(id, Box::new(option));
+        }
+        if let Some(tabs) = self
+            .views
+            .get_mut(&entity.id)
+            .and_then(|view| view.downcast_mut::<Tabs>())
+        {
+            tabs.option_nodes = next_nodes;
+        }
+        Ok(())
+    }
+
+    /// Move a tab so it sits before `before`. `None` appends it to the end.
+    pub fn reorder_tabs(
+        &mut self,
+        entity: Entity<Tabs>,
+        value: impl AsRef<str>,
+        before: Option<&str>,
+    ) -> Result<bool, FrameworkError> {
+        let value = value.as_ref();
+        self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.reorder(value, before) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Request that the application close a tab. The strip is not mutated.
+    pub fn close_tab(
+        &mut self,
+        entity: Entity<Tabs>,
+        value: impl AsRef<str>,
+    ) -> Result<bool, FrameworkError> {
+        let value = value.as_ref();
+        self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.request_close(value) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Report a cross-strip transfer. Application code applies both strips.
+    pub fn transfer_tab(
+        &mut self,
+        source: Entity<Tabs>,
+        target_strip: impl AsRef<str>,
+        value: impl AsRef<str>,
+        before: Option<&str>,
+    ) -> Result<bool, FrameworkError> {
+        let target_strip = target_strip.as_ref();
+        let value = value.as_ref();
+        self.update_component(source, |tabs, cx| {
+            if let Some(event) = tabs.transfer_to(target_strip, value, before) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn navigate_tabs(
+        &mut self,
+        entity: Entity<Tabs>,
+        intent: crate::RovingFocusIntent,
+    ) -> Result<bool, FrameworkError> {
+        let changed = self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.navigate(intent) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })?;
+        if let Some(target) = self.read(entity, Tabs::roving_target)? {
+            let document = self
+                .world
+                .node(entity.id)
+                .ok_or(FrameworkError::MissingView(entity.id))?
+                .document;
+            let _ = self.focus_node(document, target)?;
+        }
+        Ok(changed)
     }
 
     pub fn scroll_to(

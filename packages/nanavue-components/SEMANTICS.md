@@ -50,7 +50,9 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 | `#text` / `span` / `p` / `h*` | Text | iced text |
 | `li` | ListItem | `ListItem` |
 | class `card` / `nana-card` | Card | `Card` |
-| `nana-select` / `<select>` | Select | `nana_ui::Select` |
+| `nana-select` / `<select>` | Select | Runtime `Select` |
+| `nana-dropdown` | Select (`nana-dropdown`) | Runtime `Dropdown` |
+| `nana-search` | Select (`nana-search`) | Runtime `SearchDropdown` |
 | `nana-textarea` / `<textarea>` | Textarea | `Textarea` + EditorStore |
 | `nana-dialog` / role=dialog | Dialog | `Dialog`（`open`/`active`） |
 | `nana-dialog` + role=alertdialog / class confirm | Dialog | `ConfirmDialog` |

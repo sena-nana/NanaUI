@@ -1167,6 +1167,7 @@ impl UiScene {
                     track,
                     fill,
                     label,
+                    cancel,
                     corner_radius,
                 }) => {
                     if let Some(label) = label {
@@ -1219,6 +1220,26 @@ impl UiScene {
                             corner_radius: *corner_radius,
                         },
                     ));
+                    if let Some(cancel) = cancel {
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            5,
+                            &ComponentTextRegion {
+                                bounds: *cancel,
+                                content: Arc::from("×"),
+                                color: node.style.color,
+                                font_size: 15.0,
+                                font_weight: None,
+                            },
+                            TextHorizontalAlignment::Center,
+                            false,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
                 }
                 Some(ComponentGeometry::FormField {
                     label,
@@ -1870,6 +1891,9 @@ impl UiScene {
                 Some(ComponentGeometry::MenuSurface {
                     trigger,
                     surface,
+                    search,
+                    search_field,
+                    options,
                     elevation,
                     background,
                     border,
@@ -1906,6 +1930,74 @@ impl UiScene {
                                 shadow: Some(*elevation),
                             },
                         });
+                    }
+                    if let Some(field) = search_field {
+                        self.insert_primitive(visual_quad(
+                            &VisualPrimitiveContext {
+                                node: id,
+                                transform,
+                                clips: &clips,
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                            },
+                            3,
+                            scene_rect(*field),
+                            VisualQuadStyle {
+                                background: Some(*background),
+                                border_color: Some(*border),
+                                border_width: 1.0,
+                                corner_radius: UI_METRICS.radius_sm,
+                            },
+                        ));
+                    }
+                    if let Some(search) = search {
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            4,
+                            search,
+                            TextHorizontalAlignment::Start,
+                            true,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
+                    for (index, option) in options.iter().enumerate() {
+                        if let Some(background) = option.background {
+                            self.insert_primitive(visual_quad(
+                                &VisualPrimitiveContext {
+                                    node: id,
+                                    transform,
+                                    clips: &clips,
+                                    opacity,
+                                    z_index: node.z_index,
+                                    document_order: node_order,
+                                },
+                                10u8.saturating_add(index as u8),
+                                scene_rect(option.bounds),
+                                VisualQuadStyle {
+                                    background: Some(background),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: UI_METRICS.radius_sm,
+                                },
+                            ));
+                        }
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            40u8.saturating_add(index as u8),
+                            &option.label,
+                            TextHorizontalAlignment::Start,
+                            true,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
                     }
                 }
                 Some(ComponentGeometry::Card { title: None, .. })

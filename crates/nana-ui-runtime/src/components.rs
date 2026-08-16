@@ -173,6 +173,7 @@ pub enum StandardVisual {
     Progress {
         value_ratio: f32,
         label: Option<Arc<str>>,
+        cancellable: bool,
     },
     Spinner {
         label: Arc<str>,
@@ -223,6 +224,9 @@ pub enum StandardVisual {
         kind: MenuSurfaceKind,
         trigger: Option<Arc<str>>,
         gap: f32,
+        query: Option<Arc<str>>,
+        rows: Arc<[SelectOptionData]>,
+        highlighted: Option<usize>,
     },
     ActionMenuItem {
         label: Arc<str>,
@@ -370,6 +374,7 @@ pub enum ComponentGeometry {
         track: LayoutBox,
         fill: LayoutBox,
         label: Option<ComponentTextRegion>,
+        cancel: Option<LayoutBox>,
         corner_radius: f32,
     },
     FormField {
@@ -412,6 +417,9 @@ pub enum ComponentGeometry {
     MenuSurface {
         trigger: Option<ComponentTextRegion>,
         surface: LayoutBox,
+        search: Option<ComponentTextRegion>,
+        search_field: Option<LayoutBox>,
+        options: Vec<SelectOptionGeometry>,
         elevation: ComponentElevation,
         background: [f32; 4],
         border: [f32; 4],

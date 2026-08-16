@@ -28,6 +28,8 @@ use nana_ui_runtime::{
     Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome,
+    SettingsCard as RuntimeSettingsCard, SettingsRow as RuntimeSettingsRow,
+    SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
     Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, StableNodeId,
     StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextArea as RuntimeTextArea,
     TextContent, TextInput as RuntimeTextInput, TextInputState, Toast as RuntimeToast,
@@ -679,7 +681,10 @@ impl NanaTreeDocument {
             // propagation and commit work for large component trees.
             if !matches!(
                 widget.kind,
-                crate::WidgetKind::Input | crate::WidgetKind::Textarea
+                crate::WidgetKind::Input
+                    | crate::WidgetKind::Textarea
+                    | crate::WidgetKind::ContextMenu
+                    | crate::WidgetKind::Select
             ) && matches!(
                 widget.kind,
                 crate::WidgetKind::Button
@@ -698,6 +703,10 @@ impl NanaTreeDocument {
                     | crate::WidgetKind::Spinner
                     | crate::WidgetKind::FormField
                     | crate::WidgetKind::InteractiveCard
+                    | crate::WidgetKind::SidebarFrame
+                    | crate::WidgetKind::SidebarRow
+                    | crate::WidgetKind::SettingsRow
+                    | crate::WidgetKind::SettingsCard
                     | crate::WidgetKind::Skeleton
                     | crate::WidgetKind::LevelMeter
                     | crate::WidgetKind::Select
@@ -1912,6 +1921,15 @@ impl NanaTreeDocument {
     }
 }
 
+fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
+    widget.props.attrs.get("data-slot").map(String::as_str) == Some("sidebar-body")
+        || widget
+            .props
+            .class_names
+            .iter()
+            .any(|class| class.contains("nana-sidebar-frame__body"))
+}
+
 fn project_migrating_component(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
@@ -2018,26 +2036,88 @@ fn project_migrating_component(
             true
         }
         crate::WidgetKind::Select => {
-            let value = (!widget.props.value.is_empty()).then_some(widget.props.value.as_str());
-            let mut component = RuntimeSelect::new(value)
-                .options(widget.props.options.iter().map(|option| {
-                    RuntimeSelectOption::new(option.value.as_str(), option.label.as_str())
-                        .disabled(option.disabled)
-                }))
-                .size(widget.props.size)
-                .disabled(widget.props.disabled)
-                .loading(widget.props.loading)
-                .invalid(widget.props.invalid)
-                .opened(widget.props.active || widget.props.toggled);
             let placeholder = if widget.props.placeholder.is_empty() {
                 widget.props.hint.as_str()
             } else {
                 widget.props.placeholder.as_str()
             };
-            if !placeholder.is_empty() {
-                component = component.placeholder(Arc::<str>::from(placeholder));
+            if crate::widget_map::is_search_dropdown(&widget.props) {
+                let value = (!widget.props.value.is_empty()).then_some(widget.props.value.as_str());
+                let query = world
+                    .text_input(id)
+                    .map(|state| state.value.clone())
+                    .unwrap_or_default();
+                let mut component = nana_ui_runtime::SearchDropdown::new(value)
+                    .options(widget.props.options.iter().map(|option| {
+                        nana_ui_runtime::SearchDropdownOption::new(
+                            option.value.as_str(),
+                            option.label.as_str(),
+                        )
+                    }))
+                    .query(query)
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .opened(widget.props.active || widget.props.toggled);
+                if !placeholder.is_empty() {
+                    component = component.placeholder(Arc::<str>::from(placeholder));
+                }
+                component.project(id, world, mutations);
+            } else if crate::widget_map::is_dropdown_field(&widget.props) {
+                let multiple = widget.props.attrs.contains_key("multiple");
+                let mut component = if multiple {
+                    let values = if widget.props.value.is_empty() {
+                        Vec::new()
+                    } else {
+                        widget
+                            .props
+                            .value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .collect::<Vec<_>>()
+                    };
+                    nana_ui_runtime::Dropdown::multiple(values)
+                } else {
+                    nana_ui_runtime::Dropdown::single(
+                        (!widget.props.value.is_empty()).then_some(widget.props.value.as_str()),
+                    )
+                };
+                component = component
+                    .options(widget.props.options.iter().map(|option| {
+                        nana_ui_runtime::DropdownOption::new(
+                            option.value.as_str(),
+                            option.label.as_str(),
+                        )
+                        .disabled(option.disabled)
+                    }))
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .opened(widget.props.active || widget.props.toggled);
+                if !placeholder.is_empty() {
+                    component = component.placeholder(Arc::<str>::from(placeholder));
+                }
+                component.project(id, world, mutations);
+            } else {
+                let value = (!widget.props.value.is_empty()).then_some(widget.props.value.as_str());
+                let mut component = RuntimeSelect::new(value)
+                    .options(widget.props.options.iter().map(|option| {
+                        RuntimeSelectOption::new(option.value.as_str(), option.label.as_str())
+                            .disabled(option.disabled)
+                    }))
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .opened(widget.props.active || widget.props.toggled);
+                if !placeholder.is_empty() {
+                    component = component.placeholder(Arc::<str>::from(placeholder));
+                }
+                component.project(id, world, mutations);
             }
-            component.project(id, world, mutations);
             true
         }
         crate::WidgetKind::Dialog => {
@@ -2084,14 +2164,26 @@ fn project_migrating_component(
             true
         }
         crate::WidgetKind::ContextMenu => {
-            let query = crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
-                .unwrap_or("");
             let searchable = widget.props.options.len() >= 6
                 || widget
                     .props
                     .class_names
                     .iter()
                     .any(|class| class.contains("search"));
+            let query = if searchable {
+                world
+                    .text_input(id)
+                    .map(|state| state.value.clone())
+                    .or_else(|| {
+                        crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default()
+            } else {
+                crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
+                    .unwrap_or("")
+                    .to_string()
+            };
             RuntimeContextMenu::new(widget.props.anchor_x, widget.props.anchor_y)
                 .items(widget.props.options.iter().map(|option| {
                     RuntimeContextMenuItem::new(option.value.as_str(), option.label.as_str())
@@ -2397,6 +2489,8 @@ fn project_migrating_component(
             if !label.is_empty() {
                 component = component.label(Arc::<str>::from(label));
             }
+            component =
+                component.cancellable(crate::widget_map::progress_cancellable(&widget.props));
             component.project(id, world, mutations);
             true
         }
@@ -2427,6 +2521,113 @@ fn project_migrating_component(
                 .selected(widget.props.active)
                 .disabled(widget.props.disabled)
                 .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Column | crate::WidgetKind::Box if is_sidebar_frame_body(widget) => {
+            RuntimeSidebarFrame::scroll_body(widget.props.layout.clone())
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SidebarFrame => {
+            let (top, body, footer) = crate::widget_map::sidebar_frame_slots(snapshot, widget);
+            let mut component = RuntimeSidebarFrame::new().gap(widget.props.layout.gap_or(14.0));
+            if let Some(top) = top.and_then(StableNodeId::new) {
+                component = component.top(top);
+            }
+            if let Some(body) = body.and_then(StableNodeId::new) {
+                component = component.body(body);
+            }
+            if let Some(footer) = footer.and_then(StableNodeId::new) {
+                component = component.footer(footer);
+            }
+            component.style.layout = Arc::new(widget.props.layout.clone());
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SidebarRow => {
+            let slot = |name: &str| {
+                widget.children.iter().find_map(|child| {
+                    let child = snapshot.get(*child)?;
+                    (child.props.attrs.get("data-slot").map(String::as_str) == Some(name))
+                        .then(|| StableNodeId::new(child.id))
+                        .flatten()
+                })
+            };
+            let leading = slot("leading").or_else(|| slot("list-item-leading"));
+            let trailing = slot("trailing").or_else(|| slot("list-item-trailing"));
+            let content = slot("content")
+                .or_else(|| slot("list-item-content"))
+                .or_else(|| {
+                    widget.children.iter().find_map(|child| {
+                        let child_id = StableNodeId::new(*child)?;
+                        (Some(child_id) != leading && Some(child_id) != trailing)
+                            .then_some(child_id)
+                    })
+                });
+            let mut component = RuntimeSidebarRow::new(widget.props.display_label())
+                .slots(ListItemSlots {
+                    leading,
+                    content,
+                    trailing,
+                })
+                .gap(widget.props.layout.gap_or(6.0))
+                .size(widget.props.size)
+                .state(crate::widget_map::sidebar_row_state(&widget.props))
+                .tone(crate::widget_map::sidebar_row_tone(&widget.props))
+                .depth(crate::widget_map::sidebar_row_depth(&widget.props));
+            if let Some(expanded) = crate::widget_map::attr_value(
+                &widget.props,
+                &["expanded", "data-expanded", "disclosure"],
+            )
+            .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => Some(true),
+                "false" | "0" | "no" => Some(false),
+                _ => None,
+            }) {
+                component = component.disclosure(expanded);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SettingsRow => {
+            let (stacked, divided, loose, first, last) =
+                crate::widget_map::settings_row_flags(&widget.props);
+            let mut component = RuntimeSettingsRow::new(widget.props.display_label())
+                .stacked(stacked)
+                .divided(divided)
+                .loose(loose);
+            if !widget.props.hint.is_empty() {
+                component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            if first {
+                component = component.first_in_group();
+            }
+            if last {
+                component = component.last_in_group();
+            }
+            if let Some(control) =
+                crate::widget_map::settings_row_control_child_id(snapshot, widget)
+                    .and_then(StableNodeId::new)
+            {
+                component = component.control_child(control);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SettingsCard => {
+            let mut component = RuntimeSettingsCard::new(widget.props.display_label());
+            let has_title_child = widget.children.iter().any(|child| {
+                snapshot.get(*child).is_some_and(|child| {
+                    child.props.class_names.iter().any(|class| {
+                        class.contains("nana-settings-card__title")
+                            || class.contains("settings-card__title")
+                    })
+                })
+            });
+            if has_title_child {
+                component.title = Arc::from("");
+            }
+            component.project(id, world, mutations);
             true
         }
         crate::WidgetKind::Skeleton => {
@@ -4010,6 +4211,78 @@ mod tests {
         snapshot.theme = nana_ui_core::ThemeMode::Dark;
         doc.sync_semantic_styles(&snapshot);
         assert_eq!(doc.runtime.theme_mode(), nana_ui_core::ThemeMode::Dark);
+    }
+
+    #[test]
+    fn sidebar_frame_body_projects_as_vertical_scroll_view() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let frame = doc.create_element("nana-sidebar-frame");
+        let top = doc.create_element("nana-column");
+        let body = doc.create_element("nana-column");
+        let footer = doc.create_element("nana-column");
+        doc.insert(frame, doc.mount_root(), None);
+        doc.insert(top, frame, None);
+        doc.insert(body, frame, None);
+        doc.insert(footer, frame, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut frame_props = crate::WidgetProps::default();
+        frame_props.class_names = vec!["nana-sidebar-frame".into()];
+        bridge.register(frame.0, crate::WidgetKind::SidebarFrame, frame_props);
+        let mut top_props = crate::WidgetProps::default();
+        top_props.class_names = vec!["nana-sidebar-frame__top".into()];
+        top_props
+            .attrs
+            .insert("data-slot".into(), "sidebar-top".into());
+        bridge.register(top.0, crate::WidgetKind::Column, top_props);
+        let mut body_props = crate::WidgetProps::default();
+        body_props.class_names = vec!["nana-sidebar-frame__body".into()];
+        body_props
+            .attrs
+            .insert("data-slot".into(), "sidebar-body".into());
+        bridge.register(body.0, crate::WidgetKind::Column, body_props);
+        let mut footer_props = crate::WidgetProps::default();
+        footer_props.class_names = vec!["nana-sidebar-frame__footer".into()];
+        footer_props
+            .attrs
+            .insert("data-slot".into(), "sidebar-footer".into());
+        bridge.register(footer.0, crate::WidgetKind::Column, footer_props);
+        bridge.insert_child(top.0, frame.0, None);
+        bridge.insert_child(body.0, frame.0, None);
+        bridge.insert_child(footer.0, frame.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let body_id = StableNodeId::try_from(body).unwrap();
+        let top_id = StableNodeId::try_from(top).unwrap();
+        let footer_id = StableNodeId::try_from(footer).unwrap();
+        assert_eq!(
+            doc.runtime.node_style(body_id).unwrap().layout.overflow_y,
+            nana_ui_core::OverflowSpec::Scroll
+        );
+        assert!(
+            doc.runtime
+                .node_style(body_id)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert!(doc.runtime.interaction(body_id).unwrap().pointer_events);
+        assert!(
+            !doc.runtime
+                .node_style(top_id)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert!(
+            !doc.runtime
+                .node_style(footer_id)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
     }
 
     #[test]

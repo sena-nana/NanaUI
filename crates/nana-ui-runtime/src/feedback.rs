@@ -453,6 +453,7 @@ impl ComponentView for LabeledValue {
 const PROGRESS_GIRTH: f32 = 6.0;
 const PROGRESS_LABEL_SIZE: f32 = 12.0;
 const PROGRESS_GAP: f32 = 6.0;
+const PROGRESS_CANCEL_SIZE: f32 = 24.0;
 const SPINNER_DEFAULT_SIZE: f32 = 14.0;
 const SPINNER_LABEL_SIZE: f32 = 12.0;
 const SPINNER_GAP: f32 = 6.0;
@@ -473,14 +474,19 @@ fn sanitize_spinner_size(size: f32) -> f32 {
     }
 }
 
+/// Cancel request from a cancellable progress control. Progress does not own a timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressCancelled;
+
 /// Determinate progress track (Subtle rail, Accent fill, 6px girth).
 ///
-/// Cancel is not part of this pass; compose a later overlay or button child.
+/// Optional cancel is a real hit target, matching the Iced compatibility control.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Progress {
     pub value: f64,
     pub max: f64,
     pub label: Option<Arc<str>>,
+    pub cancellable: bool,
     pub style: NodeStyle,
 }
 
@@ -490,12 +496,18 @@ impl Progress {
             value,
             max: sanitize_progress_max(max),
             label: None,
+            cancellable: false,
             style: NodeStyle::default(),
         }
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    pub fn cancellable(mut self, cancellable: bool) -> Self {
+        self.cancellable = cancellable;
         self
     }
 
@@ -526,6 +538,18 @@ impl Progress {
         }
     }
 
+    fn heading_height(&self) -> f32 {
+        if self.label.is_some() || self.cancellable {
+            PROGRESS_LABEL_SIZE.max(if self.cancellable {
+                PROGRESS_CANCEL_SIZE
+            } else {
+                0.0
+            })
+        } else {
+            0.0
+        }
+    }
+
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
@@ -533,8 +557,9 @@ impl Progress {
         style.border = None;
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(if self.label.is_some() {
-            PROGRESS_LABEL_SIZE + PROGRESS_GAP + PROGRESS_GIRTH
+        let heading = self.heading_height();
+        layout.height = Some(LengthSpec::Px(if heading > 0.0 {
+            heading + PROGRESS_GAP + PROGRESS_GIRTH
         } else {
             PROGRESS_GIRTH
         }));
@@ -574,6 +599,7 @@ impl ComponentView for Progress {
             StandardVisual::Progress {
                 value_ratio: ratio,
                 label: self.label.clone(),
+                cancellable: self.cancellable,
             },
             AccessibilityState {
                 role: AccessibilityRole::ProgressIndicator,
@@ -585,6 +611,13 @@ impl ComponentView for Progress {
                 ..AccessibilityState::default()
             },
         );
+        let interaction = InteractionState {
+            pointer_events: self.cancellable,
+            focusable: self.cancellable,
+        };
+        if world.interaction(id) != Some(interaction) {
+            mutations.set_interaction(id, interaction);
+        }
     }
 }
 
@@ -697,7 +730,9 @@ impl ComponentView for Spinner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, Button, DocumentId, FrameworkError, StandardVisual};
+    use crate::{
+        AppContext, Button, DocumentId, FrameworkError, ProgressCancelled, StandardVisual,
+    };
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use unicode_segmentation::UnicodeSegmentation;
@@ -1672,6 +1707,45 @@ mod tests {
         layout(&mut context, id, 100.0, 6.0);
         let (track, fill) = progress_fill_width(&context, id);
         assert_eq!(fill, track);
+    }
+
+    #[test]
+    fn progress_cancellable_reserves_cancel_hit_target() {
+        let mut context = AppContext::new();
+        let progress = context
+            .create_component(
+                document(),
+                Progress::new(40.0, 100.0)
+                    .label("Copying")
+                    .cancellable(true),
+            )
+            .unwrap();
+        let id = progress.stable_id();
+        layout(&mut context, id, 160.0, 36.0);
+        let crate::ComponentGeometry::Progress {
+            cancel: Some(cancel),
+            label: Some(label),
+            ..
+        } = context.world().component_geometry(id).unwrap()
+        else {
+            panic!("cancellable progress geometry");
+        };
+        assert!(cancel.width > 0.0);
+        assert!(label.bounds.width < 160.0);
+        assert!(context.world().interaction(id).unwrap().pointer_events);
+
+        let cancelled = Arc::new(Mutex::new(false));
+        let flag = Arc::clone(&cancelled);
+        context
+            .on(
+                progress,
+                move |_progress, _event: &ProgressCancelled, _cx| {
+                    *flag.lock().unwrap() = true;
+                },
+            )
+            .unwrap();
+        assert!(context.cancel_progress(progress).unwrap());
+        assert!(*cancelled.lock().unwrap());
     }
 
     #[test]

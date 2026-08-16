@@ -15,7 +15,7 @@ use nana_ui::compatibility::{
     IconButton as UiIconButton, Input as UiInput, InteractiveCard as UiInteractiveCard,
     ListItem as UiListItem, Popover as UiPopover, Progress as UiProgress,
     RangeField as UiRangeField, SegmentedControl as UiSegmentedControl, Switch as UiSwitch,
-    Textarea as UiTextarea, Tooltip as UiTooltip, XYPad as UiXYPad,
+    Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip, XYPad as UiXYPad,
 };
 use nana_ui::compatibility::{
     CommandPalette as UiCommandPalette, Dropdown as UiDropdown, DropdownOption,
@@ -28,8 +28,8 @@ use nana_ui::components::{
     CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapOptions,
     CommandPaletteEvent, CommandPaletteItem, ContextMenuAnchor, ContextMenuEvent, ContextMenuHost,
     ContextMenuItem, ContextMenuTrigger, ControlSize, DropdownEvent, ImageViewer as UiImageViewer,
-    ImageViewerSource, NativeMarkdown, SelectionOption, SettingsCollapsibleCard, Tabs as UiTabs,
-    TreeNode, TreeViewEvent, XYPadEvent, XYPadValue,
+    ImageViewerSource, NativeMarkdown, SelectionOption, SettingsCollapsibleCard, TreeNode,
+    TreeViewEvent, XYPadEvent, XYPadValue,
 };
 use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 use nana_ui::icons::{Icon, icon, status_indicator};

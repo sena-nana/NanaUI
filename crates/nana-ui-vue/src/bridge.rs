@@ -78,9 +78,8 @@ pub enum WidgetKind {
     Drawer,
     /// Anchored popover → `nana_ui::Popover`.
     Popover,
-    /// Context menu → OverlayHost + ContextMenuHost when [`crate::MenuStore`] is
-    /// prepared (`anchor-x` / `anchor-y`, search when ≥6 options or `search` class;
-    /// nested via `parent/child` option values). Falls back to AnchoredActionMenu.
+    /// Context menu → Runtime `ContextMenu` (`anchor-x` / `anchor-y`, search
+    /// when ≥6 options or `search` class; nested via `parent/child` values).
     ContextMenu,
     /// Outlined notification → Runtime `Toast`.
     Toast,
@@ -112,7 +111,8 @@ impl WidgetKind {
             "textarea" => Self::Textarea,
             "checkbox" | "check" => Self::Checkbox,
             "switch" | "toggle" => Self::Switch,
-            "select" | "pick-list" | "picklist" => Self::Select,
+            "select" | "pick-list" | "picklist" | "dropdown" => Self::Select,
+            "search" | "search-dropdown" | "searchdropdown" => Self::Select,
             "tabs" | "tab-list" | "tablist" => Self::Tabs,
             "segmented" | "segmented-control" => Self::Segmented,
             "range" | "range-field" | "slider" => Self::Range,
@@ -903,6 +903,13 @@ impl WidgetProps {
                     self.attrs.insert("hidden".into(), String::new());
                 } else {
                     self.attrs.remove("hidden");
+                }
+            }
+            "multiple" => {
+                if host_truthy(value) {
+                    self.attrs.insert("multiple".into(), String::new());
+                } else {
+                    self.attrs.remove("multiple");
                 }
             }
             other => {
