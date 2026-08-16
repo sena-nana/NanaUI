@@ -607,17 +607,17 @@ mod tests {
             Some(nana_ui::component_ids::SIDEBAR_FRAME)
         );
         assert!(
-            !nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME),
-            "sidebar-frame stays Candidate until catalog qualification"
+            nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME),
+            "sidebar-frame Scene default-routing follows catalog qualification"
         );
         let scene = UiScene::new();
         with_active_scene(Some(&scene), || {
             assert!(
                 matches!(
                     qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(4).unwrap()),
-                    QualifiedSceneRoute::Compatibility
+                    QualifiedSceneRoute::Pending
                 ),
-                "SidebarFrame must not Scene-paint until catalog qualifies"
+                "empty UiScene has no node bounds, so qualified SidebarFrame stays Pending"
             );
         });
     }

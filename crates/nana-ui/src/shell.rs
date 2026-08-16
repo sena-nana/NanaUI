@@ -3,11 +3,11 @@ use iced::{Alignment, Element, Length, Padding, font};
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use crate::compatibility::SidebarFrame;
 use crate::components::ControlSize;
 use crate::geometry::TITLE_BAR_HEIGHT;
 use crate::icons::{Icon, icon};
 use crate::layout::RegionId;
-use crate::sidebar::SidebarFrame;
 use crate::theme::{Colors, ThemeMode, ThemeTokens, tracked_label};
 use crate::widgets::{ButtonKind, button_style};
 use crate::window_chrome::{

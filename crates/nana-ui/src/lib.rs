@@ -102,6 +102,10 @@ pub mod compatibility {
         Dropdown, DropdownEvent, DropdownOption, DropdownSelection, SearchDropdown,
         SearchDropdownOption, SearchDropdownState,
     };
+    #[cfg(feature = "settings-components")]
+    pub use crate::components::settings_sections::{
+        AboutMetadata, AboutSection, AppearanceSection, SettingsCollapsibleCard,
+    };
     #[cfg(feature = "surfaces")]
     pub use crate::components::surfaces::{
         Card, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
@@ -168,12 +172,8 @@ pub use components::rich_text::{
     MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
     MarkdownTableAlignment, NativeMarkdown, native_markdown,
 };
-pub use nana_ui_core::{CommandPaletteEvent, CommandPaletteItem};
+pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
 
-#[cfg(feature = "settings-components")]
-pub use components::settings_sections::{
-    AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
-};
 #[cfg(feature = "surfaces")]
 pub use components::surfaces::DockPanel;
 
@@ -244,18 +244,21 @@ pub use nana_ui_core::{XYPadEvent, XYPadValue};
 pub use nana_ui_platform::ImeEvent;
 pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::{
-    AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
+    AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppearanceSection,
+    Button, Card, Checkbox, CommandPalette, ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown,
+    DropdownEvent, DropdownOption, DropdownSelection, EmptyState, FormField, IconButton,
+    InteractiveCard, LabeledValue, LevelMeter, ListItem, OverlayHost, Popover, Progress,
+    ProgressCancelled, QrCode, QrCodeError, RangeField, SearchDropdown, SearchDropdownEvent,
+    SearchDropdownOption, SegmentedControl, Select, SelectOption, SettingsCard,
+    SettingsCollapsibleCard, SettingsRow, SidebarFooter, SidebarFooterButton, SidebarFrame,
+    SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, SidebarSectionSlots,
+    SidebarSectionState, Skeleton, Spinner, StatusBadge, Switch, TabDragGroup, TabDragLease,
+    TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Toast, Tooltip,
+    TreeNavigation, TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad,
+    tree_navigation_event,
 };
 pub use nana_ui_runtime::{
-    ActionMenu, ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, CommandPalette,
-    ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown, DropdownEvent, DropdownOption,
-    DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard, LabeledValue,
-    LevelMeter, ListItem, OverlayHost, Popover, Progress, ProgressCancelled, QrCode, QrCodeError,
-    RangeField, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
-    Select, SelectOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone,
-    Skeleton, Spinner, StatusBadge, Switch, TabDragGroup, TabDragLease, TabDragSurface, TabOption,
-    Tabs, TabsEvent, Text, TextArea, TextInput, Toast, Tooltip, TreeNavigation, TreeNode, TreeView,
-    TreeViewEvent, ValidationMessage, XYPad, tree_navigation_event,
+    AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
@@ -291,9 +294,6 @@ pub use settings::{
 };
 pub use shell::{
     AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame, app_shell, app_title_bar,
-};
-pub use sidebar::{
-    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarSection, SidebarSectionState,
 };
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController, split_pane};
 pub use theme::{

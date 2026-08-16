@@ -106,6 +106,11 @@ impl SettingsRow {
         self
     }
 
+    pub fn copy_slot(mut self, copy: StableNodeId) -> Self {
+        self.copy_slot = Some(copy);
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self

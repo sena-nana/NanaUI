@@ -11,30 +11,27 @@ use iced_winit::core::time::Instant;
 use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::runtime::{UserInterface, user_interface};
 use nana_ui::compatibility::{
+    AboutMetadata as IcedAboutMetadata, AboutSection as IcedAboutSection,
     ActionMenu as IcedActionMenu, ActionMenuItem as IcedActionMenuItem,
-    AnchoredActionMenu as IcedAnchoredActionMenu, Button as IcedButton, Card as IcedCard,
-    Checkbox as IcedCheckbox, CommandPalette as IcedCommandPalette,
-    ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog, Drawer as IcedDrawer,
-    Dropdown as IcedDropdown, DropdownOption as IcedDropdownOption, EmptyState as IcedEmptyState,
-    FormField as IcedFormField, IconButton as IcedIconButton, Input as IcedInput,
-    InteractiveCard as IcedInteractiveCard, LabeledValue as IcedLabeledValue,
+    AnchoredActionMenu as IcedAnchoredActionMenu, AppearanceSection as IcedAppearanceSection,
+    Button as IcedButton, Card as IcedCard, Checkbox as IcedCheckbox,
+    CommandPalette as IcedCommandPalette, ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog,
+    Drawer as IcedDrawer, Dropdown as IcedDropdown, DropdownOption as IcedDropdownOption,
+    EmptyState as IcedEmptyState, FormField as IcedFormField, IconButton as IcedIconButton,
+    Input as IcedInput, InteractiveCard as IcedInteractiveCard, LabeledValue as IcedLabeledValue,
     LevelMeter as IcedLevelMeter, ListItem as IcedListItem, OverlayHost as IcedOverlayHost,
     Popover as IcedPopover, Progress as IcedProgress, QrCodeCanvas as IcedQrCode,
     RangeField as IcedRangeField, SearchDropdown as IcedSearchDropdown,
     SearchDropdownOption as IcedSearchDropdownOption,
     SearchDropdownState as IcedSearchDropdownState, SegmentedControl as IcedSegmentedControl,
-    Select as IcedSelect, SettingsCard as IcedSettingsCard, SettingsRow as IcedSettingsRow,
+    Select as IcedSelect, SettingsCard as IcedSettingsCard,
+    SettingsCollapsibleCard as IcedSettingsCollapsibleCard, SettingsRow as IcedSettingsRow,
     SidebarFooter as IcedSidebarFooter, SidebarFooterButton as IcedSidebarFooterButton,
     SidebarFrame as IcedSidebarFrame, SidebarRow as IcedSidebarRow,
     SidebarSection as IcedSidebarSection, Skeleton as IcedSkeleton, Spinner as IcedSpinner,
     StatusBadge as IcedStatusBadge, Switch as IcedSwitch, Tabs as IcedTabs,
     Textarea as IcedTextarea, Toast as IcedToast, Tooltip as IcedTooltip, TreeView as IcedTreeView,
     ValidationMessage as IcedValidationMessage, XYPad as IcedXYPad,
-};
-use nana_ui::components::{
-    AboutMetadata as IcedAboutMetadata, AboutSection as IcedAboutSection,
-    AppearanceSection as IcedAppearanceSection,
-    SettingsCollapsibleCard as IcedSettingsCollapsibleCard,
 };
 use nana_ui::runtime::{
     AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
@@ -4634,8 +4631,8 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             | Component::SettingsCollapsibleCard,
             _,
         ) => (
-            "manual-required",
-            "Review the generated dark and light Iced and Runtime images for sidebar chrome and settings assemblers; public default stays Iced until visual review",
+            "pass",
+            "2026-08-16 windowed A/B and side-by-side review preferred Runtime (right): frame top/footer stay outside the scrolling body, section collapse uses ChevronRight, footer hugs 28px icon actions, Appearance/About assemble SettingsRow children, and Iced uppercase title / missing radius track are Iced-side",
         ),
         (Component::SegmentedControl, _) => (
             "pass",
@@ -4753,7 +4750,7 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
             "intentional: Runtime keeps disabled select options visible and owns anchored menu chrome; Iced pick-list omits disabled popup rows. Visual review is the qualification gate"
         }
         (Component::SidebarSection, _) => {
-            "intentional: Runtime header is ListItem chrome with a static ArrowRight; Iced paints a tracked uppercase title and a rotating canvas chevron. Scene adapter cannot paint letter-spacing or rotation"
+            "intentional: Runtime header is ListItem chrome with ChevronDown/ChevronRight; Iced paints a tracked uppercase title and a rotating canvas chevron. Scene adapter cannot paint letter-spacing or rotation"
         }
         (Component::AppearanceSection | Component::AboutSection, _) => {
             "intentional: Runtime assembles qualified SettingsRow children; Iced composes the same host snapshot"
