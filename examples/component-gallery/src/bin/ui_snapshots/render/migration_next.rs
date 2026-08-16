@@ -13,15 +13,18 @@ use iced_winit::runtime::{UserInterface, user_interface};
 use nana_ui::compatibility::{
     AboutMetadata as IcedAboutMetadata, AboutSection as IcedAboutSection,
     ActionMenu as IcedActionMenu, ActionMenuItem as IcedActionMenuItem,
-    AnchoredActionMenu as IcedAnchoredActionMenu, AppearanceSection as IcedAppearanceSection,
-    Button as IcedButton, Card as IcedCard, Checkbox as IcedCheckbox,
-    CommandPalette as IcedCommandPalette, ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog,
+    AnchoredActionMenu as IcedAnchoredActionMenu, AppTitleBar as IcedAppTitleBar,
+    AppearanceSection as IcedAppearanceSection, Button as IcedButton, Card as IcedCard,
+    Checkbox as IcedCheckbox, CommandPalette as IcedCommandPalette,
+    ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog, DockPanel as IcedDockPanel,
     Drawer as IcedDrawer, Dropdown as IcedDropdown, DropdownOption as IcedDropdownOption,
     EmptyState as IcedEmptyState, FormField as IcedFormField, IconButton as IcedIconButton,
     Input as IcedInput, InteractiveCard as IcedInteractiveCard, LabeledValue as IcedLabeledValue,
     LevelMeter as IcedLevelMeter, ListItem as IcedListItem, OverlayHost as IcedOverlayHost,
-    Popover as IcedPopover, Progress as IcedProgress, QrCodeCanvas as IcedQrCode,
-    RangeField as IcedRangeField, SearchDropdown as IcedSearchDropdown,
+    PaneChrome as IcedPaneChrome, PaneChromeAction as IcedPaneChromeAction,
+    PaneChromeActionKind as IcedPaneChromeActionKind, PaneTree as IcedPaneTree,
+    PaneTreeNode as IcedPaneTreeNode, Popover as IcedPopover, Progress as IcedProgress,
+    QrCodeCanvas as IcedQrCode, RangeField as IcedRangeField, SearchDropdown as IcedSearchDropdown,
     SearchDropdownOption as IcedSearchDropdownOption,
     SearchDropdownState as IcedSearchDropdownState, SegmentedControl as IcedSegmentedControl,
     Select as IcedSelect, SettingsCard as IcedSettingsCard,
@@ -37,42 +40,48 @@ use nana_ui::runtime::{
     AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
     AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
     ActionMenuItem as RuntimeActionMenuItem, Activate,
-    AnchoredActionMenu as RuntimeAnchoredActionMenu, AppearanceSection as RuntimeAppearanceSection,
+    AnchoredActionMenu as RuntimeAnchoredActionMenu, AppShell as RuntimeAppShell,
+    AppTitleBar as RuntimeAppTitleBar, AppearanceSection as RuntimeAppearanceSection,
     Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
     CommandPalette as RuntimeCommandPalette, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
     ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem,
-    Dialog as RuntimeDialog, DocumentId, Drawer as RuntimeDrawer, Dropdown as RuntimeDropdown,
-    DropdownOption as RuntimeDropdownOption, EmptyState as RuntimeEmptyState, Entity,
-    FormField as RuntimeFormField, IconButton as RuntimeIconButton,
-    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue, LayoutViewport,
-    LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
-    ListItemSlots, ModalSlots, MountState, MutationQueue, NodeStyle,
-    OverlayHost as RuntimeOverlayHost, Popover as RuntimePopover, Progress as RuntimeProgress,
-    QrCode as RuntimeQrCode, RangeField as RuntimeRangeField, RuntimeDocument,
-    SearchDropdown as RuntimeSearchDropdown, SearchDropdownOption as RuntimeSearchDropdownOption,
+    Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
+    DockPanel as RuntimeDockPanel, DocumentId, Drawer as RuntimeDrawer,
+    Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
+    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
+    IconButton as RuntimeIconButton, InteractiveCard as RuntimeInteractiveCard,
+    LabeledValue as RuntimeLabeledValue, LayoutViewport, LevelMeter as RuntimeLevelMeter,
+    List as RuntimeList, ListItem as RuntimeListItem, ListItemSlots, ModalSlots, MountState,
+    MutationQueue, NodeStyle, OverlayHost as RuntimeOverlayHost, PaneChrome as RuntimePaneChrome,
+    PaneTree as RuntimePaneTree, PaneTreeNode as RuntimePaneTreeNode, Popover as RuntimePopover,
+    Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
+    RuntimeDocument, SearchDropdown as RuntimeSearchDropdown,
+    SearchDropdownOption as RuntimeSearchDropdownOption,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     SegmentedSelectionRequested, Select as RuntimeSelect, SelectOption as RuntimeSelectOption,
     SettingsCard as RuntimeSettingsCard, SettingsCollapsibleCard as RuntimeSettingsCollapsibleCard,
     SidebarFooter as RuntimeSidebarFooter, SidebarFooterButton as RuntimeSidebarFooterButton,
     SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
     SidebarSection as RuntimeSidebarSection, Skeleton as RuntimeSkeleton,
-    Spinner as RuntimeSpinner, StableNodeId, StatusBadge as RuntimeStatusBadge,
-    Switch as RuntimeSwitch, TabOption as RuntimeTabOption, Tabs as RuntimeTabs,
-    Text as RuntimeText, TextArea as RuntimeTextArea, TextHorizontalAlignment,
+    Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane, StableNodeId,
+    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TabOption as RuntimeTabOption,
+    Tabs as RuntimeTabs, Text as RuntimeText, TextArea as RuntimeTextArea, TextHorizontalAlignment,
     TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment, Toast as RuntimeToast,
     TreeView as RuntimeTreeView, ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
-    XYPad as RuntimeXYPad,
+    Workspace as RuntimeWorkspace, WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
     ActionId, AnchoredMenuPosition, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId,
-    ComponentMigrationState, ControlSize, IcedSceneView, IcedTextShaper, Icon, RuntimeInputAdapter,
-    SelectionOption as IcedSelectionOption, ThemeMode, ThemeModeExt, TooltipConfig,
-    TooltipPlacement, TreeNode, WindowMaterialMode, XYPadValue, component_catalog, component_ids,
-    icon,
+    ComponentMigrationState, ControlSize, DockContents, DockController, DockId, DockItemSpec,
+    DockLayout, DockNode, DockSurfaceId, IcedSceneView, IcedTextShaper, Icon, RegionId,
+    RuntimeInputAdapter, SelectionOption as IcedSelectionOption, SplitAxis, SplitPaneController,
+    ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement, TreeNode, WindowMaterialMode,
+    WorkspaceController, WorkspaceSlots, XYPadValue, app_shell, component_catalog, component_ids,
+    dock_workspace, icon, ratio_pane_split, split_pane, workspace_view,
 };
 use nana_ui_core::{
-    DialogSize, DrawerSide, LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition,
-    ToastTone, ValidationIntent,
+    DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
+    SwitchControlPosition, ToastTone, ValidationIntent, WorkspaceModel,
 };
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 use nana_ui_scene::ScenePrimitiveKind;
@@ -83,6 +92,7 @@ use super::{pixel_difference, side_by_side, snapshot_with_cursor};
 
 const SIZE: Size<u32> = Size::new(420, 120);
 const GAP: u32 = 8;
+const SLOT_INSET: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Component {
@@ -134,6 +144,14 @@ enum Component {
     TreeView,
     SidebarRow,
     Settings,
+    Workspace,
+    Dock,
+    DockPanel,
+    SplitPane,
+    PaneChrome,
+    PaneTree,
+    AppShell,
+    AppTitleBar,
 }
 
 impl Component {
@@ -187,6 +205,14 @@ impl Component {
             Self::TreeView => component_ids::TREE_VIEW,
             Self::SidebarRow => component_ids::SIDEBAR_ROW,
             Self::Settings => component_ids::SETTINGS,
+            Self::Workspace => component_ids::WORKSPACE,
+            Self::Dock => component_ids::DOCK,
+            Self::DockPanel => component_ids::DOCK_PANEL,
+            Self::SplitPane => component_ids::SPLIT_PANE,
+            Self::PaneChrome => component_ids::PANE_CHROME,
+            Self::PaneTree => component_ids::PANE_TREE,
+            Self::AppShell => component_ids::APP_SHELL,
+            Self::AppTitleBar => component_ids::APP_TITLE_BAR,
         }
     }
 }
@@ -1187,6 +1213,46 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "row-card",
         "settings card groups a labeled control row",
     ),
+    f(
+        Component::Workspace,
+        "default-regions",
+        "workspace lays out start, primary, end and bottom regions from the model",
+    ),
+    f(
+        Component::Dock,
+        "split-tabs",
+        "dock paints a split with a tabbed leaf and an item leaf",
+    ),
+    f(
+        Component::DockPanel,
+        "bordered",
+        "dock panel is a radius-0 surface with a soft border",
+    ),
+    f(
+        Component::SplitPane,
+        "horizontal",
+        "split pane sizes the first child and keeps an 8px handle",
+    ),
+    f(
+        Component::PaneChrome,
+        "active",
+        "pane chrome keeps a 34px header over the body",
+    ),
+    f(
+        Component::PaneTree,
+        "nested",
+        "pane tree preserves leaf order across a nested split",
+    ),
+    f(
+        Component::AppShell,
+        "stacked",
+        "app shell stacks a 36px title bar over a fill body",
+    ),
+    f(
+        Component::AppTitleBar,
+        "titled",
+        "title bar is 36px with a centered title",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {
@@ -1387,6 +1453,14 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::OverlayHost, _) => Size::new(420, 160),
         (Component::TreeView, _) => Size::new(280, 160),
         (Component::Settings, _) => Size::new(420, 140),
+        (Component::Workspace, _) => Size::new(720, 400),
+        (Component::Dock, _) => Size::new(640, 320),
+        (Component::DockPanel, _) => Size::new(280, 120),
+        (Component::SplitPane, _) => Size::new(480, 200),
+        (Component::PaneChrome, _) => Size::new(420, 180),
+        (Component::PaneTree, _) => Size::new(480, 240),
+        (Component::AppShell, _) => Size::new(560, 280),
+        (Component::AppTitleBar, _) => Size::new(560, 80),
         _ => SIZE,
     }
 }
@@ -1952,6 +2026,133 @@ fn iced_fixture<'a>(
                 .view(tokens),
         )
         .view(tokens),
+        Component::Workspace => {
+            let controller = WorkspaceController::new();
+            let slot = |label: &'static str| {
+                container(text(label).size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET)
+            };
+            workspace_view(
+                &controller,
+                WorkspaceSlots::new(
+                    slot("Nav"),
+                    slot("Files"),
+                    slot("Toolbar"),
+                    slot("Primary"),
+                    slot("Inspector"),
+                    slot("Diagnostics"),
+                ),
+                tokens,
+                |_| (),
+            )
+        }
+        Component::Dock => {
+            let main = DockNode::Split {
+                axis: nana_ui::DockAxis::Horizontal,
+                ratio: 0.35,
+                first: Box::new(DockNode::Tabs {
+                    tabs: vec![DockId::from("nav"), DockId::from("files")],
+                    active: DockId::from("nav"),
+                }),
+                second: Box::new(DockNode::Item {
+                    id: DockId::from("primary"),
+                }),
+            };
+            let controller = DockController::new(
+                "primary",
+                [
+                    DockItemSpec::new("primary", "Primary").limits(160.0, 120.0),
+                    DockItemSpec::new("nav", "Nav").limits(120.0, 80.0),
+                    DockItemSpec::new("files", "Files").limits(120.0, 80.0),
+                ],
+                DockLayout::new(main),
+            )
+            .expect("dock fixture is valid");
+            let panel = |label: &'static str| {
+                container(text(label).size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET)
+            };
+            dock_workspace(
+                &controller,
+                DockSurfaceId(0),
+                DockContents::new()
+                    .insert("primary", panel("Primary"))
+                    .insert("nav", panel("Nav"))
+                    .insert("files", panel("Files")),
+                |_| (),
+                tokens,
+            )
+        }
+        Component::DockPanel => IcedDockPanel::new(
+            column![
+                text("Inspector").size(12).color(tokens.colors.text),
+                text("Selection").size(10).color(tokens.colors.muted),
+            ]
+            .spacing(4),
+        )
+        .padding(10)
+        .view(tokens),
+        Component::SplitPane => {
+            let controller = SplitPaneController::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0);
+            split_pane(
+                &controller,
+                container(text("First").size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET),
+                container(text("Second").size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET),
+                |_| (),
+                tokens,
+            )
+        }
+        Component::PaneChrome => IcedPaneChrome::new(
+            text("editor.rs").size(12),
+            text("Body").size(12).color(tokens.colors.text),
+            [IcedPaneChromeAction::new(
+                IcedPaneChromeActionKind::CloseItem,
+                "关闭",
+                (),
+            )],
+            tokens,
+        )
+        .view(),
+        Component::PaneTree => {
+            let text_color = tokens.colors.text;
+            let split_tokens = tokens;
+            IcedPaneTree::new(
+                IcedPaneTreeNode::split(
+                    "root",
+                    SplitAxis::Horizontal,
+                    0.4,
+                    IcedPaneTreeNode::leaf("left"),
+                    IcedPaneTreeNode::leaf("right"),
+                ),
+                move |id| {
+                    container(text(*id).size(12).color(text_color))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(SLOT_INSET)
+                        .into()
+                },
+                move |_, axis, ratio, first, second| {
+                    ratio_pane_split(axis, ratio, first, second, split_tokens)
+                },
+            )
+            .view()
+        }
+        Component::AppShell => app_shell(
+            IcedAppTitleBar::new("NanaUI", tokens).view(),
+            text("Workspace").size(13).color(tokens.colors.text),
+            tokens.colors,
+        ),
+        Component::AppTitleBar => IcedAppTitleBar::new("NanaUI", tokens).view(),
     };
     (
         container(view)
@@ -2895,6 +3096,49 @@ fn runtime_fixture(
             document.context_mut().append_child(card, row)?;
             card.stable_id()
         }
+        Component::Workspace => mount_runtime_workspace(&mut document)?,
+        Component::Dock => mount_runtime_dock(&mut document)?,
+        Component::DockPanel => {
+            let title = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Inspector"))?;
+            let hint = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeText::new("Selection").style({
+                    let mut style = NodeStyle::default();
+                    style.foreground = Some(SemanticColorRole::Muted);
+                    Arc::make_mut(&mut style.layout).font_size = Some(10.0);
+                    style
+                }),
+            )?;
+            let mut body_style = NodeStyle::default();
+            {
+                let layout = Arc::make_mut(&mut body_style.layout);
+                layout.direction = Some(nana_ui_core::FlexDirection::Column);
+                layout.gap = Some(LengthSpec::Px(4.0));
+            }
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeList::new().style(body_style))?;
+            document.context_mut().append_child(body, title)?;
+            document.context_mut().append_child(body, hint)?;
+            let panel = document.context_mut().create_component(
+                document_id,
+                RuntimeDockPanel::new()
+                    .padding(10.0)
+                    .content(body.stable_id()),
+            )?;
+            document.context_mut().append_child(panel, body)?;
+            panel.stable_id()
+        }
+        Component::SplitPane => mount_runtime_split_pane(&mut document)?,
+        Component::PaneChrome => mount_runtime_pane_chrome(&mut document)?,
+        Component::PaneTree => mount_runtime_pane_tree(&mut document)?,
+        Component::AppShell => mount_runtime_app_shell(&mut document)?,
+        Component::AppTitleBar => document
+            .context_mut()
+            .create_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?
+            .stable_id(),
     };
     let mut hierarchy = MutationQueue::new();
     hierarchy.insert(root.stable_id(), target, None);
@@ -3028,6 +3272,210 @@ fn mount_runtime_sidebar_section(
     document.context_mut().append_child(section, header)?;
     document.context_mut().append_child(section, body)?;
     Ok(section.stable_id())
+}
+
+fn slot_label_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    let inset = LengthSpec::Px(SLOT_INSET);
+    layout.padding_left = Some(inset);
+    layout.padding_right = Some(inset);
+    layout.padding_top = Some(inset);
+    layout.padding_bottom = Some(inset);
+    style
+}
+
+fn mount_runtime_label(
+    document: &mut RuntimeDocument,
+    label: &str,
+) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
+    mount_runtime_label_styled(document, label, NodeStyle::default())
+}
+
+fn mount_runtime_slot_label(
+    document: &mut RuntimeDocument,
+    label: &str,
+) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
+    mount_runtime_label_styled(document, label, slot_label_style())
+}
+
+fn mount_runtime_label_styled(
+    document: &mut RuntimeDocument,
+    label: &str,
+    style: NodeStyle,
+) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    Ok(document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(label).style(style))?)
+}
+
+fn mount_runtime_workspace(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let nav = mount_runtime_slot_label(document, "Nav")?;
+    let files = mount_runtime_slot_label(document, "Files")?;
+    let toolbar = mount_runtime_slot_label(document, "Toolbar")?;
+    let primary = mount_runtime_slot_label(document, "Primary")?;
+    let inspector = mount_runtime_slot_label(document, "Inspector")?;
+    let diagnostics = mount_runtime_slot_label(document, "Diagnostics")?;
+    let workspace = document.context_mut().create_component(
+        document_id,
+        RuntimeWorkspace::from_model(
+            &WorkspaceModel::new(),
+            [
+                WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Diagnostics, diagnostics.stable_id()),
+            ],
+        ),
+    )?;
+    document.context_mut().append_child(workspace, nav)?;
+    document.context_mut().append_child(workspace, files)?;
+    document.context_mut().append_child(workspace, toolbar)?;
+    document.context_mut().append_child(workspace, primary)?;
+    document.context_mut().append_child(workspace, inspector)?;
+    document
+        .context_mut()
+        .append_child(workspace, diagnostics)?;
+    document.context_mut().assemble_workspace(workspace)?;
+    Ok(workspace.stable_id())
+}
+
+fn mount_runtime_dock(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let nav = mount_runtime_slot_label(document, "Nav")?;
+    let files = mount_runtime_slot_label(document, "Files")?;
+    let primary = mount_runtime_slot_label(document, "Primary")?;
+    let dock = document.context_mut().create_component(
+        document_id,
+        RuntimeDock::new(RuntimeDockNode::split(
+            nana_ui::runtime::DockAxis::Horizontal,
+            0.35,
+            RuntimeDockNode::tabs(
+                ["nav", "files"],
+                "nav",
+                [
+                    ("nav", Some(nav.stable_id())),
+                    ("files", Some(files.stable_id())),
+                ],
+            ),
+            RuntimeDockNode::item("primary", Some(primary.stable_id())),
+        ))
+        .title("nav", "Nav")
+        .title("files", "Files")
+        .title("primary", "Primary"),
+    )?;
+    document.context_mut().append_child(dock, nav)?;
+    document.context_mut().append_child(dock, files)?;
+    document.context_mut().append_child(dock, primary)?;
+    document.context_mut().assemble_dock(dock)?;
+    Ok(dock.stable_id())
+}
+
+fn mount_runtime_split_pane(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let first = mount_runtime_slot_label(document, "First")?;
+    let second = mount_runtime_slot_label(document, "Second")?;
+    let handle = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(""))?;
+    let indicator = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(""))?;
+    let pane = document.context_mut().create_component(
+        document_id,
+        RuntimeSplitPane::from_model(
+            &SplitPaneModel::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0),
+            first.stable_id(),
+            second.stable_id(),
+        )
+        .handle(handle.stable_id()),
+    )?;
+    document.context_mut().append_child(pane, first)?;
+    document.context_mut().append_child(handle, indicator)?;
+    document.context_mut().append_child(pane, handle)?;
+    document.context_mut().append_child(pane, second)?;
+    document.context_mut().update_component(pane, |_, _| {})?;
+    Ok(pane.stable_id())
+}
+
+fn mount_runtime_pane_chrome(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let header = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(""))?;
+    let tabs = mount_runtime_label(document, "editor.rs")?;
+    let body = mount_runtime_label(document, "Body")?;
+    let close = mount_runtime_label(document, "关闭")?;
+    let chrome = document.context_mut().create_component(
+        document_id,
+        RuntimePaneChrome::new()
+            .header(header.stable_id())
+            .tabs(tabs.stable_id())
+            .body(body.stable_id())
+            .actions([nana_ui::runtime::PaneChromeAction::new(
+                nana_ui::runtime::PaneChromeActionKind::CloseItem,
+                "关闭",
+            )
+            .target(close.stable_id())])
+            .active(true),
+    )?;
+    document.context_mut().append_child(chrome, header)?;
+    document.context_mut().append_child(header, tabs)?;
+    document.context_mut().append_child(header, close)?;
+    document.context_mut().append_child(chrome, body)?;
+    Ok(chrome.stable_id())
+}
+
+fn mount_runtime_pane_tree(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let left = mount_runtime_slot_label(document, "left")?;
+    let right = mount_runtime_slot_label(document, "right")?;
+    let document_id = document.document();
+    let tree = document.context_mut().create_component(
+        document_id,
+        RuntimePaneTree::new(RuntimePaneTreeNode::split(
+            "root",
+            SplitAxis::Horizontal,
+            0.4,
+            RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
+            RuntimePaneTreeNode::leaf_content("right", right.stable_id()),
+        )),
+    )?;
+    document.context_mut().append_child(tree, left)?;
+    document.context_mut().append_child(tree, right)?;
+    Ok(tree.stable_id())
+}
+
+fn mount_runtime_app_shell(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let title = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?;
+    let body = mount_runtime_label(document, "Workspace")?;
+    let shell = document.context_mut().create_component(
+        document_id,
+        RuntimeAppShell::new()
+            .title_bar(title.stable_id())
+            .body(body.stable_id()),
+    )?;
+    document.context_mut().append_child(shell, title)?;
+    document.context_mut().append_child(shell, body)?;
+    Ok(shell.stable_id())
 }
 
 fn mount_runtime_sidebar_frame(
@@ -4371,6 +4819,14 @@ fn write_evidence(
             | Component::Skeleton
             | Component::LevelMeter
             | Component::FormField
+            | Component::Workspace
+            | Component::Dock
+            | Component::DockPanel
+            | Component::SplitPane
+            | Component::PaneChrome
+            | Component::PaneTree
+            | Component::AppShell
+            | Component::AppTitleBar
     ) {
         hit != Some(runtime.target)
     } else if expects_hit {
@@ -4428,6 +4884,14 @@ fn write_evidence(
             | Component::Tabs
             | Component::Spinner
             | Component::Skeleton
+            | Component::Workspace
+            | Component::Dock
+            | Component::DockPanel
+            | Component::SplitPane
+            | Component::PaneChrome
+            | Component::PaneTree
+            | Component::AppShell
+            | Component::AppTitleBar
     ) || geometry.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
@@ -4621,6 +5085,20 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ) => (
             "manual-required",
             "Review the generated dark and light Iced and Runtime images for select fields and anchored menus; public default stays Iced until visual review",
+        ),
+        (
+            Component::Workspace
+            | Component::Dock
+            | Component::DockPanel
+            | Component::SplitPane
+            | Component::PaneChrome
+            | Component::PaneTree
+            | Component::AppShell
+            | Component::AppTitleBar,
+            _,
+        ) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime workspace-family images; Iced remains the composer reference until windowed A/B",
         ),
         (
             Component::SidebarFrame

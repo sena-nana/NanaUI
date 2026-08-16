@@ -11,6 +11,9 @@ use nana_ui::command::{
     KeymapState,
 };
 use nana_ui::compatibility::{
+    AppTitleBar, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
+};
+use nana_ui::compatibility::{
     Button as UiButton, Card as UiCard, Checkbox as UiCheckbox, ConfirmDialog as UiConfirmDialog,
     IconButton as UiIconButton, Input as UiInput, InteractiveCard as UiInteractiveCard,
     ListItem as UiListItem, Popover as UiPopover, Progress as UiProgress,
@@ -51,12 +54,11 @@ use nana_ui::widgets::{
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
-    AppTitleBar, AppearanceEvent, DesktopShell, DockAction, DockAxis, DockChromeStyle,
-    DockContents, DockController, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode,
-    DockSurfaceId, FallbackColor, GraphCanvas, GraphCanvasEvent, GraphEdge, GraphEndpoint,
-    GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection,
-    GraphSize, GraphViewport, MaterialOutcome, PaneChrome, PaneChromeAction, PaneChromeActionKind,
-    PaneTree, PaneTreeNode, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
+    AppearanceEvent, DesktopShell, DockAction, DockAxis, DockChromeStyle, DockContents,
+    DockController, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
+    FallbackColor, GraphCanvas, GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode,
+    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
+    MaterialOutcome, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
     SplitPaneController, WindowAppearance, apply_system_material, clear_system_material,
     dock_workspace, ratio_pane_split,
 };

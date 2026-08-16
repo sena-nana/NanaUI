@@ -1,9 +1,10 @@
 use iced::widget::{button, column, container, text};
 use iced::{Alignment, Color, Element, Length, Subscription, Task};
 use nana_ui::ThemeModeExt;
+use nana_ui::compatibility::AppTitleBar;
 use nana_ui::widgets::button_style;
 use nana_ui::{
-    AppTitleBar, ButtonKind, Colors, ThemeMode, UI_METRICS, WindowChromeEvent, WindowChromeState,
+    ButtonKind, Colors, ThemeMode, UI_METRICS, WindowChromeEvent, WindowChromeState,
     custom_title_bar_window, ui_font, ui_font_defaults, ui_font_sources,
 };
 

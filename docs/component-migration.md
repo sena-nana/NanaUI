@@ -243,5 +243,20 @@ and radius-without-track are Iced-side). Collapsed disclosure is
 `Icon::ChevronRight`. Collapsible title stays body text; the card is the
 single activation target.
 
-Workspace, Dock, SplitPane, GPU views, and charts remain `Compatibility`.
-Snapshot fixtures exist for this batch and the previously qualified leftovers.
+## Current workspace-family cutover
+
+`workspace`, `dock`, `dock-panel`, `split-pane`, `pane-chrome`, `pane-tree`,
+`app-shell`, and `app-title-bar` are `RuntimeQualified`. Root
+`nana_ui::Workspace`, `Dock`, `DockPanel`, `SplitPane`, `PaneChrome`,
+`PaneTree`, `AppShell`, and `AppTitleBar` are the Runtime views. Iced
+`workspace_view` / `DockController` / `split_pane` / `DesktopShell` composers
+stay at their existing modules; Iced `AppTitleBar`, `PaneChrome`, `PaneTree`,
+and `DockPanel` live under `nana_ui::compatibility`. Hosted floating dock
+windows and native title-bar drag stay on the Iced/hosted adapters.
+
+2026-08-16 windowed A/B **passed** for this batch. Slot labels in fixtures
+use a shared 8px content inset; Workspace/Dock/Split/AppShell chrome does not
+add that inset.
+
+GPU views, charts, heatmap, markdown, `HostedTextarea`, and key-capture layers
+remain `Compatibility`.
