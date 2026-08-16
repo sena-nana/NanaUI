@@ -588,7 +588,8 @@ impl Default for AppContext {
 
 impl AppContext {
     pub fn new() -> Self {
-        Self {
+        #[allow(unused_mut)]
+        let mut context = Self {
             world: UiWorld::new(),
             views: HashMap::new(),
             event_handlers: HashMap::new(),
@@ -596,7 +597,14 @@ impl AppContext {
             extensions: HashSet::new(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
+        };
+        #[cfg(feature = "syntax-highlighting")]
+        {
+            context
+                .install(&crate::HighlightPresentation)
+                .expect("default highlight presenter");
         }
+        context
     }
 
     pub fn world(&self) -> &UiWorld {
@@ -5472,8 +5480,8 @@ mod tests {
         ListItem, NodeStyle, Radio, RangeChanged, RangeField, ScrollAxes, ScrollChanged,
         ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Slider,
         SliderChanged, StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell,
-        TableCellFocused, TableNavigation, TableRow, Text, TextChanged, TextContent, TextInput,
-        TextSelection, ToggleChanged,
+        TableCellFocused, TableNavigation, TableRow, Text, TextArea, TextChanged, TextContent,
+        TextInput, TextSelection, ToggleChanged,
     };
 
     #[derive(Debug)]
@@ -8127,7 +8135,7 @@ mod tests {
         struct Keyword;
         impl crate::TextPresenter for Keyword {
             fn name(&self) -> &'static str {
-                crate::HIGHLIGHT_PRESENTER
+                "keyword"
             }
 
             fn present(
@@ -8164,13 +8172,18 @@ mod tests {
         assert_eq!(
             context.register_presenter(Box::new(Keyword)),
             Err(FrameworkError::World(UiWorldError::DuplicatePresenter(
-                crate::HIGHLIGHT_PRESENTER.into()
+                "keyword".into()
             )))
         );
+        let mut request = crate::HighlightRequest::highlight("rs");
+        request.presenter = Arc::from("keyword");
         let entity = context
             .create_component(
                 DocumentId::new(1).unwrap(),
-                TextArea::new("fn main").highlight("rs"),
+                TextArea {
+                    highlight: Some(request),
+                    ..TextArea::new("fn main")
+                },
             )
             .unwrap();
         assert_eq!(
@@ -8189,6 +8202,44 @@ mod tests {
                 .text_presentation(entity.stable_id())
                 .map(|presentation| presentation.spans.len()),
             Some(1)
+        );
+    }
+
+    #[cfg(feature = "syntax-highlighting")]
+    #[test]
+    fn new_context_installs_the_official_highlight_presenter() {
+        let mut context = AppContext::new();
+        assert!(context.world().has_presenter(crate::HIGHLIGHT_PRESENTER));
+        let entity = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                crate::HostedTextarea::new("fn main() {}", "rs"),
+            )
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .highlight_request(entity.stable_id())
+                .map(|request| request.presenter.as_ref()),
+            Some(crate::HIGHLIGHT_PRESENTER)
+        );
+        context
+            .resolve_presentations(&[entity.stable_id()])
+            .unwrap();
+        let spans = context
+            .world()
+            .text_presentation(entity.stable_id())
+            .map(|presentation| presentation.spans.clone())
+            .unwrap_or_default();
+        assert!(
+            spans.iter().any(|span| {
+                matches!(
+                    span.color,
+                    nana_ui_core::SemanticColorRole::Accent
+                        | nana_ui_core::SemanticColorRole::AccentStrong
+                ) && &"fn main() {}"[span.start..span.end] == "fn"
+            }),
+            "default Syntect presenter must color rust `fn`, got {spans:?}"
         );
     }
 

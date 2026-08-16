@@ -141,14 +141,14 @@ component_catalog! {
     CARD => { id: "card", name: "Card", family: Primitive, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility, Animation] },
     SWITCH => { id: "switch", name: "Switch", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
     TEXTAREA => { id: "textarea", name: "Textarea", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
-    HOSTED_TEXTAREA => { id: "hosted-textarea", name: "HostedTextarea", family: Control, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
+    HOSTED_TEXTAREA => { id: "hosted-textarea", name: "HostedTextarea", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     RANGE_FIELD => { id: "range-field", name: "RangeField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SELECT => { id: "select", name: "Select", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     SEGMENTED_CONTROL => { id: "segmented-control", name: "SegmentedControl", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     TABS => { id: "tabs", name: "Tabs", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    REORDER_LIST => { id: "reorder-list", name: "ReorderList", family: Navigation, migration: Compatibility, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    CALENDAR_HEATMAP => { id: "calendar-heatmap", name: "CalendarHeatmap", family: Data, migration: Compatibility, feature: Some("calendar"), compiled: cfg!(feature = "calendar"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    TIME_SERIES_CHART => { id: "time-series-chart", name: "TimeSeriesChart", family: Data, migration: Compatibility, feature: Some("charts"), compiled: cfg!(feature = "charts"), capabilities: [Render, Accessibility] },
+    REORDER_LIST => { id: "reorder-list", name: "ReorderList", family: Navigation, migration: RuntimeQualified, feature: Some("controls"), compiled: cfg!(feature = "controls"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    CALENDAR_HEATMAP => { id: "calendar-heatmap", name: "CalendarHeatmap", family: Data, migration: RuntimeQualified, feature: Some("calendar"), compiled: cfg!(feature = "calendar"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    TIME_SERIES_CHART => { id: "time-series-chart", name: "TimeSeriesChart", family: Data, migration: RuntimeQualified, feature: Some("charts"), compiled: cfg!(feature = "charts"), capabilities: [Render, Accessibility] },
     PROGRESS => { id: "progress", name: "Progress", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SPINNER => { id: "spinner", name: "Spinner", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Animation, Accessibility] },
     SKELETON => { id: "skeleton", name: "Skeleton", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Animation] },
@@ -174,13 +174,13 @@ component_catalog! {
     SIDEBAR_SECTION => { id: "sidebar-section", name: "SidebarSection", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
     SIDEBAR_ROW => { id: "sidebar-row", name: "SidebarRow", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SIDEBAR_FOOTER => { id: "sidebar-footer", name: "SidebarFooter", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    KEY_CAPTURE_LAYER => { id: "key-capture-layer", name: "KeyCaptureLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus, Accessibility] },
-    KEYMAP_LAYER => { id: "keymap-layer", name: "KeymapLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus] },
-    NATIVE_MARKDOWN => { id: "native-markdown", name: "NativeMarkdown", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    SELECTABLE_RICH_TEXT => { id: "selectable-rich-text", name: "SelectableRichText", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    KEY_CAPTURE_LAYER => { id: "key-capture-layer", name: "KeyCaptureLayer", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Keyboard, Focus, Accessibility] },
+    KEYMAP_LAYER => { id: "keymap-layer", name: "KeymapLayer", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Keyboard, Focus] },
+    NATIVE_MARKDOWN => { id: "native-markdown", name: "NativeMarkdown", family: Data, migration: RuntimeQualified, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    SELECTABLE_RICH_TEXT => { id: "selectable-rich-text", name: "SelectableRichText", family: Data, migration: RuntimeQualified, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     QR_CODE => { id: "qr-code", name: "QrCodeCanvas", family: Data, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
-    GRAPH_CANVAS => { id: "graph-canvas", name: "GraphCanvas", family: Data, migration: Compatibility, feature: Some("graph-canvas"), compiled: cfg!(feature = "graph-canvas"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Gpu] },
-    IMAGE_VIEWER => { id: "image-viewer", name: "ImageViewer", family: Media, migration: Compatibility, feature: Some("image-viewer"), compiled: cfg!(feature = "image-viewer"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    GRAPH_CANVAS => { id: "graph-canvas", name: "GraphCanvas", family: Data, migration: RuntimeQualified, feature: Some("graph-canvas"), compiled: cfg!(feature = "graph-canvas"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Gpu] },
+    IMAGE_VIEWER => { id: "image-viewer", name: "ImageViewer", family: Media, migration: RuntimeQualified, feature: Some("image-viewer"), compiled: cfg!(feature = "image-viewer"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     FORM_FIELD => { id: "form-field", name: "FormField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     LABELED_VALUE => { id: "labeled-value", name: "LabeledValue", family: Data, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
@@ -199,8 +199,8 @@ component_catalog! {
     APPEARANCE_SECTION => { id: "appearance-section", name: "AppearanceSection", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     ABOUT_SECTION => { id: "about-section", name: "AboutSection", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Accessibility] },
     SETTINGS_COLLAPSIBLE_CARD => { id: "settings-collapsible-card", name: "SettingsCollapsibleCard", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    GPU_VIEW => { id: "gpu-view", name: "GpuView", family: Gpu, migration: Compatibility, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Pointer, Gpu] },
-    GPU_TEXTURE_VIEW => { id: "gpu-texture-view", name: "GpuTextureView", family: Gpu, migration: Compatibility, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Gpu] },
+    GPU_VIEW => { id: "gpu-view", name: "GpuView", family: Gpu, migration: RuntimeQualified, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Pointer, Gpu] },
+    GPU_TEXTURE_VIEW => { id: "gpu-texture-view", name: "GpuTextureView", family: Gpu, migration: RuntimeQualified, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Gpu] },
 }
 
 /// Complete catalog for this NanaUI build.
@@ -214,7 +214,7 @@ pub fn component_support(id: ComponentId) -> Option<&'static ComponentSupport> {
 }
 
 /// Internal default-backend routing derived from the same declaration as the
-/// public catalog. Candidate components deliberately remain on compatibility.
+/// public catalog. Only compiled `RuntimeQualified` entries take the Runtime path.
 #[doc(hidden)]
 pub fn component_uses_runtime(id: ComponentId) -> bool {
     component_support(id).is_some_and(|support| {
@@ -265,6 +265,18 @@ mod tests {
             component_ids::FORM_FIELD,
             component_ids::INTERACTIVE_CARD,
             component_ids::TEXTAREA,
+            component_ids::HOSTED_TEXTAREA,
+            component_ids::REORDER_LIST,
+            component_ids::CALENDAR_HEATMAP,
+            component_ids::TIME_SERIES_CHART,
+            component_ids::KEY_CAPTURE_LAYER,
+            component_ids::KEYMAP_LAYER,
+            component_ids::NATIVE_MARKDOWN,
+            component_ids::SELECTABLE_RICH_TEXT,
+            component_ids::IMAGE_VIEWER,
+            component_ids::GRAPH_CANVAS,
+            component_ids::GPU_VIEW,
+            component_ids::GPU_TEXTURE_VIEW,
             component_ids::TOOLTIP,
             component_ids::DIALOG,
             component_ids::CONFIRM_DIALOG,
@@ -307,11 +319,64 @@ mod tests {
     }
 
     #[test]
-    fn hosted_textarea_keeps_the_compatibility_default_route() {
+    fn catalog_has_no_runtime_candidates() {
+        let leftover: Vec<_> = component_catalog()
+            .iter()
+            .filter(|support| support.migration == ComponentMigrationState::RuntimeCandidate)
+            .map(|support| support.id)
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "catalog still lists RuntimeCandidate entries: {leftover:?}"
+        );
+    }
+
+    #[test]
+    fn hosted_textarea_public_export_is_the_runtime_highlighter() {
         let hosted = component_support(component_ids::HOSTED_TEXTAREA)
             .expect("hosted textarea is cataloged");
-        assert_eq!(hosted.migration, ComponentMigrationState::Compatibility);
-        assert!(!component_uses_runtime(component_ids::HOSTED_TEXTAREA));
+        assert_eq!(hosted.migration, ComponentMigrationState::RuntimeQualified);
+        assert!(component_uses_runtime(component_ids::HOSTED_TEXTAREA));
+        let _: nana_ui_runtime::HostedTextarea = crate::HostedTextarea::new("fn main() {}", "rs");
+        let _: nana_ui_runtime::HostedTextarea =
+            crate::components::HostedTextarea::new("fn main() {}", "rs");
+        let _: nana_ui_runtime::KeyCaptureLayer = crate::KeyCaptureLayer::new();
+        let _: nana_ui_runtime::KeymapLayer = crate::KeymapLayer::new(
+            nana_ui_runtime::Keymap::new([]),
+            nana_ui_core::KeyContext::default(),
+            nana_ui_runtime::ActionRegistry::new(),
+        );
+    }
+
+    #[cfg(all(
+        feature = "calendar",
+        feature = "charts",
+        feature = "controls",
+        feature = "rich-text",
+        feature = "image-viewer"
+    ))]
+    #[test]
+    fn candidate_cutover_public_exports_include_new_runtime_leaves() {
+        let _: nana_ui_runtime::CalendarHeatmap = crate::CalendarHeatmap::new([]);
+        let _: nana_ui_runtime::TimeSeriesChart = crate::TimeSeriesChart::new([1.0]);
+        let _: nana_ui_runtime::ReorderList = crate::ReorderList::new([]);
+        let _: nana_ui_runtime::NativeMarkdown = crate::NativeMarkdown::new();
+        let _: nana_ui_runtime::SelectableRichText = crate::SelectableRichText::new([]);
+        let _: nana_ui_runtime::ImageViewer =
+            crate::ImageViewer::new(nana_ui_runtime::ImageViewerContent::None);
+        let _: nana_ui_runtime::CalendarHeatmap = crate::components::CalendarHeatmap::new([]);
+        let _: nana_ui_runtime::NativeMarkdown = crate::components::NativeMarkdown::new();
+    }
+
+    #[cfg(all(feature = "graph-canvas", feature = "gpu"))]
+    #[test]
+    fn graph_and_gpu_public_exports_are_runtime_components() {
+        let _: nana_ui_runtime::GraphCanvas =
+            crate::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
+        let _: nana_ui_runtime::GpuView = crate::GpuView::new(1);
+        let _: nana_ui_runtime::GpuTextureView = crate::GpuTextureView::new("slot");
+        let _: nana_ui_runtime::GraphCanvas =
+            crate::components::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
     }
 
     #[test]

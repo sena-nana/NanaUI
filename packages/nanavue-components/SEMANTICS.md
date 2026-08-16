@@ -109,6 +109,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 |-----|------|
 | `NanaSelect` `modelValue` + `options` | `Select` + `BridgeEvent::SelectValue` |
 | `NanaTextarea` `modelValue` | `Textarea` + `BridgeEvent::Input` / `Editor` |
+| `NanaTextarea` `language` | Runtime `HostedTextarea` + `"highlight"` presenter |
 
 ## NanaDialog / NanaDrawer / NanaPopover / NanaContextMenu
 

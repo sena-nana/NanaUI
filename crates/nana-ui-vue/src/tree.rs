@@ -21,11 +21,12 @@ use nana_ui_runtime::{
     ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
     ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode, Dialog as RuntimeDialog,
     Drawer as RuntimeDrawer, EmptyState as RuntimeEmptyState, FormField as RuntimeFormField,
-    IconButton as RuntimeIconButton, ImeComposition, InteractionState,
-    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue,
-    LayoutBox as RuntimeLayoutBox, LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem,
-    ListItemSlots, ModalSurface, MutationQueue, NodeKind, NodeStyle, Popover as RuntimePopover,
-    Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
+    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton, ImeComposition,
+    InteractionState, InteractiveCard as RuntimeInteractiveCard,
+    LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox,
+    LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem, ListItemSlots, ModalSurface,
+    MutationQueue, NodeKind, NodeStyle, Popover as RuntimePopover, Progress as RuntimeProgress,
+    QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome,
     SettingsCard as RuntimeSettingsCard, SettingsRow as RuntimeSettingsRow,
@@ -2101,18 +2102,33 @@ fn project_migrating_component(
             } else {
                 widget.props.placeholder.as_str()
             };
-            let mut component = RuntimeTextArea::new("")
-                .placeholder(Arc::<str>::from(placeholder))
-                .disabled(widget.props.disabled)
-                .invalid(widget.props.invalid);
-            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
-                component = component.height(height);
+            if let Some(language) = crate::widget_map::highlight_language(&widget.props) {
+                let mut component = RuntimeHostedTextarea::new("", language)
+                    .placeholder(Arc::<str>::from(placeholder))
+                    .disabled(widget.props.disabled)
+                    .invalid(widget.props.invalid);
+                if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
+                    component = component.height(height);
+                }
+                if !widget.props.label.is_empty() {
+                    component = component.label(Arc::<str>::from(widget.props.label.as_str()));
+                }
+                component.state = state;
+                component.project(id, world, mutations);
+            } else {
+                let mut component = RuntimeTextArea::new("")
+                    .placeholder(Arc::<str>::from(placeholder))
+                    .disabled(widget.props.disabled)
+                    .invalid(widget.props.invalid);
+                if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
+                    component = component.height(height);
+                }
+                if !widget.props.label.is_empty() {
+                    component = component.label(Arc::<str>::from(widget.props.label.as_str()));
+                }
+                component.state = state;
+                component.project(id, world, mutations);
             }
-            if !widget.props.label.is_empty() {
-                component = component.label(Arc::<str>::from(widget.props.label.as_str()));
-            }
-            component.state = state;
-            component.project(id, world, mutations);
             true
         }
         crate::WidgetKind::Select => {
@@ -2787,6 +2803,15 @@ fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::TreeView { .. }
                         | nana_ui_runtime::StandardVisual::CommandPalette { .. }
                         | nana_ui_runtime::StandardVisual::ModalFrame { .. }
+                        | nana_ui_runtime::StandardVisual::CalendarHeatmap { .. }
+                        | nana_ui_runtime::StandardVisual::TimeSeriesChart { .. }
+                        | nana_ui_runtime::StandardVisual::ReorderList { .. }
+                        | nana_ui_runtime::StandardVisual::NativeMarkdown { .. }
+                        | nana_ui_runtime::StandardVisual::SelectableRichText { .. }
+                        | nana_ui_runtime::StandardVisual::GraphCanvas { .. }
+                        | nana_ui_runtime::StandardVisual::ImageViewer { .. }
+                        | nana_ui_runtime::StandardVisual::KeyCaptureLayer { .. }
+                        | nana_ui_runtime::StandardVisual::KeymapLayer
                 )
             ) {
                 mutations.set_standard_visual(id, None);

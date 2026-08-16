@@ -376,6 +376,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
     ) {
         let origin =
             layout.bounds().position() - Vector::new(self.scene_origin.x, self.scene_origin.y);
+        let widget_clip = layout
+            .bounds()
+            .intersection(viewport)
+            .unwrap_or(layout.bounds());
         for operation in self.operations.iter() {
             let id = match operation {
                 RenderOperation::PrepareExternal(_) => continue,
@@ -384,9 +388,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
             let Some(primitive) = self.scene().primitive(id) else {
                 continue;
             };
-            let clip = primitive.clips.iter().try_fold(*viewport, |visible, clip| {
-                visible.intersection(&translated_rect(clip.bounds, clip.transform.0, origin))
-            });
+            let clip = primitive
+                .clips
+                .iter()
+                .try_fold(widget_clip, |visible, clip| {
+                    visible.intersection(&translated_rect(clip.bounds, clip.transform.0, origin))
+                });
             let Some(clip) = clip else {
                 continue;
             };
@@ -456,6 +463,7 @@ fn paint_primitive(
         } => paint_quad(
             renderer,
             bounds,
+            clip,
             *background,
             *border_color,
             *border_width,
@@ -475,6 +483,7 @@ fn paint_primitive(
                 paint_quad(
                     renderer,
                     translated_rect(*bounds, primitive.transform.0, origin),
+                    clip,
                     *background,
                     *border_color,
                     *border_width,
@@ -631,6 +640,7 @@ fn paint_primitive(
 fn paint_quad(
     renderer: &mut iced::Renderer,
     bounds: Rectangle,
+    clip: Rectangle,
     background: Option<[f32; 4]>,
     border_color: Option<[f32; 4]>,
     border_width: f32,
@@ -638,6 +648,9 @@ fn paint_quad(
     shadow: Option<nana_ui_runtime::ComponentElevation>,
     opacity: f32,
 ) {
+    let Some(bounds) = bounds.intersection(&clip) else {
+        return;
+    };
     renderer.fill_quad(
         renderer::Quad {
             bounds,

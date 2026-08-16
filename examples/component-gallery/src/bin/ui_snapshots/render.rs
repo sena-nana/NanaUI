@@ -36,6 +36,8 @@ use nana_ui_scene::UiScene;
 
 use crate::write;
 
+#[path = "render/gpu.rs"]
+mod gpu;
 #[path = "render/migration_next.rs"]
 mod migration_next;
 
@@ -67,6 +69,8 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         trace: wgpu::Trace::Off,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
     }))?;
+    let snapshot_device = device.clone();
+    let snapshot_queue = queue.clone();
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
     let engine = Engine::new(
         &adapter,
@@ -157,6 +161,8 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             &mut renderer,
             &output,
             theme,
+            &snapshot_device,
+            &snapshot_queue,
         )?);
     }
 

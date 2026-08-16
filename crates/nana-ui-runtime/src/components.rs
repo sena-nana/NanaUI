@@ -248,6 +248,53 @@ pub enum StandardVisual {
         empty: Option<Arc<str>>,
         rows: Arc<[crate::command_palette::PaletteRowData]>,
     },
+    CalendarHeatmap {
+        cells: Arc<[crate::calendar::CalendarHeatmapCellPaint]>,
+        month_labels: Arc<[crate::calendar::CalendarHeatmapLabelPaint]>,
+        day_labels: Arc<[crate::calendar::CalendarHeatmapLabelPaint]>,
+        cell_size: f32,
+        cell_radius: f32,
+        max_level: u8,
+        active: Option<usize>,
+    },
+    TimeSeriesChart {
+        values: Arc<[f64]>,
+    },
+    ReorderList {
+        rows: Arc<[crate::reorder_list::ReorderRowPaint]>,
+        size: ControlSize,
+        spacing: f32,
+        insert: Option<LayoutBox>,
+    },
+    NativeMarkdown {
+        text: Arc<str>,
+        selection: Option<(usize, usize)>,
+    },
+    SelectableRichText {
+        text: Arc<str>,
+        selection: Option<(usize, usize)>,
+    },
+    GraphCanvas {
+        nodes: Arc<[crate::graph_canvas::GraphNodePaint]>,
+        ports: Arc<[crate::graph_canvas::GraphPortPaint]>,
+        edges: Arc<[crate::graph_canvas::GraphEdgePaint]>,
+        connecting: Option<crate::graph_canvas::GraphEdgePaint>,
+        grid_spacing: f32,
+        viewport_offset_x: f32,
+        viewport_offset_y: f32,
+        viewport_zoom: f32,
+    },
+    ImageViewer {
+        name: Option<Arc<str>>,
+        metadata: Option<Arc<str>>,
+        zoom: f32,
+        offset_x: f32,
+        offset_y: f32,
+    },
+    KeyCaptureLayer {
+        recording: bool,
+    },
+    KeymapLayer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,6 +491,63 @@ pub enum ComponentGeometry {
         input_background: [f32; 4],
         input_border: [f32; 4],
         elevation: ComponentElevation,
+    },
+    CalendarHeatmap {
+        cells: Vec<(LayoutBox, [f32; 4])>,
+        labels: Vec<ComponentTextRegion>,
+    },
+    TimeSeriesChart {
+        grid: Vec<LayoutBox>,
+        area: Vec<LayoutBox>,
+        line: Vec<LayoutBox>,
+        grid_color: [f32; 4],
+        area_color: [f32; 4],
+        line_color: [f32; 4],
+    },
+    ReorderList {
+        rows: Vec<(LayoutBox, ComponentTextRegion, Option<[f32; 4]>)>,
+        insert: Option<(LayoutBox, [f32; 4])>,
+    },
+    NativeMarkdown {
+        text: ComponentTextRegion,
+        selection: Vec<LayoutBox>,
+        selection_color: [f32; 4],
+    },
+    SelectableRichText {
+        text: ComponentTextRegion,
+        selection: Vec<LayoutBox>,
+        selection_color: [f32; 4],
+    },
+    GraphCanvas {
+        nodes: Vec<(LayoutBox, ComponentTextRegion, [f32; 4], Option<[f32; 4]>)>,
+        separators: Vec<LayoutBox>,
+        ports: Vec<(LayoutBox, [f32; 4], [f32; 4], f32)>,
+        port_labels: Vec<(ComponentTextRegion, crate::TextHorizontalAlignment)>,
+        edges: Vec<(LayoutBox, [f32; 4])>,
+        edge_labels: Vec<ComponentTextRegion>,
+        grid: Vec<LayoutBox>,
+        background: [f32; 4],
+        grid_color: [f32; 4],
+        separator_color: [f32; 4],
+    },
+    ImageViewer {
+        scrim: LayoutBox,
+        surface: LayoutBox,
+        stage: LayoutBox,
+        close: LayoutBox,
+        name: Option<ComponentTextRegion>,
+        metadata: Option<ComponentTextRegion>,
+        content: LayoutBox,
+        scrim_color: [f32; 4],
+        surface_color: [f32; 4],
+        stage_color: [f32; 4],
+    },
+    KeyCaptureLayer {
+        badge: ComponentTextRegion,
+        background: Option<[f32; 4]>,
+    },
+    KeymapLayer {
+        badge: ComponentTextRegion,
     },
 }
 

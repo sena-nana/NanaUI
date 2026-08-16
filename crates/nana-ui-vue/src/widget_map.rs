@@ -662,6 +662,12 @@ pub(crate) fn class_has_compact(props: &WidgetProps) -> bool {
         .any(|class| class.contains("compact"))
 }
 
+pub(crate) fn highlight_language(props: &WidgetProps) -> Option<&str> {
+    attr_value(props, &["language", "lang", "syntax"])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&'a str> {
     for name in names {
         if let Some(value) = props.attrs.get(*name) {

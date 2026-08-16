@@ -32,6 +32,7 @@ live2d-acceptance = [
 snapshots = [
     "bundled-fonts",
     "nana-ui/gpu",
+    "nana-ui/syntax-highlighting",
     "dep:iced_wgpu",
     "dep:iced_winit",
     "dep:nana-ui-core",

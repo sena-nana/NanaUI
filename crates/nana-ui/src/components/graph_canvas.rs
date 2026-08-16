@@ -10,33 +10,15 @@ use iced::{
 use crate::graph::{
     GraphCanvasId, GraphEdge, GraphEndpoint, GraphModel, GraphNodeId, GraphPoint, GraphPortKind,
     GraphPortSide, GraphSelection, GraphSize, GraphTargetDescriptor, GraphViewport, cubic_point,
+    port_tangent,
 };
 use crate::theme::{ThemeTokens, ui_font};
+
+pub use nana_ui_runtime::GraphCanvasEvent;
 
 const DEFAULT_GRID_SPACING: f32 = 24.0;
 const KEYBOARD_PAN_STEP: f32 = 32.0;
 const KEYBOARD_ZOOM_FACTOR: f32 = 1.2;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum GraphCanvasEvent {
-    SelectionChanged(Option<GraphSelection>),
-    NodePositionInput {
-        node: GraphNodeId,
-        position: GraphPoint,
-    },
-    NodePositionChanged {
-        node: GraphNodeId,
-        position: GraphPoint,
-    },
-    ConnectionRequested {
-        source: GraphEndpoint,
-        target: GraphEndpoint,
-    },
-    /// A live viewport update produced while a pointer is panning.
-    ViewportInput(GraphViewport),
-    /// A committed viewport update produced on pointer release, wheel or keyboard input.
-    ViewportChanged(GraphViewport),
-}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 enum GraphInteraction {
@@ -273,24 +255,11 @@ impl<'a, Message: 'a> canvas::Program<Message> for GraphCanvas<'a, Message> {
                                     })
                             })
                             .unwrap_or_default(),
-                        GraphSelection::Port { node, port }
-                            if graph_port_kind(self.model.as_ref(), node, port).is_some_and(
-                                |kind| {
-                                    matches!(
-                                        kind,
-                                        GraphPortKind::Output | GraphPortKind::Bidirectional
-                                    )
-                                },
-                            ) =>
-                        {
-                            GraphInteraction::MouseConnection {
-                                source: GraphEndpoint::new(node.clone(), port.clone()),
-                                current: position,
-                            }
-                        }
-                        GraphSelection::Port { .. } | GraphSelection::Edge(_) => {
-                            GraphInteraction::None
-                        }
+                        GraphSelection::Port { node, port } => GraphInteraction::MouseConnection {
+                            source: GraphEndpoint::new(node.clone(), port.clone()),
+                            current: position,
+                        },
+                        GraphSelection::Edge(_) => GraphInteraction::None,
                     };
                     return Some(self.publish(GraphCanvasEvent::SelectionChanged(Some(selection))));
                 }
@@ -360,26 +329,31 @@ impl<'a, Message: 'a> canvas::Program<Message> for GraphCanvas<'a, Message> {
                         }))
                     }
                     GraphInteraction::MouseConnection { source, .. } => {
-                        let target = Self::local_cursor(bounds, cursor)
-                            .and_then(|position| {
-                                self.model
-                                    .hit_test(self.displayed_viewport(state), position)
-                            })
-                            .and_then(|selection| match selection {
-                                GraphSelection::Port { node, port }
-                                    if graph_port_kind(self.model.as_ref(), &node, &port)
-                                        .is_some_and(|kind| {
-                                            matches!(
-                                                kind,
-                                                GraphPortKind::Input | GraphPortKind::Bidirectional
+                        let target = Self::local_cursor(bounds, cursor).and_then(|position| {
+                            match self
+                                .model
+                                .hit_test(self.displayed_viewport(state), position)
+                            {
+                                Some(GraphSelection::Port { node, port }) => order_connection(
+                                    self.model.as_ref(),
+                                    source.clone(),
+                                    GraphEndpoint::new(node, port),
+                                ),
+                                Some(GraphSelection::Node(node)) => {
+                                    self.model.node(&node).and_then(|graph_node| {
+                                        graph_node.ports.iter().find_map(|port| {
+                                            order_connection(
+                                                self.model.as_ref(),
+                                                source.clone(),
+                                                GraphEndpoint::new(node.clone(), port.id.clone()),
                                             )
-                                        }) =>
-                                {
-                                    Some(GraphEndpoint::new(node, port))
+                                        })
+                                    })
                                 }
                                 _ => None,
-                            });
-                        target.map(|target| {
+                            }
+                        });
+                        target.map(|(source, target)| {
                             self.publish(GraphCanvasEvent::ConnectionRequested { source, target })
                         })
                     }
@@ -524,12 +498,14 @@ impl<'a, Message: 'a> canvas::Program<Message> for GraphCanvas<'a, Message> {
             );
         }
         if let GraphInteraction::MouseConnection { source, current } = &state.interaction
-            && let Some(source) = self.model.port_position(source)
+            && let Some(origin) = self.model.port_position(source)
+            && let Some(side) = graph_port_side(self.model.as_ref(), &source.node, &source.port)
         {
             draw_pending_connection(
                 &mut frame,
-                viewport.world_to_view(source),
+                viewport.world_to_view(origin),
                 *current,
+                side,
                 self.tokens,
                 opacity,
             );
@@ -619,6 +595,41 @@ fn draw_grid(
     }
 }
 
+fn order_connection(
+    model: &GraphModel,
+    source: GraphEndpoint,
+    target: GraphEndpoint,
+) -> Option<(GraphEndpoint, GraphEndpoint)> {
+    if source == target {
+        return None;
+    }
+    let source_kind = graph_port_kind(model, &source.node, &source.port)?;
+    let target_kind = graph_port_kind(model, &target.node, &target.port)?;
+    let source_out = matches!(
+        source_kind,
+        GraphPortKind::Output | GraphPortKind::Bidirectional
+    );
+    let source_in = matches!(
+        source_kind,
+        GraphPortKind::Input | GraphPortKind::Bidirectional
+    );
+    let target_out = matches!(
+        target_kind,
+        GraphPortKind::Output | GraphPortKind::Bidirectional
+    );
+    let target_in = matches!(
+        target_kind,
+        GraphPortKind::Input | GraphPortKind::Bidirectional
+    );
+    if source_out && target_in {
+        Some((source, target))
+    } else if source_in && target_out {
+        Some((target, source))
+    } else {
+        None
+    }
+}
+
 fn graph_port_kind(
     model: &GraphModel,
     node_id: &GraphNodeId,
@@ -632,19 +643,36 @@ fn graph_port_kind(
         .map(|port| port.kind)
 }
 
+fn graph_port_side(
+    model: &GraphModel,
+    node_id: &GraphNodeId,
+    port_id: &crate::graph::GraphPortId,
+) -> Option<GraphPortSide> {
+    model
+        .node(node_id)?
+        .ports
+        .iter()
+        .find(|port| &port.id == port_id)
+        .map(|port| port.side)
+}
+
 fn draw_pending_connection(
     frame: &mut canvas::Frame,
     source: GraphPoint,
     target: GraphPoint,
+    source_side: GraphPortSide,
     tokens: ThemeTokens,
     opacity: f32,
 ) {
-    let tangent = ((target.x - source.x).abs() * 0.5).max(36.0);
+    let reach =
+        ((target.x - source.x).abs().max((target.y - source.y).abs()) * 0.45).clamp(32.0, 180.0);
+    let out = port_tangent(source_side);
+    let incoming = Point::new(target.x - out.x * reach, target.y - out.y * reach);
     let path = canvas::Path::new(|builder| {
         builder.move_to(to_iced_point(source));
         builder.bezier_curve_to(
-            Point::new(source.x + tangent, source.y),
-            Point::new(target.x - tangent, target.y),
+            Point::new(source.x + out.x * reach, source.y + out.y * reach),
+            incoming,
             to_iced_point(target),
         );
     });
@@ -673,9 +701,9 @@ fn draw_edge(
     let selected = selection == Some(&GraphSelection::Edge(edge.id.clone()));
     let hovered = hover == Some(&GraphSelection::Edge(edge.id.clone()));
     let color = if selected {
-        tokens.colors.accent
-    } else if hovered {
         tokens.colors.text
+    } else if hovered {
+        tokens.colors.muted
     } else {
         tokens.colors.border_strong
     };
@@ -691,7 +719,7 @@ fn draw_edge(
         &path,
         canvas::Stroke::default()
             .with_color(with_alpha(color, opacity))
-            .with_width(if selected { 2.4 } else { 1.6 }),
+            .with_width(1.6),
     );
 
     if viewport.zoom >= 0.7

@@ -274,6 +274,13 @@ impl SplitPane {
     }
 }
 
+fn point_near_box(bounds: crate::LayoutBox, x: f32, y: f32, slop: f32) -> bool {
+    x >= bounds.x - slop
+        && y >= bounds.y - slop
+        && x <= bounds.x + bounds.width + slop
+        && y <= bounds.y + bounds.height + slop
+}
+
 pub(crate) fn split_direction(axis: SplitAxis) -> FlexDirection {
     match axis {
         SplitAxis::Horizontal => FlexDirection::Row,
@@ -300,10 +307,175 @@ impl ComponentView for SplitPane {
     }
 }
 
+impl crate::AppContext {
+    pub fn is_split_pane(&self, id: StableNodeId) -> bool {
+        self.read(crate::Entity::<SplitPane>::from_stable_id(id), |_| ())
+            .is_ok()
+    }
+
+    pub fn is_split_handle(&self, id: StableNodeId) -> bool {
+        self.split_for_handle(id).is_some()
+    }
+
+    pub fn split_handle_axis(&self, id: StableNodeId) -> Option<SplitAxis> {
+        let entity = self.split_for_handle(id)?;
+        self.read(entity, |pane| pane.model.axis()).ok()
+    }
+
+    /// Handle under the pointer, including a few pixels of slop around the 8px bar.
+    pub fn split_handle_near(
+        &self,
+        document: crate::DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Option<StableNodeId> {
+        const SLOP: f32 = 6.0;
+        if let Some(target) = self.pointer_target(document, x, y) {
+            if self.is_split_handle(target) {
+                return Some(target);
+            }
+            if let Some(parent) = self.world().node(target).and_then(|node| node.parent) {
+                if self.is_split_handle(parent) {
+                    return Some(parent);
+                }
+                if let Some(handle) = self.handle_of_split(parent)
+                    && let Some(bounds) = self.world().layout_box(handle)
+                    && point_near_box(bounds, x, y, SLOP)
+                {
+                    return Some(handle);
+                }
+            }
+        }
+        self.world()
+            .document_order(document)
+            .into_iter()
+            .find(|&id| {
+                self.is_split_handle(id)
+                    && self
+                        .world()
+                        .layout_box(id)
+                        .is_some_and(|bounds| point_near_box(bounds, x, y, SLOP))
+            })
+    }
+
+    fn handle_of_split(&self, id: StableNodeId) -> Option<StableNodeId> {
+        let entity = self.split_pane_entity(id)?;
+        self.read(entity, |pane| pane.handle).ok().flatten()
+    }
+
+    pub fn begin_split_resize(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(entity) = self.split_for_handle(target) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |pane, cx| {
+            cx.mutations().request_focus(document, Some(target));
+            cx.mutations().capture_pointer(pointer_id, target);
+            pane.apply(SplitPaneMutation::Focus);
+            pane.apply(SplitPaneMutation::ResizeStart);
+            pane.apply(SplitPaneMutation::ResizeMove { x, y });
+            true
+        })
+    }
+
+    pub fn update_split_resize(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(entity) = self.split_for_handle(target) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |pane, _| {
+            pane.apply(SplitPaneMutation::ResizeMove { x, y })
+        })
+    }
+
+    pub fn end_split_resize(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(entity) = self.split_for_handle(target) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |pane, cx| {
+            if cancel {
+                pane.apply(SplitPaneMutation::Reset);
+            } else {
+                pane.apply(SplitPaneMutation::ResizeEnd);
+            }
+            cx.mutations().release_pointer(pointer_id, target);
+            true
+        })
+    }
+
+    pub fn hover_split_handle(
+        &mut self,
+        target: Option<StableNodeId>,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(target) = target else {
+            return Ok(false);
+        };
+        let Some(entity) = self.split_for_handle(target) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |pane, _| pane.apply(SplitPaneMutation::Hover(true)))
+    }
+
+    pub fn adjust_focused_split(
+        &mut self,
+        document: crate::DocumentId,
+        direction: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(focused) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        let Some(entity) = self
+            .split_for_handle(focused)
+            .or_else(|| self.split_pane_entity(focused))
+        else {
+            return Ok(false);
+        };
+        self.update_component(entity, |pane, _| {
+            pane.apply(SplitPaneMutation::Adjust(direction))
+        })
+    }
+
+    fn split_for_handle(&self, id: StableNodeId) -> Option<crate::Entity<SplitPane>> {
+        let parent = self.world().node(id)?.parent?;
+        let entity = self.split_pane_entity(parent)?;
+        self.read(entity, |pane| pane.handle == Some(id))
+            .ok()
+            .filter(|matches| *matches)
+            .map(|_| entity)
+    }
+
+    fn split_pane_entity(&self, id: StableNodeId) -> Option<crate::Entity<SplitPane>> {
+        self.is_split_pane(id)
+            .then(|| crate::Entity::from_stable_id(id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, DocumentId};
+    use crate::{AppContext, DocumentId, MutationQueue};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -481,6 +653,94 @@ mod tests {
                 focusable: true,
             })
         );
+    }
+
+    #[test]
+    fn pointer_drag_resizes_the_first_pane() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let handle = slot(&mut context, "handle");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount(&mut context, &model, first, second, handle);
+        context
+            .commit_mutations({
+                let mut mutations = MutationQueue::new();
+                mutations.insert(split.stable_id(), handle, None);
+                mutations.write_layout(
+                    split.stable_id(),
+                    crate::LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 400.0,
+                        height: 200.0,
+                    },
+                );
+                mutations.write_layout(
+                    handle,
+                    crate::LayoutBox {
+                        x: 200.0,
+                        y: 0.0,
+                        width: HANDLE_SIZE,
+                        height: 200.0,
+                    },
+                );
+                mutations
+            })
+            .unwrap();
+
+        assert!(
+            context
+                .begin_split_resize(document(), 1, handle, 204.0, 20.0)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_split_resize(document(), 1, 240.0, 20.0)
+                .unwrap()
+        );
+        assert!(context.end_split_resize(document(), 1, false).unwrap());
+        assert_eq!(
+            context.read(split, |pane| pane.model.size()).unwrap(),
+            236.0
+        );
+        assert!(context.world().pointer_capture(document(), 1).is_none());
+    }
+
+    #[test]
+    fn nearby_pointer_still_resolves_the_resize_handle() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let handle = slot(&mut context, "handle");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount(&mut context, &model, first, second, handle);
+        context
+            .commit_mutations({
+                let mut mutations = MutationQueue::new();
+                mutations.insert(split.stable_id(), handle, None);
+                mutations.write_layout(
+                    handle,
+                    crate::LayoutBox {
+                        x: 200.0,
+                        y: 0.0,
+                        width: HANDLE_SIZE,
+                        height: 200.0,
+                    },
+                );
+                mutations
+            })
+            .unwrap();
+        context.rebuild_hit_test(document());
+        assert_eq!(
+            context.split_handle_near(document(), 204.0, 20.0),
+            Some(handle)
+        );
+        assert_eq!(
+            context.split_handle_near(document(), 196.0, 20.0),
+            Some(handle)
+        );
+        assert_eq!(context.split_handle_near(document(), 40.0, 20.0), None);
     }
 
     #[test]
