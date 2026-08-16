@@ -8,6 +8,7 @@
 mod animation;
 mod command_palette;
 mod components;
+mod dock;
 mod dropdown;
 mod feedback;
 mod form_surfaces;
@@ -16,6 +17,7 @@ mod layout_engine;
 mod menus;
 mod mutation;
 mod overlay_surfaces;
+mod pane;
 mod placeholders;
 mod popover;
 mod presentation;
@@ -26,11 +28,14 @@ mod search_dropdown;
 mod select;
 mod selection;
 mod settings;
+mod shell;
 mod sidebar;
+mod split_pane;
 mod tabs;
 mod toast;
 mod tree_view;
 mod view_components;
+mod workspace;
 mod world;
 mod xy_pad;
 
@@ -47,6 +52,7 @@ pub use components::{
     TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics, TextSelection,
     TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
 };
+pub use dock::{Dock, DockAxis, DockDropZone, DockNode, DockPanel};
 pub use dropdown::{Dropdown, DropdownOption};
 pub use feedback::{
     EmptyState, LabeledValue, Progress, ProgressCancelled, Spinner, StatusBadge, ValidationMessage,
@@ -79,6 +85,7 @@ pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
     ModalSlots, ModalSurface, ModalSurfaceKind,
 };
+pub use pane::{PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode};
 pub use placeholders::{LevelMeter, Skeleton};
 pub use popover::{ActionMenu, Popover, PopoverClosed, PopoverToggled, resolve_popover_origin};
 pub use presentation::{
@@ -99,11 +106,13 @@ pub use settings::{
     AppearanceSectionAssembly, SettingsCard, SettingsCollapsibleCard, SettingsRow,
     apply_appearance_event,
 };
+pub use shell::{AppShell, AppTitleBar, AppTitleBarControls, WindowChromeAction};
 pub use sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState,
     SidebarRowTone, SidebarSection, SidebarSectionSlots, SidebarSectionState,
     sidebar_row_depth_inset,
 };
+pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
@@ -114,6 +123,7 @@ pub use view_components::{
     SliderChanged, SliderError, Switch, Tab, TabList, TabSelected, Table, TableCell,
     TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, ToggleChanged, Tooltip,
 };
+pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
     CommitReport, DocumentId, NodeKind, NodeSnapshot, StableNodeId, UiWorld, UiWorldError,
 };

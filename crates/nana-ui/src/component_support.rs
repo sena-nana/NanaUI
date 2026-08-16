@@ -187,14 +187,14 @@ component_catalog! {
     EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     INTERACTIVE_CARD => { id: "interactive-card", name: "InteractiveCard", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     LIST_ITEM => { id: "list-item", name: "ListItem", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, migration: Compatibility, feature: Some("surfaces"), compiled: cfg!(feature = "surfaces"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    WORKSPACE => { id: "workspace", name: "Workspace", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
-    DOCK => { id: "dock", name: "Dock", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
-    SPLIT_PANE => { id: "split-pane", name: "SplitPane", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    PANE_CHROME => { id: "pane-chrome", name: "PaneChrome", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    PANE_TREE => { id: "pane-tree", name: "PaneTree", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    APP_SHELL => { id: "app-shell", name: "AppShell", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    APP_TITLE_BAR => { id: "app-title-bar", name: "AppTitleBar", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    WORKSPACE => { id: "workspace", name: "Workspace", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
+    DOCK => { id: "dock", name: "Dock", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
+    SPLIT_PANE => { id: "split-pane", name: "SplitPane", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    PANE_CHROME => { id: "pane-chrome", name: "PaneChrome", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    PANE_TREE => { id: "pane-tree", name: "PaneTree", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    APP_SHELL => { id: "app-shell", name: "AppShell", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    APP_TITLE_BAR => { id: "app-title-bar", name: "AppTitleBar", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SETTINGS => { id: "settings", name: "Settings", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     APPEARANCE_SECTION => { id: "appearance-section", name: "AppearanceSection", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     ABOUT_SECTION => { id: "about-section", name: "AboutSection", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Accessibility] },
@@ -291,6 +291,14 @@ mod tests {
             component_ids::APPEARANCE_SECTION,
             component_ids::ABOUT_SECTION,
             component_ids::SETTINGS_COLLAPSIBLE_CARD,
+            component_ids::WORKSPACE,
+            component_ids::DOCK,
+            component_ids::DOCK_PANEL,
+            component_ids::SPLIT_PANE,
+            component_ids::PANE_CHROME,
+            component_ids::PANE_TREE,
+            component_ids::APP_SHELL,
+            component_ids::APP_TITLE_BAR,
         ] {
             let support = component_support(id).expect("qualified component is cataloged");
             assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
@@ -447,6 +455,24 @@ mod tests {
         );
         let _: nana_ui_runtime::SettingsCollapsibleCard =
             crate::components::SettingsCollapsibleCard::new(true);
+    }
+
+    #[test]
+    fn workspace_family_public_exports_are_runtime_components() {
+        let _: nana_ui_runtime::Workspace = crate::Workspace::new();
+        let _: nana_ui_runtime::Dock =
+            crate::Dock::new(nana_ui_runtime::DockNode::item("main", None));
+        let _: nana_ui_runtime::DockPanel = crate::DockPanel::new();
+        let _: fn(
+            &nana_ui_core::SplitPaneModel,
+            nana_ui_runtime::StableNodeId,
+            nana_ui_runtime::StableNodeId,
+        ) -> nana_ui_runtime::SplitPane = crate::SplitPane::from_model;
+        let _: nana_ui_runtime::PaneChrome = crate::PaneChrome::new();
+        let _: nana_ui_runtime::PaneTree =
+            crate::PaneTree::new(nana_ui_runtime::PaneTreeNode::leaf("editor"));
+        let _: nana_ui_runtime::AppShell = crate::AppShell::new();
+        let _: nana_ui_runtime::AppTitleBar = crate::AppTitleBar::new("NanaUI");
     }
 
     #[test]

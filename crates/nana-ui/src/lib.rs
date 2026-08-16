@@ -107,6 +107,8 @@ pub mod compatibility {
         AboutMetadata, AboutSection, AppearanceSection, SettingsCollapsibleCard,
     };
     #[cfg(feature = "surfaces")]
+    pub use crate::components::surfaces::DockPanel;
+    #[cfg(feature = "surfaces")]
     pub use crate::components::surfaces::{
         Card, EmptyState, FormField, InteractiveCard, LabeledValue, ListItem,
     };
@@ -117,7 +119,11 @@ pub mod compatibility {
     };
     #[cfg(feature = "xy-pad")]
     pub use crate::components::xy_pad::XYPad;
+    pub use crate::pane::{
+        PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
+    };
     pub use crate::settings::{SettingsCard, SettingsRow};
+    pub use crate::shell::AppTitleBar;
     pub use crate::sidebar::{
         SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState,
         SidebarRowTone, SidebarSection, SidebarSectionState,
@@ -173,9 +179,6 @@ pub use components::rich_text::{
     MarkdownTableAlignment, NativeMarkdown, native_markdown,
 };
 pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
-
-#[cfg(feature = "surfaces")]
-pub use components::surfaces::DockPanel;
 
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::XYPadState;
@@ -244,17 +247,19 @@ pub use nana_ui_core::{XYPadEvent, XYPadValue};
 pub use nana_ui_platform::ImeEvent;
 pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::{
-    AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppearanceSection,
-    Button, Card, Checkbox, CommandPalette, ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown,
-    DropdownEvent, DropdownOption, DropdownSelection, EmptyState, FormField, IconButton,
-    InteractiveCard, LabeledValue, LevelMeter, ListItem, OverlayHost, Popover, Progress,
-    ProgressCancelled, QrCode, QrCodeError, RangeField, SearchDropdown, SearchDropdownEvent,
-    SearchDropdownOption, SegmentedControl, Select, SelectOption, SettingsCard,
-    SettingsCollapsibleCard, SettingsRow, SidebarFooter, SidebarFooterButton, SidebarFrame,
-    SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, SidebarSectionSlots,
-    SidebarSectionState, Skeleton, Spinner, StatusBadge, Switch, TabDragGroup, TabDragLease,
-    TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Toast, Tooltip,
-    TreeNavigation, TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad,
+    AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppShell,
+    AppTitleBar, AppTitleBarControls, AppearanceSection, Button, Card, Checkbox, CommandPalette,
+    ConfirmDialog, ContextMenu, Dialog, Dock, DockPanel, Drawer, Dropdown, DropdownEvent,
+    DropdownOption, DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard,
+    LabeledValue, LevelMeter, ListItem, OverlayHost, PaneChrome, PaneChromeAction,
+    PaneChromeActionKind, PaneTree, PaneTreeNode, Popover, Progress, ProgressCancelled, QrCode,
+    QrCodeError, RangeField, SearchDropdown, SearchDropdownEvent, SearchDropdownOption,
+    SegmentedControl, Select, SelectOption, SettingsCard, SettingsCollapsibleCard, SettingsRow,
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
+    SidebarSection, SidebarSectionSlots, SidebarSectionState, Skeleton, Spinner, SplitPane,
+    StatusBadge, Switch, TabDragGroup, TabDragLease, TabDragSurface, TabOption, Tabs, TabsEvent,
+    Text, TextArea, TextInput, Toast, Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent,
+    ValidationMessage, Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle, XYPad,
     tree_navigation_event,
 };
 pub use nana_ui_runtime::{
@@ -268,9 +273,7 @@ pub use nana_window::{
     platform_material_support,
 };
 pub use overlay::ExclusiveOverlay;
-pub use pane::{
-    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, ratio_pane_split,
-};
+pub use pane::ratio_pane_split;
 pub use runtime_animation::RuntimeAnimationClock;
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
@@ -292,9 +295,7 @@ pub use settings::{
     AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
     SettingsTabId, WindowMaterialMode, settings_page, settings_sidebar,
 };
-pub use shell::{
-    AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame, app_shell, app_title_bar,
-};
+pub use shell::{DesktopShell, PopupShell, PopupTitleBarFrame, app_shell, app_title_bar};
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController, split_pane};
 pub use theme::{
     Colors, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, ThemeModeExt, ThemeTokens,
