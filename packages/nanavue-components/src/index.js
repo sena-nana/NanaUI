@@ -41,6 +41,7 @@ export { NanaActionMenu } from "./NanaActionMenu.js";
 export { NanaXyPad } from "./NanaXyPad.js";
 export { NanaQrCode } from "./NanaQrCode.js";
 export { NanaDropdown } from "./NanaDropdown.js";
+export { NanaSearch } from "./NanaSearch.js";
 export { NanaThemeToggle } from "./NanaThemeToggle.js";
 export { NanaAppearancePanel } from "./NanaAppearancePanel.js";
 export { NanaWorkspaceShell } from "./NanaWorkspaceShell.js";

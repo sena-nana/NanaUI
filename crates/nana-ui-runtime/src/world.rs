@@ -3198,13 +3198,18 @@ impl UiWorld {
                     .then(|| self.style_model.palette.accent.as_rgba_array()),
                 })
             }
-            StandardVisual::Progress { value_ratio, label } => progress_geometry(
+            StandardVisual::Progress {
+                value_ratio,
+                label,
+                cancellable,
+            } => progress_geometry(
                 bounds,
                 style,
                 *value_ratio,
                 6.0,
                 3.0,
                 label.as_ref(),
+                *cancellable,
                 self.style_model.palette.text.as_rgba_array(),
             ),
             StandardVisual::LevelMeter {
@@ -3222,6 +3227,7 @@ impl UiWorld {
                     girth,
                     girth / 2.0,
                     None,
+                    false,
                     [0.0; 4],
                 )
             }
@@ -3359,6 +3365,19 @@ impl UiWorld {
                 *highlighted,
                 style,
                 source,
+                &self.style_model.palette,
+            )),
+            StandardVisual::MenuSurface {
+                kind: crate::MenuSurfaceKind::ContextMenu,
+                query,
+                rows,
+                highlighted,
+                ..
+            } if query.is_some() || !rows.is_empty() => Some(crate::menus::context_menu_geometry(
+                bounds,
+                query.as_ref(),
+                rows,
+                *highlighted,
                 &self.style_model.palette,
             )),
             StandardVisual::MenuSurface { trigger, gap, .. } => {
@@ -4148,6 +4167,7 @@ fn progress_geometry(
     girth: f32,
     corner_radius: f32,
     label: Option<&Arc<str>>,
+    cancellable: bool,
     default_label_color: [f32; 4],
 ) -> Option<crate::ComponentGeometry> {
     let ratio = value_ratio.clamp(0.0, 1.0);
@@ -4156,11 +4176,26 @@ fn progress_geometry(
     } else {
         6.0
     };
+    let cancel_size = 24.0_f32.min(bounds.height).min(bounds.width);
+    let heading = if label.is_some() || cancellable {
+        12.0_f32.max(if cancellable { cancel_size } else { 0.0 })
+    } else {
+        0.0
+    };
+    let cancel = cancellable.then(|| LayoutBox {
+        x: bounds.x + (bounds.width - cancel_size).max(0.0),
+        y: bounds.y + (heading - cancel_size).max(0.0) / 2.0,
+        width: cancel_size,
+        height: cancel_size,
+    });
+    let label_width = cancel
+        .map(|cancel| (cancel.x - bounds.x - 8.0).max(0.0))
+        .unwrap_or(bounds.width);
     let label_region = label.map(|label| crate::ComponentTextRegion {
         bounds: LayoutBox {
             x: bounds.x,
-            y: bounds.y,
-            width: bounds.width,
+            y: bounds.y + (heading - 12.0).max(0.0) / 2.0,
+            width: label_width,
             height: 12.0_f32.min(bounds.height),
         },
         content: Arc::clone(label),
@@ -4168,8 +4203,8 @@ fn progress_geometry(
         font_size: 12.0,
         font_weight: Some(500),
     });
-    let track = if label.is_some() {
-        let track_y = bounds.y + 12.0 + 6.0;
+    let track = if heading > 0.0 {
+        let track_y = bounds.y + heading + 6.0;
         LayoutBox {
             x: bounds.x,
             y: track_y,
@@ -4191,6 +4226,7 @@ fn progress_geometry(
         },
         track,
         label: label_region,
+        cancel,
         corner_radius: corner_radius.max(0.0),
     })
 }

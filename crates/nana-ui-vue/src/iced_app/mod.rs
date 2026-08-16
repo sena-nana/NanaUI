@@ -37,14 +37,14 @@ use iced::{Point, Rectangle, Renderer, Theme};
 use nana_ui::compatibility::{
     ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, ConfirmDialog, Dialog, Drawer,
     EmptyState, FormField, IconButton, Input, InteractiveCard, LabeledValue, LevelMeter, ListItem,
-    OverlayHost, Popover, Progress, RangeField, SegmentedControl, Select, Skeleton, Spinner,
-    StatusBadge, Switch, Textarea, Tooltip, ValidationMessage,
+    OverlayHost, Popover, Progress, RangeField, SegmentedControl, Select, SettingsCard,
+    SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Skeleton, Spinner, StatusBadge,
+    Switch, Tabs, Textarea, Tooltip, ValidationMessage,
 };
 use nana_ui::{
     AnchoredMenuPlacement, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ContextMenuEvent,
     ContextMenuHost, ControlSize, DrawerSide, HostTextureBinding, HostTextureRegistry, Icon,
-    SelectionOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Tabs,
-    ThemeTokens, TooltipConfig, TooltipPlacement, icon, ui_font,
+    SelectionOption, ThemeTokens, TooltipConfig, TooltipPlacement, icon, ui_font,
 };
 use nana_ui_scene::UiScene;
 use nana_ui_web_api::{CanvasBitmap, SharedCanvasRuntime};
@@ -61,8 +61,9 @@ use crate::menu_store::MenuStore;
 use crate::native_component::NativeComponentRegistry;
 use crate::tree::{LayoutBoxStore, NodeHandle, shared_layout_box_store};
 use crate::widget_map::{
-    first_button_child_id, form_field_control_child_id, form_field_support, labeled_value_caption,
-    level_meter_value, validation_message_text,
+    first_button_child_id, form_field_control_child_id, form_field_support, is_dropdown_field,
+    is_search_dropdown, labeled_value_caption, level_meter_value, progress_cancellable,
+    validation_message_text,
 };
 
 pub(crate) fn hosted_text_widget_id(id: WidgetId) -> String {
@@ -784,9 +785,25 @@ fn runtime_component_for_widget(
         }
         WidgetKind::Input => Some(nana_ui::component_ids::TEXT_INPUT),
         WidgetKind::Textarea => Some(nana_ui::component_ids::TEXTAREA),
+        WidgetKind::Select if is_search_dropdown(&widget.props) => {
+            Some(nana_ui::component_ids::SEARCH_DROPDOWN)
+        }
+        WidgetKind::Select if is_dropdown_field(&widget.props) => {
+            Some(nana_ui::component_ids::DROPDOWN)
+        }
         WidgetKind::Select => Some(nana_ui::component_ids::SELECT),
+        WidgetKind::Tabs => Some(nana_ui::component_ids::TABS),
+        WidgetKind::Segmented => Some(nana_ui::component_ids::SEGMENTED_CONTROL),
+        WidgetKind::FormField => Some(nana_ui::component_ids::FORM_FIELD),
+        WidgetKind::InteractiveCard => Some(nana_ui::component_ids::INTERACTIVE_CARD),
+        // SettingsRow/Card and SidebarRow compose existing Scene paint.
+        // SidebarFrame keeps the Iced independently scrolling body.
+        WidgetKind::SettingsRow | WidgetKind::SettingsCard => {
+            Some(nana_ui::component_ids::SETTINGS)
+        }
+        WidgetKind::SidebarRow => Some(nana_ui::component_ids::SIDEBAR_ROW),
         // Scene paints the Runtime subtree, so Dialog/Drawer/Popover may have
-        // children. Searchable ContextMenu stays on ContextMenuHost.
+        // children. Searchable ContextMenu now keeps its filter field in Runtime.
         WidgetKind::Dialog => Some(if is_confirm_dialog_props(&widget.props) {
             nana_ui::component_ids::CONFIRM_DIALOG
         } else {
@@ -794,13 +811,11 @@ fn runtime_component_for_widget(
         }),
         WidgetKind::Drawer => Some(nana_ui::component_ids::DRAWER),
         WidgetKind::Popover => Some(nana_ui::component_ids::POPOVER),
-        WidgetKind::ContextMenu if !context_menu_requires_iced_host(&widget.props) => {
-            Some(if is_action_menu_props(&widget.props) {
-                nana_ui::component_ids::ACTION_MENU
-            } else {
-                nana_ui::component_ids::CONTEXT_MENU
-            })
-        }
+        WidgetKind::ContextMenu => Some(if is_action_menu_props(&widget.props) {
+            nana_ui::component_ids::ACTION_MENU
+        } else {
+            nana_ui::component_ids::CONTEXT_MENU
+        }),
         WidgetKind::ActionMenu => Some(nana_ui::component_ids::ACTION_MENU),
         WidgetKind::ActionMenuItem => Some(nana_ui::component_ids::ACTION_MENU_ITEM),
         WidgetKind::Toast => Some(nana_ui::component_ids::TOAST),
@@ -809,12 +824,8 @@ fn runtime_component_for_widget(
         WidgetKind::QrCode => Some(nana_ui::component_ids::QR_CODE),
         WidgetKind::StatusBadge => Some(nana_ui::component_ids::STATUS_BADGE),
         WidgetKind::ValidationMessage => Some(nana_ui::component_ids::VALIDATION_MESSAGE),
-        WidgetKind::LabeledValue if first_button_child_id(snap, widget).is_none() => {
-            Some(nana_ui::component_ids::LABELED_VALUE)
-        }
-        WidgetKind::EmptyState if first_button_child_id(snap, widget).is_none() => {
-            Some(nana_ui::component_ids::EMPTY_STATE)
-        }
+        WidgetKind::LabeledValue => Some(nana_ui::component_ids::LABELED_VALUE),
+        WidgetKind::EmptyState => Some(nana_ui::component_ids::EMPTY_STATE),
         WidgetKind::Progress => Some(nana_ui::component_ids::PROGRESS),
         WidgetKind::Spinner => Some(nana_ui::component_ids::SPINNER),
         WidgetKind::Skeleton => Some(nana_ui::component_ids::SKELETON),
@@ -1259,6 +1270,11 @@ where
                     Progress::new(widget.props.progress, widget.props.progress_max.max(1.0));
                 if !widget.props.display_label().is_empty() {
                     progress = progress.label(widget.props.display_label());
+                }
+                if progress_cancellable(&widget.props) {
+                    let id = widget.id;
+                    let map = map_event.clone();
+                    progress = progress.on_cancel(map(BridgeEvent::Press { id }));
                 }
                 progress.view(tokens)
             }
@@ -2175,6 +2191,10 @@ where
             let label = owned_display(&props);
             if !label.is_empty() {
                 progress = progress.label(label);
+            }
+            if progress_cancellable(&props) {
+                let map = map_event.clone();
+                progress = progress.on_cancel(map(BridgeEvent::Press { id: wid }));
             }
             progress.view(tokens)
         }

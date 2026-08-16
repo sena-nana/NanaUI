@@ -8,10 +8,10 @@ use nana_ui_core::{
 use crate::popover::{menu_surface_style, project_anchored_menu};
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentGeometry, ComponentTextRegion, ComputedStyle,
-    InteractionState, InteractionStyle, LayoutBox, MenuSurfaceKind, MutationQueue, NodeKind,
-    NodeStyle, SemanticPaint, StableNodeId, StandardVisual, TextContent, TextVerticalAlignment,
-    UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentElevation, ComponentGeometry,
+    ComponentTextRegion, ComputedStyle, InteractionState, InteractionStyle, LayoutBox,
+    MenuSurfaceKind, MutationQueue, NodeKind, NodeStyle, SelectOptionData, SemanticPaint,
+    StableNodeId, StandardVisual, TextContent, TextInputState, TextVerticalAlignment, UiWorld,
 };
 
 const MENU_WIDTH: f32 = 200.0;
@@ -306,12 +306,13 @@ impl ContextMenuItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuEvent {
     Select(Arc<str>),
+    Search(Arc<str>),
     Dismiss,
 }
 
 /// Pointer-anchored menu. Slash-separated values (`parent/child`) are a tree;
-/// [`Self::query`] filters the current level or matching leaves. Iced keeps
-/// the search field and two-step danger confirm.
+/// [`Self::query`] filters the current level or matching leaves. Searchable
+/// menus own a committed [`TextInputState`] for the filter field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextMenu {
     pub items: Vec<ContextMenuItem>,
@@ -324,6 +325,7 @@ pub struct ContextMenu {
     pub active_path: Vec<Arc<str>>,
     pub query: Arc<str>,
     pub searchable: bool,
+    pub state: TextInputState,
 }
 
 impl ContextMenu {
@@ -339,6 +341,7 @@ impl ContextMenu {
             active_path: Vec::new(),
             query: Arc::from(""),
             searchable: false,
+            state: TextInputState::new(""),
         };
         menu.apply_anchor();
         menu
@@ -368,14 +371,29 @@ impl ContextMenu {
     }
 
     pub fn query(mut self, query: impl Into<Arc<str>>) -> Self {
-        self.query = query.into();
+        let query = query.into();
+        self.query = Arc::clone(&query);
+        self.state = TextInputState::new(query.as_ref());
         self.apply_anchor();
         self
     }
 
     pub fn searchable(mut self, searchable: bool) -> Self {
         self.searchable = searchable;
+        self.apply_anchor();
         self
+    }
+
+    pub fn set_query(&mut self, query: impl Into<Arc<str>>) {
+        let query = query.into();
+        self.query = Arc::clone(&query);
+        self.state = TextInputState::new(query.as_ref());
+        self.apply_anchor();
+    }
+
+    pub(crate) fn sync_query_from_state(&mut self) {
+        self.query = Arc::from(self.state.value.as_str());
+        self.apply_anchor();
     }
 
     /// Rows at the current nested level, or matching leaves when `query` is set.
@@ -388,7 +406,7 @@ impl ContextMenu {
     }
 
     pub fn place_in(&mut self, viewport: LayoutBox) {
-        let height = context_menu_height(self.visible_items().len());
+        let height = context_menu_height(self.visible_items().len(), self.searchable);
         let origin = resolve_anchored_origin(
             self.anchor_x,
             self.anchor_y,
@@ -440,7 +458,7 @@ impl ContextMenu {
     }
 
     fn apply_anchor(&mut self) {
-        let height = context_menu_height(self.visible_items().len());
+        let height = context_menu_height(self.visible_items().len(), self.searchable);
         let layout = Arc::make_mut(&mut self.style.layout);
         layout.position = PositionSpec::Fixed;
         layout.offset_left = Some(LengthSpec::Px(self.anchor_x));
@@ -506,14 +524,56 @@ impl crate::ComponentView for ContextMenu {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_anchored_menu(
+        let rows: Arc<[SelectOptionData]> = self
+            .visible_items()
+            .into_iter()
+            .map(|item| SelectOptionData {
+                label: item.label,
+                hint: item.hint,
+                disabled: item.disabled,
+                checked: false,
+            })
+            .collect();
+        if self.open {
+            let visual = StandardVisual::MenuSurface {
+                kind: MenuSurfaceKind::ContextMenu,
+                trigger: None,
+                gap: 0.0,
+                query: self.searchable.then(|| Arc::clone(&self.query)),
+                rows,
+                highlighted: self.highlighted,
+            };
+            if world.standard_visual(id) != Some(visual.clone()) {
+                mutations.set_standard_visual(id, Some(visual));
+            }
+        } else if world.standard_visual(id).is_some() {
+            mutations.set_standard_visual(id, None);
+        }
+        if self.searchable && self.open {
+            if world.text_input(id) != Some(&self.state) {
+                mutations.set_text_input(id, Some(self.state.clone()));
+            }
+        } else if world.text_input(id).is_some() {
+            mutations.set_text_input(id, None);
+        }
+        let mut style = self.style.clone();
+        Arc::make_mut(&mut style.layout).hidden = !self.open;
+        project_common(
             id,
             world,
             mutations,
-            MenuSurfaceKind::ContextMenu,
-            &self.style,
-            self.open,
-            "context-menu",
+            &style,
+            InteractionState {
+                pointer_events: self.open,
+                focusable: self.open && self.searchable,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                label: Some(Arc::from("context-menu")),
+                value: (self.searchable && !self.query.is_empty()).then(|| Arc::clone(&self.query)),
+                editable: self.searchable && self.open,
+                ..AccessibilityState::default()
+            },
         );
     }
 }
@@ -612,10 +672,123 @@ pub fn resolve_anchored_origin(
     origin
 }
 
-fn context_menu_height(item_count: usize) -> f32 {
+const SEARCH_FIELD_HEIGHT: f32 = 28.0;
+const SEARCH_FIELD_GAP: f32 = 4.0;
+
+fn context_menu_height(item_count: usize, searchable: bool) -> f32 {
     let count = item_count.max(1) as f32;
     let item = ControlSize::Small.height();
-    MENU_PADDING * 2.0 + count * item + (count - 1.0).max(0.0)
+    let list = MENU_PADDING * 2.0 + count * item + (count - 1.0).max(0.0);
+    if searchable {
+        list + SEARCH_FIELD_HEIGHT + SEARCH_FIELD_GAP
+    } else {
+        list
+    }
+}
+
+pub(crate) fn context_menu_geometry(
+    bounds: LayoutBox,
+    query: Option<&Arc<str>>,
+    rows: &[SelectOptionData],
+    highlighted: Option<usize>,
+    palette: &SemanticPalette,
+) -> ComponentGeometry {
+    let is_light = palette.background.as_rgba_array()[0] > 0.5;
+    let searchable = query.is_some();
+    let search_field = searchable.then(|| LayoutBox {
+        x: bounds.x + MENU_PADDING,
+        y: bounds.y + MENU_PADDING,
+        width: (bounds.width - MENU_PADDING * 2.0).max(0.0),
+        height: SEARCH_FIELD_HEIGHT,
+    });
+    let search = search_field.map(|field| {
+        let empty = query.is_none_or(|query| query.trim().is_empty());
+        ComponentTextRegion {
+            bounds: field,
+            content: if empty {
+                Arc::from("搜索操作")
+            } else {
+                Arc::clone(query.expect("searchable query"))
+            },
+            color: Some(if empty {
+                palette.faint.as_rgba_array()
+            } else {
+                palette.text.as_rgba_array()
+            }),
+            font_size: ControlSize::Small.text_size(),
+            font_weight: None,
+        }
+    });
+    let list_top = if searchable {
+        bounds.y + MENU_PADDING + SEARCH_FIELD_HEIGHT + SEARCH_FIELD_GAP
+    } else {
+        bounds.y + MENU_PADDING
+    };
+    let item_height = ControlSize::Small.height();
+    let options = rows
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            let y = list_top + index as f32 * (item_height + 1.0);
+            let selected = highlighted == Some(index);
+            let row = LayoutBox {
+                x: bounds.x + MENU_PADDING,
+                y,
+                width: (bounds.width - MENU_PADDING * 2.0).max(0.0),
+                height: item_height,
+            };
+            crate::SelectOptionGeometry {
+                bounds: row,
+                label: ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: row.x + ControlSize::Small.padding_x(),
+                        y: row.y,
+                        width: (row.width - ControlSize::Small.padding_x() * 2.0).max(0.0),
+                        height: row.height,
+                    },
+                    content: crate::select::menu_option_label(option),
+                    color: Some(if option.disabled {
+                        palette.faint.as_rgba_array()
+                    } else {
+                        palette.text.as_rgba_array()
+                    }),
+                    font_size: ControlSize::Small.text_size(),
+                    font_weight: Some(500),
+                },
+                selected,
+                checked: option.checked,
+                disabled: option.disabled,
+                background: selected.then_some(palette.hover.as_rgba_array()),
+            }
+        })
+        .collect();
+    ComponentGeometry::MenuSurface {
+        trigger: None,
+        surface: bounds,
+        search,
+        search_field,
+        options,
+        elevation: ComponentElevation {
+            color: [0.0, 0.0, 0.0, if is_light { 0.30 } else { 0.55 }],
+            offset_y: 4.0,
+            blur_radius: if is_light { 14.0 } else { 18.0 },
+        },
+        background: palette.surface.as_rgba_array(),
+        border: palette.border_soft.as_rgba_array(),
+    }
+}
+
+pub(crate) fn context_menu_option_at(
+    geometry: &ComponentGeometry,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    let ComponentGeometry::MenuSurface { options, .. } = geometry else {
+        return None;
+    };
+    options
+        .iter()
+        .position(|option| !option.disabled && option.bounds.contains(x, y))
 }
 
 fn value_segments(value: &str) -> Vec<&str> {
@@ -678,7 +851,7 @@ fn item_style(size: ControlSize) -> NodeStyle {
 mod tests {
     use super::*;
     use crate::framework::AppContext;
-    use crate::{Activate, DocumentId};
+    use crate::{Activate, DocumentId, StandardVisual};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -837,6 +1010,48 @@ mod tests {
                 Some(LengthSpec::Px(filtered)) if filtered < full
             )
         ));
+        let Some(LengthSpec::Px(searchable_height)) = menu.style.layout.height else {
+            panic!("searchable menu height");
+        };
+        assert!(searchable_height > context_menu_height(1, false));
+    }
+
+    #[test]
+    fn searchable_context_menu_projects_query_state_and_rows() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([
+                        ContextMenuItem::new("rename", "Rename"),
+                        ContextMenuItem::new("delete", "Delete"),
+                    ])
+                    .searchable(true)
+                    .query("del"),
+            )
+            .unwrap();
+        let id = menu.stable_id();
+        assert_eq!(
+            context
+                .world()
+                .text_input(id)
+                .map(|state| state.value.as_str()),
+            Some("del")
+        );
+        assert!(context.world().interaction(id).unwrap().focusable);
+        match context.world().standard_visual(id) {
+            Some(StandardVisual::MenuSurface {
+                query: Some(query),
+                rows,
+                ..
+            }) => {
+                assert_eq!(query.as_ref(), "del");
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].label.as_ref(), "Delete");
+            }
+            other => panic!("searchable menu visual: {other:?}"),
+        }
     }
 
     #[test]

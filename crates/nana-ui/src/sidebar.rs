@@ -29,22 +29,7 @@ const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
 const ROW_TREE_DEPTH_STEP: f32 = 12.0;
 const SECTION_ANIMATION_DURATION: Duration = Duration::from_millis(160);
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum SidebarRowState {
-    #[default]
-    Idle,
-    Active,
-    AncestorActive,
-    Disabled,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum SidebarRowTone {
-    #[default]
-    Default,
-    Warning,
-    Error,
-}
+pub use nana_ui_runtime::{SidebarRowState, SidebarRowTone};
 
 /// Persistent expansion state and frame subscription for a sidebar section.
 #[derive(Debug, Clone)]

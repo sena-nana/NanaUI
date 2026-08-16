@@ -2421,7 +2421,13 @@ impl VueHost {
                 .expect("vue bridge")
                 .get(target.0)
                 .is_some_and(|widget| {
-                    matches!(widget.kind, WidgetKind::Input | WidgetKind::Textarea)
+                    matches!(
+                        widget.kind,
+                        WidgetKind::Input
+                            | WidgetKind::Textarea
+                            | WidgetKind::ContextMenu
+                            | WidgetKind::Select
+                    )
                 });
             let document = self.document.lock().expect("vue doc");
             (
@@ -2435,7 +2441,15 @@ impl VueHost {
         let editable = widget_editable
             || matches!(
                 tag.as_deref(),
-                Some("input" | "textarea" | "nana-input" | "nana-textarea")
+                Some(
+                    "input"
+                        | "textarea"
+                        | "nana-input"
+                        | "nana-textarea"
+                        | "nana-context-menu"
+                        | "nana-search"
+                        | "nana-dropdown"
+                )
             )
             || contenteditable.is_some_and(|value| value != "false");
         let Some(mut state) =
@@ -2461,6 +2475,18 @@ impl VueHost {
                 return Ok(false);
             }
             document.set_attribute(target, "value", &next.value);
+        }
+        #[cfg(feature = "iced-view")]
+        {
+            let is_menu = self
+                .bridge
+                .lock()
+                .expect("vue bridge")
+                .get(target.0)
+                .is_some_and(|widget| widget.kind == WidgetKind::ContextMenu);
+            if is_menu {
+                self.menus.set_query(target.0, next.value.clone());
+            }
         }
         self.fire_dom_event(engine, target, "input", detail)?;
         engine.run_microtasks()?;

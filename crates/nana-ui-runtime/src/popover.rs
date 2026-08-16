@@ -218,6 +218,9 @@ pub(crate) fn project_menu_surface(
             kind,
             trigger: trigger.clone(),
             gap,
+            query: None,
+            rows: Arc::from([]),
+            highlighted: None,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -322,6 +325,9 @@ pub(crate) fn project_anchored_menu(
             kind,
             trigger: None,
             gap: 0.0,
+            query: None,
+            rows: Arc::from([]),
+            highlighted: None,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -386,6 +392,9 @@ pub(crate) fn menu_surface_geometry(
                 font_weight: None,
             }),
         surface,
+        search: None,
+        search_field: None,
+        options: Vec::new(),
         elevation: ComponentElevation {
             color: [0.0, 0.0, 0.0, if is_light { 0.30 } else { 0.55 }],
             offset_y: 4.0,

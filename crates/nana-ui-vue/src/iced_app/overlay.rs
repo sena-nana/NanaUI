@@ -4,20 +4,6 @@ fn overlay_is_open(props: &crate::bridge::WidgetProps) -> bool {
     props.active || props.toggled
 }
 
-/// Searchable menus stay on Iced [`ContextMenuHost`] + [`MenuStore`] so the
-/// search field is not dropped. Nested `parent/child` values Scene-route.
-fn context_menu_requires_iced_host(props: &WidgetProps) -> bool {
-    context_menu_is_searchable(props)
-}
-
-fn context_menu_is_searchable(props: &WidgetProps) -> bool {
-    props.options.len() >= 6
-        || props
-            .class_names
-            .iter()
-            .any(|class| class.contains("search"))
-}
-
 fn is_action_menu_props(props: &WidgetProps) -> bool {
     props.class_names.iter().any(|class| {
         matches!(

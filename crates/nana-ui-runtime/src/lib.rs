@@ -25,6 +25,9 @@ mod schedule;
 mod search_dropdown;
 mod select;
 mod selection;
+mod settings;
+mod sidebar;
+mod tabs;
 mod toast;
 mod tree_view;
 mod view_components;
@@ -46,7 +49,8 @@ pub use components::{
 };
 pub use dropdown::{Dropdown, DropdownOption};
 pub use feedback::{
-    EmptyState, LabeledValue, Progress, Spinner, StatusBadge, ValidationMessage, ValueEmphasis,
+    EmptyState, LabeledValue, Progress, ProgressCancelled, Spinner, StatusBadge, ValidationMessage,
+    ValueEmphasis,
 };
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
@@ -64,8 +68,9 @@ pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
     ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, JustifySpec, KeyContext,
     LayoutStyle, LengthSpec, PopoverAlignment, PopoverPlacement, PositionSpec, SemanticColorRole,
-    StatusTone, TableCursor, TableNavigation, ThemeMode, TreeNavigation, TreeNode, TreeViewEvent,
-    ValidationIntent, VirtualListLayout, VirtualListMaterialization,
+    StatusTone, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator,
+    TabStripPaint, TableCursor, TableNavigation, ThemeMode, TreeNavigation, TreeNode,
+    TreeViewEvent, ValidationIntent, VirtualListLayout, VirtualListMaterialization,
     VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
     tree_navigation_event,
@@ -89,6 +94,15 @@ pub use selection::{
     Radio, RadioGroup, RovingFocusIntent, RovingFocusPolicy, SegmentedControl, SegmentedOption,
     SegmentedSelectionRequested, SelectionChrome, SelectionOrientation,
 };
+pub use settings::{
+    AboutMetadata, AboutSection, AppearanceSection, SettingsCard, SettingsCollapsibleCard,
+    SettingsRow, apply_appearance_event,
+};
+pub use sidebar::{
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
+    SidebarSection, SidebarSectionState, sidebar_row_depth_inset,
+};
+pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
 pub use view_components::{

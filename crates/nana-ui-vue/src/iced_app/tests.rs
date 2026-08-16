@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn searchable_context_menu_stays_on_compatibility_composer() {
+    fn searchable_context_menu_scene_routes_through_runtime() {
         let mut bridge = MessageBridge::new();
         bridge.register(
             1,
@@ -448,13 +448,13 @@ mod tests {
         let snap = bridge.snapshot();
         assert_eq!(
             runtime_component_for_widget(&snap, snap.get(1).unwrap()),
-            None,
-            "6+ options must stay on ContextMenuHost"
+            Some(nana_ui::component_ids::CONTEXT_MENU),
+            "6+ options keep the Runtime search field"
         );
         assert_eq!(
             runtime_component_for_widget(&snap, snap.get(2).unwrap()),
-            None,
-            "search class must stay on ContextMenuHost"
+            Some(nana_ui::component_ids::CONTEXT_MENU),
+            "search class keeps the Runtime search field"
         );
         assert_eq!(
             runtime_component_for_widget(&snap, snap.get(3).unwrap()),
@@ -472,14 +472,20 @@ mod tests {
 
         let scene = UiScene::new();
         with_active_scene(Some(&scene), || {
-            assert!(matches!(
-                qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(1).unwrap()),
-                QualifiedSceneRoute::Compatibility
-            ));
-            assert!(matches!(
-                qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(2).unwrap()),
-                QualifiedSceneRoute::Compatibility
-            ));
+            assert!(
+                !matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(1).unwrap()),
+                    QualifiedSceneRoute::Compatibility
+                ),
+                "searchable menus Scene-route through Runtime"
+            );
+            assert!(
+                !matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(2).unwrap()),
+                    QualifiedSceneRoute::Compatibility
+                ),
+                "search class menus Scene-route through Runtime"
+            );
             assert!(
                 !matches!(
                     qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(3).unwrap()),
@@ -489,6 +495,114 @@ mod tests {
             );
         });
         let _: Element<'static, BridgeEvent> = paint_overlay_scene(&snap, &scene, (320.0, 200.0));
+    }
+
+    #[test]
+    fn dropdown_search_tabs_and_hosts_scene_route() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Select,
+            WidgetProps {
+                element_tag: "nana-dropdown".into(),
+                class_names: vec!["nana-dropdown".into()],
+                options: vec![select_option("code", "Code")],
+                value: "code".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Select,
+            WidgetProps {
+                element_tag: "nana-search".into(),
+                class_names: vec!["nana-search".into()],
+                options: vec![select_option("alpha", "Alpha")],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::Tabs,
+            WidgetProps {
+                options: vec![select_option("one", "One"), select_option("two", "Two")],
+                value: "one".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            4,
+            WidgetKind::FormField,
+            WidgetProps {
+                label: "Email".into(),
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::DROPDOWN)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::SEARCH_DROPDOWN)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(3).unwrap()),
+            Some(nana_ui::component_ids::TABS)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(4).unwrap()),
+            Some(nana_ui::component_ids::FORM_FIELD)
+        );
+    }
+
+    #[test]
+    fn sidebar_and_settings_scene_route() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::SidebarRow,
+            WidgetProps {
+                label: "工作区".into(),
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::SettingsRow,
+            WidgetProps {
+                label: "主题".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::SettingsCard,
+            WidgetProps {
+                label: "外观".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(4, WidgetKind::SidebarFrame, WidgetProps::default());
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::SIDEBAR_ROW)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::SETTINGS)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(3).unwrap()),
+            Some(nana_ui::component_ids::SETTINGS)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(4).unwrap()),
+            None
+        );
     }
 
     #[test]

@@ -1,9 +1,16 @@
 /**
- * NanaDropdown — Lilia `@lilia/ui/search` Dropdown stand-in for Nana host.
- * Maps to iced `Select` (`nana-select`) — not CSS fixed Teleport menus.
+ * NanaDropdown — single or multiple Runtime Dropdown field.
+ * Host tag `nana-dropdown` projects Runtime `Dropdown`, not Select.
  */
 import { h } from "@vue/runtime-core";
-import { NanaSelect } from "./NanaSelect.js";
+
+function normalizeOptions(options) {
+  return (options || []).map((option) => ({
+    value: option.value ?? option.key ?? option.label,
+    label: option.label ?? String(option.value ?? option.key ?? ""),
+    disabled: !!option.disabled,
+  }));
+}
 
 export const NanaDropdown = {
   name: "NanaDropdown",
@@ -16,7 +23,6 @@ export const NanaDropdown = {
     loading: { type: Boolean, default: false },
     invalid: { type: Boolean, default: false },
     size: { type: String, default: "small" },
-    /** Accepted for API parity; iced Select owns placement. */
     placement: { type: String, default: "bottom" },
     multiple: { type: Boolean, default: false },
     block: { type: Boolean, default: false },
@@ -29,31 +35,34 @@ export const NanaDropdown = {
   },
   emits: ["update:modelValue", "select", "change"],
   setup(props, { emit, attrs }) {
+    function onSelect(ev) {
+      const value = ev?.value ?? ev;
+      emit("update:modelValue", value);
+      emit("select", value, ev);
+      emit("change", value, ev);
+    }
+
     return () => {
       const size =
         props.size === "large" ? "large" : props.size === "medium" ? "medium" : "small";
       const value = Array.isArray(props.modelValue)
-        ? props.modelValue[0] ?? ""
+        ? props.modelValue.join(",")
         : props.modelValue;
-      return h(NanaSelect, {
+      return h("nana-dropdown", {
         ...attrs,
-        class: ["nana-dropdown", props.buttonClass, attrs.class]
-          .filter(Boolean)
-          .join(" "),
-        modelValue: value,
-        options: props.options,
+        class: ["nana-dropdown", props.buttonClass, attrs.class].filter(Boolean).join(" "),
+        value,
+        "model-value": value,
+        options: normalizeOptions(props.options),
         placeholder: props.displayLabel || props.placeholder || props.menuLabel || "",
         disabled: props.disabled,
         loading: props.loading,
         invalid: props.invalid,
         size,
+        multiple: props.multiple ? "" : undefined,
         "data-agent-id": props.agentId || attrs["data-agent-id"] || "nana.dropdown",
-        "onUpdate:modelValue": (v) => emit("update:modelValue", v),
-        onSelect: (v, ev) => {
-          emit("select", v, ev);
-          emit("change", v, ev);
-        },
-        onChange: (v, ev) => emit("change", v, ev),
+        onSelect,
+        onChange: onSelect,
       });
     };
   },

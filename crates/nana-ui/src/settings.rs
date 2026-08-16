@@ -1,3 +1,9 @@
+//! Iced compatibility composer for Settings.
+//!
+//! Leaf chrome (`SettingsRow`, `SettingsCard`) is implemented in Runtime.
+//! `settings_page` / `settings_sidebar` still assemble Iced views from the
+//! adapters in this module and [`crate::sidebar`].
+
 use std::borrow::Cow;
 
 use iced::widget::{column, container, row, scrollable, space, text};
@@ -269,5 +275,26 @@ where
                 left: 0.0,
             })
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeModeExt;
+    use iced::widget::text;
+
+    #[test]
+    fn iced_settings_row_keeps_chrome_slots() {
+        let tokens = crate::ThemeMode::Dark.tokens();
+        let _ = SettingsRow::<()>::new("主题", text("控制"))
+            .hint("立即生效")
+            .stacked(true)
+            .divided(true)
+            .loose(true)
+            .first_in_group()
+            .last_in_group()
+            .view(tokens);
+        let _ = SettingsCard::<()>::new("外观", text("内容")).view(tokens);
     }
 }

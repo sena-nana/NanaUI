@@ -83,7 +83,8 @@ pub mod compatibility {
     pub use crate::components::command_palette::CommandPalette;
     #[cfg(feature = "controls")]
     pub use crate::components::controls::{
-        Checkbox, Input, RangeField, SegmentedControl, Select, SelectionOption, Switch, Textarea,
+        Checkbox, Input, RangeField, SegmentedControl, Select, SelectionOption, Switch, Tabs,
+        Textarea,
     };
     #[cfg(feature = "feedback")]
     pub use crate::components::feedback::{
@@ -112,6 +113,11 @@ pub mod compatibility {
     };
     #[cfg(feature = "xy-pad")]
     pub use crate::components::xy_pad::XYPad;
+    pub use crate::settings::{SettingsCard, SettingsRow};
+    pub use crate::sidebar::{
+        SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState,
+        SidebarRowTone, SidebarSection, SidebarSectionState,
+    };
     pub use iced::widget::Text;
 }
 
@@ -142,9 +148,7 @@ pub use components::command_palette::COMMAND_PALETTE_INPUT_ID;
 #[cfg(feature = "syntax-highlighting")]
 pub use components::controls::HostedSyntaxHighlighting;
 #[cfg(feature = "controls")]
-pub use components::controls::{
-    HostedTextarea, HostedTextareaState, SelectionOption, TabDragGroup, TabDragSurface, Tabs,
-};
+pub use components::controls::{HostedTextarea, HostedTextareaState, SelectionOption};
 #[cfg(feature = "feedback")]
 pub use components::feedback::{StatusTone, ToastTone, ValidationIntent};
 #[cfg(feature = "graph-canvas")]
@@ -246,11 +250,12 @@ pub use nana_ui_runtime::{
     ActionMenu, ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, CommandPalette,
     ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown, DropdownEvent, DropdownOption,
     DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard, LabeledValue,
-    LevelMeter, ListItem, OverlayHost, Popover, Progress, QrCode, QrCodeError, RangeField,
-    SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl, Select,
-    SelectOption, Skeleton, Spinner, StatusBadge, Switch, Text, TextArea, TextInput, Toast,
-    Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad,
-    tree_navigation_event,
+    LevelMeter, ListItem, OverlayHost, Popover, Progress, ProgressCancelled, QrCode, QrCodeError,
+    RangeField, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
+    Select, SelectOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone,
+    Skeleton, Spinner, StatusBadge, Switch, TabDragGroup, TabDragLease, TabDragSurface, TabOption,
+    Tabs, TabsEvent, Text, TextArea, TextInput, Toast, Tooltip, TreeNavigation, TreeNode, TreeView,
+    TreeViewEvent, ValidationMessage, XYPad, tree_navigation_event,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
@@ -281,15 +286,14 @@ pub use scene_gpu::{
 pub use scene_view::{HostTextureSceneResolver, IcedSceneView, ScenePaintError};
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
-    AppearanceSettings, BackdropTarget, SettingsCard, SettingsError, SettingsModel, SettingsRow,
-    SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode, settings_page, settings_sidebar,
+    AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
+    SettingsTabId, WindowMaterialMode, settings_page, settings_sidebar,
 };
 pub use shell::{
     AppTitleBar, DesktopShell, PopupShell, PopupTitleBarFrame, app_shell, app_title_bar,
 };
 pub use sidebar::{
-    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
-    SidebarSection, SidebarSectionState,
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarSection, SidebarSectionState,
 };
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController, split_pane};
 pub use theme::{

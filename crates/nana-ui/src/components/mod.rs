@@ -54,9 +54,7 @@ pub use charts::TimeSeriesChart;
 #[cfg(feature = "overlays")]
 pub use command_palette::COMMAND_PALETTE_INPUT_ID;
 #[cfg(feature = "controls")]
-pub use controls::{
-    HostedTextarea, HostedTextareaState, SelectionOption, TabDragGroup, TabDragSurface, Tabs,
-};
+pub use controls::{HostedTextarea, HostedTextareaState, SelectionOption};
 #[cfg(feature = "feedback")]
 pub use feedback::{StatusTone, ToastTone, ValidationIntent};
 #[cfg(feature = "graph-canvas")]
@@ -77,10 +75,12 @@ pub use nana_ui_runtime::{
     ActionMenu, ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, CommandPalette,
     ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown, DropdownEvent, DropdownOption,
     DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard, LabeledValue,
-    LevelMeter, ListItem, OverlayHost, Popover, Progress, QrCode, RangeField, SearchDropdown,
-    SearchDropdownEvent, SearchDropdownOption, SegmentedControl, Select, SelectOption, Skeleton,
-    Spinner, StatusBadge, Switch, Text, TextArea, TextInput, Toast, Tooltip, TreeNavigation,
-    TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad, tree_navigation_event,
+    LevelMeter, ListItem, OverlayHost, Popover, Progress, ProgressCancelled, QrCode, RangeField,
+    SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl, Select,
+    SelectOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Skeleton,
+    Spinner, StatusBadge, Switch, TabDragGroup, TabDragSurface, TabOption, Tabs, TabsEvent, Text,
+    TextArea, TextInput, Toast, Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent,
+    ValidationMessage, XYPad, tree_navigation_event,
 };
 #[cfg(feature = "controls")]
 pub use reorder_list::{ReorderItem, ReorderList, TreeDropIntent, TreeDropPosition};
