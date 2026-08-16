@@ -2014,6 +2014,9 @@ fn project_migrating_component(
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) -> bool {
+    if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
+        return true;
+    }
     match widget.kind {
         crate::WidgetKind::Button => {
             let icon = widget
@@ -2669,12 +2672,23 @@ fn project_migrating_component(
         crate::WidgetKind::SettingsRow => {
             let (stacked, divided, loose, first, last) =
                 crate::widget_map::settings_row_flags(&widget.props);
-            let mut component = RuntimeSettingsRow::new(widget.props.display_label())
+            let slots = crate::widget_map::settings_row_slots(snapshot, widget);
+            let slot_text = |slot: Option<crate::WidgetId>, fallback: &str| {
+                if !fallback.is_empty() {
+                    return fallback.to_string();
+                }
+                slot.map(|id| crate::widget_map::settings_row_plain_text(snapshot, id))
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_default()
+            };
+            let label = slot_text(slots.label, widget.props.display_label());
+            let hint = slot_text(slots.hint, widget.props.hint.as_str());
+            let mut component = RuntimeSettingsRow::new(label)
                 .stacked(stacked)
                 .divided(divided)
                 .loose(loose);
-            if !widget.props.hint.is_empty() {
-                component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
+            if !hint.is_empty() {
+                component = component.hint(Arc::<str>::from(hint));
             }
             if first {
                 component = component.first_in_group();
@@ -2687,6 +2701,15 @@ fn project_migrating_component(
                     .and_then(StableNodeId::new)
             {
                 component = component.control_child(control);
+            }
+            if let Some(copy) = slots.copy.and_then(StableNodeId::new) {
+                component = component.copy_slot(copy);
+            }
+            if let Some(label_slot) = slots.label.and_then(StableNodeId::new) {
+                component = component.label_slot(label_slot);
+            }
+            if let Some(hint_slot) = slots.hint.and_then(StableNodeId::new) {
+                component = component.hint_slot(hint_slot);
             }
             component.project(id, world, mutations);
             true
@@ -4360,6 +4383,112 @@ mod tests {
                 .overflow_y
                 .scrolls()
         );
+    }
+
+    fn register_settings_row(
+        doc: &mut NanaTreeDocument,
+        bridge: &mut crate::MessageBridge,
+        label: &str,
+        hint: Option<&str>,
+        nest_hint_text: bool,
+    ) -> (NodeHandle, NodeHandle, Option<NodeHandle>) {
+        let row = doc.create_element("nana-settings-row");
+        let copy = doc.create_element("div");
+        let label_node = doc.create_element("span");
+        let control = doc.create_element("div");
+        doc.insert(row, doc.mount_root(), None);
+        doc.insert(copy, row, None);
+        doc.insert(label_node, copy, None);
+        doc.insert(control, row, None);
+        let mut row_props = crate::WidgetProps::default();
+        row_props.class_names = vec!["nana-settings-row".into()];
+        row_props.label = label.into();
+        bridge.register(row.0, crate::WidgetKind::SettingsRow, row_props);
+        let mut copy_props = crate::WidgetProps::default();
+        copy_props.class_names = vec!["nana-settings-row__label".into()];
+        bridge.register(copy.0, crate::WidgetKind::Column, copy_props);
+        let mut label_props = crate::WidgetProps::default();
+        label_props.label = label.into();
+        bridge.register(label_node.0, crate::WidgetKind::Text, label_props);
+        let hint_text = hint.filter(|_| nest_hint_text).map(|value| {
+            let hint = doc.create_element("div");
+            let text = doc.create_text(value);
+            doc.insert(hint, copy, None);
+            doc.insert(text, hint, None);
+            let mut hint_props = crate::WidgetProps::default();
+            hint_props.class_names = vec!["nana-settings-row__hint".into()];
+            bridge.register(hint.0, crate::WidgetKind::Column, hint_props);
+            let mut text_props = crate::WidgetProps::default();
+            text_props.label = value.into();
+            bridge.register(text.0, crate::WidgetKind::Text, text_props);
+            bridge.insert_child(hint.0, copy.0, None);
+            bridge.insert_child(text.0, hint.0, None);
+            (hint, text)
+        });
+        let mut control_props = crate::WidgetProps::default();
+        control_props.class_names = vec!["nana-settings-row__control".into()];
+        bridge.register(control.0, crate::WidgetKind::Column, control_props);
+        bridge.insert_child(copy.0, row.0, None);
+        bridge.insert_child(label_node.0, copy.0, None);
+        bridge.insert_child(control.0, row.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        (
+            label_node,
+            hint_text.map(|(hint, _)| hint).unwrap_or(label_node),
+            hint_text.map(|(_, text)| text),
+        )
+    }
+
+    #[test]
+    fn settings_row_projects_label_and_nested_hint_once() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let (label, hint, hint_text) = register_settings_row(
+            &mut doc,
+            &mut bridge,
+            "主题",
+            Some("选择应用配色，立即生效"),
+            true,
+        );
+        let label_style = doc
+            .runtime
+            .node_style(StableNodeId::try_from(label).unwrap())
+            .unwrap();
+        assert_eq!(label_style.layout.font_size, Some(13.0));
+        assert_eq!(label_style.layout.font_weight, Some(500));
+        let hint_text_id = StableNodeId::try_from(hint_text.unwrap()).unwrap();
+        let hint_style = doc.runtime.node_style(hint_text_id).unwrap();
+        assert_eq!(
+            hint_style.foreground,
+            Some(nana_ui_core::SemanticColorRole::Muted)
+        );
+        assert_eq!(hint_style.layout.font_size, Some(12.0));
+        assert_eq!(
+            doc.runtime.text(hint_text_id),
+            Some("选择应用配色，立即生效")
+        );
+        let hint_box = doc
+            .runtime
+            .node_style(StableNodeId::try_from(hint).unwrap())
+            .unwrap();
+        assert_ne!(
+            hint_box.foreground,
+            Some(nana_ui_core::SemanticColorRole::Muted)
+        );
+    }
+
+    #[test]
+    fn settings_row_without_hint_still_projects_label() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let (label, _, _) = register_settings_row(&mut doc, &mut bridge, "工作区边缘", None, false);
+        let label_style = doc
+            .runtime
+            .node_style(StableNodeId::try_from(label).unwrap())
+            .unwrap();
+        assert!(!label_style.layout.hidden);
+        assert_eq!(label_style.layout.font_size, Some(13.0));
+        assert_eq!(label_style.layout.font_weight, Some(500));
     }
 
     #[test]

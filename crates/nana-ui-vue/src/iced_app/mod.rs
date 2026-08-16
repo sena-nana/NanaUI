@@ -797,7 +797,7 @@ fn runtime_component_for_widget(
         WidgetKind::FormField => Some(nana_ui::component_ids::FORM_FIELD),
         WidgetKind::InteractiveCard => Some(nana_ui::component_ids::INTERACTIVE_CARD),
         // SettingsRow/Card and SidebarRow compose existing Scene paint.
-        // SidebarFrame maps now; Scene paint waits on catalog qualification.
+        // SidebarFrame maps to catalog SIDEBAR_FRAME for Scene default-routing.
         WidgetKind::SettingsRow | WidgetKind::SettingsCard => {
             Some(nana_ui::component_ids::SETTINGS)
         }

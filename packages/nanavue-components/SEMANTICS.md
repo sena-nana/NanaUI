@@ -147,7 +147,7 @@ FormField / InteractiveCard 承载子节点，不 Scene 路由。Skeleton / Leve
 
 | Vue | Rust |
 |-----|------|
-| `NanaSidebarFrame` | 布局 Column（槽位组合） |
+| `NanaSidebarFrame` | Runtime `SidebarFrame` |
 | `NanaSidebarRow` | `SidebarRow` |
 | `NanaSettingsRow` / Card / Page | Settings 行/卡组合 |
 

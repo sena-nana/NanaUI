@@ -263,6 +263,168 @@ fn is_input_like_kind(kind: WidgetKind) -> bool {
     )
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SettingsRowSlots {
+    pub copy: Option<WidgetId>,
+    pub label: Option<WidgetId>,
+    pub hint: Option<WidgetId>,
+}
+
+impl SettingsRowSlots {
+    fn contains(self, id: WidgetId) -> bool {
+        self.copy == Some(id) || self.label == Some(id) || self.hint == Some(id)
+    }
+}
+
+fn settings_row_marked(props: &WidgetProps, slot: &str, classes: &[&str]) -> bool {
+    props.attrs.get("data-slot").map(String::as_str) == Some(slot)
+        || props
+            .class_names
+            .iter()
+            .any(|class| classes.iter().any(|needle| class.contains(needle)))
+}
+
+fn settings_row_child(
+    snapshot: &SemanticSnapshot,
+    parent: &SemanticWidget,
+    pred: impl Fn(&WidgetProps) -> bool,
+) -> Option<WidgetId> {
+    parent
+        .children
+        .iter()
+        .copied()
+        .find(|&id| snapshot.get(id).is_some_and(|child| pred(&child.props)))
+}
+
+fn settings_row_descendent(
+    snapshot: &SemanticSnapshot,
+    id: WidgetId,
+    pred: impl Fn(&WidgetProps) -> bool + Copy,
+) -> Option<WidgetId> {
+    let widget = snapshot.get(id)?;
+    for &child in &widget.children {
+        if snapshot.get(child).is_some_and(|node| pred(&node.props)) {
+            return Some(child);
+        }
+        if let Some(found) = settings_row_descendent(snapshot, child, pred) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn settings_row_text_or_self(snapshot: &SemanticSnapshot, id: WidgetId) -> WidgetId {
+    snapshot
+        .get(id)
+        .and_then(|node| {
+            (node.kind == WidgetKind::Text).then_some(id).or_else(|| {
+                node.children.iter().copied().find(|&child| {
+                    snapshot
+                        .get(child)
+                        .is_some_and(|node| node.kind == WidgetKind::Text)
+                })
+            })
+        })
+        .unwrap_or(id)
+}
+
+pub(crate) fn settings_row_slots(
+    snapshot: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> SettingsRowSlots {
+    let is_label = |props: &WidgetProps| {
+        settings_row_marked(
+            props,
+            "label",
+            &["nana-settings-row__label", "settings-row__label"],
+        )
+    };
+    let is_hint = |props: &WidgetProps| {
+        settings_row_marked(
+            props,
+            "hint",
+            &["nana-settings-row__hint", "settings-row__hint"],
+        )
+    };
+    let container = settings_row_child(snapshot, widget, is_label);
+    let hint = settings_row_child(snapshot, widget, is_hint)
+        .or_else(|| container.and_then(|id| settings_row_descendent(snapshot, id, is_hint)))
+        .map(|id| settings_row_text_or_self(snapshot, id));
+    let label = container.and_then(|id| {
+        let node = snapshot.get(id)?;
+        node.children
+            .iter()
+            .copied()
+            .find(|&child| {
+                snapshot
+                    .get(child)
+                    .is_some_and(|child| !is_hint(&child.props) && child.kind == WidgetKind::Text)
+            })
+            .or_else(|| {
+                node.children.iter().copied().find(|&child| {
+                    snapshot
+                        .get(child)
+                        .is_some_and(|child| !is_hint(&child.props))
+                })
+            })
+            .or(Some(id))
+    });
+    let copy = match (container, hint, label) {
+        (Some(container), Some(hint), Some(label)) if hint != container && label != container => {
+            Some(container)
+        }
+        (Some(container), Some(hint), None) if hint != container => Some(container),
+        _ => None,
+    };
+    SettingsRowSlots { copy, label, hint }
+}
+
+pub(crate) fn settings_row_plain_text(snapshot: &SemanticSnapshot, id: WidgetId) -> String {
+    let Some(widget) = snapshot.get(id) else {
+        return String::new();
+    };
+    let mut text = widget.props.display_label().to_string();
+    for &child in &widget.children {
+        let child = settings_row_plain_text(snapshot, child);
+        if child.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(&child);
+    }
+    text
+}
+
+pub(crate) fn is_settings_row_projected_slot(
+    snapshot: &SemanticSnapshot,
+    widget: &SemanticWidget,
+) -> bool {
+    let mut parent = widget.parent;
+    while let Some(parent_id) = parent {
+        let Some(row) = snapshot.get(parent_id) else {
+            break;
+        };
+        if row.kind == WidgetKind::SettingsRow {
+            let slots = settings_row_slots(snapshot, row);
+            let mut id = Some(widget.id);
+            while let Some(node_id) = id {
+                if node_id == parent_id {
+                    break;
+                }
+                if slots.contains(node_id) {
+                    return true;
+                }
+                id = snapshot.get(node_id).and_then(|node| node.parent);
+            }
+            return false;
+        }
+        parent = row.parent;
+    }
+    false
+}
+
 pub(crate) fn settings_row_control_child_id(
     snapshot: &SemanticSnapshot,
     widget: &SemanticWidget,

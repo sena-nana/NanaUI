@@ -67,20 +67,22 @@ pub use menus::{
     AnchoredMenuPlacement, AnchoredMenuPosition, ContextMenuAnchor, ContextMenuEvent,
     ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
 };
-pub use nana_ui_core::{CommandPaletteEvent, CommandPaletteItem};
+pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
 pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
 pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::{
-    ActionMenu, ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, CommandPalette,
-    ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown, DropdownEvent, DropdownOption,
-    DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard, LabeledValue,
-    LevelMeter, ListItem, OverlayHost, Popover, Progress, ProgressCancelled, QrCode, RangeField,
-    SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl, Select,
-    SelectOption, SettingsCard, SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Skeleton,
-    Spinner, StatusBadge, Switch, TabDragGroup, TabDragSurface, TabOption, Tabs, TabsEvent, Text,
-    TextArea, TextInput, Toast, Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent,
-    ValidationMessage, XYPad, tree_navigation_event,
+    AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppearanceSection,
+    Button, Card, Checkbox, CommandPalette, ConfirmDialog, ContextMenu, Dialog, Drawer, Dropdown,
+    DropdownEvent, DropdownOption, DropdownSelection, EmptyState, FormField, IconButton,
+    InteractiveCard, LabeledValue, LevelMeter, ListItem, OverlayHost, Popover, Progress,
+    ProgressCancelled, QrCode, RangeField, SearchDropdown, SearchDropdownEvent,
+    SearchDropdownOption, SegmentedControl, Select, SelectOption, SettingsCard,
+    SettingsCollapsibleCard, SettingsRow, SidebarFooter, SidebarFooterButton, SidebarFrame,
+    SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, SidebarSectionSlots,
+    SidebarSectionState, Skeleton, Spinner, StatusBadge, Switch, TabDragGroup, TabDragSurface,
+    TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Toast, Tooltip, TreeNavigation,
+    TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad, tree_navigation_event,
 };
 #[cfg(feature = "controls")]
 pub use reorder_list::{ReorderItem, ReorderList, TreeDropIntent, TreeDropPosition};
@@ -92,10 +94,6 @@ pub use rich_text::{
 #[cfg(feature = "rich-text")]
 pub use selectable_rich_text::{SelectableRichText, TextSelectionGroup, TextSelectionSnapshot};
 
-#[cfg(feature = "settings-components")]
-pub use settings_sections::{
-    AboutMetadata, AboutSection, AppearanceEvent, AppearanceSection, SettingsCollapsibleCard,
-};
 #[cfg(feature = "surfaces")]
 pub use surfaces::DockPanel;
 

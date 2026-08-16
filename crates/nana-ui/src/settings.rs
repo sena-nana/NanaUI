@@ -2,7 +2,7 @@
 //!
 //! Leaf chrome (`SettingsRow`, `SettingsCard`) is implemented in Runtime.
 //! `settings_page` / `settings_sidebar` still assemble Iced views from the
-//! adapters in this module and [`crate::sidebar`].
+//! adapters in this module and [`crate::compatibility`].
 
 use std::borrow::Cow;
 
@@ -15,8 +15,9 @@ pub use nana_ui_core::settings::{
     SettingsTabId, WindowMaterialMode,
 };
 
+use crate::compatibility::{SidebarFrame, SidebarRow};
 use crate::icons::{Icon, icon};
-use crate::sidebar::{SidebarFrame, SidebarRow, SidebarRowState};
+use crate::sidebar::SidebarRowState;
 use crate::theme::{ThemeTokens, UI_METRICS, tracked_label, ui_font};
 use crate::widgets::{CardKind, canvas_style, card_style, scrollable_style, vertical_scrollbar};
 

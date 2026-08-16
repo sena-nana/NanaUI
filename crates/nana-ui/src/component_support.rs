@@ -170,10 +170,10 @@ component_catalog! {
     DROPDOWN => { id: "dropdown", name: "Dropdown", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     SEARCH_DROPDOWN => { id: "search-dropdown", name: "SearchDropdown", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility, Overlay] },
     TREE_VIEW => { id: "tree-view", name: "TreeView", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    SIDEBAR_FRAME => { id: "sidebar-frame", name: "SidebarFrame", family: Navigation, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Accessibility] },
-    SIDEBAR_SECTION => { id: "sidebar-section", name: "SidebarSection", family: Navigation, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
+    SIDEBAR_FRAME => { id: "sidebar-frame", name: "SidebarFrame", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
+    SIDEBAR_SECTION => { id: "sidebar-section", name: "SidebarSection", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation] },
     SIDEBAR_ROW => { id: "sidebar-row", name: "SidebarRow", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    SIDEBAR_FOOTER => { id: "sidebar-footer", name: "SidebarFooter", family: Navigation, migration: RuntimeCandidate, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    SIDEBAR_FOOTER => { id: "sidebar-footer", name: "SidebarFooter", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     KEY_CAPTURE_LAYER => { id: "key-capture-layer", name: "KeyCaptureLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus, Accessibility] },
     KEYMAP_LAYER => { id: "keymap-layer", name: "KeymapLayer", family: Control, migration: Compatibility, feature: None, compiled: true, capabilities: [Keyboard, Focus] },
     NATIVE_MARKDOWN => { id: "native-markdown", name: "NativeMarkdown", family: Data, migration: Compatibility, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
@@ -196,9 +196,9 @@ component_catalog! {
     APP_SHELL => { id: "app-shell", name: "AppShell", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     APP_TITLE_BAR => { id: "app-title-bar", name: "AppTitleBar", family: Workspace, migration: Compatibility, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SETTINGS => { id: "settings", name: "Settings", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    APPEARANCE_SECTION => { id: "appearance-section", name: "AppearanceSection", family: Workspace, migration: RuntimeCandidate, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
-    ABOUT_SECTION => { id: "about-section", name: "AboutSection", family: Workspace, migration: RuntimeCandidate, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Accessibility] },
-    SETTINGS_COLLAPSIBLE_CARD => { id: "settings-collapsible-card", name: "SettingsCollapsibleCard", family: Workspace, migration: RuntimeCandidate, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    APPEARANCE_SECTION => { id: "appearance-section", name: "AppearanceSection", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    ABOUT_SECTION => { id: "about-section", name: "AboutSection", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Accessibility] },
+    SETTINGS_COLLAPSIBLE_CARD => { id: "settings-collapsible-card", name: "SettingsCollapsibleCard", family: Workspace, migration: RuntimeQualified, feature: Some("settings-components"), compiled: cfg!(feature = "settings-components"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     GPU_VIEW => { id: "gpu-view", name: "GpuView", family: Gpu, migration: Compatibility, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Pointer, Gpu] },
     GPU_TEXTURE_VIEW => { id: "gpu-texture-view", name: "GpuTextureView", family: Gpu, migration: Compatibility, feature: Some("gpu"), compiled: cfg!(feature = "gpu"), capabilities: [Render, Gpu] },
 }
@@ -285,6 +285,12 @@ mod tests {
             component_ids::TREE_VIEW,
             component_ids::SIDEBAR_ROW,
             component_ids::SETTINGS,
+            component_ids::SIDEBAR_FRAME,
+            component_ids::SIDEBAR_SECTION,
+            component_ids::SIDEBAR_FOOTER,
+            component_ids::APPEARANCE_SECTION,
+            component_ids::ABOUT_SECTION,
+            component_ids::SETTINGS_COLLAPSIBLE_CARD,
         ] {
             let support = component_support(id).expect("qualified component is cataloged");
             assert_eq!(support.migration, ComponentMigrationState::RuntimeQualified);
@@ -415,9 +421,32 @@ mod tests {
         let _: nana_ui_runtime::SidebarRow = crate::SidebarRow::new("工作区");
         let _: nana_ui_runtime::SettingsRow = crate::SettingsRow::new("主题");
         let _: nana_ui_runtime::SettingsCard = crate::SettingsCard::new("外观");
+        let _: nana_ui_runtime::SidebarFrame = crate::SidebarFrame::new();
+        let _: nana_ui_runtime::SidebarSection = crate::SidebarSection::new("资源");
+        let _: nana_ui_runtime::SidebarFooter = crate::SidebarFooter::new();
+        let _: nana_ui_runtime::AppearanceSection = crate::AppearanceSection::new(
+            nana_ui_core::ThemeMode::Dark,
+            nana_ui_core::AppearanceSettings::default(),
+        );
+        let _: nana_ui_runtime::AboutSection =
+            crate::AboutSection::new(nana_ui_runtime::AboutMetadata::new("NanaUI", "0"));
+        let _: nana_ui_runtime::SettingsCollapsibleCard = crate::SettingsCollapsibleCard::new(true);
+
         let _: nana_ui_runtime::SidebarRow = crate::components::SidebarRow::new("工作区");
         let _: nana_ui_runtime::SettingsRow = crate::components::SettingsRow::new("主题");
         let _: nana_ui_runtime::SettingsCard = crate::components::SettingsCard::new("外观");
+        let _: nana_ui_runtime::SidebarFrame = crate::components::SidebarFrame::new();
+        let _: nana_ui_runtime::SidebarSection = crate::components::SidebarSection::new("资源");
+        let _: nana_ui_runtime::SidebarFooter = crate::components::SidebarFooter::new();
+        let _: nana_ui_runtime::AppearanceSection = crate::components::AppearanceSection::new(
+            nana_ui_core::ThemeMode::Dark,
+            nana_ui_core::AppearanceSettings::default(),
+        );
+        let _: nana_ui_runtime::AboutSection = crate::components::AboutSection::new(
+            nana_ui_runtime::AboutMetadata::new("NanaUI", "0"),
+        );
+        let _: nana_ui_runtime::SettingsCollapsibleCard =
+            crate::components::SettingsCollapsibleCard::new(true);
     }
 
     #[test]
@@ -429,14 +458,6 @@ mod tests {
         assert!(RuntimeQualified.allows_transition_to(RuntimeQualified));
         assert!(!RuntimeQualified.allows_transition_to(RuntimeCandidate));
         assert!(!RuntimeCandidate.allows_transition_to(Compatibility));
-    }
-
-    #[test]
-    fn sidebar_frame_stays_candidate_while_vue_needs_iced_body_scroll() {
-        let support =
-            component_support(component_ids::SIDEBAR_FRAME).expect("sidebar-frame is cataloged");
-        assert_eq!(support.migration, ComponentMigrationState::RuntimeCandidate);
-        assert!(!component_uses_runtime(component_ids::SIDEBAR_FRAME));
     }
 
     #[test]

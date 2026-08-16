@@ -1,5 +1,8 @@
 use super::*;
 use iced::widget::column;
+use nana_ui::compatibility::{
+    AboutMetadata, AboutSection, AppearanceSection, SettingsCollapsibleCard,
+};
 
 impl GalleryState {
     pub(super) fn settings_content(&self, _colors: Colors) -> Element<'_, GalleryMessage> {

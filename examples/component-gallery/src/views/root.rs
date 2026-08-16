@@ -1,4 +1,7 @@
 use super::*;
+use nana_ui::compatibility::{
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarSection,
+};
 
 impl GalleryState {
     pub fn view(&self) -> Element<'_, GalleryMessage> {
