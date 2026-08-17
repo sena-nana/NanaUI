@@ -8,7 +8,6 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
-use iced::wgpu;
 use nana_ui_runtime::{GPU_VIEW_RENDERER, GpuViewPalette};
 use nana_ui_scene::PrimitiveId;
 

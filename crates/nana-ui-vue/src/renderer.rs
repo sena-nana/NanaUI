@@ -3,7 +3,7 @@
 //! ## L2 边界
 //! - hostOps 写入树文档 + [`MessageBridge`]；Semantics 解析委托
 //!   [`crate::widget_map::resolve_kind_from_hints`]。
-//! - 不在此实现 CSS parse / paint；绘制经 `iced_app` → `nana_ui`。
+//! - 不在此实现 CSS parse / paint；绘制经 Runtime / UiScene → `nana_ui` Scene host。
 
 use std::sync::{Arc, Mutex};
 

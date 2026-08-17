@@ -4,9 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, RwLock};
 
-use iced::Element;
 use nana_js_engine::{HostValue, JsException};
-use nana_ui::ThemeTokens;
 
 use crate::{BridgeEvent, WidgetId, WidgetProps};
 
@@ -121,7 +119,6 @@ pub struct NativeComponentContext {
     pub id: WidgetId,
     pub props: BTreeMap<String, HostValue>,
     pub semantic: WidgetProps,
-    pub tokens: ThemeTokens,
     events: Arc<BTreeSet<String>>,
 }
 
@@ -150,12 +147,6 @@ pub struct NativeComponentCommand {
 }
 
 pub trait NativeComponentFactory: Send + Sync + 'static {
-    fn view(
-        &self,
-        context: NativeComponentContext,
-        children: Vec<Element<'static, BridgeEvent>>,
-    ) -> Result<Element<'static, BridgeEvent>, JsException>;
-
     fn command(&self, command: NativeComponentCommand) -> Result<HostValue, JsException> {
         Err(component_error(
             "NativeComponentCommandError",
@@ -346,36 +337,6 @@ impl NativeComponentRegistry {
         descriptor.props.validate(&descriptor.name, props)
     }
 
-    pub(crate) fn view(
-        &self,
-        name: &str,
-        id: WidgetId,
-        props: WidgetProps,
-        tokens: ThemeTokens,
-        children: Vec<Element<'static, BridgeEvent>>,
-    ) -> Result<Element<'static, BridgeEvent>, JsException> {
-        let descriptor = self.require(name)?;
-        descriptor
-            .props
-            .validate(&descriptor.name, &props.native_props)?;
-        let context = NativeComponentContext {
-            id,
-            props: props.native_props.clone(),
-            semantic: props,
-            tokens,
-            events: Arc::new(descriptor.events.clone()),
-        };
-        catch_unwind(AssertUnwindSafe(|| {
-            descriptor.factory.view(context, children)
-        }))
-        .map_err(|_| {
-            component_error(
-                "NativeComponentRenderError",
-                format!("component `{name}` panicked while rendering"),
-            )
-        })?
-    }
-
     pub(crate) fn command(
         &self,
         component: &str,
@@ -444,10 +405,6 @@ fn component_error(name: &str, message: impl Into<String>) -> JsException {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use iced::widget::Space;
-    use nana_ui::ThemeModeExt;
-    use nana_ui_core::ThemeMode;
-
     use super::*;
 
     #[derive(Clone)]
@@ -456,19 +413,6 @@ mod tests {
     }
 
     impl NativeComponentFactory for ProbeFactory {
-        fn view(
-            &self,
-            context: NativeComponentContext,
-            children: Vec<Element<'static, BridgeEvent>>,
-        ) -> Result<Element<'static, BridgeEvent>, JsException> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("view:{}:{}", context.id, children.len()));
-            let _ = context.event("ready", HostValue::Bool(true))?;
-            Ok(Space::new().into())
-        }
-
         fn command(&self, command: NativeComponentCommand) -> Result<HostValue, JsException> {
             self.calls
                 .lock()
@@ -514,13 +458,6 @@ mod tests {
                 .is_err()
         );
 
-        let mut semantic = WidgetProps::default();
-        semantic.native_component = Some("probe-view".into());
-        semantic.native_props = props;
-        let tokens = ThemeTokens::from(ThemeMode::Light.colors());
-        registry
-            .view("probe-view", 7, semantic, tokens, Vec::new())
-            .unwrap();
         assert_eq!(
             registry
                 .command("probe-view", 7, "refresh", HostValue::string("ok"))
@@ -533,9 +470,6 @@ mod tests {
                 .is_err()
         );
         registry.unmount("probe-view", 7);
-        assert_eq!(
-            *calls.lock().unwrap(),
-            ["view:7:0", "command:7:refresh", "unmount:7"]
-        );
+        assert_eq!(*calls.lock().unwrap(), ["command:7:refresh", "unmount:7"]);
     }
 }

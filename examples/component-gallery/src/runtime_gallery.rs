@@ -1,46 +1,52 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use iced::widget::space;
-use iced::{Element, Event, Length, Point, Size};
-use nana_ui::compatibility::{
-    CalendarHeatmapActiveCell as IcedCalendarCell, CalendarHeatmapEvent as IcedCalendarEvent,
-    MarkdownBlock as IcedMarkdownBlock, MarkdownBlockKind as IcedMarkdownBlockKind,
-    MarkdownSpan as IcedMarkdownSpan, MarkdownTable as IcedMarkdownTable,
-    MarkdownTableAlignment as IcedMarkdownTableAlignment, NativeMarkdown as IcedNativeMarkdown,
-    PaneChromeActionKind as IcedPaneChromeActionKind,
-};
 use nana_ui::runtime::{
-    Activate, AppShell, AppTitleBar, Button, CalendarHeatmap, CalendarHeatmapDatum, Card, Checkbox,
-    DesktopShell, DocumentId, Dropdown, DropdownEvent, DropdownOption, EmptyState, Entity,
-    FrameworkError, GraphCanvas, GraphCanvasEvent, IconButton, InteractiveCard, LabeledValue,
-    LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, MarkdownBlock,
-    MarkdownBlockKind, MarkdownSpan, MarkdownTable, MarkdownTableAlignment, NativeMarkdown,
-    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, Popover,
-    PopoverClosed, PopoverToggled, Progress, RangeChanged, RichTextEvent, RuntimeDocument,
-    SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, SemanticColorRole, SidebarFooter, SidebarFooterButton,
-    SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner,
-    StableNodeId, StatusBadge, Switch, TabOption, Tabs, TabsEvent, TextArea, TextChanged,
-    TextInput, Toast, ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage, View,
-    XYPad, XYPadEvent,
+    Activate, AppShell, AppTitleBar, Button, CalendarHeatmap, CalendarHeatmapDatum,
+    CalendarHeatmapEvent, Card, Checkbox, DesktopShell, DockFloatingSurface, DocumentId, Dropdown,
+    DropdownEvent, DropdownOption, EmptyState, Entity, FrameworkError, GraphCanvas,
+    GraphCanvasEvent, IconButton, InteractiveCard, LabeledValue, LayoutViewport, LengthSpec,
+    LevelMeter, ListItem, ListItemSlots, NativeMarkdown, OverlayHost, PaneChrome, PaneChromeAction,
+    PaneChromeActionKind, PaneTree, PaneTreeNode, Popover, PopoverClosed, PopoverToggled, Progress,
+    RangeChanged, RichTextEvent, RuntimeDocument, SearchDropdown, SearchDropdownEvent,
+    SearchDropdownOption, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
+    SemanticColorRole, SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow,
+    SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge,
+    Switch, TabOption, Tabs, TabsEvent, TextArea, TextChanged, TextInput, Toast, ToggleChanged,
+    TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
 };
 use nana_ui::window_chrome::WindowChromeAction;
 use nana_ui::{
-    ButtonKind, CardKind, ControlSize, DockAction, DockBounds, DockId, IcedSceneView,
-    IcedTextShaper, Icon, RegionId, RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent,
+    ButtonKind, CardKind, ControlSize, DockAction, DockBounds, DockId, Icon, LogicalPoint,
+    NanaTextShaper, RegionId, RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent,
     WindowChromeEvent, WorkspaceAction,
 };
 use nana_ui_platform::InputEvent;
 
 use super::runtime_host::{
     DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_insets,
-    apply_workspace_corners, bind_event, hugging_text, iced_key_name, iced_modifiers, labeled_text,
-    node_is_or_under, reconcile_children, runtime_input_event, scene_pointer,
-    search_command_button, sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
-    window_control_button,
+    apply_workspace_corners, bind_event, hugging_text, labeled_text, node_is_or_under,
+    reconcile_children, runtime_input_event, search_command_button, sidebar_toggle_button,
+    styled_text, take_pending, theme_toggle_button, window_control_button,
 };
 use super::{GalleryMessage, GallerySection, GalleryState, SurfaceView, section_label};
+
+type SidebarMount = (
+    Entity<SidebarFrame>,
+    [Entity<SidebarRow>; 6],
+    Entity<SidebarFooterButton>,
+);
+type RichTextMount = (
+    Entity<HostStack>,
+    Entity<NativeMarkdown>,
+    Entity<nana_ui::runtime::Text>,
+);
+type GraphMount = (
+    Entity<HostStack>,
+    Entity<GraphCanvas>,
+    Entity<nana_ui::runtime::Text>,
+    Entity<Button>,
+);
 
 const GALLERY_DOCUMENT: u64 = 2;
 
@@ -136,6 +142,7 @@ pub(super) struct GalleryRuntime {
     last_viewport: LayoutViewport,
     chrome: RuntimeChrome,
     pending: Arc<Mutex<Vec<GalleryMessage>>>,
+    text: NanaTextShaper,
 }
 
 struct ControlsTree {
@@ -424,7 +431,8 @@ impl GalleryRuntime {
 
         let (width, height) = state.gallery_viewport_size();
         let last_viewport = LayoutViewport::new(width, height);
-        let _ = document.flush(last_viewport, &mut IcedTextShaper);
+        let mut text = NanaTextShaper::default();
+        let _ = document.flush(last_viewport, &mut text);
 
         Ok(Self {
             document,
@@ -457,6 +465,7 @@ impl GalleryRuntime {
             last_viewport,
             chrome: RuntimeChrome::default(),
             pending,
+            text,
         })
     }
 
@@ -515,7 +524,7 @@ impl GalleryRuntime {
         sync_surfaces(context, &self.surfaces, state);
         sync_feedback(context, &self.feedback, state);
         let _ = context.update_component(self.rich_text, |markdown, _| {
-            *markdown = runtime_markdown(&state.markdown);
+            *markdown = state.markdown.clone();
         });
         let _ = context.assemble_markdown(self.rich_text);
         let _ = context.update_component(self.link_status, |label, _| {
@@ -582,12 +591,63 @@ impl GalleryRuntime {
 
     fn flush(&mut self, (width, height): (f32, f32)) {
         self.last_viewport = LayoutViewport::new(width, height);
-        let _ = self.document.flush(self.last_viewport, &mut IcedTextShaper);
+        let _ = self.document.flush(self.last_viewport, &mut self.text);
+    }
+
+    pub(super) fn runtime_document(&self) -> &RuntimeDocument {
+        self.document()
+    }
+
+    pub(super) fn runtime_document_mut(&mut self) -> &mut RuntimeDocument {
+        self.document_mut()
+    }
+
+    pub(super) fn shell(&self) -> Entity<DesktopShell> {
+        self.shell
+    }
+
+    pub(super) fn overlay_host(&self) -> Option<Entity<OverlayHost>> {
+        self.document
+            .context()
+            .read(self.shell, |shell| {
+                shell.overlay.map(Entity::<OverlayHost>::from_stable_id)
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn pending_sink(&self) -> Arc<Mutex<Vec<GalleryMessage>>> {
+        Arc::clone(&self.pending)
+    }
+
+    pub(super) fn flush_viewport(&mut self, size: (f32, f32)) {
+        self.flush(size);
+    }
+
+    pub(super) fn note_pointer(&mut self, event: &InputEvent) {
+        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = *event {
+            self.chrome.last_pointer = LogicalPoint::new(x, y);
+        }
+    }
+
+    pub(super) fn take_host_messages(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+        self.note_pointer(event);
+        let extra = self.host_pointer_messages(event);
+        let mut messages = take_pending(&self.pending);
+        messages.extend(extra);
+        messages.extend(self.chrome.workspace_resize_messages(&self.document, event));
+        messages.extend(self.chrome.title_bar_chrome_messages(
+            &self.document,
+            self.shell,
+            self.title_center.stable_id(),
+            event,
+        ));
+        messages
     }
 
     fn dispatch(&mut self, event: InputEvent) -> Vec<GalleryMessage> {
         if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = event {
-            self.chrome.last_pointer = Point::new(x, y);
+            self.chrome.last_pointer = LogicalPoint::new(x, y);
         }
         let extra = self.host_pointer_messages(&event);
         let document = self.document.document();
@@ -637,7 +697,7 @@ impl GalleryRuntime {
                     .flatten();
                 match hit {
                     Some(cell) => vec![GalleryMessage::CalendarHeatmap(
-                        IcedCalendarEvent::CellMove(iced_calendar_cell(&cell)),
+                        CalendarHeatmapEvent::CellMove(cell),
                     )],
                     None if node_is_or_under(
                         context,
@@ -646,7 +706,7 @@ impl GalleryRuntime {
                     ) =>
                     {
                         vec![GalleryMessage::CalendarHeatmap(
-                            IcedCalendarEvent::CellLeave,
+                            CalendarHeatmapEvent::CellLeave,
                         )]
                     }
                     None => Vec::new(),
@@ -667,10 +727,10 @@ impl GalleryRuntime {
                     {
                         messages.push(GalleryMessage::OpenMarkdownLink(link.to_string()));
                     }
-                    if node_is_or_under(context, target, self.workspace.lock.stable_id()) {
-                        if let Ok(locked) = context.read(self.workspace.dock, |dock| dock.locked) {
-                            messages.push(GalleryMessage::Dock(DockAction::SetLocked(!locked)));
-                        }
+                    if node_is_or_under(context, target, self.workspace.lock.stable_id())
+                        && let Ok(locked) = context.read(self.workspace.dock, |dock| dock.locked)
+                    {
+                        messages.push(GalleryMessage::Dock(DockAction::SetLocked(!locked)));
                     }
                     if node_is_or_under(context, target, self.workspace.hide.stable_id()) {
                         let assets_visible = context
@@ -709,12 +769,12 @@ impl GalleryRuntime {
         }
     }
 
-    fn cursor(&self) -> iced::mouse::Interaction {
-        self.chrome.cursor(&self.document, self.shell)
+    pub(super) fn document(&self) -> &RuntimeDocument {
+        &self.document
     }
 
-    fn viewport_size(&self) -> Size {
-        Size::new(self.last_viewport.width, self.last_viewport.height)
+    pub(super) fn document_mut(&mut self) -> &mut RuntimeDocument {
+        &mut self.document
     }
 
     #[cfg(test)]
@@ -741,7 +801,7 @@ impl GalleryRuntime {
     }
 
     #[cfg(test)]
-    fn first_dock_handle_drag(&self) -> Option<(Point, Point)> {
+    fn first_dock_handle_drag(&self) -> Option<(LogicalPoint, LogicalPoint)> {
         let context = self.document.context();
         let document = self.document.document();
         context
@@ -756,14 +816,14 @@ impl GalleryRuntime {
                 if bounds.width <= 0.0 || bounds.height <= 0.0 {
                     return None;
                 }
-                let start = Point::new(
+                let start = LogicalPoint::new(
                     bounds.x + bounds.width / 2.0,
                     bounds.y + bounds.height / 2.0,
                 );
                 let end = if bounds.width <= bounds.height {
-                    Point::new(start.x + 40.0, start.y)
+                    LogicalPoint::new(start.x + 40.0, start.y)
                 } else {
-                    Point::new(start.x, start.y + 40.0)
+                    LogicalPoint::new(start.x, start.y + 40.0)
                 };
                 Some((start, end))
             })
@@ -814,15 +874,16 @@ impl GalleryState {
         for message in messages {
             self.update(message);
         }
-        if empty && !self.settings_open {
-            if let Some(mut runtime) = self.gallery_runtime.take() {
-                runtime.flush(self.gallery_viewport_size());
-                self.gallery_runtime = Some(runtime);
-            }
+        if empty
+            && !self.settings_open
+            && let Some(mut runtime) = self.gallery_runtime.take()
+        {
+            runtime.flush(self.gallery_viewport_size());
+            self.gallery_runtime = Some(runtime);
         }
     }
 
-    fn persist_runtime_dock_workspace(&mut self, runtime: &GalleryRuntime) {
+    pub(super) fn persist_runtime_dock_workspace(&mut self, runtime: &GalleryRuntime) {
         let Ok((root, hidden, locked)) = runtime
             .document
             .context()
@@ -861,17 +922,6 @@ impl GalleryState {
         }
     }
 
-    pub(super) fn gallery_runtime_view(&self) -> Element<'_, GalleryMessage> {
-        let Some(runtime) = self.gallery_runtime.as_ref() else {
-            return space().width(Length::Fill).height(Length::Fill).into();
-        };
-        let view = match IcedSceneView::new(runtime.document.scene(), runtime.viewport_size()) {
-            Ok(view) => Element::from(view),
-            Err(_) => space().width(Length::Fill).height(Length::Fill).into(),
-        };
-        scene_pointer(view, runtime.cursor(), GalleryMessage::GalleryRuntime)
-    }
-
     #[cfg(test)]
     pub(crate) fn gallery_runtime_scene_populated(&self) -> bool {
         self.gallery_runtime
@@ -887,39 +937,128 @@ impl GalleryState {
     }
 
     #[cfg(test)]
-    pub(crate) fn gallery_runtime_dock_handle_drag(&self) -> Option<(Point, Point)> {
+    pub(crate) fn gallery_runtime_dock_handle_drag(&self) -> Option<(LogicalPoint, LogicalPoint)> {
         self.gallery_runtime
             .as_ref()
             .and_then(GalleryRuntime::first_dock_handle_drag)
     }
+
+    pub fn runtime_document(&self) -> Option<&RuntimeDocument> {
+        if self.settings_open {
+            self.settings_runtime
+                .as_ref()
+                .map(super::runtime_settings::GallerySettingsRuntime::runtime_document)
+        } else {
+            self.gallery_runtime
+                .as_ref()
+                .map(GalleryRuntime::runtime_document)
+        }
+    }
 }
 
-pub(super) fn gallery_runtime_key_event(
-    event: Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<GalleryMessage> {
-    match event {
-        Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key,
-            modifiers,
-            repeat,
-            ..
-        }) => Some(GalleryMessage::GalleryRuntime(RuntimeSceneInput::Key {
-            pressed: true,
-            key: iced_key_name(&key)?,
-            repeat,
-            modifiers: iced_modifiers(modifiers),
-        })),
-        Event::Keyboard(iced::keyboard::Event::KeyReleased { key, modifiers, .. }) => {
-            Some(GalleryMessage::GalleryRuntime(RuntimeSceneInput::Key {
-                pressed: false,
-                key: iced_key_name(&key)?,
-                repeat: false,
-                modifiers: iced_modifiers(modifiers),
-            }))
+pub(super) struct DockWindowRuntime {
+    document: RuntimeDocument,
+    dock: Entity<nana_ui::runtime::Dock>,
+    panels: Vec<(String, Entity<HostStack>)>,
+    text: NanaTextShaper,
+}
+
+impl fmt::Debug for DockWindowRuntime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DockWindowRuntime")
+            .field("dock", &self.dock.stable_id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DockWindowRuntime {
+    pub(super) fn mount(
+        state: &GalleryState,
+        surface: &DockFloatingSurface,
+    ) -> Result<Self, FrameworkError> {
+        let document_id = DocumentId::new(100 + surface.window_key())
+            .or_else(|| DocumentId::new(100))
+            .expect("dock document id");
+        let mut document = RuntimeDocument::new(document_id);
+        let context = document.context_mut();
+        let _ = context.set_theme(state.theme);
+        let mut panels = Vec::new();
+        let mut contents = std::collections::HashMap::new();
+        for id in surface.root.flatten() {
+            let (title, hint) = DOCK_PANELS
+                .iter()
+                .find(|(panel, _, _)| *panel == id.as_ref())
+                .map(|(_, title, hint)| (*title, *hint))
+                .unwrap_or(("Panel", ""));
+            let panel = context.create_detached_component(
+                document_id,
+                HostStack::fill_column(5.0).padding(10.0),
+            )?;
+            let heading = context.create_detached_component(
+                document_id,
+                styled_text(title, SemanticColorRole::Text, 12.0, 400),
+            )?;
+            let detail = context.create_detached_component(
+                document_id,
+                styled_text(hint, SemanticColorRole::Muted, 10.0, 400),
+            )?;
+            context.append_child(panel, heading)?;
+            context.append_child(panel, detail)?;
+            contents.insert(id.to_string(), panel.stable_id());
+            panels.push((id.to_string(), panel));
         }
-        _ => None,
+        let dock = context.create_component(
+            document_id,
+            runtime_dock_from_node(state, &surface.root, &contents),
+        )?;
+        for (_, panel) in &panels {
+            context.append_child(dock, *panel)?;
+        }
+        context.assemble_dock(dock)?;
+        let mut text = NanaTextShaper::default();
+        let _ = document.flush(
+            LayoutViewport::new(surface.width.max(1.0), surface.height.max(1.0)),
+            &mut text,
+        );
+        Ok(Self {
+            document,
+            dock,
+            panels,
+            text,
+        })
+    }
+
+    pub(super) fn sync(&mut self, state: &GalleryState, surface: &DockFloatingSurface) {
+        let context = self.document.context_mut();
+        let _ = context.set_theme(state.theme);
+        let mut contents = std::collections::HashMap::new();
+        for (id, panel) in &self.panels {
+            contents.insert(id.clone(), panel.stable_id());
+        }
+        let _ = context.update_component(self.dock, |dock, _| {
+            *dock = runtime_dock_from_node(state, &surface.root, &contents);
+        });
+        let _ = context.assemble_dock(self.dock);
+        let _ = self.document.flush(
+            LayoutViewport::new(surface.width.max(1.0), surface.height.max(1.0)),
+            &mut self.text,
+        );
+    }
+
+    pub(super) fn runtime_document(&self) -> &RuntimeDocument {
+        &self.document
+    }
+
+    pub(super) fn runtime_document_mut(&mut self) -> &mut RuntimeDocument {
+        &mut self.document
+    }
+
+    pub(super) fn resize(&mut self, width: f32, height: f32) {
+        let _ = self.document.flush(
+            LayoutViewport::new(width.max(1.0), height.max(1.0)),
+            &mut self.text,
+        );
     }
 }
 
@@ -946,14 +1085,7 @@ fn mount_sidebar(
     context: &mut nana_ui::runtime::AppContext,
     document_id: DocumentId,
     state: &GalleryState,
-) -> Result<
-    (
-        Entity<SidebarFrame>,
-        [Entity<SidebarRow>; 6],
-        Entity<SidebarFooterButton>,
-    ),
-    FrameworkError,
-> {
+) -> Result<SidebarMount, FrameworkError> {
     let mut spec = SidebarSection::new("Gallery").count(6);
     let title = context.create_detached_component(document_id, spec.title_label())?;
     spec = spec.title_slot(title.stable_id());
@@ -1123,7 +1255,7 @@ fn mount_controls(
     let mut dropdowns = [None; 3];
     for (index, (placeholder, size)) in ["小", "中", "大"].iter().zip(sizes).enumerate() {
         let dropdown = context
-            .create_detached_component(document_id, gallery_dropdown(state, *placeholder, size))?;
+            .create_detached_component(document_id, gallery_dropdown(state, placeholder, size))?;
         bind_event(
             context,
             dropdown,
@@ -1585,7 +1717,7 @@ fn mount_surfaces(
         Arc::clone(pending),
         |event: &Activate| {
             let _ = event;
-            GalleryMessage::PaneChrome(IcedPaneChromeActionKind::SplitHorizontal)
+            GalleryMessage::PaneChrome(PaneChromeActionKind::SplitHorizontal)
         },
     )?;
     let pane_close = context.create_detached_component(
@@ -1600,7 +1732,7 @@ fn mount_surfaces(
         Arc::clone(pending),
         |event: &Activate| {
             let _ = event;
-            GalleryMessage::PaneChrome(IcedPaneChromeActionKind::CloseItem)
+            GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem)
         },
     )?;
     let header = context.create_detached_component(document_id, HostStack::fill_row(6.0))?;
@@ -1968,14 +2100,7 @@ fn mount_rich_text(
     document_id: DocumentId,
     state: &GalleryState,
     _pending: &Arc<Mutex<Vec<GalleryMessage>>>,
-) -> Result<
-    (
-        Entity<HostStack>,
-        Entity<NativeMarkdown>,
-        Entity<nana_ui::runtime::Text>,
-    ),
-    FrameworkError,
-> {
+) -> Result<RichTextMount, FrameworkError> {
     let root = context.create_detached_component(document_id, HostStack::canvas())?;
     let heading = context.create_detached_component(
         document_id,
@@ -1990,8 +2115,7 @@ fn mount_rich_text(
             400,
         ),
     )?;
-    let markdown =
-        context.create_detached_component(document_id, runtime_markdown(&state.markdown))?;
+    let markdown = context.create_detached_component(document_id, state.markdown.clone())?;
     context.assemble_markdown(markdown)?;
     let link_status = context.create_detached_component(
         document_id,
@@ -2017,15 +2141,7 @@ fn mount_graph(
     document_id: DocumentId,
     state: &GalleryState,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
-) -> Result<
-    (
-        Entity<HostStack>,
-        Entity<GraphCanvas>,
-        Entity<nana_ui::runtime::Text>,
-        Entity<Button>,
-    ),
-    FrameworkError,
-> {
+) -> Result<GraphMount, FrameworkError> {
     let root = context.create_detached_component(document_id, HostStack::canvas())?;
     let toolbar = context.create_detached_component(
         document_id,
@@ -2869,8 +2985,8 @@ fn gallery_dropdown(state: &GalleryState, placeholder: &str, size: ControlSize) 
 }
 
 fn gallery_search(state: &GalleryState) -> SearchDropdown {
-    let search = SearchDropdown::new(state.search_selection.map(|value| value.to_string()))
-        .options(state.search_dropdown.options().iter().map(|option| {
+    SearchDropdown::new(state.search_selection.map(|value| value.to_string()))
+        .options(state.search_dropdown_options.iter().map(|option| {
             let mut item =
                 SearchDropdownOption::new(option.value.to_string(), option.label.clone());
             if let Some(hint) = &option.hint {
@@ -2879,15 +2995,14 @@ fn gallery_search(state: &GalleryState) -> SearchDropdown {
             item
         }))
         .placeholder("搜索选项")
-        .query(state.search_dropdown_query.clone());
-    search
+        .query(state.search_dropdown_query.clone())
 }
 
 fn gallery_textarea(state: &GalleryState) -> TextArea {
-    TextArea::new(state.editor.text())
+    TextArea::new(state.editor.as_str())
         .placeholder("输入说明")
         .height(96.0)
-        .invalid(state.editor.text().trim().chars().count() < 4)
+        .invalid(state.editor.trim().chars().count() < 4)
         .disabled(!state.editor_enabled())
 }
 
@@ -2910,7 +3025,7 @@ fn field_status_text(state: &GalleryState) -> nana_ui::runtime::Text {
 }
 
 fn editor_status_text(state: &GalleryState) -> nana_ui::runtime::Text {
-    let invalid = state.editor.text().trim().chars().count() < 4;
+    let invalid = state.editor.trim().chars().count() < 4;
     let (copy, color) = if invalid {
         ("请至少输入 4 个字符", SemanticColorRole::Danger)
     } else if state.editor_enabled() {
@@ -3009,7 +3124,15 @@ fn runtime_dock_from_workspace(
     state: &GalleryState,
     contents: &std::collections::HashMap<String, StableNodeId>,
 ) -> nana_ui::runtime::Dock {
-    let root = bind_dock_contents(&state.dock.main, contents);
+    runtime_dock_from_node(state, &state.dock.main, contents)
+}
+
+fn runtime_dock_from_node(
+    state: &GalleryState,
+    root: &nana_ui::runtime::DockNode,
+    contents: &std::collections::HashMap<String, StableNodeId>,
+) -> nana_ui::runtime::Dock {
+    let root = bind_dock_contents(root, contents);
     let mut view = nana_ui::runtime::Dock::new(root).locked(state.dock_locked);
     if let Some(primary) = state.dock.primary.as_deref() {
         view = view.primary(primary);
@@ -3136,75 +3259,6 @@ fn map_search_event(event: &SearchDropdownEvent) -> GalleryMessage {
     }
 }
 
-fn runtime_markdown(source: &IcedNativeMarkdown) -> NativeMarkdown {
-    NativeMarkdown::from_blocks(source.blocks().iter().map(convert_markdown_block))
-}
-
-fn convert_markdown_block(block: &IcedMarkdownBlock) -> MarkdownBlock {
-    match block {
-        IcedMarkdownBlock::Text { kind, spans } => MarkdownBlock::Text {
-            kind: match kind {
-                IcedMarkdownBlockKind::Paragraph => MarkdownBlockKind::Paragraph,
-                IcedMarkdownBlockKind::Heading(level) => MarkdownBlockKind::Heading(*level),
-                IcedMarkdownBlockKind::Quote => MarkdownBlockKind::Quote,
-                IcedMarkdownBlockKind::ListItem { depth } => {
-                    MarkdownBlockKind::ListItem { depth: *depth }
-                }
-            },
-            spans: spans.iter().map(convert_markdown_span).collect(),
-        },
-        IcedMarkdownBlock::Code { language, source } => MarkdownBlock::Code {
-            language: language.clone(),
-            source: source.clone(),
-        },
-        IcedMarkdownBlock::DisplayMath(source) => MarkdownBlock::DisplayMath(source.clone()),
-        IcedMarkdownBlock::Mermaid(source) => MarkdownBlock::Mermaid(source.clone()),
-        IcedMarkdownBlock::Table(table) => MarkdownBlock::Table(convert_markdown_table(table)),
-        IcedMarkdownBlock::Rule => MarkdownBlock::Rule,
-    }
-}
-
-fn convert_markdown_span(span: &IcedMarkdownSpan) -> MarkdownSpan {
-    MarkdownSpan {
-        text: span.text.clone(),
-        strong: span.strong,
-        emphasis: span.emphasis,
-        strikethrough: span.strikethrough,
-        code: span.code,
-        inline_math: span.inline_math,
-        link: span.link.clone(),
-        image: span.image.clone(),
-    }
-}
-
-fn convert_markdown_table(table: &IcedMarkdownTable) -> MarkdownTable {
-    MarkdownTable {
-        alignments: table
-            .alignments
-            .iter()
-            .map(|alignment| match alignment {
-                IcedMarkdownTableAlignment::Left => MarkdownTableAlignment::Left,
-                IcedMarkdownTableAlignment::Center => MarkdownTableAlignment::Center,
-                IcedMarkdownTableAlignment::Right => MarkdownTableAlignment::Right,
-            })
-            .collect(),
-        header: table
-            .header
-            .iter()
-            .map(|cell| cell.iter().map(convert_markdown_span).collect())
-            .collect(),
-        rows: table
-            .rows
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|cell| cell.iter().map(convert_markdown_span).collect())
-                    .collect()
-            })
-            .collect(),
-    }
-}
-
 fn gallery_calendar_data() -> Vec<CalendarHeatmapDatum> {
     (0..84)
         .map(|offset| {
@@ -3217,18 +3271,6 @@ fn gallery_calendar_data() -> Vec<CalendarHeatmapDatum> {
             )
         })
         .collect()
-}
-
-fn iced_calendar_cell(cell: &nana_ui::runtime::CalendarHeatmapActiveCell) -> IcedCalendarCell {
-    IcedCalendarCell {
-        date: cell.date.clone(),
-        value: cell.value,
-        data: cell.data.clone(),
-        level: cell.level,
-        title: cell.title.clone(),
-        x: cell.x,
-        y: cell.y,
-    }
 }
 
 fn graph_selection_label(state: &GalleryState) -> String {

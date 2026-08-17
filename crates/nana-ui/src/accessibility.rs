@@ -13,9 +13,9 @@ use accesskit::{ActionHandler, ActionRequest, ActivationHandler, DeactivationHan
 #[cfg(not(target_os = "android"))]
 use accesskit_winit::Adapter;
 #[cfg(not(target_os = "android"))]
-use iced_winit::winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::Window};
-#[cfg(not(target_os = "android"))]
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_os = "android"))]
+use winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::Window};
 
 /// Stateful conversion from NanaUI's backend-neutral semantics to AccessKit.
 ///

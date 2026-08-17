@@ -346,6 +346,7 @@ impl MeshPipeline {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tessellate_icon(
     fill: &mut FillTessellator,
     stroke: &mut StrokeTessellator,

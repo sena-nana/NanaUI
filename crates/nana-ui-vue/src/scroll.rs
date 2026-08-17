@@ -328,12 +328,11 @@ fn translate_descendants(
     }
 }
 
-/// Re-apply Runtime-owned scroll offsets onto compatibility layout boxes after
-/// iced paint writeback.
+/// Re-apply Runtime-owned scroll offsets onto diagnostic layout boxes after
+/// Scene paint writeback.
 ///
-/// HostedProgram does not drain iced `scrollable` Tasks, so paint boxes are
-/// unscrolled; this restores JS-visible geometry without rewriting Runtime
-/// layout.
+/// The Scene host does not drain Iced `scrollable` Tasks; this restores
+/// JS-visible geometry without rewriting Runtime layout.
 pub fn reapply_scroll_translations(
     doc: &mut NanaTreeDocument,
     bridge: &MessageBridge,
@@ -393,26 +392,6 @@ pub(crate) fn sync_host_scroll_offset(
     };
     translate_descendants(doc, layout_store, node, prev.x - next.x, prev.y - next.y);
     true
-}
-
-/// Drain pending iced scroll Tasks (no-op when `iced-view` is off).
-#[cfg(feature = "iced-view")]
-pub fn drain_pending_scroll_tasks<Message: 'static + Send>() -> iced::Task<Message> {
-    use iced::widget::{Id, operation, scrollable::AbsoluteOffset};
-
-    let pending = shared_scroll_offset_store().take_pending();
-    if pending.is_empty() {
-        return iced::Task::none();
-    }
-    iced::Task::batch(pending.into_iter().map(|p| {
-        operation::scroll_to(
-            Id::from(scrollable_widget_id(p.widget_id)),
-            AbsoluteOffset {
-                x: Some(p.offset.x),
-                y: Some(p.offset.y),
-            },
-        )
-    }))
 }
 
 #[cfg(test)]

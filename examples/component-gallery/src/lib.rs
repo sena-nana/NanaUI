@@ -1,79 +1,49 @@
 use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use iced::widget::{
-    button, container, row, scrollable, slider, space, stack, text, text_editor, toggler,
-};
-use iced::{Alignment, Element, Length, Padding, Point, Size, Subscription, Task, font};
-
+use nana_ui::LogicalPoint;
 use nana_ui::command::{
     ActionDescriptor, ActionId, ActionPickerNavigation, ActionPickerState, ActionRegistry,
     ContextPredicate, KeyBinding, KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch,
     KeymapState,
 };
-use nana_ui::compatibility::{
-    AppTitleBar, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
-};
-use nana_ui::compatibility::{
-    Button as UiButton, Card as UiCard, Checkbox as UiCheckbox, ConfirmDialog as UiConfirmDialog,
-    IconButton as UiIconButton, Input as UiInput, InteractiveCard as UiInteractiveCard,
-    ListItem as UiListItem, Popover as UiPopover, Progress as UiProgress,
-    RangeField as UiRangeField, SegmentedControl as UiSegmentedControl, Switch as UiSwitch,
-    Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip, XYPad as UiXYPad,
-};
-use nana_ui::compatibility::{
-    CalendarHeatmap as UiCalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapDatum,
-    CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapOptions, GraphCanvas,
-    ImageViewer as UiImageViewer, ImageViewerSource, NativeMarkdown, build_calendar_heatmap_model,
-};
-use nana_ui::compatibility::{
-    CommandPalette as UiCommandPalette, Dropdown as UiDropdown, DropdownOption,
-    SearchDropdown as UiSearchDropdown, SearchDropdownOption, SearchDropdownState,
-    TreeView as UiTreeView,
-};
 use nana_ui::components::{
-    AnchoredMenuPlacement, AnchoredMenuPosition, CommandPaletteEvent, CommandPaletteItem,
-    ContextMenuAnchor, ContextMenuEvent, ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
-    ControlSize, DropdownEvent, SelectionOption, TreeNode, TreeViewEvent, XYPadEvent, XYPadValue,
+    CalendarHeatmapActiveCell, CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel,
+    CalendarHeatmapOptions, CommandPaletteEvent, CommandPaletteItem, ContextMenuItem,
+    DropdownEvent, NativeMarkdown, SearchDropdownOption, TreeViewEvent, XYPadEvent, XYPadValue,
+    build_calendar_heatmap_model,
 };
-use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-use nana_ui::icons::{Icon, icon, status_indicator};
+use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger};
+use nana_ui::icons::Icon;
 use nana_ui::layout::{
     RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
 };
 use nana_ui::menu::{MenuConfirmation, MenuSelection};
 use nana_ui::overlay::ExclusiveOverlay;
+use nana_ui::runtime::{FrameworkError, RuntimeDocument, UiScene};
 use nana_ui::selection::{SelectionMove, SingleSelection};
 use nana_ui::settings::{
     AppearanceSettings, BackdropTarget, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
     WindowMaterialMode,
 };
-use nana_ui::theme::{Colors, ThemeMode, ThemeModeExt, ThemeTokens, UI_METRICS, ui_font};
-use nana_ui::tooltip::TooltipConfig;
-use nana_ui::widgets::{
-    ButtonKind, CardKind, button_style, canvas_style, panel_style, scrollable_style, slider_style,
-    toggler_style, toolbar_style, vertical_scrollbar,
-};
-use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
+use nana_ui::theme::{ThemeMode, ThemeModeExt, ThemeTokens};
+use nana_ui::window_chrome::{WindowChromeAction, WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
     AppearanceEvent, DockAction, DockId, DockSurfaceId, DockWorkspace, DockWorkspaceEvent,
-    FallbackColor, GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
-    GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    MaterialOutcome, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
-    SplitPaneController, WindowAppearance, apply_system_material, clear_system_material,
-    ratio_pane_split,
+    GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort,
+    GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport, MaterialOutcome,
+    PaneChromeActionKind, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    RuntimeRedraw, SplitAxis, SplitPaneAction, SplitPaneController,
 };
-use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
+use nana_ui_platform::{
+    InputEvent, WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings,
+};
 
-#[path = "views/controls.rs"]
-mod controls_view;
-#[path = "views/feedback.rs"]
-mod feedback_view;
 #[path = "views/graph.rs"]
 mod graph_view;
-#[path = "views/rich_text.rs"]
-mod rich_text_view;
 #[path = "views/root.rs"]
 mod root_view;
 mod runtime_gallery;
@@ -82,10 +52,6 @@ mod runtime_overlays;
 mod runtime_settings;
 #[path = "views/settings.rs"]
 mod settings_view;
-#[path = "views/surfaces.rs"]
-mod surfaces_view;
-#[path = "views/workspace.rs"]
-mod workspace_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GallerySection {
@@ -166,14 +132,16 @@ pub enum GalleryMessage {
     RequestDialogClose(DialogCloseTrigger),
     DismissOverlay,
     OverlayInteraction,
-    EditText(text_editor::Action),
     ToggleContextMenu,
-    OpenContextMenu(ContextMenuAnchor),
+    OpenContextMenu {
+        x: f32,
+        y: f32,
+    },
     ToggleImageViewer,
     RequestImageViewerClose(DialogCloseTrigger),
     TogglePopover,
     ClosePopover,
-    ContextMenu(ContextMenuEvent<ContextAction>),
+    ContextMenu(GalleryContextMenuEvent),
     ToggleCommandPalette,
     CommandPalette(CommandPaletteEvent),
     NavigateCommandPalette(ActionPickerNavigation),
@@ -185,6 +153,14 @@ pub enum GalleryMessage {
     GalleryRuntime(runtime_host::RuntimeSceneInput),
     OverlayRuntime(runtime_host::RuntimeSceneInput),
     SetEditorText(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GalleryContextMenuEvent {
+    Search(String),
+    Select(String),
+    Dismiss,
+    OpenSubmenu(Vec<usize>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,54 +176,6 @@ enum GalleryOverlay {
     ContextMenu,
     Dialog,
     ImageViewer,
-}
-
-fn overlay_event(
-    event: iced::Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<GalleryMessage> {
-    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event else {
-        return None;
-    };
-    nana_ui::action_picker_from_iced_key(&key).map(GalleryMessage::NavigateCommandPalette)
-}
-
-fn command_shortcut_event(
-    event: iced::Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<GalleryMessage> {
-    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event
-    else {
-        return None;
-    };
-    if !modifiers.command() {
-        return None;
-    }
-    KeyStroke::from_iced(&key, modifiers).map(GalleryMessage::KeyStroke)
-}
-
-#[allow(dead_code)]
-fn surface_selection_event(
-    event: iced::Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<GalleryMessage> {
-    let movement = match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key: iced::keyboard::Key::Named(named),
-            ..
-        }) => match named {
-            iced::keyboard::key::Named::ArrowLeft => SelectionMove::Previous,
-            iced::keyboard::key::Named::ArrowRight => SelectionMove::Next,
-            iced::keyboard::key::Named::Home => SelectionMove::First,
-            iced::keyboard::key::Named::End => SelectionMove::Last,
-            _ => return None,
-        },
-        _ => return None,
-    };
-    Some(GalleryMessage::NavigateSurfaceView(movement))
 }
 
 #[derive(Debug)]
@@ -274,7 +202,7 @@ pub struct GalleryState {
     slider: u8,
     xy_pad: XYPadValue,
     dropdown_values: Vec<u8>,
-    search_dropdown: SearchDropdownState<u8>,
+    search_dropdown_options: Vec<SearchDropdownOption>,
     search_dropdown_query: String,
     search_selection: Option<u8>,
     #[allow(dead_code)]
@@ -291,8 +219,8 @@ pub struct GalleryState {
     dialog_policy: DialogClosePolicy,
     menu_confirmation: MenuConfirmation<ContextAction>,
     context_action: Option<ContextAction>,
-    context_anchor: Option<ContextMenuAnchor>,
-    context_items: OnceCell<Vec<ContextMenuItem<'static, ContextAction>>>,
+    context_anchor: Option<(f32, f32)>,
+    context_items: OnceCell<Vec<ContextMenuItem>>,
     context_query: String,
     context_path: Vec<usize>,
     action_registry: ActionRegistry,
@@ -307,7 +235,7 @@ pub struct GalleryState {
     graph: GraphModel,
     graph_viewport: GraphViewport,
     graph_selection: Option<GraphSelection>,
-    editor: text_editor::Content,
+    editor: String,
     primary_clicks: u32,
     window_chrome: WindowChromeState,
     /// Latest material application outcome from the iced host path.
@@ -351,11 +279,11 @@ impl GalleryState {
             slider: 58,
             xy_pad: XYPadValue::new(0.65, 0.35),
             dropdown_values: vec![50],
-            search_dropdown: SearchDropdownState::new([
-                SearchDropdownOption::new(1, "第一个选项").hint("Alpha"),
-                SearchDropdownOption::new(2, "第二个选项").hint("Beta"),
-                SearchDropdownOption::new(3, "第三个选项").hint("Gamma"),
-            ]),
+            search_dropdown_options: vec![
+                SearchDropdownOption::new("1", "第一个选项").hint("Alpha"),
+                SearchDropdownOption::new("2", "第二个选项").hint("Beta"),
+                SearchDropdownOption::new("3", "第三个选项").hint("Gamma"),
+            ],
             search_dropdown_query: String::new(),
             search_selection: Some(2),
             calendar_model: OnceCell::new(),
@@ -387,7 +315,7 @@ impl GalleryState {
             graph: graph_view::gallery_graph(),
             graph_viewport: GraphViewport::new(GraphPoint::new(72.0, 96.0), 1.0),
             graph_selection: None,
-            editor: text_editor::Content::with_text("示例说明\n用于展示多行文本编辑"),
+            editor: "示例说明\n用于展示多行文本编辑".to_owned(),
             primary_clicks: 0,
             window_chrome: WindowChromeState::default(),
             material_outcome: MaterialOutcome::chosen_solid(),
@@ -402,6 +330,71 @@ impl GalleryState {
 
     pub fn theme_mode(&self) -> ThemeMode {
         self.theme
+    }
+
+    /// Flush retained Runtime documents so snapshot tooling can paint `UiScene`.
+    pub fn flush_snapshot_scene(&mut self) {
+        let (width, height) = self.window_size.unwrap_or(runtime_host::DEFAULT_VIEWPORT);
+        if self.window_size != Some((width, height)) {
+            self.update(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
+                width,
+                height,
+            }));
+        } else if self.settings_open {
+            self.refresh_settings_runtime();
+        } else {
+            self.refresh_gallery_runtime();
+        }
+        if self.overlay.is_open() {
+            self.refresh_overlay_runtime();
+        }
+    }
+
+    pub fn document(&self) -> Option<&RuntimeDocument> {
+        self.runtime_document()
+    }
+
+    pub fn document_mut(&mut self) -> Option<&mut RuntimeDocument> {
+        if self.settings_open {
+            self.settings_runtime
+                .as_mut()
+                .map(runtime_settings::GallerySettingsRuntime::document_mut)
+        } else {
+            self.gallery_runtime
+                .as_mut()
+                .map(runtime_gallery::GalleryRuntime::document_mut)
+        }
+    }
+
+    pub fn active_scene(&self) -> Option<&UiScene> {
+        self.runtime_document().map(RuntimeDocument::scene)
+    }
+
+    /// Overlay lives in the primary Runtime document; same `UiScene` as
+    /// [`Self::active_scene`]. Snapshot paint must not stack this on the base.
+    pub fn overlay_scene(&self) -> Option<&UiScene> {
+        self.overlay
+            .is_open()
+            .then(|| self.active_scene())
+            .flatten()
+    }
+
+    /// Drive hover through Runtime input so snapshot paint includes pointer state.
+    pub fn snapshot_hover(&mut self, x: f32, y: f32) {
+        let point = LogicalPoint::new(x, y);
+        if self.overlay.is_open() {
+            self.update(GalleryMessage::OverlayRuntime(
+                runtime_host::RuntimeSceneInput::PointerMove(point),
+            ));
+        } else if self.settings_open {
+            self.update(GalleryMessage::SettingsRuntime(
+                runtime_host::RuntimeSceneInput::PointerMove(point),
+            ));
+        } else {
+            self.update(GalleryMessage::GalleryRuntime(
+                runtime_host::RuntimeSceneInput::PointerMove(point),
+            ));
+        }
     }
 
     pub fn material_outcome(&self) -> MaterialOutcome {
@@ -440,90 +433,10 @@ impl GalleryState {
         self.calendar_model.get_or_init(gallery_calendar_model)
     }
 
-    fn context_items(&self) -> &[ContextMenuItem<'static, ContextAction>] {
+    fn context_items(&self) -> &[ContextMenuItem] {
         self.context_items
             .get_or_init(gallery_context_items)
             .as_slice()
-    }
-
-    pub fn subscription(&self) -> Subscription<GalleryMessage> {
-        let interaction = if self.overlay.is_open() {
-            Subscription::batch([
-                iced::event::listen_with(overlay_event),
-                iced::event::listen_with(runtime_overlays::overlay_runtime_key_event),
-            ])
-        } else if self.settings_open {
-            iced::event::listen_with(runtime_settings::settings_runtime_key_event)
-        } else {
-            iced::event::listen_with(runtime_gallery::gallery_runtime_key_event)
-        };
-        let loading = if self.loading {
-            iced::time::every(iced::time::Duration::from_millis(100))
-                .map(|_| GalleryMessage::LoadingTick)
-        } else {
-            Subscription::none()
-        };
-        Subscription::batch([
-            iced::event::listen_with(command_shortcut_event),
-            interaction,
-            loading,
-            self.active_workspace()
-                .subscription()
-                .map(GalleryMessage::Workspace),
-            self.split_pane
-                .subscription()
-                .map(GalleryMessage::SplitPane),
-            WindowChromeState::subscription().map(GalleryMessage::WindowChrome),
-        ])
-    }
-
-    pub fn update_windowed(&mut self, message: GalleryMessage) -> Task<GalleryMessage> {
-        if let GalleryMessage::MaterialApplied(outcome) = message {
-            self.material_outcome = outcome;
-            return Task::none();
-        }
-
-        if let GalleryMessage::WindowChrome(event) = message {
-            let reapply = matches!(event, WindowChromeEvent::PrepareWindow(_));
-            let chrome = self
-                .window_chrome
-                .update_iced(event)
-                .map(GalleryMessage::WindowChrome);
-            if reapply {
-                return Task::batch([chrome, self.apply_window_material_task()]);
-            }
-            return chrome;
-        }
-
-        let focus_palette = !self.action_picker.is_open();
-        let previous_theme = self.theme;
-        let refresh_material = matches!(
-            message,
-            GalleryMessage::SetWindowMaterial(_)
-                | GalleryMessage::ResetAppearance
-                | GalleryMessage::SetTheme(_)
-                | GalleryMessage::ToggleTheme
-        );
-        self.update(message);
-        if focus_palette && self.action_picker.is_open() {
-            iced::widget::operation::focus(nana_ui::COMMAND_PALETTE_INPUT_ID)
-        } else if refresh_material || self.theme != previous_theme {
-            self.apply_window_material_task()
-        } else {
-            Task::none()
-        }
-    }
-
-    fn apply_window_material_task(&self) -> Task<GalleryMessage> {
-        let Some(window_id) = self.window_chrome.window_id() else {
-            return Task::none();
-        };
-        let theme = self.theme;
-        let mode = self.appearance.window_material();
-        iced::window::run(window_id, move |window| {
-            apply_gallery_window_material(window, theme, mode)
-        })
-        .map(GalleryMessage::MaterialApplied)
     }
 
     pub fn update(&mut self, message: GalleryMessage) {
@@ -551,7 +464,7 @@ impl GalleryState {
                 self.handle_overlay_runtime_input(input);
             }
             GalleryMessage::SetEditorText(value) => {
-                self.editor = text_editor::Content::with_text(&value);
+                self.editor = value;
             }
             GalleryMessage::Workspace(action) => {
                 if let WorkspaceAction::WindowResized { width, height } = &action {
@@ -754,11 +667,14 @@ impl GalleryState {
                 }
             }
             GalleryMessage::DismissOverlay => {
+                self.action_picker.dismiss();
                 self.overlay.dismiss();
                 self.menu_confirmation.clear();
+                self.context_anchor = None;
+                self.context_query.clear();
+                self.context_path.clear();
             }
             GalleryMessage::OverlayInteraction => {}
-            GalleryMessage::EditText(action) => self.editor.perform(action),
             GalleryMessage::ToggleContextMenu => {
                 self.menu_confirmation.clear();
                 self.context_query.clear();
@@ -766,11 +682,11 @@ impl GalleryState {
                 self.context_anchor = None;
                 self.overlay.toggle(GalleryOverlay::ContextMenu);
             }
-            GalleryMessage::OpenContextMenu(anchor) => {
+            GalleryMessage::OpenContextMenu { x, y } => {
                 self.menu_confirmation.clear();
                 self.context_query.clear();
                 self.context_path.clear();
-                self.context_anchor = Some(anchor);
+                self.context_anchor = Some((x, y));
                 self.overlay.open(GalleryOverlay::ContextMenu);
             }
             GalleryMessage::ToggleImageViewer => {
@@ -788,15 +704,18 @@ impl GalleryState {
             GalleryMessage::TogglePopover => self.popover_open = !self.popover_open,
             GalleryMessage::ClosePopover => self.popover_open = false,
             GalleryMessage::ContextMenu(event) => match event {
-                ContextMenuEvent::Search(query) => {
+                GalleryContextMenuEvent::Search(query) => {
                     self.context_query = query;
                     self.context_path.clear();
                 }
-                ContextMenuEvent::OpenSubmenu(path) => self.context_path = path,
-                ContextMenuEvent::Select(action) => {
+                GalleryContextMenuEvent::OpenSubmenu(path) => self.context_path = path,
+                GalleryContextMenuEvent::Select(value) => {
                     if !self.overlay.contains(&GalleryOverlay::ContextMenu) {
                         return;
                     }
+                    let Some(action) = context_action_from_value(&value) else {
+                        return;
+                    };
                     let requires_confirmation = action == ContextAction::Remove;
                     if let MenuSelection::Confirmed(action) =
                         self.menu_confirmation.select(action, requires_confirmation)
@@ -804,14 +723,13 @@ impl GalleryState {
                         self.apply_context_action(action);
                     }
                 }
-                ContextMenuEvent::Dismiss => {
+                GalleryContextMenuEvent::Dismiss => {
                     self.overlay.dismiss();
                     self.context_anchor = None;
                     self.menu_confirmation.clear();
                     self.context_query.clear();
                     self.context_path.clear();
                 }
-                ContextMenuEvent::Interaction => {}
             },
             GalleryMessage::ToggleCommandPalette => self.toggle_command_palette(),
             GalleryMessage::CommandPalette(event) => self.update_command_palette(event),
@@ -874,16 +792,16 @@ impl GalleryState {
             }
             DockAction::SurfaceGeometry { surface, bounds }
             | DockAction::SurfaceLayout { surface, bounds } => {
-                if let Some(id) = floating_surface_id(surface) {
-                    if self.dock.floating.iter().any(|item| item.id == id) {
-                        self.apply_dock_workspace_event(DockWorkspaceEvent::MoveFloating {
-                            id,
-                            x: bounds.x,
-                            y: bounds.y,
-                            width: bounds.width,
-                            height: bounds.height,
-                        });
-                    }
+                if let Some(id) = floating_surface_id(surface)
+                    && self.dock.floating.iter().any(|item| item.id == id)
+                {
+                    self.apply_dock_workspace_event(DockWorkspaceEvent::MoveFloating {
+                        id,
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: bounds.width,
+                        height: bounds.height,
+                    });
                 }
             }
             DockAction::Hide(id) => {
@@ -914,10 +832,10 @@ impl GalleryState {
                 }
             }
             DockAction::CloseSurface(surface) => {
-                if let Some(id) = floating_surface_id(surface) {
-                    if self.dock.floating.iter().any(|item| item.id == id) {
-                        self.apply_dock_workspace_event(DockWorkspaceEvent::CloseFloating(id));
-                    }
+                if let Some(id) = floating_surface_id(surface)
+                    && self.dock.floating.iter().any(|item| item.id == id)
+                {
+                    self.apply_dock_workspace_event(DockWorkspaceEvent::CloseFloating(id));
                 }
             }
             DockAction::SetLocked(locked) => {
@@ -1089,13 +1007,399 @@ impl GalleryState {
                 self.primary_clicks = self.primary_clicks.saturating_add(1);
             }
             ContextAction::Rename => {
-                self.editor = text_editor::Content::with_text("已重命名项目");
+                self.editor = "已重命名项目".to_owned();
             }
             ContextAction::Remove => {
                 self.selected_item = 0;
             }
         }
     }
+}
+
+const LOADING_TICK: Duration = Duration::from_millis(100);
+
+/// Scene-host application: one Runtime document per window.
+pub struct GalleryApp {
+    state: GalleryState,
+    dock_windows: HashMap<WindowId, runtime_gallery::DockWindowRuntime>,
+    loading_deadline: Option<Instant>,
+}
+
+impl Default for GalleryApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GalleryApp {
+    pub fn new() -> Self {
+        Self {
+            state: GalleryState::new(),
+            dock_windows: HashMap::new(),
+            loading_deadline: None,
+        }
+    }
+
+    pub fn state(&self) -> &GalleryState {
+        &self.state
+    }
+
+    pub fn state_mut(&mut self) -> &mut GalleryState {
+        &mut self.state
+    }
+
+    pub(crate) fn apply_message(&mut self, message: GalleryMessage) -> RuntimeProgramUpdate {
+        let exit = matches!(
+            message,
+            GalleryMessage::WindowChrome(WindowChromeEvent::Action(WindowChromeAction::Close))
+        );
+        let chrome_commands = window_chrome_commands(
+            WindowId::PRIMARY,
+            &message,
+            self.state.window_chrome.is_maximized(),
+        );
+        let previous_commands = self.state.dock_window_commands.len();
+        self.state.update(message);
+        let mut window_commands = chrome_commands;
+        window_commands.extend(
+            self.state.dock_window_commands[previous_commands..]
+                .iter()
+                .cloned(),
+        );
+        self.sync_dock_windows();
+        self.sync_loading_deadline();
+        RuntimeProgramUpdate {
+            redraw: RuntimeRedraw::All,
+            window_commands,
+            exit,
+        }
+    }
+
+    fn sync_dock_windows(&mut self) {
+        let live = self
+            .state
+            .dock
+            .floating
+            .iter()
+            .map(|surface| {
+                (
+                    WindowId(nana_ui::runtime::dock_surface_window_key(&surface.id)),
+                    surface.clone(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        self.dock_windows.retain(|id, _| live.contains_key(id));
+        for (id, surface) in live {
+            if let Some(runtime) = self.dock_windows.get_mut(&id) {
+                runtime.sync(&self.state, &surface);
+            } else if let Ok(runtime) =
+                runtime_gallery::DockWindowRuntime::mount(&self.state, &surface)
+            {
+                self.dock_windows.insert(id, runtime);
+            }
+        }
+    }
+
+    fn sync_loading_deadline(&mut self) {
+        if self.state.loading {
+            if self.loading_deadline.is_none() {
+                self.loading_deadline = Some(Instant::now() + LOADING_TICK);
+            }
+        } else {
+            self.loading_deadline = None;
+        }
+    }
+
+    fn persist_primary_dock(&mut self) {
+        let Some(runtime) = self.state.gallery_runtime.take() else {
+            return;
+        };
+        self.state.persist_runtime_dock_workspace(&runtime);
+        self.state.gallery_runtime = Some(runtime);
+        self.sync_dock_windows();
+    }
+
+    fn drain_primary_input(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+        let mut messages = if self.state.settings_open {
+            self.state
+                .settings_runtime
+                .as_mut()
+                .map(|runtime| runtime.take_host_messages(event))
+                .unwrap_or_default()
+        } else {
+            self.state
+                .gallery_runtime
+                .as_mut()
+                .map(|runtime| runtime.take_host_messages(event))
+                .unwrap_or_default()
+        };
+        messages.extend(self.state.apply_overlay_host_input(event));
+        if let Some(message) = shortcut_message(event) {
+            messages.push(message);
+        }
+        messages
+    }
+
+    fn apply_all(
+        &mut self,
+        messages: impl IntoIterator<Item = GalleryMessage>,
+    ) -> RuntimeProgramUpdate {
+        let mut update = RuntimeProgramUpdate::default();
+        for message in messages {
+            update = merge_program_update(update, self.apply_message(message));
+        }
+        update
+    }
+}
+
+impl RuntimeProgram for GalleryApp {
+    type Message = GalleryMessage;
+    type Error = FrameworkError;
+
+    fn initialize(
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
+        let mut app = Self::new();
+        let size = context.geometry().logical_size;
+        if size.0 > 0.0 && size.1 > 0.0 {
+            let _ = app.apply_message(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
+                width: size.0,
+                height: size.1,
+            }));
+        }
+        if app.state.gallery_runtime.is_none() {
+            return Err(FrameworkError::InvalidInput);
+        }
+        Ok((app, Vec::new()))
+    }
+
+    fn document(&self, id: WindowId) -> Option<&nana_ui::runtime::RuntimeDocument> {
+        if id == WindowId::PRIMARY {
+            self.state.runtime_document()
+        } else {
+            self.dock_windows
+                .get(&id)
+                .map(runtime_gallery::DockWindowRuntime::runtime_document)
+        }
+    }
+
+    fn document_mut(&mut self, id: WindowId) -> Option<&mut nana_ui::runtime::RuntimeDocument> {
+        if id == WindowId::PRIMARY {
+            if self.state.settings_open {
+                self.state
+                    .settings_runtime
+                    .as_mut()
+                    .map(runtime_settings::GallerySettingsRuntime::runtime_document_mut)
+            } else {
+                self.state
+                    .gallery_runtime
+                    .as_mut()
+                    .map(runtime_gallery::GalleryRuntime::runtime_document_mut)
+            }
+        } else {
+            self.dock_windows
+                .get_mut(&id)
+                .map(runtime_gallery::DockWindowRuntime::runtime_document_mut)
+        }
+    }
+
+    fn update(
+        &mut self,
+        message: Self::Message,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.apply_message(message)
+    }
+
+    fn theme_mode(&self) -> ThemeMode {
+        self.state.theme_mode()
+    }
+
+    fn input_event(
+        &mut self,
+        id: WindowId,
+        event: &InputEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        if id == WindowId::PRIMARY {
+            let messages = self.drain_primary_input(event);
+            let mut update = self.apply_all(messages);
+            if !self.state.settings_open {
+                self.persist_primary_dock();
+            }
+            if !update.window_commands.is_empty() {
+                update.redraw = RuntimeRedraw::All;
+            }
+            return Ok(update);
+        }
+        Ok(RuntimeProgramUpdate::redraw(id))
+    }
+
+    fn window_event(
+        &mut self,
+        event: WindowEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        match event {
+            WindowEvent::Ready { id, geometry } | WindowEvent::Resized { id, geometry } => {
+                self.apply_window_geometry(id, geometry)
+            }
+            WindowEvent::CloseRequested { id } if id == WindowId::PRIMARY => {
+                RuntimeProgramUpdate::exit()
+            }
+            WindowEvent::CloseRequested { id } => self.apply_message(GalleryMessage::Dock(
+                DockAction::CloseSurface(DockSurfaceId(id.0)),
+            )),
+            WindowEvent::Closed { id } => {
+                self.dock_windows.remove(&id);
+                RuntimeProgramUpdate::default()
+            }
+            WindowEvent::FocusChanged { id, focused: true } if id != WindowId::PRIMARY => {
+                if let Some(surface) =
+                    self.state.dock.floating.iter().find(|surface| {
+                        nana_ui::runtime::dock_surface_window_key(&surface.id) == id.0
+                    })
+                {
+                    self.apply_message(GalleryMessage::Dock(DockAction::Focus(DockId::from(
+                        surface
+                            .root
+                            .flatten()
+                            .first()
+                            .map(|id| id.as_ref())
+                            .unwrap_or(""),
+                    ))))
+                } else {
+                    RuntimeProgramUpdate::default()
+                }
+            }
+            _ => RuntimeProgramUpdate::default(),
+        }
+    }
+
+    fn next_wakeup(&self) -> Option<Instant> {
+        self.loading_deadline
+    }
+
+    fn wake(
+        &mut self,
+        now: Instant,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        if self.state.loading
+            && self
+                .loading_deadline
+                .is_some_and(|deadline| now >= deadline)
+        {
+            self.loading_deadline = None;
+            return self.apply_message(GalleryMessage::LoadingTick);
+        }
+        RuntimeProgramUpdate::default()
+    }
+
+    fn prepare_window_frame(
+        &mut self,
+        id: WindowId,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        if id == WindowId::PRIMARY && !self.state.settings_open {
+            self.persist_primary_dock();
+        }
+    }
+}
+
+impl GalleryApp {
+    fn apply_window_geometry(
+        &mut self,
+        id: WindowId,
+        geometry: nana_ui_platform::WindowGeometry,
+    ) -> RuntimeProgramUpdate {
+        self.state.window_chrome.set_maximized(geometry.maximized);
+        if id == WindowId::PRIMARY {
+            return self.apply_message(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
+                width: geometry.logical_size.0,
+                height: geometry.logical_size.1,
+            }));
+        }
+        if let Some(runtime) = self.dock_windows.get_mut(&id) {
+            runtime.resize(geometry.logical_size.0, geometry.logical_size.1);
+        }
+        if self
+            .state
+            .dock
+            .floating
+            .iter()
+            .any(|surface| nana_ui::runtime::dock_surface_window_key(&surface.id) == id.0)
+        {
+            return self.apply_message(GalleryMessage::Dock(DockAction::SurfaceResized {
+                surface: DockSurfaceId(id.0),
+                width: geometry.logical_size.0,
+                height: geometry.logical_size.1,
+            }));
+        }
+        RuntimeProgramUpdate::redraw(id)
+    }
+}
+
+fn window_chrome_commands(
+    id: WindowId,
+    message: &GalleryMessage,
+    maximized: bool,
+) -> Vec<WindowCommand> {
+    let GalleryMessage::WindowChrome(WindowChromeEvent::Action(action)) = message else {
+        return Vec::new();
+    };
+    match action {
+        WindowChromeAction::Minimize => vec![WindowCommand::SetMinimized {
+            id,
+            minimized: true,
+        }],
+        WindowChromeAction::ToggleMaximize => vec![WindowCommand::SetMaximized {
+            id,
+            maximized: !maximized,
+        }],
+        WindowChromeAction::Close | WindowChromeAction::Drag => Vec::new(),
+    }
+}
+
+fn shortcut_message(event: &InputEvent) -> Option<GalleryMessage> {
+    let InputEvent::Keyboard {
+        pressed: true,
+        key,
+        modifiers,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    if !modifiers.meta && !modifiers.control {
+        return None;
+    }
+    Some(GalleryMessage::KeyStroke(KeyStroke::new(
+        key,
+        KeyModifiers {
+            control: modifiers.control,
+            alt: modifiers.alt,
+            shift: modifiers.shift,
+            logo: modifiers.meta,
+        },
+    )))
+}
+
+fn merge_program_update(
+    mut left: RuntimeProgramUpdate,
+    right: RuntimeProgramUpdate,
+) -> RuntimeProgramUpdate {
+    left.exit |= right.exit;
+    left.window_commands.extend(right.window_commands);
+    left.redraw = match (left.redraw, right.redraw) {
+        (RuntimeRedraw::All, _) | (_, RuntimeRedraw::All) => RuntimeRedraw::All,
+        (RuntimeRedraw::None, redraw) | (redraw, RuntimeRedraw::None) => redraw,
+        (RuntimeRedraw::Window(first), RuntimeRedraw::Window(second)) if first == second => {
+            RuntimeRedraw::Window(first)
+        }
+        _ => RuntimeRedraw::All,
+    };
+    left
 }
 
 const FLOATING_MIN_WIDTH: f64 = 160.0;
@@ -1233,33 +1537,6 @@ fn gallery_dock_workspace() -> DockWorkspace {
     DockWorkspace::new(main).primary(DOCK_CENTER)
 }
 
-#[allow(dead_code)]
-fn section_heading<'a, Message>(
-    title: &'a str,
-    trailing: Option<Element<'a, Message>>,
-    colors: Colors,
-) -> Element<'a, Message>
-where
-    Message: 'a,
-{
-    let mut content = row![
-        text(title)
-            .size(12)
-            .font(ui_font(font::Weight::Bold))
-            .color(colors.muted)
-    ]
-    .align_y(Alignment::Center)
-    .spacing(8);
-    if let Some(trailing) = trailing {
-        content = content.push(space().width(Length::Fill)).push(trailing);
-    }
-    container(content)
-        .height(Length::Fixed(ControlSize::Small.height()))
-        .padding([0.0, UI_METRICS.selection_padding_x])
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
-}
-
 fn gallery_layout(show_workspace: bool) -> WorkspaceLayout {
     WorkspaceLayout::new([
         RegionState::new(RegionId::Resources, RegionRole::Resources)
@@ -1314,22 +1591,25 @@ fn gallery_calendar_model() -> CalendarHeatmapModel {
     )
 }
 
-fn gallery_context_items() -> Vec<ContextMenuItem<'static, ContextAction>> {
+fn gallery_context_items() -> Vec<ContextMenuItem> {
     vec![
-        ContextMenuItem::new(ContextAction::Duplicate, "项目操作").children([
-            ContextMenuItem::new(ContextAction::Duplicate, "复制项目")
-                .icon(Icon::Add)
-                .keywords(["copy", "duplicate"]),
-            ContextMenuItem::new(ContextAction::Rename, "重命名项目")
-                .icon(Icon::File)
-                .keywords(["edit", "name"]),
-        ]),
-        ContextMenuItem::new(ContextAction::Remove, "移除项目")
+        ContextMenuItem::new("project", "项目操作"),
+        ContextMenuItem::new("project/duplicate", "复制项目").icon(Icon::Add),
+        ContextMenuItem::new("project/rename", "重命名项目").icon(Icon::File),
+        ContextMenuItem::new("remove", "移除项目")
             .icon(Icon::Close)
-            .keywords(["delete", "remove"])
-            .confirm_label("再次点击确认移除")
             .danger(true),
     ]
+}
+
+fn context_action_from_value(value: &str) -> Option<ContextAction> {
+    let key = value.rsplit('/').next().unwrap_or(value);
+    match key {
+        "duplicate" => Some(ContextAction::Duplicate),
+        "rename" => Some(ContextAction::Rename),
+        "remove" => Some(ContextAction::Remove),
+        _ => None,
+    }
 }
 
 fn gallery_action_registry() -> ActionRegistry {
@@ -1411,29 +1691,6 @@ fn appearance_message(event: AppearanceEvent) -> GalleryMessage {
             GalleryMessage::SetTitlebarFollowsSidebar(enabled)
         }
         AppearanceEvent::Reset => GalleryMessage::ResetAppearance,
-    }
-}
-
-fn apply_gallery_window_material(
-    window: &dyn iced::Window,
-    theme: ThemeMode,
-    mode: WindowMaterialMode,
-) -> MaterialOutcome {
-    match mode {
-        WindowMaterialMode::Solid => {
-            clear_system_material(window);
-            MaterialOutcome::chosen_solid()
-        }
-        WindowMaterialMode::Translucent => {
-            let (appearance, fallback) = match theme {
-                ThemeMode::Dark => (WindowAppearance::Dark, FallbackColor::rgba(24, 24, 24, 220)),
-                ThemeMode::Light => (
-                    WindowAppearance::Light,
-                    FallbackColor::rgba(255, 255, 255, 232),
-                ),
-            };
-            apply_system_material(window, appearance, fallback)
-        }
     }
 }
 

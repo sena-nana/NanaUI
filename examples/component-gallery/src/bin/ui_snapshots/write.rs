@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::BufWriter;
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 use iced::Size;
@@ -16,4 +16,23 @@ pub fn png(path: &Path, size: Size<u32>, pixels: &[u8]) -> Result<(), Box<dyn st
     writer.write_image_data(pixels)?;
     writer.finish()?;
     Ok(())
+}
+
+#[allow(dead_code)]
+pub fn read_png(path: &Path) -> Option<(Size<u32>, Vec<u8>)> {
+    let file = File::open(path).ok()?;
+    let decoder = png::Decoder::new(BufReader::new(file));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let raw = &buf[..info.buffer_size()];
+    let pixels = match info.color_type {
+        png::ColorType::Rgba => raw.to_vec(),
+        png::ColorType::Rgb => raw
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect(),
+        _ => return None,
+    };
+    Some((Size::new(info.width, info.height), pixels))
 }

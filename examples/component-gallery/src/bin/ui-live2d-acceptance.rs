@@ -8,13 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iced::widget::{column, container, row, space, stack, text};
-use iced::{Alignment, Color, Element, Length, Pixels, Size, Theme};
-use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
-use iced_wgpu::{Engine, Renderer as IcedRenderer, wgpu};
-use iced_winit::core::{Event, mouse, renderer, shell, window};
+use iced::Size;
+use iced_wgpu::wgpu;
 use iced_winit::futures::futures::executor;
-use iced_winit::runtime::{UserInterface, user_interface};
 use live2d_core::{
     BlendColor, ClippingInfo, DrawableId, FrameDirtyFlags, ModelDynamicFrame, ModelGeometryFrame,
     ModelStaticData, RenderObject, RuntimeFrame, TextureAsset, Vertex,
@@ -24,19 +20,19 @@ use live2d_wgpu::{
     RegistrationRequest, RenderTarget, RenderView, Renderer as Live2dRenderer, RendererOptions,
     SubmissionBatch, SubmissionToken,
 };
-use nana_ui::compatibility::Button;
 use nana_ui::runtime::{
-    Card as RuntimeCard, CustomRenderNode, DocumentId, LayoutBox, MutationQueue, NodeKind,
-    RuntimeDocument, Text as RuntimeText, UiScene,
+    Button as RuntimeButton, Card as RuntimeCard, CustomRenderNode, DocumentId, LayoutBox,
+    MutationQueue, NodeKind, RuntimeDocument, Text as RuntimeText, UiScene,
 };
-use nana_ui::widgets::{ButtonKind, panel_style};
 use nana_ui::{
-    HostTexture, HostTextureAlphaMode, HostTextureRegistry, IcedSceneView,
-    SceneResourceEncodeContext, SceneResourceProducer, SceneResourceProducerRegistry, ThemeMode,
-    ThemeModeExt, UI_BASE_TEXT_SIZE, ui_font, ui_font_sources,
+    ButtonKind, HostTexture, HostTextureAlphaMode, HostTextureRegistry, NanaTextShaper,
+    ScenePaintViewport, SceneResourceEncodeContext, SceneResourceProducer,
+    SceneResourceProducerRegistry, SceneWgpuPainter, ThemeMode, ThemeModeExt,
 };
 use serde::Serialize;
 
+#[path = "ui_snapshots/render/offscreen.rs"]
+mod offscreen;
 #[path = "ui_snapshots/write.rs"]
 mod write;
 
@@ -292,25 +288,7 @@ fn run(screenshot_path: &Path) -> Report {
     .expect("acceptance requires a WGPU device");
 
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-    load_fonts();
-    let engine = Engine::new(
-        &adapter,
-        device.clone(),
-        queue.clone(),
-        format,
-        Some(Antialiasing::MSAAx4),
-        Shell::headless(),
-    );
-    let mut ui_renderer = IcedRenderer::new(
-        engine,
-        renderer::Settings {
-            default_font: ui_font(iced::font::Weight::Normal),
-            default_text_size: Pixels::from(UI_BASE_TEXT_SIZE),
-            metrics_hinting: true,
-        },
-    );
-    let viewport =
-        Viewport::with_physical_size(Size::new(WIDTH, HEIGHT), renderer::Scale::default());
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
     let ui_target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("NanaUI acceptance target"),
         size: wgpu::Extent3d {
@@ -322,7 +300,7 @@ fn run(screenshot_path: &Path) -> Report {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let ui_target_view = ui_target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -372,8 +350,7 @@ fn run(screenshot_path: &Path) -> Report {
     resource_producers.insert("live2d", producer.clone());
     let resource_scene = live2d_resource_scene(host_texture.version());
 
-    let mut ui_only_cache = user_interface::Cache::new();
-    let mut composed_cache = user_interface::Cache::new();
+    let ui_only_scene = acceptance_scene(None);
     let mut ui_only = Vec::with_capacity(ITERATIONS);
     let mut live2d_only = Vec::with_capacity(ITERATIONS);
     let mut composed = Vec::with_capacity(ITERATIONS);
@@ -390,17 +367,17 @@ fn run(screenshot_path: &Path) -> Report {
         for workload in order {
             match workload {
                 Workload::Ui => {
-                    let (cache, sample) = render_ui(
-                        None,
-                        &device,
-                        &mut ui_renderer,
-                        &viewport,
-                        &ui_target_view,
-                        format,
-                        std::mem::take(&mut ui_only_cache),
+                    ui_sample = Some(
+                        paint_scene(
+                            &mut painter,
+                            &ui_only_scene.0,
+                            None,
+                            &device,
+                            &queue,
+                            &ui_target_view,
+                        )
+                        .0,
                     );
-                    ui_only_cache = cache;
-                    ui_sample = Some(sample);
                 }
                 Workload::Live2d => {
                     let submission = resource_producers
@@ -414,20 +391,19 @@ fn run(screenshot_path: &Path) -> Report {
                         .encode_scene(&resource_scene, &device, &queue)
                         .expect("encode graph-managed composed Live2D resource")
                         .expect("Live2D resource producer is registered");
-                    let ui_cpu_started = Instant::now();
-                    let (cache, submission) = draw_ui(
-                        Some(host_texture.clone()),
-                        &mut ui_renderer,
-                        &viewport,
+                    let composed = acceptance_scene(Some(host_texture.clone()));
+                    let (sample, submission) = paint_scene(
+                        &mut painter,
+                        &composed.0,
+                        Some(&composed.1),
+                        &device,
+                        &queue,
                         &ui_target_view,
-                        format,
-                        std::mem::take(&mut composed_cache),
                     );
-                    let ui_cpu_ms = elapsed_ms(ui_cpu_started);
-                    let mut sample = producer.complete(&device, submission);
-                    sample.cpu_ms += ui_cpu_ms;
-                    composed_cache = cache;
-                    composed_sample = Some(sample);
+                    let mut live2d = producer.complete(&device, submission);
+                    live2d.cpu_ms += sample.cpu_ms;
+                    live2d.total_ms += sample.total_ms;
+                    composed_sample = Some(live2d);
                 }
             }
         }
@@ -442,16 +418,17 @@ fn run(screenshot_path: &Path) -> Report {
         .encode_scene(&resource_scene, &device, &queue)
         .expect("encode final graph-managed Live2D resource")
         .expect("Live2D resource producer is registered");
-    let (_, final_submission) = draw_ui(
-        Some(host_texture.clone()),
-        &mut ui_renderer,
-        &viewport,
+    let final_frame = acceptance_scene(Some(host_texture.clone()));
+    let (_, final_submission) = paint_scene(
+        &mut painter,
+        &final_frame.0,
+        Some(&final_frame.1),
+        &device,
+        &queue,
         &ui_target_view,
-        format,
-        composed_cache,
     );
     let _ = producer.complete(&device, final_submission);
-    let pixels = screenshot_ui(host_texture.clone(), &mut ui_renderer, &viewport);
+    let pixels = screenshot_target(&device, &queue, &ui_target);
     write::png(screenshot_path, Size::new(WIDTH, HEIGHT), &pixels).expect("write screenshot");
     let distinct_colors = distinct_colors(&pixels);
     assert!(
@@ -480,166 +457,88 @@ fn run(screenshot_path: &Path) -> Report {
     }
 }
 
-fn render_ui(
-    texture: Option<HostTexture>,
+fn paint_scene(
+    painter: &mut SceneWgpuPainter,
+    scene: &UiScene,
+    textures: Option<&HostTextureRegistry>,
     device: &wgpu::Device,
-    renderer: &mut IcedRenderer,
-    viewport: &Viewport,
+    queue: &wgpu::Queue,
     target: &wgpu::TextureView,
-    format: wgpu::TextureFormat,
-    cache: user_interface::Cache,
-) -> (user_interface::Cache, Sample) {
+) -> (Sample, wgpu::SubmissionIndex) {
+    let colors = ThemeMode::Dark.colors();
     let total_started = Instant::now();
     let cpu_started = Instant::now();
-    let (cache, submission) = draw_ui(texture, renderer, viewport, target, format, cache);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui live2d acceptance paint"),
+    });
+    painter
+        .paint(
+            scene,
+            &mut encoder,
+            target,
+            ScenePaintViewport {
+                logical_size: [WIDTH as f32, HEIGHT as f32],
+                physical_size: [WIDTH, HEIGHT],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [
+                    colors.background.r,
+                    colors.background.g,
+                    colors.background.b,
+                    colors.background.a,
+                ],
+                clear: true,
+            },
+            textures,
+            None,
+        )
+        .expect("acceptance scene must paint");
     let cpu_ms = elapsed_ms(cpu_started);
     let wait_started = Instant::now();
+    let submission = queue.submit([encoder.finish()]);
     device
         .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
+            submission_index: Some(submission.clone()),
             timeout: None,
         })
         .expect("UI GPU frame completes");
     (
-        cache,
         Sample {
             cpu_ms,
             submit_to_complete_ms: elapsed_ms(wait_started),
             total_ms: elapsed_ms(total_started),
         },
+        submission,
     )
 }
 
-fn draw_ui(
-    texture: Option<HostTexture>,
-    renderer: &mut IcedRenderer,
-    viewport: &Viewport,
-    target: &wgpu::TextureView,
-    format: wgpu::TextureFormat,
-    cache: user_interface::Cache,
-) -> (user_interface::Cache, wgpu::SubmissionIndex) {
-    let mut interface = UserInterface::build(ui(texture), viewport.logical_size(), cache, renderer);
-    let window = window::Headless;
-    let waker = shell::Waker::noop();
-    let _ = interface.update(
-        &window,
-        &waker,
-        &[Event::Window(
-            window::Event::RedrawRequested(Instant::now()),
-        )],
-        mouse::Cursor::Unavailable,
-        renderer,
-        &mut shell::Bus::new(),
-    );
-    let colors = ThemeMode::Dark.colors();
-    interface.draw(
-        renderer,
-        &Theme::Dark,
-        &renderer::Style {
-            text_color: colors.text,
-        },
-        mouse::Cursor::Unavailable,
-    );
-    let cache = interface.into_cache();
-    let submission = renderer.present(Some(colors.background), format, target, viewport);
-    (cache, submission)
-}
-
-fn screenshot_ui(
-    texture: HostTexture,
-    renderer: &mut IcedRenderer,
-    viewport: &Viewport,
+fn screenshot_target(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
 ) -> Vec<u8> {
-    let mut interface = UserInterface::build(
-        ui(Some(texture)),
-        viewport.logical_size(),
-        user_interface::Cache::new(),
-        renderer,
-    );
-    let window = window::Headless;
-    let waker = shell::Waker::noop();
-    let _ = interface.update(
-        &window,
-        &waker,
-        &[Event::Window(
-            window::Event::RedrawRequested(Instant::now()),
-        )],
-        mouse::Cursor::Unavailable,
-        renderer,
-        &mut shell::Bus::new(),
-    );
-    let colors = ThemeMode::Dark.colors();
-    interface.draw(
-        renderer,
-        &Theme::Dark,
-        &renderer::Style {
-            text_color: colors.text,
-        },
-        mouse::Cursor::Unavailable,
-    );
-    let pixels = renderer.screenshot(viewport, colors.background);
-    drop(interface);
-    pixels
+    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui live2d acceptance readback"),
+    });
+    offscreen::readback(device, queue, encoder, texture, Size::new(WIDTH, HEIGHT))
+        .expect("acceptance screenshot readback")
 }
 
-fn ui(texture: Option<HostTexture>) -> Element<'static, (), Theme, IcedRenderer> {
-    let colors = ThemeMode::Dark.colors();
-    let preview = runtime_preview(texture);
-    let header = container(
-        row![
-            text("Live2D Composition").size(18),
-            space().width(Length::Fill),
-            text("LIVE").color(Color::from_rgb8(255, 92, 112)),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .height(48)
-    .padding([0, 20])
-    .style(move |_theme| {
-        iced::widget::container::Style::default()
-            .background(Color::from_rgba8(19, 22, 28, 0.94))
-            .color(colors.text)
-    });
-    let footer = container(
-        row![
-            Button::label("Preview").on_press(()).view(colors),
-            Button::label("Take")
-                .kind(ButtonKind::Primary)
-                .on_press(())
-                .view(colors),
-            space().width(Length::Fill),
-            text("60 fps · GPU texture")
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .height(64)
-    .padding([10, 20])
-    .style(move |_theme| {
-        iced::widget::container::Style::default()
-            .background(Color::from_rgba8(19, 22, 28, 0.94))
-            .color(colors.text)
-    });
-    let chrome = column![header, space().height(Length::Fill), footer]
-        .width(Length::Fill)
-        .height(Length::Fill);
-    let preview = container(preview)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(56)
-        .style(panel_style(colors));
-    stack![preview, chrome]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-
-fn runtime_preview(texture: Option<HostTexture>) -> Element<'static, (), Theme, IcedRenderer> {
+fn acceptance_scene(texture: Option<HostTexture>) -> (UiScene, HostTextureRegistry) {
     #[derive(Debug)]
     struct TextureNode;
 
     let document_id = DocumentId::new(1).expect("acceptance document");
     let mut document = RuntimeDocument::new(document_id);
+    let header = document
+        .context_mut()
+        .create_component(document_id, RuntimeText::new("Live2D Composition"))
+        .expect("header");
+    let live = document
+        .context_mut()
+        .create_component(document_id, RuntimeText::new("LIVE"))
+        .expect("live badge");
     let root = document
         .context_mut()
         .create_component(document_id, RuntimeCard::new())
@@ -677,13 +576,46 @@ fn runtime_preview(texture: Option<HostTexture>) -> Element<'static, (), Theme, 
         .context_mut()
         .append_child(root, caption)
         .expect("append caption");
+    let preview = document
+        .context_mut()
+        .create_component(document_id, RuntimeButton::new("Preview"))
+        .expect("preview button");
+    let take = document
+        .context_mut()
+        .create_component(
+            document_id,
+            RuntimeButton::new("Take").kind(ButtonKind::Primary),
+        )
+        .expect("take button");
+    let fps = document
+        .context_mut()
+        .create_component(document_id, RuntimeText::new("60 fps · GPU texture"))
+        .expect("fps");
 
     let mut mutations = MutationQueue::new();
     mutations.write_layout(
+        header.stable_id(),
+        LayoutBox {
+            x: 20.0,
+            y: 12.0,
+            width: 320.0,
+            height: 28.0,
+        },
+    );
+    mutations.write_layout(
+        live.stable_id(),
+        LayoutBox {
+            x: 820.0,
+            y: 12.0,
+            width: 60.0,
+            height: 28.0,
+        },
+    );
+    mutations.write_layout(
         root.stable_id(),
         LayoutBox {
-            x: 0.0,
-            y: 0.0,
+            x: 194.0,
+            y: 64.0,
             width: 512.0,
             height: 512.0,
         },
@@ -692,8 +624,8 @@ fn runtime_preview(texture: Option<HostTexture>) -> Element<'static, (), Theme, 
         mutations.write_layout(
             texture_node.stable_id(),
             LayoutBox {
-                x: 0.0,
-                y: 0.0,
+                x: 194.0,
+                y: 64.0,
                 width: 512.0,
                 height: 512.0,
             },
@@ -710,10 +642,37 @@ fn runtime_preview(texture: Option<HostTexture>) -> Element<'static, (), Theme, 
     mutations.write_layout(
         caption.stable_id(),
         LayoutBox {
-            x: 18.0,
-            y: 18.0,
+            x: 212.0,
+            y: 82.0,
             width: 280.0,
             height: 28.0,
+        },
+    );
+    mutations.write_layout(
+        preview.stable_id(),
+        LayoutBox {
+            x: 20.0,
+            y: 590.0,
+            width: 88.0,
+            height: 32.0,
+        },
+    );
+    mutations.write_layout(
+        take.stable_id(),
+        LayoutBox {
+            x: 116.0,
+            y: 590.0,
+            width: 72.0,
+            height: 32.0,
+        },
+    );
+    mutations.write_layout(
+        fps.stable_id(),
+        LayoutBox {
+            x: 700.0,
+            y: 594.0,
+            width: 180.0,
+            height: 24.0,
         },
     );
     document
@@ -721,11 +680,14 @@ fn runtime_preview(texture: Option<HostTexture>) -> Element<'static, (), Theme, 
         .commit_mutations(mutations)
         .expect("commit runtime preview");
     document
-        .flush_with(|_, _| Ok(()))
+        .flush_with(|context, work| {
+            context.shape_text(&work.text, &mut NanaTextShaper::default())?;
+            Ok(())
+        })
         .expect("extract runtime preview scene");
 
-    let registry = texture.map(|texture| {
-        let registry = HostTextureRegistry::new();
+    let registry = HostTextureRegistry::new();
+    if let Some(texture) = texture {
         registry.register(
             "live2d",
             texture,
@@ -733,11 +695,8 @@ fn runtime_preview(texture: Option<HostTexture>) -> Element<'static, (), Theme, 
             LIVE2D_SIZE,
             HostTextureAlphaMode::Premultiplied,
         );
-        registry
-    });
-    IcedSceneView::from_shared(document.shared_scene(), registry, Size::new(512.0, 512.0))
-        .expect("runtime preview scene must be paintable")
-        .into()
+    }
+    (document.scene().clone(), registry)
 }
 
 fn live2d_resource_scene(revision: u64) -> Arc<UiScene> {
@@ -879,15 +838,6 @@ fn distinct_colors(pixels: &[u8]) -> usize {
     colors.sort_unstable();
     colors.dedup();
     colors.len()
-}
-
-fn load_fonts() {
-    let mut font_system = iced_wgpu::graphics::text::font_system()
-        .write()
-        .expect("font system");
-    for source in ui_font_sources() {
-        font_system.load_font(std::borrow::Cow::Borrowed(source));
-    }
 }
 
 fn elapsed_ms(started: Instant) -> f64 {

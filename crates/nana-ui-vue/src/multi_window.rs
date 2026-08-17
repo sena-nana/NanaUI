@@ -576,6 +576,14 @@ impl VueRuntime {
             .and_then(|state| state.windows.get(&id).map(|entry| Arc::clone(&entry.host)))
     }
 
+    pub fn shared_runtime_document(
+        &self,
+        id: VueWindowId,
+    ) -> Option<Arc<crate::SharedRuntimeDocument>> {
+        self.host(id)
+            .and_then(|host| host.lock().ok().map(|host| host.shared_runtime_document()))
+    }
+
     /// Registers application CSS for every current and future Vue window.
     pub fn inject_stylesheet(&self, css: &str) -> Result<(), JsEngineError> {
         let mut state = self
@@ -912,56 +920,43 @@ impl VueRuntime {
         state.commands.drain(..).collect()
     }
 
-    /// Translate Vue window requests into NanaUI's existing host-owned surface path.
-    #[cfg(feature = "hosted")]
-    pub fn drain_hosted_window_commands(&self) -> Vec<nana_ui::HostedWindowCommand> {
-        use iced::Point;
-        use nana_ui::{
-            HostedTitleBarMode, HostedWindowCommand, HostedWindowId, HostedWindowRole,
-            HostedWindowSettings,
-        };
+    /// Translate Vue window requests into the Scene/`run_runtime` host contract.
+    pub fn drain_runtime_window_commands(&self) -> Vec<nana_ui_platform::WindowCommand> {
+        use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
 
         self.drain_window_commands()
             .into_iter()
             .map(|command| match command {
-                VueWindowCommand::Open { id, options } => {
-                    let mut settings = HostedWindowSettings::new(options.title)
-                        .initial_size(options.width, options.height)
-                        .minimum_size(options.minimum_width, options.minimum_height)
-                        .transparent(options.transparent)
-                        .transparent_background(options.transparent)
-                        .always_on_top(options.always_on_top)
-                        .resizable(options.resizable)
-                        .role(match options.role {
-                            VueWindowRole::Main => HostedWindowRole::Main,
-                            VueWindowRole::Tool | VueWindowRole::Dialog => HostedWindowRole::Tool,
-                        })
-                        .title_bar_mode(if options.frameless {
-                            HostedTitleBarMode::Custom
-                        } else {
-                            HostedTitleBarMode::Native
-                        });
-                    if let (Some(x), Some(y)) = (options.x, options.y) {
-                        settings = settings.initial_position(x, y);
-                    }
-                    if options.modal {
-                        settings = settings.modal_for(HostedWindowId(
-                            options.parent.unwrap_or(VueWindowId::PRIMARY).0,
-                        ));
-                    }
-                    HostedWindowCommand::Open {
-                        id: HostedWindowId(id.0),
-                        settings,
-                    }
-                }
-                VueWindowCommand::Close(id) => HostedWindowCommand::Close(HostedWindowId(id.0)),
-                VueWindowCommand::Focus(id) => HostedWindowCommand::Focus(HostedWindowId(id.0)),
-                VueWindowCommand::Move { id, x, y } => HostedWindowCommand::Move {
-                    id: HostedWindowId(id.0),
-                    position: Point::new(x as f32, y as f32),
+                VueWindowCommand::Open { id, options } => WindowCommand::Open {
+                    id: WindowId(id.0),
+                    settings: WindowSettings {
+                        title: options.title,
+                        initial_size: (options.width, options.height),
+                        minimum_size: (options.minimum_width, options.minimum_height),
+                        initial_position: match (options.x, options.y) {
+                            (Some(x), Some(y)) => Some((x, y)),
+                            _ => None,
+                        },
+                        maximized: false,
+                        transparent: options.transparent,
+                        always_on_top: options.always_on_top,
+                        resizable: options.resizable,
+                        role: match options.role {
+                            VueWindowRole::Main => WindowRole::Main,
+                            VueWindowRole::Tool | VueWindowRole::Dialog => WindowRole::Tool,
+                        },
+                        modal: options.modal,
+                        parent: options.parent.map(|parent| WindowId(parent.0)),
+                    },
                 },
-                VueWindowCommand::SetTitle { id, title } => HostedWindowCommand::SetTitle {
-                    id: HostedWindowId(id.0),
+                VueWindowCommand::Close(id) => WindowCommand::Close(WindowId(id.0)),
+                VueWindowCommand::Focus(id) => WindowCommand::Focus(WindowId(id.0)),
+                VueWindowCommand::Move { id, x, y } => WindowCommand::Move {
+                    id: WindowId(id.0),
+                    position: (x as f32, y as f32),
+                },
+                VueWindowCommand::SetTitle { id, title } => WindowCommand::SetTitle {
+                    id: WindowId(id.0),
                     title,
                 },
                 VueWindowCommand::SetBounds {
@@ -970,33 +965,28 @@ impl VueRuntime {
                     y,
                     width,
                     height,
-                } => HostedWindowCommand::SetBounds {
-                    id: HostedWindowId(id.0),
-                    position: Point::new(x as f32, y as f32),
-                    width: width as f32,
-                    height: height as f32,
+                } => WindowCommand::SetBounds {
+                    id: WindowId(id.0),
+                    position: (x as f32, y as f32),
+                    size: (width as f32, height as f32),
                 },
                 VueWindowCommand::SetFullscreen { id, fullscreen } => {
-                    HostedWindowCommand::SetFullscreen {
-                        id: HostedWindowId(id.0),
+                    WindowCommand::SetFullscreen {
+                        id: WindowId(id.0),
                         fullscreen,
                     }
                 }
-                VueWindowCommand::SetMinimized { id, minimized } => {
-                    HostedWindowCommand::SetMinimized {
-                        id: HostedWindowId(id.0),
-                        minimized,
-                    }
-                }
-                VueWindowCommand::SetMaximized { id, maximized } => {
-                    HostedWindowCommand::SetMaximized {
-                        id: HostedWindowId(id.0),
-                        maximized,
-                    }
-                }
+                VueWindowCommand::SetMinimized { id, minimized } => WindowCommand::SetMinimized {
+                    id: WindowId(id.0),
+                    minimized,
+                },
+                VueWindowCommand::SetMaximized { id, maximized } => WindowCommand::SetMaximized {
+                    id: WindowId(id.0),
+                    maximized,
+                },
                 VueWindowCommand::SetAlwaysOnTop { id, always_on_top } => {
-                    HostedWindowCommand::SetAlwaysOnTop {
-                        id: HostedWindowId(id.0),
+                    WindowCommand::SetAlwaysOnTop {
+                        id: WindowId(id.0),
                         always_on_top,
                     }
                 }
@@ -1111,7 +1101,7 @@ impl VueRuntime {
     pub fn record_geometry(
         &self,
         id: VueWindowId,
-        geometry: &nana_ui::HostedWindowGeometry,
+        geometry: &nana_ui_platform::WindowGeometry,
     ) -> Result<(), JsEngineError> {
         let mut state = self
             .state
@@ -1121,13 +1111,43 @@ impl VueRuntime {
             .windows
             .get_mut(&id)
             .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        entry.geometry.width = geometry.logical_size.width as f64;
-        entry.geometry.height = geometry.logical_size.height as f64;
+        entry.geometry.width = geometry.logical_size.0 as f64;
+        entry.geometry.height = geometry.logical_size.1 as f64;
         entry.geometry.scale_factor = geometry.scale_factor as f64;
         entry.geometry.maximized = geometry.maximized;
-        if let Some(position) = geometry.logical_position {
-            entry.geometry.x = position.x as f64;
-            entry.geometry.y = position.y as f64;
+        if let Some((x, y)) = geometry.logical_position {
+            entry.geometry.x = x as f64;
+            entry.geometry.y = y as f64;
+        }
+        let payload = geometry_value(&entry.geometry);
+        if let HostValue::Object(mut map) = payload {
+            map.insert("id".into(), HostValue::Number(id.0 as f64));
+            state.emit("window-geometry", HostValue::Object(map));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "hosted")]
+    pub fn record_platform_geometry(
+        &self,
+        id: VueWindowId,
+        geometry: &nana_ui_platform::WindowGeometry,
+    ) -> Result<(), JsEngineError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
+        let entry = state
+            .windows
+            .get_mut(&id)
+            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
+        entry.geometry.width = geometry.logical_size.0 as f64;
+        entry.geometry.height = geometry.logical_size.1 as f64;
+        entry.geometry.scale_factor = geometry.scale_factor as f64;
+        entry.geometry.maximized = geometry.maximized;
+        if let Some((x, y)) = geometry.logical_position {
+            entry.geometry.x = x as f64;
+            entry.geometry.y = y as f64;
         }
         let payload = geometry_value(&entry.geometry);
         if let HostValue::Object(mut map) = payload {

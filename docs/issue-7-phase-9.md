@@ -102,7 +102,7 @@ SetTextSelection 实机复核又暴露了 adapter 边界的第二处双权威：
 - `nana-ui-vue --features iced-view --lib --locked`：389 项通过；
 - `nana-ui-vue --features hosted --lib --locked`：391 项通过（包含 UTF-8/多行 selection 到 retained editor position 的转换门禁）；
 - `nana-ui --features hosted --no-default-features`：152 项通过（含 Runtime pointer/keyboard/IME 路由，以及 AccessKit 全量/增量、generation 防回滚、hidden tombstone、empty/single/multi-root replacement、异步空树 opt-in、DPI、重复 activation 最新完整树、editable/read-only action、有界 FIFO action queue、Unicode TextRun selection round-trip、合成 ID collision 与 TextRun 角色/删除生命周期门禁）；
-- `runtime-host-fixture --locked`：编译通过，fixture 的直接依赖不包含 Iced，应用仅实现 `RuntimeProgram` 并持有 `RuntimeDocument`；macOS 原生进程与窗口已创建且持续 present，无崩溃。当前系统截图权限只返回全黑桌面帧，因此不把这次启动提升为人工视觉或 IME/VoiceOver 复验；
+- `runtime-host-fixture --locked`：编译通过，应用仅实现 `RuntimeProgram` 并走 `run_runtime` → `run_runtime_scene`。2026-08-17 本机再次启动 `./target/debug/runtime-host-fixture`（pid 14136）后，`CGWindowListCopyWindowInfo` 同时看到 `NanaUI fixture` 与 `NanaUI fixture tool`。本 agent 未获 TCC 辅助访问（`AXIsProcessTrusted()=false`，`AXError` -25211），因此本轮不能用 System Events 复验 `AXTextField`/`AXButton`；Windows/Linux 仍未验收。
 - Runtime mixed Scene Live2D acceptance：Apple M4 / Metal，20 次预热 + 80 次交错样本，Quad → HostTexture → Text 通过同一 `RuntimeDocument → UiScene → IcedSceneView` 绘制；composed total P95 1.628 ms、P99 1.733 ms，CPU P95 0.248 ms，截图 455 个 distinct colors。临时报告写入 `/tmp`，未覆盖既有 baseline；
 - `vue-hosted-acceptance --bins`：2 项通过，真实窗口 wrapper 的 Vue accessibility snapshot/action 委托在编译与功能测试中生效；
 - Runtime/Scene 与 `nana-ui --features hosted --no-default-features` 的 `clippy -D warnings`：通过；hosted runner 仅在 Loading 阶段装箱大体积 window settings，避免整个事件循环状态枚举被冷路径数据撑大，Ready 热路径不增加间接访问；

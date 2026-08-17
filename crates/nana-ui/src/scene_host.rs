@@ -3,18 +3,16 @@
 //! Applications never see Iced Message/Element/window IDs. Paint goes through
 //! [`crate::SceneWgpuPainter`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iced_wgpu::wgpu;
-use iced_winit::futures::futures::executor;
 use nana_ui_platform::{
     ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType, TextInputPurpose,
     TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId,
 };
-use nana_ui_runtime::{AccessibilityUpdate, LayoutViewport, Task};
+use nana_ui_runtime::{AccessibilityUpdate, FrameworkError, LayoutViewport, Task};
 use nana_window::{
     Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
     clear_system_material,
@@ -25,21 +23,24 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
+#[cfg(target_os = "windows")]
+use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
+#[cfg(target_os = "windows")]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 #[cfg(not(target_os = "android"))]
 use crate::accessibility::HostedAccessibility;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    RuntimeWindowSettings, gated_runtime_input_update, gated_runtime_window_update,
-    runtime_text_input_request,
+    RuntimeWindowSettings, gated_runtime_window_update, runtime_text_input_request,
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::theme::ThemeModeExt;
 use crate::{
-    HostedGpuContext, HostedGpuError, HostedRunError, HostedSurfaceFrame, RuntimeAnimationClock,
-    RuntimeInputAdapter, SceneGpuRendererRegistry, default_scene_gpu_renderers_with_host,
-    resolve_scene_gpu_renderers,
+    HostedGpuContext, HostedGpuError, HostedGpuSurface, HostedRunError, HostedSurfaceFrame,
+    RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry,
+    default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers,
 };
 
 const GPU_RETRY_INTERVAL: Duration = Duration::from_secs(2);
@@ -77,10 +78,29 @@ enum SceneRunner<Program: RuntimeProgram> {
     },
 }
 
+struct SceneAuxiliary {
+    surface: HostedGpuSurface,
+    geometry: WindowGeometry,
+    input: InputTracker,
+    material: MaterialOutcome,
+    settings: RuntimeWindowSettings,
+    #[cfg(not(target_os = "android"))]
+    accessibility: Option<HostedAccessibility>,
+    accessibility_pending: Option<AccessibilityUpdate>,
+    #[cfg(target_os = "windows")]
+    pen_hook: crate::windows_pen::WindowsPenHook,
+}
+
+impl Drop for SceneAuxiliary {
+    fn drop(&mut self) {
+        clear_system_material(self.surface.window().as_ref());
+    }
+}
+
 struct SceneReady<Program: RuntimeProgram> {
     program: Program,
     graphics: HostedGpuContext,
-    painter: SceneWgpuPainter,
+    painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
     text: NanaTextShaper,
     proxy: EventLoopProxy<Program::Message>,
     tasks: SyncSender<Task<Program::Message>>,
@@ -92,6 +112,8 @@ struct SceneReady<Program: RuntimeProgram> {
     accessibility_pending: Option<AccessibilityUpdate>,
     input: InputTracker,
     material: MaterialOutcome,
+    auxiliary: HashMap<WindowId, SceneAuxiliary>,
+    window_ids: HashMap<winit::window::WindowId, WindowId>,
     #[cfg(target_os = "windows")]
     pen_hook: crate::windows_pen::WindowsPenHook,
     next_gpu_retry: Option<Instant>,
@@ -146,13 +168,16 @@ impl<Program: RuntimeProgram> ApplicationHandler<Program::Message> for SceneRunn
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: winit::window::WindowId,
+        window_id: winit::window::WindowId,
         event: WinitWindowEvent,
     ) {
         let Self::Ready(ready) = self else {
             return;
         };
-        ready.handle_window_event(event_loop, event);
+        let Some(id) = ready.window_ids.get(&window_id).copied() else {
+            return;
+        };
+        ready.handle_window_event(event_loop, id, event);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -173,19 +198,30 @@ fn initialize<Program: RuntimeProgram>(
             .create_window(scene_window_attributes(&settings).with_visible(false))
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
-    let graphics = executor::block_on(HostedGpuContext::new(
+    let graphics = pollster::block_on(HostedGpuContext::new(
         Arc::clone(&window),
         wgpu::Features::empty(),
     ))
     .map_err(|error| error.to_string())?;
-    let painter = SceneWgpuPainter::new(
-        graphics.resources().device(),
-        graphics.resources().queue(),
-        graphics.format(),
+    let format = graphics.format();
+    let mut painters = HashMap::new();
+    painters.insert(
+        format,
+        SceneWgpuPainter::new(
+            graphics.resources().device(),
+            graphics.resources().queue(),
+            format,
+        ),
     );
     let tasks = spawn_task_workers(proxy.clone());
     let geometry = window_geometry(graphics.window());
-    let context = program_context(&proxy, &graphics, geometry, tasks.clone());
+    let context = program_context(
+        &proxy,
+        &graphics,
+        WindowId::PRIMARY,
+        geometry,
+        tasks.clone(),
+    );
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     let default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
         Arc::clone(graphics.resources().device()),
@@ -195,7 +231,7 @@ fn initialize<Program: RuntimeProgram>(
     let material = apply_scene_material(graphics.window().as_ref(), last_theme);
     #[cfg(not(target_os = "android"))]
     let accessibility = {
-        let nodes = accessibility_snapshot(&program);
+        let nodes = accessibility_snapshot(&program, WindowId::PRIMARY);
         Some(HostedAccessibility::new(
             event_loop,
             Arc::clone(graphics.window()),
@@ -205,10 +241,12 @@ fn initialize<Program: RuntimeProgram>(
             window.scale_factor() as f32,
         ))
     };
+    let mut window_ids = HashMap::new();
+    window_ids.insert(window.id(), WindowId::PRIMARY);
     let mut ready = SceneReady {
         program,
         graphics,
-        painter,
+        painters,
         text: NanaTextShaper::default(),
         proxy,
         tasks,
@@ -220,6 +258,8 @@ fn initialize<Program: RuntimeProgram>(
         accessibility_pending: None,
         input: InputTracker::default(),
         material,
+        auxiliary: HashMap::new(),
+        window_ids,
         #[cfg(target_os = "windows")]
         pen_hook: crate::windows_pen::WindowsPenHook::install(window.as_ref())?,
         next_gpu_retry: None,
@@ -249,10 +289,15 @@ fn initialize<Program: RuntimeProgram>(
 
 impl<Program: RuntimeProgram> SceneReady<Program> {
     fn context(&self) -> RuntimeProgramContext<Program::Message> {
+        self.context_for(WindowId::PRIMARY)
+    }
+
+    fn context_for(&self, id: WindowId) -> RuntimeProgramContext<Program::Message> {
         program_context(
             &self.proxy,
             &self.graphics,
-            self.geometry,
+            id,
+            self.geometry_of(id),
             self.tasks.clone(),
         )
     }
@@ -263,16 +308,23 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.apply_update(event_loop, update);
     }
 
-    fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, event: WinitWindowEvent) {
+    fn handle_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        event: WinitWindowEvent,
+    ) {
         #[cfg(not(target_os = "android"))]
-        if let Some(accessibility) = self.accessibility.as_mut() {
-            accessibility.process_event(self.graphics.window().as_ref(), &event);
+        if let Some(window) = self.window(id).cloned()
+            && let Some(accessibility) = self.accessibility_mut(id)
+        {
+            accessibility.process_event(window.as_ref(), &event);
         }
         #[cfg(not(target_os = "android"))]
-        for request in self.take_accessibility_actions() {
+        for request in self.take_accessibility_actions(id) {
             let update = self
                 .program
-                .accessibility_action(WindowId::PRIMARY, request, &self.context())
+                .accessibility_action(id, request, &self.context_for(id))
                 .unwrap_or_else(|error| {
                     panic!("RuntimeProgram accessibility action failed: {error}")
                 });
@@ -281,101 +333,102 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
         }
+        if let Some(modal) = self.active_modal_child(id)
+            && !allows_modal_parent_event(&event)
+        {
+            #[cfg(target_os = "windows")]
+            let _ = self.take_windows_pen_events(id);
+            self.focus_window(modal);
+            return;
+        }
         #[cfg(target_os = "windows")]
-        self.dispatch_windows_pen_events(event_loop);
+        self.dispatch_windows_pen_events(event_loop, id);
         if let WinitWindowEvent::ModifiersChanged(modifiers) = &event {
-            self.input.modifiers = modifiers.state();
+            self.input_mut(id).modifiers = modifiers.state();
         }
         if let WinitWindowEvent::CursorMoved { position, .. } = &event {
-            let scale = self.scale_factor();
+            let scale = self.scale_factor(id);
             let point = position.to_logical::<f32>(f64::from(scale));
-            self.input.cursor = (point.x, point.y);
-            self.sync_window_cursor();
+            self.input_mut(id).cursor = (point.x, point.y);
+            self.sync_window_cursor(id);
         }
-        if let Some(input) = self.normalized_input(&event) {
-            let disposition = self.dispatch_input(event_loop, input);
+        if let Some(input) = self.normalized_input(id, &event) {
+            let disposition = self.dispatch_input(event_loop, id, input);
             if disposition.prevent_default || event_loop.exiting() {
                 return;
             }
         }
         match &event {
-            WinitWindowEvent::RedrawRequested => self.redraw(event_loop),
+            WinitWindowEvent::RedrawRequested => self.redraw(event_loop, id),
+            WinitWindowEvent::CloseRequested if id == WindowId::PRIMARY => {
+                self.forward_window_event(event_loop, id, &event);
+                event_loop.exit();
+            }
             WinitWindowEvent::CloseRequested => {
-                if let Some(window_event) =
-                    platform_window_event(&event, WindowId::PRIMARY, self.geometry)
-                {
-                    let update = self.program.window_event(window_event, &self.context());
-                    self.apply_update(event_loop, update);
+                self.forward_window_event(event_loop, id, &event);
+                if self.auxiliary.contains_key(&id) {
+                    self.close_window(event_loop, id);
                 }
+            }
+            WinitWindowEvent::Destroyed if id == WindowId::PRIMARY => {
+                self.forward_window_event(event_loop, id, &event);
                 event_loop.exit();
             }
             WinitWindowEvent::Destroyed => {
-                if let Some(window_event) =
-                    platform_window_event(&event, WindowId::PRIMARY, self.geometry)
-                {
-                    let update = self.program.window_event(window_event, &self.context());
-                    self.apply_update(event_loop, update);
+                if self.auxiliary.contains_key(&id) {
+                    self.close_window(event_loop, id);
                 }
-                event_loop.exit();
             }
             WinitWindowEvent::Moved(_) => {
-                self.sync_geometry();
-                if let Some(window_event) =
-                    platform_window_event(&event, WindowId::PRIMARY, self.geometry)
-                {
-                    let update = self.program.window_event(window_event, &self.context());
-                    self.apply_update(event_loop, update);
-                }
+                self.sync_geometry(id);
+                self.forward_window_event(event_loop, id, &event);
             }
             WinitWindowEvent::Resized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
-                self.graphics.resize();
-                self.sync_geometry();
-                if let Some(window_event) =
-                    platform_window_event(&event, WindowId::PRIMARY, self.geometry)
-                {
-                    let update = self.program.window_event(window_event, &self.context());
-                    self.apply_update(event_loop, update);
-                }
-                self.graphics.window().request_redraw();
+                self.resize_window(id);
+                self.sync_geometry(id);
+                self.forward_window_event(event_loop, id, &event);
+                self.request_redraw(id);
             }
             WinitWindowEvent::Occluded(_) => {
-                if let Some(window_event) =
-                    platform_window_event(&event, WindowId::PRIMARY, self.geometry)
-                {
-                    let update = self.program.window_event(window_event, &self.context());
-                    self.apply_update(event_loop, update);
-                }
+                self.forward_window_event(event_loop, id, &event);
             }
             WinitWindowEvent::Focused(focused) => {
                 if !*focused {
-                    self.input.clear_pointers();
+                    self.input_mut(id).clear_pointers();
                 }
-                if let Some(window_event) =
-                    platform_window_event(&event, WindowId::PRIMARY, self.geometry)
-                {
-                    let update = self.program.window_event(window_event, &self.context());
-                    self.apply_update(event_loop, update);
-                }
-                self.apply_ime_request();
+                self.forward_window_event(event_loop, id, &event);
+                self.apply_ime_request(id);
             }
             WinitWindowEvent::Ime(ime) => {
-                self.handle_ime(event_loop, platform_ime_event(ime.clone()))
+                self.handle_ime(event_loop, id, platform_ime_event(ime.clone()))
             }
             _ => {}
         }
     }
 
-    fn handle_ime(&mut self, event_loop: &ActiveEventLoop, event: ImeEvent) {
+    fn forward_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        event: &WinitWindowEvent,
+    ) {
+        if let Some(window_event) = platform_window_event(event, id, self.geometry_of(id)) {
+            let update = self
+                .program
+                .window_event(window_event, &self.context_for(id));
+            self.apply_update(event_loop, update);
+        }
+    }
+
+    fn handle_ime(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: ImeEvent) {
         let window_event = WindowEvent::Ime {
-            id: WindowId::PRIMARY,
+            id,
             event: event.clone(),
         };
-        let mut runtime_ime_owned = false;
         let ime_changed = self
             .program
-            .document_mut(WindowId::PRIMARY)
+            .document_mut(id)
             .map(|document| {
-                runtime_ime_owned = true;
                 let document_id = document.document();
                 RuntimeInputAdapter::default()
                     .dispatch_ime(document.context_mut(), document_id, &event)
@@ -386,23 +439,24 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .transpose()
             .unwrap_or_else(|error| panic!("RuntimeProgram IME dispatch failed: {error}"))
             .unwrap_or(false);
-        let modal_blocks_ime = self
-            .program
-            .document(WindowId::PRIMARY)
-            .is_some_and(|document| {
-                document
-                    .context()
-                    .has_blocking_runtime_overlay(document.document())
-            });
-        let mut update = gated_runtime_window_update(runtime_ime_owned || modal_blocks_ime, || {
-            self.program.window_event(window_event, &self.context())
+        let modal_blocks_ime = self.program.document(id).is_some_and(|document| {
+            document
+                .context()
+                .has_blocking_runtime_overlay(document.document())
         });
+        // Runtime already applied IME. Still notify the program so Vue can emit
+        // JS events; programs must not re-apply the same IME to Runtime.
+        let mut update =
+            gated_runtime_window_update(!should_deliver_program_ime(modal_blocks_ime), || {
+                self.program
+                    .window_event(window_event, &self.context_for(id))
+            });
         if ime_changed {
-            update = update.merge(RuntimeProgramUpdate::redraw(WindowId::PRIMARY));
+            update = update.merge(RuntimeProgramUpdate::redraw(id));
         }
         self.sync_theme();
         self.apply_update(event_loop, update);
-        self.apply_ime_request();
+        self.apply_ime_request(id);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -410,7 +464,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if self.graphics.take_device_lost()
             || self.next_gpu_retry.is_some_and(|deadline| now >= deadline)
         {
-            self.recover_device();
+            self.recover_device(event_loop);
         }
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
@@ -423,9 +477,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn animation_deadline(&self) -> Option<Instant> {
-        self.program
-            .document(WindowId::PRIMARY)
-            .and_then(|document| self.animation_clock.next_wakeup(document.context()))
+        self.known_window_ids()
+            .into_iter()
+            .filter_map(|id| {
+                self.program
+                    .document(id)
+                    .and_then(|document| self.animation_clock.next_wakeup(document.context()))
+            })
+            .min()
     }
 
     fn next_wakeup(&self) -> Option<Instant> {
@@ -438,59 +497,66 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn wake(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
         let mut update = self.program.wake(now, &self.context());
-        let frame = self
-            .program
-            .document_mut(WindowId::PRIMARY)
-            .map(|document| self.animation_clock.wake(document.context_mut(), now));
-        if let Some(frame) = frame {
+        for id in self.known_window_ids() {
+            let frame = self
+                .program
+                .document_mut(id)
+                .map(|document| self.animation_clock.wake(document.context_mut(), now));
+            let Some(frame) = frame else {
+                continue;
+            };
             let had_samples = frame.has_updates();
             update = update.merge(
                 self.program
-                    .animation_frame(WindowId::PRIMARY, frame, &self.context())
+                    .animation_frame(id, frame, &self.context_for(id))
                     .unwrap_or_else(|error| {
                         panic!("RuntimeProgram animation handler failed: {error}")
                     }),
             );
             if had_samples {
-                update = update.merge(RuntimeProgramUpdate::redraw(WindowId::PRIMARY));
+                update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
         }
         self.sync_theme();
         self.apply_update(event_loop, update);
     }
 
-    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+    fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
         if self.render_suspended {
             return;
         }
         if self.graphics.take_device_lost() {
-            self.recover_device();
+            self.recover_device(event_loop);
             return;
         }
-        self.program
-            .prepare_window_frame(WindowId::PRIMARY, &self.context());
-        let viewport =
-            LayoutViewport::new(self.geometry.logical_size.0, self.geometry.logical_size.1);
-        let scene = {
+        if id != WindowId::PRIMARY && !self.auxiliary.contains_key(&id) {
+            return;
+        }
+        self.program.prepare_window_frame(id, &self.context_for(id));
+        let geometry = self.geometry_of(id);
+        let material = self.material_of(id);
+        let viewport = LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
+        let (scene, pending) = {
             let document = self
                 .program
-                .document_mut(WindowId::PRIMARY)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "RuntimeProgram has no document for window {}",
-                        WindowId::PRIMARY.0
-                    )
-                });
+                .document_mut(id)
+                .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0));
             let update = document
                 .flush(viewport, &mut self.text)
                 .unwrap_or_else(|error| panic!("RuntimeProgram frame did not settle: {error}"));
-            if !update.accessibility.updated.is_empty() || !update.accessibility.removed.is_empty()
+            let pending = if !update.accessibility.updated.is_empty()
+                || !update.accessibility.removed.is_empty()
             {
-                self.accessibility_pending = Some(AccessibilityUpdate::Delta(update.accessibility));
-            }
-            document.shared_scene()
+                Some(AccessibilityUpdate::Delta(update.accessibility))
+            } else {
+                None
+            };
+            (document.shared_scene(), pending)
         };
-        if let Some(producers) = self.program.scene_resource_producers(WindowId::PRIMARY) {
+        if let Some(pending) = pending {
+            *self.accessibility_pending_mut(id) = Some(pending);
+        }
+        if let Some(producers) = self.program.scene_resource_producers(id) {
             producers
                 .encode_scene(
                     scene.as_ref(),
@@ -501,10 +567,19 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     panic!("RuntimeProgram resource production failed: {error}")
                 });
         }
-        let frame = match self.graphics.acquire_frame() {
+        let format = if id == WindowId::PRIMARY {
+            self.graphics.format()
+        } else {
+            self.auxiliary
+                .get(&id)
+                .expect("validated auxiliary")
+                .surface
+                .format()
+        };
+        let frame = match self.acquire_frame(id) {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
             Ok(HostedSurfaceFrame::Retry) => {
-                self.graphics.window().request_redraw();
+                self.request_redraw(id);
                 return;
             }
             Ok(HostedSurfaceFrame::Skipped) => return,
@@ -521,17 +596,18 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 label: Some("NanaUI scene host frame"),
             },
         );
-        let host_textures = self.program.host_textures(WindowId::PRIMARY);
+        let host_textures = self.program.host_textures(id);
         let gpu_renderers = resolve_scene_gpu_renderers(
-            self.program.scene_gpu_renderers(WindowId::PRIMARY),
+            self.program.scene_gpu_renderers(id),
             self.default_scene_gpu_renderers.clone(),
         );
-        self.painter
+        let theme = self.program.theme_mode();
+        self.painter_mut(format)
             .paint(
                 scene.as_ref(),
                 &mut encoder,
                 &target,
-                scene_paint_viewport(&self.geometry, self.material, self.program.theme_mode()),
+                scene_paint_viewport(&geometry, material, theme),
                 host_textures.as_ref(),
                 gpu_renderers.as_ref(),
             )
@@ -540,14 +616,26 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             });
         self.graphics.resources().queue().submit([encoder.finish()]);
         self.graphics.present(frame);
-        self.apply_ime_request();
+        self.apply_ime_request(id);
         let update = self
             .program
-            .window_frame_presented(WindowId::PRIMARY, &self.context());
+            .window_frame_presented(id, &self.context_for(id));
         self.sync_theme();
         self.apply_update(event_loop, update);
         #[cfg(not(target_os = "android"))]
-        self.synchronize_accessibility();
+        self.synchronize_accessibility(id);
+    }
+
+    fn acquire_frame(&mut self, id: WindowId) -> Result<HostedSurfaceFrame, HostedGpuError> {
+        if id == WindowId::PRIMARY {
+            self.graphics.acquire_frame()
+        } else {
+            let host = self
+                .auxiliary
+                .get_mut(&id)
+                .ok_or(HostedGpuError::SurfaceValidation)?;
+            self.graphics.acquire_surface_frame(&mut host.surface)
+        }
     }
 
     fn apply_update(&mut self, event_loop: &ActiveEventLoop, update: RuntimeProgramUpdate) {
@@ -561,98 +649,287 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
         }
-        match update.redraw {
-            RuntimeRedraw::None => {}
-            RuntimeRedraw::Window(id) if id != WindowId::PRIMARY => {}
-            RuntimeRedraw::Window(_) | RuntimeRedraw::All => {
-                self.graphics.window().request_redraw();
-            }
+        for id in windows_to_redraw(update.redraw, &self.known_window_ids()) {
+            self.request_redraw(id);
         }
     }
 
     fn apply_window_command(&mut self, event_loop: &ActiveEventLoop, command: WindowCommand) {
-        let window = Arc::clone(self.graphics.window());
-        match command {
-            WindowCommand::Open { .. } => {}
-            WindowCommand::Close(id) if id == WindowId::PRIMARY => {}
-            WindowCommand::Close(_) => {}
-            WindowCommand::Focus(id) if id == WindowId::PRIMARY => {
-                window.set_visible(true);
-                window.focus_window();
+        let known = self.known_window_ids();
+        match route_window_command(&command, &known) {
+            RoutedWindowCommand::Ignore => {}
+            RoutedWindowCommand::Open(id) => {
+                let WindowCommand::Open { settings, .. } = command else {
+                    return;
+                };
+                if let Ok(event) = self.open_window(event_loop, id, settings) {
+                    let update = self.program.window_event(event, &self.context_for(id));
+                    self.apply_update(event_loop, update);
+                }
             }
-            WindowCommand::SetTitle { id, title } if id == WindowId::PRIMARY => {
-                window.set_title(&title);
+            RoutedWindowCommand::Focus(id) => self.focus_window(id),
+            RoutedWindowCommand::Close(id) => self.close_window(event_loop, id),
+            RoutedWindowCommand::SetTitle(id) => {
+                let WindowCommand::SetTitle { title, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    window.set_title(&title);
+                }
             }
-            WindowCommand::Move { id, position } if id == WindowId::PRIMARY => {
-                window.set_outer_position(winit::dpi::Position::Logical(
-                    winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
-                ));
+            RoutedWindowCommand::Move(id) => {
+                let WindowCommand::Move { position, .. } = command else {
+                    return;
+                };
+                self.move_window(id, position);
             }
-            WindowCommand::SetBounds { id, position, size } if id == WindowId::PRIMARY => {
-                window.set_outer_position(winit::dpi::Position::Logical(
-                    winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
-                ));
-                let _ = window.request_inner_size(winit::dpi::Size::Logical(
-                    winit::dpi::LogicalSize::new(
-                        f64::from(size.0.max(1.0)),
-                        f64::from(size.1.max(1.0)),
-                    ),
-                ));
+            RoutedWindowCommand::SetBounds(id) => {
+                let WindowCommand::SetBounds { position, size, .. } = command else {
+                    return;
+                };
+                self.set_window_bounds(id, position, size);
             }
-            WindowCommand::SetFullscreen { id, fullscreen } if id == WindowId::PRIMARY => {
-                window.set_fullscreen(
-                    fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
-                );
+            RoutedWindowCommand::SetFullscreen(id) => {
+                let WindowCommand::SetFullscreen { fullscreen, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    window.set_fullscreen(
+                        fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
+                    );
+                }
             }
-            WindowCommand::SetMinimized { id, minimized } if id == WindowId::PRIMARY => {
-                window.set_minimized(minimized);
+            RoutedWindowCommand::SetMinimized(id) => {
+                let WindowCommand::SetMinimized { minimized, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    window.set_minimized(minimized);
+                }
             }
-            WindowCommand::SetMaximized { id, maximized } if id == WindowId::PRIMARY => {
-                window.set_maximized(maximized);
-                self.graphics.resize();
-                self.sync_geometry();
-                let update = self.program.window_event(
-                    WindowEvent::Resized {
-                        id: WindowId::PRIMARY,
-                        geometry: self.geometry,
-                    },
-                    &self.context(),
-                );
-                self.apply_update(event_loop, update);
+            RoutedWindowCommand::SetMaximized(id) => {
+                let WindowCommand::SetMaximized { maximized, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id).cloned() {
+                    window.set_maximized(maximized);
+                    self.resize_window(id);
+                    self.sync_geometry(id);
+                    let update = self.program.window_event(
+                        WindowEvent::Resized {
+                            id,
+                            geometry: self.geometry_of(id),
+                        },
+                        &self.context_for(id),
+                    );
+                    self.apply_update(event_loop, update);
+                }
             }
-            WindowCommand::SetAlwaysOnTop { id, always_on_top } if id == WindowId::PRIMARY => {
-                window.set_window_level(window_level(always_on_top));
+            RoutedWindowCommand::SetAlwaysOnTop(id) => {
+                let WindowCommand::SetAlwaysOnTop { always_on_top, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    window.set_window_level(window_level(always_on_top));
+                }
             }
-            WindowCommand::Focus(_)
-            | WindowCommand::SetTitle { .. }
-            | WindowCommand::Move { .. }
-            | WindowCommand::SetBounds { .. }
-            | WindowCommand::SetFullscreen { .. }
-            | WindowCommand::SetMinimized { .. }
-            | WindowCommand::SetMaximized { .. }
-            | WindowCommand::SetAlwaysOnTop { .. } => {}
         }
     }
 
-    fn recover_device(&mut self) {
-        let window = Arc::clone(self.graphics.window());
-        match executor::block_on(HostedGpuContext::new(window, wgpu::Features::empty())) {
-            Ok(graphics) => {
-                self.painter = SceneWgpuPainter::new(
-                    graphics.resources().device(),
-                    graphics.resources().queue(),
-                    graphics.format(),
-                );
-                self.default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
-                    Arc::clone(graphics.resources().device()),
-                    Arc::clone(graphics.resources().queue()),
+    fn open_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        settings: RuntimeWindowSettings,
+    ) -> Result<WindowEvent, String> {
+        if settings.modal {
+            let parent = settings
+                .parent
+                .ok_or_else(|| "modal window requires a parent".to_string())?;
+            if self.window(parent).is_none() {
+                return Err(format!("modal parent window {} does not exist", parent.0));
+            }
+            if self.active_modal_child(parent).is_some() {
+                return Err(format!(
+                    "modal parent window {} is already blocked",
+                    parent.0
                 ));
+            }
+        }
+        let parent = settings
+            .parent
+            .and_then(|parent| self.window(parent).cloned());
+        let attributes = scene_aux_window_attributes(&settings, parent.as_deref())?;
+        let window = Arc::new(
+            event_loop
+                .create_window(attributes)
+                .map_err(|error| error.to_string())?,
+        );
+        let surface = self
+            .graphics
+            .create_surface(Arc::clone(&window))
+            .map_err(|error| error.to_string())?;
+        let format = surface.format();
+        let _ = self.painter_mut(format);
+        #[cfg(target_os = "windows")]
+        let pen_hook = crate::windows_pen::WindowsPenHook::install(window.as_ref())?;
+        let material = apply_scene_material(window.as_ref(), self.last_theme);
+        #[cfg(not(target_os = "android"))]
+        let accessibility = {
+            let nodes = accessibility_snapshot(&self.program, id);
+            Some(HostedAccessibility::new(
+                event_loop,
+                Arc::clone(&window),
+                None,
+                nodes,
+                true,
+                window.scale_factor() as f32,
+            ))
+        };
+        let geometry = window_geometry(&window);
+        #[cfg(target_os = "windows")]
+        let modal_parent = settings.modal.then_some(settings.parent).flatten();
+        self.window_ids.insert(window.id(), id);
+        self.auxiliary.insert(
+            id,
+            SceneAuxiliary {
+                surface,
+                geometry,
+                input: InputTracker::default(),
+                material,
+                settings,
+                #[cfg(not(target_os = "android"))]
+                accessibility,
+                accessibility_pending: None,
+                #[cfg(target_os = "windows")]
+                pen_hook,
+            },
+        );
+        #[cfg(target_os = "windows")]
+        if let Some(parent) = modal_parent.and_then(|parent| self.window(parent)) {
+            parent.set_enable(false);
+        }
+        window.set_visible(true);
+        window.request_redraw();
+        Ok(WindowEvent::Ready { id, geometry })
+    }
+
+    fn close_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+        if id == WindowId::PRIMARY {
+            return;
+        }
+        if let Some(host) = self.auxiliary.remove(&id) {
+            #[cfg(target_os = "windows")]
+            if let Some(parent) = host
+                .settings
+                .modal
+                .then_some(host.settings.parent)
+                .flatten()
+                .and_then(|parent| self.window(parent))
+            {
+                parent.set_enable(true);
+                parent.focus_window();
+            }
+            self.window_ids.remove(&host.surface.window().id());
+            drop(host);
+            let update = self
+                .program
+                .window_event(WindowEvent::Closed { id }, &self.context_for(id));
+            self.apply_update(event_loop, update);
+        }
+    }
+
+    fn focus_window(&self, id: WindowId) {
+        if let Some(window) = self.window(id) {
+            window.set_visible(true);
+            window.focus_window();
+        }
+    }
+
+    fn move_window(&self, id: WindowId, position: (f32, f32)) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
+        window.set_outer_position(winit::dpi::Position::Logical(
+            winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
+        ));
+    }
+
+    fn set_window_bounds(&self, id: WindowId, position: (f32, f32), size: (f32, f32)) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
+        window.set_outer_position(winit::dpi::Position::Logical(
+            winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
+        ));
+        let _ = window.request_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
+            f64::from(size.0.max(1.0)),
+            f64::from(size.1.max(1.0)),
+        )));
+    }
+
+    fn active_modal_child(&self, parent: WindowId) -> Option<WindowId> {
+        self.auxiliary.iter().find_map(|(id, host)| {
+            (host.settings.modal && host.settings.parent == Some(parent)).then_some(*id)
+        })
+    }
+
+    fn recover_device(&mut self, event_loop: &ActiveEventLoop) {
+        let window = Arc::clone(self.graphics.window());
+        match pollster::block_on(HostedGpuContext::new(window, wgpu::Features::empty())) {
+            Ok(graphics) => {
+                let mut painters = HashMap::new();
+                painters.insert(
+                    graphics.format(),
+                    SceneWgpuPainter::new(
+                        graphics.resources().device(),
+                        graphics.resources().queue(),
+                        graphics.format(),
+                    ),
+                );
+                let previous = std::mem::take(&mut self.auxiliary);
+                let mut rebuilt = HashMap::new();
+                let mut failed = Vec::new();
+                for (id, mut host) in previous {
+                    let window = Arc::clone(host.surface.window());
+                    match graphics.create_surface(window) {
+                        Ok(surface) => {
+                            let format = surface.format();
+                            painters.entry(format).or_insert_with(|| {
+                                SceneWgpuPainter::new(
+                                    graphics.resources().device(),
+                                    graphics.resources().queue(),
+                                    format,
+                                )
+                            });
+                            host.surface = surface;
+                            rebuilt.insert(id, host);
+                        }
+                        Err(_) => failed.push((id, host.surface.window().id())),
+                    }
+                }
                 self.graphics = graphics;
+                self.painters = painters;
+                self.auxiliary = rebuilt;
+                self.default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
+                    Arc::clone(self.graphics.resources().device()),
+                    Arc::clone(self.graphics.resources().queue()),
+                ));
                 self.refresh_material();
                 self.next_gpu_retry = None;
                 self.render_suspended = false;
                 self.program.rebuild_gpu(&self.context());
-                self.graphics.window().request_redraw();
+                for (id, window_id) in failed {
+                    self.window_ids.remove(&window_id);
+                    let update = self
+                        .program
+                        .window_event(WindowEvent::Closed { id }, &self.context_for(id));
+                    self.apply_update(event_loop, update);
+                    if event_loop.exiting() {
+                        return;
+                    }
+                }
+                self.request_redraw_all();
             }
             Err(_) => {
                 self.render_suspended = true;
@@ -671,31 +948,47 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if theme != self.last_theme {
             self.last_theme = theme;
             self.refresh_material();
-            self.graphics.window().request_redraw();
+            self.request_redraw_all();
         }
     }
 
     fn refresh_material(&mut self) {
         clear_system_material(self.graphics.window().as_ref());
         self.material = apply_scene_material(self.graphics.window().as_ref(), self.last_theme);
+        for host in self.auxiliary.values_mut() {
+            clear_system_material(host.surface.window().as_ref());
+            host.material = apply_scene_material(host.surface.window().as_ref(), self.last_theme);
+        }
     }
 
-    fn sync_geometry(&mut self) {
-        self.geometry = window_geometry(self.graphics.window());
+    fn sync_geometry(&mut self, id: WindowId) {
+        if id == WindowId::PRIMARY {
+            self.geometry = window_geometry(self.graphics.window());
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            host.geometry = window_geometry(host.surface.window());
+        }
     }
 
-    fn sync_window_cursor(&self) {
+    fn resize_window(&mut self, id: WindowId) {
+        if id == WindowId::PRIMARY {
+            self.graphics.resize();
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            self.graphics.resize_surface(&mut host.surface);
+        }
+    }
+
+    fn sync_window_cursor(&self, id: WindowId) {
         use winit::window::CursorIcon;
+        let cursor = self.input_of(id).cursor;
         let icon = self
             .program
-            .document(WindowId::PRIMARY)
+            .document(id)
             .and_then(|document| {
                 let context = document.context();
-                let id = document.document();
-                let (x, y) = self.input.cursor;
+                let document_id = document.document();
                 context
-                    .split_handle_near(id, x, y)
-                    .or_else(|| context.dock_handle_near(id, x, y))
+                    .split_handle_near(document_id, cursor.0, cursor.1)
+                    .or_else(|| context.dock_handle_near(document_id, cursor.0, cursor.1))
                     .and_then(|handle| context.world().layout_box(handle))
             })
             .map(|bounds| {
@@ -706,38 +999,44 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 }
             })
             .unwrap_or(CursorIcon::Default);
-        self.graphics.window().set_cursor(icon);
+        if let Some(window) = self.window(id) {
+            window.set_cursor(icon);
+        }
     }
 
-    fn scale_factor(&self) -> f32 {
-        normalized_scale_factor(self.graphics.window().scale_factor() as f32)
+    fn scale_factor(&self, id: WindowId) -> f32 {
+        self.window(id)
+            .map(|window| normalized_scale_factor(window.scale_factor() as f32))
+            .unwrap_or(1.0)
     }
 
-    fn apply_ime_request(&self) {
+    fn apply_ime_request(&self, id: WindowId) {
+        let Some(window) = self.window(id) else {
+            return;
+        };
         apply_text_input_request(
-            self.graphics.window().as_ref(),
-            self.program
-                .document(WindowId::PRIMARY)
-                .map(runtime_text_input_request),
+            window.as_ref(),
+            self.program.document(id).map(runtime_text_input_request),
         );
     }
 
-    fn normalized_input(&mut self, event: &WinitWindowEvent) -> Option<InputEvent> {
-        self.input.map(
-            event,
-            self.scale_factor(),
-            window_screen_origin(self.graphics.window()),
-        )
+    fn normalized_input(&mut self, id: WindowId, event: &WinitWindowEvent) -> Option<InputEvent> {
+        let scale = self.scale_factor(id);
+        let origin = self
+            .window(id)
+            .and_then(|window| window_screen_origin(window));
+        self.input_mut(id).map(event, scale, origin)
     }
 
     fn dispatch_input(
         &mut self,
         event_loop: &ActiveEventLoop,
+        id: WindowId,
         input: InputEvent,
     ) -> nana_ui_platform::InputDisposition {
         let disposition = self
             .program
-            .document_mut(WindowId::PRIMARY)
+            .document_mut(id)
             .map(|document| {
                 let document_id = document.document();
                 RuntimeInputAdapter::default().dispatch_at(
@@ -750,9 +1049,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .transpose()
             .unwrap_or_else(|error| panic!("RuntimeProgram input dispatch failed: {error}"))
             .unwrap_or_default();
-        let update = gated_runtime_input_update(disposition, WindowId::PRIMARY, || {
-            self.program
-                .input_event(WindowId::PRIMARY, &input, &self.context())
+        // Runtime may already have consumed the event (prevent_default). Scene
+        // still delivers input_event so Gallery can drain Activate bindings and
+        // Vue can emit JS. Leftover winit handling stays gated by the caller.
+        let update = scene_runtime_input_update(disposition, id, || {
+            self.program.input_event(id, &input, &self.context_for(id))
         });
         self.sync_theme();
         self.apply_update(event_loop, update);
@@ -760,50 +1061,100 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     #[cfg(not(target_os = "android"))]
-    fn take_accessibility_actions(&self) -> Vec<nana_ui_runtime::AccessibilityActionRequest> {
-        self.accessibility
-            .as_ref()
-            .map_or_else(Vec::new, HostedAccessibility::take_actions)
+    fn take_accessibility_actions(
+        &self,
+        id: WindowId,
+    ) -> Vec<nana_ui_runtime::AccessibilityActionRequest> {
+        if id == WindowId::PRIMARY {
+            self.accessibility
+                .as_ref()
+                .map_or_else(Vec::new, HostedAccessibility::take_actions)
+        } else {
+            self.auxiliary
+                .get(&id)
+                .and_then(|host| host.accessibility.as_ref())
+                .map_or_else(Vec::new, HostedAccessibility::take_actions)
+        }
     }
 
     #[cfg(not(target_os = "android"))]
-    fn synchronize_accessibility(&mut self) {
-        let scale_factor = self.scale_factor();
-        let Some(accessibility) = self.accessibility.as_mut() else {
-            return;
+    fn synchronize_accessibility(&mut self, id: WindowId) {
+        let scale_factor = self.scale_factor(id);
+        let has_adapter = if id == WindowId::PRIMARY {
+            self.accessibility.is_some()
+        } else {
+            self.auxiliary
+                .get(&id)
+                .is_some_and(|host| host.accessibility.is_some())
         };
-        let scale_factor_changed = accessibility.scale_factor_changed(scale_factor);
-        let pending = self.accessibility_pending.take();
+        if !has_adapter {
+            return;
+        }
+        let scale_factor_changed = if id == WindowId::PRIMARY {
+            self.accessibility
+                .as_ref()
+                .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor))
+        } else {
+            self.auxiliary
+                .get(&id)
+                .and_then(|host| host.accessibility.as_ref())
+                .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor))
+        };
+        let pending = self.accessibility_pending_mut(id).take();
         let update = if scale_factor_changed {
             match pending {
                 Some(update @ AccessibilityUpdate::Full { .. }) => Some(update),
                 Some(AccessibilityUpdate::Delta(delta)) => Some(AccessibilityUpdate::Full {
                     generation: Some(delta.generation),
-                    nodes: accessibility_snapshot(&self.program),
+                    nodes: accessibility_snapshot(&self.program, id),
                 }),
                 None => Some(AccessibilityUpdate::Full {
                     generation: None,
-                    nodes: accessibility_snapshot(&self.program),
+                    nodes: accessibility_snapshot(&self.program, id),
                 }),
             }
         } else {
             pending
         };
-        if let Some(update) = update {
+        let Some(update) = update else {
+            return;
+        };
+        if id == WindowId::PRIMARY {
+            if let Some(accessibility) = self.accessibility.as_mut() {
+                accessibility.synchronize(update, scale_factor);
+            }
+        } else if let Some(accessibility) = self
+            .auxiliary
+            .get_mut(&id)
+            .and_then(|host| host.accessibility.as_mut())
+        {
             accessibility.synchronize(update, scale_factor);
         }
     }
 
     #[cfg(target_os = "windows")]
-    fn dispatch_windows_pen_events(&mut self, event_loop: &ActiveEventLoop) {
+    fn take_windows_pen_events(&self, id: WindowId) -> Vec<crate::windows_pen::PenEvent> {
+        if id == WindowId::PRIMARY {
+            self.pen_hook.drain()
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| host.pen_hook.drain())
+                .unwrap_or_default()
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn dispatch_windows_pen_events(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
         use crate::windows_pen::PenPhase;
 
-        let scale = self.scale_factor().max(0.01);
-        let modifiers = platform_input_modifiers(self.input.modifiers);
-        for event in self.pen_hook.drain() {
+        let events = self.take_windows_pen_events(id);
+        let scale = self.scale_factor(id).max(0.01);
+        let modifiers = platform_input_modifiers(self.input_of(id).modifiers);
+        for event in events {
             let x = event.client_x as f32 / scale;
             let y = event.client_y as f32 / scale;
-            self.input.cursor = (x, y);
+            self.input_mut(id).cursor = (x, y);
             let input = InputEvent::Pointer {
                 phase: match event.phase {
                     PenPhase::Down => PointerPhase::Down,
@@ -827,10 +1178,108 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 is_primary: event.is_primary,
                 modifiers,
             };
-            self.dispatch_input(event_loop, input);
+            self.dispatch_input(event_loop, id, input);
             if event_loop.exiting() {
                 return;
             }
+        }
+    }
+
+    fn known_window_ids(&self) -> Vec<WindowId> {
+        let mut ids = vec![WindowId::PRIMARY];
+        ids.extend(self.auxiliary.keys().copied());
+        ids
+    }
+
+    fn window(&self, id: WindowId) -> Option<&Arc<winit::window::Window>> {
+        if id == WindowId::PRIMARY {
+            Some(self.graphics.window())
+        } else {
+            self.auxiliary.get(&id).map(|host| host.surface.window())
+        }
+    }
+
+    fn geometry_of(&self, id: WindowId) -> WindowGeometry {
+        if id == WindowId::PRIMARY {
+            self.geometry
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| host.geometry)
+                .unwrap_or_default()
+        }
+    }
+
+    fn material_of(&self, id: WindowId) -> MaterialOutcome {
+        if id == WindowId::PRIMARY {
+            self.material
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| host.material)
+                .unwrap_or(self.material)
+        }
+    }
+
+    fn input_of(&self, id: WindowId) -> &InputTracker {
+        if id == WindowId::PRIMARY {
+            &self.input
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| &host.input)
+                .unwrap_or(&self.input)
+        }
+    }
+
+    fn input_mut(&mut self, id: WindowId) -> &mut InputTracker {
+        if id == WindowId::PRIMARY {
+            &mut self.input
+        } else {
+            self.auxiliary
+                .get_mut(&id)
+                .map(|host| &mut host.input)
+                .unwrap_or(&mut self.input)
+        }
+    }
+
+    fn accessibility_pending_mut(&mut self, id: WindowId) -> &mut Option<AccessibilityUpdate> {
+        if id == WindowId::PRIMARY {
+            &mut self.accessibility_pending
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            &mut host.accessibility_pending
+        } else {
+            &mut self.accessibility_pending
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn accessibility_mut(&mut self, id: WindowId) -> Option<&mut HostedAccessibility> {
+        if id == WindowId::PRIMARY {
+            self.accessibility.as_mut()
+        } else {
+            self.auxiliary
+                .get_mut(&id)
+                .and_then(|host| host.accessibility.as_mut())
+        }
+    }
+
+    fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
+        let resources = self.graphics.resources();
+        self.painters
+            .entry(format)
+            .or_insert_with(|| SceneWgpuPainter::new(resources.device(), resources.queue(), format))
+    }
+
+    fn request_redraw(&self, id: WindowId) {
+        if let Some(window) = self.window(id) {
+            window.request_redraw();
+        }
+    }
+
+    fn request_redraw_all(&self) {
+        for id in self.known_window_ids() {
+            self.request_redraw(id);
         }
     }
 }
@@ -844,12 +1293,13 @@ impl<Program: RuntimeProgram> Drop for SceneReady<Program> {
 fn program_context<Message: Send + 'static>(
     proxy: &EventLoopProxy<Message>,
     graphics: &HostedGpuContext,
+    id: WindowId,
     geometry: WindowGeometry,
     tasks: SyncSender<Task<Message>>,
 ) -> RuntimeProgramContext<Message> {
     let proxy = proxy.clone();
     RuntimeProgramContext::new(
-        WindowId::PRIMARY,
+        id,
         geometry,
         graphics.resources(),
         Arc::new(move |message| {
@@ -878,7 +1328,7 @@ fn spawn_task_workers<Message: Send + 'static>(
                     };
                     task
                 };
-                let message = executor::block_on(task.into_future());
+                let message = pollster::block_on(task.into_future());
                 if proxy.send_event(message).is_err() {
                     return;
                 }
@@ -890,9 +1340,10 @@ fn spawn_task_workers<Message: Send + 'static>(
 
 fn accessibility_snapshot<Program: RuntimeProgram>(
     program: &Program,
+    id: WindowId,
 ) -> Vec<nana_ui_runtime::AccessibilityNode> {
     program
-        .document(WindowId::PRIMARY)
+        .document(id)
         .map(|document| {
             document
                 .context()
@@ -979,6 +1430,114 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
     }
 
     attributes.with_decorations(true)
+}
+
+fn scene_aux_window_attributes(
+    settings: &RuntimeWindowSettings,
+    parent: Option<&winit::window::Window>,
+) -> Result<winit::window::WindowAttributes, String> {
+    let attributes = scene_window_attributes(settings).with_visible(false);
+    #[cfg(target_os = "windows")]
+    let attributes = if settings.modal {
+        let parent = parent.ok_or_else(|| "modal window requires a parent".to_string())?;
+        let handle = parent
+            .window_handle()
+            .map_err(|error| format!("failed to acquire modal owner handle: {error}"))?;
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return Err("Windows modal owner is not an HWND".into());
+        };
+        attributes.with_owner_window(handle.hwnd.get())
+    } else {
+        let _ = parent;
+        attributes
+    };
+    #[cfg(not(target_os = "windows"))]
+    let _ = parent;
+    Ok(attributes)
+}
+
+fn allows_modal_parent_event(event: &WinitWindowEvent) -> bool {
+    matches!(
+        event,
+        WinitWindowEvent::RedrawRequested
+            | WinitWindowEvent::Resized(_)
+            | WinitWindowEvent::Moved(_)
+            | WinitWindowEvent::ScaleFactorChanged { .. }
+            | WinitWindowEvent::Occluded(_)
+            | WinitWindowEvent::Destroyed
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutedWindowCommand {
+    Open(WindowId),
+    Focus(WindowId),
+    Close(WindowId),
+    SetTitle(WindowId),
+    Move(WindowId),
+    SetBounds(WindowId),
+    SetFullscreen(WindowId),
+    SetMinimized(WindowId),
+    SetMaximized(WindowId),
+    SetAlwaysOnTop(WindowId),
+    Ignore,
+}
+
+fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWindowCommand {
+    let known = |id: WindowId| known.contains(&id);
+    match command {
+        WindowCommand::Open { id, .. } if known(*id) => RoutedWindowCommand::Focus(*id),
+        WindowCommand::Open { id, .. } => RoutedWindowCommand::Open(*id),
+        WindowCommand::Close(id) if *id == WindowId::PRIMARY || !known(*id) => {
+            RoutedWindowCommand::Ignore
+        }
+        WindowCommand::Close(id) => RoutedWindowCommand::Close(*id),
+        WindowCommand::Focus(id) if known(*id) => RoutedWindowCommand::Focus(*id),
+        WindowCommand::SetTitle { id, .. } if known(*id) => RoutedWindowCommand::SetTitle(*id),
+        WindowCommand::Move { id, .. } if known(*id) => RoutedWindowCommand::Move(*id),
+        WindowCommand::SetBounds { id, .. } if known(*id) => RoutedWindowCommand::SetBounds(*id),
+        WindowCommand::SetFullscreen { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetFullscreen(*id)
+        }
+        WindowCommand::SetMinimized { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetMinimized(*id)
+        }
+        WindowCommand::SetMaximized { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetMaximized(*id)
+        }
+        WindowCommand::SetAlwaysOnTop { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetAlwaysOnTop(*id)
+        }
+        _ => RoutedWindowCommand::Ignore,
+    }
+}
+
+fn windows_to_redraw(redraw: RuntimeRedraw, known: &[WindowId]) -> Vec<WindowId> {
+    match redraw {
+        RuntimeRedraw::None => Vec::new(),
+        RuntimeRedraw::Window(id) => known.iter().copied().filter(|known| *known == id).collect(),
+        RuntimeRedraw::All => known.to_vec(),
+    }
+}
+
+fn should_deliver_program_ime(modal_blocks: bool) -> bool {
+    !modal_blocks
+}
+
+/// Always invoke the program input hook. Runtime `prevent_default` still
+/// requests a window redraw; it does not drop Gallery/Vue delivery.
+fn scene_runtime_input_update(
+    disposition: nana_ui_platform::InputDisposition,
+    id: WindowId,
+    program_input: impl FnOnce() -> Result<RuntimeProgramUpdate, FrameworkError>,
+) -> RuntimeProgramUpdate {
+    let program_update = program_input()
+        .unwrap_or_else(|error| panic!("RuntimeProgram input handler failed: {error}"));
+    if disposition.prevent_default {
+        RuntimeProgramUpdate::redraw(id).merge(program_update)
+    } else {
+        program_update
+    }
 }
 
 fn window_level(always_on_top: bool) -> winit::window::WindowLevel {
@@ -1297,13 +1856,15 @@ fn platform_window_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        InputTracker, mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
-        platform_input_modifiers, platform_window_event, scene_window_attributes, screen_position,
-        window_level,
+        InputTracker, RoutedWindowCommand, mouse_button_code, mouse_button_mask,
+        platform_ime_event, platform_input_key, platform_input_modifiers, platform_window_event,
+        route_window_command, scene_runtime_input_update, scene_window_attributes, screen_position,
+        should_deliver_program_ime, window_level, windows_to_redraw,
     };
+    use crate::{RuntimeProgramUpdate, RuntimeRedraw};
     use nana_ui_platform::{
-        ImeEvent, InputEvent, PointerPhase, PointerType, WindowEvent, WindowGeometry, WindowId,
-        WindowSettings,
+        ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, WindowCommand,
+        WindowEvent, WindowGeometry, WindowId, WindowSettings,
     };
     use winit::dpi::PhysicalPosition;
     use winit::event::{
@@ -1622,5 +2183,177 @@ mod tests {
             screen_position(Some((10.0, 20.0)), (3.0, 4.0)),
             (13.0, 24.0)
         );
+    }
+
+    #[test]
+    fn window_commands_route_by_known_ids_without_a_surface() {
+        let primary = WindowId::PRIMARY;
+        let tool = WindowId(7);
+        let known = [primary, tool];
+        let settings = WindowSettings::new("tool");
+
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::Open {
+                    id: tool,
+                    settings: settings.clone(),
+                },
+                &known
+            ),
+            RoutedWindowCommand::Focus(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::Open {
+                    id: WindowId(9),
+                    settings,
+                },
+                &known
+            ),
+            RoutedWindowCommand::Open(WindowId(9))
+        );
+        assert_eq!(
+            route_window_command(&WindowCommand::Close(primary), &known),
+            RoutedWindowCommand::Ignore
+        );
+        assert_eq!(
+            route_window_command(&WindowCommand::Close(tool), &known),
+            RoutedWindowCommand::Close(tool)
+        );
+        assert_eq!(
+            route_window_command(&WindowCommand::Close(WindowId(3)), &known),
+            RoutedWindowCommand::Ignore
+        );
+        assert_eq!(
+            route_window_command(&WindowCommand::Focus(tool), &known),
+            RoutedWindowCommand::Focus(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetTitle {
+                    id: tool,
+                    title: "Aux".into(),
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetTitle(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::Move {
+                    id: tool,
+                    position: (8.0, 16.0),
+                },
+                &known
+            ),
+            RoutedWindowCommand::Move(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetBounds {
+                    id: primary,
+                    position: (0.0, 0.0),
+                    size: (100.0, 80.0),
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetBounds(primary)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetFullscreen {
+                    id: WindowId(3),
+                    fullscreen: true,
+                },
+                &known
+            ),
+            RoutedWindowCommand::Ignore
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetMinimized {
+                    id: tool,
+                    minimized: true,
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetMinimized(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetMaximized {
+                    id: tool,
+                    maximized: true,
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetMaximized(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetAlwaysOnTop {
+                    id: tool,
+                    always_on_top: true,
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetAlwaysOnTop(tool)
+        );
+    }
+
+    #[test]
+    fn redraw_requests_ignore_unknown_ids_and_cover_every_known_window() {
+        let primary = WindowId::PRIMARY;
+        let tool = WindowId(2);
+        let known = [primary, tool];
+
+        assert!(windows_to_redraw(RuntimeRedraw::None, &known).is_empty());
+        assert_eq!(
+            windows_to_redraw(RuntimeRedraw::Window(tool), &known),
+            vec![tool]
+        );
+        assert!(windows_to_redraw(RuntimeRedraw::Window(WindowId(9)), &known).is_empty());
+        assert_eq!(
+            windows_to_redraw(RuntimeRedraw::All, &known),
+            vec![primary, tool]
+        );
+    }
+
+    #[test]
+    fn runtime_ime_ownership_does_not_drop_program_notification() {
+        assert!(should_deliver_program_ime(false));
+        assert!(!should_deliver_program_ime(true));
+    }
+
+    #[test]
+    fn runtime_prevent_default_still_invokes_the_program_input_hook() {
+        let mut calls = 0;
+        let update = scene_runtime_input_update(
+            InputDisposition {
+                prevent_default: true,
+            },
+            WindowId::PRIMARY,
+            || {
+                calls += 1;
+                Ok(RuntimeProgramUpdate::exit())
+            },
+        );
+        assert_eq!(calls, 1);
+        assert!(update.exit);
+        assert_eq!(update.redraw, RuntimeRedraw::Window(WindowId::PRIMARY));
+
+        calls = 0;
+        let update = scene_runtime_input_update(
+            InputDisposition {
+                prevent_default: false,
+            },
+            WindowId::PRIMARY,
+            || {
+                calls += 1;
+                Ok(RuntimeProgramUpdate::default())
+            },
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(update.redraw, RuntimeRedraw::None);
     }
 }

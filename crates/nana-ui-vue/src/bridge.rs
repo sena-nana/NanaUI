@@ -1154,13 +1154,7 @@ pub enum BridgeEvent {
         name: String,
         payload: nana_js_engine::HostValue,
     },
-    /// Multi-line editor action; host applies to [`crate::EditorStore`] then syncs `value`.
-    #[cfg(feature = "iced-view")]
-    Editor {
-        id: WidgetId,
-        action: iced::widget::text_editor::Action,
-    },
-    /// Context-menu search query (host-owned [`crate::MenuStore`]).
+    /// Context-menu search query.
     #[cfg(feature = "iced-view")]
     MenuSearch {
         id: WidgetId,
@@ -1186,9 +1180,7 @@ impl BridgeEvent {
             | Self::Scroll { id, .. }
             | Self::Native { id, .. } => *id,
             #[cfg(feature = "iced-view")]
-            Self::Editor { id, .. } | Self::MenuSearch { id, .. } | Self::MenuPath { id, .. } => {
-                *id
-            }
+            Self::MenuSearch { id, .. } | Self::MenuPath { id, .. } => *id,
         }
     }
 
@@ -1203,8 +1195,6 @@ impl BridgeEvent {
             Self::Change { .. } => "change",
             Self::Scroll { .. } => "scroll",
             Self::Native { name, .. } => name,
-            #[cfg(feature = "iced-view")]
-            Self::Editor { .. } => "input",
             #[cfg(feature = "iced-view")]
             Self::MenuSearch { .. } => "input",
             #[cfg(feature = "iced-view")]

@@ -3,8 +3,8 @@
 //! Applications own [`GraphModel`], viewport, selection, and persistence.
 //! This component owns transient pointer state and emits [`GraphCanvasEvent`].
 //! Default paint is fill layout and accessibility only. [`CustomRenderNode`]
-//! (`renderer = "graph-canvas"`) is not projected here because default
-//! `IcedSceneView` rejects unregistered custom renderers. Hosts that register a
+//! (`renderer = "graph-canvas"`) is not projected here because the default
+//! Scene painter rejects unregistered custom renderers. Hosts that register a
 //! Scene GPU painter for [`GRAPH_CANVAS_RENDERER`] may attach
 //! [`GraphCanvas::custom_render`]. No host Device or Queue is created here.
 
@@ -621,8 +621,8 @@ impl GraphCanvas {
 
     /// Identity for a host-registered Scene GPU painter.
     ///
-    /// [`ComponentView::project`] does not attach this node. Default
-    /// `IcedSceneView` fails on unregistered `"graph-canvas"` renderers.
+    /// [`ComponentView::project`] does not attach this node. The default
+    /// Scene painter fails on unregistered `"graph-canvas"` renderers.
     pub fn custom_render(&self) -> CustomRenderNode {
         CustomRenderNode {
             renderer: Arc::from(GRAPH_CANVAS_RENDERER),
@@ -1464,7 +1464,7 @@ mod tests {
         let style = context.world().node_style(canvas.stable_id()).unwrap();
         assert_eq!(style.layout.width, Some(LengthSpec::Fill));
         assert_eq!(style.layout.height, Some(LengthSpec::Fill));
-        // Default IcedSceneView errors on unregistered custom renderers. Keep
+        // Default Scene painter errors on unregistered custom renderers. Keep
         // layout/a11y only unless the host registers SceneGpuRenderer
         // "graph-canvas" and attaches GraphCanvas::custom_render().
         assert!(context.world().custom_render(canvas.stable_id()).is_none());

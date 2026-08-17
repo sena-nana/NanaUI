@@ -26,8 +26,15 @@ paths are independently checked against the component's design contract, includi
 bounds, padding, baseline, wrapping, clipping and hit area. For each state the snapshot runner
 writes `iced.png`, `runtime.png`, `side-by-side.png`, `difference.png`, and `evidence.txt` under
 `target/ui-snapshots/component-migration/<component>/<theme>/<state>/` (or the corresponding
-`NANA_UI_SNAPSHOT_OUTPUT` root). These images are diagnostic evidence, not a pixel-similarity gate,
-and the runner never promotes a catalog entry automatically.
+`NANA_UI_SNAPSHOT_OUTPUT` root). `runtime.png` is the current Runtime frame painted by
+`SceneWgpuPainter`. `iced.png` is an archived baseline when present; the runner does not host
+Iced widgets as the left/oracle column. These images are diagnostic evidence, not a
+pixel-similarity gate, and the runner never promotes a catalog entry automatically.
+
+Iced widget adapters (`nana_ui::compatibility`) were removed after leaf
+qualification. Public types route through Runtime / UiScene. Historical batch
+notes below may still mention those adapters as migration-era references; the
+modules no longer exist.
 
 Iced preserves migration-era product behavior and design intent, but it is not an absolute visual
 truth. Review differences against shared theme semantics, font metrics, component state contracts,
@@ -44,9 +51,9 @@ the existing idle-redraw contract.
 ## Current first batch
 
 `Text`, `Button`, `TextInput`, and `Checkbox` are `RuntimeQualified`; their root, `components`
-aggregate, and Vue hosted default routes use Runtime while their Iced adapters remain under
-`nana_ui::compatibility`. A hosted Runtime Scene never silently rebuilds a qualified component
-through Iced when retained state is missing. Button passed
+aggregate, and Vue hosted default routes use Runtime. Iced widget adapters were removed after
+leaf qualification. A hosted Runtime Scene never silently rebuilds a qualified component
+through a second retained tree when state is missing. Button passed
 all semantic kinds, sizes, loading, activation, focus and accessibility review. TextInput passed
 placeholder, shaped selection/caret, secure, invalid, read-only/loading, keyboard, IME preedit and
 native input-purpose review. Text passed wrapping, clipping, alignment, typography and
@@ -253,11 +260,9 @@ single activation target.
 `workspace`, `dock`, `dock-panel`, `split-pane`, `pane-chrome`, `pane-tree`,
 `app-shell`, and `app-title-bar` are `RuntimeQualified`. Root
 `nana_ui::Workspace`, `Dock`, `DockPanel`, `SplitPane`, `PaneChrome`,
-`PaneTree`, `AppShell`, and `AppTitleBar` are the Runtime views. Iced
-`workspace_view` / `DockController` / `split_pane` / `DesktopShell` composers
-stay at their existing modules; Iced `AppTitleBar`, `PaneChrome`, `PaneTree`,
-and `DockPanel` live under `nana_ui::compatibility`. Hosted floating dock
-windows and native title-bar drag stay on the Iced/hosted adapters.
+`PaneTree`, `AppShell`, and `AppTitleBar` are the Runtime views. Iced widget
+adapters were removed; hosted floating dock windows and native title-bar drag
+stay on the Scene host.
 
 2026-08-16 windowed A/B **passed** for this batch. Slot labels in fixtures
 use a shared 8px content inset; Workspace/Dock/Split/AppShell chrome does not
@@ -265,26 +270,21 @@ add that inset.
 
 `CalendarHeatmap`, `TimeSeriesChart`, `ReorderList`, `NativeMarkdown`,
 `SelectableRichText`, `ImageViewer`, `KeyCaptureLayer`, and `KeymapLayer` are
-`RuntimeQualified`. Root and `components` exports route to Runtime. Iced
-canvas/widgets stay under `nana_ui::compatibility`. Scene paints these through
-Quad/Text geometry. Iced output is a reference, not a pixel oracle.
+`RuntimeQualified`. Root and `components` exports route to Runtime. Scene
+paints these through Quad/Text geometry. Archived Iced output is a reference,
+not a pixel oracle.
 
 `GraphCanvas`, `GpuView`, and `GpuTextureView` are `RuntimeQualified`. The
 graph model lives once in `nana-ui-core`. Root `nana_ui::GraphCanvas`,
-`GpuView`, and `GpuTextureView` are the Runtime views. Iced canvas/shader
-widgets stay under `nana_ui::compatibility`. GraphCanvas paints Scene
+`GpuView`, and `GpuTextureView` are the Runtime views. GraphCanvas paints Scene
 Quad/Text geometry from `StandardVisual::GraphCanvas`: background grid,
 cubic edges, node title bars, port discs and labels, hover/selected, and
 live drag or connection preview. `RuntimeInputAdapter` routes pointer,
-wheel and keyboard into the same events the Iced canvas emits. GpuTextureView
-binds the host-owned `"nana.host-texture"` slot. GpuView projects
-`CustomRenderNode` `"gpu-view"`. `IcedSceneView::new`, `for_node`, and
-`from_shared` install the default `"gpu-view"` painter.
-`from_shared_with_renderers(..., None, ...)` gets the same default;
-explicit `from_shared_with_renderers(Some(_))` and
-`with_gpu_resources(..., None)` stay caller-controlled. Construction is
-not a draw: the default painter still needs the host Device/Queue to emit
-GPU. Syntax highlighting is the
+wheel and keyboard into the same graph events. GpuTextureView binds the
+host-owned `"nana.host-texture"` slot. GpuView projects
+`CustomRenderNode` `"gpu-view"`. `default_scene_gpu_renderers` and the Scene
+host install the default `"gpu-view"` painter. Construction is not a draw:
+the default painter still needs the host Device/Queue to emit GPU. Syntax highlighting is the
 Runtime `"highlight"` presenter on `HostedTextarea` / `TextArea` / `TextInput`.
 `SplitPane` handle drag applies `SplitPaneMutation` through the same
 adapter.
@@ -301,16 +301,17 @@ Remaining work is host polish, not a new leaf batch.
 SettingsPage, and CalendarHeatmap. Calendar hover titles hug `Tooltip`
 metrics; Iced's fixed 176px popup is Iced-side.
 
-- `IcedSceneView::from_shared` now installs the default `"gpu-view"`
-  painter so Vue `from_shared_node` can keep GpuView. Explicit
-  `from_shared_with_renderers(Some(_))` stays caller-controlled.
 - Gallery settings, six main sections, and overlays (command palette,
   confirm dialog, image viewer, context menu) paint retained Runtime
-  documents through `IcedSceneView`.
+  documents. Windowed Gallery uses `run_runtime` / `RuntimeProgram`.
+  `ui-snapshots` and the windowed A/B bins paint `UiScene` with
+  `SceneWgpuPainter`.
 - Gallery live dock state is Runtime `DockWorkspace`. Hide/show uses
   `DockWorkspace::{hide,show,is_visible}`; the workspace tree stays live.
-  Floating events record host window commands. The Iced `application`
-  host does not open extra daemon windows.
+  Floating events record host window commands. The Scene host does not open
+  extra daemon windows.
+- `default_scene_gpu_renderers` installs the `"gpu-view"` painter so Vue
+  hosted GpuView keeps a product Scene GPU renderer.
 - Vue maps Calendar `options` (weekday labels, level strategy, string
   `monthFormat` / `titleFormat` templates). JS `Function` formatters stay
   ignored — tree sync does not invoke the engine. GraphCanvas

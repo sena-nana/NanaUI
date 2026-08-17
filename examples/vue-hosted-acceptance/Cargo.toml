@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 publish = false
-description = "Windowed V8 acceptance app for pure Vue and Vue/Iced composition"
+description = "Windowed V8 acceptance app for pure Vue and Vue/Runtime composition"
 
 [features]
 default = ["engine-v8"]
@@ -12,8 +12,12 @@ engine-v8 = []
 engine-quickjs = []
 
 [dependencies]
-iced.workspace = true
 nana-js-engine.workspace = true
 nana-js-v8 = { workspace = true, features = ["engine"] }
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls"] }
+nana-ui-platform.workspace = true
+nana-ui-runtime.workspace = true
+nana-ui-scene.workspace = true
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false, features = ["iced-view", "hosted"] }
+pollster = "0.4"
+wgpu.workspace = true

@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use iced::wgpu;
 use nana_ui::{
     HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureRegistry, HostedGpuResources,
 };
 use nana_ui_web_api::{CanvasId, SharedCanvasRuntime};
+use wgpu;
 
 const CANVAS_TEXTURE_ID_BIT: u64 = 1 << 63;
 

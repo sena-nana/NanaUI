@@ -1,10 +1,10 @@
 //! Backend-neutral GPU content slots.
 //!
-//! [`GpuTextureView`] projects a [`CustomRenderNode`] that `IcedSceneView` can
-//! bind as `"nana.host-texture"`. [`GpuView`] projects [`GPU_VIEW_RENDERER`];
-//! default `IcedSceneView::new` / `from_shared` install a host painter.
-//! Device, Queue, Surface, and any WGPU objects stay host-owned; Runtime never
-//! constructs a second renderer.
+//! [`GpuTextureView`] projects a [`CustomRenderNode`] that the Scene painter
+//! can bind as `"nana.host-texture"`. [`GpuView`] projects [`GPU_VIEW_RENDERER`];
+//! hosts that leave scene GPU renderers unset receive a default `"gpu-view"`
+//! painter. Device, Queue, Surface, and any WGPU objects stay host-owned;
+//! Runtime never constructs a second renderer.
 
 use std::sync::Arc;
 
@@ -18,14 +18,14 @@ use crate::{
 
 /// Scene renderer key for [`GpuView`].
 ///
-/// [`GpuView::project`] attaches [`GpuView::custom_render`]. Default
-/// `IcedSceneView::new` / `from_shared` install a `"gpu-view"` painter;
+/// [`GpuView::project`] attaches [`GpuView::custom_render`]. Hosts that
+/// return `None` from scene GPU renderers install a `"gpu-view"` painter;
 /// an explicit empty registry still leaves the node unpaintable.
 pub const GPU_VIEW_RENDERER: &str = "gpu-view";
 /// Scene renderer key for [`GpuTextureView`].
 ///
 /// Must stay [`crate::HOST_TEXTURE_RENDERER`] (`"nana.host-texture"`) so
-/// `IcedSceneView` can bind a host-owned texture without a second Device/Queue.
+/// the Scene painter can bind a host-owned texture without a second Device/Queue.
 /// `"gpu-texture-view"` is not a registered Scene painter. The node's
 /// `resource` is the same slot string the host registers.
 pub const GPU_TEXTURE_VIEW_RENDERER: &str = crate::HOST_TEXTURE_RENDERER;
@@ -139,8 +139,7 @@ impl GpuView {
 
     /// Backend-neutral custom node for hosts that register a Scene GPU
     /// renderer for [`GPU_VIEW_RENDERER`]. [`ComponentView::project`] attaches
-    /// this node, so default IcedSceneView construction fails until that
-    /// renderer is registered.
+    /// this node, so the Scene painter fails until that renderer is registered.
     ///
     /// `resource` is the decimal [`Self::slot_id`].
     pub fn custom_render(&self) -> CustomRenderNode {

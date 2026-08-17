@@ -4,10 +4,6 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iced::Size;
-use iced_wgpu::wgpu;
-use iced_winit::winit;
-
 /// Cloneable access to the host's only device and queue pair.
 #[derive(Clone)]
 pub struct HostedGpuResources {
@@ -73,9 +69,9 @@ impl HostedGpuSurface {
         self.configuration.alpha_mode
     }
 
-    pub fn physical_size(&self) -> Size<u32> {
+    pub fn physical_size(&self) -> (u32, u32) {
         let size = self.window.inner_size();
-        Size::new(size.width, size.height)
+        (size.width, size.height)
     }
 
     pub fn is_drawable(&self) -> bool {
@@ -250,7 +246,7 @@ impl HostedGpuContext {
         self.primary.alpha_mode()
     }
 
-    pub fn physical_size(&self) -> Size<u32> {
+    pub fn physical_size(&self) -> (u32, u32) {
         self.primary.physical_size()
     }
 
@@ -385,6 +381,24 @@ impl fmt::Display for HostedGpuError {
 
 impl std::error::Error for HostedGpuError {}
 
+/// Failure starting or running the Nana Scene host event loop.
+#[derive(Debug)]
+pub enum HostedRunError {
+    EventLoop(winit::error::EventLoopError),
+    Startup(String),
+}
+
+impl fmt::Display for HostedRunError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EventLoop(error) => write!(formatter, "hosted event loop failed: {error}"),
+            Self::Startup(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for HostedRunError {}
+
 fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
     formats
         .iter()
@@ -408,7 +422,6 @@ fn preferred_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAl
 #[cfg(test)]
 mod tests {
     use super::{preferred_alpha_mode, preferred_surface_format};
-    use iced_wgpu::wgpu;
 
     #[test]
     fn surface_preferences_preserve_transparency_and_srgb() {

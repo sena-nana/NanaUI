@@ -1,5 +1,6 @@
-use super::view::{RegionEdges, primary_edges, resize_handle_translation};
-use super::{WorkspaceAction, WorkspaceController};
+use super::{
+    RegionEdges, WorkspaceAction, WorkspaceController, primary_edges, resize_handle_translation,
+};
 use crate::geometry::RESIZE_HANDLE_SIZE;
 use crate::layout::{RegionId, RegionPlacement, RegionRole, RegionState, WorkspaceLayout};
 

@@ -1,26 +1,23 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use iced::widget::space;
-use iced::{Element, Event, Length, Point, Size};
 use nana_ui::runtime::{
     AboutSection, Activate, AppearanceSection, Button, DesktopShell, DocumentId, Entity,
-    FrameworkError, IconButton, LayoutViewport, LengthSpec, RuntimeDocument, SemanticColorRole,
-    SettingsBack, SettingsCollapsibleCard, SettingsPage, SettingsSidebar, SettingsTabSelected,
-    StableNodeId, ToggleChanged,
+    FrameworkError, IconButton, LayoutViewport, LengthSpec, OverlayHost, RuntimeDocument,
+    SemanticColorRole, SettingsBack, SettingsCollapsibleCard, SettingsPage, SettingsSidebar,
+    SettingsTabSelected, StableNodeId, ToggleChanged,
 };
 use nana_ui::window_chrome::WindowChromeAction;
 use nana_ui::{
-    AppearanceEvent, ButtonKind, ControlSize, IcedSceneView, IcedTextShaper, Icon, RegionId,
+    AppearanceEvent, ButtonKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
     RuntimeInputAdapter, WindowChromeEvent, WorkspaceAction,
 };
 use nana_ui_platform::InputEvent;
 
 use super::runtime_host::{
     DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_insets,
-    apply_workspace_corners, bind_event, hugging_text, iced_key_name, iced_modifiers,
-    runtime_input_event, scene_pointer, search_command_button, sidebar_toggle_button, styled_text,
-    take_pending, theme_toggle_button, window_control_button,
+    apply_workspace_corners, bind_event, hugging_text, runtime_input_event, search_command_button,
+    sidebar_toggle_button, styled_text, take_pending, theme_toggle_button, window_control_button,
 };
 use super::{GalleryMessage, GalleryState, appearance_message, settings_view};
 
@@ -47,6 +44,7 @@ pub(super) struct GallerySettingsRuntime {
     last_viewport: LayoutViewport,
     chrome: RuntimeChrome,
     pending: Arc<Mutex<Vec<GalleryMessage>>>,
+    text: NanaTextShaper,
     #[cfg(test)]
     last_window_chrome_events: Vec<WindowChromeEvent>,
 }
@@ -322,7 +320,8 @@ impl GallerySettingsRuntime {
         )?;
         let (width, height) = state.settings_viewport_size();
         let last_viewport = LayoutViewport::new(width, height);
-        let _ = document.flush(last_viewport, &mut IcedTextShaper);
+        let mut text = NanaTextShaper::default();
+        let _ = document.flush(last_viewport, &mut text);
 
         Ok(Self {
             document,
@@ -343,6 +342,7 @@ impl GallerySettingsRuntime {
             last_viewport,
             chrome: RuntimeChrome::default(),
             pending,
+            text,
             #[cfg(test)]
             last_window_chrome_events: Vec::new(),
         })
@@ -440,12 +440,71 @@ impl GallerySettingsRuntime {
 
     fn flush(&mut self, (width, height): (f32, f32)) {
         self.last_viewport = LayoutViewport::new(width, height);
-        let _ = self.document.flush(self.last_viewport, &mut IcedTextShaper);
+        let _ = self.document.flush(self.last_viewport, &mut self.text);
+    }
+
+    pub(super) fn runtime_document(&self) -> &RuntimeDocument {
+        self.document()
+    }
+
+    pub(super) fn runtime_document_mut(&mut self) -> &mut RuntimeDocument {
+        self.document_mut()
+    }
+
+    pub(super) fn shell(&self) -> Entity<DesktopShell> {
+        self.shell
+    }
+
+    pub(super) fn overlay_host(&self) -> Option<Entity<OverlayHost>> {
+        self.document
+            .context()
+            .read(self.shell, |shell| {
+                shell.overlay.map(Entity::<OverlayHost>::from_stable_id)
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn pending_sink(&self) -> Arc<Mutex<Vec<GalleryMessage>>> {
+        Arc::clone(&self.pending)
+    }
+
+    pub(super) fn flush_viewport(&mut self, size: (f32, f32)) {
+        self.flush(size);
+    }
+
+    pub(super) fn note_pointer(&mut self, event: &InputEvent) {
+        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = *event {
+            self.chrome.last_pointer = LogicalPoint::new(x, y);
+        }
+    }
+
+    pub(super) fn take_host_messages(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+        self.note_pointer(event);
+        let mut messages = take_pending(&self.pending);
+        messages.extend(self.chrome.workspace_resize_messages(&self.document, event));
+        messages.extend(self.chrome.title_bar_chrome_messages(
+            &self.document,
+            self.shell,
+            self.title_center.stable_id(),
+            event,
+        ));
+        #[cfg(test)]
+        {
+            self.last_window_chrome_events = messages
+                .iter()
+                .filter_map(|message| match message {
+                    GalleryMessage::WindowChrome(event) => Some(*event),
+                    _ => None,
+                })
+                .collect();
+        }
+        messages
     }
 
     fn dispatch(&mut self, event: InputEvent) -> Vec<GalleryMessage> {
         if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = event {
-            self.chrome.last_pointer = Point::new(x, y);
+            self.chrome.last_pointer = LogicalPoint::new(x, y);
         }
         let document = self.document.document();
         let _ =
@@ -474,12 +533,12 @@ impl GallerySettingsRuntime {
         messages
     }
 
-    fn cursor(&self) -> iced::mouse::Interaction {
-        self.chrome.cursor(&self.document, self.shell)
+    pub(super) fn document(&self) -> &RuntimeDocument {
+        &self.document
     }
 
-    fn viewport_size(&self) -> Size {
-        Size::new(self.last_viewport.width, self.last_viewport.height)
+    pub(super) fn document_mut(&mut self) -> &mut RuntimeDocument {
+        &mut self.document
     }
 
     #[cfg(test)]
@@ -536,23 +595,13 @@ impl GalleryState {
         for message in messages {
             self.update(message);
         }
-        if empty && self.settings_open {
-            if let Some(mut runtime) = self.settings_runtime.take() {
-                runtime.flush(self.settings_viewport_size());
-                self.settings_runtime = Some(runtime);
-            }
+        if empty
+            && self.settings_open
+            && let Some(mut runtime) = self.settings_runtime.take()
+        {
+            runtime.flush(self.settings_viewport_size());
+            self.settings_runtime = Some(runtime);
         }
-    }
-
-    pub(super) fn settings_runtime_view(&self) -> Element<'_, GalleryMessage> {
-        let Some(runtime) = self.settings_runtime.as_ref() else {
-            return space().width(Length::Fill).height(Length::Fill).into();
-        };
-        let view = match IcedSceneView::new(runtime.document.scene(), runtime.viewport_size()) {
-            Ok(view) => Element::from(view),
-            Err(_) => space().width(Length::Fill).height(Length::Fill).into(),
-        };
-        scene_pointer(view, runtime.cursor(), GalleryMessage::SettingsRuntime)
     }
 
     #[cfg(test)]
@@ -590,33 +639,4 @@ fn workspace_reset_button() -> Button {
         .size(ControlSize::Small);
     std::sync::Arc::make_mut(&mut button.style.layout).width = Some(LengthSpec::Shrink);
     button
-}
-
-pub(super) fn settings_runtime_key_event(
-    event: Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<GalleryMessage> {
-    match event {
-        Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key,
-            modifiers,
-            repeat,
-            ..
-        }) => Some(GalleryMessage::SettingsRuntime(SettingsRuntimeInput::Key {
-            pressed: true,
-            key: iced_key_name(&key)?,
-            repeat,
-            modifiers: iced_modifiers(modifiers),
-        })),
-        Event::Keyboard(iced::keyboard::Event::KeyReleased { key, modifiers, .. }) => {
-            Some(GalleryMessage::SettingsRuntime(SettingsRuntimeInput::Key {
-                pressed: false,
-                key: iced_key_name(&key)?,
-                repeat: false,
-                modifiers: iced_modifiers(modifiers),
-            }))
-        }
-        _ => None,
-    }
 }

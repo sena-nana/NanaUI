@@ -160,18 +160,29 @@ readback、Base64/图片编码或额外子窗口后伪装成共享合成。
 
 `RuntimeProgram` / `run_runtime` 是 Rust 应用的 canonical host contract：应用只提供
 `RuntimeDocument`、UiScene、平台事件处理与可选 HostTexture / SceneGpu renderer registry，不返回
-`iced::Element`。内部 hosted adapter 统一执行 systems、Scene 增量、输入、Accessibility、
-任务完成消息与 redraw；原 `HostedProgram` 仅保留给迁移中的 compatibility consumer。
+`iced::Element`。`run_runtime` 直接进入 `run_runtime_scene`（Nana-owned winit + `SceneWgpuPainter`）。
+该路径按 `winit::window::WindowId` 映射 `nana_ui_platform::WindowId`，主窗口留在同一个
+`HostedGpuContext`，辅助窗口用 `create_surface` 共享 Device/Queue。`WindowCommand::Open` /
+`Close` / `Focus` / `SetTitle` / `Move` / `SetBounds` / `SetFullscreen` / `SetMinimized` /
+`SetMaximized` / `SetAlwaysOnTop` 作用在目标窗口；关闭主窗口退出，关闭辅助窗口拆除
+surface/AccessKit 并发送 `WindowEvent::Closed`。Runtime 先消费 IME，再把同一
+`WindowEvent::Ime` 交给 `RuntimeProgram::window_event`（程序不得再写入 Runtime）。
+每窗独立 IME request 与 AccessKit adapter，adapter 在首次 show 前创建。
 
-当前 `nana-ui` 与 `nana-ui-vue` 是显式 Iced compatibility adapters。Android 不属于
-NanaUI 当前产品范围；未来移动端必须由 Android 原生组件拥有平台生命周期、IME、
-accessibility 与原生控件，NanaUI 仅作为嵌入渲染内容参与混合合成，不直接调用 Android API。
-`nana-ui::IcedSceneView` 消费编译后的 RenderGraph operation，标准 Quad/Text/HostTexture 与
-注册的 direct custom pass 按顺序在同一 WGPU context 合成；Vue compatibility 复用相同
-`HostTextureSceneResolver`，不维护第二套 custom-node 编译路径。无法忠实表达的
-affine/text/custom primitive 显式失败。保留成熟 text/layout/IME/accessibility
-实现优先于为了“零 Iced”重写。
+2026-08-17 本机 macOS 证据（`runtime-host-fixture` 经 `run_runtime`）：
 
-只有 Runtime、components、IME、accessibility、Vue fixtures、desktop 与性能
-全部达到 parity 时，才能退出 Iced runtime/renderer 核心路径。未达到门禁时保留兼容
-路径是合同要求，不是临时例外。
+- `cargo build -p runtime-host-fixture --locked` 通过；进程 `./target/debug/runtime-host-fixture` pid 14136 保持运行。
+- `CGWindowListCopyWindowInfo` 同时看到 titled 窗口 `NanaUI fixture`（480×252）与
+  `NanaUI fixture tool`（360×212）。fixture 在 primary `Ready` 时发出
+  `WindowCommand::Open`，按钮 Activate 也会再发同一命令。
+- 本 agent 的 `osascript` / `AXIsProcessTrusted()` 为 false，`AXUIElement` 返回 -25211
+  （TCC 未授权辅助访问），因此本轮未从 System Events 或 Accessibility Inspector 读到
+  `AXTextField`/`AXButton`。fixture 主文档含 `TextInput` + `Button`，辅助文档含
+  `Button`，角色投影仍是 AccessKit `TextInput`/`Button`。
+- Windows/Linux 实机未跑，不记为通过。
+
+当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime/UiScene；`nana-ui-vue` 的
+`iced-view` / `hosted` feature 接入同一 Scene host，而不是 `iced::Element` 树。
+Android 不属于 NanaUI 当前产品范围；未来移动端必须由 Android 原生组件拥有平台
+生命周期、IME、accessibility 与原生控件，NanaUI 仅作为嵌入渲染内容参与混合合成，
+不直接调用 Android API。无法忠实表达的 affine/text/custom primitive 显式失败。

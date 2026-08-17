@@ -37,7 +37,7 @@ pub struct IcedSlotPainter {
     pub press_count: u32,
     /// Switch toggled state (shell strip).
     pub switch_on: bool,
-    /// Editable field value for the slot [`nana_ui::compatibility::Input`].
+    /// Editable field value for the slot input.
     pub input_value: String,
     /// Last touch was inside the control-slot geometry (diagnostics).
     last_touch_in_slot: bool,

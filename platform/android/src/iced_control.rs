@@ -1,34 +1,22 @@
-//! Primary control-slot **Iced widget strip** — Icon + Text + Input + Switch + Button.
+//! Experimental Iced control-slot widgets (not the product Runtime path).
 //!
-//! Not DesktopShell. Host tests prove `nana-ui` control types link. On Android, see
-//! [`crate::iced_slot_paint`] for wgpu present + pointer/key into the Primary slot.
+//! Android is not a NanaUI product target. This strip uses raw Iced widgets
+//! plus Nana `Icon` identity; it does not depend on removed compatibility
+//! adapters.
 
 use std::borrow::Cow;
 
-use iced::widget::{row, text};
-use iced::{Alignment, Element, Length};
-use nana_ui::compatibility::{Button, Input, Switch};
-use nana_ui::{Icon, ThemeTokens, icon};
+use iced::widget::{button, row, text, toggler};
+use iced::{Alignment, Color, Element, Length};
+use nana_ui::{Icon, ThemeTokens};
 
-/// Label on the Primary slot Button.
 pub const SLOT_BUTTON_LABEL: &str = "Nana";
-
-/// Caption shown beside the slot controls.
 pub const SLOT_TEXT_LABEL: &str = "Shell";
-
-/// Leading shell glyph in the control strip (Nana line icon, not Lucide SVG).
 pub const SLOT_ICON: Icon = Icon::Settings;
-
-/// Logical size for [`SLOT_ICON`].
 pub const SLOT_ICON_SIZE: f32 = 18.0;
-
-/// Switch field label (Nana `Switch` caption).
 pub const SLOT_SWITCH_LABEL: &str = "On";
-
-/// Placeholder for the slot [`Input`].
 pub const SLOT_INPUT_PLACEHOLDER: &str = "Type…";
 
-/// Messages produced by the Primary slot control strip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotStripMessage {
     Pressed,
@@ -36,40 +24,42 @@ pub enum SlotStripMessage {
     Input(String),
 }
 
-/// Build the slot strip: Icon + Text + Input + Switch + Button in one row.
 pub fn slot_strip_element<'a>(
     switch_on: bool,
     input_value: impl Into<Cow<'a, str>>,
     button_label: impl Into<Cow<'a, str>>,
     tokens: ThemeTokens,
 ) -> Element<'a, SlotStripMessage> {
-    let leading = icon(SLOT_ICON, SLOT_ICON_SIZE, tokens.colors.muted);
-    let caption = text(SLOT_TEXT_LABEL).size(14).color(tokens.colors.text);
-    let field = Input::new(SLOT_INPUT_PLACEHOLDER, input_value)
-        .on_input(SlotStripMessage::Input)
-        .view(tokens);
-    let switch = Switch::new(switch_on, SLOT_SWITCH_LABEL)
-        .on_toggle(SlotStripMessage::Toggle)
-        .view(tokens);
-    let button = Button::label(button_label)
-        .on_press(SlotStripMessage::Pressed)
-        .view(tokens);
-    row![leading, caption, field, switch, button]
+    let leading = text("⚙")
+        .size(SLOT_ICON_SIZE)
+        .color(iced_color(tokens.colors.muted));
+    let caption = text(SLOT_TEXT_LABEL)
+        .size(14)
+        .color(iced_color(tokens.colors.text));
+    let input_value = input_value.into().into_owned();
+    let field = text(input_value).size(13);
+    let switch = toggler(switch_on).on_toggle(SlotStripMessage::Toggle);
+    let action = button(text(button_label.into()).size(13)).on_press(SlotStripMessage::Pressed);
+    row![leading, caption, field, switch, action]
         .spacing(10)
         .align_y(Alignment::Center)
         .width(Length::Fill)
         .into()
 }
 
-/// Legacy single-button helper (tests / callers that only need a press target).
+fn iced_color(color: nana_ui::Color) -> Color {
+    Color::from_rgba(color.r, color.g, color.b, color.a)
+}
+
 #[allow(dead_code)]
 pub fn slot_button_element<'a, Message: Clone + 'a>(
     on_press: Message,
     tokens: ThemeTokens,
 ) -> Element<'a, Message> {
-    Button::label(SLOT_BUTTON_LABEL)
+    let _ = tokens;
+    button(text(SLOT_BUTTON_LABEL).size(13))
         .on_press(on_press)
-        .view(tokens)
+        .into()
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
-use iced::{Point, Subscription, Task, window};
+use nana_ui_core::LogicalPoint;
+use nana_ui_platform::WindowId;
 
 pub use nana_ui_core::{WindowChrome, WindowChromeAction, WindowControlMode};
 
@@ -7,40 +8,30 @@ const DRAG_THRESHOLD: f32 = 4.0;
 /// Input handled by [`WindowChromeState`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowChromeEvent {
-    PointerMoved(Point),
+    PointerMoved(LogicalPoint),
     PointerPressed,
     PointerReleased,
     PointerCancelled,
     Action(WindowChromeAction),
-    PrepareWindow(window::Id),
-    SyncMaximized(window::Id),
-    WindowClosed(window::Id),
-    MaximizedChanged { window: window::Id, maximized: bool },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IcedWindowCommand {
-    Prepare(window::Id),
-    SyncMaximized(window::Id),
-    Action {
-        window: window::Id,
-        action: WindowChromeAction,
-    },
+    PrepareWindow(WindowId),
+    SyncMaximized(WindowId),
+    WindowClosed(WindowId),
+    MaximizedChanged { window: WindowId, maximized: bool },
 }
 
 /// Interaction state shared by title bar views and their window runtime.
 #[derive(Debug, Clone)]
 pub struct WindowChromeState {
     chrome: WindowChrome,
-    window: Option<window::Id>,
+    window: Option<WindowId>,
     auto_bind: bool,
-    cursor_position: Option<Point>,
-    drag_origin: Option<Point>,
+    cursor_position: Option<LogicalPoint>,
+    drag_origin: Option<LogicalPoint>,
     maximized: bool,
 }
 
 impl WindowChromeState {
-    /// Creates a state that binds to the first window opened by the Iced runtime.
+    /// Creates a state that binds to the first window opened by the host.
     pub fn new(chrome: WindowChrome) -> Self {
         Self {
             chrome,
@@ -52,22 +43,22 @@ impl WindowChromeState {
         }
     }
 
-    /// Creates a state bound to a specific Iced window.
-    pub fn for_window(window: window::Id, chrome: WindowChrome) -> Self {
+    /// Creates a state bound to a specific host window.
+    pub fn for_window(window: WindowId, chrome: WindowChrome) -> Self {
         let mut state = Self::new(chrome);
         state.bind(window);
         state
     }
 
-    /// Binds this state to a specific Iced window.
+    /// Binds this state to a specific host window.
     ///
     /// Binding explicitly disables automatic rebinding after the window closes.
-    pub fn bind(&mut self, window: window::Id) {
+    pub fn bind(&mut self, window: WindowId) {
         self.auto_bind = false;
         self.set_window(Some(window));
     }
 
-    pub const fn window_id(&self) -> Option<window::Id> {
+    pub const fn window_id(&self) -> Option<WindowId> {
         self.window
     }
 
@@ -129,57 +120,17 @@ impl WindowChromeState {
                 }
                 None
             }
-            WindowChromeEvent::PrepareWindow(_) | WindowChromeEvent::SyncMaximized(_) => None,
-        }
-    }
-
-    /// Handles an event using the standard Iced window runtime.
-    pub fn update_iced(&mut self, event: WindowChromeEvent) -> Task<WindowChromeEvent> {
-        match self.iced_command(event) {
-            Some(IcedWindowCommand::Prepare(window)) => prepare_window(window),
-            Some(IcedWindowCommand::SyncMaximized(window)) => sync_maximized(window),
-            Some(IcedWindowCommand::Action { window, action }) => {
-                perform_window_action(window, action)
-            }
-            None => Task::none(),
-        }
-    }
-
-    /// Tracks window creation, resize, and close events for all application windows.
-    ///
-    /// Each [`WindowChromeState`] filters this stream against its own binding.
-    pub fn subscription() -> Subscription<WindowChromeEvent> {
-        iced::event::listen_with(window_event)
-    }
-
-    fn iced_command(&mut self, event: WindowChromeEvent) -> Option<IcedWindowCommand> {
-        match event {
             WindowChromeEvent::PrepareWindow(window) => {
                 if self.window.is_none() && self.auto_bind {
                     self.set_window(Some(window));
                 }
-                (self.window == Some(window)).then_some(IcedWindowCommand::Prepare(window))
-            }
-            WindowChromeEvent::SyncMaximized(window) => {
-                (self.window == Some(window)).then_some(IcedWindowCommand::SyncMaximized(window))
-            }
-            WindowChromeEvent::WindowClosed(window) => {
-                self.update(WindowChromeEvent::WindowClosed(window));
                 None
             }
-            WindowChromeEvent::MaximizedChanged { window, maximized } => {
-                self.update(WindowChromeEvent::MaximizedChanged { window, maximized });
-                None
-            }
-            event => {
-                let window = self.window?;
-                self.update(event)
-                    .map(|action| IcedWindowCommand::Action { window, action })
-            }
+            WindowChromeEvent::SyncMaximized(_) => None,
         }
     }
 
-    fn set_window(&mut self, window: Option<window::Id>) {
+    fn set_window(&mut self, window: Option<WindowId>) {
         self.window = window;
         self.cursor_position = None;
         self.drag_origin = None;
@@ -193,95 +144,17 @@ impl Default for WindowChromeState {
     }
 }
 
-/// Applies NanaUI's custom-title-bar attributes to a standard Iced window.
-pub fn custom_title_bar_window(mut settings: window::Settings) -> window::Settings {
-    #[cfg(target_os = "macos")]
-    {
-        settings.decorations = true;
-        settings.platform_specific.title_hidden = true;
-        settings.platform_specific.titlebar_transparent = true;
-        settings.platform_specific.fullsize_content_view = true;
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        settings.decorations = false;
-    }
-
-    settings
-}
-
-fn perform_window_action(
-    window: window::Id,
-    action: WindowChromeAction,
-) -> Task<WindowChromeEvent> {
-    match action {
-        WindowChromeAction::Drag => perform_drag(window),
-        WindowChromeAction::Minimize => window::minimize::<WindowChromeEvent>(window, true),
-        WindowChromeAction::ToggleMaximize => window::toggle_maximize::<WindowChromeEvent>(window)
-            .chain(
-                window::is_maximized(window).map(move |maximized| {
-                    WindowChromeEvent::MaximizedChanged { window, maximized }
-                }),
-            ),
-        WindowChromeAction::Close => window::close::<WindowChromeEvent>(window),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn perform_drag(id: window::Id) -> Task<WindowChromeEvent> {
-    window::run(id, |window| {
-        let _ = nana_window::drag_custom_title_bar(window);
-    })
-    .discard()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn perform_drag(id: window::Id) -> Task<WindowChromeEvent> {
-    window::drag(id)
-}
-
-fn sync_maximized(window: window::Id) -> Task<WindowChromeEvent> {
-    window::is_maximized(window)
-        .map(move |maximized| WindowChromeEvent::MaximizedChanged { window, maximized })
-}
-
-fn prepare_window(window: window::Id) -> Task<WindowChromeEvent> {
-    window::run(window, move |handle| {
-        let _ = nana_window::prepare_custom_title_bar(handle);
-        WindowChromeEvent::SyncMaximized(window)
-    })
-}
-
-fn window_event(
-    event: iced::Event,
-    _status: iced::event::Status,
-    window: window::Id,
-) -> Option<WindowChromeEvent> {
-    match event {
-        iced::Event::Window(window::Event::Opened { .. }) => {
-            Some(WindowChromeEvent::PrepareWindow(window))
-        }
-        iced::Event::Window(window::Event::Resized(_)) => {
-            Some(WindowChromeEvent::SyncMaximized(window))
-        }
-        iced::Event::Window(window::Event::Closed) => Some(WindowChromeEvent::WindowClosed(window)),
-        _ => None,
-    }
-}
-
-fn distance(from: Point, to: Point) -> f32 {
+fn distance(from: LogicalPoint, to: LogicalPoint) -> f32 {
     (to.x - from.x).hypot(to.y - from.y)
 }
 
 #[cfg(test)]
 mod tests {
-    use iced::{Point, Size, event, window};
-
     use super::{
-        IcedWindowCommand, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
-        WindowControlMode, window_event,
+        WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,
     };
+    use nana_ui_core::LogicalPoint;
+    use nana_ui_platform::WindowId;
 
     #[cfg(not(target_os = "macos"))]
     #[test]
@@ -289,20 +162,28 @@ mod tests {
         let mut state = WindowChromeState::default();
 
         assert_eq!(
-            state.update(WindowChromeEvent::PointerMoved(Point::new(10.0, 10.0))),
+            state.update(WindowChromeEvent::PointerMoved(LogicalPoint::new(
+                10.0, 10.0
+            ))),
             None
         );
         assert_eq!(state.update(WindowChromeEvent::PointerPressed), None);
         assert_eq!(
-            state.update(WindowChromeEvent::PointerMoved(Point::new(12.0, 11.0))),
+            state.update(WindowChromeEvent::PointerMoved(LogicalPoint::new(
+                12.0, 11.0
+            ))),
             None
         );
         assert_eq!(
-            state.update(WindowChromeEvent::PointerMoved(Point::new(15.0, 10.0))),
+            state.update(WindowChromeEvent::PointerMoved(LogicalPoint::new(
+                15.0, 10.0
+            ))),
             Some(WindowChromeAction::Drag)
         );
         assert_eq!(
-            state.update(WindowChromeEvent::PointerMoved(Point::new(20.0, 10.0))),
+            state.update(WindowChromeEvent::PointerMoved(LogicalPoint::new(
+                20.0, 10.0
+            ))),
             None
         );
     }
@@ -325,12 +206,14 @@ mod tests {
             WindowChromeEvent::PointerCancelled,
         ] {
             let mut state = WindowChromeState::default();
-            state.update(WindowChromeEvent::PointerMoved(Point::new(4.0, 4.0)));
+            state.update(WindowChromeEvent::PointerMoved(LogicalPoint::new(4.0, 4.0)));
             state.update(WindowChromeEvent::PointerPressed);
             state.update(end);
 
             assert_eq!(
-                state.update(WindowChromeEvent::PointerMoved(Point::new(20.0, 20.0))),
+                state.update(WindowChromeEvent::PointerMoved(LogicalPoint::new(
+                    20.0, 20.0
+                ))),
                 None
             );
         }
@@ -353,111 +236,56 @@ mod tests {
     }
 
     #[test]
-    fn window_events_preserve_their_source_window() {
-        let window = window::Id::unique();
-        let opened = iced::Event::Window(window::Event::Opened {
-            position: None,
-            size: Size::new(800.0, 600.0),
-            scale_factor: 1.0,
-        });
-        let resized = iced::Event::Window(window::Event::Resized(Size::new(900.0, 700.0)));
-        let closed = iced::Event::Window(window::Event::Closed);
-
-        assert_eq!(
-            window_event(opened, event::Status::Ignored, window),
-            Some(WindowChromeEvent::PrepareWindow(window))
-        );
-        assert_eq!(
-            window_event(resized, event::Status::Ignored, window),
-            Some(WindowChromeEvent::SyncMaximized(window))
-        );
-        assert_eq!(
-            window_event(closed, event::Status::Ignored, window),
-            Some(WindowChromeEvent::WindowClosed(window))
-        );
-    }
-
-    #[test]
-    fn explicit_states_route_rebind_and_ignore_stale_results() {
-        let window_a = window::Id::unique();
-        let window_b = window::Id::unique();
+    fn explicit_states_bind_and_ignore_stale_windows() {
+        let window_a = WindowId(1);
+        let window_b = WindowId(2);
         let mut state_a = WindowChromeState::for_window(window_a, WindowChrome::platform_default());
         let mut state_b = WindowChromeState::for_window(window_b, WindowChrome::platform_default());
 
         assert_eq!(
-            state_a.iced_command(WindowChromeEvent::SyncMaximized(window_b)),
-            None
+            state_a.update(WindowChromeEvent::Action(WindowChromeAction::Minimize)),
+            Some(WindowChromeAction::Minimize)
         );
         assert_eq!(
-            state_a.iced_command(WindowChromeEvent::SyncMaximized(window_a)),
-            Some(IcedWindowCommand::SyncMaximized(window_a))
-        );
-        assert_eq!(
-            state_a.iced_command(WindowChromeEvent::Action(WindowChromeAction::Minimize)),
-            Some(IcedWindowCommand::Action {
-                window: window_a,
-                action: WindowChromeAction::Minimize,
-            })
-        );
-        assert_eq!(
-            state_b.iced_command(WindowChromeEvent::Action(WindowChromeAction::Close)),
-            Some(IcedWindowCommand::Action {
-                window: window_b,
-                action: WindowChromeAction::Close,
-            })
+            state_b.update(WindowChromeEvent::Action(WindowChromeAction::Close)),
+            Some(WindowChromeAction::Close)
         );
 
-        state_a.iced_command(WindowChromeEvent::WindowClosed(window_a));
+        state_a.update(WindowChromeEvent::WindowClosed(window_a));
         assert_eq!(state_a.window_id(), None);
-        assert_eq!(
-            state_a.iced_command(WindowChromeEvent::PrepareWindow(window_b)),
-            None
-        );
+        state_a.update(WindowChromeEvent::PrepareWindow(window_b));
+        assert_eq!(state_a.window_id(), None);
 
         state_a.bind(window_b);
-        state_a.iced_command(WindowChromeEvent::MaximizedChanged {
+        state_a.update(WindowChromeEvent::MaximizedChanged {
             window: window_a,
             maximized: true,
         });
         assert!(!state_a.is_maximized());
         assert_eq!(
-            state_a.iced_command(WindowChromeEvent::Action(
+            state_a.update(WindowChromeEvent::Action(
                 WindowChromeAction::ToggleMaximize
             )),
-            Some(IcedWindowCommand::Action {
-                window: window_b,
-                action: WindowChromeAction::ToggleMaximize,
-            })
+            Some(WindowChromeAction::ToggleMaximize)
         );
         assert!(state_a.is_maximized());
     }
 
     #[test]
     fn automatic_state_binds_first_window_and_rebinds_after_it_closes() {
-        let window_a = window::Id::unique();
-        let window_b = window::Id::unique();
+        let window_a = WindowId(1);
+        let window_b = WindowId(2);
         let mut state = WindowChromeState::default();
 
         assert_eq!(state.window_id(), None);
-        assert_eq!(
-            state.iced_command(WindowChromeEvent::PrepareWindow(window_a)),
-            Some(IcedWindowCommand::Prepare(window_a))
-        );
+        state.update(WindowChromeEvent::PrepareWindow(window_a));
         assert_eq!(state.window_id(), Some(window_a));
-        assert_eq!(
-            state.iced_command(WindowChromeEvent::PrepareWindow(window_b)),
-            None
-        );
+        state.update(WindowChromeEvent::PrepareWindow(window_b));
+        assert_eq!(state.window_id(), Some(window_a));
 
-        assert_eq!(
-            state.iced_command(WindowChromeEvent::WindowClosed(window_a)),
-            None
-        );
+        state.update(WindowChromeEvent::WindowClosed(window_a));
         assert_eq!(state.window_id(), None);
-        assert_eq!(
-            state.iced_command(WindowChromeEvent::PrepareWindow(window_b)),
-            Some(IcedWindowCommand::Prepare(window_b))
-        );
+        state.update(WindowChromeEvent::PrepareWindow(window_b));
         assert_eq!(state.window_id(), Some(window_b));
     }
 
@@ -484,31 +312,5 @@ mod tests {
         assert_eq!(chrome.trailing_inset, 0.0);
         assert!(!chrome.uses_custom_controls());
         assert!(WindowChrome::custom().uses_custom_controls());
-    }
-
-    #[test]
-    fn iced_window_settings_use_the_platform_titlebar_contract() {
-        let settings = super::custom_title_bar_window(iced::window::Settings::default());
-
-        #[cfg(target_os = "macos")]
-        {
-            assert!(settings.decorations);
-            assert!(settings.platform_specific.title_hidden);
-            assert!(settings.platform_specific.titlebar_transparent);
-            assert!(settings.platform_specific.fullsize_content_view);
-            assert_eq!(
-                WindowChrome::platform_default().controls,
-                WindowControlMode::NativeLeading
-            );
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            assert!(!settings.decorations);
-            assert_eq!(
-                WindowChrome::platform_default().controls,
-                WindowControlMode::Custom
-            );
-        }
     }
 }
