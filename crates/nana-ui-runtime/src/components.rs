@@ -256,6 +256,7 @@ pub enum StandardVisual {
         cell_radius: f32,
         max_level: u8,
         active: Option<usize>,
+        active_title: Option<Arc<str>>,
     },
     TimeSeriesChart {
         values: Arc<[f64]>,
@@ -303,6 +304,7 @@ pub struct SelectOptionData {
     pub hint: Option<Arc<str>>,
     pub disabled: bool,
     pub checked: bool,
+    pub icon: Option<Icon>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +328,16 @@ pub struct ComponentElevation {
     pub color: [f32; 4],
     pub offset_y: f32,
     pub blur_radius: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalendarHoverGeometry {
+    pub ring: LayoutBox,
+    pub tooltip: LayoutBox,
+    pub title: ComponentTextRegion,
+    pub ring_color: [f32; 4],
+    pub tooltip_fill: [f32; 4],
+    pub tooltip_border: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -495,6 +507,7 @@ pub enum ComponentGeometry {
     CalendarHeatmap {
         cells: Vec<(LayoutBox, [f32; 4])>,
         labels: Vec<ComponentTextRegion>,
+        hover: Option<CalendarHoverGeometry>,
     },
     TimeSeriesChart {
         grid: Vec<LayoutBox>,
@@ -568,6 +581,7 @@ pub struct SelectOptionGeometry {
     pub checked: bool,
     pub disabled: bool,
     pub background: Option<[f32; 4]>,
+    pub icon: Option<(Icon, LayoutBox, [f32; 4])>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

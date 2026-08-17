@@ -2,6 +2,7 @@ use super::*;
 use iced::widget::column;
 
 impl GalleryState {
+    #[allow(dead_code)]
     pub(super) fn controls(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         let input_invalid = self.input.trim().is_empty();

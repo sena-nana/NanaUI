@@ -2,6 +2,7 @@ use super::*;
 use iced::widget::column;
 
 impl GalleryState {
+    #[allow(dead_code)]
     pub(super) fn workspace_gallery(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         let popup_title_bar = PopupTitleBarFrame::new(
@@ -24,45 +25,9 @@ impl GalleryState {
         )
         .title_bar(popup_title_bar)
         .view(tokens);
-        let dock_panel = |label: &'static str, hint: &'static str| {
-            container(
-                column![
-                    text(label).size(12).color(colors.text),
-                    text(hint).size(10).color(colors.muted),
-                ]
-                .spacing(5),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(10)
-        };
-        let dock = dock_workspace(
-            &self.dock,
-            DockSurfaceId(0),
-            DockContents::new()
-                .insert(
-                    "gallery.primary",
-                    dock_panel("Primary Content", "不可移动的主内容节点"),
-                )
-                .insert("gallery.navigation", dock_panel("Section A", "工作区导航"))
-                .insert("gallery.assets", dock_panel("Asset", "应用提供的资源内容"))
-                .insert(
-                    "gallery.inspector",
-                    dock_panel("Selection", "应用提供的检查器内容"),
-                )
-                .insert(
-                    "gallery.outline",
-                    dock_panel("Outline", "当前内容的结构投影"),
-                )
-                .insert("gallery.console", dock_panel("Console", "应用运行输出"))
-                .insert("gallery.problems", dock_panel("Problems", "应用诊断列表"))
-                .insert("gallery.output", dock_panel("Output", "应用提供的输出内容")),
-            GalleryMessage::Dock,
-            tokens,
-        );
-        let locked = self.dock.layout().locked;
-        let hidden_assets = !self.dock.is_visible(&DockId::from("gallery.assets"));
-        let floating_count = self.dock.layout().floating.len();
+        let locked = self.dock_locked;
+        let hidden_assets = !self.dock_is_visible("gallery.assets");
+        let floating_count = self.dock.floating.len();
         container(
             column![
                 text("工作区").size(16).color(colors.text),
@@ -108,9 +73,6 @@ impl GalleryState {
                 .width(Length::Fill)
                 .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
                 .style(panel_style(tokens)),
-                container(dock)
-                    .width(Length::Fill)
-                    .height(Length::Fixed(430.0)),
                 container(popup)
                     .width(Length::Fixed(360.0))
                     .height(Length::Fixed(150.0))
@@ -130,6 +92,7 @@ impl GalleryState {
         .into()
     }
 
+    #[allow(dead_code)]
     pub(super) fn workspace_toolbar(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         container(
@@ -153,6 +116,7 @@ impl GalleryState {
         .into()
     }
 
+    #[allow(dead_code)]
     pub(super) fn workspace_inspector(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         let radius = self.appearance.standard_radius().round() as u8;
@@ -200,6 +164,7 @@ impl GalleryState {
         .into()
     }
 
+    #[allow(dead_code)]
     pub(super) fn workspace_bottom(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         container(column![

@@ -165,10 +165,17 @@ impl RuntimeInputAdapter {
                             )?
                             || context.update_graph_canvas_pointer(document, *pointer_id, *x, *y)?
                             || context.update_split_resize(document, *pointer_id, *x, *y)?
+                            || context.update_dock_split_resize(document, *pointer_id, *x, *y)?
+                            || context.update_dock_item_drag(document, *pointer_id, *x, *y)?
                             || target
                                 .map(|target| context.hover_graph_canvas(target, *x, *y))
                                 .transpose()?
                                 .unwrap_or(false)
+                            || target
+                                .map(|target| context.hover_calendar_heatmap(target, *x, *y))
+                                .transpose()?
+                                .unwrap_or(false)
+                            || context.clear_calendar_heatmap_hover(document)?
                             || context.hover_split_handle(
                                 context.split_handle_near(document, *x, *y).or(target),
                             )?
@@ -177,7 +184,11 @@ impl RuntimeInputAdapter {
                     PointerPhase::Down if (*is_primary && *button == 0) || *button == 1 => {
                         context.dismiss_detached_menus(target)?;
                         let split_handle = context.split_handle_near(document, *x, *y);
-                        if let Some(target) = split_handle.or(target) {
+                        let dock_handle = context.dock_handle_near(document, *x, *y);
+                        let dock_source = target
+                            .filter(|id| context.is_dock_item_source(*id))
+                            .or_else(|| context.dock_tab_strip_near(document, *x, *y));
+                        if let Some(target) = dock_handle.or(split_handle).or(target) {
                             context.focus_node(document, target)?;
                             if context.is_graph_canvas(target) {
                                 context.begin_graph_canvas_pointer(
@@ -188,6 +199,14 @@ impl RuntimeInputAdapter {
                                     *y,
                                     graph_button,
                                 )?;
+                            } else if context.is_dock_handle(target) && *button == 0 {
+                                context.begin_dock_split_resize(
+                                    document,
+                                    *pointer_id,
+                                    target,
+                                    *x,
+                                    *y,
+                                )?;
                             } else if context.is_split_handle(target) && *button == 0 {
                                 context.begin_split_resize(
                                     document,
@@ -197,17 +216,32 @@ impl RuntimeInputAdapter {
                                     *y,
                                 )?;
                             } else if *button == 0 {
-                                context.press_pointer(document, *pointer_id, target)?;
-                                if context.is_range_field(target) {
-                                    context.begin_range_drag(document, *pointer_id, target, *x)?;
-                                } else if context.is_xy_pad(target) {
-                                    context.begin_xy_pad_drag(
+                                if let Some(source) = dock_source {
+                                    context.begin_dock_item_drag(
                                         document,
                                         *pointer_id,
-                                        target,
+                                        source,
                                         *x,
                                         *y,
                                     )?;
+                                } else {
+                                    context.press_pointer(document, *pointer_id, target)?;
+                                    if context.is_range_field(target) {
+                                        context.begin_range_drag(
+                                            document,
+                                            *pointer_id,
+                                            target,
+                                            *x,
+                                        )?;
+                                    } else if context.is_xy_pad(target) {
+                                        context.begin_xy_pad_drag(
+                                            document,
+                                            *pointer_id,
+                                            target,
+                                            *x,
+                                            *y,
+                                        )?;
+                                    }
                                 }
                             }
                             true
@@ -226,6 +260,8 @@ impl RuntimeInputAdapter {
                                 false,
                             )?
                             || context.end_split_resize(document, *pointer_id, false)?
+                            || context.end_dock_split_resize(document, *pointer_id, false)?
+                            || context.end_dock_item_drag(document, *pointer_id, *x, *y, false)?
                         {
                             context.release_pointer(document, *pointer_id);
                             return Ok(InputDisposition {
@@ -253,9 +289,21 @@ impl RuntimeInputAdapter {
                             true,
                         )?;
                         let split = context.end_split_resize(document, *pointer_id, true)?;
+                        let dock_split =
+                            context.end_dock_split_resize(document, *pointer_id, true)?;
+                        let dock_item =
+                            context.end_dock_item_drag(document, *pointer_id, *x, *y, true)?;
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
                         context.set_pointer_hover_at(document, *pointer_id, None, now)?;
-                        range || xy_pad || graph || split || pressed
+                        let calendar = context.clear_calendar_heatmap_hover(document)?;
+                        range
+                            || xy_pad
+                            || graph
+                            || split
+                            || dock_split
+                            || dock_item
+                            || calendar
+                            || pressed
                     }
                     _ => false,
                 };
@@ -387,7 +435,8 @@ impl RuntimeInputAdapter {
                     })
                     .flatten();
                 if let Some(direction) = split_direction
-                    && context.adjust_focused_split(document, direction)?
+                    && (context.adjust_focused_split(document, direction)?
+                        || context.adjust_focused_dock_split(document, direction)?)
                 {
                     return Ok(InputDisposition {
                         prevent_default: true,
@@ -540,10 +589,10 @@ mod tests {
     use super::*;
     use nana_ui_platform::{ImeEvent, InputModifiers, PointerType};
     use nana_ui_runtime::{
-        Activate, Button, Dialog, LayoutBox, Menu, MenuItem, ModalSlots, MutationQueue,
-        OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView,
-        SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow,
-        TextArea, TextInput,
+        Activate, Button, CalendarHeatmap, CalendarHeatmapDatum, Dialog, Dock, DockAxis, DockNode,
+        LayoutBox, Menu, MenuItem, ModalSlots, MutationQueue, OverlayHost, OverlayHostState,
+        RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl, SegmentedOption,
+        SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea, TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -1582,6 +1631,217 @@ mod tests {
                 .dispatch(&mut context, document, &primary_tab)
                 .unwrap()
                 .prevent_default
+        );
+    }
+
+    #[test]
+    fn pointer_on_dock_handle_changes_split_ratio() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let first = context
+            .create_component(document, Text::new("first"))
+            .unwrap()
+            .stable_id();
+        let second = context
+            .create_component(document, Text::new("second"))
+            .unwrap()
+            .stable_id();
+        let dock = context
+            .create_component(
+                document,
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(first)),
+                    DockNode::item("console", Some(second)),
+                )),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let handle = context.world().node(dock.stable_id()).unwrap().children[1];
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            dock.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            handle,
+            LayoutBox {
+                x: 156.8,
+                y: 0.0,
+                width: 8.0,
+                height: 200.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 160.0, 20.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Move, 200.0, 20.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Up, 200.0, 20.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        let ratio = context
+            .read(dock, |dock| match &dock.root {
+                DockNode::Split { ratio, .. } => *ratio,
+                _ => panic!("split"),
+            })
+            .unwrap();
+        assert!((ratio - (0.4_f32 + 40.0 / 392.0).clamp(0.05, 0.95)).abs() < 0.001);
+    }
+
+    #[test]
+    fn keyboard_arrow_right_on_focused_dock_handle_changes_ratio() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let first = context
+            .create_component(document, Text::new("first"))
+            .unwrap()
+            .stable_id();
+        let second = context
+            .create_component(document, Text::new("second"))
+            .unwrap()
+            .stable_id();
+        let dock = context
+            .create_component(
+                document,
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(first)),
+                    DockNode::item("console", Some(second)),
+                )),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let handle = context.world().node(dock.stable_id()).unwrap().children[1];
+        assert!(context.focus_node(document, handle).unwrap());
+
+        let event = InputEvent::Keyboard {
+            pressed: true,
+            key: "ArrowRight".into(),
+            text: None,
+            code: "ArrowRight".into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+        assert!(
+            RuntimeInputAdapter::default()
+                .dispatch(&mut context, document, &event)
+                .unwrap()
+                .prevent_default
+        );
+        let ratio = context
+            .read(dock, |dock| match &dock.root {
+                DockNode::Split { ratio, .. } => *ratio,
+                _ => panic!("split"),
+            })
+            .unwrap();
+        assert!((ratio - 0.45).abs() < 0.001);
+    }
+
+    #[test]
+    fn pointer_on_calendar_heatmap_sets_active_cell() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let heatmap = context
+            .create_component(
+                document,
+                CalendarHeatmap::new([
+                    CalendarHeatmapDatum::<()>::new("2026-06-01", 2.0),
+                    CalendarHeatmapDatum::<()>::new("2026-06-03", 8.0),
+                ]),
+            )
+            .unwrap();
+        let model = context.read(heatmap, CalendarHeatmap::model).unwrap();
+        let cell = model
+            .cells
+            .iter()
+            .find(|cell| cell.date == "2026-06-03")
+            .expect("June 3");
+        context
+            .commit_mutations({
+                let mut mutations = MutationQueue::new();
+                mutations.write_layout(
+                    heatmap.stable_id(),
+                    LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: model.width,
+                        height: model.height,
+                    },
+                );
+                mutations
+            })
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        assert!(
+            RuntimeInputAdapter::default()
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Move, cell.x + 1.0, cell.y + 1.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.read(heatmap, |calendar| calendar.active).unwrap(),
+            Some(
+                model
+                    .cells
+                    .iter()
+                    .position(|item| item.date == "2026-06-03")
+                    .expect("index")
+            )
+        );
+        assert!(
+            RuntimeInputAdapter::default()
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Move, 400.0, 400.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            context
+                .read(heatmap, |calendar| calendar.active)
+                .unwrap()
+                .is_none()
         );
     }
 }

@@ -56,9 +56,9 @@ use nana_ui::runtime::{
     CalendarHeatmapDatum as RuntimeCalendarDatum, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
     CommandPalette as RuntimeCommandPalette, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
     ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem,
-    Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
-    DockPanel as RuntimeDockPanel, DocumentId, Drawer as RuntimeDrawer,
-    Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
+    DesktopShell as RuntimeDesktopShell, Dialog as RuntimeDialog, Dock as RuntimeDock,
+    DockNode as RuntimeDockNode, DockPanel as RuntimeDockPanel, DocumentId,
+    Drawer as RuntimeDrawer, Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
     EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
     GpuTextureView as RuntimeGpuTextureView, GpuView as RuntimeGpuView,
     GpuViewPalette as RuntimeGpuViewPalette, GraphCanvas as RuntimeGraphCanvas,
@@ -78,28 +78,31 @@ use nana_ui::runtime::{
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     SegmentedSelectionRequested, Select as RuntimeSelect, SelectOption as RuntimeSelectOption,
     SelectableRichText as RuntimeSelectableRichText, SettingsCard as RuntimeSettingsCard,
-    SettingsCollapsibleCard as RuntimeSettingsCollapsibleCard,
-    SidebarFooter as RuntimeSidebarFooter, SidebarFooterButton as RuntimeSidebarFooterButton,
-    SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
-    SidebarSection as RuntimeSidebarSection, Skeleton as RuntimeSkeleton,
-    Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane, StableNodeId,
-    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TabOption as RuntimeTabOption,
-    Tabs as RuntimeTabs, Text as RuntimeText, TextArea as RuntimeTextArea, TextHorizontalAlignment,
-    TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
-    TimeSeriesChart as RuntimeTimeSeriesChart, Toast as RuntimeToast, TreeView as RuntimeTreeView,
+    SettingsCollapsibleCard as RuntimeSettingsCollapsibleCard, SettingsPage as RuntimeSettingsPage,
+    SettingsSidebar as RuntimeSettingsSidebar, SidebarFooter as RuntimeSidebarFooter,
+    SidebarFooterButton as RuntimeSidebarFooterButton, SidebarFrame as RuntimeSidebarFrame,
+    SidebarRow as RuntimeSidebarRow, SidebarSection as RuntimeSidebarSection,
+    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane,
+    StableNodeId, StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch,
+    TabOption as RuntimeTabOption, Tabs as RuntimeTabs, Text as RuntimeText,
+    TextArea as RuntimeTextArea, TextHorizontalAlignment, TextInput as RuntimeTextInput,
+    TextSelection, TextVerticalAlignment, TimeSeriesChart as RuntimeTimeSeriesChart,
+    Toast as RuntimeToast, TreeView as RuntimeTreeView,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
     ActionId, AnchoredMenuPosition, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId,
-    ComponentMigrationState, ControlSize, DockContents, DockController, DockId, DockItemSpec,
-    DockLayout, DockNode, DockSurfaceId, GraphEdge, GraphEndpoint, GraphModel, GraphNode,
-    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSize, GraphViewport, IcedSceneView,
-    IcedTextShaper, Icon, RegionId, RuntimeInputAdapter, SelectionOption as IcedSelectionOption,
-    SplitAxis, SplitPaneController, ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement,
-    TreeNode, WindowMaterialMode, WorkspaceController, WorkspaceSlots, XYPadValue, app_shell,
-    component_catalog, component_ids, dock_workspace, icon, ratio_pane_split, split_pane,
-    workspace_view,
+    ComponentMigrationState, ControlSize, DesktopShell as IcedDesktopShell, DockContents,
+    DockController, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, GraphEdge,
+    GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
+    GraphSize, GraphViewport, IcedSceneView, IcedTextShaper, Icon, RegionId, RegionRole,
+    RegionState, RuntimeInputAdapter, SelectionOption as IcedSelectionOption, SettingsModel,
+    SettingsState, SettingsTab, SettingsTabId, SplitAxis, SplitPaneController, ThemeMode,
+    ThemeModeExt, TooltipConfig, TooltipPlacement, TreeNode, WindowMaterialMode,
+    WorkspaceController, WorkspaceLayout, WorkspaceSlots, XYPadValue, app_shell, component_catalog,
+    component_ids, dock_workspace, icon, ratio_pane_split, settings_page, settings_sidebar,
+    split_pane, workspace_view,
 };
 use nana_ui_core::{
     DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
@@ -168,6 +171,8 @@ enum Component {
     TreeView,
     SidebarRow,
     Settings,
+    SettingsSidebar,
+    SettingsPage,
     Workspace,
     Dock,
     DockPanel,
@@ -175,6 +180,7 @@ enum Component {
     PaneChrome,
     PaneTree,
     AppShell,
+    DesktopShell,
     AppTitleBar,
     CalendarHeatmap,
     TimeSeriesChart,
@@ -241,6 +247,8 @@ impl Component {
             Self::TreeView => component_ids::TREE_VIEW,
             Self::SidebarRow => component_ids::SIDEBAR_ROW,
             Self::Settings => component_ids::SETTINGS,
+            Self::SettingsSidebar => component_ids::SETTINGS,
+            Self::SettingsPage => component_ids::SETTINGS,
             Self::Workspace => component_ids::WORKSPACE,
             Self::Dock => component_ids::DOCK,
             Self::DockPanel => component_ids::DOCK_PANEL,
@@ -248,6 +256,7 @@ impl Component {
             Self::PaneChrome => component_ids::PANE_CHROME,
             Self::PaneTree => component_ids::PANE_TREE,
             Self::AppShell => component_ids::APP_SHELL,
+            Self::DesktopShell => component_ids::APP_SHELL,
             Self::AppTitleBar => component_ids::APP_TITLE_BAR,
             Self::CalendarHeatmap => component_ids::CALENDAR_HEATMAP,
             Self::TimeSeriesChart => component_ids::TIME_SERIES_CHART,
@@ -1331,6 +1340,21 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "settings card groups a labeled control row",
     ),
     f(
+        Component::SettingsSidebar,
+        "settings-sidebar",
+        "settings sidebar keeps back and tab rows in the frame",
+    ),
+    f(
+        Component::SettingsPage,
+        "settings-page",
+        "settings page shows the tab title above host content",
+    ),
+    f(
+        Component::SettingsPage,
+        "settings-page-full",
+        "full-page settings tab fills with content only",
+    ),
+    f(
         Component::Workspace,
         "default-regions",
         "workspace lays out start, primary, end and bottom regions from the model",
@@ -1364,6 +1388,11 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         Component::AppShell,
         "stacked",
         "app shell stacks a 36px title bar over a fill body",
+    ),
+    f(
+        Component::DesktopShell,
+        "desktop-settings",
+        "desktop shell stacks title, resources sidebar and primary settings page",
     ),
     f(
         Component::AppTitleBar,
@@ -1583,6 +1612,8 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::OverlayHost, _) => Size::new(420, 160),
         (Component::TreeView, _) => Size::new(280, 160),
         (Component::Settings, _) => Size::new(420, 140),
+        (Component::SettingsSidebar, _) => Size::new(220, 400),
+        (Component::SettingsPage, _) => Size::new(420, 360),
         (Component::Workspace, _) => Size::new(720, 400),
         (Component::Dock, _) => Size::new(640, 320),
         (Component::DockPanel, _) => Size::new(280, 120),
@@ -1590,6 +1621,7 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::PaneChrome, _) => Size::new(420, 180),
         (Component::PaneTree, _) => Size::new(480, 240),
         (Component::AppShell, _) => Size::new(560, 280),
+        (Component::DesktopShell, _) => Size::new(560, 360),
         (Component::AppTitleBar, _) => Size::new(560, 80),
         (Component::CalendarHeatmap, _) => Size::new(280, 180),
         (Component::TimeSeriesChart, _) => Size::new(420, 180),
@@ -2252,6 +2284,32 @@ fn iced_fixture<'a>(
                 .view(tokens),
         )
         .view(tokens),
+        Component::SettingsSidebar => settings_sidebar(
+            snapshot_settings_model(),
+            snapshot_settings_state(),
+            (),
+            |_| (),
+            tokens,
+        ),
+        Component::SettingsPage => {
+            let appearance = AppearanceSettings::default();
+            let (state, content) = if fixture.state == "settings-page-full" {
+                (
+                    snapshot_settings_full_state(),
+                    IcedAboutSection::new(
+                        IcedAboutMetadata::new("NanaUI Gallery", "0.1.0")
+                            .description("Injected product metadata for the about card."),
+                    )
+                    .view(tokens),
+                )
+            } else {
+                (
+                    snapshot_settings_state(),
+                    IcedAppearanceSection::new(theme, &appearance, |_| ()).view(tokens),
+                )
+            };
+            settings_page(snapshot_settings_model(), state, content, tokens)
+        }
         Component::Workspace => {
             let controller = WorkspaceController::new();
             let slot = |label: &'static str| {
@@ -2378,6 +2436,29 @@ fn iced_fixture<'a>(
             text("Workspace").size(13).color(tokens.colors.text),
             tokens.colors,
         ),
+        Component::DesktopShell => {
+            let appearance = AppearanceSettings::default();
+            IcedDesktopShell::new(
+                IcedAppTitleBar::new("NanaUI", tokens).view(),
+                WorkspaceController::with_layout(snapshot_desktop_workspace_layout()),
+                settings_page(
+                    snapshot_settings_model(),
+                    snapshot_settings_state(),
+                    IcedAppearanceSection::new(theme, &appearance, |_| ()).view(tokens),
+                    tokens,
+                ),
+                |_| (),
+                tokens,
+            )
+            .navigation(settings_sidebar(
+                snapshot_settings_model(),
+                snapshot_settings_state(),
+                (),
+                |_| (),
+                tokens,
+            ))
+            .view()
+        }
         Component::AppTitleBar => IcedAppTitleBar::new("NanaUI", tokens).view(),
     };
     (
@@ -3414,6 +3495,8 @@ fn runtime_fixture(
             document.context_mut().append_child(card, row)?;
             card.stable_id()
         }
+        Component::SettingsSidebar => mount_runtime_settings_sidebar(&mut document)?,
+        Component::SettingsPage => mount_runtime_settings_page(&mut document, theme, fixture)?,
         Component::Workspace => mount_runtime_workspace(&mut document)?,
         Component::Dock => mount_runtime_dock(&mut document)?,
         Component::DockPanel => {
@@ -3453,6 +3536,7 @@ fn runtime_fixture(
         Component::PaneChrome => mount_runtime_pane_chrome(&mut document)?,
         Component::PaneTree => mount_runtime_pane_tree(&mut document)?,
         Component::AppShell => mount_runtime_app_shell(&mut document)?,
+        Component::DesktopShell => mount_runtime_desktop_shell(&mut document, theme)?,
         Component::AppTitleBar => document
             .context_mut()
             .create_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?
@@ -3823,6 +3907,153 @@ fn mount_runtime_app_shell(
     )?;
     document.context_mut().append_child(shell, title)?;
     document.context_mut().append_child(shell, body)?;
+    Ok(shell.stable_id())
+}
+
+fn snapshot_settings_model() -> &'static SettingsModel {
+    static MODEL: std::sync::OnceLock<SettingsModel> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| {
+        SettingsModel::new(
+            "appearance",
+            [
+                SettingsTab::new("appearance", "外观").icon(Icon::Appearance),
+                SettingsTab::new("about", "关于")
+                    .icon(Icon::About)
+                    .full_page(true),
+            ],
+        )
+        .expect("snapshot settings model")
+    })
+}
+
+fn snapshot_settings_state() -> &'static SettingsState {
+    static STATE: std::sync::OnceLock<SettingsState> = std::sync::OnceLock::new();
+    STATE.get_or_init(|| SettingsState::new(snapshot_settings_model()))
+}
+
+fn snapshot_settings_full_state() -> &'static SettingsState {
+    static STATE: std::sync::OnceLock<SettingsState> = std::sync::OnceLock::new();
+    STATE.get_or_init(|| {
+        let model = snapshot_settings_model();
+        let mut state = SettingsState::new(model);
+        state.select(model, &SettingsTabId::from("about"));
+        state
+    })
+}
+
+fn snapshot_desktop_workspace_layout() -> WorkspaceLayout {
+    WorkspaceLayout::new([
+        RegionState::new(RegionId::Resources, RegionRole::Resources)
+            .size(220.0)
+            .min_size(180.0)
+            .max_size(480.0)
+            .collapsible(true)
+            .resizable(true),
+        RegionState::new(RegionId::Primary, RegionRole::Primary)
+            .min_size(160.0)
+            .fill_priority(1),
+    ])
+    .expect("desktop-settings regions")
+}
+
+fn mount_runtime_appearance_section(
+    document: &mut RuntimeDocument,
+    theme: ThemeMode,
+) -> Result<nana_ui::runtime::Entity<RuntimeAppearanceSection>, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let section = document.context_mut().create_detached_component(
+        document_id,
+        RuntimeAppearanceSection::new(theme, AppearanceSettings::default()),
+    )?;
+    document
+        .context_mut()
+        .assemble_appearance_section(section)?;
+    Ok(section)
+}
+
+fn mount_runtime_about_section(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::Entity<RuntimeAboutSection>, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let section = document.context_mut().create_detached_component(
+        document_id,
+        RuntimeAboutSection::new(
+            RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
+                .description("Injected product metadata for the about card."),
+        ),
+    )?;
+    document.context_mut().assemble_about_section(section)?;
+    Ok(section)
+}
+
+fn mount_runtime_settings_sidebar(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let sidebar = document.context_mut().create_component(
+        document_id,
+        RuntimeSettingsSidebar::new(
+            snapshot_settings_model().clone(),
+            snapshot_settings_state().clone(),
+        ),
+    )?;
+    document.context_mut().assemble_settings_sidebar(sidebar)?;
+    Ok(sidebar.stable_id())
+}
+
+fn mount_runtime_settings_page(
+    document: &mut RuntimeDocument,
+    theme: ThemeMode,
+    fixture: Fixture,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let full_page = fixture.state == "settings-page-full";
+    let content = if full_page {
+        mount_runtime_about_section(document)?.stable_id()
+    } else {
+        mount_runtime_appearance_section(document, theme)?.stable_id()
+    };
+    let state = if full_page {
+        snapshot_settings_full_state().clone()
+    } else {
+        snapshot_settings_state().clone()
+    };
+    let page = document.context_mut().create_component(
+        document_id,
+        RuntimeSettingsPage::new(snapshot_settings_model().clone(), state).content(content),
+    )?;
+    document.context_mut().assemble_settings_page(page)?;
+    Ok(page.stable_id())
+}
+
+fn mount_runtime_desktop_shell(
+    document: &mut RuntimeDocument,
+    theme: ThemeMode,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let model = snapshot_settings_model().clone();
+    let state = snapshot_settings_state().clone();
+    let sidebar = document.context_mut().create_detached_component(
+        document_id,
+        RuntimeSettingsSidebar::new(model.clone(), state.clone()),
+    )?;
+    document.context_mut().assemble_settings_sidebar(sidebar)?;
+    let content = mount_runtime_appearance_section(document, theme)?;
+    let page = document.context_mut().create_detached_component(
+        document_id,
+        RuntimeSettingsPage::new(model, state).content(content.stable_id()),
+    )?;
+    document.context_mut().assemble_settings_page(page)?;
+    let shell = document.context_mut().create_component(
+        document_id,
+        RuntimeDesktopShell::from_model(WorkspaceModel::with_layout(
+            snapshot_desktop_workspace_layout(),
+        ))
+        .title("NanaUI")
+        .navigation(sidebar.stable_id())
+        .primary(page.stable_id()),
+    )?;
+    document.context_mut().assemble_desktop_shell(shell)?;
     Ok(shell.stable_id())
 }
 
@@ -5174,6 +5405,9 @@ fn write_evidence(
             | Component::PaneChrome
             | Component::PaneTree
             | Component::AppShell
+            | Component::DesktopShell
+            | Component::SettingsSidebar
+            | Component::SettingsPage
             | Component::AppTitleBar
             | Component::GpuTextureView
     ) {
@@ -5241,6 +5475,9 @@ fn write_evidence(
             | Component::PaneChrome
             | Component::PaneTree
             | Component::AppShell
+            | Component::DesktopShell
+            | Component::SettingsSidebar
+            | Component::SettingsPage
             | Component::AppTitleBar
             | Component::GpuTextureView
             | Component::GpuView
@@ -5439,15 +5676,15 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ),
         (Component::Tooltip, _) => (
             "manual-required",
-            "Review the generated dark and light Iced Tooltip and Runtime overlay images for open, delay-not-open and edge placement; public default stays Iced until visual and platform review",
+            "Review the generated dark and light Iced Tooltip and Runtime overlay images for open, delay-not-open and edge placement; Runtime is the accepted public default and Iced images remain a migration-era reference, not an oracle",
         ),
         (Component::Dialog | Component::ConfirmDialog | Component::Drawer, _) => (
             "manual-required",
-            "Review the generated dark and light Iced and Runtime modal images for scrim, surface, title and slotted body or actions; public default stays Iced until overlay-host review",
+            "Review the generated dark and light Iced and Runtime modal images for scrim, surface, title and slotted body or actions; Runtime is the accepted public default and Iced images remain a migration-era reference, not an oracle",
         ),
         (Component::Toast | Component::XYPad | Component::QrCode, _) => (
             "manual-required",
-            "Review the generated dark and light Iced and Runtime images; public default stays Iced until visual review",
+            "Review the generated dark and light Iced and Runtime images; Runtime is the accepted public default and Iced images remain a migration-era reference, not an oracle",
         ),
         (
             Component::Select
@@ -5459,7 +5696,11 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             _,
         ) => (
             "manual-required",
-            "Review the generated dark and light Iced and Runtime images for select fields and anchored menus; public default stays Iced until visual review",
+            "Review the generated dark and light Iced and Runtime images for select fields and anchored menus; Runtime is the accepted public default and Iced images remain a migration-era reference, not an oracle",
+        ),
+        (Component::SettingsSidebar | Component::SettingsPage | Component::DesktopShell, _) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime images; Runtime is the accepted public default and Iced images remain a migration-era reference, not an oracle",
         ),
         (
             Component::Workspace
@@ -5472,8 +5713,8 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             | Component::AppTitleBar,
             _,
         ) => (
-            "manual-required",
-            "Review the generated dark and light Iced and Runtime workspace-family images; Iced remains the composer reference until windowed A/B",
+            "pass",
+            "2026-08-16 windowed A/B and side-by-side review preferred Runtime (right): workspace-family is the accepted public default, fixture slot labels keep the shared 8px inset that Workspace/Dock/Split/AppShell chrome does not add, and Iced images remain a migration-era reference, not an oracle",
         ),
         (
             Component::SidebarFrame
@@ -5611,6 +5852,9 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         (Component::SettingsCollapsibleCard, _) => {
             "intentional: Runtime disclosure is non-interactive chrome; the card remains the single activation target"
         }
+        (Component::SettingsSidebar | Component::SettingsPage | Component::DesktopShell, _) => {
+            "intentional: Runtime settings and desktop composers are the public default; Iced is a migration-era reference"
+        }
         (Component::GraphCanvas, _) => {
             "intentional: Runtime Scene approximates Bézier edges as quad samples and 1px grid lines; Iced strokes paths. Port discs use the Iced 4/5px radius, not the 8px hit target"
         }
@@ -5618,7 +5862,7 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
             "intentional: Iced GpuTextureView samples the same host texture as Runtime nana.host-texture; layout chrome may differ"
         }
         (Component::GpuView, _) => {
-            "intentional: Iced GpuView shader is inline; Runtime paints via a fixture SceneGpuRenderer using the same WGSL. CustomRenderNode does not encode palette; the snapshot renderer uses the fixture theme"
+            "intentional: Iced GpuView shader is inline; Runtime paints via DefaultGpuViewRenderer using the same WGSL. CustomRenderNode does not encode palette; the snapshot registry supplies the fixture theme"
         }
         _ => fixture.divergence,
     }

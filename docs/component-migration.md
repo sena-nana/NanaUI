@@ -52,8 +52,8 @@ placeholder, shaped selection/caret, secure, invalid, read-only/loading, keyboar
 native input-purpose review. Text passed wrapping, clipping, alignment, typography and
 accessibility review. Checkbox passed checked/off, hover, pressed, focused, disabled, invalid,
 pointer, keyboard and accessibility activation states in dark and light. Workspace, Dock,
-Sidebar, Overlay and other professional components remain `Compatibility` unless their individual
-catalog entry says otherwise.
+Sidebar, Overlay, and the remaining catalog leaves are covered in later sections;
+`component_catalog()` is the authority for each identity.
 
 ## Current second batch
 
@@ -278,8 +278,49 @@ cubic edges, node title bars, port discs and labels, hover/selected, and
 live drag or connection preview. `RuntimeInputAdapter` routes pointer,
 wheel and keyboard into the same events the Iced canvas emits. GpuTextureView
 binds the host-owned `"nana.host-texture"` slot. GpuView projects
-`CustomRenderNode` `"gpu-view"`; default `IcedSceneView::new` still requires
-the host to register that painter. Syntax highlighting is the Runtime
-`"highlight"` presenter on `HostedTextarea` / `TextArea` / `TextInput`.
+`CustomRenderNode` `"gpu-view"`. `IcedSceneView::new`, `for_node`, and
+`from_shared` install the default `"gpu-view"` painter.
+`from_shared_with_renderers(..., None, ...)` gets the same default;
+explicit `from_shared_with_renderers(Some(_))` and
+`with_gpu_resources(..., None)` stay caller-controlled. Construction is
+not a draw: the default painter still needs the host Device/Queue to emit
+GPU. Syntax highlighting is the
+Runtime `"highlight"` presenter on `HostedTextarea` / `TextArea` / `TextInput`.
 `SplitPane` handle drag applies `SplitPaneMutation` through the same
 adapter.
+
+## Current remaining work
+
+`component_catalog()` lists 68 identities; every entry is `RuntimeQualified`
+and none remain `RuntimeCandidate`. Leaf qualification is complete. There is
+no further leaf batch.
+
+Remaining work is host polish, not a new leaf batch.
+
+2026-08-17 windowed A/B **passed** for Dock, SplitPane, AppShell,
+SettingsPage, and CalendarHeatmap. Calendar hover titles hug `Tooltip`
+metrics; Iced's fixed 176px popup is Iced-side.
+
+- `IcedSceneView::from_shared` now installs the default `"gpu-view"`
+  painter so Vue `from_shared_node` can keep GpuView. Explicit
+  `from_shared_with_renderers(Some(_))` stays caller-controlled.
+- Gallery settings, six main sections, and overlays (command palette,
+  confirm dialog, image viewer, context menu) paint retained Runtime
+  documents through `IcedSceneView`.
+- Gallery live dock state is Runtime `DockWorkspace`. Hide/show uses
+  `DockWorkspace::{hide,show,is_visible}`; the workspace tree stays live.
+  Floating events record host window commands. The Iced `application`
+  host does not open extra daemon windows.
+- Vue maps Calendar `options` (weekday labels, level strategy, string
+  `monthFormat` / `titleFormat` templates). JS `Function` formatters stay
+  ignored — tree sync does not invoke the engine. GraphCanvas
+  `viewport`/`selection`, and Workspace / Dock / SplitPane / AppShell /
+  SettingsPage children map onto Runtime composers. After
+  `sync_semantic_styles`, Vue binds Workspace / Dock / SplitPane /
+  AppShell / NativeMarkdown / SettingsPage on `AppContext` and calls
+  `assemble_workspace` / `assemble_dock` / `assemble_split_pane` /
+  `assemble_app_shell` / `assemble_markdown` / `assemble_settings_page`.
+- Runtime `assemble_markdown` attaches a hidden text child per mermaid,
+  display-math, and code fence (`mermaid` / `math` / `highlight`).
+  Applications still own mermaid/math paint.
+- Windows/Linux real-device acceptance stays deferred.

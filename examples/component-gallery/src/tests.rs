@@ -2,12 +2,18 @@ use super::{
     ContextAction, ContextMenuEvent, GalleryMessage, GalleryOverlay, GallerySection, GalleryState,
     SurfaceView,
 };
+use crate::runtime_host::RuntimeSceneInput;
+use crate::runtime_settings::SettingsRuntimeInput;
+use iced::Point;
 use nana_ui::compatibility::PaneChromeActionKind;
+use nana_ui::window_chrome::{WindowChromeAction, WindowChromeEvent, WindowChromeState};
 use nana_ui::{
     ActionId, ActionPickerNavigation, AppearanceSettings, BackdropTarget, CommandPaletteEvent,
-    DockAction, DockHostEffect, DockId, KeyModifiers, KeyStroke, MaterialOutcome, RegionId,
-    SelectionMove, SplitPaneAction, ThemeMode, TreeViewEvent, WindowMaterialMode, WorkspaceAction,
+    DockAction, DockId, DockWorkspaceEvent, Icon, KeyModifiers, KeyStroke, MaterialOutcome,
+    RegionId, SelectionMove, SettingsTabId, SplitPaneAction, ThemeMode, TreeViewEvent,
+    WindowMaterialMode, WorkspaceAction,
 };
+use nana_ui_platform::WindowCommand;
 
 #[test]
 fn gallery_interactions_update_real_state() {
@@ -27,6 +33,35 @@ fn gallery_interactions_update_real_state() {
     assert_eq!(state.section, GallerySection::Feedback);
     assert!(!state.overlay.is_open());
     assert_eq!(state.context_action, Some(ContextAction::Rename));
+}
+
+#[test]
+fn gallery_overlays_paint_a_runtime_scene() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::ToggleCommandPalette);
+    assert!(state.overlay.contains(&GalleryOverlay::CommandPalette));
+    let _ = state.view();
+    assert!(state.gallery_overlay_runtime_scene_populated());
+
+    state.update(GalleryMessage::ToggleDialog);
+    assert!(state.overlay.contains(&GalleryOverlay::Dialog));
+    assert!(!state.overlay.contains(&GalleryOverlay::CommandPalette));
+    let _ = state.view();
+    assert!(state.gallery_overlay_runtime_scene_populated());
+
+    state.update(GalleryMessage::ToggleImageViewer);
+    assert!(state.overlay.contains(&GalleryOverlay::ImageViewer));
+    let _ = state.view();
+    assert!(state.gallery_overlay_runtime_scene_populated());
+
+    state.update(GalleryMessage::ToggleContextMenu);
+    assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
+    let _ = state.view();
+    assert!(state.gallery_overlay_runtime_scene_populated());
+
+    state.update(GalleryMessage::DismissOverlay);
+    assert!(!state.overlay.is_open());
+    assert!(!state.gallery_overlay_runtime_scene_populated());
 }
 
 #[test]
@@ -73,10 +108,82 @@ fn dialog_confirmation_executes_and_closes_the_overlay() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::ToggleDialog);
     assert!(state.overlay.contains(&GalleryOverlay::Dialog));
+    assert_eq!(
+        state.gallery_overlay_dialog_copy(),
+        Some(("确认操作".to_owned(), "此操作会更新当前状态".to_owned()))
+    );
 
     state.update(GalleryMessage::ConfirmDialog);
     assert!(!state.overlay.is_open());
     assert_eq!(state.confirmed_actions, 1);
+}
+
+#[test]
+fn image_viewer_mounts_an_accent_preview_child() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::ToggleImageViewer);
+    assert!(state.overlay.contains(&GalleryOverlay::ImageViewer));
+    let (has_child, labels) = state
+        .gallery_overlay_image_preview()
+        .expect("image viewer remains mounted");
+    assert!(has_child);
+    assert!(labels.iter().any(|label| label == "NANA"));
+    assert!(labels.iter().any(|label| label == "完整组件库"));
+}
+
+#[test]
+fn context_menu_maps_leaf_suffixes_and_keeps_item_icons() {
+    assert_eq!(
+        crate::runtime_overlays::gallery_context_action_from_value("project"),
+        None
+    );
+    assert_eq!(
+        crate::runtime_overlays::gallery_context_action_from_value("duplicate"),
+        Some(ContextAction::Duplicate)
+    );
+    assert_eq!(
+        crate::runtime_overlays::gallery_context_action_from_value("project/duplicate"),
+        Some(ContextAction::Duplicate)
+    );
+    assert_eq!(
+        crate::runtime_overlays::gallery_context_action_from_value("rename"),
+        Some(ContextAction::Rename)
+    );
+    assert_eq!(
+        crate::runtime_overlays::gallery_context_action_from_value("project/rename"),
+        Some(ContextAction::Rename)
+    );
+    assert_eq!(
+        crate::runtime_overlays::gallery_context_action_from_value("remove"),
+        Some(ContextAction::Remove)
+    );
+
+    let mut state = GalleryState::new();
+    let items = crate::runtime_overlays::gallery_runtime_context_item_icons(state.context_items());
+    assert!(
+        items.iter().any(|(value, label, icon)| {
+            value == "project/duplicate" && label == "复制项目" && *icon == Some(Icon::Add)
+        }),
+        "copy leaf must keep Icon::Add: {items:?}"
+    );
+    assert!(
+        items.iter().any(|(value, label, icon)| {
+            value == "project/rename" && label == "重命名项目" && *icon == Some(Icon::File)
+        }),
+        "rename leaf must keep Icon::File: {items:?}"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|(value, _, icon)| value == "project" && icon.is_none()),
+        "parent path must not be a leaf action: {items:?}"
+    );
+
+    state.update(GalleryMessage::ToggleContextMenu);
+    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::Select(
+        ContextAction::Rename,
+    )));
+    assert_eq!(state.context_action, Some(ContextAction::Rename));
 }
 
 #[test]
@@ -155,6 +262,34 @@ fn pane_chrome_actions_change_the_real_gallery_pane_state() {
     state.update(GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem));
     assert!(!state.pane_chrome_item_open);
     assert!(!state.pane_chrome_split);
+}
+
+#[test]
+fn command_palette_keeps_title_and_search_query_after_search() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::ToggleCommandPalette);
+    state.update(GalleryMessage::CommandPalette(CommandPaletteEvent::Search(
+        "工作区".to_owned(),
+    )));
+
+    assert_eq!(state.action_picker.query(), "工作区");
+    let (title, query, input, selected) = state
+        .gallery_overlay_command_palette_state()
+        .expect("command palette remains mounted");
+    assert_eq!(title, "命令");
+    assert_eq!(query, "工作区");
+    assert_eq!(input, "工作区");
+    assert_eq!(selected, 0);
+    assert_eq!(
+        state.gallery_overlay_command_palette_visual(),
+        Some(("命令".to_owned(), "工作区".to_owned()))
+    );
+    assert!(
+        state
+            .palette_items()
+            .iter()
+            .all(|item| item.category.as_deref() == Some("工作区"))
+    );
 }
 
 #[test]
@@ -307,6 +442,78 @@ fn settings_return_to_the_gallery_and_appearance_updates_immediately() {
 }
 
 #[test]
+fn gallery_runtime_assembles_markdown_fence_children() {
+    let mut state = GalleryState::new();
+    assert!(state.gallery_runtime_markdown_has_mermaid_presenter());
+    state.update(GalleryMessage::SelectSection(GallerySection::RichText));
+    assert!(state.gallery_runtime_markdown_has_mermaid_presenter());
+}
+
+#[test]
+fn gallery_main_route_paints_a_runtime_scene() {
+    let mut state = GalleryState::new();
+    assert!(!state.settings_open);
+    let _ = state.view();
+    assert!(state.gallery_runtime_scene_populated());
+    state.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
+    let _ = state.view();
+    assert!(state.gallery_runtime_scene_populated());
+}
+
+#[test]
+fn settings_route_paints_a_runtime_scene() {
+    let mut state = GalleryState::new();
+    assert!(!state.settings_runtime_scene_populated());
+    state.update(GalleryMessage::OpenSettings);
+    assert!(state.settings_open);
+    assert!(state.settings_runtime_scene_populated());
+    let _ = state.view();
+    state.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
+        "workspace",
+    )));
+    assert!(state.settings_runtime_scene_populated());
+    state.update(GalleryMessage::BackFromSettings);
+    assert!(!state.settings_open);
+}
+
+#[test]
+fn settings_runtime_title_bar_chrome_starts_window_drag() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::OpenSettings);
+    assert!(state.settings_open);
+    assert!(state.settings_runtime_scene_populated());
+
+    let origin = Point::new(640.0, 18.0);
+    let dragged = Point::new(648.0, 18.0);
+    state.update(GalleryMessage::SettingsRuntime(
+        SettingsRuntimeInput::PointerDown {
+            button: 0,
+            point: origin,
+        },
+    ));
+    let mut chrome = WindowChromeState::default();
+    let mut action = None;
+    for event in state.take_settings_window_chrome_events() {
+        assert!(
+            matches!(
+                event,
+                WindowChromeEvent::PointerMoved(_) | WindowChromeEvent::PointerPressed
+            ),
+            "title-bar chrome must not emit control actions on an empty press: {event:?}"
+        );
+        action = chrome.update(event).or(action);
+    }
+    state.update(GalleryMessage::SettingsRuntime(
+        SettingsRuntimeInput::PointerMove(dragged),
+    ));
+    for event in state.take_settings_window_chrome_events() {
+        action = chrome.update(event).or(action);
+    }
+
+    assert_eq!(action, Some(WindowChromeAction::Drag));
+}
+
+#[test]
 fn appearance_material_and_opacity_drive_runtime_state() {
     let mut state = GalleryState::new();
     assert_eq!(
@@ -425,20 +632,118 @@ fn dock_gallery_mutates_the_real_layout_and_emits_host_effects() {
         bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
         monitor: None,
     }));
-    assert_eq!(state.dock.layout().floating.len(), 1);
+    assert_eq!(state.dock.floating.len(), 1);
+    assert!(!state.dock.main.contains("gallery.assets"));
     assert!(matches!(
-        state.dock_effects.as_slice(),
-        [DockHostEffect::OpenFloating(_)]
+        state.dock_events.as_slice(),
+        [DockWorkspaceEvent::OpenFloating(_)]
     ));
 
     state.update(GalleryMessage::Dock(DockAction::SetLocked(true)));
     state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
         "gallery.navigation",
     ))));
-    assert!(state.dock.is_visible(&DockId::from("gallery.navigation")));
+    assert!(state.dock_is_visible("gallery.navigation"));
 
     state.update(GalleryMessage::Dock(DockAction::SetLocked(false)));
+    state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
+        "gallery.primary",
+    ))));
+    assert!(state.dock_is_visible("gallery.primary"));
+    assert!(state.dock.main.contains("gallery.primary"));
+
+    state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
+        "gallery.navigation",
+    ))));
+    assert!(!state.dock_is_visible("gallery.navigation"));
+    assert!(
+        state.dock.main.contains("gallery.navigation"),
+        "hide must not remove the live DockWorkspace tree"
+    );
+
     state.update(GalleryMessage::Dock(DockAction::Reset));
-    assert!(state.dock.layout().floating.is_empty());
-    assert!(state.dock.is_visible(&DockId::from("gallery.assets")));
+    assert!(state.dock.floating.is_empty());
+    assert!(state.dock.main.contains("gallery.assets"));
+    assert!(state.dock_is_visible("gallery.assets"));
+    assert!(state.dock_is_visible("gallery.navigation"));
+}
+
+#[test]
+fn dock_float_records_a_runtime_open_window_command() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::Dock(DockAction::Float {
+        id: DockId::from("gallery.assets"),
+        bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
+        monitor: None,
+    }));
+    assert!(
+        state
+            .dock_events
+            .iter()
+            .any(|event| matches!(event, DockWorkspaceEvent::OpenFloating(_)))
+    );
+    assert!(
+        state
+            .dock_window_commands
+            .iter()
+            .any(|command| matches!(command, WindowCommand::Open { .. })),
+        "Float must map through runtime_dock_window_update into an Open command"
+    );
+
+    state.update(GalleryMessage::Dock(DockAction::Reset));
+    assert!(state.dock.floating.is_empty());
+    assert!(state.dock.main.contains("gallery.assets"));
+    assert!(
+        state
+            .dock_window_commands
+            .iter()
+            .any(|command| matches!(command, WindowCommand::Close(_))),
+        "Reset of a floating dock must record a Close window command"
+    );
+}
+
+#[test]
+fn gallery_runtime_dock_pointer_resize_persists_into_workspace() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+    let (start, end) = state
+        .gallery_runtime_dock_handle_drag()
+        .expect("workspace dock handle is laid out");
+    let before = first_dock_split_ratio(&state.dock.main);
+
+    state.update(GalleryMessage::GalleryRuntime(
+        RuntimeSceneInput::PointerDown {
+            button: 0,
+            point: start,
+        },
+    ));
+    state.update(GalleryMessage::GalleryRuntime(
+        RuntimeSceneInput::PointerMove(end),
+    ));
+    state.update(GalleryMessage::GalleryRuntime(
+        RuntimeSceneInput::PointerUp {
+            button: 0,
+            point: end,
+        },
+    ));
+
+    let resized = first_dock_split_ratio(&state.dock.main);
+    assert!(
+        (resized - before).abs() > f32::EPSILON,
+        "pointer dock resize must write back into DockWorkspace.main"
+    );
+
+    state.update(GalleryMessage::ToggleCheck(state.checked));
+    assert_eq!(
+        first_dock_split_ratio(&state.dock.main),
+        resized,
+        "gallery sync must keep the persisted dock ratio"
+    );
+}
+
+fn first_dock_split_ratio(node: &nana_ui::runtime::DockNode) -> f32 {
+    match node {
+        nana_ui::runtime::DockNode::Split { ratio, .. } => *ratio,
+        _ => panic!("gallery dock main is a split"),
+    }
 }

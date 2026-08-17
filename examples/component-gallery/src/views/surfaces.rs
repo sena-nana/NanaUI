@@ -2,6 +2,7 @@ use super::*;
 use iced::widget::column;
 
 impl GalleryState {
+    #[allow(dead_code)]
     pub(super) fn surfaces(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let selected_view = SurfaceView::from_index(self.surface_selection.selected());
         let card = |title: &'static str, detail: &'static str, kind| {

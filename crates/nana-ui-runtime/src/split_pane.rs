@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nana_ui_core::{
@@ -7,8 +8,9 @@ use nana_ui_core::{
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
+    FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId,
+    TextContent, UiWorld,
 };
 
 pub(crate) const HANDLE_SIZE: f32 = 8.0;
@@ -307,7 +309,44 @@ impl ComponentView for SplitPane {
     }
 }
 
-impl crate::AppContext {
+impl AppContext {
+    /// Mount the 8px resize handle between host pane slots, then re-project.
+    ///
+    /// Created handle identity is reused. Host first/second content is
+    /// reparented, not recreated.
+    pub fn assemble_split_pane(&mut self, pane: Entity<SplitPane>) -> Result<bool, FrameworkError> {
+        let parent = pane.stable_id();
+        let document = document_of(self, parent)?;
+        let snapshot = self.read(pane, |pane| (pane.first, pane.second, pane.handle))?;
+        let (stored_first, stored_second, stored_handle) = snapshot;
+        let first = stored_first.filter(|id| self.world().contains(*id));
+        let second = stored_second.filter(|id| self.world().contains(*id));
+        let handle = match recover_handle(self, parent, first, second, stored_handle) {
+            Some(id) => id,
+            None => create_split_handle(self, document)?,
+        };
+        let fields_changed =
+            first != stored_first || second != stored_second || stored_handle != Some(handle);
+        if fields_changed {
+            self.update_component(pane, |pane, _| {
+                pane.first = first;
+                pane.second = second;
+                pane.handle = Some(handle);
+            })?;
+        }
+        let mut children = Vec::new();
+        if let Some(first) = first {
+            children.push(first);
+        }
+        children.push(handle);
+        if let Some(second) = second {
+            children.push(second);
+        }
+        let changed = reconcile_ids(self, parent, &children)?;
+        self.update_component(pane, |_, _| {})?;
+        Ok(changed || fields_changed)
+    }
+
     pub fn is_split_pane(&self, id: StableNodeId) -> bool {
         self.read(crate::Entity::<SplitPane>::from_stable_id(id), |_| ())
             .is_ok()
@@ -466,10 +505,174 @@ impl crate::AppContext {
             .map(|_| entity)
     }
 
-    fn split_pane_entity(&self, id: StableNodeId) -> Option<crate::Entity<SplitPane>> {
-        self.is_split_pane(id)
-            .then(|| crate::Entity::from_stable_id(id))
+    fn split_pane_entity(&self, id: StableNodeId) -> Option<Entity<SplitPane>> {
+        self.is_split_pane(id).then(|| Entity::from_stable_id(id))
     }
+}
+
+#[derive(Debug, Clone)]
+struct SplitHandle;
+
+impl ComponentView for SplitHandle {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "split-handle".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &NodeStyle::default(),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                label: Some(Arc::from("Resize")),
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SplitHandleMark;
+
+impl ComponentView for SplitHandleMark {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "split-handle-mark".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &NodeStyle::default(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+fn document_of(context: &AppContext, id: StableNodeId) -> Result<DocumentId, FrameworkError> {
+    context
+        .world()
+        .node(id)
+        .map(|node| node.document)
+        .ok_or(FrameworkError::MissingView(id))
+}
+
+fn recover_handle(
+    context: &AppContext,
+    parent: StableNodeId,
+    first: Option<StableNodeId>,
+    second: Option<StableNodeId>,
+    stored: Option<StableNodeId>,
+) -> Option<StableNodeId> {
+    if let Some(id) = stored.filter(|id| context.world().contains(*id)) {
+        return Some(id);
+    }
+    let extras = context
+        .world()
+        .node(parent)
+        .map(|node| {
+            node.children
+                .into_iter()
+                .filter(|id| Some(*id) != first && Some(*id) != second)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    extras
+        .iter()
+        .copied()
+        .find(|id| is_handle_node(context, *id))
+        .or_else(|| extras.first().copied())
+}
+
+fn is_handle_node(context: &AppContext, id: StableNodeId) -> bool {
+    matches!(
+        context.world().node(id).map(|node| node.kind),
+        Some(NodeKind::Element { tag }) if tag == "split-handle" || tag.contains("handle")
+    ) || context
+        .world()
+        .accessibility(id)
+        .is_some_and(|state| state.label.as_deref() == Some("Resize"))
+}
+
+fn create_split_handle(
+    context: &mut AppContext,
+    document: DocumentId,
+) -> Result<StableNodeId, FrameworkError> {
+    let handle = context
+        .create_detached_component(document, SplitHandle)?
+        .stable_id();
+    let indicator = context
+        .create_detached_component(document, SplitHandleMark)?
+        .stable_id();
+    reconcile_ids(context, handle, &[indicator])?;
+    Ok(handle)
+}
+
+fn reconcile_ids(
+    context: &mut AppContext,
+    parent: StableNodeId,
+    ordered: &[StableNodeId],
+) -> Result<bool, FrameworkError> {
+    let ordered = ordered
+        .iter()
+        .copied()
+        .filter(|id| *id != parent && context.world().contains(*id))
+        .collect::<Vec<_>>();
+    let current = context
+        .world()
+        .node(parent)
+        .ok_or(FrameworkError::MissingView(parent))?
+        .children
+        .clone();
+    if current.as_slice() == ordered.as_slice() {
+        return Ok(false);
+    }
+    let keep = ordered.iter().copied().collect::<HashSet<_>>();
+    let mut mutations = MutationQueue::new();
+    for child in &current {
+        if !keep.contains(child) {
+            mutations.park_subtree(*child);
+        }
+    }
+    for child in ordered {
+        mutations.insert(parent, child, None);
+    }
+    context.commit_mutations(mutations)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -754,5 +957,122 @@ mod tests {
         let _ = context.take_system_work();
         context.update_component(split, |_, _| {}).unwrap();
         assert!(context.take_system_work().is_empty());
+    }
+
+    fn mount_without_handle(
+        context: &mut AppContext,
+        model: &SplitPaneModel,
+        first: StableNodeId,
+        second: StableNodeId,
+    ) -> crate::Entity<SplitPane> {
+        context
+            .create_component(document(), SplitPane::from_model(model, first, second))
+            .unwrap()
+    }
+
+    #[test]
+    fn assemble_creates_handle_when_none_was_set() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount_without_handle(&mut context, &model, first, second);
+        assert!(context.read(split, |pane| pane.handle).unwrap().is_none());
+
+        assert!(context.assemble_split_pane(split).unwrap());
+        let handle = context
+            .read(split, |pane| pane.handle)
+            .unwrap()
+            .expect("assemble creates a handle");
+        assert_eq!(
+            context.world().node(split.stable_id()).unwrap().children,
+            vec![first, handle, second]
+        );
+        assert_eq!(
+            context.world().node(handle).unwrap().kind,
+            NodeKind::Element {
+                tag: "split-handle".into(),
+            }
+        );
+        let handle_layout = &context.world().node_style(handle).unwrap().layout;
+        assert_eq!(handle_layout.width, Some(LengthSpec::Px(HANDLE_SIZE)));
+        assert_eq!(handle_layout.height, Some(LengthSpec::Fill));
+    }
+
+    #[test]
+    fn assemble_is_idempotent() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount_without_handle(&mut context, &model, first, second);
+        context.assemble_split_pane(split).unwrap();
+        let handle = context
+            .read(split, |pane| pane.handle)
+            .unwrap()
+            .expect("handle");
+
+        assert!(!context.assemble_split_pane(split).unwrap());
+        assert_eq!(
+            context.read(split, |pane| pane.handle).unwrap(),
+            Some(handle)
+        );
+        assert_eq!(
+            context.world().node(split.stable_id()).unwrap().children,
+            vec![first, handle, second]
+        );
+    }
+
+    #[test]
+    fn assemble_keeps_first_second_host_slots() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let model = SplitPaneModel::new(SplitAxis::Vertical, 160.0, 80.0, 280.0);
+        let split = mount_without_handle(&mut context, &model, first, second);
+        context.assemble_split_pane(split).unwrap();
+
+        let (bound_first, bound_second) = context
+            .read(split, |pane| (pane.first, pane.second))
+            .unwrap();
+        assert_eq!(bound_first, Some(first));
+        assert_eq!(bound_second, Some(second));
+        assert_eq!(
+            context.world().node(first).unwrap().kind,
+            NodeKind::Element {
+                tag: "first".into(),
+            }
+        );
+        assert_eq!(
+            context.world().node(second).unwrap().kind,
+            NodeKind::Element {
+                tag: "second".into(),
+            }
+        );
+        let first_layout = &context.world().node_style(first).unwrap().layout;
+        assert_eq!(first_layout.height, Some(LengthSpec::Px(160.0)));
+        assert_eq!(first_layout.flex_grow, Some(0.0));
+        let second_layout = &context.world().node_style(second).unwrap().layout;
+        assert_eq!(second_layout.height, Some(LengthSpec::Fill));
+        assert_eq!(second_layout.flex_grow, Some(1.0));
+    }
+
+    #[test]
+    fn assemble_marks_handle_as_split_handle() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount_without_handle(&mut context, &model, first, second);
+        context.assemble_split_pane(split).unwrap();
+        let handle = context
+            .read(split, |pane| pane.handle)
+            .unwrap()
+            .expect("handle");
+        assert!(context.is_split_handle(handle));
+        assert_eq!(
+            context.split_handle_axis(handle),
+            Some(SplitAxis::Horizontal)
+        );
     }
 }

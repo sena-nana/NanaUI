@@ -25,7 +25,8 @@ use crate::{
     HostTextureRegistry, HostedGpuResources, HostedProgram, HostedProgramContext,
     HostedProgramUpdate, HostedRedraw, HostedWindowCommand, HostedWindowEvent,
     HostedWindowGeometry, HostedWindowRole, HostedWindowSettings, IcedSceneView, IcedTextShaper,
-    RuntimeAnimationClock, RuntimeInputAdapter, ThemeMode, run_hosted,
+    RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry, ThemeMode,
+    default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers, run_hosted,
 };
 
 pub use nana_ui_platform::WindowSettings as RuntimeWindowSettings;
@@ -191,7 +192,14 @@ pub trait RuntimeProgram: Sized + 'static {
     /// Advanced direct Scene renderers executed with NanaUI's current frame
     /// encoder and render target. HostTexture remains available as a simpler
     /// compatibility resource path.
-    fn scene_gpu_renderers(&self, _id: WindowId) -> Option<crate::SceneGpuRendererRegistry> {
+    ///
+    /// Returning `None` lets the hosted runtime attach a default `"gpu-view"`
+    /// painter that uses stored host Device/Queue clones. `Some(registry)` is
+    /// used unchanged. [`IcedSceneView::new`], [`IcedSceneView::for_node`],
+    /// and [`IcedSceneView::from_shared`] install the same default painter when
+    /// the caller does not pass a registry; explicit `None` on
+    /// `with_gpu_resources` stays caller-controlled.
+    fn scene_gpu_renderers(&self, _id: WindowId) -> Option<SceneGpuRendererRegistry> {
         None
     }
 
@@ -297,6 +305,9 @@ struct RuntimeHosted<Program: RuntimeProgram> {
     accessibility: HashMap<WindowId, AccessibilityUpdate>,
     animation_clock: RuntimeAnimationClock,
     tasks: SyncSender<Task<Program::Message>>,
+    gpu_device: Arc<iced_wgpu::wgpu::Device>,
+    gpu_queue: Arc<iced_wgpu::wgpu::Queue>,
+    default_scene_gpu_renderers: Option<SceneGpuRendererRegistry>,
 }
 
 enum RuntimeHostMessage<Message> {
@@ -349,7 +360,10 @@ impl<Program: RuntimeProgram> RuntimeHosted<Program> {
         IcedSceneView::from_shared_with_renderers(
             document.shared_scene(),
             self.program.host_textures(id),
-            self.program.scene_gpu_renderers(id),
+            resolve_scene_gpu_renderers(
+                self.program.scene_gpu_renderers(id),
+                self.default_scene_gpu_renderers.clone(),
+            ),
             Size::new(geometry.logical_size.0, geometry.logical_size.1),
         )
         .unwrap_or_else(|error| panic!("RuntimeProgram produced an unpaintable UiScene: {error}"))
@@ -368,6 +382,12 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
         let tasks = runtime_task_workers(hosted.proxy().clone());
         let context = Self::context(hosted, WindowId::PRIMARY, geometry, tasks.clone());
         let (program, messages) = Program::initialize(&context)?;
+        let gpu_device = Arc::clone(hosted.gpu().device());
+        let gpu_queue = Arc::clone(hosted.gpu().queue());
+        let default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
+            Arc::clone(&gpu_device),
+            Arc::clone(&gpu_queue),
+        ));
         Ok((
             Self {
                 program,
@@ -375,6 +395,9 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
                 accessibility: HashMap::new(),
                 animation_clock: RuntimeAnimationClock::now(),
                 tasks,
+                gpu_device,
+                gpu_queue,
+                default_scene_gpu_renderers,
             },
             messages.into_iter().map(RuntimeHostMessage::App).collect(),
         ))
@@ -456,6 +479,12 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
     }
 
     fn rebuild_gpu(&mut self, hosted: &HostedProgramContext<Self::Message>) {
+        self.gpu_device = Arc::clone(hosted.gpu().device());
+        self.gpu_queue = Arc::clone(hosted.gpu().queue());
+        self.default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
+            Arc::clone(&self.gpu_device),
+            Arc::clone(&self.gpu_queue),
+        ));
         let geometry = self
             .geometries
             .get(&WindowId::PRIMARY)

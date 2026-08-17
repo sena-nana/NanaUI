@@ -432,7 +432,10 @@ where
     }
 }
 
-/// Full-window shell used by compact popup and status windows.
+/// Iced host composer for compact popup and status windows.
+///
+/// Not a catalog identity. Product chrome for the main window is Runtime
+/// `AppShell` / `AppTitleBar`. Keep this adapter for hosted popup windows.
 pub struct PopupShell<'a, Message> {
     body: Element<'a, Message>,
     title_bar: Option<Element<'a, Message>>,
@@ -496,8 +499,7 @@ where
     }
 }
 
-/// Popup-specific title bar with focus-main/new actions and native
-/// minimize/close commands.
+/// Iced popup title-bar adapter. Native drag and window commands stay hosted.
 pub struct PopupTitleBarFrame<'a, Message> {
     center: Element<'a, Message>,
     on_focus_main: Message,

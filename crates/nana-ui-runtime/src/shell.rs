@@ -1,15 +1,17 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LengthSpec, OverflowSpec,
-    PositionSpec, SemanticColorRole, TITLE_BAR_HEIGHT, UI_METRICS,
+    PositionSpec, RegionId, SemanticColorRole, TITLE_BAR_HEIGHT, UI_METRICS, WorkspaceModel,
 };
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, StandardVisual, TextContent,
-    UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
+    FrameworkError, InteractionState, InteractionStyle, MutationQueue, NodeKind, NodeStyle,
+    OverlayHost, SemanticPaint, SidebarFrame, StableNodeId, StandardVisual, TextContent, UiWorld,
+    Workspace, WorkspaceRegionSlot,
 };
 
 const SLOT_PADDING: f32 = 6.0;
@@ -527,6 +529,648 @@ impl ComponentView for AppShell {
     }
 }
 
+/// Page-level composer equivalent to Iced `DesktopShell`.
+///
+/// Wires host-mounted [`AppTitleBar`], [`Workspace`], [`AppShell`] layout, and
+/// [`OverlayHost`]. Application content stays in the supplied region slots.
+#[derive(Debug, Clone)]
+pub struct DesktopShell {
+    pub title_bar: Option<StableNodeId>,
+    pub workspace: Option<StableNodeId>,
+    pub overlay: Option<StableNodeId>,
+    pub primary: Option<StableNodeId>,
+    pub navigation: Option<StableNodeId>,
+    pub navigation_footer: Option<StableNodeId>,
+    pub inspector: Option<StableNodeId>,
+    pub bottom: Option<StableNodeId>,
+    pub extra_regions: Vec<(RegionId, StableNodeId)>,
+    pub overlays: Vec<StableNodeId>,
+    pub navigation_frame: Option<StableNodeId>,
+    pub title: Option<Arc<str>>,
+    pub title_leading: Option<StableNodeId>,
+    pub title_center: Option<StableNodeId>,
+    pub title_trailing: Option<StableNodeId>,
+    pub model: WorkspaceModel,
+    pub style: NodeStyle,
+}
+
+impl DesktopShell {
+    pub fn new() -> Self {
+        Self {
+            title_bar: None,
+            workspace: None,
+            overlay: None,
+            primary: None,
+            navigation: None,
+            navigation_footer: None,
+            inspector: None,
+            bottom: None,
+            extra_regions: Vec::new(),
+            overlays: Vec::new(),
+            navigation_frame: None,
+            title: None,
+            title_leading: None,
+            title_center: None,
+            title_trailing: None,
+            model: WorkspaceModel::new(),
+            style: NodeStyle::default(),
+        }
+    }
+
+    pub fn from_model(model: WorkspaceModel) -> Self {
+        Self {
+            model,
+            ..Self::new()
+        }
+    }
+
+    pub fn title_bar(mut self, title_bar: StableNodeId) -> Self {
+        self.title_bar = Some(title_bar);
+        self
+    }
+
+    /// Create an [`AppTitleBar`] on assemble when no host-mounted bar is set.
+    pub fn title(mut self, title: impl Into<Arc<str>>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn title_leading(mut self, leading: StableNodeId) -> Self {
+        self.title_leading = Some(leading);
+        self
+    }
+
+    pub fn title_center(mut self, center: StableNodeId) -> Self {
+        self.title_center = Some(center);
+        self
+    }
+
+    pub fn title_trailing(mut self, trailing: StableNodeId) -> Self {
+        self.title_trailing = Some(trailing);
+        self
+    }
+
+    pub fn primary(mut self, primary: StableNodeId) -> Self {
+        self.primary = Some(primary);
+        self
+    }
+
+    pub fn navigation(mut self, navigation: StableNodeId) -> Self {
+        self.navigation = Some(navigation);
+        self
+    }
+
+    pub fn navigation_footer(mut self, footer: StableNodeId) -> Self {
+        self.navigation_footer = Some(footer);
+        self
+    }
+
+    pub fn inspector(mut self, inspector: StableNodeId) -> Self {
+        self.inspector = Some(inspector);
+        self
+    }
+
+    pub fn bottom(mut self, bottom: StableNodeId) -> Self {
+        self.bottom = Some(bottom);
+        self
+    }
+
+    pub fn region(mut self, id: RegionId, content: StableNodeId) -> Self {
+        if let Some((_, existing)) = self
+            .extra_regions
+            .iter_mut()
+            .find(|(region, _)| *region == id)
+        {
+            *existing = content;
+        } else {
+            self.extra_regions.push((id, content));
+        }
+        self
+    }
+
+    /// Push an overlay child onto the assembled [`OverlayHost`].
+    pub fn overlay(mut self, overlay: StableNodeId) -> Self {
+        self.overlays.push(overlay);
+        self
+    }
+
+    pub fn workspace_model(mut self, model: WorkspaceModel) -> Self {
+        self.model = model;
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+}
+
+impl Default for DesktopShell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ComponentView for DesktopShell {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "desktop-shell".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        AppShell {
+            title_bar: self.title_bar,
+            body: self.workspace,
+            overlay: self.overlay,
+            style: self.style.clone(),
+        }
+        .project(id, world, mutations);
+    }
+}
+
+impl AppContext {
+    /// Reconcile title bar, body, and optional overlay, then re-project slots.
+    ///
+    /// Host-mounted slots are kept. A title bar or overlay node is created
+    /// only when that slot was already assigned or already present as a child.
+    pub fn assemble_app_shell(&mut self, shell: Entity<AppShell>) -> Result<bool, FrameworkError> {
+        let parent = shell.stable_id();
+        let document = document_of(self, parent)?;
+        let snapshot = self.read(shell, Clone::clone)?;
+        let title_bar = resolve_app_title_bar(self, document, parent, &snapshot)?;
+        let body = snapshot.body.filter(|id| self.world().contains(*id));
+        let overlay = resolve_app_overlay(self, document, parent, &snapshot)?;
+        let fields_changed =
+            title_bar != snapshot.title_bar || body != snapshot.body || overlay != snapshot.overlay;
+        if fields_changed {
+            self.update_component(shell, |shell, _| {
+                shell.title_bar = title_bar;
+                shell.body = body;
+                shell.overlay = overlay;
+            })?;
+        }
+        let mut children = Vec::new();
+        if let Some(title_bar) = title_bar {
+            children.push(title_bar);
+        }
+        if let Some(body) = body {
+            children.push(body);
+        }
+        if let Some(overlay) = overlay {
+            children.push(overlay);
+        }
+        let changed = reconcile_ids(self, parent, &children)?;
+        self.update_component(shell, |_, _| {})?;
+        Ok(changed || fields_changed)
+    }
+
+    /// Mount title bar, workspace regions, and overlay host on `shell`.
+    ///
+    /// Created chrome is reused on the next call. Host content nodes are
+    /// reparented, not recreated. Floating dock windows are out of scope.
+    pub fn assemble_desktop_shell(
+        &mut self,
+        shell: Entity<DesktopShell>,
+    ) -> Result<bool, FrameworkError> {
+        let document = document_of(self, shell.stable_id())?;
+        let snapshot = self.read(shell, Clone::clone)?;
+        let previous_slots = snapshot
+            .workspace
+            .filter(|id| view_is::<Workspace>(self, *id))
+            .map(|id| {
+                self.read(Entity::<Workspace>::from_stable_id(id), |workspace| {
+                    workspace.slots.clone()
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let previous_used = used_ids(&snapshot, &previous_slots);
+
+        let workspace_id = ensure_workspace(self, document, snapshot.workspace)?;
+        let overlay_id = ensure_overlay_host(self, document, snapshot.overlay)?;
+        let title_bar = ensure_title_bar(
+            self,
+            document,
+            snapshot.title_bar,
+            snapshot.title.as_ref(),
+            snapshot.title_leading,
+            snapshot.title_center,
+            snapshot.title_trailing,
+        )?;
+        let (resources, navigation_frame) = resolve_navigation(
+            self,
+            document,
+            snapshot.navigation,
+            snapshot.navigation_footer,
+            snapshot.navigation_frame,
+        )?;
+
+        let mut assembled = snapshot;
+        assembled.title_bar = title_bar;
+        assembled.workspace = Some(workspace_id);
+        assembled.overlay = Some(overlay_id);
+        assembled.navigation_frame = navigation_frame;
+        let slots = region_slots(self, &assembled, resources);
+        let next_used = used_ids(&assembled, &slots);
+        park_unused(self, shell.stable_id(), &previous_used, &next_used)?;
+
+        self.update_component(shell, |desktop, _| {
+            desktop.title_bar = title_bar;
+            desktop.workspace = Some(workspace_id);
+            desktop.overlay = Some(overlay_id);
+            desktop.navigation_frame = navigation_frame;
+        })?;
+        let mut shell_children = Vec::new();
+        if let Some(title_bar) = title_bar {
+            shell_children.push(title_bar);
+        }
+        shell_children.push(workspace_id);
+        shell_children.push(overlay_id);
+        let mut changed = reconcile_ids(self, shell.stable_id(), &shell_children)?;
+
+        let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
+        self.update_component(workspace, |workspace, _| {
+            workspace.refresh_from_model(&assembled.model);
+            workspace.slots = slots;
+        })?;
+        changed |= self.assemble_workspace(workspace)?;
+        changed |= reconcile_ids(self, overlay_id, &assembled.overlays)?;
+        self.update_component(shell, |_, _| {})?;
+        Ok(changed)
+    }
+}
+
+fn document_of(context: &AppContext, id: StableNodeId) -> Result<DocumentId, FrameworkError> {
+    context
+        .world()
+        .node(id)
+        .map(|node| node.document)
+        .ok_or(FrameworkError::MissingView(id))
+}
+
+fn view_is<C: ComponentView>(context: &AppContext, id: StableNodeId) -> bool {
+    context
+        .read(Entity::<C>::from_stable_id(id), |_| ())
+        .is_ok()
+}
+
+fn resolve_app_title_bar(
+    context: &mut AppContext,
+    document: DocumentId,
+    parent: StableNodeId,
+    snapshot: &AppShell,
+) -> Result<Option<StableNodeId>, FrameworkError> {
+    if let Some(id) = snapshot
+        .title_bar
+        .filter(|id| context.world().contains(*id))
+    {
+        return Ok(Some(id));
+    }
+    if let Some(id) = find_title_bar_child(context, parent) {
+        return Ok(Some(id));
+    }
+    if snapshot.title_bar.is_none() {
+        return Ok(None);
+    }
+    let title = recovered_title(context, parent).unwrap_or_else(|| Arc::from(""));
+    Ok(Some(
+        context
+            .create_detached_component(document, AppTitleBar::new(title))?
+            .stable_id(),
+    ))
+}
+
+fn resolve_app_overlay(
+    context: &mut AppContext,
+    document: DocumentId,
+    parent: StableNodeId,
+    snapshot: &AppShell,
+) -> Result<Option<StableNodeId>, FrameworkError> {
+    if let Some(id) = snapshot.overlay.filter(|id| context.world().contains(*id)) {
+        return Ok(Some(id));
+    }
+    if let Some(id) = find_overlay_child(context, parent) {
+        return Ok(Some(id));
+    }
+    if snapshot.overlay.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(
+        context
+            .create_detached_component(document, OverlayHost::new())?
+            .stable_id(),
+    ))
+}
+
+fn find_title_bar_child(context: &AppContext, parent: StableNodeId) -> Option<StableNodeId> {
+    context
+        .world()
+        .node(parent)
+        .into_iter()
+        .flat_map(|node| node.children)
+        .find(|&id| {
+            view_is::<AppTitleBar>(context, id)
+                || matches!(
+                    context.world().node(id).map(|node| node.kind),
+                    Some(NodeKind::Element { tag })
+                        if tag.contains("title-bar") || tag.contains("titlebar")
+                )
+        })
+}
+
+fn find_overlay_child(context: &AppContext, parent: StableNodeId) -> Option<StableNodeId> {
+    context
+        .world()
+        .node(parent)
+        .into_iter()
+        .flat_map(|node| node.children)
+        .find(|&id| {
+            view_is::<OverlayHost>(context, id)
+                || matches!(
+                    context.world().node(id).map(|node| node.kind),
+                    Some(NodeKind::Element { tag }) if tag.contains("overlay")
+                )
+        })
+}
+
+fn recovered_title(context: &AppContext, parent: StableNodeId) -> Option<Arc<str>> {
+    let id = find_title_bar_child(context, parent)?;
+    if let Ok(title) = context.read(Entity::<AppTitleBar>::from_stable_id(id), |bar| {
+        Arc::clone(&bar.title)
+    }) {
+        if !title.is_empty() {
+            return Some(title);
+        }
+    }
+    if let Some(text) = context.world().text(id).filter(|text| !text.is_empty()) {
+        return Some(Arc::from(text));
+    }
+    context
+        .world()
+        .accessibility(id)
+        .and_then(|state| state.label.clone())
+        .filter(|label| !label.is_empty())
+}
+
+fn ensure_workspace(
+    context: &mut AppContext,
+    document: DocumentId,
+    existing: Option<StableNodeId>,
+) -> Result<StableNodeId, FrameworkError> {
+    if let Some(id) = existing.filter(|id| view_is::<Workspace>(context, *id)) {
+        return Ok(id);
+    }
+    Ok(context
+        .create_detached_component(document, Workspace::new())?
+        .stable_id())
+}
+
+fn ensure_overlay_host(
+    context: &mut AppContext,
+    document: DocumentId,
+    existing: Option<StableNodeId>,
+) -> Result<StableNodeId, FrameworkError> {
+    if let Some(id) = existing.filter(|id| context.world().contains(*id)) {
+        return Ok(id);
+    }
+    Ok(context
+        .create_detached_component(document, OverlayHost::new())?
+        .stable_id())
+}
+
+fn ensure_title_bar(
+    context: &mut AppContext,
+    document: DocumentId,
+    existing: Option<StableNodeId>,
+    title: Option<&Arc<str>>,
+    leading: Option<StableNodeId>,
+    center: Option<StableNodeId>,
+    trailing: Option<StableNodeId>,
+) -> Result<Option<StableNodeId>, FrameworkError> {
+    if let Some(id) = existing.filter(|id| context.world().contains(*id)) {
+        return Ok(Some(id));
+    }
+    let Some(title) = title else {
+        return Ok(None);
+    };
+    let leading = leading.filter(|id| context.world().contains(*id));
+    let center = center.filter(|id| context.world().contains(*id));
+    let trailing = trailing.filter(|id| context.world().contains(*id));
+    let mut bar = AppTitleBar::new(Arc::clone(title));
+    if let Some(leading) = leading {
+        bar = bar.leading(leading);
+    }
+    if let Some(center) = center {
+        bar = bar.center(center);
+    }
+    if let Some(trailing) = trailing {
+        bar = bar.trailing(trailing);
+    }
+    let title_bar = context
+        .create_detached_component(document, bar)?
+        .stable_id();
+    let mut children = Vec::new();
+    if let Some(leading) = leading {
+        children.push(leading);
+    }
+    if let Some(center) = center {
+        children.push(center);
+    }
+    if let Some(trailing) = trailing {
+        children.push(trailing);
+    }
+    reconcile_ids(context, title_bar, &children)?;
+    Ok(Some(title_bar))
+}
+
+fn resolve_navigation(
+    context: &mut AppContext,
+    document: DocumentId,
+    navigation: Option<StableNodeId>,
+    footer: Option<StableNodeId>,
+    existing_frame: Option<StableNodeId>,
+) -> Result<(Option<StableNodeId>, Option<StableNodeId>), FrameworkError> {
+    let Some(navigation) = navigation.filter(|id| context.world().contains(*id)) else {
+        return Ok((None, None));
+    };
+    let footer = footer.filter(|id| context.world().contains(*id));
+    if view_is::<SidebarFrame>(context, navigation) {
+        if let Some(footer) = footer {
+            context.update_component(
+                Entity::<SidebarFrame>::from_stable_id(navigation),
+                |frame, _| {
+                    frame.footer = Some(footer);
+                },
+            )?;
+            let children = context
+                .world()
+                .node(navigation)
+                .map(|node| node.children)
+                .unwrap_or_default();
+            if !children.contains(&footer) {
+                let mut mutations = MutationQueue::new();
+                mutations.insert(navigation, footer, None);
+                context.commit_mutations(mutations)?;
+            }
+        }
+        return Ok((Some(navigation), None));
+    }
+
+    let frame = if let Some(id) = existing_frame.filter(|id| view_is::<SidebarFrame>(context, *id))
+    {
+        id
+    } else {
+        context
+            .create_detached_component(document, SidebarFrame::new())?
+            .stable_id()
+    };
+    let scroll = match context.read(Entity::<SidebarFrame>::from_stable_id(frame), |frame| {
+        frame.body
+    })? {
+        Some(id) if is_scroll_node(context, id) => id,
+        _ => context
+            .create_detached_component(document, SidebarFrame::vertical_body_scroll())?
+            .stable_id(),
+    };
+    context.update_component(Entity::<SidebarFrame>::from_stable_id(frame), |frame, _| {
+        frame.body = Some(scroll);
+        frame.footer = footer;
+    })?;
+    reconcile_ids(context, scroll, &[navigation])?;
+    let mut frame_children = vec![scroll];
+    if let Some(footer) = footer {
+        frame_children.push(footer);
+    }
+    reconcile_ids(context, frame, &frame_children)?;
+    Ok((Some(frame), Some(frame)))
+}
+
+fn is_scroll_node(context: &AppContext, id: StableNodeId) -> bool {
+    matches!(
+        context.world().node(id).map(|node| node.kind),
+        Some(NodeKind::Element { tag }) if tag == "scroll"
+    )
+}
+
+fn region_slots(
+    context: &AppContext,
+    shell: &DesktopShell,
+    resources: Option<StableNodeId>,
+) -> Vec<WorkspaceRegionSlot> {
+    let present = |id: Option<StableNodeId>| id.filter(|id| context.world().contains(*id));
+    let mut slots = Vec::new();
+    if let Some(content) = present(resources) {
+        slots.push(WorkspaceRegionSlot::new(RegionId::Resources, content));
+    }
+    if let Some(content) = present(shell.primary) {
+        slots.push(WorkspaceRegionSlot::new(RegionId::Primary, content));
+    }
+    if let Some(content) = present(shell.inspector) {
+        slots.push(WorkspaceRegionSlot::new(RegionId::Inspector, content));
+    }
+    if let Some(content) = present(shell.bottom) {
+        slots.push(WorkspaceRegionSlot::new(RegionId::Diagnostics, content));
+    }
+    for (id, content) in &shell.extra_regions {
+        let Some(content) = present(Some(*content)) else {
+            continue;
+        };
+        if let Some(existing) = slots.iter_mut().find(|slot| slot.id == *id) {
+            existing.content = Some(content);
+        } else {
+            slots.push(WorkspaceRegionSlot::new(id.clone(), content));
+        }
+    }
+    slots
+}
+
+fn used_ids(shell: &DesktopShell, slots: &[WorkspaceRegionSlot]) -> HashSet<StableNodeId> {
+    let mut ids = HashSet::new();
+    for id in [
+        shell.title_bar,
+        shell.workspace,
+        shell.overlay,
+        shell.primary,
+        shell.navigation,
+        shell.navigation_footer,
+        shell.inspector,
+        shell.bottom,
+        shell.navigation_frame,
+        shell.title_leading,
+        shell.title_center,
+        shell.title_trailing,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        ids.insert(id);
+    }
+    for (_, content) in &shell.extra_regions {
+        ids.insert(*content);
+    }
+    ids.extend(shell.overlays.iter().copied());
+    for slot in slots {
+        if let Some(content) = slot.content {
+            ids.insert(content);
+        }
+    }
+    ids
+}
+
+fn park_unused(
+    context: &mut AppContext,
+    shell: StableNodeId,
+    previous: &HashSet<StableNodeId>,
+    next: &HashSet<StableNodeId>,
+) -> Result<(), FrameworkError> {
+    let mut mutations = MutationQueue::new();
+    for id in previous {
+        if *id == shell || next.contains(id) || !context.world().contains(*id) {
+            continue;
+        }
+        mutations.park_subtree(*id);
+    }
+    if mutations.as_slice().is_empty() {
+        return Ok(());
+    }
+    context.commit_mutations(mutations)?;
+    Ok(())
+}
+
+fn reconcile_ids(
+    context: &mut AppContext,
+    parent: StableNodeId,
+    ordered: &[StableNodeId],
+) -> Result<bool, FrameworkError> {
+    let ordered = ordered
+        .iter()
+        .copied()
+        .filter(|id| *id != parent && context.world().contains(*id))
+        .collect::<Vec<_>>();
+    let current = context
+        .world()
+        .node(parent)
+        .ok_or(FrameworkError::MissingView(parent))?
+        .children
+        .clone();
+    if current.as_slice() == ordered.as_slice() {
+        return Ok(false);
+    }
+    let keep = ordered.iter().copied().collect::<HashSet<_>>();
+    let mut mutations = MutationQueue::new();
+    for child in &current {
+        if !keep.contains(child) {
+            mutations.park_subtree(*child);
+        }
+    }
+    for child in ordered {
+        mutations.insert(parent, child, None);
+    }
+    context.commit_mutations(mutations)?;
+    Ok(true)
+}
+
 fn project_window_control(
     id: StableNodeId,
     action: WindowChromeAction,
@@ -671,7 +1315,8 @@ fn finite_positive(value: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, DocumentId, IconButton, LayoutViewport, Text};
+    use crate::{AppContext, DocumentId, Entity, IconButton, LayoutViewport, SidebarFrame, Text};
+    use nana_ui_core::RegionId;
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -1047,5 +1692,391 @@ mod tests {
         context.update_component(bar, |_, _| {}).unwrap();
         context.update_component(shell, |_, _| {}).unwrap();
         assert!(context.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn assemble_app_shell_reconciles_title_bar_and_body() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_detached_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let body = context
+            .create_detached_component(document(), Text::new("workspace"))
+            .unwrap();
+        let shell = context
+            .create_component(
+                document(),
+                AppShell::new()
+                    .title_bar(title.stable_id())
+                    .body(body.stable_id()),
+            )
+            .unwrap();
+
+        assert!(context.assemble_app_shell(shell).unwrap());
+        assert_eq!(
+            context.world().node(shell.stable_id()).unwrap().children,
+            vec![title.stable_id(), body.stable_id()]
+        );
+        let title_layout = &context
+            .world()
+            .node_style(title.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(title_layout.height, Some(LengthSpec::Px(TITLE_BAR_HEIGHT)));
+        assert_eq!(
+            title_layout.min_height,
+            Some(LengthSpec::Px(TITLE_BAR_HEIGHT))
+        );
+        assert_eq!(title_layout.flex_grow, Some(0.0));
+        let body_layout = &context.world().node_style(body.stable_id()).unwrap().layout;
+        assert_eq!(body_layout.flex_grow, Some(1.0));
+        assert_eq!(body_layout.height, Some(LengthSpec::Fill));
+        assert_eq!(body_layout.min_height, Some(LengthSpec::Px(0.0)));
+        assert!(
+            context
+                .read(shell, |shell| shell.overlay)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn assemble_app_shell_is_idempotent() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_detached_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let body = context
+            .create_detached_component(document(), Text::new("workspace"))
+            .unwrap();
+        let shell = context
+            .create_component(
+                document(),
+                AppShell::new()
+                    .title_bar(title.stable_id())
+                    .body(body.stable_id()),
+            )
+            .unwrap();
+        context.assemble_app_shell(shell).unwrap();
+        let children = context.world().node(shell.stable_id()).unwrap().children;
+
+        assert!(!context.assemble_app_shell(shell).unwrap());
+        assert_eq!(
+            context
+                .read(shell, |shell| (shell.title_bar, shell.body, shell.overlay))
+                .unwrap(),
+            (Some(title.stable_id()), Some(body.stable_id()), None)
+        );
+        assert_eq!(
+            context.world().node(shell.stable_id()).unwrap().children,
+            children
+        );
+    }
+
+    #[test]
+    fn assemble_app_shell_keeps_overlay_absolute_fill() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_detached_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let body = context
+            .create_detached_component(document(), Text::new("workspace"))
+            .unwrap();
+        let overlay = context
+            .create_detached_component(document(), Text::new("overlay"))
+            .unwrap();
+        let shell = context
+            .create_component(
+                document(),
+                AppShell::new()
+                    .title_bar(title.stable_id())
+                    .body(body.stable_id())
+                    .overlay(overlay.stable_id()),
+            )
+            .unwrap();
+
+        context.assemble_app_shell(shell).unwrap();
+        assert_eq!(
+            context.world().node(shell.stable_id()).unwrap().children,
+            vec![title.stable_id(), body.stable_id(), overlay.stable_id()]
+        );
+        let overlay_layout = &context
+            .world()
+            .node_style(overlay.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(overlay_layout.position, PositionSpec::Absolute);
+        assert_eq!(overlay_layout.offset_top, Some(LengthSpec::Px(0.0)));
+        assert_eq!(overlay_layout.offset_right, Some(LengthSpec::Px(0.0)));
+        assert_eq!(overlay_layout.offset_bottom, Some(LengthSpec::Px(0.0)));
+        assert_eq!(overlay_layout.offset_left, Some(LengthSpec::Px(0.0)));
+        assert_eq!(overlay_layout.width, Some(LengthSpec::Fill));
+        assert_eq!(overlay_layout.height, Some(LengthSpec::Fill));
+        assert_eq!(overlay_layout.flex_grow, Some(0.0));
+        assert_eq!(overlay_layout.z_index, Some(OVERLAY_Z_INDEX));
+        assert_eq!(
+            context.read(shell, |shell| shell.overlay).unwrap(),
+            Some(overlay.stable_id())
+        );
+    }
+
+    fn mounted_roots(context: &AppContext, document: DocumentId) -> Vec<StableNodeId> {
+        context
+            .world()
+            .document_order(document)
+            .into_iter()
+            .filter(|id| {
+                context.world().is_mounted(*id)
+                    && context
+                        .world()
+                        .node(*id)
+                        .is_some_and(|node| node.parent.is_none())
+            })
+            .collect()
+    }
+
+    fn assemble_shell(
+        context: &mut AppContext,
+        shell: DesktopShell,
+    ) -> crate::Entity<DesktopShell> {
+        let entity = context
+            .create_component(document(), shell)
+            .expect("desktop shell");
+        context
+            .assemble_desktop_shell(entity)
+            .expect("assemble desktop shell");
+        entity
+    }
+
+    #[test]
+    fn desktop_shell_stacks_title_workspace_and_overlay() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_detached_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let primary = context
+            .create_detached_component(document(), Text::new("workspace"))
+            .unwrap();
+        let overlay = context
+            .create_detached_component(document(), Text::new("overlay"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .title_bar(title.stable_id())
+                .primary(primary.stable_id())
+                .overlay(overlay.stable_id()),
+        );
+        let (workspace, overlay_host) = context
+            .read(shell, |shell| (shell.workspace, shell.overlay))
+            .unwrap();
+        let workspace = workspace.expect("workspace");
+        let overlay_host = overlay_host.expect("overlay host");
+
+        assert_eq!(
+            context.world().node(shell.stable_id()).unwrap().kind,
+            NodeKind::Element {
+                tag: "desktop-shell".into(),
+            }
+        );
+        assert_eq!(
+            context.world().node(shell.stable_id()).unwrap().children,
+            vec![title.stable_id(), workspace, overlay_host]
+        );
+        let title_layout = &context
+            .world()
+            .node_style(title.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(title_layout.height, Some(LengthSpec::Px(TITLE_BAR_HEIGHT)));
+        assert_eq!(title_layout.flex_grow, Some(0.0));
+        let shell_layout = &context
+            .world()
+            .node_style(shell.stable_id())
+            .unwrap()
+            .layout;
+        assert!(
+            shell_layout.padding.is_none()
+                && shell_layout.padding_left.is_none()
+                && shell_layout.padding_right.is_none()
+                && shell_layout.padding_top.is_none()
+                && shell_layout.padding_bottom.is_none()
+        );
+        let body_layout = &context.world().node_style(workspace).unwrap().layout;
+        assert_eq!(body_layout.flex_grow, Some(1.0));
+        assert_eq!(body_layout.height, Some(LengthSpec::Fill));
+        assert_eq!(body_layout.min_height, Some(LengthSpec::Px(0.0)));
+        assert_eq!(body_layout.position, PositionSpec::Static);
+        let overlay_layout = &context.world().node_style(overlay_host).unwrap().layout;
+        assert_eq!(overlay_layout.position, PositionSpec::Absolute);
+        assert_eq!(overlay_layout.width, Some(LengthSpec::Fill));
+        assert_eq!(overlay_layout.height, Some(LengthSpec::Fill));
+        assert_eq!(overlay_layout.flex_grow, Some(0.0));
+        assert_eq!(
+            context.world().node(overlay_host).unwrap().children,
+            vec![overlay.stable_id()]
+        );
+
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let title_box = context.world().layout_box(title.stable_id()).unwrap();
+        let body_box = context.world().layout_box(workspace).unwrap();
+        let overlay_box = context.world().layout_box(overlay_host).unwrap();
+        let shell_box = context.world().layout_box(shell.stable_id()).unwrap();
+        assert_eq!(title_box.height, TITLE_BAR_HEIGHT);
+        assert_eq!(title_box.y, shell_box.y);
+        assert_eq!(body_box.y, title_box.y + title_box.height);
+        assert_eq!(body_box.height, 400.0 - TITLE_BAR_HEIGHT);
+        assert_eq!(overlay_box.x, shell_box.x);
+        assert_eq!(overlay_box.y, shell_box.y);
+        assert_eq!(overlay_box.width, shell_box.width);
+        assert_eq!(overlay_box.height, shell_box.height);
+        assert_eq!(shell_box.height, 400.0);
+    }
+
+    #[test]
+    fn desktop_shell_maps_navigation_and_primary_to_workspace_slots() {
+        let mut context = AppContext::new();
+        let navigation = context
+            .create_detached_component(document(), SidebarFrame::new())
+            .unwrap();
+        let primary = context
+            .create_detached_component(document(), Text::new("primary"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .navigation(navigation.stable_id())
+                .primary(primary.stable_id()),
+        );
+        let workspace_id = context
+            .read(shell, |shell| shell.workspace)
+            .unwrap()
+            .expect("workspace");
+        let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
+        let (slots, middle, primary_column) = context
+            .read(workspace, |workspace| {
+                (
+                    workspace.slots.clone(),
+                    workspace.middle,
+                    workspace.primary_column,
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            slots,
+            vec![
+                WorkspaceRegionSlot::new(RegionId::Resources, navigation.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
+            ]
+        );
+        let middle = middle.expect("assembled start track");
+        let primary_column = primary_column.expect("assembled primary column");
+        assert_eq!(
+            context.world().node(middle).unwrap().children,
+            vec![navigation.stable_id(), primary_column]
+        );
+        assert!(
+            context
+                .world()
+                .node(workspace_id)
+                .unwrap()
+                .children
+                .contains(&middle)
+        );
+    }
+
+    #[test]
+    fn desktop_shell_omits_missing_inspector_and_bottom() {
+        let mut context = AppContext::new();
+        let navigation = context
+            .create_detached_component(document(), SidebarFrame::new())
+            .unwrap();
+        let primary = context
+            .create_detached_component(document(), Text::new("primary"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .navigation(navigation.stable_id())
+                .primary(primary.stable_id()),
+        );
+        let workspace_id = context
+            .read(shell, |shell| shell.workspace)
+            .unwrap()
+            .expect("workspace");
+        let slots = context
+            .read(
+                Entity::<Workspace>::from_stable_id(workspace_id),
+                |workspace| workspace.slots.clone(),
+            )
+            .unwrap();
+        assert!(
+            !slots
+                .iter()
+                .any(|slot| slot.id == RegionId::Inspector || slot.id == RegionId::Diagnostics)
+        );
+        assert_eq!(slots.len(), 2);
+        assert!(context.world().node(navigation.stable_id()).is_some());
+        assert!(context.world().node(primary.stable_id()).is_some());
+    }
+
+    #[test]
+    fn desktop_shell_reassemble_after_primary_change_keeps_single_root() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_detached_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let first = context
+            .create_detached_component(document(), Text::new("first"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document(), Text::new("second"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .title_bar(title.stable_id())
+                .primary(first.stable_id()),
+        );
+        let first_workspace = context
+            .read(shell, |shell| shell.workspace)
+            .unwrap()
+            .expect("workspace");
+        assert_eq!(mounted_roots(&context, document()), vec![shell.stable_id()]);
+
+        context
+            .update_component(shell, |shell, _| {
+                shell.primary = Some(second.stable_id());
+            })
+            .unwrap();
+        context.assemble_desktop_shell(shell).unwrap();
+        let workspace_id = context
+            .read(shell, |shell| shell.workspace)
+            .unwrap()
+            .expect("workspace");
+        let slots = context
+            .read(
+                Entity::<Workspace>::from_stable_id(workspace_id),
+                |workspace| workspace.slots.clone(),
+            )
+            .unwrap();
+
+        assert_eq!(workspace_id, first_workspace);
+        assert_eq!(mounted_roots(&context, document()), vec![shell.stable_id()]);
+        assert_eq!(
+            slots,
+            vec![WorkspaceRegionSlot::new(
+                RegionId::Primary,
+                second.stable_id()
+            )]
+        );
+        assert!(context.world().is_mounted(second.stable_id()));
+        assert!(!context.world().is_mounted(first.stable_id()));
+        assert_eq!(
+            context.world().node(shell.stable_id()).unwrap().children[0],
+            title.stable_id()
+        );
     }
 }

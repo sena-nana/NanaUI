@@ -59,16 +59,20 @@ pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
 pub use command_palette::CommandPalette;
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
-    AccessibilityRole, AccessibilityState, AccessibilityUpdate, ComponentElevation,
-    ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode, EventRoute,
-    ExtractedNode, ExtractedTextSpan, ImeComposition, InteractionState, InteractionStyle,
-    LayoutBox, LayoutInput, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle,
-    OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, SelectMenuGeometry,
-    SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual, TextContent,
-    TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics, TextSelection,
-    TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
+    AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
+    ComponentElevation, ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode,
+    EventRoute, ExtractedNode, ExtractedTextSpan, ImeComposition, InteractionState,
+    InteractionStyle, LayoutBox, LayoutInput, MenuSurfaceKind, ModalLayoutInput, MountState,
+    NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
+    SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
+    TextContent, TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics,
+    TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment,
+    TooltipVisual,
 };
-pub use dock::{Dock, DockAxis, DockDropZone, DockNode, DockPanel};
+pub use dock::{
+    Dock, DockAxis, DockDropZone, DockFloatingSurface, DockNode, DockPanel, DockSurfaceSpec,
+    DockWorkspace, DockWorkspaceEvent, MAIN_SURFACE_ID, dock_surface_window_key,
+};
 pub use dropdown::{Dropdown, DropdownOption};
 pub use feedback::{
     EmptyState, LabeledValue, Progress, ProgressCancelled, Spinner, StatusBadge, ValidationMessage,
@@ -150,10 +154,11 @@ pub use selection::{
 };
 pub use settings::{
     AboutMetadata, AboutSection, AboutSectionAssembly, AppearanceSection,
-    AppearanceSectionAssembly, SettingsCard, SettingsCollapsibleCard, SettingsRow,
-    apply_appearance_event,
+    AppearanceSectionAssembly, SettingsBack, SettingsCard, SettingsCollapsibleCard, SettingsPage,
+    SettingsPageAssembly, SettingsRow, SettingsSidebar, SettingsSidebarAssembly,
+    SettingsTabSelected, apply_appearance_event,
 };
-pub use shell::{AppShell, AppTitleBar, AppTitleBarControls, WindowChromeAction};
+pub use shell::{AppShell, AppTitleBar, AppTitleBarControls, DesktopShell, WindowChromeAction};
 pub use sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState,
     SidebarRowTone, SidebarSection, SidebarSectionSlots, SidebarSectionState,

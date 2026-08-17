@@ -2,6 +2,7 @@ use super::*;
 use iced::widget::column;
 
 impl GalleryState {
+    #[allow(dead_code)]
     pub(super) fn graph_gallery(&self, _colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         let selection = match self.graph_selection.as_ref() {

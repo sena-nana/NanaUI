@@ -1,0 +1,127 @@
+//! Maps Runtime dock workspace events to host window commands.
+//!
+//! Iced [`crate::dock::hosted_dock_update`] remains the DockController path.
+//! This helper does not build an Iced element or a second GPU context.
+
+use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
+use nana_ui_runtime::{DockFloatingSurface, DockWorkspaceEvent, dock_surface_window_key};
+
+use crate::runtime_host::{RuntimeProgramUpdate, RuntimeRedraw};
+
+const FLOATING_MIN_WIDTH: f64 = 160.0;
+const FLOATING_MIN_HEIGHT: f64 = 120.0;
+
+/// Deterministic [`WindowId`] for a Runtime dock surface.
+pub fn dock_workspace_window_id(surface: &str) -> WindowId {
+    WindowId(dock_surface_window_key(surface))
+}
+
+/// Convert Runtime floating-dock events into [`RuntimeProgramUpdate`] window commands.
+pub fn runtime_dock_window_update(
+    effects: impl IntoIterator<Item = DockWorkspaceEvent>,
+    title: &str,
+) -> RuntimeProgramUpdate {
+    let window_commands = effects
+        .into_iter()
+        .map(|effect| match effect {
+            DockWorkspaceEvent::OpenFloating(surface) => WindowCommand::Open {
+                id: dock_workspace_window_id(&surface.id),
+                settings: floating_window_settings(title, &surface),
+            },
+            DockWorkspaceEvent::CloseFloating(id) => {
+                WindowCommand::Close(dock_workspace_window_id(&id))
+            }
+            DockWorkspaceEvent::MoveFloating { id, x, y, .. } => WindowCommand::Move {
+                id: dock_workspace_window_id(&id),
+                position: (x, y),
+            },
+            DockWorkspaceEvent::FocusFloating(id) => {
+                WindowCommand::Focus(dock_workspace_window_id(&id))
+            }
+        })
+        .collect();
+    RuntimeProgramUpdate {
+        redraw: RuntimeRedraw::All,
+        window_commands,
+        exit: false,
+    }
+}
+
+fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> WindowSettings {
+    WindowSettings {
+        title: title.to_string(),
+        initial_size: (f64::from(surface.width), f64::from(surface.height)),
+        minimum_size: (FLOATING_MIN_WIDTH, FLOATING_MIN_HEIGHT),
+        initial_position: Some((f64::from(surface.x), f64::from(surface.y))),
+        maximized: false,
+        transparent: false,
+        always_on_top: false,
+        resizable: true,
+        role: WindowRole::Tool,
+        modal: false,
+        parent: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nana_ui_runtime::DockNode;
+
+    use super::*;
+
+    #[test]
+    fn open_floating_maps_to_one_window_open_command() {
+        let surface = DockFloatingSurface {
+            id: Arc::from("1"),
+            root: DockNode::item("console", None),
+            x: 40.0,
+            y: 50.0,
+            width: 360.0,
+            height: 280.0,
+        };
+        let update =
+            runtime_dock_window_update([DockWorkspaceEvent::OpenFloating(surface)], "NanaUI Dock");
+        assert_eq!(update.redraw, RuntimeRedraw::All);
+        assert_eq!(update.window_commands.len(), 1);
+        let WindowCommand::Open { id, settings } = &update.window_commands[0] else {
+            panic!("open command");
+        };
+        assert_eq!(*id, WindowId(1));
+        assert_eq!(settings.title, "NanaUI Dock");
+        assert_eq!(settings.role, WindowRole::Tool);
+        assert_eq!(settings.initial_position, Some((40.0, 50.0)));
+        assert_eq!(settings.initial_size, (360.0, 280.0));
+        assert_eq!(settings.minimum_size, (160.0, 120.0));
+    }
+
+    #[test]
+    fn close_move_and_focus_map_to_matching_window_commands() {
+        let update = runtime_dock_window_update(
+            [
+                DockWorkspaceEvent::MoveFloating {
+                    id: Arc::from("2"),
+                    x: 80.0,
+                    y: 90.0,
+                    width: 360.0,
+                    height: 280.0,
+                },
+                DockWorkspaceEvent::FocusFloating(Arc::from("2")),
+                DockWorkspaceEvent::CloseFloating(Arc::from("2")),
+            ],
+            "NanaUI Dock",
+        );
+        assert_eq!(
+            update.window_commands,
+            [
+                WindowCommand::Move {
+                    id: WindowId(2),
+                    position: (80.0, 90.0),
+                },
+                WindowCommand::Focus(WindowId(2)),
+                WindowCommand::Close(WindowId(2)),
+            ]
+        );
+    }
+}

@@ -1,6 +1,7 @@
 use super::*;
 
 impl GalleryState {
+    #[allow(dead_code)]
     pub(super) fn rich_text_gallery(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         let mut content = iced::widget::column![

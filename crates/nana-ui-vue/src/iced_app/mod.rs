@@ -837,6 +837,17 @@ fn runtime_component_for_widget(
         WidgetKind::Spinner => Some(nana_ui::component_ids::SPINNER),
         WidgetKind::Skeleton => Some(nana_ui::component_ids::SKELETON),
         WidgetKind::LevelMeter => Some(nana_ui::component_ids::LEVEL_METER),
+        WidgetKind::CommandPalette => Some(nana_ui::component_ids::COMMAND_PALETTE),
+        WidgetKind::TreeView => Some(nana_ui::component_ids::TREE_VIEW),
+        WidgetKind::CalendarHeatmap => Some(nana_ui::component_ids::CALENDAR_HEATMAP),
+        WidgetKind::ImageViewer => Some(nana_ui::component_ids::IMAGE_VIEWER),
+        WidgetKind::NativeMarkdown => Some(nana_ui::component_ids::NATIVE_MARKDOWN),
+        WidgetKind::GraphCanvas => Some(nana_ui::component_ids::GRAPH_CANVAS),
+        WidgetKind::Workspace => Some(nana_ui::component_ids::WORKSPACE),
+        WidgetKind::Dock => Some(nana_ui::component_ids::DOCK),
+        WidgetKind::SplitPane => Some(nana_ui::component_ids::SPLIT_PANE),
+        WidgetKind::AppShell => Some(nana_ui::component_ids::APP_SHELL),
+        WidgetKind::SettingsPage => Some(nana_ui::component_ids::SETTINGS),
         _ => None,
     }
 }
@@ -1350,7 +1361,13 @@ where
             | WidgetKind::ActionMenu
             | WidgetKind::ActionMenuItem
             | WidgetKind::XYPad
-            | WidgetKind::QrCode => {
+            | WidgetKind::QrCode
+            | WidgetKind::CommandPalette
+            | WidgetKind::TreeView
+            | WidgetKind::CalendarHeatmap
+            | WidgetKind::ImageViewer
+            | WidgetKind::NativeMarkdown
+            | WidgetKind::GraphCanvas => {
                 let label = widget.props.display_label();
                 if label.is_empty() {
                     space().width(Length::Shrink).height(Length::Shrink).into()
@@ -1362,6 +1379,13 @@ where
                         parent_box.width,
                     )
                 }
+            }
+            WidgetKind::Workspace
+            | WidgetKind::Dock
+            | WidgetKind::SplitPane
+            | WidgetKind::AppShell
+            | WidgetKind::SettingsPage => {
+                layout_column(snap, widget, tokens, parent_box, editors, menus, map_event)
             }
         }
     });
@@ -2279,7 +2303,13 @@ where
         | WidgetKind::ActionMenu
         | WidgetKind::ActionMenuItem
         | WidgetKind::XYPad
-        | WidgetKind::QrCode => {
+        | WidgetKind::QrCode
+        | WidgetKind::CommandPalette
+        | WidgetKind::TreeView
+        | WidgetKind::CalendarHeatmap
+        | WidgetKind::ImageViewer
+        | WidgetKind::NativeMarkdown
+        | WidgetKind::GraphCanvas => {
             let label = owned_display(&props);
             if label.is_empty() {
                 space().width(Length::Shrink).height(Length::Shrink).into()
@@ -2287,6 +2317,24 @@ where
                 label_text(label, props.size, &props.layout, parent_box.width)
             }
         }
+        WidgetKind::Workspace
+        | WidgetKind::Dock
+        | WidgetKind::SplitPane
+        | WidgetKind::AppShell
+        | WidgetKind::SettingsPage => wrap_layout_owned(
+            true,
+            &props,
+            children,
+            snap,
+            tokens,
+            parent_box,
+            parent_direction,
+            editors,
+            menus,
+            viewport,
+            Some(wid),
+            map_event,
+        ),
     };
     finish(content)
 }

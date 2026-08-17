@@ -15,6 +15,7 @@ syntax-highlighting = ["dep:two-face"]
 bevy_ecs.workspace = true
 futures-core.workspace = true
 nana-ui-core.workspace = true
+pulldown-cmark = { version = "0.13.4", default-features = false }
 qrcode = { version = "0.14.1", default-features = false }
 unicode-segmentation.workspace = true
 serde = { workspace = true, optional = true }

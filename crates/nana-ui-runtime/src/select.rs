@@ -287,6 +287,7 @@ impl crate::ComponentView for Select {
                     hint: None,
                     disabled: option.disabled,
                     checked: false,
+                    icon: None,
                 })
                 .collect(),
             highlighted: self.highlighted,
@@ -434,6 +435,7 @@ fn select_menu_geometry(
                 checked: option.checked,
                 disabled: option.disabled,
                 background: selected.then_some(palette.selected.as_rgba_array()),
+                icon: None,
             }
         })
         .collect();

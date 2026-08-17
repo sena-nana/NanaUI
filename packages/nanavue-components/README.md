@@ -43,6 +43,12 @@ Writes `document.documentElement.dataset` / CSS vars through the Nana web-api sh
 | `NanaSidebarRow` | `SidebarRow` | label / active · emit `select` |
 | `NanaSegmented` | `SegmentedControl` | `modelValue` + `options` |
 | `NanaTabs` | `Tabs` | `modelValue` + `options` |
+| `NanaCommandPalette` | `CommandPalette` | `open` / `query` / `options` · emit `select` |
+| `NanaTreeView` | `TreeView` | `nodes`/`options` / `size` · emit `select`/`toggle` |
+| `NanaCalendar` | `CalendarHeatmap` | `data` cells · `options` metrics object or cell-array fallback · emit `select` |
+| `NanaImageViewer` | `ImageViewer` | `open` + host texture `src`/`value` · emit `close` |
+| `NanaMarkdown` | `NativeMarkdown` | `value`/`modelValue` source · optional `mermaidRenderer`/`mathRenderer` identity |
+| `NanaGraphCanvas` | `GraphCanvas` | `nodes`/`edges`/`model` · `viewport`/`selection` |
 
 Shared CSS: `src/nana-controls.css` — **inherits** `lilia-tokens.css`（禁止独立 `#3867ff`）。
 

@@ -160,6 +160,7 @@ impl SearchDropdown {
                     hint: option.hint.clone(),
                     disabled: false,
                     checked: false,
+                    icon: None,
                 }),
                 false,
             );
@@ -268,6 +269,7 @@ impl SearchDropdown {
                     hint: option.hint.clone(),
                     disabled: false,
                     checked: false,
+                    icon: None,
                 }
             })
             .collect()

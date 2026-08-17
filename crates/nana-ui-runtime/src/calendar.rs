@@ -285,7 +285,7 @@ impl<T> Default for CalendarHeatmapOptions<T> {
             cell_radius: 2.0,
             label_width: 42.0,
             month_label_height: 14.0,
-            week_starts_on: 0,
+            week_starts_on: 1,
             weekday_labels: vec![
                 (1, "周一".to_owned()),
                 (3, "周三".to_owned()),
@@ -640,6 +640,10 @@ where
             cell_radius: model.cell_radius,
             max_level: self.max_level(),
             active: self.active,
+            active_title: self
+                .active
+                .and_then(|index| model.cells.get(index))
+                .map(|cell| Arc::from(cell.title.as_str())),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -663,6 +667,64 @@ where
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+impl crate::AppContext {
+    pub fn is_calendar_heatmap(&self, id: crate::StableNodeId) -> bool {
+        self.read(crate::Entity::<CalendarHeatmap>::from_stable_id(id), |_| ())
+            .is_ok()
+    }
+
+    pub fn hover_calendar_heatmap(
+        &mut self,
+        target: crate::StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        if !self.is_calendar_heatmap(target) {
+            return Ok(false);
+        }
+        let entity = crate::Entity::<CalendarHeatmap>::from_stable_id(target);
+        let Some(bounds) = self.world().layout_box(target) else {
+            return Ok(false);
+        };
+        let local = bounds
+            .contains(x, y)
+            .then_some((x - bounds.x, y - bounds.y));
+        self.update_component(entity, |calendar, cx| {
+            if let Some(event) = calendar.set_pointer(local) {
+                cx.emit(event);
+            }
+            true
+        })?;
+        Ok(true)
+    }
+
+    pub fn clear_calendar_heatmap_hover(
+        &mut self,
+        document: crate::DocumentId,
+    ) -> Result<bool, crate::FrameworkError> {
+        let ids = self
+            .world()
+            .document_order(document)
+            .into_iter()
+            .filter(|id| self.is_calendar_heatmap(*id))
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for id in ids {
+            let entity = crate::Entity::<CalendarHeatmap>::from_stable_id(id);
+            if !self.read(entity, |calendar| calendar.active.is_some())? {
+                continue;
+            }
+            changed |= self.update_component(entity, |calendar, cx| {
+                if let Some(event) = calendar.set_pointer(None) {
+                    cx.emit(event);
+                }
+                true
+            })?;
+        }
+        Ok(changed)
     }
 }
 
@@ -852,7 +914,7 @@ mod tests {
         CalendarLevelStrategy, build_calendar_heatmap_model, civil_from_days, days_from_civil,
     };
     use crate::framework::AppContext;
-    use crate::{DocumentId, LayoutBox, LengthSpec, NodeKind, StandardVisual};
+    use crate::{DocumentId, LayoutBox, LengthSpec, MutationQueue, NodeKind, StandardVisual};
     use std::sync::Arc;
 
     fn document() -> DocumentId {
@@ -867,24 +929,23 @@ mod tests {
     }
 
     #[test]
-    fn week_grouping_fills_complete_sunday_weeks() {
+    fn week_grouping_fills_complete_monday_weeks() {
         let model = build_calendar_heatmap_model(&june_sample(), CalendarHeatmapOptions::default());
         assert_eq!(model.week_count(), 1);
         assert_eq!(model.cells.len(), 7);
-        assert_eq!(model.cells[0].date, "2026-05-31");
-        assert_eq!(model.cells[0].week_start, "2026-05-31");
-        assert_eq!(model.cells[1].date, "2026-06-01");
-        assert_eq!(model.cells[3].date, "2026-06-03");
+        assert_eq!(model.cells[0].date, "2026-06-01");
+        assert_eq!(model.cells[0].week_start, "2026-06-01");
+        assert_eq!(model.cells[2].date, "2026-06-03");
         assert_eq!(model.month_labels.len(), 1);
         assert_eq!(model.month_labels[0].label, "6月");
 
-        let monday = build_calendar_heatmap_model(
+        let sunday = build_calendar_heatmap_model(
             &june_sample(),
-            CalendarHeatmapOptions::default().week_starts_on(1),
+            CalendarHeatmapOptions::default().week_starts_on(0),
         );
-        assert_eq!(monday.week_count(), 1);
-        assert_eq!(monday.cells[0].date, "2026-06-01");
-        assert!(monday.cells[0].y < model.cells[1].y);
+        assert_eq!(sunday.week_count(), 1);
+        assert_eq!(sunday.cells[0].date, "2026-05-31");
+        assert!(model.cells[0].y < sunday.cells[1].y);
 
         let spanned = build_calendar_heatmap_model(
             &[
@@ -895,7 +956,7 @@ mod tests {
         );
         assert_eq!(spanned.week_count(), 2);
         assert_eq!(spanned.cells.len(), 14);
-        assert_eq!(spanned.cells[7].week_start, "2026-06-07");
+        assert_eq!(spanned.cells[7].week_start, "2026-06-08");
     }
 
     #[test]
@@ -915,8 +976,8 @@ mod tests {
         let empty_day = relative
             .cells
             .iter()
-            .find(|cell| cell.date == "2026-05-31")
-            .expect("padded Sunday");
+            .find(|cell| cell.date == "2026-06-07")
+            .expect("padded Sunday at week end");
         assert_eq!(june_first.level, 1);
         assert_eq!(june_third.level, 4);
         assert_eq!(empty_day.level, 0);
@@ -1101,11 +1162,86 @@ mod tests {
             cell_radius: model.cell_radius,
             max_level: view.max_level(),
             active: view.active,
+            active_title: None,
         };
         let heatmap = context.create_component(document(), view).unwrap();
         assert_eq!(
             context.world().standard_visual(heatmap.stable_id()),
             Some(expected)
+        );
+    }
+
+    #[test]
+    fn hover_sets_active_cell_ring_and_title_tooltip() {
+        let mut context = AppContext::new();
+        let heatmap = context
+            .create_component(document(), CalendarHeatmap::new(june_sample()))
+            .unwrap();
+        let model = context.read(heatmap, CalendarHeatmap::model).unwrap();
+        let cell = model
+            .cells
+            .iter()
+            .find(|cell| cell.date == "2026-06-03")
+            .expect("June 3");
+        context
+            .commit_mutations({
+                let mut mutations = MutationQueue::new();
+                mutations.write_layout(
+                    heatmap.stable_id(),
+                    LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: model.width,
+                        height: model.height,
+                    },
+                );
+                mutations
+            })
+            .unwrap();
+
+        assert!(
+            context
+                .hover_calendar_heatmap(heatmap.stable_id(), cell.x + 1.0, cell.y + 1.0)
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(heatmap, |calendar| calendar.active).unwrap(),
+            Some(
+                model
+                    .cells
+                    .iter()
+                    .position(|item| item.date == "2026-06-03")
+                    .expect("index")
+            )
+        );
+        let Some(StandardVisual::CalendarHeatmap {
+            active_title,
+            active,
+            ..
+        }) = context.world().standard_visual(heatmap.stable_id())
+        else {
+            panic!("hovered calendar must keep a heatmap visual");
+        };
+        assert!(active.is_some());
+        assert_eq!(active_title.as_deref(), Some("2026-06-03: 8"));
+        let crate::ComponentGeometry::CalendarHeatmap { hover, .. } = context
+            .world()
+            .component_geometry(heatmap.stable_id())
+            .expect("hovered geometry")
+        else {
+            panic!("expected calendar geometry");
+        };
+        let hover = hover.expect("hovered cell paints hover chrome");
+        assert_eq!(hover.title.content.as_ref(), "2026-06-03: 8");
+        assert!(hover.tooltip.width < 176.0);
+        assert!(hover.tooltip.width > nana_ui_core::TooltipConfig::PADDING_X * 2.0);
+
+        assert!(context.clear_calendar_heatmap_hover(document()).unwrap());
+        assert!(
+            context
+                .read(heatmap, |calendar| calendar.active)
+                .unwrap()
+                .is_none()
         );
     }
 }
