@@ -3,7 +3,7 @@
 use nana_ui::runtime::{Button, DocumentId, FrameworkError, RuntimeDocument};
 use nana_ui::{
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
-    run_runtime,
+    run_runtime_scene,
 };
 use nana_ui_platform::WindowId;
 
@@ -49,7 +49,7 @@ impl RuntimeProgram for Fixture {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_runtime::<Fixture>(
+    run_runtime_scene::<Fixture>(
         RuntimeWindowSettings::new("NanaUI fixture")
             .initial_size(480.0, 180.0)
             .minimum_size(320.0, 140.0),

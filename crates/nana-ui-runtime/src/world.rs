@@ -5746,12 +5746,7 @@ fn graph_canvas_geometry(
     let mut edge_labels = Vec::new();
     for edge in edges.iter().chain(connecting) {
         let color = graph_edge_stroke_color(palette, edge);
-        painted_edges.extend(
-            stroke_curve(bounds, edge.curve, 1.6)
-                .into_iter()
-                .filter_map(|quad| intersect_layout_boxes(bounds, quad))
-                .map(|quad| (quad, color)),
-        );
+        painted_edges.push((sample_curve(bounds, edge.curve), color));
         if !edge.connecting
             && viewport_zoom >= 0.7
             && let Some(label) = edge.label.as_ref()
@@ -5910,24 +5905,21 @@ fn graph_edge_stroke_color(palette: &SemanticPalette, edge: &crate::GraphEdgePai
     }
 }
 
-fn stroke_curve(bounds: LayoutBox, curve: [GraphPoint; 4], thickness: f32) -> Vec<LayoutBox> {
-    const SAMPLES: u32 = 32;
-    let mut quads = Vec::with_capacity(SAMPLES as usize);
+fn sample_curve(bounds: LayoutBox, curve: [GraphPoint; 4]) -> Vec<[f32; 2]> {
+    let mut length = 0.0;
     let mut previous = curve[0];
-    for index in 1..=SAMPLES {
-        let next = cubic_point(curve, index as f32 / SAMPLES as f32);
-        if let Some(quad) = stroke_box(
-            bounds.x + previous.x,
-            bounds.y + previous.y,
-            bounds.x + next.x,
-            bounds.y + next.y,
-            thickness,
-        ) {
-            quads.push(quad);
-        }
+    for index in 1..=16 {
+        let next = cubic_point(curve, index as f32 / 16.0);
+        length += (next.x - previous.x).hypot(next.y - previous.y);
         previous = next;
     }
-    quads
+    let samples = ((length / 4.0).ceil() as u32).clamp(24, 96);
+    let mut points = Vec::with_capacity(samples as usize + 1);
+    for index in 0..=samples {
+        let point = cubic_point(curve, index as f32 / samples as f32);
+        points.push([bounds.x + point.x, bounds.y + point.y]);
+    }
+    points
 }
 
 fn graph_grid_lines(
@@ -6210,19 +6202,6 @@ fn stroke_polyline(points: &[(f32, f32)], thickness: f32) -> Vec<LayoutBox> {
         });
     }
     quads
-}
-
-fn stroke_box(x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32) -> Option<LayoutBox> {
-    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
-        return None;
-    }
-    let pad = thickness * 0.5;
-    Some(LayoutBox {
-        x: x0.min(x1) - pad,
-        y: y0.min(y1) - pad,
-        width: (x1 - x0).abs() + thickness,
-        height: (y1 - y0).abs() + thickness,
-    })
 }
 
 #[cfg(test)]
@@ -8326,7 +8305,7 @@ mod tests {
 
     #[test]
     fn diagonal_stroke_segments_overlap_so_curves_do_not_break() {
-        let boxes = stroke_curve(
+        let points = sample_curve(
             LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -8339,14 +8318,15 @@ mod tests {
                 GraphPoint::new(120.0, 80.0),
                 GraphPoint::new(190.0, 80.0),
             ],
-            1.6,
         );
-        assert!(boxes.len() > 1);
+        assert!(points.len() > 1);
         assert!(
-            boxes
-                .windows(2)
-                .all(|pair| intersect_layout_boxes(pair[0], pair[1]).is_some()),
-            "adjacent stroke boxes must overlap at joints"
+            points.windows(2).all(|pair| {
+                let dx = pair[1][0] - pair[0][0];
+                let dy = pair[1][1] - pair[0][1];
+                dx.hypot(dy) <= 8.0
+            }),
+            "sampled stroke points must stay close enough to form a continuous curve"
         );
     }
 

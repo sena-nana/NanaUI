@@ -53,7 +53,7 @@ selects = []
 settings-components = ["controls"]
 surfaces = ["feedback"]
 xy-pad = []
-gpu = ["dep:bytemuck", "dep:iced_wgpu", "dep:wgpu"]
+gpu = ["dep:bytemuck", "dep:cryoglyph", "dep:iced_wgpu", "dep:lyon", "dep:wgpu"]
 hosted = [
     "gpu",
     "dep:accesskit",
@@ -63,15 +63,19 @@ hosted = [
     "dep:image",
     "dep:raw-window-handle",
     "dep:windows",
+    "dep:winit",
 ]
 browser = ["hosted", "dep:wry"]
 
 [dependencies]
 accesskit = { version = "0.24.1", optional = true }
 bytemuck = { version = "1.24", features = ["derive"], optional = true }
+cosmic-text = "0.19"
+cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b131eda1288d08df89ad5ba56de97713308", optional = true }
 iced.workspace = true
 iced_wgpu = { workspace = true, optional = true }
 iced_winit = { workspace = true, optional = true }
+lyon = { version = "1.0", optional = true }
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
@@ -89,6 +93,7 @@ ratex-types = { version = "0.1.14", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wgpu = { workspace = true, optional = true }
+winit = { git = "https://github.com/iced-rs/winit.git", rev = "05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed", default-features = false, features = ["rwh_06"], optional = true }
 
 # winit → android-activity has no default activity backend; align with Nana host.
 [target.'cfg(target_os = "android")'.dependencies]

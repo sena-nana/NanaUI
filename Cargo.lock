@@ -4679,10 +4679,13 @@ dependencies = [
  "accesskit_winit",
  "android-activity",
  "bytemuck",
+ "cosmic-text",
+ "cryoglyph",
  "iced",
  "iced_wgpu",
  "iced_winit",
  "image",
+ "lyon",
  "merman",
  "nana-ui-core",
  "nana-ui-platform",
@@ -4703,6 +4706,7 @@ dependencies = [
  "wgpu",
  "windows 0.62.2",
  "windows-sys 0.61.2",
+ "winit",
  "wry",
 ]
 

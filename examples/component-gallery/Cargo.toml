@@ -81,6 +81,11 @@ path = "src/bin/ui-migration-ab.rs"
 required-features = ["snapshots"]
 
 [[bin]]
+name = "ui-host-ab"
+path = "src/bin/ui-host-ab.rs"
+required-features = ["snapshots"]
+
+[[bin]]
 name = "ui-live2d-acceptance"
 path = "src/bin/ui-live2d-acceptance.rs"
 required-features = ["live2d-acceptance"]

@@ -31,7 +31,7 @@ use crate::{
 
 pub use nana_ui_platform::WindowSettings as RuntimeWindowSettings;
 
-fn gated_runtime_input_update(
+pub(crate) fn gated_runtime_input_update(
     disposition: InputDisposition,
     id: WindowId,
     raw_input: impl FnOnce() -> Result<RuntimeProgramUpdate, FrameworkError>,
@@ -43,7 +43,7 @@ fn gated_runtime_input_update(
     }
 }
 
-fn gated_runtime_window_update(
+pub(crate) fn gated_runtime_window_update(
     prevent_raw: bool,
     raw_event: impl FnOnce() -> RuntimeProgramUpdate,
 ) -> RuntimeProgramUpdate {
@@ -66,6 +66,22 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
 }
 
 impl<Message: Send + 'static> RuntimeProgramContext<Message> {
+    pub(crate) fn new(
+        window_id: WindowId,
+        geometry: WindowGeometry,
+        gpu: HostedGpuResources,
+        dispatch: Arc<dyn Fn(Message) + Send + Sync>,
+        tasks: SyncSender<Task<Message>>,
+    ) -> Self {
+        Self {
+            window_id,
+            geometry,
+            gpu,
+            dispatch,
+            tasks,
+        }
+    }
+
     pub const fn window_id(&self) -> WindowId {
         self.window_id
     }
@@ -149,7 +165,7 @@ impl RuntimeProgramUpdate {
         }
     }
 
-    fn merge(mut self, other: Self) -> Self {
+    pub(crate) fn merge(mut self, other: Self) -> Self {
         self.exit |= other.exit;
         self.window_commands.extend(other.window_commands);
         self.redraw = match (self.redraw, other.redraw) {
@@ -682,7 +698,9 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
     }
 }
 
-fn runtime_text_input_request(document: &RuntimeDocument) -> nana_ui_platform::TextInputRequest {
+pub(crate) fn runtime_text_input_request(
+    document: &RuntimeDocument,
+) -> nana_ui_platform::TextInputRequest {
     let focused = document
         .context()
         .focused_text_input(document.document())

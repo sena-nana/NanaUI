@@ -151,6 +151,7 @@ pub struct IcedSceneView<'scene> {
     operations: Arc<[RenderOperation]>,
     size: Size,
     scene_origin: Point,
+    pointer_interaction: mouse::Interaction,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +256,7 @@ impl<'scene> IcedSceneView<'scene> {
             operations,
             size,
             scene_origin: Point::ORIGIN,
+            pointer_interaction: mouse::Interaction::None,
         })
     }
 
@@ -276,7 +278,13 @@ impl<'scene> IcedSceneView<'scene> {
             operations,
             size,
             scene_origin: Point::ORIGIN,
+            pointer_interaction: mouse::Interaction::None,
         })
+    }
+
+    pub fn pointer_interaction(mut self, interaction: mouse::Interaction) -> Self {
+        self.pointer_interaction = interaction;
+        self
     }
 
     fn restrict_to_node(&mut self, node: StableNodeId) -> Result<(), ScenePaintError> {
@@ -303,7 +311,7 @@ impl<'scene> IcedSceneView<'scene> {
     }
 }
 
-fn validate_scene(
+pub(crate) fn validate_scene(
     scene: &UiScene,
     host_textures: Option<&HostTextureRegistry>,
     gpu_renderers: Option<&SceneGpuRendererRegistry>,
@@ -362,6 +370,17 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
             Length::Fixed(self.size.width),
             Length::Fixed(self.size.height),
         )
+    }
+
+    fn mouse_interaction(
+        &self,
+        _tree: &widget::Tree,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+        _renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.pointer_interaction
     }
 
     fn layout(
@@ -643,6 +662,23 @@ fn paint_primitive(
                 renderer.draw_geometry(frame.into_geometry());
             });
         }
+        ScenePrimitiveKind::Stroke {
+            points,
+            width,
+            color,
+        } => {
+            if points.len() >= 2 {
+                paint_stroke(
+                    renderer,
+                    points,
+                    *width,
+                    color_with_opacity(*color, primitive.opacity),
+                    origin,
+                    primitive.transform.0,
+                    clip,
+                );
+            }
+        }
         ScenePrimitiveKind::Custom(_) => {
             unreachable!("custom primitives are rejected by IcedSceneView::new")
         }
@@ -686,6 +722,46 @@ fn paint_quad(
             opacity,
         )),
     );
+}
+
+fn paint_stroke(
+    renderer: &mut iced::Renderer,
+    points: &[[f32; 2]],
+    width: f32,
+    color: Color,
+    origin: Point,
+    transform: [f32; 6],
+    clip: Rectangle,
+) {
+    let Some(first) = points.first() else {
+        return;
+    };
+    let path = canvas::Path::new(|builder| {
+        builder.move_to(translated_point(*first, transform, origin));
+        for point in points.iter().skip(1) {
+            builder.line_to(translated_point(*point, transform, origin));
+        }
+    });
+    renderer.with_layer(clip, |renderer| {
+        let mut frame = canvas::Frame::new(renderer, clip.size());
+        frame.translate(Vector::new(-clip.x, -clip.y));
+        frame.stroke(
+            &path,
+            canvas::Stroke::default()
+                .with_color(color)
+                .with_width(width)
+                .with_line_cap(canvas::LineCap::Round)
+                .with_line_join(canvas::LineJoin::Round),
+        );
+        renderer.draw_geometry(frame.into_geometry());
+    });
+}
+
+fn translated_point(point: [f32; 2], transform: [f32; 6], origin: Point) -> Point {
+    Point::new(
+        origin.x + point[0] + transform[4],
+        origin.y + point[1] + transform[5],
+    )
 }
 
 fn translated_rect(bounds: SceneRect, transform: [f32; 6], origin: Point) -> Rectangle {

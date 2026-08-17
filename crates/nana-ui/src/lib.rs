@@ -38,6 +38,7 @@ pub mod icons;
 pub mod layout;
 pub mod layout_probe;
 pub mod menu;
+mod nana_text;
 pub mod overlay;
 pub mod pane;
 mod runtime_animation;
@@ -49,6 +50,10 @@ mod runtime_input;
 mod runtime_text;
 #[cfg(feature = "gpu")]
 mod scene_gpu;
+#[cfg(feature = "hosted")]
+mod scene_host;
+#[cfg(feature = "gpu")]
+mod scene_paint;
 #[cfg(feature = "gpu")]
 mod scene_view;
 pub mod selection;
@@ -297,6 +302,7 @@ pub use layout::{
 };
 pub use layout_probe::{LayoutBounds, LayoutProbe};
 pub use menu::{MenuConfirmation, MenuSelection};
+pub use nana_text::NanaTextShaper;
 pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};
 pub use nana_ui_core::{
     ExpansionState, SplitPaneModel, SplitPaneMutation, WORKSPACE_REGION_TRANSITION_DURATION,
@@ -351,6 +357,10 @@ pub use scene_gpu::{
     SceneGpuRendererRegistry, SceneResourceEncodeContext, SceneResourceProduceError,
     SceneResourceProducer, SceneResourceProducerRegistry,
 };
+#[cfg(feature = "hosted")]
+pub use scene_host::run_runtime_scene;
+#[cfg(feature = "gpu")]
+pub use scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 #[cfg(feature = "gpu")]
 pub use scene_view::{HostTextureSceneResolver, IcedSceneView, ScenePaintError};
 pub use selection::{SelectionMove, SingleSelection};
