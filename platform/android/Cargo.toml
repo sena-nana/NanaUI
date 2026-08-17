@@ -17,12 +17,14 @@ default = ["engine-quickjs"]
 # Android MVP default engine — mutually exclusive with engine-v8 at the app boundary.
 engine-quickjs = ["dep:nana-js-quickjs"]
 engine-v8 = []
+# Frozen Iced slot paint path. Not a product UI target.
+experimental-android = []
 
 [dependencies]
 nana-js-engine.workspace = true
 nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, features = ["experimental-android"] }
-nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["controls"] }
+nana-ui = { path = "../../crates/nana-ui", default-features = false }
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
 nana-js-quickjs = { workspace = true, optional = true }
 iced.workspace = true

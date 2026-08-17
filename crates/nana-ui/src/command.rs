@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use iced::keyboard;
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, CommandPaletteEvent, CommandPaletteItem, ContextPredicate,
     KeyContext,
@@ -254,17 +253,6 @@ impl KeyModifiers {
     }
 }
 
-impl From<keyboard::Modifiers> for KeyModifiers {
-    fn from(value: keyboard::Modifiers) -> Self {
-        Self {
-            control: value.control(),
-            alt: value.alt(),
-            shift: value.shift(),
-            logo: value.logo(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyStroke {
     pub key: String,
@@ -277,15 +265,6 @@ impl KeyStroke {
             key: normalize_key_name(&key.into()),
             modifiers,
         }
-    }
-
-    pub fn from_iced(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Self> {
-        let key = match key.as_ref() {
-            keyboard::Key::Named(named) => format!("{named:?}"),
-            keyboard::Key::Character(character) => character.to_owned(),
-            keyboard::Key::Unidentified => return None,
-        };
-        Some(Self::new(key, modifiers.into()))
     }
 
     pub fn display(&self) -> String {
@@ -475,16 +454,14 @@ pub struct ActionPickerSelection {
     pub restore_focus: Option<String>,
 }
 
-pub fn action_picker_from_iced_key(key: &keyboard::Key) -> Option<ActionPickerNavigation> {
-    match key.as_ref() {
-        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
-            Some(ActionPickerNavigation::Previous)
-        }
-        keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(ActionPickerNavigation::Next),
-        keyboard::Key::Named(keyboard::key::Named::Home) => Some(ActionPickerNavigation::First),
-        keyboard::Key::Named(keyboard::key::Named::End) => Some(ActionPickerNavigation::Last),
-        keyboard::Key::Named(keyboard::key::Named::Enter) => Some(ActionPickerNavigation::Confirm),
-        keyboard::Key::Named(keyboard::key::Named::Escape) => Some(ActionPickerNavigation::Dismiss),
+pub fn action_picker_from_key_name(key: &str) -> Option<ActionPickerNavigation> {
+    match key {
+        "ArrowUp" | "Up" => Some(ActionPickerNavigation::Previous),
+        "ArrowDown" | "Down" => Some(ActionPickerNavigation::Next),
+        "Home" => Some(ActionPickerNavigation::First),
+        "End" => Some(ActionPickerNavigation::Last),
+        "Enter" => Some(ActionPickerNavigation::Confirm),
+        "Escape" => Some(ActionPickerNavigation::Dismiss),
         _ => None,
     }
 }

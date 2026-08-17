@@ -1,162 +1,241 @@
-use iced::widget::{button, column, container, row, shader, text};
-use iced::{Element, Length, Subscription, Task};
-use nana_ui::ThemeModeExt;
-use nana_ui::compatibility::AppTitleBar;
-use nana_ui::compatibility::{GpuView, GpuViewMode, GpuViewPalette};
-use nana_ui::widgets::{button_style, card_style};
-use nana_ui::{
-    ButtonKind, CardKind, ThemeMode, UI_METRICS, WindowChromeEvent, WindowChromeState,
-    custom_title_bar_window, ui_font, ui_font_defaults, ui_font_sources,
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use nana_ui::runtime::{
+    Activate, Button, DocumentId, Entity, FrameworkError, GpuView, GpuViewMode, GpuViewPalette,
+    List, RuntimeDocument, Text,
 };
+use nana_ui::{
+    ButtonKind, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings,
+    ThemeMode, ThemeModeExt, run_runtime,
+};
+use nana_ui_platform::{WindowEvent, WindowId};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Message {
     Refresh,
     ToggleTheme,
-    WindowChrome(WindowChromeEvent),
 }
 
-#[derive(Debug, Default)]
 struct GpuViewDemo {
     theme: ThemeMode,
     revision: u32,
-    window_chrome: WindowChromeState,
+    document: RuntimeDocument,
+    preview: Entity<GpuView>,
+    thumbnail: Entity<GpuView>,
+    version: Entity<Text>,
+    theme_button: Entity<Button>,
+    refresh: Arc<AtomicBool>,
+    toggle_theme: Arc<AtomicBool>,
 }
 
 impl GpuViewDemo {
-    fn update(&mut self, message: Message) -> Task<Message> {
+    fn palette(theme: ThemeMode, accent_strong: bool) -> GpuViewPalette {
+        let colors = theme.colors();
+        let accent = if accent_strong {
+            colors.accent_strong
+        } else {
+            colors.accent
+        };
+        GpuViewPalette {
+            background: [
+                colors.background.r,
+                colors.background.g,
+                colors.background.b,
+                colors.background.a,
+            ],
+            accent: [accent.r, accent.g, accent.b, accent.a],
+        }
+    }
+
+    fn mount(theme: ThemeMode, revision: u32) -> Result<Self, FrameworkError> {
+        let refresh = Arc::new(AtomicBool::new(false));
+        let toggle_theme = Arc::new(AtomicBool::new(false));
+        let document_id = DocumentId::new(1).expect("gpu view document");
+        let mut document = RuntimeDocument::new(document_id);
+        let root = document
+            .context_mut()
+            .create_component(document_id, List::new().label("GPU View"))?;
+        let title = document
+            .context_mut()
+            .create_component(document_id, Text::new("NANA 实时预览"))?;
+        let theme_button = document.context_mut().create_component(
+            document_id,
+            Button::new(theme_label(theme)).kind(ButtonKind::Text),
+        )?;
+        let preview = document.context_mut().create_component(
+            document_id,
+            GpuView::new(1)
+                .mode(GpuViewMode::Standalone)
+                .palette(Self::palette(theme, true))
+                .seed(revision as f32),
+        )?;
+        let thumbnail = document.context_mut().create_component(
+            document_id,
+            GpuView::new(2)
+                .mode(GpuViewMode::Inline)
+                .palette(Self::palette(theme, false))
+                .seed((revision.saturating_add(2)) as f32),
+        )?;
+        let version = document
+            .context_mut()
+            .create_component(document_id, Text::new(format!("版本 {}", revision + 1)))?;
+        let refresh_button = document.context_mut().create_component(
+            document_id,
+            Button::new("刷新预览").kind(ButtonKind::Primary),
+        )?;
+        document.context_mut().append_child(root, title)?;
+        document.context_mut().append_child(root, theme_button)?;
+        document.context_mut().append_child(root, preview)?;
+        document.context_mut().append_child(root, version)?;
+        document.context_mut().append_child(root, thumbnail)?;
+        document.context_mut().append_child(root, refresh_button)?;
+
+        let pending_refresh = Arc::clone(&refresh);
+        document
+            .context_mut()
+            .on(refresh_button, move |_button, _event: &Activate, _cx| {
+                pending_refresh.store(true, Ordering::SeqCst);
+            })?;
+        let pending_theme = Arc::clone(&toggle_theme);
+        document
+            .context_mut()
+            .on(theme_button, move |_button, _event: &Activate, _cx| {
+                pending_theme.store(true, Ordering::SeqCst);
+            })?;
+
+        Ok(Self {
+            theme,
+            revision,
+            document,
+            preview,
+            thumbnail,
+            version,
+            theme_button,
+            refresh,
+            toggle_theme,
+        })
+    }
+
+    fn apply(&mut self, message: Message) {
         match message {
             Message::Refresh => self.revision = self.revision.saturating_add(1),
             Message::ToggleTheme => self.theme = self.theme.toggle(),
-            Message::WindowChrome(event) => {
-                return self
-                    .window_chrome
-                    .update_iced(event)
-                    .map(Message::WindowChrome);
-            }
         }
-        Task::none()
-    }
-
-    fn subscription(&self) -> Subscription<Message> {
-        WindowChromeState::subscription().map(Message::WindowChrome)
-    }
-
-    fn view(&self) -> Element<'_, Message> {
-        let colors = self.theme.colors();
-        let title_bar = AppTitleBar::new("实时预览", colors)
-            .leading(text("NANA").size(12).color(colors.accent))
-            .trailing(
-                button(
-                    text(if self.theme == ThemeMode::Dark {
-                        "浅色"
-                    } else {
-                        "深色"
-                    })
-                    .size(13),
-                )
-                .height(Length::Fixed(UI_METRICS.control_height))
-                .padding([0.0, UI_METRICS.control_padding_x])
-                .on_press(Message::ToggleTheme)
-                .style(button_style(colors, ButtonKind::Text)),
-            )
-            .window_chrome(&self.window_chrome, Message::WindowChrome)
-            .view();
-
-        let preview = container(
-            shader(
-                GpuView::new(
-                    1,
-                    GpuViewPalette {
-                        background: colors.background,
-                        accent: colors.accent_strong,
-                    },
-                    self.revision,
-                )
-                .mode(GpuViewMode::Standalone),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .clip(true)
-        .style(card_style(colors, CardKind::Surface));
-
-        let thumbnail = container(
-            shader(GpuView::new(
-                2,
-                GpuViewPalette {
-                    background: colors.surface,
-                    accent: colors.accent,
-                },
-                self.revision.saturating_add(2),
-            ))
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(116.0))
-        .clip(true)
-        .style(card_style(colors, CardKind::Outlined));
-
-        let controls = container(
-            column![
-                text("预览设置").size(13),
-                text(format!("版本 {}", self.revision + 1))
-                    .size(12)
-                    .color(colors.muted),
-                text("缩略预览").size(12).color(colors.muted),
-                thumbnail,
-                button(text("刷新预览").size(13))
-                    .height(Length::Fixed(UI_METRICS.control_height))
-                    .padding([0.0, UI_METRICS.control_padding_x])
-                    .on_press(Message::Refresh)
-                    .style(button_style(colors, ButtonKind::Primary)),
-            ]
-            .spacing(10),
-        )
-        .width(Length::Fixed(220.0))
-        .height(Length::Fill)
-        .padding([UI_METRICS.panel_padding_y, UI_METRICS.panel_padding_x])
-        .style(card_style(colors, CardKind::Surface));
-
-        container(column![
-            title_bar,
-            container(row![preview, controls].spacing(10))
-                .padding(16)
-                .width(Length::Fill)
-                .height(Length::Fill)
-        ])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(move |_theme| {
-            iced::widget::container::Style::default()
-                .background(colors.background)
-                .color(colors.text)
-        })
-        .into()
+        let theme = self.theme;
+        let revision = self.revision;
+        let _ = self
+            .document
+            .context_mut()
+            .update_component(self.version, |text, _| {
+                text.value = format!("版本 {}", revision + 1);
+            });
+        let _ = self
+            .document
+            .context_mut()
+            .update_component(self.theme_button, |button, _| {
+                button.label = theme_label(theme).to_owned();
+            });
+        let _ = self
+            .document
+            .context_mut()
+            .update_component(self.preview, |view, _| {
+                view.palette = Self::palette(theme, true);
+                view.seed = revision as f32;
+                view.invalidate_content();
+            });
+        let _ = self
+            .document
+            .context_mut()
+            .update_component(self.thumbnail, |view, _| {
+                view.palette = Self::palette(theme, false);
+                view.seed = (revision.saturating_add(2)) as f32;
+                view.invalidate_content();
+            });
     }
 }
 
-fn main() -> iced::Result {
-    let mut application = iced::application(
-        || (GpuViewDemo::default(), ui_font_defaults()),
-        GpuViewDemo::update,
-        GpuViewDemo::view,
-    )
-    .title("NanaUI GPU View Demo")
-    .theme(|state: &GpuViewDemo| state.theme.iced_theme())
-    .default_font(ui_font(iced::font::Weight::Normal))
-    .subscription(GpuViewDemo::subscription)
-    .window(custom_title_bar_window(iced::window::Settings {
-        size: iced::Size::new(1100.0, 720.0),
-        min_size: Some(iced::Size::new(760.0, 520.0)),
-        ..iced::window::Settings::default()
-    }))
-    .centered();
-    for source in ui_font_sources() {
-        application = application.font(source);
+fn theme_label(theme: ThemeMode) -> &'static str {
+    if theme == ThemeMode::Dark {
+        "浅色"
+    } else {
+        "深色"
     }
-    application.run()
+}
+
+impl RuntimeProgram for GpuViewDemo {
+    type Message = Message;
+    type Error = Infallible;
+
+    fn initialize(
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
+        Ok((
+            Self::mount(ThemeMode::Dark, 0).expect("gpu view document"),
+            Vec::new(),
+        ))
+    }
+
+    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
+        (id == WindowId::PRIMARY).then_some(&self.document)
+    }
+
+    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
+        (id == WindowId::PRIMARY).then_some(&mut self.document)
+    }
+
+    fn update(
+        &mut self,
+        message: Self::Message,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.apply(message);
+        RuntimeProgramUpdate::redraw_all()
+    }
+
+    fn theme_mode(&self) -> ThemeMode {
+        self.theme
+    }
+
+    fn window_event(
+        &mut self,
+        event: WindowEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        match event {
+            WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
+            _ => RuntimeProgramUpdate::default(),
+        }
+    }
+
+    fn input_event(
+        &mut self,
+        id: WindowId,
+        _event: &nana_ui_platform::InputEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let mut changed = false;
+        if self.refresh.swap(false, Ordering::SeqCst) {
+            self.apply(Message::Refresh);
+            changed = true;
+        }
+        if self.toggle_theme.swap(false, Ordering::SeqCst) {
+            self.apply(Message::ToggleTheme);
+            changed = true;
+        }
+        Ok(if changed {
+            RuntimeProgramUpdate::redraw_all()
+        } else {
+            RuntimeProgramUpdate::redraw(id)
+        })
+    }
+}
+
+fn main() -> Result<(), nana_ui::HostedRunError> {
+    run_runtime::<GpuViewDemo>(
+        RuntimeWindowSettings::new("NanaUI GPU View Demo")
+            .initial_size(1100.0, 720.0)
+            .minimum_size(760.0, 520.0),
+    )
 }

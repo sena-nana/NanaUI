@@ -2,50 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iced::advanced::widget;
-use iced::widget::{column, container, row, shader, text, text_editor};
-use iced::{Alignment, Element, Length, Padding, Point, Size, Theme, mouse};
-use iced_wgpu::Renderer;
-use iced_wgpu::graphics::Viewport;
-use iced_wgpu::wgpu;
-use iced_winit::core::time::Instant;
-use iced_winit::core::{Event, renderer, shell, window};
-use iced_winit::runtime::{UserInterface, user_interface};
-use nana_ui::compatibility::{
-    AboutMetadata as IcedAboutMetadata, AboutSection as IcedAboutSection,
-    ActionMenu as IcedActionMenu, ActionMenuItem as IcedActionMenuItem,
-    AnchoredActionMenu as IcedAnchoredActionMenu, AppTitleBar as IcedAppTitleBar,
-    AppearanceSection as IcedAppearanceSection, Button as IcedButton,
-    CalendarHeatmap as IcedCalendarHeatmap, CalendarHeatmapDatum as IcedCalendarHeatmapDatum,
-    CalendarHeatmapOptions as IcedCalendarHeatmapOptions, Card as IcedCard,
-    Checkbox as IcedCheckbox, CommandPalette as IcedCommandPalette,
-    ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog, DockPanel as IcedDockPanel,
-    Drawer as IcedDrawer, Dropdown as IcedDropdown, DropdownOption as IcedDropdownOption,
-    EmptyState as IcedEmptyState, FormField as IcedFormField, GpuTextureView as IcedGpuTextureView,
-    GpuView as IcedGpuView, GpuViewPalette as IcedGpuViewPalette, GraphCanvas as IcedGraphCanvas,
-    HostedTextarea as IcedHostedTextarea, HostedTextareaState as IcedHostedTextareaState,
-    IconButton as IcedIconButton, ImageViewer as IcedImageViewer,
-    ImageViewerSource as IcedImageViewerSource, Input as IcedInput,
-    InteractiveCard as IcedInteractiveCard, KeyCaptureLayer as IcedKeyCaptureLayer,
-    KeymapLayer as IcedKeymapLayer, LabeledValue as IcedLabeledValue, LevelMeter as IcedLevelMeter,
-    ListItem as IcedListItem, NativeMarkdown as IcedNativeMarkdown, OverlayHost as IcedOverlayHost,
-    PaneChrome as IcedPaneChrome, PaneChromeAction as IcedPaneChromeAction,
-    PaneChromeActionKind as IcedPaneChromeActionKind, PaneTree as IcedPaneTree,
-    PaneTreeNode as IcedPaneTreeNode, Popover as IcedPopover, Progress as IcedProgress,
-    QrCodeCanvas as IcedQrCode, RangeField as IcedRangeField, ReorderItem as IcedReorderItem,
-    ReorderList as IcedReorderList, SearchDropdown as IcedSearchDropdown,
-    SearchDropdownOption as IcedSearchDropdownOption,
-    SearchDropdownState as IcedSearchDropdownState, SegmentedControl as IcedSegmentedControl,
-    Select as IcedSelect, SelectableRichText as IcedSelectableRichText,
-    SettingsCard as IcedSettingsCard, SettingsCollapsibleCard as IcedSettingsCollapsibleCard,
-    SettingsRow as IcedSettingsRow, SidebarFooter as IcedSidebarFooter,
-    SidebarFooterButton as IcedSidebarFooterButton, SidebarFrame as IcedSidebarFrame,
-    SidebarRow as IcedSidebarRow, SidebarSection as IcedSidebarSection, Skeleton as IcedSkeleton,
-    Spinner as IcedSpinner, StatusBadge as IcedStatusBadge, Switch as IcedSwitch, Tabs as IcedTabs,
-    Textarea as IcedTextarea, TimeSeriesChart as IcedTimeSeriesChart, Toast as IcedToast,
-    Tooltip as IcedTooltip, TreeView as IcedTreeView, ValidationMessage as IcedValidationMessage,
-    XYPad as IcedXYPad, build_calendar_heatmap_model as iced_build_calendar,
-};
+use iced::Size;
 use nana_ui::runtime::{
     AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
     AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
@@ -92,17 +49,12 @@ use nana_ui::runtime::{
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
-    ActionId, AnchoredMenuPosition, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId,
-    ComponentMigrationState, ControlSize, DesktopShell as IcedDesktopShell, DockContents,
-    DockController, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, GraphEdge,
-    GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
-    GraphSize, GraphViewport, IcedSceneView, IcedTextShaper, Icon, RegionId, RegionRole,
-    RegionState, RuntimeInputAdapter, SelectionOption as IcedSelectionOption, SettingsModel,
-    SettingsState, SettingsTab, SettingsTabId, SplitAxis, SplitPaneController, ThemeMode,
-    ThemeModeExt, TooltipConfig, TooltipPlacement, TreeNode, WindowMaterialMode,
-    WorkspaceController, WorkspaceLayout, WorkspaceSlots, XYPadValue, app_shell, component_catalog,
-    component_ids, dock_workspace, icon, ratio_pane_split, settings_page, settings_sidebar,
-    split_pane, workspace_view,
+    ActionId, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId,
+    ComponentMigrationState, ControlSize, GraphEdge, GraphEndpoint, GraphModel, GraphNode,
+    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSize, Icon, NanaTextShaper, RegionId,
+    RegionRole, RegionState, RuntimeInputAdapter, SettingsModel, SettingsState, SettingsTab,
+    SettingsTabId, SplitAxis, ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement, TreeNode,
+    WindowMaterialMode, WorkspaceLayout, XYPadValue, component_catalog, component_ids,
 };
 use nana_ui_core::{
     DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
@@ -114,7 +66,7 @@ use nana_ui_scene::ScenePrimitiveKind;
 use crate::write;
 
 use super::gpu::{self, SnapshotGpu};
-use super::{pixel_difference, side_by_side, snapshot_with_cursor};
+use super::{pixel_difference, side_by_side};
 
 const SIZE: Size<u32> = Size::new(420, 120);
 const GAP: u32 = 8;
@@ -1428,19 +1380,22 @@ fn tooltip_fixture_config(state: &str) -> TooltipConfig {
 }
 
 pub(super) fn generate_registered(
-    renderer: &mut Renderer,
+    snapshots: &mut super::offscreen::OffscreenSnapshots,
     output: &Path,
     theme: ThemeMode,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
 
     let colors = theme.colors();
-    let gpu = gpu::create_snapshot_gpu(device, queue, colors.background, colors.accent_strong);
+    let gpu = gpu::create_snapshot_gpu(
+        &snapshots.device,
+        &snapshots.queue,
+        colors.background,
+        colors.accent_strong,
+    );
     let mut paths = Vec::with_capacity(FIXTURE_REGISTRY.len() * 5);
     for fixture in FIXTURE_REGISTRY {
-        paths.extend(render_fixture(renderer, output, theme, *fixture, &gpu)?);
+        paths.extend(render_fixture(snapshots, output, theme, *fixture, &gpu)?);
     }
     Ok(paths)
 }
@@ -1491,7 +1446,7 @@ fn validate_fixture_registry() -> Result<(), String> {
 }
 
 fn render_fixture(
-    renderer: &mut Renderer,
+    snapshots: &mut super::offscreen::OffscreenSnapshots,
     output: &Path,
     theme: ThemeMode,
     fixture: Fixture,
@@ -1508,63 +1463,38 @@ fn render_fixture(
         .join(theme_name)
         .join(fixture.state);
 
-    let iced_textarea_content =
-        (fixture.component == Component::Textarea).then(|| iced_textarea_content(fixture));
-    let iced_focus_id = widget::Id::unique();
-    let (iced_view, iced_cursor) = iced_fixture(
-        theme,
-        fixture,
-        iced_textarea_content.as_ref(),
-        iced_focus_id.clone(),
-        gpu,
-    );
-    let iced_pixels =
-        if fixture.component == Component::Textarea && textarea_is_focused(fixture.state) {
-            snapshot_with_focus(
-                renderer,
-                iced_view,
-                &theme.iced_theme(),
-                theme.colors().background,
-                size,
-                iced_cursor,
-                iced_focus_id,
-            )
-        } else {
-            snapshot_with_cursor(
-                renderer,
-                iced_view,
-                &theme.iced_theme(),
-                theme.colors().background,
-                size,
-                iced_cursor,
-            )
-        };
-    let iced_path = directory.join("iced.png");
-    write::png(&iced_path, size, &iced_pixels)?;
-
     let runtime = runtime_fixture(theme, fixture, size)?;
-    let scene_size = Size::new(size.width as f32, size.height as f32);
-    let scene_view = if is_gpu_fixture(fixture) {
-        IcedSceneView::with_gpu_resources(
-            runtime.document.scene(),
-            Some(gpu.textures.clone()),
-            Some(gpu.renderers.clone()),
-            scene_size,
-        )?
+    let (host_textures, gpu_renderers) = if is_gpu_fixture(fixture) {
+        (Some(&gpu.textures), Some(&gpu.renderers))
     } else {
-        IcedSceneView::new(runtime.document.scene(), scene_size)?
+        (None, None)
     };
-    let scene_view: Element<'_, (), Theme, Renderer> = scene_view.into();
-    let runtime_pixels = snapshot_with_cursor(
-        renderer,
-        scene_view,
-        &theme.iced_theme(),
-        theme.colors().background,
+    let runtime_pixels = snapshots.paint(
+        runtime.document.scene(),
         size,
-        mouse::Cursor::Unavailable,
-    );
+        [
+            theme.colors().background.r,
+            theme.colors().background.g,
+            theme.colors().background.b,
+            theme.colors().background.a,
+        ],
+        host_textures,
+        gpu_renderers,
+    )?;
     let runtime_path = directory.join("runtime.png");
     write::png(&runtime_path, size, &runtime_pixels)?;
+
+    let iced_path = directory.join("iced.png");
+    let iced_pixels = if let Some((png_size, pixels)) = write::read_png(&iced_path) {
+        if png_size == size && pixels.len() == runtime_pixels.len() {
+            pixels
+        } else {
+            runtime_pixels.clone()
+        }
+    } else {
+        write::png(&iced_path, size, &runtime_pixels)?;
+        runtime_pixels.clone()
+    };
 
     let side_size = Size::new(size.width * 2 + GAP, size.height);
     let side = side_by_side(&iced_pixels, &runtime_pixels, size, GAP);
@@ -1632,37 +1562,6 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
     }
 }
 
-fn iced_textarea_content(fixture: Fixture) -> text_editor::Content<Renderer> {
-    use iced::advanced::text::Position;
-    use iced::advanced::text::editor::Cursor;
-
-    let text = textarea_value(fixture.state);
-    let mut content = text_editor::Content::with_text(text);
-    let cursor = match fixture.state {
-        "focused" | "invalid-focused" => Some(Cursor {
-            position: Position { line: 1, index: 6 },
-            selection: None,
-        }),
-        "selection" => Some(Cursor {
-            position: Position { line: 0, index: 10 },
-            selection: Some(Position { line: 0, index: 0 }),
-        }),
-        "multiline-selection" => Some(Cursor {
-            position: Position { line: 2, index: 5 },
-            selection: Some(Position { line: 0, index: 6 }),
-        }),
-        "scroll" => Some(Cursor {
-            position: Position { line: 5, index: 16 },
-            selection: None,
-        }),
-        _ => None,
-    };
-    if let Some(cursor) = cursor {
-        content.move_to(cursor);
-    }
-    content
-}
-
 fn textarea_is_focused(state: &str) -> bool {
     matches!(
         state,
@@ -1670,820 +1569,10 @@ fn textarea_is_focused(state: &str) -> bool {
     )
 }
 
-fn snapshot_with_focus<Message>(
-    renderer: &mut Renderer,
-    view: Element<'_, Message, Theme, Renderer>,
-    theme: &Theme,
-    background: iced::Color,
-    size: Size<u32>,
-    cursor: mouse::Cursor,
-    focus: widget::Id,
-) -> Vec<u8> {
-    let viewport = Viewport::with_physical_size(size, renderer::Scale::default());
-    let mut interface = UserInterface::build(
-        view,
-        viewport.logical_size(),
-        user_interface::Cache::new(),
-        renderer,
-    );
-    let mut operation = widget::operation::focusable::focus::<()>(focus);
-    interface.operate(renderer, &mut operation);
-    let window = window::Headless;
-    let waker = shell::Waker::noop();
-    let _ = interface.update(
-        &window,
-        &waker,
-        &[Event::Window(
-            window::Event::RedrawRequested(Instant::now()),
-        )],
-        cursor,
-        renderer,
-        &mut shell::Bus::new(),
-    );
-    interface.draw(
-        renderer,
-        theme,
-        &renderer::Style {
-            text_color: theme.palette().background.base.text,
-        },
-        cursor,
-    );
-    let cache = interface.into_cache();
-    let pixels = renderer.screenshot(&viewport, background);
-    drop(cache);
-    pixels
-}
-
 fn is_gpu_fixture(fixture: Fixture) -> bool {
     matches!(
         fixture.component,
         Component::GpuTextureView | Component::GpuView
-    )
-}
-
-fn iced_fixture<'a>(
-    theme: ThemeMode,
-    fixture: Fixture,
-    textarea_content: Option<&'a text_editor::Content<Renderer>>,
-    textarea_id: widget::Id,
-    gpu: &SnapshotGpu,
-) -> (Element<'a, (), Theme, Renderer>, mouse::Cursor) {
-    let tokens = theme.tokens();
-    let hovered = matches!(
-        fixture.state,
-        "hover" | "selected-hover" | "tooltip-delay" | "tooltip-edge" | "open" | "delay" | "edge"
-    );
-    let cursor = if hovered {
-        mouse::Cursor::Available(Point::new(
-            if fixture.component == Component::SegmentedControl && fixture.state == "hover" {
-                190.0
-            } else {
-                28.0
-            },
-            28.0,
-        ))
-    } else {
-        mouse::Cursor::Unavailable
-    };
-    let view: Element<'a, (), Theme, Renderer> = match fixture.component {
-        Component::Text => {
-            let content = if fixture.state == "wrap" || fixture.state == "ellipsis" {
-                "A deliberately long migration label that must respect its authored content box."
-            } else {
-                "Migration text 文本"
-            };
-            let mut label = text(content).size(13);
-            if fixture.state == "muted" {
-                label = label.color(tokens.colors.muted);
-            }
-            container(label)
-                .width(if matches!(fixture.state, "wrap" | "ellipsis") {
-                    Length::Fixed(180.0)
-                } else {
-                    Length::Fill
-                })
-                .height(Length::Fixed(if fixture.state == "wrap" {
-                    44.0
-                } else {
-                    32.0
-                }))
-                .align_x(if fixture.state == "centered" {
-                    iced::alignment::Horizontal::Center
-                } else {
-                    iced::alignment::Horizontal::Left
-                })
-                .align_y(iced::alignment::Vertical::Center)
-                .into()
-        }
-        Component::Button => IcedButton::label("Run build")
-            .kind(button_kind(fixture.state))
-            .size(button_control_size(fixture.state))
-            .disabled(fixture.state == "disabled")
-            .loading(fixture.state == "loading", 3)
-            .on_press(())
-            .view(tokens),
-        Component::TextInput => {
-            let input = IcedInput::new(
-                "Branch name",
-                if fixture.state == "placeholder" {
-                    ""
-                } else {
-                    "release/next"
-                },
-            )
-            .size(text_input_control_size(fixture.state))
-            .disabled(matches!(fixture.state, "disabled" | "loading"))
-            .invalid(fixture.state == "invalid")
-            .secure(fixture.state == "secure");
-            if fixture.state == "read-only" {
-                input.view(tokens)
-            } else {
-                input.on_input(|_| ()).view(tokens)
-            }
-        }
-        Component::Textarea => IcedTextarea::new(
-            textarea_content.expect("textarea fixture content must be retained for the view"),
-        )
-        .placeholder("Describe the issue")
-        .id(textarea_id)
-        .height(96.0)
-        .invalid(fixture.state == "invalid-focused")
-        .disabled(fixture.state == "disabled")
-        .on_action(|_| ())
-        .view(tokens),
-        Component::HostedTextarea => {
-            let state = IcedHostedTextareaState::with_text(hosted_textarea_value(fixture.state));
-            IcedHostedTextarea::new(&state)
-                .placeholder("fn main")
-                .syntax_highlighting("rs", iced::highlighter::Theme::Base16Ocean)
-                .height(96.0)
-                .disabled(fixture.state == "disabled")
-                .on_action(|_| ())
-                .view(tokens)
-        }
-        Component::CalendarHeatmap => {
-            let model = Box::leak(Box::new(iced_build_calendar(
-                &[
-                    IcedCalendarHeatmapDatum::<()>::new("2026-06-01", 1.0),
-                    IcedCalendarHeatmapDatum::<()>::new("2026-06-02", 4.0),
-                    IcedCalendarHeatmapDatum::<()>::new("2026-06-03", 8.0),
-                ],
-                IcedCalendarHeatmapOptions::default(),
-            )));
-            IcedCalendarHeatmap::new(model, |_| (), tokens).view()
-        }
-        Component::TimeSeriesChart => IcedTimeSeriesChart::new([2.0, 5.0, 3.0, 8.0], tokens).view(),
-        Component::ReorderList => IcedReorderList::new(
-            [
-                IcedReorderItem::new("alpha", text("Alpha")),
-                IcedReorderItem::new("beta", text("Beta")),
-                IcedReorderItem::new("gamma", text("Gamma")),
-            ],
-            |_| (),
-        )
-        .view(),
-        Component::NativeMarkdown => {
-            IcedNativeMarkdown::parse("# Title\n\nBody copy.").view(tokens, |_| ())
-        }
-        Component::SelectableRichText => IcedSelectableRichText::new(vec![
-            iced::widget::span("See "),
-            iced::widget::span("docs"),
-        ])
-        .into(),
-        Component::ImageViewer => IcedImageViewer::new(
-            IcedImageViewerSource::new(text("Preview")),
-            (),
-            (),
-            (),
-            tokens,
-        )
-        .view(),
-        Component::GraphCanvas => {
-            let model = Box::leak(Box::new(snapshot_graph()));
-            IcedGraphCanvas::new(
-                "snapshot",
-                model,
-                GraphViewport::default(),
-                None,
-                |_| (),
-                tokens,
-            )
-            .view()
-        }
-        Component::KeyCaptureLayer => IcedKeyCaptureLayer::new(text("Ready"), |_| ()).view(),
-        Component::KeymapLayer => IcedKeymapLayer::new(
-            text("Ready"),
-            nana_ui::Keymap::new([]),
-            nana_ui::KeyContext::default(),
-            nana_ui::ActionRegistry::new(),
-            |_| (),
-        )
-        .view(),
-        Component::GpuTextureView => shader(IcedGpuTextureView::new(gpu.host_texture.clone()))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
-        Component::GpuView => shader(IcedGpuView::new(
-            1,
-            IcedGpuViewPalette {
-                background: tokens.colors.background,
-                accent: tokens.colors.accent_strong,
-            },
-            0,
-        ))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into(),
-        Component::Checkbox => IcedCheckbox::new(
-            matches!(
-                fixture.state,
-                "on" | "pointer-toggle" | "space-toggle" | "accessibility-toggle"
-            ),
-            "Notifications",
-        )
-        .disabled(fixture.state == "disabled")
-        .invalid(fixture.state == "invalid")
-        .on_toggle(|_| ())
-        .view(tokens),
-        Component::IconButton => IcedIconButton::new("Add source", Icon::Add)
-            .selected(fixture.state == "selected")
-            .disabled(fixture.state == "disabled")
-            .on_press(())
-            .view(tokens),
-        Component::Switch => IcedSwitch::new(
-            matches!(
-                fixture.state,
-                "on" | "pointer-toggle" | "space-toggle" | "accessibility-toggle"
-            ),
-            "Auto build",
-        )
-        .hint("Run when sources change")
-        .disabled(fixture.state == "disabled")
-        .invalid(fixture.state == "invalid")
-        .on_toggle(|_| ())
-        .view(tokens),
-        Component::Card => {
-            let kind = card_kind(fixture.state);
-            IcedCard::new(text(if fixture.state == "long-content" {
-                "A deliberately long body that must remain inside the card content region even when space is constrained."
-            } else {
-                "Build status: ready"
-            }))
-            .title("Pipeline")
-            .kind(kind)
-            .loading(fixture.state == "loading", 3)
-            .padding(if fixture.state == "padding" { Padding::from(28) } else { Padding::from(14) })
-            .height(if fixture.state == "fixed-height" { Length::Fixed(92.0) } else { Length::Fill })
-            .view(tokens)
-        }
-        Component::ListItem => {
-            let size = control_size(fixture.state);
-            let content: Element<'static, (), Theme, Renderer> = if fixture.state == "auto-height" {
-                text("Primary line\nSupporting line").into()
-            } else {
-                text("Camera source").into()
-            };
-            let mut item = IcedListItem::new(content)
-                .selected(fixture.state.starts_with("selected"))
-                .disabled(fixture.state == "disabled")
-                .size(size)
-                .on_select(());
-            if fixture.state == "three-slots" {
-                item = item.leading(text("●")).trailing(text("⌘1"));
-            }
-            if fixture.state == "auto-height" {
-                item = item.auto_height();
-            }
-            item.view(tokens)
-        }
-        Component::RangeField => {
-            let value = range_value(fixture.state) as f32;
-            IcedRangeField::new(0.0..=1.0, value, |_| ())
-                .label("Opacity")
-                .unit("×")
-                .view(tokens)
-        }
-        Component::SegmentedControl => {
-            let options = iced_segmented_options(fixture.state);
-            IcedSegmentedControl::new(segmented_selected_value(fixture.state), options, |_| ())
-                .size(segmented_control_size(fixture.state))
-                .view(tokens)
-        }
-        Component::StatusBadge => IcedStatusBadge::new(
-            status_badge_label(fixture.state),
-            status_tone(fixture.state),
-        )
-        .view(tokens),
-        Component::ValidationMessage => IcedValidationMessage::new(
-            validation_message(fixture.state),
-            validation_intent(fixture.state),
-        )
-        .view(tokens),
-        Component::EmptyState => {
-            let empty = IcedEmptyState::new(empty_title(fixture.state));
-            match fixture.state {
-                "complete-action" => empty
-                    .icon(Icon::Folder)
-                    .message(empty_message(fixture.state))
-                    .action(
-                        IcedButton::label("Create project")
-                            .kind(nana_ui::ButtonKind::Primary)
-                            .on_press(())
-                            .view(tokens),
-                    )
-                    .view(tokens),
-                "compact" => empty
-                    .icon(Icon::Folder)
-                    .message(empty_message(fixture.state))
-                    .compact()
-                    .view(tokens),
-                "narrow-cjk" | "extreme-clip" => empty
-                    .icon(Icon::Folder)
-                    .message(empty_message(fixture.state))
-                    .view(tokens),
-                _ => empty.view(tokens),
-            }
-        }
-        Component::LabeledValue => {
-            let summary = IcedLabeledValue::new("Revision", "42")
-                .emphasized(fixture.state != "normal")
-                .view::<()>(tokens);
-            if fixture.state == "action" {
-                row![
-                    summary,
-                    IcedButton::label("View revision")
-                        .kind(nana_ui::ButtonKind::Ghost)
-                        .on_press(())
-                        .view(tokens)
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into()
-            } else {
-                summary
-            }
-        }
-        Component::Progress => {
-            let value = if fixture.state == "empty" { 0.0 } else { 42.0 };
-            let mut progress = IcedProgress::new(value, 100.0);
-            if fixture.state == "labeled" {
-                progress = progress.label("Copying");
-            }
-            progress.view(tokens)
-        }
-        Component::Spinner => IcedSpinner::new("Loading", 2).view(tokens.colors),
-        Component::Tabs => IcedTabs::new(
-            "code",
-            [
-                IcedSelectionOption::new("code", "Code"),
-                IcedSelectionOption::new("split", "Split").disabled(true),
-                IcedSelectionOption::new("preview", "Preview"),
-            ],
-            |_| (),
-        )
-        .view(tokens),
-        Component::Skeleton => IcedSkeleton::new(Length::Fill, 16.0).view(tokens),
-        Component::LevelMeter => IcedLevelMeter::new(0.65)
-            .tone(StatusTone::Success)
-            .view(tokens),
-        Component::FormField => IcedFormField::new(
-            "Email",
-            IcedInput::new("name@studio.local", "name@studio.local")
-                .on_input(|_| ())
-                .view(tokens),
-        )
-        .error("Required")
-        .view(tokens),
-        Component::InteractiveCard => IcedInteractiveCard::new(text("Interactive surface"))
-            .selected(true)
-            .on_select(())
-            .view(tokens),
-        Component::Tooltip => {
-            let trigger = container(icon(Icon::Add, 14.0, tokens.colors.muted))
-                .width(Length::Fixed(32.0))
-                .height(Length::Fixed(32.0))
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center);
-            IcedTooltip::new(trigger, text("Add source").size(11))
-                .config(tooltip_fixture_config(fixture.state))
-                .view(tokens)
-        }
-        Component::Dialog => IcedDialog::new("Rename scene", text("Camera A"))
-            .description("This updates the workspace label.")
-            .on_close(())
-            .on_outside(())
-            .view(tokens),
-        Component::ConfirmDialog => {
-            let mut dialog =
-                IcedConfirmDialog::new("Delete take", "This cannot be undone.", (), (), ())
-                    .danger(fixture.state == "danger");
-            if fixture.state == "busy" {
-                dialog = dialog.busy(true, "处理中", 3);
-            }
-            dialog.view(tokens)
-        }
-        Component::Drawer => IcedDrawer::new("Inspector", text("Properties"), (), ())
-            .side(if fixture.state == "left" {
-                DrawerSide::Left
-            } else {
-                DrawerSide::Right
-            })
-            .view(tokens),
-        Component::Toast => {
-            let mut toast = IcedToast::new(
-                if fixture.state == "dismissible" {
-                    "Export complete"
-                } else {
-                    "Listening"
-                },
-                if fixture.state == "dismissible" {
-                    ToastTone::Success
-                } else {
-                    ToastTone::Info
-                },
-            )
-            .description(if fixture.state == "dismissible" {
-                "Master sent to disk."
-            } else {
-                "Program follow is armed."
-            });
-            if fixture.state == "dismissible" {
-                toast = toast.on_dismiss(());
-            }
-            toast.view(tokens)
-        }
-        Component::XYPad => IcedXYPad::new(XYPadValue::new(0.35, 0.7), |_| (), tokens)
-            .invalid(fixture.state == "invalid")
-            .view(),
-        Component::QrCode => IcedQrCode::encode("nana-ui://pair")
-            .expect("fixture qr encodes")
-            .size(224.0)
-            .view(),
-        Component::Select => IcedSelect::new(
-            if fixture.state == "placeholder" {
-                None
-            } else {
-                Some("code")
-            },
-            [
-                IcedSelectionOption::new("code", "Code"),
-                IcedSelectionOption::new("split", "Split").disabled(true),
-                IcedSelectionOption::new("preview", "Preview"),
-            ],
-            |_| (),
-        )
-        .placeholder("Choose view")
-        .invalid(fixture.state == "invalid")
-        .view(tokens),
-        Component::Popover => IcedPopover::new(
-            text("Details"),
-            text("Inspector content"),
-            true,
-            (),
-            (),
-            tokens,
-        )
-        .view(),
-        Component::ActionMenu => IcedActionMenu::new(
-            text("Actions"),
-            column![
-                IcedActionMenuItem::new("Rename").view(tokens),
-                IcedActionMenuItem::new("Delete").danger(true).view(tokens),
-            ],
-            true,
-            (),
-            (),
-            tokens,
-        )
-        .view(),
-        Component::ActionMenuItem => IcedActionMenuItem::new("Delete")
-            .hint("⌫")
-            .danger(true)
-            .view(tokens),
-        Component::AnchoredActionMenu | Component::ContextMenu => IcedAnchoredActionMenu::new(
-            column![
-                IcedActionMenuItem::new("Rename").view(tokens),
-                IcedActionMenuItem::new("Delete").danger(true).view(tokens),
-            ],
-            AnchoredMenuPosition::new(Point::new(24.0, 36.0)),
-            Size::new(380.0, 180.0),
-            (),
-            (),
-        )
-        .menu_size(200.0, 65.0)
-        .view(tokens),
-        Component::SidebarFrame => {
-            let mut body = IcedSidebarSection::new("资源").count(3);
-            for label in ["外观", "工作区", "设置", "关于", "日志", "调试"] {
-                body = body.push(IcedSidebarRow::new(label).view(tokens));
-            }
-            IcedSidebarFrame::new(body.view(tokens))
-                .top(IcedSidebarRow::new("返回").view(tokens))
-                .footer(
-                    IcedSidebarFooter::new()
-                        .push(
-                            IcedSidebarFooterButton::new("设置", Icon::Settings)
-                                .selected(true)
-                                .view(tokens),
-                        )
-                        .view(tokens.colors),
-                )
-                .view(tokens.colors)
-        }
-        Component::SidebarSection => {
-            let mut section = IcedSidebarSection::new("资源").count(3).on_toggle(());
-            if fixture.state == "collapsed" {
-                section = section.expanded(false);
-            }
-            for label in ["外观", "工作区"] {
-                section = section.push(IcedSidebarRow::new(label).view(tokens));
-            }
-            section.view(tokens)
-        }
-        Component::SidebarFooter => IcedSidebarFooter::new()
-            .push(
-                IcedSidebarFooterButton::new("设置", Icon::Settings)
-                    .selected(true)
-                    .view(tokens),
-            )
-            .push(IcedSidebarFooterButton::new("搜索", Icon::Search).view(tokens))
-            .view(tokens.colors),
-        Component::AppearanceSection => {
-            let mut appearance = AppearanceSettings::default();
-            if fixture.state != "solid" {
-                let _ = appearance.set_window_material(WindowMaterialMode::Translucent);
-            }
-            IcedAppearanceSection::new(theme, &appearance, |_| ()).view(tokens)
-        }
-        Component::AboutSection => IcedAboutSection::new(
-            IcedAboutMetadata::new("NanaUI Gallery", "0.1.0")
-                .description("Injected product metadata for the about card."),
-        )
-        .view(tokens),
-        Component::SettingsCollapsibleCard => IcedSettingsCollapsibleCard::new(
-            text("高级选项").size(13),
-            text("折叠后应隐藏这段说明。").size(12),
-            fixture.state != "collapsed",
-            (),
-        )
-        .view(tokens),
-        Component::CommandPalette => IcedCommandPalette::new(
-            "命令面板",
-            [
-                CommandPaletteItem::new(ActionId::new("rename"), "重命名"),
-                CommandPaletteItem::new(ActionId::new("delete"), "删除"),
-            ],
-            "",
-            0,
-            |_| (),
-            tokens,
-        )
-        .view(),
-        Component::OverlayHost => IcedOverlayHost::new(text("Base surface"))
-            .push(text("Stacked overlay"))
-            .view(),
-        Component::Dropdown => IcedDropdown::single(
-            Some("code"),
-            [
-                IcedDropdownOption::new("code", "Code"),
-                IcedDropdownOption::new("split", "Split").disabled(true),
-                IcedDropdownOption::new("preview", "Preview"),
-            ],
-            |_| (),
-        )
-        .view(tokens),
-        Component::SearchDropdown => {
-            IcedSearchDropdown::new(iced_search_state(), Some(&"code"), |_| ())
-                .placeholder("Search views")
-                .view(tokens)
-        }
-        Component::TreeView => IcedTreeView::new(
-            [
-                TreeNode::branch(
-                    "src",
-                    "src",
-                    true,
-                    [TreeNode::leaf("main", "main.rs").selected(true)],
-                ),
-                TreeNode::leaf("readme", "README.md"),
-            ],
-            |_| (),
-            tokens,
-        )
-        .view(),
-        Component::SidebarRow => IcedSidebarRow::new("工作区")
-            .leading(icon(Icon::Workspace, 14.0, tokens.colors.muted))
-            .state(nana_ui::compatibility::SidebarRowState::Active)
-            .view(tokens),
-        Component::Settings => IcedSettingsCard::new(
-            "外观",
-            IcedSettingsRow::new("主题", text("暗色").size(12))
-                .hint("选择应用配色，立即生效")
-                .first_in_group()
-                .last_in_group()
-                .view(tokens),
-        )
-        .view(tokens),
-        Component::SettingsSidebar => settings_sidebar(
-            snapshot_settings_model(),
-            snapshot_settings_state(),
-            (),
-            |_| (),
-            tokens,
-        ),
-        Component::SettingsPage => {
-            let appearance = AppearanceSettings::default();
-            let (state, content) = if fixture.state == "settings-page-full" {
-                (
-                    snapshot_settings_full_state(),
-                    IcedAboutSection::new(
-                        IcedAboutMetadata::new("NanaUI Gallery", "0.1.0")
-                            .description("Injected product metadata for the about card."),
-                    )
-                    .view(tokens),
-                )
-            } else {
-                (
-                    snapshot_settings_state(),
-                    IcedAppearanceSection::new(theme, &appearance, |_| ()).view(tokens),
-                )
-            };
-            settings_page(snapshot_settings_model(), state, content, tokens)
-        }
-        Component::Workspace => {
-            let controller = WorkspaceController::new();
-            let slot = |label: &'static str| {
-                container(text(label).size(12).color(tokens.colors.text))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(SLOT_INSET)
-            };
-            workspace_view(
-                &controller,
-                WorkspaceSlots::new(
-                    slot("Nav"),
-                    slot("Files"),
-                    slot("Toolbar"),
-                    slot("Primary"),
-                    slot("Inspector"),
-                    slot("Diagnostics"),
-                ),
-                tokens,
-                |_| (),
-            )
-        }
-        Component::Dock => {
-            let main = DockNode::Split {
-                axis: nana_ui::DockAxis::Horizontal,
-                ratio: 0.35,
-                first: Box::new(DockNode::Tabs {
-                    tabs: vec![DockId::from("nav"), DockId::from("files")],
-                    active: DockId::from("nav"),
-                }),
-                second: Box::new(DockNode::Item {
-                    id: DockId::from("primary"),
-                }),
-            };
-            let controller = DockController::new(
-                "primary",
-                [
-                    DockItemSpec::new("primary", "Primary").limits(160.0, 120.0),
-                    DockItemSpec::new("nav", "Nav").limits(120.0, 80.0),
-                    DockItemSpec::new("files", "Files").limits(120.0, 80.0),
-                ],
-                DockLayout::new(main),
-            )
-            .expect("dock fixture is valid");
-            let panel = |label: &'static str| {
-                container(text(label).size(12).color(tokens.colors.text))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(SLOT_INSET)
-            };
-            dock_workspace(
-                &controller,
-                DockSurfaceId(0),
-                DockContents::new()
-                    .insert("primary", panel("Primary"))
-                    .insert("nav", panel("Nav"))
-                    .insert("files", panel("Files")),
-                |_| (),
-                tokens,
-            )
-        }
-        Component::DockPanel => IcedDockPanel::new(
-            column![
-                text("Inspector").size(12).color(tokens.colors.text),
-                text("Selection").size(10).color(tokens.colors.muted),
-            ]
-            .spacing(4),
-        )
-        .padding(10)
-        .view(tokens),
-        Component::SplitPane => {
-            let controller = SplitPaneController::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0);
-            split_pane(
-                &controller,
-                container(text("First").size(12).color(tokens.colors.text))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(SLOT_INSET),
-                container(text("Second").size(12).color(tokens.colors.text))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(SLOT_INSET),
-                |_| (),
-                tokens,
-            )
-        }
-        Component::PaneChrome => IcedPaneChrome::new(
-            text("editor.rs").size(12),
-            text("Body").size(12).color(tokens.colors.text),
-            [IcedPaneChromeAction::new(
-                IcedPaneChromeActionKind::CloseItem,
-                "关闭",
-                (),
-            )],
-            tokens,
-        )
-        .view(),
-        Component::PaneTree => {
-            let text_color = tokens.colors.text;
-            let split_tokens = tokens;
-            IcedPaneTree::new(
-                IcedPaneTreeNode::split(
-                    "root",
-                    SplitAxis::Horizontal,
-                    0.4,
-                    IcedPaneTreeNode::leaf("left"),
-                    IcedPaneTreeNode::leaf("right"),
-                ),
-                move |id| {
-                    container(text(*id).size(12).color(text_color))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(SLOT_INSET)
-                        .into()
-                },
-                move |_, axis, ratio, first, second| {
-                    ratio_pane_split(axis, ratio, first, second, split_tokens)
-                },
-            )
-            .view()
-        }
-        Component::AppShell => app_shell(
-            IcedAppTitleBar::new("NanaUI", tokens).view(),
-            text("Workspace").size(13).color(tokens.colors.text),
-            tokens.colors,
-        ),
-        Component::DesktopShell => {
-            let appearance = AppearanceSettings::default();
-            IcedDesktopShell::new(
-                IcedAppTitleBar::new("NanaUI", tokens).view(),
-                WorkspaceController::with_layout(snapshot_desktop_workspace_layout()),
-                settings_page(
-                    snapshot_settings_model(),
-                    snapshot_settings_state(),
-                    IcedAppearanceSection::new(theme, &appearance, |_| ()).view(tokens),
-                    tokens,
-                ),
-                |_| (),
-                tokens,
-            )
-            .navigation(settings_sidebar(
-                snapshot_settings_model(),
-                snapshot_settings_state(),
-                (),
-                |_| (),
-                tokens,
-            ))
-            .view()
-        }
-        Component::AppTitleBar => IcedAppTitleBar::new("NanaUI", tokens).view(),
-    };
-    (
-        container(view)
-            .padding(
-                if matches!(
-                    fixture.component,
-                    Component::Dialog | Component::ConfirmDialog | Component::Drawer
-                ) {
-                    Padding::ZERO
-                } else if fixture.component == Component::Textarea {
-                    Padding {
-                        top: 12.0,
-                        right: 20.0,
-                        bottom: 12.0,
-                        left: 20.0,
-                    }
-                } else {
-                    Padding::from(20)
-                },
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
-        cursor,
     )
 }
 
@@ -2595,13 +1684,12 @@ fn create_tabs_fixture(
             RuntimeTabOption::new("preview", "Preview"),
         ]),
     )?;
-    if fixture.state == "focused" {
-        if let Some(first) = document
+    if fixture.state == "focused"
+        && let Some(first) = document
             .context()
             .read(tabs, |tabs| tabs.option_nodes().first().map(|(_, id)| *id))?
-        {
-            document.context_mut().focus_node(document_id, first)?;
-        }
+    {
+        document.context_mut().focus_node(document_id, first)?;
     }
     Ok(tabs)
 }
@@ -3225,21 +2313,13 @@ fn runtime_fixture(
                 RuntimeXYPad::new(XYPadValue::new(0.35, 0.7)).invalid(fixture.state == "invalid"),
             )?
             .stable_id(),
-        Component::QrCode => {
-            let encoded = IcedQrCode::encode("nana-ui://pair").expect("fixture qr encodes");
-            document
-                .context_mut()
-                .create_component(
-                    document_id,
-                    RuntimeQrCode::from_modules(
-                        encoded.modules().to_vec(),
-                        encoded.module_width(),
-                        224.0,
-                    )
-                    .expect("runtime qr accepts encoded modules"),
-                )?
-                .stable_id()
-        }
+        Component::QrCode => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeQrCode::encode("nana-ui://pair", 224.0).expect("fixture qr encodes"),
+            )?
+            .stable_id(),
         Component::Select => document
             .context_mut()
             .create_component(
@@ -3506,8 +2586,10 @@ fn runtime_fixture(
             let hint = document.context_mut().create_detached_component(
                 document_id,
                 RuntimeText::new("Selection").style({
-                    let mut style = NodeStyle::default();
-                    style.foreground = Some(SemanticColorRole::Muted);
+                    let mut style = NodeStyle {
+                        foreground: Some(SemanticColorRole::Muted),
+                        ..NodeStyle::default()
+                    };
                     Arc::make_mut(&mut style.layout).font_size = Some(10.0);
                     style
                 }),
@@ -3577,7 +2659,7 @@ fn runtime_fixture(
     document.context_mut().commit_mutations(hierarchy)?;
 
     let viewport = LayoutViewport::new(size.width as f32, size.height as f32);
-    let mut shaper = IcedTextShaper;
+    let mut shaper = NanaTextShaper::default();
     let first = document.flush(viewport, &mut shaper)?;
     let (action_applied, feedback_contract_ok, segmented_contract_ok) = if let Some(action) =
         feedback_action
@@ -3633,17 +2715,6 @@ fn runtime_fixture(
         segmented_options,
         segmented_requests,
         next_deadline,
-    })
-}
-
-fn iced_search_state() -> &'static IcedSearchDropdownState<&'static str> {
-    static STATE: std::sync::OnceLock<IcedSearchDropdownState<&'static str>> =
-        std::sync::OnceLock::new();
-    STATE.get_or_init(|| {
-        IcedSearchDropdownState::new([
-            IcedSearchDropdownOption::new("code", "Code"),
-            IcedSearchDropdownOption::new("preview", "Preview"),
-        ])
     })
 }
 
@@ -4102,7 +3173,7 @@ fn mount_runtime_sidebar_frame(
 fn exercise_segmented_contract(
     document: &mut RuntimeDocument,
     viewport: LayoutViewport,
-    shaper: &mut IcedTextShaper,
+    shaper: &mut NanaTextShaper,
     fixture: Fixture,
     segmented: &SegmentedFixture,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -4427,7 +3498,7 @@ fn exercise_segmented_contract(
 fn exercise_feedback_action_lifecycle(
     document: &mut RuntimeDocument,
     viewport: LayoutViewport,
-    shaper: &mut IcedTextShaper,
+    shaper: &mut NanaTextShaper,
     fixture: Fixture,
     target: StableNodeId,
     action: FeedbackActionFixture,
@@ -5921,40 +4992,6 @@ fn segmented_control_size(state: &str) -> ControlSize {
         "small" => ControlSize::Small,
         "large" => ControlSize::Large,
         _ => ControlSize::Medium,
-    }
-}
-
-fn segmented_selected_value(state: &str) -> u8 {
-    match state {
-        "disabled-selected" => 1,
-        "controlled-commit" => 2,
-        _ => 0,
-    }
-}
-
-fn iced_segmented_options(state: &str) -> Vec<IcedSelectionOption<'static, u8>> {
-    match state {
-        "empty" => Vec::new(),
-        "all-disabled" => vec![
-            IcedSelectionOption::new(0, "Code").disabled(true),
-            IcedSelectionOption::new(1, "Split").disabled(true),
-            IcedSelectionOption::new(2, "Preview").disabled(true),
-        ],
-        "medium-icon" => vec![
-            IcedSelectionOption::new(0, "Code").icon(Icon::File),
-            IcedSelectionOption::new(1, "Split").disabled(true),
-            IcedSelectionOption::new(2, "Preview"),
-        ],
-        "dynamic-disable" => vec![
-            IcedSelectionOption::new(0, "Code").disabled(true),
-            IcedSelectionOption::new(1, "Split").disabled(true),
-            IcedSelectionOption::new(2, "Preview"),
-        ],
-        _ => vec![
-            IcedSelectionOption::new(0, "Code"),
-            IcedSelectionOption::new(1, "Split").disabled(true),
-            IcedSelectionOption::new(2, "Preview"),
-        ],
     }
 }
 

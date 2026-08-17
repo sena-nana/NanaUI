@@ -1,33 +1,36 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use iced::widget::space;
-use iced::{Element, Event, Length, Point, Size};
-#[cfg(test)]
-use nana_ui::runtime::StandardVisual;
 use nana_ui::runtime::{
     AlignSpec, AppContext, Button, CommandPalette, ConfirmDialog, ConfirmIntent, ConfirmSlots,
     ContextMenu, ContextMenuEvent as RuntimeContextMenuEvent,
-    ContextMenuItem as RuntimeContextMenuItem, DocumentId, Entity, FrameworkError, IconButton,
-    ImageViewer, ImageViewerContent, ImageViewerEvent, LayoutBox, LayoutViewport, OverlayChanged,
+    ContextMenuItem as RuntimeContextMenuItem, DesktopShell, DocumentId, Entity, FrameworkError,
+    IconButton, ImageViewer, ImageViewerContent, ImageViewerEvent, LayoutBox, OverlayChanged,
     OverlayHost, RuntimeDocument, SemanticColorRole, Text,
 };
+#[cfg(test)]
+use nana_ui::runtime::{StableNodeId, StandardVisual};
 use nana_ui::{
-    ButtonKind, CommandPaletteEvent, ControlSize, IcedSceneView, IcedTextShaper, Icon,
-    RuntimeInputAdapter,
+    ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, RuntimeInputAdapter,
 };
 use nana_ui_platform::{InputEvent, PointerPhase};
 
 use super::runtime_host::{
-    HostStack, RuntimeSceneInput, bind_event, hugging_text, iced_key_name, iced_modifiers,
-    runtime_input_event, scene_pointer, styled_text, take_pending,
+    HostStack, RuntimeSceneInput, bind_event, hugging_text, runtime_input_event, styled_text,
+    take_pending,
 };
 use super::{
-    ContextAction, ContextMenuEvent, DialogCloseTrigger, GalleryMessage, GalleryOverlay,
+    ContextAction, DialogCloseTrigger, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay,
     GalleryState,
 };
 
-const OVERLAY_DOCUMENT: u64 = 3;
+type OverlayTarget = (
+    DocumentId,
+    Entity<DesktopShell>,
+    Entity<OverlayHost>,
+    Arc<Mutex<Vec<GalleryMessage>>>,
+);
+
 const PALETTE_TITLE: &str = "命令";
 const PALETTE_PLACEHOLDER: &str = "搜索命令";
 const DIALOG_TITLE: &str = "确认操作";
@@ -41,9 +44,9 @@ const IMAGE_PREVIEW_INSET: f32 = 54.0;
 const CONTEXT_GROUP: &str = "project";
 
 pub(super) struct GalleryOverlaysRuntime {
-    document: RuntimeDocument,
     kind: GalleryOverlay,
-    #[allow(dead_code)]
+    document_id: DocumentId,
+    shell: Entity<DesktopShell>,
     host: Entity<OverlayHost>,
     palette: Option<Entity<CommandPalette>>,
     #[allow(dead_code)]
@@ -51,9 +54,7 @@ pub(super) struct GalleryOverlaysRuntime {
     image: Option<Entity<ImageViewer>>,
     menu: Option<Entity<ContextMenu>>,
     last_menu_path: Vec<usize>,
-    last_pointer: Point,
-    last_viewport: LayoutViewport,
-    pending: Arc<Mutex<Vec<GalleryMessage>>>,
+    last_pointer: LogicalPoint,
 }
 
 impl fmt::Debug for GalleryOverlaysRuntime {
@@ -61,42 +62,45 @@ impl fmt::Debug for GalleryOverlaysRuntime {
         formatter
             .debug_struct("GalleryOverlaysRuntime")
             .field("kind", &self.kind)
-            .field("last_viewport", &self.last_viewport)
+            .field("document_id", &self.document_id)
             .finish_non_exhaustive()
     }
 }
 
 impl GalleryOverlaysRuntime {
-    fn mount(state: &GalleryState, kind: GalleryOverlay) -> Result<Self, FrameworkError> {
-        let pending = Arc::new(Mutex::new(Vec::new()));
-        let mut document =
-            RuntimeDocument::new(DocumentId::new(OVERLAY_DOCUMENT).expect("overlay document id"));
+    fn mount(
+        document: &mut RuntimeDocument,
+        shell: Entity<DesktopShell>,
+        host: Entity<OverlayHost>,
+        state: &GalleryState,
+        kind: GalleryOverlay,
+        pending: &Arc<Mutex<Vec<GalleryMessage>>>,
+        bind_host: bool,
+    ) -> Result<Self, FrameworkError> {
         let document_id = document.document();
         let context = document.context_mut();
         let _ = context.set_theme(state.theme);
-
-        let host = context.create_component(document_id, OverlayHost::new())?;
         let mut palette = None;
         let mut dialog = None;
         let mut image = None;
         let mut menu = None;
-
-        match kind {
+        let overlay_id = match kind {
             GalleryOverlay::CommandPalette => {
                 let overlay = context
                     .create_detached_component(document_id, gallery_command_palette(state))?;
-                context.append_child(host, overlay)?;
-                context.activate_overlay(host, overlay)?;
                 bind_event(
                     context,
                     overlay,
-                    Arc::clone(&pending),
+                    Arc::clone(pending),
                     |event: &CommandPaletteEvent| match event {
                         CommandPaletteEvent::Navigate(_) => GalleryMessage::OverlayInteraction,
                         event => GalleryMessage::CommandPalette(event.clone()),
                     },
                 )?;
+                context.append_child(host, overlay)?;
+                context.activate_overlay(host, overlay)?;
                 palette = Some(overlay);
+                overlay.stable_id()
             }
             GalleryOverlay::Dialog => {
                 let overlay = context.create_detached_component(
@@ -128,12 +132,10 @@ impl GalleryOverlaysRuntime {
                         confirm: confirm.stable_id(),
                     },
                 )?;
-                context.append_child(host, overlay)?;
-                context.activate_overlay(host, overlay)?;
                 bind_event(
                     context,
                     overlay,
-                    Arc::clone(&pending),
+                    Arc::clone(pending),
                     |intent: &ConfirmIntent| match intent {
                         ConfirmIntent::Confirm { .. } => GalleryMessage::ConfirmDialog,
                         ConfirmIntent::Cancel | ConfirmIntent::Secondary => {
@@ -141,7 +143,10 @@ impl GalleryOverlaysRuntime {
                         }
                     },
                 )?;
+                context.append_child(host, overlay)?;
+                context.activate_overlay(host, overlay)?;
                 dialog = Some(overlay);
+                overlay.stable_id()
             }
             GalleryOverlay::ImageViewer => {
                 let preview = mount_image_preview(context, document_id)?;
@@ -152,12 +157,10 @@ impl GalleryOverlaysRuntime {
                         .metadata(IMAGE_PREVIEW_METADATA),
                 )?;
                 context.append_child(overlay, preview)?;
-                context.append_child(host, overlay)?;
-                context.activate_overlay(host, overlay)?;
                 bind_event(
                     context,
                     overlay,
-                    Arc::clone(&pending),
+                    Arc::clone(pending),
                     |event: &ImageViewerEvent| match event {
                         ImageViewerEvent::Close => {
                             GalleryMessage::RequestImageViewerClose(DialogCloseTrigger::CloseButton)
@@ -168,7 +171,10 @@ impl GalleryOverlaysRuntime {
                         ImageViewerEvent::Interaction => GalleryMessage::OverlayInteraction,
                     },
                 )?;
+                context.append_child(host, overlay)?;
+                context.activate_overlay(host, overlay)?;
                 image = Some(overlay);
+                overlay.stable_id()
             }
             GalleryOverlay::ContextMenu => {
                 let (anchor_x, anchor_y) = context_menu_anchor(state);
@@ -181,67 +187,89 @@ impl GalleryOverlaysRuntime {
                         .active_path(runtime_menu_path(&state.context_path))
                         .open(true),
                 )?;
-                context.append_child(host, overlay)?;
-                context.activate_overlay(host, overlay)?;
                 bind_event(
                     context,
                     overlay,
-                    Arc::clone(&pending),
+                    Arc::clone(pending),
                     |event: &RuntimeContextMenuEvent| match event {
-                        RuntimeContextMenuEvent::Search(query) => {
-                            GalleryMessage::ContextMenu(ContextMenuEvent::Search(query.to_string()))
-                        }
+                        RuntimeContextMenuEvent::Search(query) => GalleryMessage::ContextMenu(
+                            GalleryContextMenuEvent::Search(query.to_string()),
+                        ),
                         RuntimeContextMenuEvent::Select(value) => {
                             match context_action_from_value(value) {
                                 Some(action) => {
-                                    GalleryMessage::ContextMenu(ContextMenuEvent::Select(action))
+                                    GalleryMessage::ContextMenu(GalleryContextMenuEvent::Select(
+                                        context_action_key(action).to_string(),
+                                    ))
                                 }
                                 None => GalleryMessage::OverlayInteraction,
                             }
                         }
                         RuntimeContextMenuEvent::Dismiss => {
-                            GalleryMessage::ContextMenu(ContextMenuEvent::Dismiss)
+                            GalleryMessage::ContextMenu(GalleryContextMenuEvent::Dismiss)
                         }
                     },
                 )?;
+                context.append_child(host, overlay)?;
+                context.activate_overlay(host, overlay)?;
                 menu = Some(overlay);
+                overlay.stable_id()
             }
+        };
+
+        let _ = context.update_component(shell, |shell, _| {
+            shell.overlays = vec![overlay_id];
+        });
+        context.assemble_desktop_shell(shell)?;
+        if let Some(overlay) = palette {
+            context.activate_overlay(host, overlay)?;
+        } else if let Some(overlay) = dialog {
+            context.activate_overlay(host, overlay)?;
+        } else if let Some(overlay) = image {
+            context.activate_overlay(host, overlay)?;
+        } else if let Some(overlay) = menu {
+            context.activate_overlay(host, overlay)?;
+        }
+        if bind_host {
+            bind_event(
+                context,
+                host,
+                Arc::clone(pending),
+                |event: &OverlayChanged| {
+                    if event.active.is_none() {
+                        GalleryMessage::DismissOverlay
+                    } else {
+                        GalleryMessage::OverlayInteraction
+                    }
+                },
+            )?;
         }
 
-        bind_event(
-            context,
-            host,
-            Arc::clone(&pending),
-            move |event: &OverlayChanged| {
-                if event.active.is_none() {
-                    overlay_dismissed_message(kind)
-                } else {
-                    GalleryMessage::OverlayInteraction
-                }
-            },
-        )?;
-
-        let (width, height) = state.gallery_viewport_size();
-        let last_viewport = LayoutViewport::new(width, height);
-        let _ = document.flush(last_viewport, &mut IcedTextShaper);
-
         Ok(Self {
-            document,
             kind,
+            document_id,
+            shell,
             host,
             palette,
             dialog,
             image,
             menu,
             last_menu_path: state.context_path.clone(),
-            last_pointer: Point::ORIGIN,
-            last_viewport,
-            pending,
+            last_pointer: LogicalPoint::default(),
         })
     }
 
-    fn sync(&mut self, state: &GalleryState) {
-        let context = self.document.context_mut();
+    fn detach(&self, document: &mut RuntimeDocument) {
+        let context = document.context_mut();
+        let _ = context.dismiss_overlay(self.host);
+        let _ = context.update_component(self.shell, |shell, _| {
+            shell.overlays.clear();
+        });
+        let _ = context.assemble_desktop_shell(self.shell);
+    }
+
+    fn sync(&mut self, document: &mut RuntimeDocument, state: &GalleryState) {
+        let context = document.context_mut();
         let _ = context.set_theme(state.theme);
         match self.kind {
             GalleryOverlay::CommandPalette => {
@@ -285,106 +313,144 @@ impl GalleryOverlaysRuntime {
             }
             GalleryOverlay::Dialog | GalleryOverlay::ImageViewer => {}
         }
-        self.flush(state.gallery_viewport_size());
     }
 
-    fn flush(&mut self, (width, height): (f32, f32)) {
-        self.last_viewport = LayoutViewport::new(width, height);
-        let _ = self.document.flush(self.last_viewport, &mut IcedTextShaper);
-    }
-
-    fn dispatch(&mut self, event: InputEvent) -> Vec<GalleryMessage> {
-        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = event {
-            self.last_pointer = Point::new(x, y);
+    fn apply_pointer(&mut self, document: &mut RuntimeDocument, event: &InputEvent) {
+        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = *event {
+            self.last_pointer = LogicalPoint::new(x, y);
         }
-        if let Some(viewer) = self.image {
-            let context = self.document.context_mut();
-            match event {
-                InputEvent::Pointer {
-                    phase: PointerPhase::Down,
-                    pointer_id,
-                    x,
-                    y,
-                    ..
-                } => {
-                    let _ = context.image_viewer_pointer_down(viewer, pointer_id, x, y);
-                }
-                InputEvent::Pointer {
-                    phase: PointerPhase::Move,
-                    pointer_id,
-                    x,
-                    y,
-                    ..
-                } => {
-                    let _ = context.image_viewer_pointer_move(viewer, pointer_id, x, y);
-                }
-                InputEvent::Pointer {
-                    phase: PointerPhase::Up | PointerPhase::Cancel,
-                    pointer_id,
-                    ..
-                } => {
-                    let _ = context.image_viewer_pointer_up(viewer, pointer_id);
-                }
-                InputEvent::Wheel { x, y, delta_y, .. } => {
-                    let _ = context.image_viewer_wheel(viewer, x, y, delta_y);
-                }
-                _ => {}
+        let Some(viewer) = self.image else {
+            return;
+        };
+        let context = document.context_mut();
+        match *event {
+            InputEvent::Pointer {
+                phase: PointerPhase::Down,
+                pointer_id,
+                x,
+                y,
+                ..
+            } => {
+                let _ = context.image_viewer_pointer_down(viewer, pointer_id, x, y);
             }
+            InputEvent::Pointer {
+                phase: PointerPhase::Move,
+                pointer_id,
+                x,
+                y,
+                ..
+            } => {
+                let _ = context.image_viewer_pointer_move(viewer, pointer_id, x, y);
+            }
+            InputEvent::Pointer {
+                phase: PointerPhase::Up | PointerPhase::Cancel,
+                pointer_id,
+                ..
+            } => {
+                let _ = context.image_viewer_pointer_up(viewer, pointer_id);
+            }
+            InputEvent::Wheel { x, y, delta_y, .. } => {
+                let _ = context.image_viewer_wheel(viewer, x, y, delta_y);
+            }
+            _ => {}
         }
-        let document = self.document.document();
-        let _ =
-            RuntimeInputAdapter::default().dispatch(self.document.context_mut(), document, &event);
-        let mut messages = take_pending(&self.pending);
+    }
+
+    fn take_messages(
+        &mut self,
+        document: &RuntimeDocument,
+        pending: &Arc<Mutex<Vec<GalleryMessage>>>,
+    ) -> Vec<GalleryMessage> {
+        let mut messages = take_pending(pending);
         if let Some(menu) = self.menu
-            && let Ok(path) = self
-                .document
+            && let Ok(path) = document
                 .context()
                 .read(menu, |menu| menu.active_path.clone())
         {
             let gallery_path = gallery_menu_path(&path);
             if gallery_path != self.last_menu_path {
                 self.last_menu_path = gallery_path.clone();
-                messages.push(GalleryMessage::ContextMenu(ContextMenuEvent::OpenSubmenu(
-                    gallery_path,
-                )));
+                messages.push(GalleryMessage::ContextMenu(
+                    GalleryContextMenuEvent::OpenSubmenu(gallery_path),
+                ));
             }
         }
         messages
     }
 
-    fn viewport_size(&self) -> Size {
-        Size::new(self.last_viewport.width, self.last_viewport.height)
+    fn dispatch(
+        &mut self,
+        document: &mut RuntimeDocument,
+        event: InputEvent,
+        pending: &Arc<Mutex<Vec<GalleryMessage>>>,
+    ) -> Vec<GalleryMessage> {
+        self.apply_pointer(document, &event);
+        let document_id = document.document();
+        let _ =
+            RuntimeInputAdapter::default().dispatch(document.context_mut(), document_id, &event);
+        self.take_messages(document, pending)
+    }
+
+    fn matches_host(&self, document_id: DocumentId, host: Entity<OverlayHost>) -> bool {
+        self.document_id == document_id && self.host == host
     }
 
     #[cfg(test)]
-    fn scene_populated(&self) -> bool {
-        !self.document.scene().is_empty()
+    fn attached_overlay(&self) -> Option<StableNodeId> {
+        self.palette
+            .map(Entity::stable_id)
+            .or_else(|| self.dialog.map(Entity::stable_id))
+            .or_else(|| self.image.map(Entity::stable_id))
+            .or_else(|| self.menu.map(Entity::stable_id))
     }
 }
 
 impl GalleryState {
     pub(super) fn refresh_overlay_runtime(&mut self) {
         let Some(kind) = self.overlay.active().copied() else {
+            self.detach_overlay_runtime();
+            return;
+        };
+        let Some((document_id, shell, host, pending)) = self.active_overlay_target() else {
             self.overlay_runtime = None;
             return;
         };
         let remount = self
             .overlay_runtime
             .as_ref()
-            .is_none_or(|runtime| runtime.kind != kind);
+            .is_none_or(|runtime| runtime.kind != kind || !runtime.matches_host(document_id, host));
         if remount {
-            match GalleryOverlaysRuntime::mount(self, kind) {
-                Ok(runtime) => self.overlay_runtime = Some(runtime),
-                Err(_) => {
+            let bind_host = self
+                .overlay_runtime
+                .as_ref()
+                .is_none_or(|runtime| !runtime.matches_host(document_id, host));
+            self.detach_overlay_runtime();
+            let mounted = self.with_active_document_mut(|document, state| {
+                GalleryOverlaysRuntime::mount(
+                    document, shell, host, state, kind, &pending, bind_host,
+                )
+            });
+            match mounted {
+                Some(Ok(runtime)) => self.overlay_runtime = Some(runtime),
+                _ => {
                     self.overlay_runtime = None;
                     return;
                 }
             }
         }
         if let Some(mut runtime) = self.overlay_runtime.take() {
-            runtime.sync(self);
+            self.with_active_document_mut(|document, state| runtime.sync(document, state));
             self.overlay_runtime = Some(runtime);
         }
+        self.flush_active_document();
+    }
+
+    fn detach_overlay_runtime(&mut self) {
+        let Some(runtime) = self.overlay_runtime.take() else {
+            return;
+        };
+        self.with_active_document_mut(|document, _| runtime.detach(document));
+        self.flush_active_document();
     }
 
     pub(super) fn handle_overlay_runtime_input(&mut self, input: RuntimeSceneInput) {
@@ -401,38 +467,132 @@ impl GalleryState {
             runtime.last_pointer = point;
         }
         let event = overlay_input_event(&input, runtime.last_pointer);
-        let messages = runtime.dispatch(event);
+        let pending = self.active_runtime_pending();
+        let messages = self
+            .with_active_document_mut(|document, _| runtime.dispatch(document, event, &pending))
+            .unwrap_or_default();
         self.overlay_runtime = Some(runtime);
+        self.flush_active_document();
         for message in messages {
             self.update(message);
         }
         if self.overlay.is_open() {
             self.refresh_overlay_runtime();
         } else {
-            self.overlay_runtime = None;
+            self.detach_overlay_runtime();
         }
     }
 
-    pub(super) fn overlay_runtime_view(&self) -> Element<'_, GalleryMessage> {
-        let Some(runtime) = self.overlay_runtime.as_ref() else {
-            return space().width(Length::Fill).height(Length::Fill).into();
+    pub(super) fn apply_overlay_host_input(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+        let Some(mut runtime) = self.overlay_runtime.take() else {
+            return Vec::new();
         };
-        let view = match IcedSceneView::new(runtime.document.scene(), runtime.viewport_size()) {
-            Ok(view) => Element::from(view),
-            Err(_) => space().width(Length::Fill).height(Length::Fill).into(),
-        };
-        scene_pointer(
-            view,
-            iced::mouse::Interaction::None,
-            GalleryMessage::OverlayRuntime,
-        )
+        let pending = self.active_runtime_pending();
+        runtime.apply_pointer_on_active(self, event);
+        let messages = self
+            .with_active_document(|document| runtime.take_messages(document, &pending))
+            .unwrap_or_default();
+        self.overlay_runtime = Some(runtime);
+        messages
+    }
+
+    fn active_overlay_target(&self) -> Option<OverlayTarget> {
+        if self.settings_open {
+            let runtime = self.settings_runtime.as_ref()?;
+            Some((
+                runtime.runtime_document().document(),
+                runtime.shell(),
+                runtime.overlay_host()?,
+                runtime.pending_sink(),
+            ))
+        } else {
+            let runtime = self.gallery_runtime.as_ref()?;
+            Some((
+                runtime.runtime_document().document(),
+                runtime.shell(),
+                runtime.overlay_host()?,
+                runtime.pending_sink(),
+            ))
+        }
+    }
+
+    fn active_runtime_pending(&self) -> Arc<Mutex<Vec<GalleryMessage>>> {
+        if self.settings_open {
+            self.settings_runtime
+                .as_ref()
+                .map(super::runtime_settings::GallerySettingsRuntime::pending_sink)
+        } else {
+            self.gallery_runtime
+                .as_ref()
+                .map(super::runtime_gallery::GalleryRuntime::pending_sink)
+        }
+        .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())))
+    }
+
+    pub(super) fn with_active_document<R>(
+        &self,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Option<R> {
+        if self.settings_open {
+            self.settings_runtime
+                .as_ref()
+                .map(|runtime| f(runtime.runtime_document()))
+        } else {
+            self.gallery_runtime
+                .as_ref()
+                .map(|runtime| f(runtime.runtime_document()))
+        }
+    }
+
+    fn with_active_document_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut RuntimeDocument, &GalleryState) -> R,
+    ) -> Option<R> {
+        if self.settings_open {
+            let mut runtime = self.settings_runtime.take()?;
+            let result = f(runtime.runtime_document_mut(), self);
+            self.settings_runtime = Some(runtime);
+            Some(result)
+        } else {
+            let mut runtime = self.gallery_runtime.take()?;
+            let result = f(runtime.runtime_document_mut(), self);
+            self.gallery_runtime = Some(runtime);
+            Some(result)
+        }
+    }
+
+    fn flush_active_document(&mut self) {
+        if self.settings_open {
+            let size = self.settings_viewport_size();
+            if let Some(runtime) = self.settings_runtime.as_mut() {
+                runtime.flush_viewport(size);
+            }
+        } else {
+            let size = self.gallery_viewport_size();
+            if let Some(runtime) = self.gallery_runtime.as_mut() {
+                runtime.flush_viewport(size);
+            }
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn gallery_overlay_runtime_scene_populated(&self) -> bool {
-        self.overlay_runtime
-            .as_ref()
-            .is_some_and(GalleryOverlaysRuntime::scene_populated)
+        let Some(runtime) = self.overlay_runtime.as_ref() else {
+            return false;
+        };
+        let Some(overlay) = runtime.attached_overlay() else {
+            return false;
+        };
+        self.with_active_document(|document| {
+            !document.scene().is_empty()
+                && document
+                    .context()
+                    .world()
+                    .overlay_host(runtime.host.stable_id())
+                    .and_then(|host| host.active)
+                    == Some(overlay)
+        })
+        .unwrap_or(false)
     }
 
     #[cfg(test)]
@@ -441,10 +601,8 @@ impl GalleryState {
     ) -> Option<(String, String, String, usize)> {
         let runtime = self.overlay_runtime.as_ref()?;
         let palette = runtime.palette?;
-        runtime
-            .document
-            .context()
-            .read(palette, |palette| {
+        self.with_active_document(|document| {
+            document.context().read(palette, |palette| {
                 (
                     palette.title.to_string(),
                     palette.query.clone(),
@@ -452,52 +610,73 @@ impl GalleryState {
                     palette.selected,
                 )
             })
-            .ok()
+        })?
+        .ok()
     }
 
     #[cfg(test)]
     pub(crate) fn gallery_overlay_command_palette_visual(&self) -> Option<(String, String)> {
         let runtime = self.overlay_runtime.as_ref()?;
         let palette = runtime.palette?;
-        match runtime
-            .document
-            .context()
-            .world()
-            .standard_visual(palette.stable_id())?
-        {
-            StandardVisual::CommandPalette { title, query, .. } => {
-                Some((title.to_string(), query.to_string()))
+        self.with_active_document(|document| {
+            match document
+                .context()
+                .world()
+                .standard_visual(palette.stable_id())
+            {
+                Some(StandardVisual::CommandPalette { title, query, .. }) => {
+                    Some((title.to_string(), query.to_string()))
+                }
+                _ => None,
             }
-            _ => None,
-        }
+        })?
     }
 
     #[cfg(test)]
     pub(crate) fn gallery_overlay_dialog_copy(&self) -> Option<(String, String)> {
         let runtime = self.overlay_runtime.as_ref()?;
         let dialog = runtime.dialog?;
-        runtime
-            .document
-            .context()
-            .read(dialog, |dialog| {
+        self.with_active_document(|document| {
+            document.context().read(dialog, |dialog| {
                 (dialog.title.to_string(), dialog.message.to_string())
             })
-            .ok()
+        })?
+        .ok()
     }
 
     #[cfg(test)]
     pub(crate) fn gallery_overlay_image_preview(&self) -> Option<(bool, Vec<String>)> {
         let runtime = self.overlay_runtime.as_ref()?;
         let viewer = runtime.image?;
-        let content = runtime
-            .document
-            .context()
-            .read(viewer, |viewer| viewer.content.clone())
+        let content = self
+            .with_active_document(|document| {
+                document
+                    .context()
+                    .read(viewer, |viewer| viewer.content.clone())
+            })?
             .ok()?;
         let ImageViewerContent::Child(child) = content else {
             return Some((false, Vec::new()));
         };
-        Some((true, collect_node_text(runtime.document.context(), child)))
+        Some((
+            true,
+            self.with_active_document(|document| collect_node_text(document.context(), child))?,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overlay_shares_active_document(&self) -> bool {
+        let Some(runtime) = self.overlay_runtime.as_ref() else {
+            return false;
+        };
+        self.with_active_document(|document| document.document() == runtime.document_id)
+            .unwrap_or(false)
+    }
+}
+
+impl GalleryOverlaysRuntime {
+    fn apply_pointer_on_active(&mut self, state: &mut GalleryState, event: &InputEvent) {
+        state.with_active_document_mut(|document, _| self.apply_pointer(document, event));
     }
 }
 
@@ -508,10 +687,10 @@ pub(crate) fn gallery_context_action_from_value(value: &str) -> Option<ContextAc
 
 #[cfg(test)]
 pub(crate) fn gallery_runtime_context_item_icons(
-    items: &[nana_ui::components::ContextMenuItem<'static, ContextAction>],
+    items: &[nana_ui::ContextMenuItem],
 ) -> Vec<(String, String, Option<Icon>)> {
-    runtime_context_items(items)
-        .into_iter()
+    items
+        .iter()
         .map(|item| (item.value.to_string(), item.label.to_string(), item.icon))
         .collect()
 }
@@ -521,10 +700,10 @@ fn collect_node_text(context: &AppContext, root: nana_ui::runtime::StableNodeId)
     let mut texts = Vec::new();
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {
-        if let Some(text) = context.world().text(id) {
-            if !text.is_empty() {
-                texts.push(text.to_owned());
-            }
+        if let Some(text) = context.world().text(id)
+            && !text.is_empty()
+        {
+            texts.push(text.to_owned());
         }
         if let Some(node) = context.world().node(id) {
             stack.extend(node.children.iter().rev().copied());
@@ -533,36 +712,7 @@ fn collect_node_text(context: &AppContext, root: nana_ui::runtime::StableNodeId)
     texts
 }
 
-pub(super) fn overlay_runtime_key_event(
-    event: Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<GalleryMessage> {
-    match event {
-        Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key,
-            modifiers,
-            repeat,
-            ..
-        }) => Some(GalleryMessage::OverlayRuntime(RuntimeSceneInput::Key {
-            pressed: true,
-            key: iced_key_name(&key)?,
-            repeat,
-            modifiers: iced_modifiers(modifiers),
-        })),
-        Event::Keyboard(iced::keyboard::Event::KeyReleased { key, modifiers, .. }) => {
-            Some(GalleryMessage::OverlayRuntime(RuntimeSceneInput::Key {
-                pressed: false,
-                key: iced_key_name(&key)?,
-                repeat: false,
-                modifiers: iced_modifiers(modifiers),
-            }))
-        }
-        _ => None,
-    }
-}
-
-fn overlay_input_event(input: &RuntimeSceneInput, last_pointer: Point) -> InputEvent {
+fn overlay_input_event(input: &RuntimeSceneInput, last_pointer: LogicalPoint) -> InputEvent {
     let mut event = runtime_input_event(input, last_pointer);
     if let RuntimeSceneInput::Key {
         pressed: true,
@@ -581,64 +731,14 @@ fn overlay_input_event(input: &RuntimeSceneInput, last_pointer: Point) -> InputE
     event
 }
 
-fn overlay_dismissed_message(kind: GalleryOverlay) -> GalleryMessage {
-    match kind {
-        GalleryOverlay::CommandPalette => {
-            GalleryMessage::CommandPalette(CommandPaletteEvent::Dismiss)
-        }
-        GalleryOverlay::Dialog => GalleryMessage::RequestDialogClose(DialogCloseTrigger::Outside),
-        GalleryOverlay::ImageViewer => {
-            GalleryMessage::RequestImageViewerClose(DialogCloseTrigger::Outside)
-        }
-        GalleryOverlay::ContextMenu => GalleryMessage::ContextMenu(ContextMenuEvent::Dismiss),
-    }
-}
-
 fn context_menu_anchor(state: &GalleryState) -> (f32, f32) {
     let (width, _) = state.gallery_viewport_size();
     let _ = state.context_anchor;
     (width - 24.0, 112.0)
 }
 
-fn runtime_context_items(
-    items: &[nana_ui::components::ContextMenuItem<'static, ContextAction>],
-) -> Vec<RuntimeContextMenuItem> {
-    fn walk(
-        items: &[nana_ui::components::ContextMenuItem<'static, ContextAction>],
-        prefix: Option<&str>,
-        out: &mut Vec<RuntimeContextMenuItem>,
-    ) {
-        for item in items {
-            let segment = context_item_segment(item);
-            let value = match prefix {
-                Some(prefix) => format!("{prefix}/{segment}"),
-                None => segment.to_string(),
-            };
-            let mut runtime = RuntimeContextMenuItem::new(value.clone(), item.label.to_string())
-                .disabled(item.disabled)
-                .danger(item.danger);
-            if let Some(icon) = item.icon {
-                runtime = runtime.icon(icon);
-            }
-            out.push(runtime);
-            if !item.children.is_empty() {
-                walk(&item.children, Some(&value), out);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(items, None, &mut out);
-    out
-}
-
-fn context_item_segment(
-    item: &nana_ui::components::ContextMenuItem<'static, ContextAction>,
-) -> &'static str {
-    if item.children.is_empty() {
-        context_action_key(item.value)
-    } else {
-        CONTEXT_GROUP
-    }
+fn runtime_context_items(items: &[nana_ui::ContextMenuItem]) -> Vec<RuntimeContextMenuItem> {
+    items.to_vec()
 }
 
 fn context_action_key(action: ContextAction) -> &'static str {

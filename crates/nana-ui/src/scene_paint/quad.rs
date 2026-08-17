@@ -154,6 +154,7 @@ impl QuadPipeline {
         self.pending.clear();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn push(
         &mut self,
         bounds: LogicalRect,

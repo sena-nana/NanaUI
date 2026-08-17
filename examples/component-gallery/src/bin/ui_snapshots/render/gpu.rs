@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use iced::Color;
 use iced_wgpu::wgpu;
+use nana_ui::Color;
 use nana_ui::runtime::GPU_VIEW_RENDERER;
 use nana_ui::{
     DefaultGpuViewRenderer, GpuViewPalette, HostTexture, HostTextureAlphaMode, HostTextureRegistry,
@@ -18,7 +18,7 @@ const TEXTURE_SIZE: u32 = 32;
 
 pub struct SnapshotGpu {
     _texture: wgpu::Texture,
-    pub host_texture: HostTexture,
+    _host_texture: HostTexture,
     pub textures: HostTextureRegistry,
     pub renderers: SceneGpuRendererRegistry,
 }
@@ -91,7 +91,7 @@ pub fn create_snapshot_gpu(
     );
     SnapshotGpu {
         _texture: texture,
-        host_texture,
+        _host_texture: host_texture,
         textures,
         renderers,
     }

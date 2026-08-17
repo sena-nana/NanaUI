@@ -1,24 +1,48 @@
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use iced::widget::canvas::{Fill, Path, Style, fill};
-use iced::widget::{canvas, container, row, space, stack};
-use iced::{Element, Length, Padding, Rectangle, Renderer, Subscription, Theme, mouse};
+#[cfg(test)]
+use crate::geometry::RESIZE_HANDLE_SIZE;
+use crate::geometry::WorkspaceGeometry;
+#[cfg(test)]
+use crate::layout::RegionPlacement;
+use crate::layout::{RegionId, WorkspaceLayout};
 
-use crate::geometry::{RESIZE_HANDLE_SIZE, WorkspaceGeometry};
-use crate::layout::{
-    RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
-};
-use crate::theme::{Colors, ThemeTokens};
-use crate::widgets::{primary_region_radius, primary_region_style, workspace_region_style};
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RegionEdges {
+    pub start: bool,
+    pub end: bool,
+}
 
-#[path = "workspace_parts/regions.rs"]
-mod regions;
-#[path = "workspace_parts/view.rs"]
-mod view;
+#[cfg(test)]
+pub(crate) fn primary_edges(
+    expanded: bool,
+    has_track_before: bool,
+    has_track_after: bool,
+) -> RegionEdges {
+    RegionEdges {
+        start: expanded && !has_track_before,
+        end: expanded && !has_track_after,
+    }
+}
 
-pub use regions::{WorkspaceRegion, WorkspaceRegions, WorkspaceSlots};
-pub use view::workspace_view;
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HandleOffset {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[cfg(test)]
+pub(crate) fn resize_handle_translation(placement: RegionPlacement) -> HandleOffset {
+    let offset = RESIZE_HANDLE_SIZE / 2.0;
+    match placement {
+        RegionPlacement::Start | RegionPlacement::Primary => HandleOffset { x: offset, y: 0.0 },
+        RegionPlacement::End => HandleOffset { x: -offset, y: 0.0 },
+        RegionPlacement::Top => HandleOffset { x: 0.0, y: offset },
+        RegionPlacement::Bottom => HandleOffset { x: 0.0, y: -offset },
+    }
+}
 
 /// Framework-owned workspace interaction message.
 #[derive(Debug, Clone, PartialEq)]
@@ -105,17 +129,6 @@ impl WorkspaceController {
         self.model.viewport_geometry()
     }
 
-    pub fn subscription(&self) -> Subscription<WorkspaceAction> {
-        let mut subscriptions = vec![iced::event::listen_with(window_event)];
-        if self.model.has_active_transitions() {
-            let origin = self.clock_origin;
-            subscriptions.push(iced::window::frames().with(origin).map(|(origin, now)| {
-                WorkspaceAction::AnimationFrame(now.saturating_duration_since(origin))
-            }));
-        }
-        Subscription::batch(subscriptions)
-    }
-
     /// Applies one framework action and reports whether observable state changed.
     pub fn update(&mut self, action: WorkspaceAction) -> bool {
         let now = match action {
@@ -166,43 +179,9 @@ impl WorkspaceController {
         self.model.update(mutation, now)
     }
 
-    fn region_visible(&self, state: &RegionState) -> bool {
-        self.model.region_visible(state)
-    }
-
-    fn region_overlay(&self, state: &RegionState) -> bool {
-        self.model.region_overlay(state)
-    }
-
+    #[cfg(test)]
     fn region_extent(&self, region: &RegionId) -> f32 {
         self.model.region_extent(region)
-    }
-
-    fn region_transitioning(&self, region: &RegionId) -> bool {
-        self.model.region_transitioning(region)
-    }
-
-    fn resize_highlighted(&self, region: &RegionId) -> bool {
-        self.model.resize_highlighted(region)
-    }
-}
-
-fn window_event(
-    event: iced::Event,
-    _status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<WorkspaceAction> {
-    match event {
-        iced::Event::Window(iced::window::Event::Resized(size)) => {
-            Some(WorkspaceAction::WindowResized {
-                width: size.width,
-                height: size.height,
-            })
-        }
-        iced::Event::Window(iced::window::Event::Rescaled(scale_factor)) => {
-            Some(WorkspaceAction::WindowScaleFactorChanged(scale_factor))
-        }
-        _ => None,
     }
 }
 

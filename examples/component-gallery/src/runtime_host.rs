@@ -1,8 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use iced::advanced::widget::{self, Tree, Widget};
-use iced::advanced::{Layout, layout, renderer};
-use iced::{Element, Event, Length, Point};
 use nana_ui::runtime::{
     AlignSpec, AppContext, ComponentView, DesktopShell, Entity, FlexDirection, FrameworkError,
     IconButton, InteractionState, JustifySpec, LayoutBox, LengthSpec, MutationQueue, NodeKind,
@@ -10,7 +7,7 @@ use nana_ui::runtime::{
     WorkspaceResizeHandle,
 };
 use nana_ui::{
-    ButtonKind, ControlSize, Icon, RegionId, RegionPlacement, ThemeMode, WindowChromeEvent,
+    ButtonKind, ControlSize, Icon, LogicalPoint, RegionId, ThemeMode, WindowChromeEvent,
     WorkspaceAction,
 };
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
@@ -21,16 +18,19 @@ pub(super) const DEFAULT_VIEWPORT: (f32, f32) = (1280.0, 800.0);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeSceneInput {
-    PointerMove(Point),
+    PointerMove(LogicalPoint),
     PointerDown {
         button: i16,
-        point: Point,
+        point: LogicalPoint,
     },
     PointerUp {
         button: i16,
-        point: Point,
+        point: LogicalPoint,
     },
-    Scroll(iced::mouse::ScrollDelta),
+    Scroll {
+        delta_y: f32,
+        line_delta: bool,
+    },
     Key {
         pressed: bool,
         key: String,
@@ -39,22 +39,12 @@ pub enum RuntimeSceneInput {
     },
 }
 
+#[derive(Default)]
 pub(super) struct RuntimeChrome {
-    pub last_pointer: Point,
+    pub last_pointer: LogicalPoint,
     pub resize_region: Option<RegionId>,
     pub hovered_resize: Option<RegionId>,
     pub title_bar_pressed: bool,
-}
-
-impl Default for RuntimeChrome {
-    fn default() -> Self {
-        Self {
-            last_pointer: Point::ORIGIN,
-            resize_region: None,
-            hovered_resize: None,
-            title_bar_pressed: false,
-        }
-    }
 }
 
 impl RuntimeChrome {
@@ -82,7 +72,7 @@ impl RuntimeChrome {
                     return Vec::new();
                 }
                 self.title_bar_pressed = true;
-                let point = Point::new(*x, *y);
+                let point = LogicalPoint::new(*x, *y);
                 vec![
                     GalleryMessage::WindowChrome(WindowChromeEvent::PointerMoved(point)),
                     GalleryMessage::WindowChrome(WindowChromeEvent::PointerPressed),
@@ -101,7 +91,7 @@ impl RuntimeChrome {
                     || title_bar_chrome_hit(document, shell, title_center, *x, *y)
                 {
                     vec![GalleryMessage::WindowChrome(
-                        WindowChromeEvent::PointerMoved(Point::new(*x, *y)),
+                        WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)),
                     )]
                 } else {
                     Vec::new()
@@ -204,44 +194,6 @@ impl RuntimeChrome {
                 |handle| handle.region.clone(),
             )
             .ok()
-    }
-
-    pub(super) fn cursor(
-        &self,
-        document: &RuntimeDocument,
-        shell: Entity<DesktopShell>,
-    ) -> iced::mouse::Interaction {
-        if self.resize_region.is_some() {
-            return iced::mouse::Interaction::ResizingHorizontally;
-        }
-        let Some(region) =
-            self.resize_handle_at(document, self.last_pointer.x, self.last_pointer.y)
-        else {
-            return iced::mouse::Interaction::None;
-        };
-        let horizontal = document
-            .context()
-            .read(shell, |shell| {
-                shell
-                    .model
-                    .layout()
-                    .region(&region)
-                    .map(|state| {
-                        matches!(
-                            state.placement_value(),
-                            RegionPlacement::Start
-                                | RegionPlacement::Primary
-                                | RegionPlacement::End
-                        )
-                    })
-                    .unwrap_or(true)
-            })
-            .unwrap_or(true);
-        if horizontal {
-            iced::mouse::Interaction::ResizingHorizontally
-        } else {
-            iced::mouse::Interaction::ResizingVertically
-        }
     }
 }
 
@@ -368,8 +320,10 @@ pub(super) fn labeled_text(
     weight: u16,
     width: Option<LengthSpec>,
 ) -> Text {
-    let mut style = NodeStyle::default();
-    style.foreground = Some(color);
+    let mut style = NodeStyle {
+        foreground: Some(color),
+        ..NodeStyle::default()
+    };
     let layout = std::sync::Arc::make_mut(&mut style.layout);
     layout.font_size = Some(size);
     layout.font_weight = Some(weight);
@@ -434,7 +388,10 @@ pub(super) fn take_pending(pending: &Arc<Mutex<Vec<GalleryMessage>>>) -> Vec<Gal
         .unwrap_or_default()
 }
 
-pub(super) fn runtime_input_event(input: &RuntimeSceneInput, last_pointer: Point) -> InputEvent {
+pub(super) fn runtime_input_event(
+    input: &RuntimeSceneInput,
+    last_pointer: LogicalPoint,
+) -> InputEvent {
     match *input {
         RuntimeSceneInput::PointerMove(point) => runtime_pointer(PointerPhase::Move, point, 0),
         RuntimeSceneInput::PointerDown { button, point } => {
@@ -443,20 +400,17 @@ pub(super) fn runtime_input_event(input: &RuntimeSceneInput, last_pointer: Point
         RuntimeSceneInput::PointerUp { button, point } => {
             runtime_pointer(PointerPhase::Up, point, button)
         }
-        RuntimeSceneInput::Scroll(delta) => {
-            let (delta_y, line_delta) = match delta {
-                iced::mouse::ScrollDelta::Lines { y, .. } => (y, true),
-                iced::mouse::ScrollDelta::Pixels { y, .. } => (y, false),
-            };
-            InputEvent::Wheel {
-                x: last_pointer.x,
-                y: last_pointer.y,
-                delta_x: 0.0,
-                delta_y,
-                line_delta,
-                modifiers: InputModifiers::default(),
-            }
-        }
+        RuntimeSceneInput::Scroll {
+            delta_y,
+            line_delta,
+        } => InputEvent::Wheel {
+            x: last_pointer.x,
+            y: last_pointer.y,
+            delta_x: 0.0,
+            delta_y,
+            line_delta,
+            modifiers: InputModifiers::default(),
+        },
         RuntimeSceneInput::Key {
             pressed,
             ref key,
@@ -473,7 +427,7 @@ pub(super) fn runtime_input_event(input: &RuntimeSceneInput, last_pointer: Point
     }
 }
 
-pub(super) fn runtime_pointer(phase: PointerPhase, point: Point, button: i16) -> InputEvent {
+pub(super) fn runtime_pointer(phase: PointerPhase, point: LogicalPoint, button: i16) -> InputEvent {
     InputEvent::Pointer {
         phase,
         pointer_id: 1,
@@ -495,192 +449,6 @@ pub(super) fn runtime_pointer(phase: PointerPhase, point: Point, button: i16) ->
         twist: 0,
         is_primary: button == 0,
         modifiers: InputModifiers::default(),
-    }
-}
-
-pub(super) fn iced_key_name(key: &iced::keyboard::Key) -> Option<String> {
-    match key {
-        iced::keyboard::Key::Named(named) => Some(format!("{named:?}")),
-        iced::keyboard::Key::Character(character) => Some(character.to_string()),
-        _ => None,
-    }
-}
-
-pub(super) fn iced_modifiers(modifiers: iced::keyboard::Modifiers) -> InputModifiers {
-    InputModifiers {
-        alt: modifiers.alt(),
-        control: modifiers.control(),
-        meta: modifiers.logo(),
-        shift: modifiers.shift(),
-    }
-}
-
-pub(super) fn scene_pointer(
-    content: Element<'_, GalleryMessage>,
-    interaction: iced::mouse::Interaction,
-    map: fn(RuntimeSceneInput) -> GalleryMessage,
-) -> Element<'_, GalleryMessage> {
-    Element::new(ScenePointer {
-        content,
-        interaction,
-        map,
-    })
-}
-
-struct ScenePointer<'a> {
-    content: Element<'a, GalleryMessage>,
-    interaction: iced::mouse::Interaction,
-    map: fn(RuntimeSceneInput) -> GalleryMessage,
-}
-
-#[derive(Default)]
-struct ScenePointerState {
-    pressed: Option<i16>,
-}
-
-impl Widget<GalleryMessage, iced::Theme, iced::Renderer> for ScenePointer<'_> {
-    fn tag(&self) -> widget::tree::Tag {
-        widget::tree::Tag::of::<ScenePointerState>()
-    }
-
-    fn state(&self) -> widget::tree::State {
-        widget::tree::State::new(ScenePointerState::default())
-    }
-
-    fn diff(&mut self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_mut(&mut self.content));
-    }
-
-    fn size(&self) -> iced::Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        self.content
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
-    }
-
-    fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: iced::mouse::Cursor,
-        renderer: &iced::Renderer,
-        shell: &mut iced::advanced::Shell<'_, GalleryMessage>,
-        viewport: &iced::Rectangle,
-    ) {
-        self.content.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            layout,
-            cursor,
-            renderer,
-            shell,
-            viewport,
-        );
-        let state = tree.state.downcast_mut::<ScenePointerState>();
-        let local = cursor.position_in(layout.bounds());
-        match event {
-            Event::Mouse(iced::mouse::Event::CursorMoved { .. })
-            | Event::Touch(iced::touch::Event::FingerMoved { .. }) => {
-                if let Some(point) = local.or_else(|| {
-                    state
-                        .pressed
-                        .is_some()
-                        .then(|| cursor.position())
-                        .flatten()
-                        .map(|position| {
-                            Point::new(
-                                position.x - layout.bounds().x,
-                                position.y - layout.bounds().y,
-                            )
-                        })
-                }) {
-                    shell.publish((self.map)(RuntimeSceneInput::PointerMove(point)));
-                }
-            }
-            Event::Mouse(iced::mouse::Event::ButtonPressed(button)) => {
-                let Some(point) = local else {
-                    return;
-                };
-                let button = match button {
-                    iced::mouse::Button::Left => 0,
-                    iced::mouse::Button::Middle => 1,
-                    iced::mouse::Button::Right => 2,
-                    _ => return,
-                };
-                state.pressed = Some(button);
-                shell.publish((self.map)(RuntimeSceneInput::PointerDown { button, point }));
-                shell.capture_event();
-            }
-            Event::Mouse(iced::mouse::Event::ButtonReleased(button)) => {
-                let button = match button {
-                    iced::mouse::Button::Left => 0,
-                    iced::mouse::Button::Middle => 1,
-                    iced::mouse::Button::Right => 2,
-                    _ => return,
-                };
-                if state.pressed == Some(button) {
-                    state.pressed = None;
-                }
-                let point = local.unwrap_or(Point::ORIGIN);
-                shell.publish((self.map)(RuntimeSceneInput::PointerUp { button, point }));
-                shell.capture_event();
-            }
-            Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) if local.is_some() => {
-                shell.publish((self.map)(RuntimeSceneInput::Scroll(*delta)));
-                shell.capture_event();
-            }
-            _ => {}
-        }
-    }
-
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: iced::mouse::Cursor,
-        viewport: &iced::Rectangle,
-    ) {
-        self.content.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
-    }
-
-    fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: iced::mouse::Cursor,
-        viewport: &iced::Rectangle,
-        renderer: &iced::Renderer,
-    ) -> iced::mouse::Interaction {
-        if cursor.is_over(layout.bounds()) && self.interaction != iced::mouse::Interaction::None {
-            return self.interaction;
-        }
-        self.content.as_widget().mouse_interaction(
-            &tree.children[0],
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
     }
 }
 
@@ -897,8 +665,10 @@ impl ComponentView for HostStack {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let mut style = NodeStyle::default();
-        style.background = self.background;
+        let mut style = NodeStyle {
+            background: self.background,
+            ..NodeStyle::default()
+        };
         let layout = std::sync::Arc::make_mut(&mut style.layout);
         layout.direction = Some(self.direction);
         layout.gap = Some(LengthSpec::Px(self.gap));

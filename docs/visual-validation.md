@@ -1,10 +1,11 @@
 # UI 视觉验收
 
-`component-gallery` crate 中的 `ui-snapshots` 使用与原生窗口相同的
-`GalleryState::view`、主题和 Iced WGPU renderer，在离屏纹理生成 PNG。它不是
-重新制作的静态 mock。
-原生 Gallery 启动任务与离屏 Renderer 都使用 `UI_BASE_TEXT_SIZE` 的 13px 基准，
-因此未显式覆盖字号的标准正文不会在真实窗口中回退到 Iced 的 16px 默认值。
+`component-gallery` crate 中的 `ui-snapshots` 驱动同一套 `GalleryState` 与
+Runtime 文档（`flush` + `document.scene()`），再用 `SceneWgpuPainter` 把
+`UiScene` 画进宿主离屏 WGPU 纹理后 CPU 回读 PNG。它不是重新制作的静态 mock，
+也不再以 Iced `UserInterface` / `IcedSceneView` 作为快照宿主。
+原生 Gallery 与 Scene 文本路径都使用 `UI_BASE_TEXT_SIZE` 的 13px 基准，
+因此未显式覆盖字号的标准正文不会回退到 Iced 的 16px 默认值。
 
 当前输出：
 
@@ -45,10 +46,9 @@
 - Controls 的中号按钮、输入、选择与列表主标签共享 13px 基准，辅助文字仍保持
   10–12px 的语义层级，不出现真实窗口独有的 16px 放大。
 
-首次实现快照时，普通 Text 未显示而 Canvas/TextArea 正常。根因是 snapshot 工具
-在 GPU 读取前丢弃 `UserInterface::Cache`，使普通文本上传缓存的弱引用失效。当前
-实现让 Cache 保持到 screenshot 完成，并在 draw 前发送真实
-`RedrawRequested`，因此快照可用于状态和颜色验收。
+快照工具把 `UiScene` 画到 `Bgra8UnormSrgb` 离屏纹理（`RENDER_ATTACHMENT |
+COPY_SRC`），再 `copy_texture_to_buffer` 回读。`UserInterface::Cache` 只属于
+已退役的 Iced 快照宿主，不再参与这条路径。
 
 运行命令：
 

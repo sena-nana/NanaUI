@@ -4,7 +4,7 @@
 //! - **本模块**：Semantics 解析（hint → kind）。业务 / kit BEM 不得在此发明 kind。
 //! - **`bridge`**：持有 `WidgetKind` / `WidgetProps` / 森林；调用本模块，不复制 class 表。
 //! - **`layout_map`**：Layout 方向默认（Column/Row），不解析控件语义。
-//! - **`iced_app`**：kind → `nana_ui` 控件（L3 绘制）。
+//! - Runtime / Scene host：kind → `nana_ui` Runtime 控件。
 //!
 //! 已知 class（如 `nana-btn` / `nana-chip`）→ kind + 后续 props；**不是**把 class
 //! 当 ThemeTokens 工厂。Vue 自定义组件通过组合这些 kind 表达，不旁路 paint。
@@ -670,14 +670,6 @@ pub(crate) fn labeled_value_caption(
         .map(|child| child.props.display_label().to_string())
         .filter(|label| !label.is_empty())
         .unwrap_or_default()
-}
-
-pub(crate) fn validation_message_text(props: &WidgetProps) -> String {
-    if !props.hint.is_empty() {
-        props.hint.clone()
-    } else {
-        props.display_label().to_string()
-    }
 }
 
 pub(crate) fn class_has_compact(props: &WidgetProps) -> bool {

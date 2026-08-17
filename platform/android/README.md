@@ -65,8 +65,8 @@ Requires SDK `build-tools` (e.g. `build-tools;34.0.0`).
 ## Iced control slot (frozen host test)
 
 - Geometry: `iced_control_slot` / `chrome_present_bands`
-- Widget strip: `IcedSlotPainter` draws **Icon + Text + Input + Switch + Button**
-  via host-owned `iced_wgpu` and `nana_ui::compatibility` adapters.
+- Widget strip: raw Iced `button` / `text` / `toggler` plus Nana `Icon` identity.
+  This host does not use `nana_ui::compatibility` adapters.
   `iced_shell_available()` stays `false`.
 - Pointer: NativeActivity `MotionEvent` → iced update; Button / Switch / Input
   messages update `press_count` / `switch_on` / `input_value`.

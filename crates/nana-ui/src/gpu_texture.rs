@@ -2,12 +2,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use iced::wgpu;
-use iced::widget::{container, responsive, shader};
-use iced::{Element, Length, Rectangle};
+use wgpu;
 
-use crate::geometry::LogicalRect;
-use crate::gpu_view::{RenderSlot, slot_for_bounds};
+use crate::geometry::{LogicalRect, PhysicalRect};
+use crate::gpu_view::{RenderSlot, intersect_physical, slot_for_bounds};
 
 const SOURCE: &str = r#"
 @group(0) @binding(0)
@@ -59,7 +57,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-static NEXT_PRESENTATION_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_HOST_TEXTURE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A stable handle to a host-owned, filterable 2D WGPU texture.
@@ -168,8 +165,8 @@ impl HostTexture {
 
     /// Replaces the sampled view and invalidates the content in one operation.
     ///
-    /// The stable handle is intentionally retained so an existing Iced tree
-    /// observes the replacement without rebuilding its widgets or layout.
+    /// The stable handle is intentionally retained so the Scene painter
+    /// observes the replacement without rebuilding layout.
     pub fn replace_view(&self, view: wgpu::TextureView) -> u64 {
         self.state.view.replace(view);
         self.invalidate()
@@ -357,9 +354,8 @@ impl HostTextureRegistry {
 
 /// Presentation properties for one host texture layer.
 ///
-/// Layer order follows the order of the surrounding Iced elements (for
-/// example, the order of a `stack!`), so composition remains owned by the UI
-/// tree rather than by a second renderer.
+/// Layer order follows Scene primitive order, so composition remains owned
+/// by the UI tree rather than by a second renderer.
 #[derive(Debug, Clone)]
 pub struct HostTextureLayer {
     texture: HostTexture,
@@ -397,7 +393,7 @@ impl HostTextureLayer {
 
     pub fn with_clip(mut self, clip: LogicalRect) -> Self {
         // Clip rectangles use the same window-logical coordinate space as the
-        // Iced layout bounds and are intersected with the parent clip at draw.
+        // Scene bounds and are intersected with the parent clip at draw.
         self.clip = Some(clip);
         self
     }
@@ -438,112 +434,6 @@ impl HostTextureLayer {
     }
 }
 
-/// Displays a host texture directly inside an Iced layout region.
-#[derive(Debug, Clone)]
-pub struct GpuTextureView {
-    layer: HostTextureLayer,
-}
-
-impl GpuTextureView {
-    pub const fn new(texture: HostTexture) -> Self {
-        Self {
-            layer: HostTextureLayer::new(texture),
-        }
-    }
-
-    pub fn from_layer(layer: HostTextureLayer) -> Self {
-        Self { layer }
-    }
-
-    pub fn from_binding(binding: HostTextureBinding) -> Self {
-        Self::from_layer(HostTextureLayer::from_binding(binding))
-    }
-
-    pub fn with_opacity(mut self, opacity: f32) -> Self {
-        self.layer.opacity = finite_opacity(opacity);
-        self
-    }
-
-    pub fn with_clip(mut self, clip: LogicalRect) -> Self {
-        self.layer.clip = Some(clip);
-        self
-    }
-
-    pub fn with_corner_radius(mut self, radius: f32) -> Self {
-        self.layer = self.layer.with_corner_radius(radius);
-        self
-    }
-
-    /// Fits the texture inside the available region while preserving its aspect ratio.
-    pub fn contain<Message: 'static>(self, aspect_ratio: f32) -> Element<'static, Message> {
-        let aspect_ratio = finite_aspect(aspect_ratio);
-        responsive(move |size| {
-            let (width, height) = contain_size(size.width, size.height, aspect_ratio);
-            container(
-                shader(self.clone())
-                    .width(Length::Fixed(width))
-                    .height(Length::Fixed(height)),
-            )
-            .center(Length::Fill)
-        })
-        .into()
-    }
-}
-
-fn finite_aspect(aspect_ratio: f32) -> f32 {
-    if aspect_ratio.is_finite() && aspect_ratio > 0.0 {
-        aspect_ratio
-    } else {
-        1.0
-    }
-}
-
-fn contain_size(width: f32, height: f32, aspect_ratio: f32) -> (f32, f32) {
-    let width = width.max(0.0);
-    let height = height.max(0.0);
-    if width == 0.0 || height == 0.0 {
-        return (width, height);
-    }
-    if width / height > aspect_ratio {
-        (height * aspect_ratio, height)
-    } else {
-        (width, width / aspect_ratio)
-    }
-}
-
-/// Renderer-owned state that gives each mounted texture widget a stable
-/// presentation identity. Applications do not need to allocate IDs.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct GpuTextureViewState {
-    presentation_id: u64,
-}
-
-impl Default for GpuTextureViewState {
-    fn default() -> Self {
-        Self {
-            presentation_id: next_presentation_id(),
-        }
-    }
-}
-
-impl<Message> shader::Program<Message> for GpuTextureView {
-    type State = GpuTextureViewState;
-    type Primitive = GpuTexturePrimitive;
-
-    fn draw(
-        &self,
-        state: &Self::State,
-        _cursor: iced::mouse::Cursor,
-        _bounds: Rectangle,
-    ) -> Self::Primitive {
-        GpuTexturePrimitive {
-            layer: self.layer.clone(),
-            presentation: PresentationIdentity::Widget(state.presentation_id),
-        }
-    }
-}
-
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct GpuTexturePrimitive {
@@ -558,26 +448,22 @@ impl GpuTexturePrimitive {
             presentation: PresentationIdentity::Scene { node, slot },
         }
     }
-}
 
-impl shader::Primitive for GpuTexturePrimitive {
-    type Pipeline = GpuTexturePipeline;
-
-    fn prepare(
+    pub(crate) fn prepare(
         &self,
-        pipeline: &mut Self::Pipeline,
+        pipeline: &mut GpuTexturePipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bounds: &Rectangle,
-        viewport: &shader::Viewport,
+        bounds: LogicalRect,
+        scale_factor: f32,
     ) {
         let texture = self.layer.texture.snapshot();
         let key = TextureKey::new(self.presentation, texture.id);
-        let (slot, viewport_rect) = slot_for_bounds(texture.id, bounds, viewport.scale_factor());
+        let (slot, viewport_rect) = slot_for_bounds(texture.id, bounds, scale_factor);
         let clip = self
             .layer
             .clip
-            .map(|clip| RenderSlot::new(texture.id, clip, viewport.scale_factor()).physical);
+            .map(|clip| RenderSlot::new(texture.id, clip, scale_factor).physical);
         let needs_rebind = texture_needs_rebind(
             pipeline
                 .textures
@@ -642,26 +528,16 @@ impl shader::Primitive for GpuTexturePrimitive {
         }
     }
 
-    fn draw(&self, _pipeline: &Self::Pipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
-        false
-    }
-
-    fn render(
+    pub(crate) fn render(
         &self,
-        pipeline: &Self::Pipeline,
+        pipeline: &GpuTexturePipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
+        clip_bounds: PhysicalRect,
     ) {
         let key = TextureKey::new(self.presentation, self.layer.texture.id());
         let Some(texture) = pipeline.textures.get(&key) else {
             return;
-        };
-        let clip_bounds = crate::geometry::PhysicalRect {
-            x: clip_bounds.x,
-            y: clip_bounds.y,
-            width: clip_bounds.width,
-            height: clip_bounds.height,
         };
         let layer_bounds = texture.clip.map_or(texture.slot.physical, |clip| {
             intersect_physical(texture.slot.physical, clip)
@@ -703,8 +579,12 @@ pub struct GpuTexturePipeline {
     textures: HashMap<TextureKey, PreparedTexture>,
 }
 
-impl shader::Pipeline for GpuTexturePipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+impl GpuTexturePipeline {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui host texture shader"),
             source: wgpu::ShaderSource::Wgsl(SOURCE.into()),
@@ -787,7 +667,7 @@ impl shader::Pipeline for GpuTexturePipeline {
         }
     }
 
-    fn trim(&mut self) {
+    pub(crate) fn trim(&mut self) {
         trim_unused(&mut self.textures, |texture| &mut texture.used);
     }
 }
@@ -820,7 +700,6 @@ struct TextureFingerprint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PresentationIdentity {
-    Widget(u64),
     Scene { node: u64, slot: u8 },
 }
 
@@ -846,7 +725,7 @@ struct LayerUniform {
     source: [f32; 4],
 }
 
-fn make_layer_uniform(layer: &HostTextureLayer, bounds: &Rectangle) -> LayerUniform {
+fn make_layer_uniform(layer: &HostTextureLayer, bounds: LogicalRect) -> LayerUniform {
     LayerUniform {
         params: [
             layer.opacity,
@@ -865,10 +744,6 @@ fn make_layer_uniform(layer: &HostTextureLayer, bounds: &Rectangle) -> LayerUnif
             0.0,
         ],
     }
-}
-
-fn next_presentation_id() -> u64 {
-    NEXT_PRESENTATION_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 fn next_host_texture_instance_id() -> u64 {
@@ -911,64 +786,21 @@ fn finite_opacity(opacity: f32) -> f32 {
     }
 }
 
-fn intersect_physical(
-    bounds: crate::geometry::PhysicalRect,
-    clip: crate::geometry::PhysicalRect,
-) -> crate::geometry::PhysicalRect {
-    let left = bounds.x.max(clip.x);
-    let top = bounds.y.max(clip.y);
-    let right = bounds
-        .x
-        .saturating_add(bounds.width)
-        .min(clip.x.saturating_add(clip.width));
-    let bottom = bounds
-        .y
-        .saturating_add(bounds.height)
-        .min(clip.y.saturating_add(clip.height));
-    crate::geometry::PhysicalRect {
-        x: left,
-        y: top,
-        width: right.saturating_sub(left),
-        height: bottom.saturating_sub(top),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::thread;
 
-    use iced::futures::executor::block_on;
-    use iced::wgpu;
-    use iced::widget::shader::Pipeline as _;
+    use pollster::block_on;
+    use wgpu;
 
     use super::{
-        GpuTexturePipeline, GpuTextureViewState, HostTexture, HostTextureAlphaMode,
-        HostTextureLayer, HostTextureRegistry, PresentationIdentity, TextureFingerprint,
-        TextureKey, VersionedResource, contain_size, finite_aspect, make_layer_uniform,
-        texture_needs_rebind, trim_unused,
+        GpuTexturePipeline, HostTexture, HostTextureAlphaMode, HostTextureLayer,
+        HostTextureRegistry, PresentationIdentity, TextureFingerprint, TextureKey,
+        VersionedResource, make_layer_uniform, texture_needs_rebind, trim_unused,
     };
-    use iced::Rectangle;
-
-    #[test]
-    fn contain_preserves_aspect_inside_wide_and_tall_regions() {
-        assert_eq!(contain_size(800.0, 800.0, 16.0 / 9.0), (800.0, 450.0));
-        assert_eq!(contain_size(1920.0, 540.0, 16.0 / 9.0), (960.0, 540.0));
-        assert_eq!(finite_aspect(f32::NAN), 1.0);
-    }
-
-    #[test]
-    fn presentation_identity_separates_the_same_texture_in_two_widget_instances() {
-        let first = GpuTextureViewState::default();
-        let second = GpuTextureViewState::default();
-
-        assert_ne!(first.presentation_id, second.presentation_id);
-        assert_ne!(
-            TextureKey::new(PresentationIdentity::Widget(first.presentation_id), 7),
-            TextureKey::new(PresentationIdentity::Widget(second.presentation_id), 7)
-        );
-    }
+    use crate::geometry::LogicalRect;
 
     #[test]
     fn scene_identity_is_stable_across_frames_and_distinct_across_primitives() {
@@ -1000,19 +832,15 @@ mod tests {
         assert_eq!(old_snapshot.id, replacement_snapshot.id);
         assert_eq!(old_snapshot.generation, replacement_snapshot.generation);
 
-        for presentation in [
-            PresentationIdentity::Widget(11),
-            PresentationIdentity::Scene { node: 9, slot: 2 },
-        ] {
-            assert_eq!(
-                TextureKey::new(presentation, old_snapshot.id),
-                TextureKey::new(presentation, replacement_snapshot.id)
-            );
-            assert!(texture_needs_rebind(
-                Some(old_fingerprint),
-                &replacement_snapshot
-            ));
-        }
+        let presentation = PresentationIdentity::Scene { node: 9, slot: 2 };
+        assert_eq!(
+            TextureKey::new(presentation, old_snapshot.id),
+            TextureKey::new(presentation, replacement_snapshot.id)
+        );
+        assert!(texture_needs_rebind(
+            Some(old_fingerprint),
+            &replacement_snapshot
+        ));
     }
 
     #[test]
@@ -1080,12 +908,12 @@ mod tests {
         );
         assert_eq!(registry.revision(), revision);
 
-        let bounds = Rectangle::new(iced::Point::ORIGIN, iced::Size::new(320.0, 180.0));
+        let bounds = LogicalRect::new(0.0, 0.0, 320.0, 180.0);
         let premultiplied_uniform =
-            make_layer_uniform(&HostTextureLayer::from_binding(premultiplied), &bounds);
+            make_layer_uniform(&HostTextureLayer::from_binding(premultiplied), bounds);
         let opaque_uniform = make_layer_uniform(
             &HostTextureLayer::from_binding(opaque),
-            &Rectangle::new(iced::Point::ORIGIN, iced::Size::new(320.0, 180.0)),
+            LogicalRect::new(0.0, 0.0, 320.0, 180.0),
         );
         assert_eq!(premultiplied_uniform.source[0], 0.0);
         assert_eq!(opaque_uniform.source[0], 1.0);

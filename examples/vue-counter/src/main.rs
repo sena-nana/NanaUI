@@ -1,7 +1,7 @@
-//! Vue Counter MVP — JS state bridge + optional Iced compatibility view.
+//! Vue Counter MVP — JS state bridge + optional Scene/`run_runtime` window.
 //!
-//! Windowed UI (`--features windowed -- --window`) is the Iced compatibility
-//! view of Runtime/UiScene; otherwise headless JS probe only.
+//! Windowed UI (`--features windowed -- --window`) paints the Vue Runtime
+//! document through `nana_ui::run_runtime`; otherwise headless JS probe only.
 //!
 //! Semantic message bridge (`createWidget` → `MessageBridge` → Runtime `UiScene`):
 //! `cargo run -p vue-counter -- counter --semantic --clicks=2`
@@ -320,234 +320,30 @@ fn engine_label() -> &'static str {
 
 #[cfg(feature = "windowed")]
 mod windowed {
-    use std::time::Instant;
-
-    use iced::widget::column;
-    use iced::{Element, Length};
     use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
-    use nana_ui::compatibility::Button;
-    use nana_ui::{
-        AppearanceSettings, HostedInputDisposition, HostedInputEvent, HostedProgram,
-        HostedProgramContext, HostedProgramUpdate, HostedRunError, HostedRuntimeEvent,
-        HostedWindowEvent, HostedWindowId, HostedWindowSettings, ThemeMode, ThemeModeExt,
-        ThemeTokens, WindowMaterialMode, run_hosted,
-    };
-    use nana_ui_vue::{BridgeEvent, VueHostedRuntime};
+    use nana_ui::{HostedRunError, RuntimeWindowSettings};
+    use nana_ui_vue::VueHostedProgram;
 
     use super::{SEMANTIC_COUNTER_JS, engine_label};
-
-    fn hosted_appearance() -> AppearanceSettings {
-        let mut appearance = AppearanceSettings::default();
-        // Match HostedProgram default: translucent material + documented opacity.
-        let _ = appearance.set_window_material(WindowMaterialMode::Translucent);
-        appearance
-    }
-
-    #[derive(Debug, Clone)]
-    enum Message {
-        Widget(BridgeEvent),
-        ToggleTheme,
-    }
 
     #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
     type CounterEngine = nana_js_quickjs::QuickJsEngine;
     #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
     type CounterEngine = nana_js_v8::V8Engine;
 
-    struct CounterProgram {
-        runtime: VueHostedRuntime<CounterEngine>,
-        theme: ThemeMode,
-        appearance: AppearanceSettings,
-    }
-
-    impl CounterProgram {
-        fn theme_tokens(&self, native_material: bool) -> ThemeTokens {
-            ThemeTokens::new(self.theme.colors(), self.appearance.metrics())
-                .with_workspace_corners(self.appearance.workspace_corners_enabled())
-                .with_backdrop(
-                    native_material,
-                    self.appearance.backdrop_target(),
-                    self.appearance.backdrop_opacity(),
-                    self.appearance.titlebar_follows_sidebar(),
-                )
-        }
-    }
-
     pub fn run(_app: &str) -> Result<(), HostedRunError> {
+        #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
+        let engine = nana_js_quickjs::QuickJsEngine::new();
+        #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
+        let engine = nana_js_v8::V8Engine::new();
         let title = format!("Vue Counter NanaUI bridge ({})", engine_label());
-        run_hosted::<CounterProgram>(
-            HostedWindowSettings::new(title)
+        VueHostedProgram::<CounterEngine>::run(
+            RuntimeWindowSettings::new(title)
                 .initial_size(480.0, 360.0)
                 .minimum_size(360.0, 240.0),
+            engine,
+            RuntimeArtifact::from_source("semantic-counter.js", SEMANTIC_COUNTER_JS),
+            HostApiRegistry::new(),
         )
-    }
-
-    impl HostedProgram for CounterProgram {
-        type Message = Message;
-        type Error = String;
-
-        fn initialize(
-            context: &HostedProgramContext<Self::Message>,
-        ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-            #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
-            let engine = nana_js_quickjs::QuickJsEngine::new();
-            #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
-            let engine = nana_js_v8::V8Engine::new();
-            let geometry = context.geometry();
-            let mut runtime = VueHostedRuntime::new(
-                engine,
-                RuntimeArtifact::from_source("semantic-counter.js", SEMANTIC_COUNTER_JS),
-                HostApiRegistry::new(),
-                geometry.physical_size.width.max(1),
-                geometry.physical_size.height.max(1),
-                geometry.scale_factor.max(0.01),
-            )
-            .map_err(|e| e.to_string())?;
-            runtime
-                .bind_host_gpu(context.gpu().clone())
-                .map_err(|e| e.to_string())?;
-            let theme = ThemeMode::Light;
-            runtime.inject_theme(theme).map_err(|e| e.to_string())?;
-
-            Ok((
-                Self {
-                    runtime,
-                    theme,
-                    appearance: hosted_appearance(),
-                },
-                Vec::new(),
-            ))
-        }
-
-        fn update(
-            &mut self,
-            message: Self::Message,
-            _context: &HostedProgramContext<Self::Message>,
-        ) -> HostedProgramUpdate {
-            match message {
-                Message::Widget(event) => {
-                    if let Err(err) = self
-                        .runtime
-                        .dispatch_bridge_event(HostedWindowId::PRIMARY, event)
-                    {
-                        eprintln!("bridge event failed: {err}");
-                        return HostedProgramUpdate::default();
-                    }
-                    self.runtime.hosted_wake()
-                }
-                Message::ToggleTheme => {
-                    self.theme = self.theme.toggle();
-                    if let Err(err) = self.runtime.inject_theme(self.theme) {
-                        eprintln!("theme inject failed: {err}");
-                    }
-                    self.runtime.hosted_wake()
-                }
-            }
-        }
-
-        fn view(&self, native_material: bool) -> Element<'static, Self::Message> {
-            let tokens = self.theme_tokens(native_material);
-            column![
-                self.runtime
-                    .view_window(HostedWindowId::PRIMARY, native_material)
-                    .unwrap_or_else(|_| iced::widget::Space::new().into())
-                    .map(Message::Widget),
-                Button::label("Toggle theme")
-                    .kind(nana_ui::ButtonKind::Text)
-                    .on_press(Message::ToggleTheme)
-                    .view(tokens),
-            ]
-            .spacing(8)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-        }
-
-        fn theme_mode(&self) -> ThemeMode {
-            self.theme
-        }
-
-        fn accessibility_snapshot(&self, id: HostedWindowId) -> Vec<nana_ui::AccessibilityNode> {
-            self.runtime.accessibility_snapshot(id)
-        }
-
-        fn accessibility_adapter_enabled(&self) -> bool {
-            true
-        }
-
-        fn accessibility_update(
-            &mut self,
-            id: HostedWindowId,
-        ) -> Option<nana_ui::AccessibilityUpdate> {
-            self.runtime.take_accessibility_update(id)
-        }
-
-        fn accessibility_actions_enabled(&self) -> bool {
-            true
-        }
-
-        fn accessibility_action(
-            &mut self,
-            id: HostedWindowId,
-            request: nana_ui::AccessibilityActionRequest,
-            _context: &HostedProgramContext<Self::Message>,
-        ) -> HostedProgramUpdate {
-            match self.runtime.hosted_accessibility_action(id, request) {
-                Ok(update) => update,
-                Err(error) => {
-                    eprintln!("accessibility action failed: {error}");
-                    HostedProgramUpdate::default()
-                }
-            }
-        }
-
-        fn window_material_mode(&self) -> WindowMaterialMode {
-            self.appearance.window_material()
-        }
-
-        fn backdrop_opacity(&self) -> f32 {
-            self.appearance.backdrop_opacity()
-        }
-
-        fn window_event(
-            &mut self,
-            event: HostedWindowEvent,
-            _context: &HostedProgramContext<Self::Message>,
-        ) -> HostedProgramUpdate {
-            self.runtime.hosted_window_event(event)
-        }
-
-        fn input_event(
-            &mut self,
-            id: HostedWindowId,
-            event: HostedInputEvent,
-            _context: &HostedProgramContext<Self::Message>,
-        ) -> (HostedInputDisposition, HostedProgramUpdate) {
-            self.runtime.hosted_input(id, event)
-        }
-
-        fn runtime_event(
-            &mut self,
-            event: HostedRuntimeEvent,
-            _context: &HostedProgramContext<Self::Message>,
-        ) -> HostedProgramUpdate {
-            self.runtime.hosted_runtime_event(event)
-        }
-
-        fn next_wakeup(&self) -> Option<Instant> {
-            self.runtime.next_wakeup()
-        }
-
-        fn wake(
-            &mut self,
-            _now: Instant,
-            _context: &HostedProgramContext<Self::Message>,
-        ) -> HostedProgramUpdate {
-            self.runtime.hosted_wake()
-        }
-
-        fn rebuild_gpu(&mut self, context: &HostedProgramContext<Self::Message>) {
-            let _ = self.runtime.hosted_rebuild_gpu(context.gpu().clone());
-        }
     }
 }

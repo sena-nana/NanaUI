@@ -8,9 +8,11 @@
 //! Vue mixed-tree layout writers are Style-Model [`crate::measure_layout`]
 //! (pre-paint / first insert) and Iced `LayoutProbe` writeback after paint.
 //! [`LayoutBoxStore`] is the JS paint projection. Those boxes are adapted into
-//! `UiWorld` for Scene extraction and hit-test. `RuntimeLayoutEngine` is the
-//! writer for `run_runtime` documents and is not run on Vue trees.
+//! `UiWorld` for Scene extraction and hit-test. A Scene/`run_runtime` host also
+//! flushes the same [`RuntimeDocument`], so `RuntimeLayoutEngine` writes the
+//! frame the host paints.
 
+use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -44,7 +46,7 @@ use nana_ui_runtime::{
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
-use nana_ui_scene::UiScene;
+use nana_ui_scene::{RuntimeDocument, UiScene};
 
 /// Opaque handle returned to the Vue custom renderer (JSON-safe number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -405,29 +407,76 @@ struct Node {
     scope_id: Option<String>,
 }
 
+/// Shared handle to one window's [`RuntimeDocument`].
+///
+/// JS host ops keep [`NanaTreeDocument`] behind a mutex while
+/// [`crate::VueHostedProgram`] must return `&RuntimeDocument`. Both sides clone
+/// this `Arc` and see the same tree. Access is single-threaded on the UI/JS
+/// loop; overlapping exclusive borrows are a programming error.
+pub struct SharedRuntimeDocument {
+    inner: UnsafeCell<RuntimeDocument>,
+}
+
+unsafe impl Send for SharedRuntimeDocument {}
+unsafe impl Sync for SharedRuntimeDocument {}
+
+impl SharedRuntimeDocument {
+    pub fn new(document: nana_ui_runtime::DocumentId) -> Arc<Self> {
+        Arc::new(Self {
+            inner: UnsafeCell::new(RuntimeDocument::new(document)),
+        })
+    }
+
+    pub fn get(&self) -> &RuntimeDocument {
+        // Safety: UI/JS loop is single-threaded; callers never alias exclusive
+        // RuntimeDocument borrows across host input vs JS host-op frames.
+        unsafe { &*self.inner.get() }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    pub fn get_mut(&self) -> &mut RuntimeDocument {
+        // Safety: same single-threaded non-overlapping-borrow invariant as
+        // [`Self::get`].
+        unsafe { &mut *self.inner.get() }
+    }
+}
+
 /// Vue-owned Runtime. World reads/writes forward to [`UiWorld`]; typed views
-/// and `assemble_*` live on [`AppContext`].
+/// and `assemble_*` live on [`AppContext`]. The retained scene lives on the
+/// same [`RuntimeDocument`] the Scene host flushes.
 struct VueRuntime {
-    context: AppContext,
+    document: Arc<SharedRuntimeDocument>,
 }
 
 impl VueRuntime {
-    fn new() -> Self {
+    fn new(document: nana_ui_runtime::DocumentId) -> Self {
         Self {
-            context: AppContext::new(),
+            document: SharedRuntimeDocument::new(document),
         }
     }
 
     fn world(&self) -> &UiWorld {
-        self.context.world()
+        self.document.get().context().world()
     }
 
     fn context(&self) -> &AppContext {
-        &self.context
+        self.document.get().context()
     }
 
     fn context_mut(&mut self) -> &mut AppContext {
-        &mut self.context
+        self.document.get_mut().context_mut()
+    }
+
+    fn runtime_document(&self) -> &RuntimeDocument {
+        self.document.get()
+    }
+
+    fn runtime_document_mut(&mut self) -> &mut RuntimeDocument {
+        self.document.get_mut()
+    }
+
+    fn shared(&self) -> Arc<SharedRuntimeDocument> {
+        Arc::clone(&self.document)
     }
 }
 
@@ -435,13 +484,13 @@ impl std::ops::Deref for VueRuntime {
     type Target = UiWorld;
 
     fn deref(&self) -> &UiWorld {
-        self.context.world()
+        self.document.get().context().world()
     }
 }
 
 impl std::ops::DerefMut for VueRuntime {
     fn deref_mut(&mut self) -> &mut UiWorld {
-        self.context.world_mut()
+        self.document.get_mut().context_mut().world_mut()
     }
 }
 
@@ -494,7 +543,6 @@ impl PendingAssembly {
 pub struct NanaTreeDocument {
     id: DocumentId,
     runtime: VueRuntime,
-    scene: UiScene,
     nodes: HashMap<u64, Node>,
     next_id: u64,
     html_root: NodeHandle,
@@ -543,9 +591,9 @@ impl NanaTreeDocument {
         let logical_width = physical_width as f32 / scale;
         let logical_height = physical_height as f32 / scale;
         let mut nodes = HashMap::new();
-        let mut runtime = VueRuntime::new();
         let runtime_document =
             nana_ui_runtime::DocumentId::try_from(id).expect("Vue document IDs are nonzero");
+        let mut runtime = VueRuntime::new(runtime_document);
         let node_base = id.node_base();
         let html_root = node_base + 1;
         let mount_root = node_base + 2;
@@ -593,7 +641,6 @@ impl NanaTreeDocument {
         let mut doc = Self {
             id,
             runtime,
-            scene: UiScene::new(),
             nodes,
             next_id: node_base + 3,
             html_root: NodeHandle(html_root),
@@ -627,6 +674,22 @@ impl NanaTreeDocument {
 
     pub fn context(&self) -> &AppContext {
         self.runtime.context()
+    }
+
+    pub fn context_mut(&mut self) -> &mut AppContext {
+        self.runtime.context_mut()
+    }
+
+    pub fn runtime_document(&self) -> &RuntimeDocument {
+        self.runtime.runtime_document()
+    }
+
+    pub fn runtime_document_mut(&mut self) -> &mut RuntimeDocument {
+        self.runtime.runtime_document_mut()
+    }
+
+    pub fn shared_runtime_document(&self) -> Arc<SharedRuntimeDocument> {
+        self.runtime.shared()
     }
 
     pub fn runtime_generation(&self) -> u64 {
@@ -810,7 +873,7 @@ impl NanaTreeDocument {
     }
 
     pub fn scene(&self) -> &UiScene {
-        &self.scene
+        self.runtime.runtime_document().scene()
     }
 
     pub fn accessibility_snapshot(&self) -> Vec<nana_ui_runtime::AccessibilityNode> {
@@ -2101,23 +2164,19 @@ impl NanaTreeDocument {
     }
 
     fn flush_runtime_systems(&mut self) {
-        let work = self.runtime.take_system_work();
-        self.runtime
-            .resolve_styles(&work.style)
-            .expect("scheduled style nodes remain live");
-        #[cfg(feature = "iced-view")]
-        self.runtime
-            .shape_text(&work.text, &mut crate::IcedTextShaper)
-            .expect("Iced shaping produces finite metrics");
-        self.runtime.reconcile_focus(&work.focus_ime);
-        self.record_accessibility_delta(self.runtime.project_accessibility_delta(&work));
-        if !work.input_hit_test.is_empty() {
-            self.runtime.rebuild_hit_test(
-                nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
-            );
-        }
-        let extracted = self.runtime.extract_nodes(&work.render_extraction);
-        self.scene.apply_delta(extracted, work.render_removals);
+        let update = self
+            .runtime
+            .runtime_document_mut()
+            .flush_with(|context, work| {
+                context.world_mut().reconcile_focus(&work.focus_ime);
+                #[cfg(feature = "iced-view")]
+                context
+                    .shape_text(&work.text, &mut nana_ui::NanaTextShaper::default())
+                    .expect("Nana shaping produces finite metrics");
+                Ok(())
+            })
+            .expect("vue runtime frame");
+        self.record_accessibility_delta(update.accessibility);
     }
 
     fn record_accessibility_delta(&mut self, delta: AccessibilityDelta) {
