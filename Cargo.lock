@@ -4740,8 +4740,10 @@ dependencies = [
  "bevy_ecs",
  "futures-core",
  "nana-ui-core",
+ "qrcode",
  "serde",
  "serde_json",
+ "two-face",
  "unicode-segmentation",
 ]
 

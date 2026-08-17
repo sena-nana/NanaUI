@@ -107,10 +107,14 @@ pub enum SwitchControlPosition {
     End,
 }
 
-/// Placement options shared with LiliaUI tooltips.
+/// Placement options for hover tooltips.
+///
+/// The default follows the pointer. Directional variants stay anchored to the
+/// trigger and flip only when the preferred side cannot fit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TooltipPlacement {
     #[default]
+    FollowCursor,
     Top,
     Right,
     Bottom,
@@ -127,10 +131,17 @@ pub struct TooltipConfig {
     pub max_width: f32,
 }
 
+impl TooltipConfig {
+    pub const PADDING_X: f32 = 7.0;
+    pub const PADDING_Y: f32 = 4.0;
+    pub const RADIUS: f32 = 4.0;
+    pub const FONT_SIZE: f32 = 11.0;
+}
+
 impl Default for TooltipConfig {
     fn default() -> Self {
         Self {
-            placement: TooltipPlacement::Top,
+            placement: TooltipPlacement::FollowCursor,
             delay_ms: 350,
             gap: 6.0,
             viewport_padding: 4.0,
@@ -146,6 +157,14 @@ pub enum PopoverPlacement {
     Bottom,
     Left,
     Right,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PopoverAlignment {
+    Start,
+    #[default]
+    Center,
+    End,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

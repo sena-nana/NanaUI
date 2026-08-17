@@ -20,6 +20,18 @@ pub enum SelectionOrientation {
     Horizontal,
 }
 
+/// Shared selection contract with two product surfaces.
+///
+/// `Segmented` keeps the bordered pill. `Tabs` is the same RadioGroup/roving
+/// behavior on an independent tab strip (no outer chrome). Professional
+/// reorder, close, and drag/lease behavior lives on [`crate::Tabs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionChrome {
+    #[default]
+    Segmented,
+    Tabs,
+}
+
 /// Selection-independent intent consumed by roving-focus components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RovingFocusIntent {
@@ -42,12 +54,12 @@ impl Default for RovingFocusPolicy {
 }
 
 impl RovingFocusPolicy {
-    pub fn resolve(
+    pub fn resolve<T: Copy + Eq>(
         self,
-        items: &[(StableNodeId, bool)],
-        current: Option<StableNodeId>,
+        items: &[(T, bool)],
+        current: Option<T>,
         intent: RovingFocusIntent,
-    ) -> Option<StableNodeId> {
+    ) -> Option<T> {
         let enabled = items
             .iter()
             .filter_map(|(id, enabled)| enabled.then_some(*id))
@@ -203,6 +215,8 @@ impl ComponentView for Radio {
 pub struct SegmentedControl {
     pub label: Option<Arc<str>>,
     pub orientation: SelectionOrientation,
+    pub(crate) chrome: SelectionChrome,
+    pub(crate) fill: bool,
     pub(crate) size: ControlSize,
     pub(crate) options: Vec<StableNodeId>,
     pub(crate) selected: Option<StableNodeId>,
@@ -213,31 +227,26 @@ pub struct SegmentedControl {
 
 impl SegmentedControl {
     pub fn new() -> Self {
-        let layout = LayoutStyle {
-            direction: Some(FlexDirection::Row),
-            gap: Some(LengthSpec::Px(2.0)),
-            padding: Some(LengthSpec::Px(2.0)),
-            width: Some(LengthSpec::Shrink),
-            height: Some(LengthSpec::Px(ControlSize::Medium.height())),
-            align_items: AlignSpec::Center,
-            border_width: Some(1.0),
-            border_radius: Some(10.0),
-            ..LayoutStyle::default()
-        };
+        Self::with_chrome(SelectionChrome::Segmented, ControlSize::Medium)
+    }
+
+    /// Independent tab strip: same selection contract, no segmented border.
+    pub fn tabs() -> Self {
+        Self::with_chrome(SelectionChrome::Tabs, ControlSize::Small)
+    }
+
+    fn with_chrome(chrome: SelectionChrome, size: ControlSize) -> Self {
         Self {
             label: None,
             orientation: SelectionOrientation::Horizontal,
-            size: ControlSize::Medium,
+            chrome,
+            fill: false,
+            size,
             options: Vec::new(),
             selected: None,
             focus_target: None,
             roving_focus: RovingFocusPolicy::default(),
-            style: NodeStyle {
-                layout: Arc::new(layout),
-                background: Some(SemanticColorRole::Background),
-                border: Some(SemanticColorRole::Border),
-                ..NodeStyle::default()
-            },
+            style: selection_chrome_style(chrome, size, false),
         }
     }
 
@@ -246,13 +255,35 @@ impl SegmentedControl {
         self
     }
     pub fn size(mut self, size: ControlSize) -> Self {
+        self.apply_size(size);
+        self
+    }
+
+    pub(crate) fn apply_size(&mut self, size: ControlSize) {
         self.size = size;
-        Arc::make_mut(&mut self.style.layout).height = Some(LengthSpec::Px(size.height()));
+        self.style = selection_chrome_style(self.chrome, size, self.fill);
+    }
+    pub fn fill(mut self, fill: bool) -> Self {
+        self.fill = fill;
+        self.style = selection_chrome_style(self.chrome, self.size, fill);
+        self
+    }
+    pub fn chrome(mut self, chrome: SelectionChrome) -> Self {
+        self.chrome = chrome;
+        self.style = selection_chrome_style(chrome, self.size, self.fill);
         self
     }
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
+    }
+
+    pub const fn chrome_value(&self) -> SelectionChrome {
+        self.chrome
+    }
+
+    pub const fn fill_value(&self) -> bool {
+        self.fill
     }
 
     pub const fn size_value(&self) -> ControlSize {
@@ -281,12 +312,25 @@ impl Default for SegmentedControl {
 impl ComponentView for SegmentedControl {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
-            tag: "segmented-control".into(),
+            tag: match self.chrome {
+                SelectionChrome::Segmented => "segmented-control".into(),
+                SelectionChrome::Tabs => "tabs".into(),
+            },
         }
     }
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let mut style = self.style.clone();
-        Arc::make_mut(&mut style.layout).border_radius = Some(world.theme_metrics().radius_md);
+        let layout = Arc::make_mut(&mut style.layout);
+        match self.chrome {
+            SelectionChrome::Segmented => {
+                layout.border_radius = Some(world.theme_metrics().radius_md);
+            }
+            SelectionChrome::Tabs => {
+                layout.border_radius = None;
+                style.background = None;
+                style.border = None;
+            }
+        }
         project_common(
             id,
             world,
@@ -297,7 +341,10 @@ impl ComponentView for SegmentedControl {
                 focusable: false,
             },
             AccessibilityState {
-                role: AccessibilityRole::RadioGroup,
+                role: match self.chrome {
+                    SelectionChrome::Segmented => AccessibilityRole::RadioGroup,
+                    SelectionChrome::Tabs => AccessibilityRole::TabList,
+                },
                 label: self.label.clone(),
                 ..AccessibilityState::default()
             },
@@ -312,6 +359,8 @@ pub struct SegmentedOption {
     pub(crate) selected: bool,
     pub(crate) disabled: bool,
     pub(crate) size: ControlSize,
+    pub(crate) chrome: SelectionChrome,
+    pub(crate) fill: bool,
     pub style: NodeStyle,
 }
 
@@ -323,7 +372,9 @@ impl SegmentedOption {
             selected: false,
             disabled: false,
             size: ControlSize::Medium,
-            style: segmented_option_style(ControlSize::Medium),
+            chrome: SelectionChrome::Segmented,
+            fill: false,
+            style: segmented_option_style(ControlSize::Medium, SelectionChrome::Segmented, false),
         }
     }
     pub fn icon(mut self, icon: Icon) -> Self {
@@ -334,8 +385,16 @@ impl SegmentedOption {
         self.disabled = disabled;
         self
     }
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
     pub fn size(mut self, size: ControlSize) -> Self {
-        self.synchronize_size(size);
+        self.synchronize_surface(size, self.chrome, self.fill);
+        self
+    }
+    pub fn surface(mut self, size: ControlSize, chrome: SelectionChrome, fill: bool) -> Self {
+        self.synchronize_surface(size, chrome, fill);
         self
     }
     pub fn style(mut self, style: NodeStyle) -> Self {
@@ -355,27 +414,72 @@ impl SegmentedOption {
         self.size
     }
 
-    pub(crate) fn synchronize_size(&mut self, size: ControlSize) {
+    pub(crate) fn synchronize_surface(
+        &mut self,
+        size: ControlSize,
+        chrome: SelectionChrome,
+        fill: bool,
+    ) {
         self.size = size;
-        let layout = Arc::make_mut(&mut self.style.layout);
-        let padding = size.padding_x() + 2.0;
-        layout.height = Some(LengthSpec::Px((size.height() - 6.0).max(0.0)));
-        layout.padding_left = Some(LengthSpec::Px(padding));
-        layout.padding_right = Some(LengthSpec::Px(padding));
-        layout.font_size = Some(size.text_size());
-        layout.font_weight = Some(500);
-        layout.line_height = Some(LineHeightSpec::Absolute(size.line_height()));
-        layout.white_space_nowrap = true;
-        layout.align_self = Some(AlignSpec::Center);
-        layout.justify_content = JustifySpec::Center;
-        layout.border_radius = Some(7.0);
+        self.chrome = chrome;
+        self.fill = fill;
+        self.style = segmented_option_style(size, chrome, fill);
     }
 }
 
-fn segmented_option_style(size: ControlSize) -> NodeStyle {
+pub(crate) fn selection_chrome_style(
+    chrome: SelectionChrome,
+    size: ControlSize,
+    fill: bool,
+) -> NodeStyle {
+    let (gap, padding, border_width, background, border) = match chrome {
+        SelectionChrome::Segmented => (
+            2.0,
+            2.0,
+            1.0,
+            Some(SemanticColorRole::Background),
+            Some(SemanticColorRole::Border),
+        ),
+        SelectionChrome::Tabs => (4.0, 0.0, 0.0, None, None),
+    };
+    let layout = LayoutStyle {
+        direction: Some(FlexDirection::Row),
+        gap: Some(LengthSpec::Px(gap)),
+        padding: Some(LengthSpec::Px(padding)),
+        width: Some(if fill {
+            LengthSpec::Percent(100.0)
+        } else {
+            LengthSpec::Shrink
+        }),
+        height: Some(LengthSpec::Px(size.height())),
+        align_items: AlignSpec::Center,
+        border_width: Some(border_width),
+        border_radius: Some(if matches!(chrome, SelectionChrome::Segmented) {
+            10.0
+        } else {
+            0.0
+        }),
+        ..LayoutStyle::default()
+    };
+    NodeStyle {
+        layout: Arc::new(layout),
+        background,
+        border,
+        ..NodeStyle::default()
+    }
+}
+
+fn option_height(size: ControlSize, chrome: SelectionChrome) -> f32 {
+    match chrome {
+        SelectionChrome::Segmented => (size.height() - 6.0).max(0.0),
+        SelectionChrome::Tabs => size.height(),
+    }
+}
+
+fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool) -> NodeStyle {
     let padding = size.padding_x() + 2.0;
     let layout = LayoutStyle {
-        height: Some(LengthSpec::Px((size.height() - 6.0).max(0.0))),
+        height: Some(LengthSpec::Px(option_height(size, chrome))),
         padding_left: Some(LengthSpec::Px(padding)),
         padding_right: Some(LengthSpec::Px(padding)),
         font_size: Some(size.text_size()),
@@ -384,7 +488,13 @@ fn segmented_option_style(size: ControlSize) -> NodeStyle {
         white_space_nowrap: true,
         align_self: Some(AlignSpec::Center),
         justify_content: JustifySpec::Center,
-        border_radius: Some(7.0),
+        border_radius: Some(match chrome {
+            SelectionChrome::Segmented => 7.0,
+            SelectionChrome::Tabs => 6.0,
+        }),
+        flex_grow: fill.then_some(1.0),
+        flex_shrink: fill.then_some(1.0),
+        width: fill.then_some(LengthSpec::Fill),
         ..LayoutStyle::default()
     };
     NodeStyle {
@@ -431,7 +541,10 @@ fn segmented_option_style(size: ControlSize) -> NodeStyle {
 impl ComponentView for SegmentedOption {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
-            tag: "segmented-option".into(),
+            tag: match self.chrome {
+                SelectionChrome::Segmented => "segmented-option".into(),
+                SelectionChrome::Tabs => "tab".into(),
+            },
         }
     }
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -449,13 +562,17 @@ impl ComponentView for SegmentedOption {
             selected: self.selected,
             disabled: self.disabled,
             size: self.size,
+            show_focus_ring: matches!(self.chrome, SelectionChrome::Segmented),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
-        Arc::make_mut(&mut effective_style.layout).border_radius =
-            Some((world.theme_metrics().radius_md - 3.0).max(0.0));
+        let radius = match self.chrome {
+            SelectionChrome::Segmented => (world.theme_metrics().radius_md - 3.0).max(0.0),
+            SelectionChrome::Tabs => world.theme_metrics().radius_sm,
+        };
+        Arc::make_mut(&mut effective_style.layout).border_radius = Some(radius);
         if self.icon.is_some() {
             let layout = Arc::make_mut(&mut effective_style.layout);
             layout.padding_left = Some(LengthSpec::Px(
@@ -472,10 +589,14 @@ impl ComponentView for SegmentedOption {
                 focusable: !self.disabled,
             },
             AccessibilityState {
-                role: AccessibilityRole::Radio,
+                role: match self.chrome {
+                    SelectionChrome::Segmented => AccessibilityRole::Radio,
+                    SelectionChrome::Tabs => AccessibilityRole::Tab,
+                },
                 label: Some(Arc::clone(&self.label)),
                 disabled: self.disabled,
-                checked: Some(self.selected),
+                selected: matches!(self.chrome, SelectionChrome::Tabs).then_some(self.selected),
+                checked: matches!(self.chrome, SelectionChrome::Segmented).then_some(self.selected),
                 ..AccessibilityState::default()
             },
         );
@@ -545,5 +666,63 @@ mod tests {
             assert_eq!(control.style.layout.border_radius, Some(10.0));
             assert_eq!(control.style.layout.width, Some(LengthSpec::Shrink));
         }
+    }
+
+    #[test]
+    fn tabs_chrome_uses_independent_surface_and_tab_roles() {
+        let tabs = SegmentedControl::tabs();
+        assert_eq!(tabs.chrome_value(), SelectionChrome::Tabs);
+        assert_eq!(tabs.size_value(), ControlSize::Small);
+        assert_eq!(tabs.style.layout.border_width, Some(0.0));
+        assert_eq!(tabs.style.layout.gap, Some(LengthSpec::Px(4.0)));
+        assert!(tabs.style.background.is_none());
+        assert_eq!(tabs.node_kind(), NodeKind::Element { tag: "tabs".into() });
+
+        let option = SegmentedOption::new("Preview").surface(
+            ControlSize::Small,
+            SelectionChrome::Tabs,
+            false,
+        );
+        assert_eq!(
+            option.style.layout.height,
+            Some(LengthSpec::Px(ControlSize::Small.height()))
+        );
+        assert_eq!(option.node_kind(), NodeKind::Element { tag: "tab".into() });
+    }
+
+    #[test]
+    fn tabs_options_do_not_request_a_focus_ring() {
+        let mut context = crate::AppContext::new();
+        let document = crate::DocumentId::new(1).unwrap();
+        let tab = context
+            .create_component(
+                document,
+                SegmentedOption::new("Code").surface(
+                    ControlSize::Small,
+                    SelectionChrome::Tabs,
+                    false,
+                ),
+            )
+            .unwrap();
+        let segmented = context
+            .create_component(
+                document,
+                SegmentedOption::new("Code").size(ControlSize::Medium),
+            )
+            .unwrap();
+        assert!(matches!(
+            context.world().standard_visual(tab.stable_id()),
+            Some(StandardVisual::SelectionOption {
+                show_focus_ring: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            context.world().standard_visual(segmented.stable_id()),
+            Some(StandardVisual::SelectionOption {
+                show_focus_ring: true,
+                ..
+            })
+        ));
     }
 }

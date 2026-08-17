@@ -1,7 +1,8 @@
 use crate::{
-    AccessibilityState, AnimationId, AnimationSpec, CustomRenderNode, DocumentId, ImeComposition,
-    InteractionState, LayoutBox, NodeKind, NodeStyle, OverlayHostState, ScrollMetrics,
-    ScrollOffset, StableNodeId, StandardVisual, TextContent, TextInputState, TextSelection,
+    AccessibilityState, AnimationId, AnimationSpec, CustomRenderNode, DocumentId, HighlightRequest,
+    ImeComposition, InteractionState, LayoutBox, NodeKind, NodeStyle, OverlayHostState,
+    ScrollMetrics, ScrollOffset, StableNodeId, StandardVisual, TextContent, TextInputState,
+    TextSelection,
 };
 use nana_ui_core::ThemeMode;
 
@@ -109,6 +110,10 @@ pub enum UiMutation {
     ReplaceTextSelection {
         id: StableNodeId,
         text: String,
+    },
+    SetHighlightRequest {
+        id: StableNodeId,
+        request: Option<HighlightRequest>,
     },
 }
 
@@ -247,6 +252,11 @@ impl MutationQueue {
             id,
             text: text.into(),
         });
+    }
+
+    pub fn set_highlight_request(&mut self, id: StableNodeId, request: Option<HighlightRequest>) {
+        self.mutations
+            .push(UiMutation::SetHighlightRequest { id, request });
     }
 
     pub fn len(&self) -> usize {

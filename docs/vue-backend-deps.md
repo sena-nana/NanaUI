@@ -7,7 +7,7 @@
 | WGPU | **30.0.0** — keep aligned with NanaUI/Iced |
 | QuickJS | `rquickjs = "0.12.2"` (QuickJS-NG 0.15.1) |
 | V8 | crates.io `v8 = "150.4.0"` |
-| UI frontend | **NanaUI (Iced)** only — Blitz / Vello / CustomContent paint **removed** |
+| UI frontend | Runtime / UiScene retained; Iced is the current compatibility view |
 | MSRV | ≥ 1.92 |
 
 ## Dependency direction
@@ -15,10 +15,12 @@
 ```text
 nana-ui-core
      ↑
-     ├─ nana-ui (Iced / run_hosted / HostTexture)  ← product UI
-     └─ nana-ui-vue
+     ├─ nana-ui-runtime / nana-ui-scene   ← product retained / render
+     ├─ nana-ui (Iced adapter / run_hosted / HostTexture)  ← compatibility view
+     └─ nana-ui-vue                       ← first-class L1/L2 Vue + JS
           ├─ NanaTreeDocument   (JS custom-renderer ops; simplified layout)
-          ├─ MessageBridge      (all visible nodes → Nana iced-view)
+          ├─ MessageBridge      (all visible nodes → Runtime/Scene)
+          ├─ iced_app           (Iced compatibility view; feature iced-view)
           ├─ nana-ui-web-api    (window/document/timer/buffered fetch subset)
           └─ nana-js-engine     (traits only)
                ├─ nana-js-quickjs
@@ -29,9 +31,9 @@ Constraints:
 
 - `nana-ui-core` depends only on serde/serde_json
 - `nana-ui-vue` must not depend on concrete QuickJS/V8 types
-- App chooses exactly one JS engine (QuickJS XOR V8); UI is always NanaUI when windowed
-- No `blitz-dom` / `blitz-shell` / `vello` / `anyrender_vello`
-- No CustomContent / CPU raster paint path
+- App chooses exactly one JS engine (QuickJS XOR V8)
+- Windowed UI is Runtime/UiScene, painted by the Iced compatibility view
+- WebView is not the product UI path
 - Paint / chrome use **host-injected** Device/Queue only — no second `request_device`
 
 ## Runtime pipeline
@@ -39,13 +41,14 @@ Constraints:
 ```text
 Windowed (default product path):
   HostedProgram + DesktopShell + SidebarFrame + settings_page
-  → NanaUI Iced draw on host wgpu
+  → Runtime/UiScene retained
+  → Iced compatibility view on host wgpu
 
 Optional JS bridge:
   Nana Vite entry (Vue SFC/TS/CSS) → reproducible IIFE
   → VueHost::initialize_with_web_api
   → hostOps → NanaTreeDocument + MessageBridge
-  → semantic snapshot → Nana iced-view
+  → Runtime/UiScene → Iced compatibility view (`iced-view`)
 ```
 
 ## Docs

@@ -32,6 +32,7 @@ live2d-acceptance = [
 snapshots = [
     "bundled-fonts",
     "nana-ui/gpu",
+    "nana-ui/syntax-highlighting",
     "dep:iced_wgpu",
     "dep:iced_winit",
     "dep:nana-ui-core",
@@ -73,6 +74,11 @@ required-features = ["benchmark"]
 [[bin]]
 name = "ui-snapshots"
 path = "src/bin/ui-snapshots.rs"
+required-features = ["snapshots"]
+
+[[bin]]
+name = "ui-migration-ab"
+path = "src/bin/ui-migration-ab.rs"
 required-features = ["snapshots"]
 
 [[bin]]

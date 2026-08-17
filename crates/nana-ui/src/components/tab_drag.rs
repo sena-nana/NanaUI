@@ -1,353 +1,36 @@
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use iced::advanced::Renderer as _;
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Shell, layout, mouse, overlay, renderer};
 use iced::{Color, Element, Event, Length, Point, Rectangle, Size, Theme, Vector, touch};
+use nana_ui_core::{LogicalPoint, TabDragRect, TabDropIndicator, TabStripPaint};
+
+pub use nana_ui_core::{TabDragGroup, TabDragLease, TabDragSurface};
 
 const TAB_DRAG_THRESHOLD: f32 = 4.0;
 
-/// Shared geometry and active-drag state for tabs that can move between strips.
-///
-/// Each [`Tabs`](super::controls::Tabs) instance registers its current painted
-/// bounds through a short-lived lease. The group owns no application ordering;
-/// it only resolves a pointer release to a target strip and a before-value.
-pub struct TabDragGroup<T> {
-    inner: Rc<RefCell<TabDragGroupState<T>>>,
+fn drag_point(point: Point) -> LogicalPoint {
+    LogicalPoint::new(point.x, point.y)
 }
 
-/// Window-local coordinate transform used by a [`TabDragGroup`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct TabDragSurface {
-    id: String,
-    physical_origin: Point,
-    scale_factor: f32,
+fn drag_rect(bounds: Rectangle) -> TabDragRect {
+    TabDragRect::new(bounds.x, bounds.y, bounds.width, bounds.height)
 }
 
-impl TabDragSurface {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            physical_origin: Point::ORIGIN,
-            scale_factor: 1.0,
-        }
-    }
-
-    /// Sets the window origin in physical screen pixels and its logical scale.
-    pub fn with_physical_geometry(mut self, x: i32, y: i32, scale_factor: f64) -> Self {
-        self.physical_origin = Point::new(x as f32, y as f32);
-        self.scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
-            scale_factor as f32
-        } else {
-            1.0
-        };
-        self
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn global_point(&self, point: Point) -> Point {
-        Point::new(
-            self.physical_origin.x + point.x * self.scale_factor,
-            self.physical_origin.y + point.y * self.scale_factor,
-        )
-    }
-
-    fn global_rectangle(&self, rectangle: Rectangle) -> Rectangle {
-        Rectangle::new(
-            self.global_point(rectangle.position()),
-            Size::new(
-                rectangle.width * self.scale_factor,
-                rectangle.height * self.scale_factor,
-            ),
-        )
-    }
-}
-
-impl<T> Clone for TabDragGroup<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Rc::clone(&self.inner),
-        }
-    }
-}
-
-impl<T> Default for TabDragGroup<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> TabDragGroup<T> {
-    pub fn new() -> Self {
-        Self {
-            inner: Rc::new(RefCell::new(TabDragGroupState::default())),
-        }
-    }
-
-    fn lease(&self, surface: TabDragSurface, strip_id: String) -> TabDragLease<T> {
-        let mut state = self.inner.borrow_mut();
-        state.next_generation = state.next_generation.saturating_add(1);
-        let generation = state.next_generation;
-        TabDragLease {
-            group: self.clone(),
-            surface,
-            strip_id,
-            generation,
-        }
-    }
-
-    fn register(
-        &self,
-        surface: &TabDragSurface,
-        strip_id: &str,
-        generation: u64,
-        paint: TabStripPaint<T>,
-    ) {
-        self.inner.borrow_mut().strips.insert(
-            strip_id.to_owned(),
-            TabStripRegistration {
-                generation,
-                surface_id: surface.id.clone(),
-                bounds: surface.global_rectangle(paint.bounds),
-                tab_bounds: paint
-                    .tab_bounds
-                    .into_iter()
-                    .map(|bounds| surface.global_rectangle(bounds))
-                    .collect(),
-                values: paint.values,
-                disabled: paint.disabled,
-                accepts_external_drop: paint.accepts_external_drop,
-            },
-        );
-    }
-
-    fn sync_active(
-        &self,
-        surface: &TabDragSurface,
-        source_strip: &str,
-        source_generation: u64,
-        source_index: usize,
-        position: Point,
-        moved: bool,
-    ) {
-        let mut state = self.inner.borrow_mut();
-        if state
-            .active
-            .as_ref()
-            .is_some_and(|active| active.source_strip != source_strip)
-        {
-            return;
-        }
-        state.active = Some(ActiveGroupDrag {
-            source_surface: surface.id.clone(),
-            source_strip: source_strip.to_owned(),
-            source_generation,
-            source_index,
-            position: surface.global_point(position),
-            moved,
-        });
-        state.completed_source = None;
-    }
-
-    fn clear_active(&self, source_strip: &str, source_generation: u64) {
-        let mut state = self.inner.borrow_mut();
-        if state.active.as_ref().is_some_and(|active| {
-            active.source_strip == source_strip && active.source_generation == source_generation
-        }) {
-            state.active = None;
-        }
-    }
-
-    fn relay_pointer(&self, surface: &TabDragSurface, position: Point) -> bool {
-        let mut state = self.inner.borrow_mut();
-        let Some(active) = state.active.as_mut() else {
-            return false;
-        };
-        if active.source_surface == surface.id {
-            return false;
-        }
-        active.position = surface.global_point(position);
-        active.moved = true;
-        true
-    }
-
-    fn take_completed(&self, source_strip: &str, source_generation: u64) -> bool {
-        let mut state = self.inner.borrow_mut();
-        if state.completed_source.as_ref().is_some_and(|completed| {
-            completed.0 == source_strip && completed.1 == source_generation
-        }) {
-            state.completed_source = None;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-impl<T: Clone> TabDragGroup<T> {
-    fn cross_drop(
-        &self,
-        surface: &TabDragSurface,
-        source_strip: &str,
-        position: Point,
-    ) -> Option<(String, Option<T>)> {
-        let position = surface.global_point(position);
-        let state = self.inner.borrow();
-        let (target_id, target) = state.strips.iter().find(|(strip_id, strip)| {
-            strip_id.as_str() != source_strip
-                && strip.accepts_external_drop
-                && strip.bounds.contains(position)
-        })?;
-        let before = drop_before_index(&target.tab_bounds, &target.disabled, None, Some(position))
-            .and_then(|index| target.values.get(index).cloned());
-        Some((target_id.clone(), before))
-    }
-
-    fn indicator_for(&self, strip_id: &str) -> Option<TabDropIndicator> {
-        let state = self.inner.borrow();
-        let active = state.active.as_ref().filter(|active| active.moved)?;
-        let strip = state.strips.get(strip_id)?;
-        if active.source_strip != strip_id && !strip.accepts_external_drop {
-            return None;
-        }
-        if !strip.bounds.contains(active.position) {
-            return None;
-        }
-        let excluded = (active.source_strip == strip_id).then_some(active.source_index);
-        Some(TabDropIndicator {
-            before: drop_before_index(
-                &strip.tab_bounds,
-                &strip.disabled,
-                excluded,
-                Some(active.position),
-            ),
-            source: excluded,
-        })
-    }
-
-    fn is_active_over(&self, surface: &TabDragSurface, strip_id: &str, position: Point) -> bool {
-        let position = surface.global_point(position);
-        let state = self.inner.borrow();
-        state.active.as_ref().is_some_and(|active| {
-            active.moved
-                && state.strips.get(strip_id).is_some_and(|strip| {
-                    (active.source_strip == strip_id || strip.accepts_external_drop)
-                        && strip.bounds.contains(position)
-                })
-        })
-    }
-
-    fn finish_relay(
-        &self,
-        surface: &TabDragSurface,
-        target_strip: &str,
-        position: Point,
-    ) -> Option<(String, T, String, Option<T>)> {
-        let position = surface.global_point(position);
-        let mut state = self.inner.borrow_mut();
-        let active = state.active.clone()?;
-        if active.source_surface == surface.id {
-            return None;
-        }
-        let source = state.strips.get(&active.source_strip)?;
-        if source.generation != active.source_generation {
-            return None;
-        }
-        let value = source.values.get(active.source_index)?.clone();
-        let target = state.strips.get(target_strip)?;
-        if target.surface_id != surface.id
-            || !target.accepts_external_drop
-            || !target.bounds.contains(position)
-        {
-            return None;
-        }
-        let before = drop_before_index(&target.tab_bounds, &target.disabled, None, Some(position))
-            .and_then(|index| target.values.get(index).cloned());
-        state.active = None;
-        state.completed_source = Some((active.source_strip.clone(), active.source_generation));
-        Some((active.source_strip, value, target_strip.to_owned(), before))
-    }
-}
-
-struct TabDragGroupState<T> {
-    next_generation: u64,
-    strips: BTreeMap<String, TabStripRegistration<T>>,
-    active: Option<ActiveGroupDrag>,
-    completed_source: Option<(String, u64)>,
-}
-
-impl<T> Default for TabDragGroupState<T> {
-    fn default() -> Self {
-        Self {
-            next_generation: 0,
-            strips: BTreeMap::new(),
-            active: None,
-            completed_source: None,
-        }
-    }
-}
-
-struct TabStripRegistration<T> {
-    generation: u64,
-    surface_id: String,
+fn strip_paint<T: Clone>(
     bounds: Rectangle,
-    tab_bounds: Vec<Rectangle>,
-    values: Vec<T>,
-    disabled: Vec<bool>,
+    tab_bounds: &[Rectangle],
+    values: &[T],
+    disabled: &[bool],
     accepts_external_drop: bool,
-}
-
-struct TabStripPaint<T> {
-    bounds: Rectangle,
-    tab_bounds: Vec<Rectangle>,
-    values: Vec<T>,
-    disabled: Vec<bool>,
-    accepts_external_drop: bool,
-}
-
-#[derive(Debug, Clone)]
-struct ActiveGroupDrag {
-    source_surface: String,
-    source_strip: String,
-    source_generation: u64,
-    source_index: usize,
-    position: Point,
-    moved: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TabDropIndicator {
-    before: Option<usize>,
-    source: Option<usize>,
-}
-
-struct TabDragLease<T> {
-    group: TabDragGroup<T>,
-    surface: TabDragSurface,
-    strip_id: String,
-    generation: u64,
-}
-
-impl<T> Drop for TabDragLease<T> {
-    fn drop(&mut self) {
-        let mut state = self.group.inner.borrow_mut();
-        if state
-            .strips
-            .get(&self.strip_id)
-            .is_some_and(|strip| strip.generation == self.generation)
-        {
-            state.strips.remove(&self.strip_id);
-        }
-        if state.active.as_ref().is_some_and(|active| {
-            active.source_strip == self.strip_id && active.source_generation == self.generation
-        }) {
-            state.active = None;
-        }
+) -> TabStripPaint<T> {
+    TabStripPaint {
+        bounds: drag_rect(bounds),
+        tab_bounds: tab_bounds.iter().copied().map(drag_rect).collect(),
+        values: values.to_vec(),
+        disabled: disabled.to_vec(),
+        accepts_external_drop,
     }
 }
 
@@ -661,7 +344,7 @@ where
                 transfer
                     .lease
                     .group
-                    .relay_pointer(&transfer.lease.surface, position)
+                    .relay_pointer(&transfer.lease.surface, drag_point(position))
             }) {
                 shell.capture_event();
                 shell.request_redraw();
@@ -679,7 +362,7 @@ where
                     transfer.lease.group.finish_relay(
                         &transfer.lease.surface,
                         &transfer.lease.strip_id,
-                        position,
+                        drag_point(position),
                     )
                 })
             {
@@ -703,7 +386,7 @@ where
                 &transfer.lease.strip_id,
                 transfer.lease.generation,
                 source,
-                position,
+                drag_point(position),
                 state.moved,
             );
         }
@@ -740,7 +423,7 @@ where
                                 .cross_drop(
                                     &transfer.lease.surface,
                                     &transfer.lease.strip_id,
-                                    position,
+                                    drag_point(position),
                                 )
                                 .map(|(target_strip, before)| {
                                     (
@@ -824,13 +507,13 @@ where
                 &transfer.lease.surface,
                 &transfer.lease.strip_id,
                 transfer.lease.generation,
-                TabStripPaint {
-                    bounds: content_layout.bounds(),
-                    tab_bounds: bounds.clone(),
-                    values: self.values.clone(),
-                    disabled: self.disabled.clone(),
-                    accepts_external_drop: transfer.accepts_external_drop,
-                },
+                strip_paint(
+                    content_layout.bounds(),
+                    &bounds,
+                    &self.values,
+                    &self.disabled,
+                    transfer.accepts_external_drop,
+                ),
             );
             transfer.lease.group.indicator_for(&transfer.lease.strip_id)
         } else {
@@ -904,7 +587,7 @@ where
                 transfer.lease.group.is_active_over(
                     &transfer.lease.surface,
                     &transfer.lease.strip_id,
-                    position,
+                    drag_point(position),
                 )
             })
         });
@@ -1081,150 +764,5 @@ mod tests {
             ),
             Some(1)
         );
-    }
-
-    #[test]
-    fn drag_group_resolves_another_strip_and_its_before_value() {
-        let group = TabDragGroup::new();
-        let surface = TabDragSurface::new("default");
-        let source = group.lease(surface.clone(), "left".to_owned());
-        let target = group.lease(surface.clone(), "right".to_owned());
-        let source_bounds = bounds();
-        let target_bounds = bounds()
-            .into_iter()
-            .map(|bounds| Rectangle::new(Point::new(bounds.x + 300.0, 0.0), bounds.size()))
-            .collect::<Vec<_>>();
-        group.register(
-            &surface,
-            &source.strip_id,
-            source.generation,
-            TabStripPaint {
-                bounds: Rectangle::new(Point::ORIGIN, Size::new(236.0, 28.0)),
-                tab_bounds: source_bounds,
-                values: vec!["overview", "a", "b"],
-                disabled: vec![true, false, false],
-                accepts_external_drop: true,
-            },
-        );
-        group.register(
-            &surface,
-            &target.strip_id,
-            target.generation,
-            TabStripPaint {
-                bounds: Rectangle::new(Point::new(300.0, 0.0), Size::new(236.0, 28.0)),
-                tab_bounds: target_bounds,
-                values: vec!["overview", "c", "d"],
-                disabled: vec![true, false, false],
-                accepts_external_drop: true,
-            },
-        );
-        let position = Point::new(301.0, 14.0);
-
-        assert_eq!(
-            group.cross_drop(&surface, "left", position),
-            Some(("right".to_owned(), Some("c")))
-        );
-        group.sync_active(&surface, "left", source.generation, 2, position, true);
-        assert_eq!(
-            group
-                .indicator_for("right")
-                .map(|indicator| indicator.before),
-            Some(Some(1))
-        );
-        assert!(group.is_active_over(&surface, "right", position));
-    }
-
-    #[test]
-    fn newer_strip_lease_survives_an_older_view_drop() {
-        let group = TabDragGroup::<u8>::new();
-        let surface = TabDragSurface::new("default");
-        let older = group.lease(surface.clone(), "pane".to_owned());
-        group.register(
-            &surface,
-            &older.strip_id,
-            older.generation,
-            TabStripPaint {
-                bounds: Rectangle::new(Point::ORIGIN, Size::new(80.0, 28.0)),
-                tab_bounds: vec![bounds()[0]],
-                values: vec![1],
-                disabled: vec![false],
-                accepts_external_drop: true,
-            },
-        );
-        let newer = group.lease(surface.clone(), "pane".to_owned());
-        group.register(
-            &surface,
-            &newer.strip_id,
-            newer.generation,
-            TabStripPaint {
-                bounds: Rectangle::new(Point::ORIGIN, Size::new(80.0, 28.0)),
-                tab_bounds: vec![bounds()[0]],
-                values: vec![2],
-                disabled: vec![false],
-                accepts_external_drop: true,
-            },
-        );
-
-        drop(older);
-        assert_eq!(
-            group.inner.borrow().strips["pane"].generation,
-            newer.generation
-        );
-    }
-
-    #[test]
-    fn drag_group_relays_between_scaled_window_surfaces_once() {
-        let group = TabDragGroup::new();
-        let source_surface =
-            TabDragSurface::new("source-window").with_physical_geometry(100, 100, 2.0);
-        let target_surface =
-            TabDragSurface::new("target-window").with_physical_geometry(500, 120, 1.5);
-        let source = group.lease(source_surface.clone(), "source-pane".to_owned());
-        let target = group.lease(target_surface.clone(), "target-pane".to_owned());
-        group.register(
-            &source_surface,
-            &source.strip_id,
-            source.generation,
-            TabStripPaint {
-                bounds: Rectangle::new(Point::ORIGIN, Size::new(236.0, 28.0)),
-                tab_bounds: bounds(),
-                values: vec![0, 1, 2],
-                disabled: vec![true, false, false],
-                accepts_external_drop: false,
-            },
-        );
-        group.register(
-            &target_surface,
-            &target.strip_id,
-            target.generation,
-            TabStripPaint {
-                bounds: Rectangle::new(Point::ORIGIN, Size::new(236.0, 28.0)),
-                tab_bounds: bounds(),
-                values: vec![0, 3, 4],
-                disabled: vec![true, false, false],
-                accepts_external_drop: true,
-            },
-        );
-        group.sync_active(
-            &source_surface,
-            &source.strip_id,
-            source.generation,
-            2,
-            Point::new(198.0, 14.0),
-            true,
-        );
-
-        assert!(group.relay_pointer(&target_surface, Point::new(1.0, 14.0)));
-        assert_eq!(
-            group.finish_relay(&target_surface, &target.strip_id, Point::new(1.0, 14.0)),
-            Some((
-                "source-pane".to_owned(),
-                2,
-                "target-pane".to_owned(),
-                Some(3),
-            ))
-        );
-        assert!(group.take_completed(&source.strip_id, source.generation));
-        assert!(!group.take_completed(&source.strip_id, source.generation));
     }
 }

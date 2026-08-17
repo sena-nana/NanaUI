@@ -3,11 +3,11 @@ use iced::{Alignment, Element, Length, Padding, font};
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use crate::compatibility::SidebarFrame;
 use crate::components::ControlSize;
 use crate::geometry::TITLE_BAR_HEIGHT;
 use crate::icons::{Icon, icon};
 use crate::layout::RegionId;
-use crate::sidebar::SidebarFrame;
 use crate::theme::{Colors, ThemeMode, ThemeTokens, tracked_label};
 use crate::widgets::{ButtonKind, button_style};
 use crate::window_chrome::{
@@ -424,7 +424,7 @@ where
         }
         let workspace = workspace_view(&self.controller, regions, self.tokens, self.on_action);
         let base = app_shell(self.title_bar, workspace, self.tokens.colors);
-        let mut host = crate::components::OverlayHost::new(base);
+        let mut host = crate::components::menus::OverlayHost::new(base);
         for overlay in self.overlays {
             host = host.push(overlay);
         }

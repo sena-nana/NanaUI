@@ -10,22 +10,28 @@ use std::time::Duration;
 
 use futures_core::Stream;
 use nana_ui_core::{
-    ActionId, ContextPredicate, KeyContext, LengthSpec, ThemeMode, TooltipPlacement,
-    VirtualListLayout, VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
+    ActionId, ActionPickerNavigation, CommandPaletteEvent, ContextPredicate, KeyContext,
+    LengthSpec, ThemeMode, TooltipConfig, TooltipPlacement, VirtualListLayout,
+    VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow,
 };
 
 #[cfg(test)]
 use crate::Dialog;
 use crate::{
-    AccessibilityAction, AccessibilityActionRequest, Activate, AnimationFrame, Button, Checkbox,
-    ComponentView, DocumentId, EmptyState, IconButton, LabeledValue, List, ListItem, ListItemSlots,
-    MenuItem, ModalSlots, ModalSurface, MutationQueue, NodeKind, OverlayChanged, OverlayHost,
-    RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged,
-    ScrollMetrics, ScrollOffset, ScrollView, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Slider, SliderChanged, StableNodeId, StandardVisual, Switch, Tab,
-    TabList, TabSelected, Table, TableCell, TableRow, TextArea, TextChanged, TextInput,
-    TextInputState, TextSelection, ToggleChanged, Tooltip, UiWorld, UiWorldError,
+    AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
+    AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
+    DocumentId, Dropdown, EmptyState, FormField, IconButton, LabeledValue, List, ListItem,
+    ListItemSlots, MenuItem, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind,
+    OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
+    ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
+    ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent,
+    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
+    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, Slider,
+    SliderChanged, StableNodeId, StandardVisual, Switch, Tab, TabList, TabSelected, Table,
+    TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter,
+    TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, XYPad, XYPadDragState,
+    XYPadEvent,
 };
 
 mod overlay;
@@ -43,13 +49,31 @@ pub trait View: Send + 'static {}
 impl<T: Send + 'static> View for T {}
 
 trait EditableText: ComponentView {
+    type Change: Send + 'static;
     fn accepts_input(&self) -> bool;
     fn replace_selection(&mut self, text: &str) -> bool;
     fn state(&self) -> &TextInputState;
     fn state_mut(&mut self) -> &mut TextInputState;
+    fn change(&self) -> Self::Change;
+    fn set_value(&mut self, value: String) -> bool {
+        if self.state().value == value {
+            return false;
+        }
+        self.state_mut().replace_value(value);
+        true
+    }
+}
+
+fn text_changed(state: &TextInputState) -> TextChanged {
+    TextChanged {
+        value: state.value.clone(),
+        selection: state.selection,
+    }
 }
 
 impl EditableText for TextInput {
+    type Change = TextChanged;
+
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.loading && !self.read_only
     }
@@ -65,9 +89,15 @@ impl EditableText for TextInput {
     fn state_mut(&mut self) -> &mut TextInputState {
         &mut self.state
     }
+
+    fn change(&self) -> TextChanged {
+        text_changed(&self.state)
+    }
 }
 
 impl EditableText for TextArea {
+    type Change = TextChanged;
+
     fn accepts_input(&self) -> bool {
         !self.disabled
     }
@@ -82,6 +112,110 @@ impl EditableText for TextArea {
 
     fn state_mut(&mut self) -> &mut TextInputState {
         &mut self.state
+    }
+
+    fn change(&self) -> TextChanged {
+        text_changed(&self.state)
+    }
+}
+
+impl EditableText for SearchDropdown {
+    type Change = SearchDropdownEvent;
+
+    fn accepts_input(&self) -> bool {
+        self.opened && !self.inactive()
+    }
+
+    fn replace_selection(&mut self, text: &str) -> bool {
+        self.replace_selection(text)
+    }
+
+    fn state(&self) -> &TextInputState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut TextInputState {
+        &mut self.state
+    }
+
+    fn change(&self) -> SearchDropdownEvent {
+        SearchDropdownEvent::Search(self.query.clone())
+    }
+
+    fn set_value(&mut self, value: String) -> bool {
+        if self.query == value {
+            return false;
+        }
+        let _ = self.set_query(value);
+        true
+    }
+}
+
+impl EditableText for ContextMenu {
+    type Change = ContextMenuEvent;
+
+    fn accepts_input(&self) -> bool {
+        self.open && self.searchable
+    }
+
+    fn replace_selection(&mut self, text: &str) -> bool {
+        if !self.state.replace_selection(text) {
+            return false;
+        }
+        self.sync_query_from_state();
+        true
+    }
+
+    fn state(&self) -> &TextInputState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut TextInputState {
+        &mut self.state
+    }
+
+    fn change(&self) -> ContextMenuEvent {
+        ContextMenuEvent::Search(Arc::clone(&self.query))
+    }
+
+    fn set_value(&mut self, value: String) -> bool {
+        if self.query.as_ref() == value {
+            return false;
+        }
+        self.set_query(value);
+        true
+    }
+}
+
+impl EditableText for CommandPalette {
+    type Change = CommandPaletteEvent;
+
+    fn accepts_input(&self) -> bool {
+        true
+    }
+
+    fn replace_selection(&mut self, text: &str) -> bool {
+        self.replace_selection(text)
+    }
+
+    fn state(&self) -> &TextInputState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut TextInputState {
+        &mut self.state
+    }
+
+    fn change(&self) -> CommandPaletteEvent {
+        CommandPaletteEvent::Search(self.query.clone())
+    }
+
+    fn set_value(&mut self, value: String) -> bool {
+        if self.query == value {
+            return false;
+        }
+        let _ = self.set_query(value);
+        true
     }
 }
 
@@ -144,6 +278,7 @@ struct TooltipLifecycle {
 struct ComponentLifecycle {
     now: Duration,
     viewports: HashMap<DocumentId, crate::LayoutViewport>,
+    pointer_positions: HashMap<(DocumentId, u64), (f32, f32)>,
     tooltips: HashMap<StableNodeId, TooltipLifecycle>,
     loading: HashMap<StableNodeId, LoadingComponent>,
     next_loading_frame: Option<Duration>,
@@ -156,6 +291,7 @@ struct ComponentLifecycle {
 #[derive(Default)]
 pub struct ExtensionRegistrar {
     actions: HashMap<ActionId, RegisteredAction>,
+    presenters: Vec<Box<dyn TextPresenter>>,
 }
 
 impl ExtensionRegistrar {
@@ -176,6 +312,25 @@ impl ExtensionRegistrar {
                 handler: Box::new(handler),
             },
         );
+        Ok(())
+    }
+
+    pub fn register_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<(), FrameworkError> {
+        let name = presenter.name().trim();
+        if name.is_empty() {
+            return Err(FrameworkError::InvalidPresenter);
+        }
+        if self
+            .presenters
+            .iter()
+            .any(|existing| existing.name() == name)
+        {
+            return Err(FrameworkError::DuplicatePresenter(name.to_owned()));
+        }
+        self.presenters.push(presenter);
         Ok(())
     }
 }
@@ -211,7 +366,9 @@ pub enum FrameworkError {
     MissingAction(ActionId),
     ActionUnavailable(ActionId),
     DuplicateExtension(String),
+    DuplicatePresenter(String),
     InvalidExtension,
+    InvalidPresenter,
     InvalidInput,
     InvalidVirtualization,
     EventOverflow(StableNodeId),
@@ -251,7 +408,11 @@ impl fmt::Display for FrameworkError {
             Self::DuplicateExtension(name) => {
                 write!(formatter, "extension `{name}` is already installed")
             }
+            Self::DuplicatePresenter(name) => {
+                write!(formatter, "presenter `{name}` is already registered")
+            }
             Self::InvalidExtension => formatter.write_str("extension name must not be empty"),
+            Self::InvalidPresenter => formatter.write_str("presenter name must not be empty"),
             Self::InvalidInput => formatter.write_str("input contains a non-finite coordinate"),
             Self::InvalidVirtualization => {
                 formatter.write_str("virtualized component state is inconsistent")
@@ -427,7 +588,8 @@ impl Default for AppContext {
 
 impl AppContext {
     pub fn new() -> Self {
-        Self {
+        #[allow(unused_mut)]
+        let mut context = Self {
             world: UiWorld::new(),
             views: HashMap::new(),
             event_handlers: HashMap::new(),
@@ -435,11 +597,30 @@ impl AppContext {
             extensions: HashSet::new(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
+        };
+        #[cfg(feature = "syntax-highlighting")]
+        {
+            context
+                .install(&crate::HighlightPresentation)
+                .expect("default highlight presenter");
         }
+        context
     }
 
     pub fn world(&self) -> &UiWorld {
         &self.world
+    }
+
+    fn view_entity<C: View>(&self, id: StableNodeId) -> Option<Entity<C>> {
+        self.views
+            .get(&id)
+            .is_some_and(|view| view.is::<C>())
+            .then(|| Entity::from_stable_id(id))
+    }
+
+    fn focused_editor<C: EditableText>(&self, document: DocumentId) -> Option<Entity<C>> {
+        let (target, _) = self.world.focused_text_input(document)?;
+        self.view_entity(target)
     }
 
     #[cfg(test)]
@@ -519,6 +700,13 @@ impl AppContext {
     /// Resolve inherited style for the supplied dirty nodes.
     pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), FrameworkError> {
         self.world.resolve_styles(ids).map_err(FrameworkError::from)
+    }
+
+    /// Derive registered text presentations for scheduled nodes.
+    pub fn resolve_presentations(&mut self, ids: &[StableNodeId]) -> Result<(), FrameworkError> {
+        self.world
+            .resolve_presentations(ids)
+            .map_err(FrameworkError::from)
     }
 
     /// Shape only scheduled text through the host's real text backend.
@@ -656,6 +844,29 @@ impl AppContext {
                 .any(|target| self.world.is_mounted(*target))
                 .then(|| now.checked_add(COMPONENT_FRAME_INTERVAL))
                 .flatten();
+        }
+        let section_targets = frame
+            .samples
+            .iter()
+            .map(|sample| sample.target)
+            .filter(|target| {
+                self.views
+                    .get(target)
+                    .is_some_and(|view| view.is::<SidebarSection>())
+            })
+            .collect::<Vec<_>>();
+        for target in section_targets {
+            if self
+                .update_component(
+                    Entity::<SidebarSection>::from_stable_id(target),
+                    |section, _| {
+                        section.animation_progress = section.state.expansion(now);
+                    },
+                )
+                .is_ok()
+            {
+                frame.component_updates.push(target);
+            }
         }
         frame.next_deadline = self.next_animation_deadline();
         frame
@@ -1206,7 +1417,153 @@ impl AppContext {
         self.activate_component(entity, |item| item.disabled)
     }
 
+    pub fn activate_sidebar_row(
+        &mut self,
+        entity: Entity<SidebarRow>,
+    ) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |row| row.disabled())
+    }
+
+    pub fn activate_sidebar_footer_button(
+        &mut self,
+        entity: Entity<SidebarFooterButton>,
+    ) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |button| button.disabled)
+    }
+
+    fn enclosing_sidebar_section(&self, id: StableNodeId) -> Option<Entity<SidebarSection>> {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self
+                .views
+                .get(&id)
+                .is_some_and(|view| view.is::<SidebarSection>())
+            {
+                return Some(Entity::from_stable_id(id));
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        None
+    }
+
+    fn node_is_or_under(&self, root: Option<StableNodeId>, target: StableNodeId) -> bool {
+        let Some(root) = root else {
+            return false;
+        };
+        let mut current = Some(target);
+        while let Some(id) = current {
+            if id == root {
+                return true;
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    fn sidebar_section_header_hovered(
+        &self,
+        section: Entity<SidebarSection>,
+        hover: Option<StableNodeId>,
+    ) -> bool {
+        let Some(hover) = hover else {
+            return false;
+        };
+        let Ok((header, body, tools, title_slot, count_slot, disclosure)) =
+            self.read(section, |section| {
+                (
+                    section.header,
+                    section.body,
+                    section.tools,
+                    section.title_slot,
+                    section.count_slot,
+                    section.disclosure,
+                )
+            })
+        else {
+            return false;
+        };
+        if self.node_is_or_under(body, hover) {
+            return false;
+        }
+        hover == section.stable_id()
+            || self.node_is_or_under(header, hover)
+            || self.node_is_or_under(tools, hover)
+            || self.node_is_or_under(title_slot, hover)
+            || self.node_is_or_under(count_slot, hover)
+            || self.node_is_or_under(disclosure, hover)
+    }
+
+    fn sync_sidebar_section_hover(
+        &mut self,
+        node: Option<StableNodeId>,
+        hover: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        let Some(section) = node.and_then(|id| self.enclosing_sidebar_section(id)) else {
+            return Ok(());
+        };
+        let hovered = self.sidebar_section_header_hovered(section, hover);
+        if self.read(section, |section| section.header_hovered == hovered)? {
+            return Ok(());
+        }
+        self.update_component(section, |section, _| {
+            section.header_hovered = hovered;
+        })?;
+        Ok(())
+    }
+
+    pub fn activate_sidebar_section(
+        &mut self,
+        entity: Entity<SidebarSection>,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, |section| !section.collapsible || section.disabled)? {
+            return Ok(false);
+        }
+        let now = self.component_lifecycle.now;
+        let id = entity.id;
+        self.update_component(entity, |section, cx| {
+            section.state.toggle(now);
+            section.animation_progress = section.state.expansion(now);
+            if let Some(animation) = crate::AnimationId::new(id.get()) {
+                cx.mutations().start_animation(crate::AnimationSpec {
+                    id: animation,
+                    target: id,
+                    start: now,
+                    duration: crate::SidebarSectionState::animation_duration(),
+                    frame_interval: COMPONENT_FRAME_INTERVAL,
+                    easing: crate::Easing::EaseOutCubic,
+                });
+            }
+            cx.emit(ToggleChanged {
+                checked: section.state.expanded(),
+            });
+        })?;
+        Ok(true)
+    }
+
+    pub fn activate_settings_collapsible_card(
+        &mut self,
+        entity: Entity<SettingsCollapsibleCard>,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, |card| card.disabled)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |card, cx| {
+            card.expanded = !card.expanded;
+            cx.emit(ToggleChanged {
+                checked: card.expanded,
+            });
+        })?;
+        Ok(true)
+    }
+
     pub fn activate_menu_item(&mut self, entity: Entity<MenuItem>) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |item| item.disabled)
+    }
+
+    pub fn activate_action_menu_item(
+        &mut self,
+        entity: Entity<ActionMenuItem>,
+    ) -> Result<bool, FrameworkError> {
         self.activate_component(entity, |item| item.disabled)
     }
 
@@ -1243,8 +1600,44 @@ impl AppContext {
         if view.is::<ListItem>() {
             return self.activate_list_item(Entity::from_stable_id(id));
         }
+        if view.is::<SidebarRow>() {
+            return self.activate_sidebar_row(Entity::from_stable_id(id));
+        }
+        if view.is::<SidebarFooterButton>() {
+            return self.activate_sidebar_footer_button(Entity::from_stable_id(id));
+        }
+        if view.is::<SidebarSection>() {
+            return self.activate_sidebar_section(Entity::from_stable_id(id));
+        }
+        if view.is::<SettingsCollapsibleCard>() {
+            return self.activate_settings_collapsible_card(Entity::from_stable_id(id));
+        }
+        if view.is::<Tabs>() {
+            return self.activate_tabs(Entity::from_stable_id(id));
+        }
         if view.is::<MenuItem>() {
             return self.activate_menu_item(Entity::from_stable_id(id));
+        }
+        if view.is::<ActionMenuItem>() {
+            return self.activate_action_menu_item(Entity::from_stable_id(id));
+        }
+        if view.is::<Select>() {
+            return self.toggle_select(Entity::from_stable_id(id));
+        }
+        if view.is::<Dropdown>() {
+            return self.toggle_dropdown(Entity::from_stable_id(id));
+        }
+        if view.is::<SearchDropdown>() {
+            return self.toggle_search_dropdown(Entity::from_stable_id(id));
+        }
+        if view.is::<Popover>() {
+            return self.toggle_popover(Entity::from_stable_id(id));
+        }
+        if view.is::<ActionMenu>() {
+            return self.toggle_action_menu(Entity::from_stable_id(id));
+        }
+        if view.is::<ContextMenu>() {
+            return self.dismiss_context_menu(Entity::from_stable_id(id));
         }
         if view.is::<crate::Radio>() {
             return self.activate_radio(Entity::from_stable_id(id));
@@ -1254,6 +1647,9 @@ impl AppContext {
         }
         if view.is::<Switch>() {
             return self.toggle_switch(Entity::from_stable_id(id));
+        }
+        if view.is::<Progress>() {
+            return self.cancel_progress(Entity::from_stable_id(id));
         }
         if view.is::<Tab>() {
             let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
@@ -1280,6 +1676,13 @@ impl AppContext {
                     Entity::from_stable_id(parent),
                     Entity::from_stable_id(id),
                 );
+            }
+            if self
+                .views
+                .get(&parent)
+                .is_some_and(|view| view.is::<Tabs>())
+            {
+                return self.activate_tabs_option(Entity::from_stable_id(parent), id);
             }
         }
         Ok(false)
@@ -1353,7 +1756,9 @@ impl AppContext {
             }
         }
         let selected_id = selected.map(Entity::stable_id);
-        let size = self.read(control, |control| control.size)?;
+        let (size, chrome, fill) = self.read(control, |control| {
+            (control.size, control.chrome, control.fill)
+        })?;
         let current = self.read(control, |control| {
             (
                 control.options.clone(),
@@ -1399,7 +1804,7 @@ impl AppContext {
         for option in options {
             let mut next = self.read(option, Clone::clone)?;
             next.selected = Some(option.id) == selected_id;
-            next.synchronize_size(size);
+            next.synchronize_surface(size, chrome, fill);
             next.project(option.id, &self.world, &mut mutations);
             staged_options.push((option.id, next));
         }
@@ -1437,15 +1842,13 @@ impl AppContext {
         if next_control.size == size {
             return Ok(false);
         }
-        next_control.size = size;
-        Arc::make_mut(&mut next_control.style.layout).height =
-            Some(nana_ui_core::LengthSpec::Px(size.height()));
+        next_control.apply_size(size);
         let mut mutations = MutationQueue::new();
         let mut staged_options = Vec::new();
         for id in &next_control.options {
             let entity = Entity::<SegmentedOption>::from_stable_id(*id);
             let mut option = self.read(entity, Clone::clone)?;
-            option.synchronize_size(size);
+            option.synchronize_surface(size, next_control.chrome, next_control.fill);
             option.project(*id, &self.world, &mut mutations);
             staged_options.push((*id, option));
         }
@@ -1561,6 +1964,13 @@ impl AppContext {
         let Some(parent) = self.world.node(focused).and_then(|node| node.parent) else {
             return Ok(false);
         };
+        if self
+            .views
+            .get(&parent)
+            .is_some_and(|view| view.is::<Tabs>())
+        {
+            return self.navigate_tabs(Entity::from_stable_id(parent), intent);
+        }
         if !self
             .views
             .get(&parent)
@@ -1601,10 +2011,17 @@ impl AppContext {
         let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
             return false;
         };
-        self.views
+        if let Some(control) = self
+            .views
             .get(&parent)
             .and_then(|view| view.downcast_ref::<SegmentedControl>())
-            .is_some_and(|control| control.focus_target == Some(id))
+        {
+            return control.focus_target == Some(id);
+        }
+        self.views
+            .get(&parent)
+            .and_then(|view| view.downcast_ref::<Tabs>())
+            .is_some_and(|tabs| tabs.roving_target() == Some(id))
     }
 
     pub fn is_segmented_option_node(&self, id: StableNodeId) -> bool {
@@ -1678,6 +2095,10 @@ impl AppContext {
             .is_some_and(|view| view.is::<RangeField>())
     }
 
+    pub fn is_xy_pad(&self, id: StableNodeId) -> bool {
+        self.views.get(&id).is_some_and(|view| view.is::<XYPad>())
+    }
+
     pub fn pointer_target(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
         self.world.hit_test(document, x, y)
     }
@@ -1689,6 +2110,22 @@ impl AppContext {
         target: Option<StableNodeId>,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
         self.set_pointer_hover_at(document, pointer_id, target, self.component_lifecycle.now)
+    }
+
+    pub fn set_pointer_location(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        position: Option<(f32, f32)>,
+    ) {
+        let key = (document, pointer_id);
+        if let Some(position) = position {
+            self.component_lifecycle
+                .pointer_positions
+                .insert(key, position);
+        } else {
+            self.component_lifecycle.pointer_positions.remove(&key);
+        }
     }
 
     pub fn set_pointer_hover_at(
@@ -1707,6 +2144,18 @@ impl AppContext {
             if let Some(target) = target {
                 self.enter_tooltip(target, now)?;
             }
+            let previous_section = previous
+                .and_then(|id| self.enclosing_sidebar_section(id))
+                .map(Entity::stable_id);
+            let next_section = target
+                .and_then(|id| self.enclosing_sidebar_section(id))
+                .map(Entity::stable_id);
+            if previous_section != next_section {
+                self.sync_sidebar_section_hover(previous, target)?;
+            }
+            self.sync_sidebar_section_hover(target, target)?;
+        } else if let Some(target) = target {
+            self.reposition_follow_cursor_tooltip(target)?;
         }
         Ok(previous)
     }
@@ -1820,6 +2269,38 @@ impl AppContext {
             }
             if let Some(action) = action {
                 cx.mutations().insert(parent, action, None);
+            }
+        })?;
+        Ok(true)
+    }
+
+    /// Atomically validate and attach a FormField's application-owned control.
+    pub fn set_form_field_control(
+        &mut self,
+        field: Entity<FormField>,
+        control: Option<StableNodeId>,
+    ) -> Result<bool, FrameworkError> {
+        let current = self.read(field, |field| field.control)?;
+        let owned_current = self.validate_feedback_action(field.id, current, control)?;
+        let ordered = control.into_iter().collect::<Vec<_>>();
+        let changed = current != control
+            || self
+                .world
+                .node(field.id)
+                .is_some_and(|node| node.children != ordered);
+        if !changed {
+            return Ok(false);
+        }
+        let parent = field.id;
+        self.update_component(field, |field, cx| {
+            field.control = control;
+            if let Some(current) = owned_current
+                && Some(current) != control
+            {
+                cx.mutations().park_subtree(current);
+            }
+            if let Some(control) = control {
+                cx.mutations().insert(parent, control, None);
             }
         })?;
         Ok(true)
@@ -2110,6 +2591,9 @@ impl AppContext {
     }
 
     fn sync_component_lifecycle(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        if self.views.get(&id).is_some_and(|view| view.is::<Tabs>()) {
+            self.sync_tabs_options(Entity::from_stable_id(id))?;
+        }
         let tooltip = self
             .views
             .get(&id)
@@ -2344,6 +2828,38 @@ impl AppContext {
         Ok(())
     }
 
+    fn pointer_location_on(&self, target: StableNodeId) -> Option<(f32, f32)> {
+        let document = self.world.node(target)?.document;
+        self.component_lifecycle.pointer_positions.iter().find_map(
+            |(&(owner, pointer_id), &position)| {
+                (owner == document && self.world.pointer_hover(owner, pointer_id) == Some(target))
+                    .then_some(position)
+            },
+        )
+    }
+
+    fn reposition_follow_cursor_tooltip(
+        &mut self,
+        target: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        let Some(lifecycle) = self.component_lifecycle.tooltips.get(&target).copied() else {
+            return Ok(());
+        };
+        if !lifecycle.open {
+            return Ok(());
+        }
+        let follows = self
+            .read(
+                Entity::<Tooltip>::from_stable_id(lifecycle.overlay),
+                |tooltip| tooltip.config.placement == TooltipPlacement::FollowCursor,
+            )
+            .unwrap_or(false);
+        if follows {
+            self.position_tooltip(target, lifecycle.overlay)?;
+        }
+        Ok(())
+    }
+
     fn position_tooltip(
         &mut self,
         target: StableNodeId,
@@ -2366,8 +2882,8 @@ impl AppContext {
             .read(Entity::<Tooltip>::from_stable_id(overlay), |tooltip| {
                 (tooltip.config, tooltip.style.clone())
             })?;
-        let padding_x = nana_ui_core::UI_METRICS.panel_padding_x;
-        let padding_y = nana_ui_core::UI_METRICS.panel_padding_y;
+        let padding_x = TooltipConfig::PADDING_X;
+        let padding_y = TooltipConfig::PADDING_Y;
         let desired_width = (metrics.width + padding_x * 2.0 + 2.0)
             .min(config.max_width)
             .max(0.0);
@@ -2376,6 +2892,10 @@ impl AppContext {
         let left_available = (anchor.x - config.gap - padding).max(0.0);
         let right_available =
             (viewport.width - padding - (anchor.x + anchor.width + config.gap)).max(0.0);
+        let cursor = self.pointer_location_on(target).unwrap_or((
+            anchor.x + anchor.width / 2.0,
+            anchor.y + anchor.height / 2.0,
+        ));
         let (width, horizontal_side) = match config.placement {
             TooltipPlacement::Left => {
                 let side = if left_available >= desired_width
@@ -2407,7 +2927,9 @@ impl AppContext {
                 };
                 (desired_width.min(available), Some(side))
             }
-            TooltipPlacement::Top | TooltipPlacement::Bottom => (desired_width, None),
+            TooltipPlacement::Top | TooltipPlacement::Bottom | TooltipPlacement::FollowCursor => {
+                (desired_width, None)
+            }
         };
         let top = (
             anchor.x + (anchor.width - width) / 2.0,
@@ -2425,6 +2947,8 @@ impl AppContext {
             anchor.x - config.gap - width,
             anchor.y + (anchor.height - height) / 2.0,
         );
+        let follow_above = (cursor.0, cursor.1 - height - config.gap);
+        let follow_below = (cursor.0, cursor.1 + config.gap);
         let fits = |(x, y): (f32, f32)| {
             x >= padding
                 && y >= padding
@@ -2436,18 +2960,22 @@ impl AppContext {
             TooltipPlacement::Right => right,
             TooltipPlacement::Bottom => bottom,
             TooltipPlacement::Left => left,
+            TooltipPlacement::FollowCursor => follow_above,
         };
         let opposite = match config.placement {
             TooltipPlacement::Top => bottom,
             TooltipPlacement::Right => left,
             TooltipPlacement::Bottom => top,
             TooltipPlacement::Left => right,
+            TooltipPlacement::FollowCursor => follow_below,
         };
         let (x, y) = if let Some(side) = horizontal_side {
             match side {
                 TooltipPlacement::Left => left,
                 TooltipPlacement::Right => right,
-                TooltipPlacement::Top | TooltipPlacement::Bottom => unreachable!(),
+                TooltipPlacement::Top
+                | TooltipPlacement::Bottom
+                | TooltipPlacement::FollowCursor => unreachable!(),
             }
         } else if fits(preferred) || !fits(opposite) {
             preferred
@@ -2500,20 +3028,50 @@ impl AppContext {
             let Some(parent) = self.world.node(target).and_then(|node| node.parent) else {
                 return Ok(false);
             };
-            let control = Entity::<SegmentedControl>::from_stable_id(parent);
-            let mut next = self.read(control, Clone::clone)?;
-            let target_changed = next.focus_target != Some(target);
-            let focus_changed = self.world.focused(document) != Some(target);
-            if !target_changed && !focus_changed {
-                return Ok(false);
+            if self
+                .views
+                .get(&parent)
+                .is_some_and(|view| view.is::<SegmentedControl>())
+            {
+                let control = Entity::<SegmentedControl>::from_stable_id(parent);
+                let mut next = self.read(control, Clone::clone)?;
+                let target_changed = next.focus_target != Some(target);
+                let focus_changed = self.world.focused(document) != Some(target);
+                if !target_changed && !focus_changed {
+                    return Ok(false);
+                }
+                next.focus_target = Some(target);
+                let mut mutations = MutationQueue::new();
+                next.project(parent, &self.world, &mut mutations);
+                mutations.request_focus(document, Some(target));
+                self.commit_mutations(mutations)?;
+                self.views.insert(parent, Box::new(next));
+                return Ok(true);
             }
-            next.focus_target = Some(target);
-            let mut mutations = MutationQueue::new();
-            next.project(parent, &self.world, &mut mutations);
-            mutations.request_focus(document, Some(target));
-            self.commit_mutations(mutations)?;
-            self.views.insert(parent, Box::new(next));
-            return Ok(true);
+            if self
+                .views
+                .get(&parent)
+                .is_some_and(|view| view.is::<Tabs>())
+            {
+                let tabs = Entity::<Tabs>::from_stable_id(parent);
+                let Some(value) = self.tabs_option_value(tabs, target)? else {
+                    return Ok(false);
+                };
+                let mut next = self.read(tabs, Clone::clone)?;
+                let target_changed = next.focus.as_ref() != Some(&value);
+                let focus_changed = self.world.focused(document) != Some(target);
+                if !target_changed && !focus_changed {
+                    return Ok(false);
+                }
+                next.focus = Some(value);
+                let mut mutations = MutationQueue::new();
+                next.project(parent, &self.world, &mut mutations);
+                mutations.request_focus(document, Some(target));
+                self.commit_mutations(mutations)?;
+                self.views.insert(parent, Box::new(next));
+                return Ok(true);
+            }
+            return Ok(false);
         }
         if self.world.focused(document) == Some(target) {
             return Ok(false);
@@ -2564,22 +3122,20 @@ impl AppContext {
     }
 
     pub fn commit_ime(&mut self, document: DocumentId, text: &str) -> Result<bool, FrameworkError> {
-        let Some((target, _)) = self.world.focused_text_input(document) else {
-            return Ok(false);
-        };
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextInput>())
-        {
-            return self.commit_editable_ime(Entity::<TextInput>::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.commit_editable_ime(entity, text);
         }
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextArea>())
-        {
-            return self.commit_editable_ime(Entity::<TextArea>::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.commit_editable_ime(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.commit_editable_ime(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.commit_editable_ime(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.commit_editable_ime(entity, text);
         }
         Ok(false)
     }
@@ -2589,22 +3145,20 @@ impl AppContext {
         document: DocumentId,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        let Some((target, _)) = self.world.focused_text_input(document) else {
-            return Ok(false);
-        };
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextInput>())
-        {
-            return self.replace_text_input_selection(Entity::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.replace_editable_selection(entity, text);
         }
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextArea>())
-        {
-            return self.replace_text_area_selection(Entity::from_stable_id(target), text);
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.replace_editable_selection(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.replace_editable_selection(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.replace_editable_selection(entity, text);
+        }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.replace_editable_selection(entity, text);
         }
         Ok(false)
     }
@@ -2613,22 +3167,20 @@ impl AppContext {
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
-        let Some((target, _)) = self.world.focused_text_input(document) else {
-            return Ok(false);
-        };
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextInput>())
-        {
-            return self.delete_editable_backward(Entity::<TextInput>::from_stable_id(target));
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.delete_editable_backward(entity);
         }
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<TextArea>())
-        {
-            return self.delete_editable_backward(Entity::<TextArea>::from_stable_id(target));
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.delete_editable_backward(entity);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.delete_editable_backward(entity);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.delete_editable_backward(entity);
+        }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.delete_editable_backward(entity);
         }
         Ok(false)
     }
@@ -2643,28 +3195,27 @@ impl AppContext {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
-            let state = editable.state_mut();
-            if state.selection.anchor == state.selection.focus {
-                let caret = state.selection.focus;
-                let Some(previous) = state.value[..caret]
-                    .grapheme_indices(true)
-                    .next_back()
-                    .map(|(index, _)| index)
-                else {
-                    return false;
-                };
-                state.selection = TextSelection {
-                    anchor: previous,
-                    focus: caret,
-                };
+            {
+                let state = editable.state_mut();
+                if state.selection.anchor == state.selection.focus {
+                    let caret = state.selection.focus;
+                    let Some(previous) = state.value[..caret]
+                        .grapheme_indices(true)
+                        .next_back()
+                        .map(|(index, _)| index)
+                    else {
+                        return false;
+                    };
+                    state.selection = TextSelection {
+                        anchor: previous,
+                        focus: caret,
+                    };
+                }
             }
-            if !state.replace_selection("") {
+            if !editable.replace_selection("") {
                 return false;
             }
-            cx.emit(TextChanged {
-                value: state.value.clone(),
-                selection: state.selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -2682,10 +3233,7 @@ impl AppContext {
             if !editable.replace_selection(text) {
                 return false;
             }
-            cx.emit(TextChanged {
-                value: editable.state().value.clone(),
-                selection: editable.state().selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -2704,25 +3252,20 @@ impl AppContext {
             AccessibilityAction::Click => self.activate_node(request.target),
             AccessibilityAction::Focus => self.focus_node(document, request.target),
             AccessibilityAction::SetValue(value) => {
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextInput>())
-                {
-                    return self.set_editable_value(
-                        Entity::<TextInput>::from_stable_id(request.target),
-                        value,
-                    );
+                if let Some(entity) = self.view_entity::<TextInput>(request.target) {
+                    return self.set_editable_value(entity, value);
                 }
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextArea>())
-                {
-                    return self.set_editable_value(
-                        Entity::<TextArea>::from_stable_id(request.target),
-                        value,
-                    );
+                if let Some(entity) = self.view_entity::<TextArea>(request.target) {
+                    return self.set_editable_value(entity, value);
+                }
+                if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
+                    return self.set_editable_value(entity, value);
+                }
+                if let Some(entity) = self.view_entity::<CommandPalette>(request.target) {
+                    return self.set_editable_value(entity, value);
+                }
+                if let Some(entity) = self.view_entity::<ContextMenu>(request.target) {
+                    return self.set_editable_value(entity, value);
                 }
                 if self
                     .views
@@ -2755,25 +3298,20 @@ impl AppContext {
                 Ok(false)
             }
             AccessibilityAction::SetSelection(selection) => {
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextInput>())
-                {
-                    return self.set_editable_selection(
-                        Entity::<TextInput>::from_stable_id(request.target),
-                        selection,
-                    );
+                if let Some(entity) = self.view_entity::<TextInput>(request.target) {
+                    return self.set_editable_selection(entity, selection);
                 }
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<TextArea>())
-                {
-                    return self.set_editable_selection(
-                        Entity::<TextArea>::from_stable_id(request.target),
-                        selection,
-                    );
+                if let Some(entity) = self.view_entity::<TextArea>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<CommandPalette>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<ContextMenu>(request.target) {
+                    return self.set_editable_selection(entity, selection);
                 }
                 Ok(false)
             }
@@ -2789,14 +3327,10 @@ impl AppContext {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
-            if editable.state().value == value {
+            if !editable.set_value(value) {
                 return false;
             }
-            editable.state_mut().replace_value(value);
-            cx.emit(TextChanged {
-                value: editable.state().value.clone(),
-                selection: editable.state().selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -3020,6 +3554,689 @@ impl AppContext {
         Ok(restored || initial.is_some())
     }
 
+    pub fn begin_xy_pad_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if !self.is_xy_pad(target) {
+            return Ok(false);
+        }
+        if self.read(Entity::<XYPad>::from_stable_id(target), XYPad::inactive)? {
+            return Ok(false);
+        }
+        let Some(bounds) = self.world.layout_box(target) else {
+            return Ok(false);
+        };
+        self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
+            pad.dragging = Some(XYPadDragState {
+                pointer_id,
+                origin_x: x - bounds.x,
+                origin_y: y - bounds.y,
+                axis_lock: None,
+                initial: pad.value,
+            });
+            cx.mutations().capture_pointer(pointer_id, target);
+        })?;
+        self.update_xy_pad_drag(document, pointer_id, x, y, false)
+    }
+
+    pub fn update_xy_pad_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+        shift: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_xy_pad(target) {
+            return Ok(false);
+        }
+        let Some(bounds) = self.world.layout_box(target) else {
+            return Ok(false);
+        };
+        self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
+            if pad.inactive() {
+                return false;
+            }
+            if let Some(drag) = pad.dragging.as_mut() {
+                if shift && drag.axis_lock.is_none() {
+                    let local_x = x - bounds.x;
+                    let local_y = y - bounds.y;
+                    let dx = (local_x - drag.origin_x).abs() / bounds.width.max(1.0);
+                    let dy = (local_y - drag.origin_y).abs() / bounds.height.max(1.0);
+                    drag.axis_lock = Some(if dx >= dy {
+                        crate::XYPadAxisLock::Horizontal
+                    } else {
+                        crate::XYPadAxisLock::Vertical
+                    });
+                } else if !shift {
+                    drag.axis_lock = None;
+                }
+            } else {
+                return false;
+            }
+            let locked = pad
+                .dragging
+                .and_then(|drag| drag.axis_lock.map(|axis| (axis, pad.value)));
+            let value = pad.value_from_point(x, y, bounds, locked);
+            pad.value = value;
+            cx.emit(XYPadEvent::Input(value));
+            true
+        })
+    }
+
+    pub fn end_xy_pad_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_xy_pad(target) {
+            return Ok(false);
+        }
+        let initial = self.read(Entity::<XYPad>::from_stable_id(target), |pad| {
+            pad.dragging.map(|drag| drag.initial)
+        })?;
+        self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
+            if cancel {
+                if let Some(value) = initial {
+                    pad.value = value;
+                }
+            } else if initial.is_some() {
+                cx.emit(XYPadEvent::Change(pad.value));
+            }
+            pad.dragging = None;
+            cx.mutations().release_pointer(pointer_id, target);
+        })?;
+        Ok(initial.is_some())
+    }
+
+    pub fn toggle_select(&mut self, entity: Entity<Select>) -> Result<bool, FrameworkError> {
+        if self.read(entity, Select::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |select, _| select.toggle_open())
+    }
+
+    pub fn activate_select_at(
+        &mut self,
+        entity: Entity<Select>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, Select::inactive)? {
+            return Ok(false);
+        }
+        let opened = self.read(entity, |select| select.opened)?;
+        if opened {
+            if let Some(crate::ComponentGeometry::Select {
+                menu: Some(menu), ..
+            }) = self.world.component_geometry(entity.id)
+                && let Some(index) = crate::select::select_option_at(&menu, x, y)
+            {
+                return self.update_component(entity, |select, cx| {
+                    if let Some(changed) = select.select_index(index) {
+                        cx.emit(changed);
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
+            let Some(field) = self.world.layout_box(entity.id) else {
+                return Ok(false);
+            };
+            if field.contains(x, y) {
+                return self.toggle_select(entity);
+            }
+            return self.update_component(entity, |select, _| {
+                select.close();
+                true
+            });
+        }
+        self.toggle_select(entity)
+    }
+
+    pub fn adjust_focused_select(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Select>())
+        {
+            return Ok(false);
+        }
+        let entity = Entity::<Select>::from_stable_id(target);
+        if self.read(entity, Select::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |select, _| {
+            if !select.opened {
+                select.toggle_open()
+            } else {
+                select.highlight_delta(delta)
+            }
+        })
+    }
+
+    pub fn adjust_focused_dropdown(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Dropdown>())
+        {
+            return Ok(false);
+        }
+        let entity = Entity::<Dropdown>::from_stable_id(target);
+        if self.read(entity, Dropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if !dropdown.opened {
+                if let Some(event) = dropdown.toggle_open() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                dropdown.highlight_delta(delta)
+            }
+        })
+    }
+
+    pub fn commit_focused_dropdown(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Dropdown>())
+        {
+            return Ok(false);
+        }
+        self.update_component(
+            Entity::<Dropdown>::from_stable_id(target),
+            |dropdown, cx| {
+                if let Some(event) = dropdown.commit_highlighted() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
+    pub fn commit_focused_select(&mut self, document: DocumentId) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<Select>())
+        {
+            return Ok(false);
+        }
+        self.update_component(Entity::<Select>::from_stable_id(target), |select, cx| {
+            if let Some(changed) = select.commit_highlighted() {
+                cx.emit(changed);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn toggle_dropdown(&mut self, entity: Entity<Dropdown>) -> Result<bool, FrameworkError> {
+        if self.read(entity, Dropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) = dropdown.toggle_open() {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn toggle_search_dropdown(
+        &mut self,
+        entity: Entity<SearchDropdown>,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, SearchDropdown::inactive)? {
+            return Ok(false);
+        }
+        if self.read(entity, |dropdown| dropdown.opened)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) = dropdown.toggle_open() {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn activate_search_dropdown_at(
+        &mut self,
+        entity: Entity<SearchDropdown>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, SearchDropdown::inactive)? {
+            return Ok(false);
+        }
+        let menu = match self.world.component_geometry(entity.id) {
+            Some(crate::ComponentGeometry::Select { menu, .. }) => menu,
+            _ => None,
+        };
+        let Some(field) = self.world.layout_box(entity.id) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) = crate::search_dropdown::activate_search_dropdown_at(
+                dropdown,
+                menu.as_ref(),
+                field,
+                x,
+                y,
+            ) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn adjust_focused_search_dropdown(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<SearchDropdown>())
+        {
+            return Ok(false);
+        }
+        let entity = Entity::<SearchDropdown>::from_stable_id(target);
+        if self.read(entity, SearchDropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if !dropdown.opened {
+                if let Some(event) = dropdown.toggle_open() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                dropdown.highlight_delta(delta)
+            }
+        })
+    }
+
+    pub fn commit_focused_search_dropdown(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<SearchDropdown>())
+        {
+            return Ok(false);
+        }
+        self.update_component(
+            Entity::<SearchDropdown>::from_stable_id(target),
+            |dropdown, cx| {
+                if let Some(event) = dropdown.commit_highlighted() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
+    pub fn activate_command_palette_at(
+        &mut self,
+        entity: Entity<CommandPalette>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(crate::ComponentGeometry::CommandPalette {
+            surface,
+            input,
+            rows,
+            ..
+        }) = self.world.component_geometry(entity.id)
+        else {
+            return Ok(false);
+        };
+        self.update_component(entity, |palette, cx| {
+            if let Some(event) = crate::command_palette::activate_command_palette_at(
+                palette,
+                surface,
+                input.bounds,
+                &rows,
+                x,
+                y,
+            ) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn navigate_focused_command_palette(
+        &mut self,
+        document: DocumentId,
+        navigation: ActionPickerNavigation,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<CommandPalette>())
+        {
+            return Ok(false);
+        }
+        self.update_component(
+            Entity::<CommandPalette>::from_stable_id(target),
+            |palette, cx| {
+                if let Some(event) = palette.navigate(navigation) {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
+    pub fn activate_dropdown_at(
+        &mut self,
+        entity: Entity<Dropdown>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, Dropdown::inactive)? {
+            return Ok(false);
+        }
+        let menu = match self.world.component_geometry(entity.id) {
+            Some(crate::ComponentGeometry::Select { menu, .. }) => menu,
+            _ => None,
+        };
+        let Some(field) = self.world.layout_box(entity.id) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |dropdown, cx| {
+            if let Some(event) =
+                crate::dropdown::activate_dropdown_at(dropdown, menu.as_ref(), field, x, y)
+            {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn activate_tree_at(
+        &mut self,
+        entity: Entity<TreeView>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(crate::ComponentGeometry::TreeView { rows }) =
+            self.world.component_geometry(entity.id)
+        else {
+            return Ok(false);
+        };
+        if let Some(index) = crate::tree_view::tree_disclosure_at(&rows, x, y) {
+            let id = Arc::clone(&rows[index].id);
+            return self.update_component(entity, |tree, cx| {
+                let event = crate::TreeViewEvent::Toggle(id);
+                if tree.apply_event(event.clone()) {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        if let Some(index) = crate::tree_view::tree_row_at(&rows, x, y) {
+            if rows[index].disabled {
+                return Ok(false);
+            }
+            let id = Arc::clone(&rows[index].id);
+            return self.update_component(entity, |tree, cx| {
+                let event = crate::TreeViewEvent::Select(id);
+                if tree.apply_event(event.clone()) {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        Ok(false)
+    }
+
+    pub fn navigate_focused_tree(
+        &mut self,
+        document: DocumentId,
+        navigation: crate::TreeNavigation,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if !self
+            .views
+            .get(&target)
+            .is_some_and(|view| view.is::<TreeView>())
+        {
+            return Ok(false);
+        }
+        self.update_component(Entity::<TreeView>::from_stable_id(target), |tree, cx| {
+            if let Some(event) = tree.navigate(navigation) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn activate_node_at(
+        &mut self,
+        id: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if let Some(entity) = self.view_entity::<Select>(id) {
+            return self.activate_select_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<Dropdown>(id) {
+            return self.activate_dropdown_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<SearchDropdown>(id) {
+            return self.activate_search_dropdown_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<CommandPalette>(id) {
+            return self.activate_command_palette_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<ContextMenu>(id) {
+            return self.activate_context_menu_at(entity, x, y);
+        }
+        if let Some(entity) = self.view_entity::<TreeView>(id) {
+            return self.activate_tree_at(entity, x, y);
+        }
+        self.activate_node(id)
+    }
+
+    pub fn dismiss_detached_menus(
+        &mut self,
+        keep: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        for id in ids {
+            if Some(id) == keep {
+                continue;
+            }
+            if let Some(entity) = self.view_entity::<Select>(id) {
+                self.update_component(entity, |select, _| {
+                    if select.opened {
+                        select.close();
+                        true
+                    } else {
+                        false
+                    }
+                })?;
+            } else if let Some(entity) = self.view_entity::<Dropdown>(id) {
+                self.update_component(entity, |dropdown, cx| {
+                    if let Some(event) = dropdown.close() {
+                        cx.emit(event);
+                        true
+                    } else {
+                        false
+                    }
+                })?;
+            } else if let Some(entity) = self.view_entity::<SearchDropdown>(id) {
+                self.update_component(entity, |dropdown, cx| {
+                    if let Some(event) = dropdown.close() {
+                        cx.emit(event);
+                        true
+                    } else {
+                        false
+                    }
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn toggle_popover(&mut self, entity: Entity<Popover>) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |popover, cx| {
+            popover.open = !popover.open;
+            cx.emit(PopoverToggled { open: popover.open });
+            if !popover.open {
+                cx.emit(PopoverClosed);
+            }
+            true
+        })
+    }
+
+    pub fn toggle_action_menu(
+        &mut self,
+        entity: Entity<ActionMenu>,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, cx| {
+            menu.popover.open = !menu.popover.open;
+            cx.emit(PopoverToggled {
+                open: menu.popover.open,
+            });
+            if !menu.popover.open {
+                cx.emit(PopoverClosed);
+            }
+            true
+        })
+    }
+
+    pub fn activate_context_menu_at(
+        &mut self,
+        entity: Entity<ContextMenu>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(geometry) = self.world.component_geometry(entity.id) else {
+            return Ok(false);
+        };
+        let Some(index) = crate::menus::context_menu_option_at(&geometry, x, y) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |menu, cx| {
+            if let Some(event) = menu.select_index(index) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn cancel_progress(&mut self, entity: Entity<Progress>) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |progress, cx| {
+            if !progress.cancellable {
+                return false;
+            }
+            cx.emit(ProgressCancelled);
+            true
+        })
+    }
+
+    pub fn dismiss_context_menu(
+        &mut self,
+        entity: Entity<ContextMenu>,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, cx| {
+            if !menu.open {
+                return false;
+            }
+            menu.dismiss();
+            cx.emit(ContextMenuEvent::Dismiss);
+            true
+        })
+    }
+
     pub fn set_slider_value(
         &mut self,
         entity: Entity<Slider>,
@@ -3093,6 +4310,276 @@ impl AppContext {
             cx.emit(TabSelected { tab: selected.id });
         })?;
         Ok(true)
+    }
+
+    /// Select one professional tab by application-owned value.
+    pub fn select_tabs_value(
+        &mut self,
+        entity: Entity<Tabs>,
+        value: impl AsRef<str>,
+    ) -> Result<bool, FrameworkError> {
+        let value = value.as_ref();
+        self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.select(value) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Activate the focused or selected tab on a professional strip.
+    pub fn activate_tabs(&mut self, entity: Entity<Tabs>) -> Result<bool, FrameworkError> {
+        let value = self.read(entity, |tabs| {
+            tabs.focus.clone().or_else(|| tabs.selected.clone())
+        })?;
+        let Some(value) = value else {
+            return Ok(false);
+        };
+        self.select_tabs_value(entity, value.as_ref())
+    }
+
+    fn activate_tabs_option(
+        &mut self,
+        entity: Entity<Tabs>,
+        option: StableNodeId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(value) = self.tabs_option_value(entity, option)? else {
+            return Ok(false);
+        };
+        let changed = self.select_tabs_value(entity, value.as_ref())?;
+        let document = self
+            .world
+            .node(entity.id)
+            .ok_or(FrameworkError::MissingView(entity.id))?
+            .document;
+        let _ = self.focus_node(document, option)?;
+        Ok(changed)
+    }
+
+    fn tabs_option_value(
+        &self,
+        entity: Entity<Tabs>,
+        option: StableNodeId,
+    ) -> Result<Option<Arc<str>>, FrameworkError> {
+        self.read(entity, |tabs| {
+            tabs.option_nodes()
+                .iter()
+                .find(|(_, id)| *id == option)
+                .map(|(value, _)| Arc::clone(value))
+        })
+    }
+
+    /// Painted option boxes after layout, when every child has a real box.
+    pub fn tabs_strip_paint(
+        &self,
+        entity: Entity<Tabs>,
+    ) -> Result<Option<nana_ui_core::TabStripPaint<Arc<str>>>, FrameworkError> {
+        self.read(entity, |tabs| {
+            tabs.strip_paint_from_layout(&self.world, entity.id)
+        })
+    }
+
+    fn sync_tabs_options(&mut self, entity: Entity<Tabs>) -> Result<(), FrameworkError> {
+        let tabs = self.read(entity, Clone::clone)?;
+        let node = self
+            .world
+            .node(entity.id)
+            .ok_or(FrameworkError::MissingView(entity.id))?;
+        let document = node.document;
+        let current_children = node.children.clone();
+
+        let mut unused = HashMap::<Arc<str>, VecDeque<StableNodeId>>::new();
+        for (value, id) in tabs.option_nodes() {
+            unused.entry(Arc::clone(value)).or_default().push_back(*id);
+        }
+
+        let mut next_nodes = Vec::with_capacity(tabs.options.len());
+        let mut created = Vec::new();
+        for option in &tabs.options {
+            let reusable = unused
+                .get_mut(&option.value)
+                .and_then(|ids| ids.pop_front())
+                .filter(|id| {
+                    self.world.node(*id).is_some_and(|node| {
+                        node.document == document
+                            && (node.parent == Some(entity.id)
+                                || (node.parent.is_none()
+                                    && self.world.mount_state(*id) == Some(MountState::Parked)))
+                    }) && self
+                        .views
+                        .get(id)
+                        .is_some_and(|view| view.is::<SegmentedOption>())
+                });
+            if let Some(id) = reusable {
+                next_nodes.push((Arc::clone(&option.value), id));
+            } else {
+                let id = self.allocate_id();
+                created.push((id, crate::tabs::tab_selection_option(option, &tabs)));
+                next_nodes.push((Arc::clone(&option.value), id));
+            }
+        }
+
+        let next_ids = next_nodes.iter().map(|(_, id)| *id).collect::<Vec<_>>();
+        let stale = current_children
+            .iter()
+            .copied()
+            .filter(|id| !next_ids.contains(id))
+            .collect::<Vec<_>>();
+        let created_ids = created.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
+
+        let mut options_dirty =
+            !created.is_empty() || current_children != next_ids || !stale.is_empty();
+        if !options_dirty {
+            for (option, (_, id)) in tabs.options.iter().zip(next_nodes.iter()) {
+                let current =
+                    self.read(Entity::<SegmentedOption>::from_stable_id(*id), Clone::clone)?;
+                if current != crate::tabs::tab_selection_option(option, &tabs) {
+                    options_dirty = true;
+                    break;
+                }
+            }
+        }
+        if !options_dirty && tabs.option_nodes() == next_nodes.as_slice() {
+            return Ok(());
+        }
+
+        let stale_subtrees = stale
+            .iter()
+            .map(|id| self.retained_subtree(*id))
+            .collect::<Vec<_>>();
+        let mut mutations = MutationQueue::new();
+        for id in &stale {
+            mutations.despawn_subtree(*id);
+        }
+        for (id, option) in &created {
+            mutations.create(*id, document, option.node_kind());
+            option.project(*id, &self.world, &mut mutations);
+        }
+        for id in &next_ids {
+            mutations.insert(entity.id, *id, None);
+        }
+
+        let mut staged_options = Vec::new();
+        for (option, (_, id)) in tabs.options.iter().zip(next_nodes.iter()) {
+            if created_ids.contains(id) {
+                continue;
+            }
+            let mut current =
+                self.read(Entity::<SegmentedOption>::from_stable_id(*id), Clone::clone)?;
+            let desired = crate::tabs::tab_selection_option(option, &tabs);
+            if current != desired {
+                current = desired;
+                current.project(*id, &self.world, &mut mutations);
+                staged_options.push((*id, current));
+            }
+        }
+
+        self.commit_mutations(mutations)?;
+        let mut removed = HashSet::new();
+        for subtree in stale_subtrees {
+            for id in subtree {
+                removed.insert(id);
+                self.views.remove(&id);
+                self.component_lifecycle.tooltips.remove(&id);
+                self.component_lifecycle.loading.remove(&id);
+            }
+        }
+        self.remove_event_handlers_for(&removed);
+        for (id, option) in created {
+            self.views.insert(id, Box::new(option));
+        }
+        for (id, option) in staged_options {
+            self.views.insert(id, Box::new(option));
+        }
+        if let Some(tabs) = self
+            .views
+            .get_mut(&entity.id)
+            .and_then(|view| view.downcast_mut::<Tabs>())
+        {
+            tabs.option_nodes = next_nodes;
+        }
+        Ok(())
+    }
+
+    /// Move a tab so it sits before `before`. `None` appends it to the end.
+    pub fn reorder_tabs(
+        &mut self,
+        entity: Entity<Tabs>,
+        value: impl AsRef<str>,
+        before: Option<&str>,
+    ) -> Result<bool, FrameworkError> {
+        let value = value.as_ref();
+        self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.reorder(value, before) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Request that the application close a tab. The strip is not mutated.
+    pub fn close_tab(
+        &mut self,
+        entity: Entity<Tabs>,
+        value: impl AsRef<str>,
+    ) -> Result<bool, FrameworkError> {
+        let value = value.as_ref();
+        self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.request_close(value) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Report a cross-strip transfer. Application code applies both strips.
+    pub fn transfer_tab(
+        &mut self,
+        source: Entity<Tabs>,
+        target_strip: impl AsRef<str>,
+        value: impl AsRef<str>,
+        before: Option<&str>,
+    ) -> Result<bool, FrameworkError> {
+        let target_strip = target_strip.as_ref();
+        let value = value.as_ref();
+        self.update_component(source, |tabs, cx| {
+            if let Some(event) = tabs.transfer_to(target_strip, value, before) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn navigate_tabs(
+        &mut self,
+        entity: Entity<Tabs>,
+        intent: crate::RovingFocusIntent,
+    ) -> Result<bool, FrameworkError> {
+        let changed = self.update_component(entity, |tabs, cx| {
+            if let Some(event) = tabs.navigate(intent) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })?;
+        if let Some(target) = self.read(entity, Tabs::roving_target)? {
+            let document = self
+                .world
+                .node(entity.id)
+                .ok_or(FrameworkError::MissingView(entity.id))?
+                .document;
+            let _ = self.focus_node(document, target)?;
+        }
+        Ok(changed)
     }
 
     pub fn scroll_to(
@@ -3258,10 +4745,7 @@ impl AppContext {
             if !editable.replace_selection(text) {
                 return false;
             }
-            cx.emit(TextChanged {
-                value: editable.state().value.clone(),
-                selection: editable.state().selection,
-            });
+            cx.emit(editable.change());
             true
         })
     }
@@ -3840,9 +5324,30 @@ impl AppContext {
         {
             return Err(FrameworkError::DuplicateAction(id.clone()));
         }
+        if let Some(presenter) = registrar
+            .presenters
+            .iter()
+            .find(|presenter| self.world.has_presenter(presenter.name()))
+        {
+            return Err(FrameworkError::DuplicatePresenter(
+                presenter.name().to_owned(),
+            ));
+        }
         self.actions.extend(registrar.actions);
+        for presenter in registrar.presenters {
+            self.world.register_presenter(presenter)?;
+        }
         self.extensions.insert(name);
         Ok(())
+    }
+
+    pub fn register_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<(), FrameworkError> {
+        self.world
+            .register_presenter(presenter)
+            .map_err(FrameworkError::from)
     }
 
     fn allocate_id(&mut self) -> StableNodeId {
@@ -3975,8 +5480,8 @@ mod tests {
         ListItem, NodeStyle, Radio, RangeChanged, RangeField, ScrollAxes, ScrollChanged,
         ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Slider,
         SliderChanged, StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell,
-        TableCellFocused, TableNavigation, TableRow, Text, TextChanged, TextContent, TextInput,
-        TextSelection, ToggleChanged,
+        TableCellFocused, TableNavigation, TableRow, Text, TextArea, TextChanged, TextContent,
+        TextInput, TextSelection, ToggleChanged,
     };
 
     #[derive(Debug)]
@@ -4422,6 +5927,12 @@ mod tests {
                 .set_ime_preedit(document, "输入".into(), None)
                 .unwrap()
         );
+        assert!(context.commit_ime(document, "输入").unwrap());
+        let state = context.world().text_input(area.stable_id()).unwrap();
+        assert_eq!(state.value, "输入\n界");
+        assert_eq!(state.selection, TextSelection::caret("输入".len()));
+        assert_eq!(context.world().ime(area.stable_id()), None);
+
         context
             .update_component(area, |area, _cx| area.disabled = true)
             .unwrap();
@@ -5958,6 +7469,151 @@ mod tests {
     }
 
     #[test]
+    fn tooltip_default_delay_stays_closed_until_deadline_and_is_label_only() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                IconButton::new(nana_ui_core::Icon::About, "Details")
+                    .tooltip("More details", nana_ui_core::TooltipConfig::default()),
+            )
+            .unwrap();
+        let tooltip = context.icon_button_tooltip(button).unwrap().unwrap();
+        assert_eq!(
+            context.world().text(tooltip.stable_id()),
+            Some("More details")
+        );
+        let accessibility = context.world().accessibility(tooltip.stable_id()).unwrap();
+        assert_eq!(accessibility.role, crate::AccessibilityRole::Tooltip);
+        assert_eq!(accessibility.label.as_deref(), Some("More details"));
+        assert!(
+            !context
+                .world()
+                .interaction(tooltip.stable_id())
+                .unwrap()
+                .focusable
+        );
+
+        context
+            .set_pointer_hover_at(
+                document,
+                1,
+                Some(button.stable_id()),
+                Duration::from_millis(10),
+            )
+            .unwrap();
+        assert_eq!(
+            context.next_animation_deadline(),
+            Some(Duration::from_millis(360))
+        );
+        assert!(
+            !context
+                .advance_animations(Duration::from_millis(359))
+                .has_updates()
+        );
+        assert_eq!(
+            context.world().overlay_host(button.stable_id()),
+            Some(crate::OverlayHostState::default())
+        );
+        assert!(
+            context
+                .advance_animations(Duration::from_millis(360))
+                .component_updates
+                .contains(&button.stable_id())
+        );
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(button.stable_id())
+                .unwrap()
+                .active,
+            Some(tooltip.stable_id())
+        );
+        assert!(context.read(button, |button| button.tooltip_open).unwrap());
+    }
+
+    #[test]
+    fn tooltip_default_follows_pointer_as_a_compact_card() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                IconButton::new(nana_ui_core::Icon::About, "Details").tooltip(
+                    "More details",
+                    nana_ui_core::TooltipConfig {
+                        delay_ms: 0,
+                        ..nana_ui_core::TooltipConfig::default()
+                    },
+                ),
+            )
+            .unwrap();
+        let tooltip = context.icon_button_tooltip(button).unwrap().unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            button.stable_id(),
+            crate::LayoutBox {
+                x: 20.0,
+                y: 50.0,
+                width: 28.0,
+                height: 28.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+
+        context.set_pointer_location(document, 1, Some((48.0, 72.0)));
+        context
+            .set_pointer_hover_at(document, 1, Some(button.stable_id()), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(button.stable_id())
+                .unwrap()
+                .active,
+            Some(tooltip.stable_id())
+        );
+
+        let tooltip_style = context.world().node_style(tooltip.stable_id()).unwrap();
+        assert_eq!(
+            tooltip_style.layout.padding_left,
+            Some(LengthSpec::Px(TooltipConfig::PADDING_X))
+        );
+        assert_eq!(
+            tooltip_style.layout.padding_top,
+            Some(LengthSpec::Px(TooltipConfig::PADDING_Y))
+        );
+        assert_eq!(
+            tooltip_style.layout.border_radius,
+            Some(TooltipConfig::RADIUS)
+        );
+        assert_eq!(
+            tooltip_style.border,
+            Some(nana_ui_core::SemanticColorRole::BorderSoft)
+        );
+        assert!(
+            matches!(
+                tooltip_style.layout.offset_left,
+                Some(LengthSpec::Px(x)) if (x - 48.0).abs() < 0.01
+            ),
+            "default tooltip should bind to the pointer x, got {:?}",
+            tooltip_style.layout.offset_left
+        );
+        assert!(
+            matches!(
+                tooltip_style.layout.offset_top,
+                Some(LengthSpec::Px(y)) if y < 72.0 - TooltipConfig::PADDING_Y
+            ),
+            "tooltip should sit above the pointer, got {:?}",
+            tooltip_style.layout.offset_top
+        );
+    }
+
+    #[test]
     fn loading_components_schedule_only_while_loading() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -6471,6 +8127,119 @@ mod tests {
             Err(FrameworkError::MissingAction(ActionId::new(
                 "unique.action"
             )))
+        );
+    }
+
+    #[test]
+    fn presenter_extension_installs_onto_the_world() {
+        struct Keyword;
+        impl crate::TextPresenter for Keyword {
+            fn name(&self) -> &'static str {
+                "keyword"
+            }
+
+            fn present(
+                &self,
+                text: &str,
+                _request: &crate::HighlightRequest,
+            ) -> Vec<crate::TextSpan> {
+                text.match_indices("fn")
+                    .map(|(start, token)| crate::TextSpan {
+                        start,
+                        end: start + token.len(),
+                        color: nana_ui_core::SemanticColorRole::Accent,
+                    })
+                    .collect()
+            }
+        }
+        struct HighlightExt;
+        impl UiExtension for HighlightExt {
+            fn name(&self) -> &'static str {
+                "test.highlight"
+            }
+
+            fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
+                registrar.register_presenter(Box::new(Keyword))
+            }
+        }
+
+        let mut context = AppContext::new();
+        context.install(&HighlightExt).unwrap();
+        assert_eq!(
+            context.install(&HighlightExt),
+            Err(FrameworkError::DuplicateExtension("test.highlight".into()))
+        );
+        assert_eq!(
+            context.register_presenter(Box::new(Keyword)),
+            Err(FrameworkError::World(UiWorldError::DuplicatePresenter(
+                "keyword".into()
+            )))
+        );
+        let mut request = crate::HighlightRequest::highlight("rs");
+        request.presenter = Arc::from("keyword");
+        let entity = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                TextArea {
+                    highlight: Some(request),
+                    ..TextArea::new("fn main")
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .highlight_request(entity.stable_id())
+                .map(|request| request.language.as_ref()),
+            Some("rs")
+        );
+        context
+            .resolve_presentations(&[entity.stable_id()])
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .text_presentation(entity.stable_id())
+                .map(|presentation| presentation.spans.len()),
+            Some(1)
+        );
+    }
+
+    #[cfg(feature = "syntax-highlighting")]
+    #[test]
+    fn new_context_installs_the_official_highlight_presenter() {
+        let mut context = AppContext::new();
+        assert!(context.world().has_presenter(crate::HIGHLIGHT_PRESENTER));
+        let entity = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                crate::HostedTextarea::new("fn main() {}", "rs"),
+            )
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .highlight_request(entity.stable_id())
+                .map(|request| request.presenter.as_ref()),
+            Some(crate::HIGHLIGHT_PRESENTER)
+        );
+        context
+            .resolve_presentations(&[entity.stable_id()])
+            .unwrap();
+        let spans = context
+            .world()
+            .text_presentation(entity.stable_id())
+            .map(|presentation| presentation.spans.clone())
+            .unwrap_or_default();
+        assert!(
+            spans.iter().any(|span| {
+                matches!(
+                    span.color,
+                    nana_ui_core::SemanticColorRole::Accent
+                        | nana_ui_core::SemanticColorRole::AccentStrong
+                ) && &"fn main() {}"[span.start..span.end] == "fn"
+            }),
+            "default Syntect presenter must color rust `fn`, got {spans:?}"
         );
     }
 

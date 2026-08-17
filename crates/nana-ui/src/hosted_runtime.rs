@@ -1685,7 +1685,9 @@ impl<Program: HostedProgram> HostedReady<Program> {
             }
             WindowEvent::Ime(ime) => {
                 self.notify_ime(event_loop, id, ime.clone());
-                self.push_window_event(id, WindowEvent::Ime(ime));
+                if !runtime_owns_platform_ime(self.program.text_input_request(id)) {
+                    self.push_window_event(id, WindowEvent::Ime(ime));
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(scale_factor) = self.window_scale_factor(id) {
@@ -3601,6 +3603,10 @@ impl<Program: HostedProgram> HostedReady<Program> {
     }
 }
 
+fn runtime_owns_platform_ime(request: Option<TextInputRequest>) -> bool {
+    request.is_some_and(|request| request.enabled)
+}
+
 fn apply_text_input_request(window: &winit::window::Window, request: Option<TextInputRequest>) {
     let Some(request) = request else {
         return;
@@ -3940,11 +3946,12 @@ mod tests {
         HostedDisplayArea, HostedProgramUpdate, HostedRedraw, HostedTitleBarMode,
         HostedWindowEvent, HostedWindowId, HostedWindowPlacement, HostedWindowRole,
         HostedWindowSettings, hosted_input_key, hosted_key_stroke, push_unique_path,
-        should_request_redraw, window_attributes, window_background, window_level,
+        runtime_owns_platform_ime, should_request_redraw, window_attributes, window_background,
+        window_level,
     };
     use iced::{Point, Size};
     use iced_winit::winit;
-    use nana_ui_platform::ImeEvent;
+    use nana_ui_platform::{ImeEvent, TextInputPurpose, TextInputRequest};
     use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome};
     use std::path::PathBuf;
 
@@ -4066,6 +4073,21 @@ mod tests {
             }
             _ => unreachable!("constructed a file-drop batch event"),
         }
+    }
+
+    #[test]
+    fn focused_runtime_ime_request_is_the_only_platform_ime_authority() {
+        assert!(!runtime_owns_platform_ime(None));
+        assert!(!runtime_owns_platform_ime(Some(TextInputRequest {
+            enabled: false,
+            cursor_area: None,
+            purpose: TextInputPurpose::Normal,
+        })));
+        assert!(runtime_owns_platform_ime(Some(TextInputRequest {
+            enabled: true,
+            cursor_area: None,
+            purpose: TextInputPurpose::Normal,
+        })));
     }
 
     #[test]

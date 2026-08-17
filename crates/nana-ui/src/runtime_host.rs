@@ -519,18 +519,12 @@ impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
                 .map(|document| {
                     runtime_ime_owned = true;
                     let document_id = document.document();
-                    match event {
-                        nana_ui_platform::ImeEvent::Enabled => Ok(false),
-                        nana_ui_platform::ImeEvent::Disabled => {
-                            document.context_mut().clear_ime(document_id)
-                        }
-                        nana_ui_platform::ImeEvent::Preedit { text, selection } => document
-                            .context_mut()
-                            .set_ime_preedit(document_id, text.clone(), *selection),
-                        nana_ui_platform::ImeEvent::Commit(text) => {
-                            document.context_mut().commit_ime(document_id, text)
-                        }
-                    }
+                    RuntimeInputAdapter::default()
+                        .dispatch_ime(document.context_mut(), document_id, event)
+                        .map(|disposition| {
+                            disposition.prevent_default
+                                && !matches!(event, nana_ui_platform::ImeEvent::Enabled)
+                        })
                 })
                 .transpose()
                 .unwrap_or_else(|error| panic!("RuntimeProgram IME dispatch failed: {error}"))
@@ -875,7 +869,7 @@ mod tests {
         runtime_text_input_request,
     };
     use nana_ui_platform::{InputDisposition, InputEvent, InputModifiers, WindowId};
-    use nana_ui_runtime::{AppContext, Dialog, DocumentId, OverlayHost};
+    use nana_ui_runtime::{AppContext, Dialog, DocumentId, OverlayHost, TextArea};
 
     #[test]
     fn runtime_windows_use_native_chrome_until_a_runtime_chrome_contract_exists() {
@@ -912,6 +906,39 @@ mod tests {
         document
             .context_mut()
             .update_component(input, |input, _cx| input.read_only = true)
+            .unwrap();
+        let request = runtime_text_input_request(&document);
+        assert!(!request.enabled);
+        assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
+    }
+
+    #[test]
+    fn runtime_textarea_ime_request_follows_focus_and_normal_purpose() {
+        let document_id = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let mut document = nana_ui_scene::RuntimeDocument::new(document_id);
+        let area = document
+            .context_mut()
+            .create_component(document_id, TextArea::new("第一行\n第二行"))
+            .unwrap();
+
+        let request = runtime_text_input_request(&document);
+        assert!(!request.enabled);
+        assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
+        assert!(request.cursor_area.is_none());
+
+        assert!(
+            document
+                .context_mut()
+                .focus_node(document_id, area.stable_id())
+                .unwrap()
+        );
+        let request = runtime_text_input_request(&document);
+        assert!(request.enabled);
+        assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
+
+        document
+            .context_mut()
+            .update_component(area, |area, _cx| area.disabled = true)
             .unwrap();
         let request = runtime_text_input_request(&document);
         assert!(!request.enabled);

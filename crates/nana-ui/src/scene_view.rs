@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use iced::advanced::Renderer as _;
 use iced::advanced::graphics::geometry::Renderer as _;
-use iced::advanced::text::{Alignment, Ellipsis, LineHeight, Renderer as _, Shaping, Wrapping};
+use iced::advanced::text::{
+    Alignment, Ellipsis, LineHeight, Paragraph, Renderer as _, Shaping, Span, Wrapping,
+};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Layout, Text, layout, mouse, renderer};
 use iced::alignment;
@@ -24,7 +26,7 @@ use iced_wgpu::primitive::Renderer as _;
 use nana_ui_runtime::{StableNodeId, TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::{
     PrimitiveId, RenderOperation, ResourceId, ScenePrimitive, ScenePrimitiveKind, SceneRect,
-    UiScene,
+    SceneTextSpan, UiScene,
 };
 
 use crate::gpu_texture::GpuTexturePrimitive;
@@ -374,6 +376,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
     ) {
         let origin =
             layout.bounds().position() - Vector::new(self.scene_origin.x, self.scene_origin.y);
+        let widget_clip = layout
+            .bounds()
+            .intersection(viewport)
+            .unwrap_or(layout.bounds());
         for operation in self.operations.iter() {
             let id = match operation {
                 RenderOperation::PrepareExternal(_) => continue,
@@ -382,9 +388,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for IcedSceneView<'_> {
             let Some(primitive) = self.scene().primitive(id) else {
                 continue;
             };
-            let clip = primitive.clips.iter().try_fold(*viewport, |visible, clip| {
-                visible.intersection(&translated_rect(clip.bounds, clip.transform.0, origin))
-            });
+            let clip = primitive
+                .clips
+                .iter()
+                .try_fold(widget_clip, |visible, clip| {
+                    visible.intersection(&translated_rect(clip.bounds, clip.transform.0, origin))
+                });
             let Some(clip) = clip else {
                 continue;
             };
@@ -454,6 +463,7 @@ fn paint_primitive(
         } => paint_quad(
             renderer,
             bounds,
+            clip,
             *background,
             *border_color,
             *border_width,
@@ -473,6 +483,7 @@ fn paint_primitive(
                 paint_quad(
                     renderer,
                     translated_rect(*bounds, primitive.transform.0, origin),
+                    clip,
                     *background,
                     *border_color,
                     *border_width,
@@ -494,7 +505,8 @@ fn paint_primitive(
             shaping,
             horizontal_alignment,
             vertical_alignment,
-            ..
+            spans,
+            letter_spacing: _,
         } => {
             let align_x = match horizontal_alignment {
                 TextHorizontalAlignment::Start => Alignment::Left,
@@ -518,43 +530,74 @@ fn paint_primitive(
                     alignment::Vertical::Bottom => bounds.y + bounds.height,
                 },
             );
-            renderer.fill_text(
-                Text {
-                    content: content.clone(),
-                    bounds: bounds.size(),
-                    size: Pixels(*size),
-                    line_height: match line_height {
-                        Some(nana_ui_core::LineHeightSpec::Relative(value)) => {
-                            LineHeight::Relative(*value)
-                        }
-                        Some(nana_ui_core::LineHeightSpec::Absolute(value)) => {
-                            LineHeight::Absolute(Pixels(*value))
-                        }
-                        None => LineHeight::Relative(1.2),
+            let default_color =
+                color_with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), primitive.opacity);
+            let line_height = match line_height {
+                Some(nana_ui_core::LineHeightSpec::Relative(value)) => LineHeight::Relative(*value),
+                Some(nana_ui_core::LineHeightSpec::Absolute(value)) => {
+                    LineHeight::Absolute(Pixels(*value))
+                }
+                None => LineHeight::Relative(1.2),
+            };
+            let font = scene_font(renderer.default_font(), family.as_deref(), *weight);
+            let shaping = match shaping {
+                TextShaping::Auto => Shaping::Auto,
+                TextShaping::Advanced => Shaping::Advanced,
+            };
+            let wrapping = if *wrap {
+                Wrapping::Word
+            } else {
+                Wrapping::None
+            };
+            let ellipsis = if *ellipsis {
+                Ellipsis::End
+            } else {
+                Ellipsis::None
+            };
+            let iced_spans = presentation_spans(content, spans, default_color, primitive.opacity);
+            if iced_spans.len() > 1
+                || iced_spans
+                    .first()
+                    .and_then(|span| span.color)
+                    .is_some_and(|color| color != default_color)
+            {
+                let paragraph =
+                    <iced::Renderer as iced::advanced::text::Renderer>::Paragraph::with_spans(
+                        Text {
+                            content: iced_spans.as_slice(),
+                            bounds: bounds.size(),
+                            size: Pixels(*size),
+                            line_height,
+                            font,
+                            align_x,
+                            align_y,
+                            shaping,
+                            wrapping,
+                            ellipsis,
+                            hint_factor: renderer.hint_factor(),
+                        },
+                    );
+                renderer.fill_paragraph(&paragraph, position, default_color, clip);
+            } else {
+                renderer.fill_text(
+                    Text {
+                        content: content.clone(),
+                        bounds: bounds.size(),
+                        size: Pixels(*size),
+                        line_height,
+                        font,
+                        align_x,
+                        align_y,
+                        shaping,
+                        wrapping,
+                        ellipsis,
+                        hint_factor: renderer.hint_factor(),
                     },
-                    font: scene_font(renderer.default_font(), family.as_deref(), *weight),
-                    align_x,
-                    align_y,
-                    shaping: match shaping {
-                        TextShaping::Auto => Shaping::Auto,
-                        TextShaping::Advanced => Shaping::Advanced,
-                    },
-                    wrapping: if *wrap {
-                        Wrapping::Word
-                    } else {
-                        Wrapping::None
-                    },
-                    ellipsis: if *ellipsis {
-                        Ellipsis::End
-                    } else {
-                        Ellipsis::None
-                    },
-                    hint_factor: renderer.hint_factor(),
-                },
-                position,
-                color_with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), primitive.opacity),
-                clip,
-            );
+                    position,
+                    default_color,
+                    clip,
+                );
+            }
         }
         ScenePrimitiveKind::Icon { icon, color } => {
             renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
@@ -597,6 +640,7 @@ fn paint_primitive(
 fn paint_quad(
     renderer: &mut iced::Renderer,
     bounds: Rectangle,
+    clip: Rectangle,
     background: Option<[f32; 4]>,
     border_color: Option<[f32; 4]>,
     border_width: f32,
@@ -604,6 +648,9 @@ fn paint_quad(
     shadow: Option<nana_ui_runtime::ComponentElevation>,
     opacity: f32,
 ) {
+    let Some(bounds) = bounds.intersection(&clip) else {
+        return;
+    };
     renderer.fill_quad(
         renderer::Quad {
             bounds,
@@ -643,6 +690,38 @@ fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
 
 fn color_with_opacity([r, g, b, a]: [f32; 4], opacity: f32) -> Color {
     Color::from_rgba(r, g, b, a * opacity)
+}
+
+fn presentation_spans<'a>(
+    content: &'a str,
+    spans: &'a [SceneTextSpan],
+    default: Color,
+    opacity: f32,
+) -> Vec<Span<'a, (), Font>> {
+    let mut painted = Vec::new();
+    let mut cursor = 0usize;
+    for span in spans {
+        if span.start > content.len()
+            || span.end > content.len()
+            || span.start >= span.end
+            || !content.is_char_boundary(span.start)
+            || !content.is_char_boundary(span.end)
+        {
+            continue;
+        }
+        if span.start > cursor {
+            painted.push(Span::new(&content[cursor..span.start]).color(default));
+        }
+        painted.push(
+            Span::new(&content[span.start..span.end])
+                .color(color_with_opacity(span.color, opacity)),
+        );
+        cursor = span.end;
+    }
+    if cursor < content.len() {
+        painted.push(Span::new(&content[cursor..]).color(default));
+    }
+    painted
 }
 
 fn scene_font(default: Font, family: Option<&str>, weight: Option<u16>) -> Font {

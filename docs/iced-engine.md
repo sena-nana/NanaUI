@@ -49,9 +49,9 @@ they describe their secure-input work as a draft and do not yet form a complete
 feature contract.
 
 The upstream MIT license remains at `engine/iced/LICENSE`. Original commit IDs
-are recorded here, and the Nana fork head is retained as merge ancestry, so the
-import can be audited without treating the old fork repository as a build
-dependency.
+are recorded here so the import can be audited without treating the old fork
+repository as a build dependency, and without keeping iced history as merge
+ancestry of this repository.
 
 ## Upstream sync
 

@@ -2,8 +2,10 @@
 
 ## 仓库边界
 
-- NanaUI 是基于 Iced/WGPU 的 Rust 原生公共 UI 框架，不引入 WebView、DOM、CSS、
-  JavaScript 或消费应用业务。
+- NanaUI 的产品保留/渲染合同是 Runtime（`nana-ui-runtime`）与 UiScene
+  （`nana-ui-scene`）。Iced/WGPU（`engine/iced`、`nana-ui` 适配器）是当前兼容绘制
+  与桌面宿主后端，不是长期应用编程模型。Vue + JS 是一等 L1/L2 消费方；不要把
+  WebView 当作产品 UI 路径。消费应用业务仍在框架外。
 - `crates/nana-ui` 负责主题、控件、Shell、Workspace 和 GPU 内容插槽；
   `crates/nana-window` 独立负责平台窗口材质，普通控件不得访问窗口句柄。
 - 消费应用拥有业务状态、配置存储和 Region 内容；NanaUI 只提供通用状态与合同。

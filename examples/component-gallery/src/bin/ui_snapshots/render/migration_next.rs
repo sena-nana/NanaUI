@@ -3,50 +3,119 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::advanced::widget;
-use iced::widget::{container, row, text, text_editor};
+use iced::widget::{column, container, row, shader, text, text_editor};
 use iced::{Alignment, Element, Length, Padding, Point, Size, Theme, mouse};
 use iced_wgpu::Renderer;
 use iced_wgpu::graphics::Viewport;
+use iced_wgpu::wgpu;
 use iced_winit::core::time::Instant;
 use iced_winit::core::{Event, renderer, shell, window};
 use iced_winit::runtime::{UserInterface, user_interface};
 use nana_ui::compatibility::{
-    Button as IcedButton, Card as IcedCard, Checkbox as IcedCheckbox, IconButton as IcedIconButton,
-    Input as IcedInput, ListItem as IcedListItem, RangeField as IcedRangeField,
-    Switch as IcedSwitch,
+    AboutMetadata as IcedAboutMetadata, AboutSection as IcedAboutSection,
+    ActionMenu as IcedActionMenu, ActionMenuItem as IcedActionMenuItem,
+    AnchoredActionMenu as IcedAnchoredActionMenu, AppTitleBar as IcedAppTitleBar,
+    AppearanceSection as IcedAppearanceSection, Button as IcedButton,
+    CalendarHeatmap as IcedCalendarHeatmap, CalendarHeatmapDatum as IcedCalendarHeatmapDatum,
+    CalendarHeatmapOptions as IcedCalendarHeatmapOptions, Card as IcedCard,
+    Checkbox as IcedCheckbox, CommandPalette as IcedCommandPalette,
+    ConfirmDialog as IcedConfirmDialog, Dialog as IcedDialog, DockPanel as IcedDockPanel,
+    Drawer as IcedDrawer, Dropdown as IcedDropdown, DropdownOption as IcedDropdownOption,
+    EmptyState as IcedEmptyState, FormField as IcedFormField, GpuTextureView as IcedGpuTextureView,
+    GpuView as IcedGpuView, GpuViewPalette as IcedGpuViewPalette, GraphCanvas as IcedGraphCanvas,
+    HostedTextarea as IcedHostedTextarea, HostedTextareaState as IcedHostedTextareaState,
+    IconButton as IcedIconButton, ImageViewer as IcedImageViewer,
+    ImageViewerSource as IcedImageViewerSource, Input as IcedInput,
+    InteractiveCard as IcedInteractiveCard, KeyCaptureLayer as IcedKeyCaptureLayer,
+    KeymapLayer as IcedKeymapLayer, LabeledValue as IcedLabeledValue, LevelMeter as IcedLevelMeter,
+    ListItem as IcedListItem, NativeMarkdown as IcedNativeMarkdown, OverlayHost as IcedOverlayHost,
+    PaneChrome as IcedPaneChrome, PaneChromeAction as IcedPaneChromeAction,
+    PaneChromeActionKind as IcedPaneChromeActionKind, PaneTree as IcedPaneTree,
+    PaneTreeNode as IcedPaneTreeNode, Popover as IcedPopover, Progress as IcedProgress,
+    QrCodeCanvas as IcedQrCode, RangeField as IcedRangeField, ReorderItem as IcedReorderItem,
+    ReorderList as IcedReorderList, SearchDropdown as IcedSearchDropdown,
+    SearchDropdownOption as IcedSearchDropdownOption,
+    SearchDropdownState as IcedSearchDropdownState, SegmentedControl as IcedSegmentedControl,
+    Select as IcedSelect, SelectableRichText as IcedSelectableRichText,
+    SettingsCard as IcedSettingsCard, SettingsCollapsibleCard as IcedSettingsCollapsibleCard,
+    SettingsRow as IcedSettingsRow, SidebarFooter as IcedSidebarFooter,
+    SidebarFooterButton as IcedSidebarFooterButton, SidebarFrame as IcedSidebarFrame,
+    SidebarRow as IcedSidebarRow, SidebarSection as IcedSidebarSection, Skeleton as IcedSkeleton,
+    Spinner as IcedSpinner, StatusBadge as IcedStatusBadge, Switch as IcedSwitch, Tabs as IcedTabs,
+    Textarea as IcedTextarea, TimeSeriesChart as IcedTimeSeriesChart, Toast as IcedToast,
+    Tooltip as IcedTooltip, TreeView as IcedTreeView, ValidationMessage as IcedValidationMessage,
+    XYPad as IcedXYPad, build_calendar_heatmap_model as iced_build_calendar,
 };
 use nana_ui::runtime::{
-    AccessibilityAction, AccessibilityActionRequest, Activate, Button as RuntimeButton,
-    Card as RuntimeCard, Checkbox as RuntimeCheckbox, DocumentId, EmptyState as RuntimeEmptyState,
-    Entity, IconButton as RuntimeIconButton, LabeledValue as RuntimeLabeledValue, LayoutViewport,
-    List as RuntimeList, ListItem as RuntimeListItem, ListItemSlots, MountState, MutationQueue,
-    NodeStyle, RangeField as RuntimeRangeField, RuntimeDocument,
+    AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
+    AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
+    ActionMenuItem as RuntimeActionMenuItem, Activate,
+    AnchoredActionMenu as RuntimeAnchoredActionMenu, AppShell as RuntimeAppShell,
+    AppTitleBar as RuntimeAppTitleBar, AppearanceSection as RuntimeAppearanceSection,
+    Button as RuntimeButton, CalendarHeatmap as RuntimeCalendarHeatmap,
+    CalendarHeatmapDatum as RuntimeCalendarDatum, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
+    CommandPalette as RuntimeCommandPalette, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
+    ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem,
+    Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
+    DockPanel as RuntimeDockPanel, DocumentId, Drawer as RuntimeDrawer,
+    Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
+    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
+    GpuTextureView as RuntimeGpuTextureView, GpuView as RuntimeGpuView,
+    GpuViewPalette as RuntimeGpuViewPalette, GraphCanvas as RuntimeGraphCanvas,
+    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton,
+    ImageViewer as RuntimeImageViewer, ImageViewerContent,
+    InteractiveCard as RuntimeInteractiveCard, KeyCaptureLayer as RuntimeKeyCaptureLayer,
+    KeymapLayer as RuntimeKeymapLayer, LabeledValue as RuntimeLabeledValue, LayoutViewport,
+    LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
+    ListItemSlots, MarkdownBlock, MarkdownBlockKind, MarkdownSpan, ModalSlots, MountState,
+    MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeStyle,
+    OverlayHost as RuntimeOverlayHost, PaneChrome as RuntimePaneChrome,
+    PaneTree as RuntimePaneTree, PaneTreeNode as RuntimePaneTreeNode, Popover as RuntimePopover,
+    Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
+    ReorderItem as RuntimeReorderItem, ReorderList as RuntimeReorderList, RichSpan,
+    RuntimeDocument, SearchDropdown as RuntimeSearchDropdown,
+    SearchDropdownOption as RuntimeSearchDropdownOption,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
-    SegmentedSelectionRequested, StableNodeId, StatusBadge as RuntimeStatusBadge,
-    Switch as RuntimeSwitch, Text as RuntimeText, TextArea as RuntimeTextArea,
-    TextHorizontalAlignment, TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
-    ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
+    SegmentedSelectionRequested, Select as RuntimeSelect, SelectOption as RuntimeSelectOption,
+    SelectableRichText as RuntimeSelectableRichText, SettingsCard as RuntimeSettingsCard,
+    SettingsCollapsibleCard as RuntimeSettingsCollapsibleCard,
+    SidebarFooter as RuntimeSidebarFooter, SidebarFooterButton as RuntimeSidebarFooterButton,
+    SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
+    SidebarSection as RuntimeSidebarSection, Skeleton as RuntimeSkeleton,
+    Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane, StableNodeId,
+    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TabOption as RuntimeTabOption,
+    Tabs as RuntimeTabs, Text as RuntimeText, TextArea as RuntimeTextArea, TextHorizontalAlignment,
+    TextInput as RuntimeTextInput, TextSelection, TextVerticalAlignment,
+    TimeSeriesChart as RuntimeTimeSeriesChart, Toast as RuntimeToast, TreeView as RuntimeTreeView,
+    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
+    WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
-    CardKind, ComponentId, ComponentMigrationState, ControlSize, EmptyState as IcedEmptyState,
-    IcedSceneView, IcedTextShaper, Icon, LabeledValue as IcedLabeledValue, RuntimeInputAdapter,
-    SegmentedControl as IcedSegmentedControl, SelectionOption as IcedSelectionOption,
-    StatusBadge as IcedStatusBadge, Textarea as IcedTextarea, ThemeMode, ThemeModeExt,
-    TooltipConfig, TooltipPlacement, ValidationMessage as IcedValidationMessage, component_catalog,
-    component_ids,
+    ActionId, AnchoredMenuPosition, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId,
+    ComponentMigrationState, ControlSize, DockContents, DockController, DockId, DockItemSpec,
+    DockLayout, DockNode, DockSurfaceId, GraphEdge, GraphEndpoint, GraphModel, GraphNode,
+    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSize, GraphViewport, IcedSceneView,
+    IcedTextShaper, Icon, RegionId, RuntimeInputAdapter, SelectionOption as IcedSelectionOption,
+    SplitAxis, SplitPaneController, ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement,
+    TreeNode, WindowMaterialMode, WorkspaceController, WorkspaceSlots, XYPadValue, app_shell,
+    component_catalog, component_ids, dock_workspace, icon, ratio_pane_split, split_pane,
+    workspace_view,
 };
 use nana_ui_core::{
-    LengthSpec, SemanticColorRole, StatusTone, SwitchControlPosition, ValidationIntent,
+    DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
+    SwitchControlPosition, ToastTone, ValidationIntent, WorkspaceModel,
 };
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 use nana_ui_scene::ScenePrimitiveKind;
 
 use crate::write;
 
+use super::gpu::{self, SnapshotGpu};
 use super::{pixel_difference, side_by_side, snapshot_with_cursor};
 
 const SIZE: Size<u32> = Size::new(420, 120);
 const GAP: u32 = 8;
+const SLOT_INSET: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Component {
@@ -54,6 +123,7 @@ enum Component {
     Button,
     TextInput,
     Textarea,
+    HostedTextarea,
     Checkbox,
     IconButton,
     Switch,
@@ -61,10 +131,62 @@ enum Component {
     ListItem,
     RangeField,
     SegmentedControl,
+    Tabs,
     StatusBadge,
     ValidationMessage,
     EmptyState,
     LabeledValue,
+    Progress,
+    Spinner,
+    Skeleton,
+    LevelMeter,
+    FormField,
+    InteractiveCard,
+    Tooltip,
+    Dialog,
+    ConfirmDialog,
+    Drawer,
+    Toast,
+    XYPad,
+    QrCode,
+    Select,
+    Popover,
+    ActionMenu,
+    ActionMenuItem,
+    AnchoredActionMenu,
+    ContextMenu,
+    SidebarFrame,
+    SidebarSection,
+    SidebarFooter,
+    AppearanceSection,
+    AboutSection,
+    SettingsCollapsibleCard,
+    CommandPalette,
+    OverlayHost,
+    Dropdown,
+    SearchDropdown,
+    TreeView,
+    SidebarRow,
+    Settings,
+    Workspace,
+    Dock,
+    DockPanel,
+    SplitPane,
+    PaneChrome,
+    PaneTree,
+    AppShell,
+    AppTitleBar,
+    CalendarHeatmap,
+    TimeSeriesChart,
+    ReorderList,
+    NativeMarkdown,
+    SelectableRichText,
+    ImageViewer,
+    GraphCanvas,
+    KeyCaptureLayer,
+    KeymapLayer,
+    GpuTextureView,
+    GpuView,
 }
 
 impl Component {
@@ -74,6 +196,7 @@ impl Component {
             Self::Button => component_ids::BUTTON,
             Self::TextInput => component_ids::TEXT_INPUT,
             Self::Textarea => component_ids::TEXTAREA,
+            Self::HostedTextarea => component_ids::HOSTED_TEXTAREA,
             Self::Checkbox => component_ids::CHECKBOX,
             Self::IconButton => component_ids::ICON_BUTTON,
             Self::Switch => component_ids::SWITCH,
@@ -81,10 +204,62 @@ impl Component {
             Self::ListItem => component_ids::LIST_ITEM,
             Self::RangeField => component_ids::RANGE_FIELD,
             Self::SegmentedControl => component_ids::SEGMENTED_CONTROL,
+            Self::Tabs => component_ids::TABS,
             Self::StatusBadge => component_ids::STATUS_BADGE,
             Self::ValidationMessage => component_ids::VALIDATION_MESSAGE,
             Self::EmptyState => component_ids::EMPTY_STATE,
             Self::LabeledValue => component_ids::LABELED_VALUE,
+            Self::Progress => component_ids::PROGRESS,
+            Self::Spinner => component_ids::SPINNER,
+            Self::Skeleton => component_ids::SKELETON,
+            Self::LevelMeter => component_ids::LEVEL_METER,
+            Self::FormField => component_ids::FORM_FIELD,
+            Self::InteractiveCard => component_ids::INTERACTIVE_CARD,
+            Self::Tooltip => component_ids::TOOLTIP,
+            Self::Dialog => component_ids::DIALOG,
+            Self::ConfirmDialog => component_ids::CONFIRM_DIALOG,
+            Self::Drawer => component_ids::DRAWER,
+            Self::Toast => component_ids::TOAST,
+            Self::XYPad => component_ids::XY_PAD,
+            Self::QrCode => component_ids::QR_CODE,
+            Self::Select => component_ids::SELECT,
+            Self::Popover => component_ids::POPOVER,
+            Self::ActionMenu => component_ids::ACTION_MENU,
+            Self::ActionMenuItem => component_ids::ACTION_MENU_ITEM,
+            Self::AnchoredActionMenu => component_ids::ANCHORED_ACTION_MENU,
+            Self::ContextMenu => component_ids::CONTEXT_MENU,
+            Self::SidebarFrame => component_ids::SIDEBAR_FRAME,
+            Self::SidebarSection => component_ids::SIDEBAR_SECTION,
+            Self::SidebarFooter => component_ids::SIDEBAR_FOOTER,
+            Self::AppearanceSection => component_ids::APPEARANCE_SECTION,
+            Self::AboutSection => component_ids::ABOUT_SECTION,
+            Self::SettingsCollapsibleCard => component_ids::SETTINGS_COLLAPSIBLE_CARD,
+            Self::CommandPalette => component_ids::COMMAND_PALETTE,
+            Self::OverlayHost => component_ids::OVERLAY_HOST,
+            Self::Dropdown => component_ids::DROPDOWN,
+            Self::SearchDropdown => component_ids::SEARCH_DROPDOWN,
+            Self::TreeView => component_ids::TREE_VIEW,
+            Self::SidebarRow => component_ids::SIDEBAR_ROW,
+            Self::Settings => component_ids::SETTINGS,
+            Self::Workspace => component_ids::WORKSPACE,
+            Self::Dock => component_ids::DOCK,
+            Self::DockPanel => component_ids::DOCK_PANEL,
+            Self::SplitPane => component_ids::SPLIT_PANE,
+            Self::PaneChrome => component_ids::PANE_CHROME,
+            Self::PaneTree => component_ids::PANE_TREE,
+            Self::AppShell => component_ids::APP_SHELL,
+            Self::AppTitleBar => component_ids::APP_TITLE_BAR,
+            Self::CalendarHeatmap => component_ids::CALENDAR_HEATMAP,
+            Self::TimeSeriesChart => component_ids::TIME_SERIES_CHART,
+            Self::ReorderList => component_ids::REORDER_LIST,
+            Self::NativeMarkdown => component_ids::NATIVE_MARKDOWN,
+            Self::SelectableRichText => component_ids::SELECTABLE_RICH_TEXT,
+            Self::ImageViewer => component_ids::IMAGE_VIEWER,
+            Self::GraphCanvas => component_ids::GRAPH_CANVAS,
+            Self::KeyCaptureLayer => component_ids::KEY_CAPTURE_LAYER,
+            Self::KeymapLayer => component_ids::KEYMAP_LAYER,
+            Self::GpuTextureView => component_ids::GPU_TEXTURE_VIEW,
+            Self::GpuView => component_ids::GPU_VIEW,
         }
     }
 }
@@ -317,7 +492,7 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
     f(
         Component::Textarea,
         "invalid-focused",
-        "focused invalid textarea retains the semantic danger border",
+        "focused invalid textarea uses a 2px danger field border without a second ring",
     ),
     f(
         Component::Textarea,
@@ -333,6 +508,76 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         Component::Textarea,
         "scroll",
         "the scrolled caret and text remain inside the content box",
+    ),
+    f(
+        Component::HostedTextarea,
+        "rust",
+        "committed rust text is colored by the Runtime highlight presenter",
+    ),
+    f(
+        Component::HostedTextarea,
+        "placeholder",
+        "empty highlighted editor paints faint placeholder text",
+    ),
+    f(
+        Component::HostedTextarea,
+        "disabled",
+        "disabled highlighted editor is visibly inert",
+    ),
+    f(
+        Component::CalendarHeatmap,
+        "weeks",
+        "week columns and level fills use theme accent, not a second canvas",
+    ),
+    f(
+        Component::TimeSeriesChart,
+        "series",
+        "grid, area and line stay inside the 148px chart box",
+    ),
+    f(
+        Component::ReorderList,
+        "rows",
+        "selected row uses the selected surface; labels stay left aligned",
+    ),
+    f(
+        Component::NativeMarkdown,
+        "blocks",
+        "heading and paragraph project as wrapped body text",
+    ),
+    f(
+        Component::SelectableRichText,
+        "plain",
+        "concatenated spans paint as selectable body text",
+    ),
+    f(
+        Component::ImageViewer,
+        "open",
+        "scrim, surface and close chrome are present without embedded pixels",
+    ),
+    f(
+        Component::GraphCanvas,
+        "nodes",
+        "two connected nodes paint as Scene quads inside the canvas",
+    ),
+    f(
+        Component::KeyCaptureLayer,
+        "recording",
+        "recording badge is visible while capture is armed",
+    ),
+    f(
+        Component::KeymapLayer,
+        "idle",
+        "keymap chrome is a non-focusable 28px badge",
+    ),
+    f(
+        Component::GpuTextureView,
+        "slot",
+        "host texture slot snapshot-gpu is sampled in the layout region",
+    ),
+    f(
+        Component::GpuView,
+        "inline",
+        "gpu-view custom renderer paints the inline slot",
     ),
     // Platform IME events cannot be injected into the compatibility widget by
     // this headless harness. Preedit remains a real Hosted acceptance gate.
@@ -860,6 +1105,271 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "action",
         "a real application-owned child action remains separate from the inert summary",
     ),
+    f(
+        Component::Progress,
+        "labeled",
+        "determinate progress keeps a Subtle track, Accent fill and optional label",
+    ),
+    f(
+        Component::Progress,
+        "empty",
+        "zero progress leaves the Accent fill collapsed on the track",
+    ),
+    f(
+        Component::Spinner,
+        "loading",
+        "spinner reuses the host-sampled Scene primitive beside a muted label",
+    ),
+    f(
+        Component::Tabs,
+        "selected",
+        "tabs share segmented selection without the bordered pill chrome",
+    ),
+    f(
+        Component::Tabs,
+        "focused",
+        "tab focus uses the same 2px external ring as segmented options",
+    ),
+    f(
+        Component::Skeleton,
+        "block",
+        "skeleton is a Subtle rounded placeholder with authored width and height",
+    ),
+    f(
+        Component::LevelMeter,
+        "success",
+        "level meter fills a compact tone-colored track without a progress label",
+    ),
+    f(
+        Component::FormField,
+        "error",
+        "form field shows the label and danger support while the control stays a child",
+    ),
+    f(
+        Component::InteractiveCard,
+        "selected",
+        "interactive card uses selected surface, border and activation semantics",
+    ),
+    f(
+        Component::Tooltip,
+        "open",
+        "zero-delay hover opens a compact label-only tooltip bound to the pointer",
+    ),
+    f(
+        Component::Tooltip,
+        "delay",
+        "hover before the delay leaves the tooltip closed",
+    ),
+    f(
+        Component::Tooltip,
+        "edge",
+        "tooltip stays inside the viewport near an edge",
+    ),
+    f(
+        Component::Dialog,
+        "titled",
+        "dialog paints a scrim, titled surface and application-owned body",
+    ),
+    f(
+        Component::ConfirmDialog,
+        "danger",
+        "confirm dialog keeps cancel and danger confirm actions",
+    ),
+    f(
+        Component::ConfirmDialog,
+        "busy",
+        "busy confirm dialog disables dismiss and shows a loading confirm",
+    ),
+    f(
+        Component::Drawer,
+        "right",
+        "right drawer docks to the viewport edge over a scrim",
+    ),
+    f(
+        Component::Drawer,
+        "left",
+        "left drawer docks to the start edge over a scrim",
+    ),
+    f(
+        Component::Toast,
+        "info",
+        "info toast is an outlined tone card with a title",
+    ),
+    f(
+        Component::Toast,
+        "dismissible",
+        "dismissible toast keeps a real dismiss affordance",
+    ),
+    f(
+        Component::XYPad,
+        "rest",
+        "xy pad shows the two-axis value inside a field border",
+    ),
+    f(
+        Component::XYPad,
+        "invalid",
+        "invalid xy pad uses a danger field border",
+    ),
+    f(
+        Component::QrCode,
+        "encoded",
+        "qr code paints a white quiet zone and black modules",
+    ),
+    f(
+        Component::Select,
+        "closed",
+        "select shows the selected label inside a field with a handle",
+    ),
+    f(
+        Component::Select,
+        "opened",
+        "opened select keeps the field and paints a surface menu of options",
+    ),
+    f(
+        Component::Select,
+        "invalid",
+        "invalid select uses a danger field border",
+    ),
+    f(
+        Component::Popover,
+        "open",
+        "popover paints an anchored surface without a scrim",
+    ),
+    f(
+        Component::ActionMenu,
+        "open",
+        "action menu uses start alignment and compact padding",
+    ),
+    f(
+        Component::ActionMenuItem,
+        "danger",
+        "danger action menu item uses danger text and an optional hint",
+    ),
+    f(
+        Component::AnchoredActionMenu,
+        "open",
+        "anchored action menu pins a menu surface to a logical point",
+    ),
+    f(
+        Component::ContextMenu,
+        "open",
+        "context menu opens at the pointer anchor",
+    ),
+    f(
+        Component::SidebarFrame,
+        "chrome",
+        "fixed top and footer stay outside the independently scrolling body",
+    ),
+    f(
+        Component::SidebarSection,
+        "expanded",
+        "section header uses uppercase faint title, count and an expanded body",
+    ),
+    f(
+        Component::SidebarSection,
+        "collapsed",
+        "collapsed section clips the body while keeping the header",
+    ),
+    f(
+        Component::SidebarFooter,
+        "actions",
+        "footer hugs small icon actions without growing",
+    ),
+    f(
+        Component::AppearanceSection,
+        "solid",
+        "appearance rows keep host-owned theme, material and radius controls",
+    ),
+    f(
+        Component::AboutSection,
+        "metadata",
+        "about section shows injected name, version and description",
+    ),
+    f(
+        Component::SettingsCollapsibleCard,
+        "expanded",
+        "collapsible card shows summary, divider and details when expanded",
+    ),
+    f(
+        Component::SettingsCollapsibleCard,
+        "collapsed",
+        "collapsed card keeps summary and hides details",
+    ),
+    f(
+        Component::CommandPalette,
+        "open",
+        "command palette shows search field and windowed rows",
+    ),
+    f(
+        Component::OverlayHost,
+        "stacked",
+        "overlay host keeps exclusive stacking order",
+    ),
+    f(
+        Component::Dropdown,
+        "closed",
+        "dropdown field shows the selected value and keeps disabled options",
+    ),
+    f(
+        Component::SearchDropdown,
+        "closed",
+        "search dropdown field shows the committed query surface",
+    ),
+    f(
+        Component::TreeView,
+        "expanded",
+        "tree view flattens visible disclosure rows",
+    ),
+    f(
+        Component::SidebarRow,
+        "active",
+        "sidebar row keeps a 14px leading icon without a selected plate",
+    ),
+    f(
+        Component::Settings,
+        "row-card",
+        "settings card groups a labeled control row",
+    ),
+    f(
+        Component::Workspace,
+        "default-regions",
+        "workspace lays out start, primary, end and bottom regions from the model",
+    ),
+    f(
+        Component::Dock,
+        "split-tabs",
+        "dock paints a split with a tabbed leaf and an item leaf",
+    ),
+    f(
+        Component::DockPanel,
+        "bordered",
+        "dock panel is a radius-0 surface with a soft border",
+    ),
+    f(
+        Component::SplitPane,
+        "horizontal",
+        "split pane sizes the first child and keeps an 8px handle",
+    ),
+    f(
+        Component::PaneChrome,
+        "active",
+        "pane chrome keeps a 34px header over the body",
+    ),
+    f(
+        Component::PaneTree,
+        "nested",
+        "pane tree preserves leaf order across a nested split",
+    ),
+    f(
+        Component::AppShell,
+        "stacked",
+        "app shell stacks a 36px title bar over a fill body",
+    ),
+    f(
+        Component::AppTitleBar,
+        "titled",
+        "title bar is 36px with a centered title",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {
@@ -874,16 +1384,34 @@ const fn f(component: Component, state: &'static str, expected: &'static str) ->
     }
 }
 
+fn tooltip_fixture_config(state: &str) -> TooltipConfig {
+    TooltipConfig {
+        placement: if matches!(state, "edge" | "tooltip-edge") {
+            TooltipPlacement::Left
+        } else {
+            TooltipPlacement::FollowCursor
+        },
+        delay_ms: if state == "delay" { 350 } else { 0 },
+        gap: 6.0,
+        viewport_padding: 4.0,
+        max_width: 280.0,
+    }
+}
+
 pub(super) fn generate_registered(
     renderer: &mut Renderer,
     output: &Path,
     theme: ThemeMode,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
 
+    let colors = theme.colors();
+    let gpu = gpu::create_snapshot_gpu(device, queue, colors.background, colors.accent_strong);
     let mut paths = Vec::with_capacity(FIXTURE_REGISTRY.len() * 5);
     for fixture in FIXTURE_REGISTRY {
-        paths.extend(render_fixture(renderer, output, theme, *fixture)?);
+        paths.extend(render_fixture(renderer, output, theme, *fixture, &gpu)?);
     }
     Ok(paths)
 }
@@ -938,6 +1466,7 @@ fn render_fixture(
     output: &Path,
     theme: ThemeMode,
     fixture: Fixture,
+    gpu: &SnapshotGpu,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let size = fixture_size(fixture);
     let theme_name = match theme {
@@ -958,6 +1487,7 @@ fn render_fixture(
         fixture,
         iced_textarea_content.as_ref(),
         iced_focus_id.clone(),
+        gpu,
     );
     let iced_pixels =
         if fixture.component == Component::Textarea && textarea_is_focused(fixture.state) {
@@ -984,10 +1514,17 @@ fn render_fixture(
     write::png(&iced_path, size, &iced_pixels)?;
 
     let runtime = runtime_fixture(theme, fixture, size)?;
-    let scene_view = IcedSceneView::new(
-        runtime.document.scene(),
-        Size::new(size.width as f32, size.height as f32),
-    )?;
+    let scene_size = Size::new(size.width as f32, size.height as f32);
+    let scene_view = if is_gpu_fixture(fixture) {
+        IcedSceneView::with_gpu_resources(
+            runtime.document.scene(),
+            Some(gpu.textures.clone()),
+            Some(gpu.renderers.clone()),
+            scene_size,
+        )?
+    } else {
+        IcedSceneView::new(runtime.document.scene(), scene_size)?
+    };
     let scene_view: Element<'_, (), Theme, Renderer> = scene_view.into();
     let runtime_pixels = snapshot_with_cursor(
         renderer,
@@ -1024,6 +1561,41 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::EmptyState, "complete-action") => Size::new(420, 190),
         (Component::EmptyState, "narrow-cjk") => Size::new(220, 220),
         (Component::EmptyState, "extreme-clip") => Size::new(92, 180),
+        (Component::FormField, _) => Size::new(420, 160),
+        (Component::InteractiveCard, _) => Size::new(420, 140),
+        (Component::Tooltip, _) => Size::new(420, 140),
+        (Component::Dialog, _) => Size::new(560, 280),
+        (Component::ConfirmDialog, _) => Size::new(560, 260),
+        (Component::Drawer, _) => Size::new(420, 240),
+        (Component::Toast, _) => Size::new(420, 88),
+        (Component::XYPad, _) => Size::new(420, 88),
+        (Component::QrCode, _) => Size::new(280, 280),
+        (Component::Select, "opened") => Size::new(420, 220),
+        (Component::Popover | Component::ActionMenu, _) => Size::new(420, 200),
+        (Component::AnchoredActionMenu | Component::ContextMenu, _) => Size::new(420, 220),
+        (Component::SidebarFrame, _) => Size::new(240, 280),
+        (Component::SidebarSection, _) => Size::new(240, 180),
+        (Component::SidebarFooter, _) => Size::new(240, 72),
+        (Component::AppearanceSection, _) => Size::new(420, 560),
+        (Component::AboutSection, _) => Size::new(420, 180),
+        (Component::SettingsCollapsibleCard, _) => Size::new(420, 160),
+        (Component::CommandPalette, _) => Size::new(560, 320),
+        (Component::OverlayHost, _) => Size::new(420, 160),
+        (Component::TreeView, _) => Size::new(280, 160),
+        (Component::Settings, _) => Size::new(420, 140),
+        (Component::Workspace, _) => Size::new(720, 400),
+        (Component::Dock, _) => Size::new(640, 320),
+        (Component::DockPanel, _) => Size::new(280, 120),
+        (Component::SplitPane, _) => Size::new(480, 200),
+        (Component::PaneChrome, _) => Size::new(420, 180),
+        (Component::PaneTree, _) => Size::new(480, 240),
+        (Component::AppShell, _) => Size::new(560, 280),
+        (Component::AppTitleBar, _) => Size::new(560, 80),
+        (Component::CalendarHeatmap, _) => Size::new(280, 180),
+        (Component::TimeSeriesChart, _) => Size::new(420, 180),
+        (Component::NativeMarkdown, _) => Size::new(420, 140),
+        (Component::ImageViewer, _) => Size::new(420, 240),
+        (Component::GraphCanvas, _) => Size::new(420, 180),
         _ => SIZE,
     }
 }
@@ -1110,16 +1682,24 @@ fn snapshot_with_focus<Message>(
     pixels
 }
 
+fn is_gpu_fixture(fixture: Fixture) -> bool {
+    matches!(
+        fixture.component,
+        Component::GpuTextureView | Component::GpuView
+    )
+}
+
 fn iced_fixture<'a>(
     theme: ThemeMode,
     fixture: Fixture,
     textarea_content: Option<&'a text_editor::Content<Renderer>>,
     textarea_id: widget::Id,
+    gpu: &SnapshotGpu,
 ) -> (Element<'a, (), Theme, Renderer>, mouse::Cursor) {
     let tokens = theme.tokens();
     let hovered = matches!(
         fixture.state,
-        "hover" | "selected-hover" | "tooltip-delay" | "tooltip-edge"
+        "hover" | "selected-hover" | "tooltip-delay" | "tooltip-edge" | "open" | "delay" | "edge"
     );
     let cursor = if hovered {
         mouse::Cursor::Available(Point::new(
@@ -1199,6 +1779,89 @@ fn iced_fixture<'a>(
         .disabled(fixture.state == "disabled")
         .on_action(|_| ())
         .view(tokens),
+        Component::HostedTextarea => {
+            let state = IcedHostedTextareaState::with_text(hosted_textarea_value(fixture.state));
+            IcedHostedTextarea::new(&state)
+                .placeholder("fn main")
+                .syntax_highlighting("rs", iced::highlighter::Theme::Base16Ocean)
+                .height(96.0)
+                .disabled(fixture.state == "disabled")
+                .on_action(|_| ())
+                .view(tokens)
+        }
+        Component::CalendarHeatmap => {
+            let model = Box::leak(Box::new(iced_build_calendar(
+                &[
+                    IcedCalendarHeatmapDatum::<()>::new("2026-06-01", 1.0),
+                    IcedCalendarHeatmapDatum::<()>::new("2026-06-02", 4.0),
+                    IcedCalendarHeatmapDatum::<()>::new("2026-06-03", 8.0),
+                ],
+                IcedCalendarHeatmapOptions::default(),
+            )));
+            IcedCalendarHeatmap::new(model, |_| (), tokens).view()
+        }
+        Component::TimeSeriesChart => IcedTimeSeriesChart::new([2.0, 5.0, 3.0, 8.0], tokens).view(),
+        Component::ReorderList => IcedReorderList::new(
+            [
+                IcedReorderItem::new("alpha", text("Alpha")),
+                IcedReorderItem::new("beta", text("Beta")),
+                IcedReorderItem::new("gamma", text("Gamma")),
+            ],
+            |_| (),
+        )
+        .view(),
+        Component::NativeMarkdown => {
+            IcedNativeMarkdown::parse("# Title\n\nBody copy.").view(tokens, |_| ())
+        }
+        Component::SelectableRichText => IcedSelectableRichText::new(vec![
+            iced::widget::span("See "),
+            iced::widget::span("docs"),
+        ])
+        .into(),
+        Component::ImageViewer => IcedImageViewer::new(
+            IcedImageViewerSource::new(text("Preview")),
+            (),
+            (),
+            (),
+            tokens,
+        )
+        .view(),
+        Component::GraphCanvas => {
+            let model = Box::leak(Box::new(snapshot_graph()));
+            IcedGraphCanvas::new(
+                "snapshot",
+                model,
+                GraphViewport::default(),
+                None,
+                |_| (),
+                tokens,
+            )
+            .view()
+        }
+        Component::KeyCaptureLayer => IcedKeyCaptureLayer::new(text("Ready"), |_| ()).view(),
+        Component::KeymapLayer => IcedKeymapLayer::new(
+            text("Ready"),
+            nana_ui::Keymap::new([]),
+            nana_ui::KeyContext::default(),
+            nana_ui::ActionRegistry::new(),
+            |_| (),
+        )
+        .view(),
+        Component::GpuTextureView => shader(IcedGpuTextureView::new(gpu.host_texture.clone()))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        Component::GpuView => shader(IcedGpuView::new(
+            1,
+            IcedGpuViewPalette {
+                background: tokens.colors.background,
+                accent: tokens.colors.accent_strong,
+            },
+            0,
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into(),
         Component::Checkbox => IcedCheckbox::new(
             matches!(
                 fixture.state,
@@ -1328,19 +1991,414 @@ fn iced_fixture<'a>(
                 summary
             }
         }
+        Component::Progress => {
+            let value = if fixture.state == "empty" { 0.0 } else { 42.0 };
+            let mut progress = IcedProgress::new(value, 100.0);
+            if fixture.state == "labeled" {
+                progress = progress.label("Copying");
+            }
+            progress.view(tokens)
+        }
+        Component::Spinner => IcedSpinner::new("Loading", 2).view(tokens.colors),
+        Component::Tabs => IcedTabs::new(
+            "code",
+            [
+                IcedSelectionOption::new("code", "Code"),
+                IcedSelectionOption::new("split", "Split").disabled(true),
+                IcedSelectionOption::new("preview", "Preview"),
+            ],
+            |_| (),
+        )
+        .view(tokens),
+        Component::Skeleton => IcedSkeleton::new(Length::Fill, 16.0).view(tokens),
+        Component::LevelMeter => IcedLevelMeter::new(0.65)
+            .tone(StatusTone::Success)
+            .view(tokens),
+        Component::FormField => IcedFormField::new(
+            "Email",
+            IcedInput::new("name@studio.local", "name@studio.local")
+                .on_input(|_| ())
+                .view(tokens),
+        )
+        .error("Required")
+        .view(tokens),
+        Component::InteractiveCard => IcedInteractiveCard::new(text("Interactive surface"))
+            .selected(true)
+            .on_select(())
+            .view(tokens),
+        Component::Tooltip => {
+            let trigger = container(icon(Icon::Add, 14.0, tokens.colors.muted))
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center);
+            IcedTooltip::new(trigger, text("Add source").size(11))
+                .config(tooltip_fixture_config(fixture.state))
+                .view(tokens)
+        }
+        Component::Dialog => IcedDialog::new("Rename scene", text("Camera A"))
+            .description("This updates the workspace label.")
+            .on_close(())
+            .on_outside(())
+            .view(tokens),
+        Component::ConfirmDialog => {
+            let mut dialog =
+                IcedConfirmDialog::new("Delete take", "This cannot be undone.", (), (), ())
+                    .danger(fixture.state == "danger");
+            if fixture.state == "busy" {
+                dialog = dialog.busy(true, "处理中", 3);
+            }
+            dialog.view(tokens)
+        }
+        Component::Drawer => IcedDrawer::new("Inspector", text("Properties"), (), ())
+            .side(if fixture.state == "left" {
+                DrawerSide::Left
+            } else {
+                DrawerSide::Right
+            })
+            .view(tokens),
+        Component::Toast => {
+            let mut toast = IcedToast::new(
+                if fixture.state == "dismissible" {
+                    "Export complete"
+                } else {
+                    "Listening"
+                },
+                if fixture.state == "dismissible" {
+                    ToastTone::Success
+                } else {
+                    ToastTone::Info
+                },
+            )
+            .description(if fixture.state == "dismissible" {
+                "Master sent to disk."
+            } else {
+                "Program follow is armed."
+            });
+            if fixture.state == "dismissible" {
+                toast = toast.on_dismiss(());
+            }
+            toast.view(tokens)
+        }
+        Component::XYPad => IcedXYPad::new(XYPadValue::new(0.35, 0.7), |_| (), tokens)
+            .invalid(fixture.state == "invalid")
+            .view(),
+        Component::QrCode => IcedQrCode::encode("nana-ui://pair")
+            .expect("fixture qr encodes")
+            .size(224.0)
+            .view(),
+        Component::Select => IcedSelect::new(
+            if fixture.state == "placeholder" {
+                None
+            } else {
+                Some("code")
+            },
+            [
+                IcedSelectionOption::new("code", "Code"),
+                IcedSelectionOption::new("split", "Split").disabled(true),
+                IcedSelectionOption::new("preview", "Preview"),
+            ],
+            |_| (),
+        )
+        .placeholder("Choose view")
+        .invalid(fixture.state == "invalid")
+        .view(tokens),
+        Component::Popover => IcedPopover::new(
+            text("Details"),
+            text("Inspector content"),
+            true,
+            (),
+            (),
+            tokens,
+        )
+        .view(),
+        Component::ActionMenu => IcedActionMenu::new(
+            text("Actions"),
+            column![
+                IcedActionMenuItem::new("Rename").view(tokens),
+                IcedActionMenuItem::new("Delete").danger(true).view(tokens),
+            ],
+            true,
+            (),
+            (),
+            tokens,
+        )
+        .view(),
+        Component::ActionMenuItem => IcedActionMenuItem::new("Delete")
+            .hint("⌫")
+            .danger(true)
+            .view(tokens),
+        Component::AnchoredActionMenu | Component::ContextMenu => IcedAnchoredActionMenu::new(
+            column![
+                IcedActionMenuItem::new("Rename").view(tokens),
+                IcedActionMenuItem::new("Delete").danger(true).view(tokens),
+            ],
+            AnchoredMenuPosition::new(Point::new(24.0, 36.0)),
+            Size::new(380.0, 180.0),
+            (),
+            (),
+        )
+        .menu_size(200.0, 65.0)
+        .view(tokens),
+        Component::SidebarFrame => {
+            let mut body = IcedSidebarSection::new("资源").count(3);
+            for label in ["外观", "工作区", "设置", "关于", "日志", "调试"] {
+                body = body.push(IcedSidebarRow::new(label).view(tokens));
+            }
+            IcedSidebarFrame::new(body.view(tokens))
+                .top(IcedSidebarRow::new("返回").view(tokens))
+                .footer(
+                    IcedSidebarFooter::new()
+                        .push(
+                            IcedSidebarFooterButton::new("设置", Icon::Settings)
+                                .selected(true)
+                                .view(tokens),
+                        )
+                        .view(tokens.colors),
+                )
+                .view(tokens.colors)
+        }
+        Component::SidebarSection => {
+            let mut section = IcedSidebarSection::new("资源").count(3).on_toggle(());
+            if fixture.state == "collapsed" {
+                section = section.expanded(false);
+            }
+            for label in ["外观", "工作区"] {
+                section = section.push(IcedSidebarRow::new(label).view(tokens));
+            }
+            section.view(tokens)
+        }
+        Component::SidebarFooter => IcedSidebarFooter::new()
+            .push(
+                IcedSidebarFooterButton::new("设置", Icon::Settings)
+                    .selected(true)
+                    .view(tokens),
+            )
+            .push(IcedSidebarFooterButton::new("搜索", Icon::Search).view(tokens))
+            .view(tokens.colors),
+        Component::AppearanceSection => {
+            let mut appearance = AppearanceSettings::default();
+            if fixture.state != "solid" {
+                let _ = appearance.set_window_material(WindowMaterialMode::Translucent);
+            }
+            IcedAppearanceSection::new(theme, &appearance, |_| ()).view(tokens)
+        }
+        Component::AboutSection => IcedAboutSection::new(
+            IcedAboutMetadata::new("NanaUI Gallery", "0.1.0")
+                .description("Injected product metadata for the about card."),
+        )
+        .view(tokens),
+        Component::SettingsCollapsibleCard => IcedSettingsCollapsibleCard::new(
+            text("高级选项").size(13),
+            text("折叠后应隐藏这段说明。").size(12),
+            fixture.state != "collapsed",
+            (),
+        )
+        .view(tokens),
+        Component::CommandPalette => IcedCommandPalette::new(
+            "命令面板",
+            [
+                CommandPaletteItem::new(ActionId::new("rename"), "重命名"),
+                CommandPaletteItem::new(ActionId::new("delete"), "删除"),
+            ],
+            "",
+            0,
+            |_| (),
+            tokens,
+        )
+        .view(),
+        Component::OverlayHost => IcedOverlayHost::new(text("Base surface"))
+            .push(text("Stacked overlay"))
+            .view(),
+        Component::Dropdown => IcedDropdown::single(
+            Some("code"),
+            [
+                IcedDropdownOption::new("code", "Code"),
+                IcedDropdownOption::new("split", "Split").disabled(true),
+                IcedDropdownOption::new("preview", "Preview"),
+            ],
+            |_| (),
+        )
+        .view(tokens),
+        Component::SearchDropdown => {
+            IcedSearchDropdown::new(iced_search_state(), Some(&"code"), |_| ())
+                .placeholder("Search views")
+                .view(tokens)
+        }
+        Component::TreeView => IcedTreeView::new(
+            [
+                TreeNode::branch(
+                    "src",
+                    "src",
+                    true,
+                    [TreeNode::leaf("main", "main.rs").selected(true)],
+                ),
+                TreeNode::leaf("readme", "README.md"),
+            ],
+            |_| (),
+            tokens,
+        )
+        .view(),
+        Component::SidebarRow => IcedSidebarRow::new("工作区")
+            .leading(icon(Icon::Workspace, 14.0, tokens.colors.muted))
+            .state(nana_ui::compatibility::SidebarRowState::Active)
+            .view(tokens),
+        Component::Settings => IcedSettingsCard::new(
+            "外观",
+            IcedSettingsRow::new("主题", text("暗色").size(12))
+                .hint("选择应用配色，立即生效")
+                .first_in_group()
+                .last_in_group()
+                .view(tokens),
+        )
+        .view(tokens),
+        Component::Workspace => {
+            let controller = WorkspaceController::new();
+            let slot = |label: &'static str| {
+                container(text(label).size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET)
+            };
+            workspace_view(
+                &controller,
+                WorkspaceSlots::new(
+                    slot("Nav"),
+                    slot("Files"),
+                    slot("Toolbar"),
+                    slot("Primary"),
+                    slot("Inspector"),
+                    slot("Diagnostics"),
+                ),
+                tokens,
+                |_| (),
+            )
+        }
+        Component::Dock => {
+            let main = DockNode::Split {
+                axis: nana_ui::DockAxis::Horizontal,
+                ratio: 0.35,
+                first: Box::new(DockNode::Tabs {
+                    tabs: vec![DockId::from("nav"), DockId::from("files")],
+                    active: DockId::from("nav"),
+                }),
+                second: Box::new(DockNode::Item {
+                    id: DockId::from("primary"),
+                }),
+            };
+            let controller = DockController::new(
+                "primary",
+                [
+                    DockItemSpec::new("primary", "Primary").limits(160.0, 120.0),
+                    DockItemSpec::new("nav", "Nav").limits(120.0, 80.0),
+                    DockItemSpec::new("files", "Files").limits(120.0, 80.0),
+                ],
+                DockLayout::new(main),
+            )
+            .expect("dock fixture is valid");
+            let panel = |label: &'static str| {
+                container(text(label).size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET)
+            };
+            dock_workspace(
+                &controller,
+                DockSurfaceId(0),
+                DockContents::new()
+                    .insert("primary", panel("Primary"))
+                    .insert("nav", panel("Nav"))
+                    .insert("files", panel("Files")),
+                |_| (),
+                tokens,
+            )
+        }
+        Component::DockPanel => IcedDockPanel::new(
+            column![
+                text("Inspector").size(12).color(tokens.colors.text),
+                text("Selection").size(10).color(tokens.colors.muted),
+            ]
+            .spacing(4),
+        )
+        .padding(10)
+        .view(tokens),
+        Component::SplitPane => {
+            let controller = SplitPaneController::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0);
+            split_pane(
+                &controller,
+                container(text("First").size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET),
+                container(text("Second").size(12).color(tokens.colors.text))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(SLOT_INSET),
+                |_| (),
+                tokens,
+            )
+        }
+        Component::PaneChrome => IcedPaneChrome::new(
+            text("editor.rs").size(12),
+            text("Body").size(12).color(tokens.colors.text),
+            [IcedPaneChromeAction::new(
+                IcedPaneChromeActionKind::CloseItem,
+                "关闭",
+                (),
+            )],
+            tokens,
+        )
+        .view(),
+        Component::PaneTree => {
+            let text_color = tokens.colors.text;
+            let split_tokens = tokens;
+            IcedPaneTree::new(
+                IcedPaneTreeNode::split(
+                    "root",
+                    SplitAxis::Horizontal,
+                    0.4,
+                    IcedPaneTreeNode::leaf("left"),
+                    IcedPaneTreeNode::leaf("right"),
+                ),
+                move |id| {
+                    container(text(*id).size(12).color(text_color))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(SLOT_INSET)
+                        .into()
+                },
+                move |_, axis, ratio, first, second| {
+                    ratio_pane_split(axis, ratio, first, second, split_tokens)
+                },
+            )
+            .view()
+        }
+        Component::AppShell => app_shell(
+            IcedAppTitleBar::new("NanaUI", tokens).view(),
+            text("Workspace").size(13).color(tokens.colors.text),
+            tokens.colors,
+        ),
+        Component::AppTitleBar => IcedAppTitleBar::new("NanaUI", tokens).view(),
     };
     (
         container(view)
-            .padding(if fixture.component == Component::Textarea {
-                Padding {
-                    top: 12.0,
-                    right: 20.0,
-                    bottom: 12.0,
-                    left: 20.0,
-                }
-            } else {
-                Padding::from(20)
-            })
+            .padding(
+                if matches!(
+                    fixture.component,
+                    Component::Dialog | Component::ConfirmDialog | Component::Drawer
+                ) {
+                    Padding::ZERO
+                } else if fixture.component == Component::Textarea {
+                    Padding {
+                        top: 12.0,
+                        right: 20.0,
+                        bottom: 12.0,
+                        left: 20.0,
+                    }
+                } else {
+                    Padding::from(20)
+                },
+            )
             .width(Length::Fill)
             .height(Length::Fill)
             .into(),
@@ -1441,6 +2499,30 @@ fn create_segmented_fixture(
         options,
         requests,
     })
+}
+
+fn create_tabs_fixture(
+    document: &mut RuntimeDocument,
+    fixture: Fixture,
+) -> Result<Entity<RuntimeTabs>, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let tabs = document.context_mut().create_component(
+        document_id,
+        RuntimeTabs::new("code").label("Editor mode").options([
+            RuntimeTabOption::new("code", "Code"),
+            RuntimeTabOption::new("split", "Split").disabled(true),
+            RuntimeTabOption::new("preview", "Preview"),
+        ]),
+    )?;
+    if fixture.state == "focused" {
+        if let Some(first) = document
+            .context()
+            .read(tabs, |tabs| tabs.option_nodes().first().map(|(_, id)| *id))?
+        {
+            document.context_mut().focus_node(document_id, first)?;
+        }
+    }
+    Ok(tabs)
 }
 
 fn runtime_fixture(
@@ -1591,6 +2673,98 @@ fn runtime_fixture(
                     .disabled(fixture.state == "disabled"),
             )?
             .stable_id(),
+        Component::HostedTextarea => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeHostedTextarea::new(hosted_textarea_value(fixture.state), "rs")
+                    .label("Highlighted source")
+                    .placeholder("fn main")
+                    .height(96.0)
+                    .disabled(fixture.state == "disabled"),
+            )?
+            .stable_id(),
+        Component::CalendarHeatmap => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeCalendarHeatmap::new([
+                    RuntimeCalendarDatum::<()>::new("2026-06-01", 1.0),
+                    RuntimeCalendarDatum::<()>::new("2026-06-02", 4.0),
+                    RuntimeCalendarDatum::<()>::new("2026-06-03", 8.0),
+                ]),
+            )?
+            .stable_id(),
+        Component::TimeSeriesChart => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeTimeSeriesChart::new([2.0, 5.0, 3.0, 8.0]),
+            )?
+            .stable_id(),
+        Component::ReorderList => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeReorderList::new([
+                    RuntimeReorderItem::new("alpha", "Alpha").selected(true),
+                    RuntimeReorderItem::new("beta", "Beta"),
+                    RuntimeReorderItem::new("gamma", "Gamma"),
+                ]),
+            )?
+            .stable_id(),
+        Component::NativeMarkdown => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeNativeMarkdown::from_blocks([
+                    MarkdownBlock::Text {
+                        kind: MarkdownBlockKind::Heading(1),
+                        spans: vec![MarkdownSpan::plain("Title")],
+                    },
+                    MarkdownBlock::Text {
+                        kind: MarkdownBlockKind::Paragraph,
+                        spans: vec![MarkdownSpan::plain("Body copy.")],
+                    },
+                ]),
+            )?
+            .stable_id(),
+        Component::SelectableRichText => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeSelectableRichText::new([RichSpan::plain("See "), RichSpan::plain("docs")]),
+            )?
+            .stable_id(),
+        Component::ImageViewer => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeImageViewer::new(ImageViewerContent::None).name("Preview"),
+            )?
+            .stable_id(),
+        Component::GraphCanvas => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeGraphCanvas::new("snapshot", snapshot_graph()),
+            )?
+            .stable_id(),
+        Component::KeyCaptureLayer => document
+            .context_mut()
+            .create_component(document_id, RuntimeKeyCaptureLayer::new().recording(true))?
+            .stable_id(),
+        Component::KeymapLayer => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeKeymapLayer::new(
+                    nana_ui::runtime::Keymap::new([]),
+                    nana_ui_core::KeyContext::default(),
+                    nana_ui::runtime::ActionRegistry::new(),
+                ),
+            )?
+            .stable_id(),
         Component::Checkbox => document
             .context_mut()
             .create_component(
@@ -1611,7 +2785,7 @@ fn runtime_fixture(
                 placement: if fixture.state == "tooltip-edge" {
                     TooltipPlacement::Left
                 } else {
-                    TooltipPlacement::Bottom
+                    TooltipPlacement::FollowCursor
                 },
                 ..TooltipConfig::default()
             };
@@ -1784,6 +2958,535 @@ fn runtime_fixture(
             }
             summary.stable_id()
         }
+        Component::Progress => {
+            let value = if fixture.state == "empty" { 0.0 } else { 42.0 };
+            let mut progress = RuntimeProgress::new(value, 100.0);
+            if fixture.state == "labeled" {
+                progress = progress.label("Copying");
+            }
+            set_full_width(&mut progress.style);
+            document
+                .context_mut()
+                .create_component(document_id, progress)?
+                .stable_id()
+        }
+        Component::Spinner => document
+            .context_mut()
+            .create_component(document_id, RuntimeSpinner::new("Loading").phase(0.25))?
+            .stable_id(),
+        Component::Tabs => create_tabs_fixture(&mut document, fixture)?.stable_id(),
+        Component::Skeleton => document
+            .context_mut()
+            .create_component(document_id, RuntimeSkeleton::fill_width(16.0))?
+            .stable_id(),
+        Component::LevelMeter => {
+            let mut meter = RuntimeLevelMeter::new(0.65).tone(StatusTone::Success);
+            set_full_width(&mut meter.style);
+            document
+                .context_mut()
+                .create_component(document_id, meter)?
+                .stable_id()
+        }
+        Component::FormField => {
+            let field = document.context_mut().create_component(
+                document_id,
+                RuntimeFormField::new("Email").error("Required"),
+            )?;
+            let control = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeTextInput::new("name@studio.local").placeholder("name@studio.local"),
+            )?;
+            document
+                .context_mut()
+                .set_form_field_control(field, Some(control.stable_id()))?;
+            field.stable_id()
+        }
+        Component::InteractiveCard => {
+            let card = document
+                .context_mut()
+                .create_component(document_id, RuntimeInteractiveCard::new().selected(true))?;
+            let label = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Interactive surface"))?;
+            document.context_mut().append_child(card, label)?;
+            card.stable_id()
+        }
+        Component::Tooltip => {
+            let component = RuntimeIconButton::new(Icon::Add, "Add source")
+                .tooltip("Add source", tooltip_fixture_config(fixture.state));
+            document
+                .context_mut()
+                .create_component(document_id, component)?
+                .stable_id()
+        }
+        Component::Dialog => {
+            let dialog = document.context_mut().create_component(
+                document_id,
+                RuntimeDialog::new("Rename scene")
+                    .description("This updates the workspace label.")
+                    .size(DialogSize::Default),
+            )?;
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Camera A"))?;
+            let close = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeIconButton::new(Icon::Close, "Close"),
+            )?;
+            document.context_mut().set_modal_slots(
+                dialog,
+                ModalSlots {
+                    body: Some(body.stable_id()),
+                    close_action: Some(close.stable_id()),
+                    ..ModalSlots::default()
+                },
+            )?;
+            dialog.stable_id()
+        }
+        Component::ConfirmDialog => {
+            let mut confirm = RuntimeConfirmDialog::new("Delete take", "This cannot be undone.");
+            confirm.danger = fixture.state == "danger";
+            confirm.busy = fixture.state == "busy";
+            let confirm = document
+                .context_mut()
+                .create_component(document_id, confirm)?;
+            let cancel = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeButton::new("取消"))?;
+            let accept = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeButton::new(if fixture.state == "busy" {
+                    "处理中"
+                } else {
+                    "确认"
+                })
+                .kind(if fixture.state == "danger" {
+                    nana_ui::ButtonKind::Danger
+                } else {
+                    nana_ui::ButtonKind::Primary
+                })
+                .loading(fixture.state == "busy"),
+            )?;
+            let close = (fixture.state != "busy")
+                .then(|| {
+                    document.context_mut().create_detached_component(
+                        document_id,
+                        RuntimeIconButton::new(Icon::Close, "Close"),
+                    )
+                })
+                .transpose()?;
+            document.context_mut().set_confirm_slots(
+                confirm,
+                ConfirmSlots {
+                    body: None,
+                    close_action: close.map(|close| close.stable_id()),
+                    cancel: cancel.stable_id(),
+                    secondary: None,
+                    confirm: accept.stable_id(),
+                },
+            )?;
+            confirm.stable_id()
+        }
+        Component::Drawer => {
+            let drawer = document.context_mut().create_component(
+                document_id,
+                RuntimeDrawer::new("Inspector").side(if fixture.state == "left" {
+                    DrawerSide::Left
+                } else {
+                    DrawerSide::Right
+                }),
+            )?;
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Properties"))?;
+            let close = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeIconButton::new(Icon::Close, "Close"),
+            )?;
+            document.context_mut().set_modal_slots(
+                drawer,
+                ModalSlots {
+                    body: Some(body.stable_id()),
+                    close_action: Some(close.stable_id()),
+                    ..ModalSlots::default()
+                },
+            )?;
+            drawer.stable_id()
+        }
+        Component::Toast => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeToast::new(
+                    if fixture.state == "dismissible" {
+                        "Export complete"
+                    } else {
+                        "Listening"
+                    },
+                    if fixture.state == "dismissible" {
+                        ToastTone::Success
+                    } else {
+                        ToastTone::Info
+                    },
+                )
+                .description(if fixture.state == "dismissible" {
+                    "Master sent to disk."
+                } else {
+                    "Program follow is armed."
+                })
+                .dismissible(fixture.state == "dismissible"),
+            )?
+            .stable_id(),
+        Component::XYPad => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeXYPad::new(XYPadValue::new(0.35, 0.7)).invalid(fixture.state == "invalid"),
+            )?
+            .stable_id(),
+        Component::QrCode => {
+            let encoded = IcedQrCode::encode("nana-ui://pair").expect("fixture qr encodes");
+            document
+                .context_mut()
+                .create_component(
+                    document_id,
+                    RuntimeQrCode::from_modules(
+                        encoded.modules().to_vec(),
+                        encoded.module_width(),
+                        224.0,
+                    )
+                    .expect("runtime qr accepts encoded modules"),
+                )?
+                .stable_id()
+        }
+        Component::Select => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeSelect::new(Some("code"))
+                    .placeholder("Choose view")
+                    .options([
+                        RuntimeSelectOption::new("code", "Code"),
+                        RuntimeSelectOption::new("split", "Split").disabled(true),
+                        RuntimeSelectOption::new("preview", "Preview"),
+                    ])
+                    .invalid(fixture.state == "invalid")
+                    .opened(fixture.state == "opened"),
+            )?
+            .stable_id(),
+        Component::Popover => {
+            let popover = document.context_mut().create_component(
+                document_id,
+                RuntimePopover::new().trigger("Details").open(true),
+            )?;
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Inspector content"))?;
+            document.context_mut().append_child(popover, body)?;
+            popover.stable_id()
+        }
+        Component::ActionMenu => {
+            let menu = document.context_mut().create_component(
+                document_id,
+                RuntimeActionMenu::new().trigger("Actions").open(true),
+            )?;
+            let rename = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
+            let delete = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").danger(true),
+            )?;
+            document.context_mut().append_child(menu, rename)?;
+            document.context_mut().append_child(menu, delete)?;
+            menu.stable_id()
+        }
+        Component::ActionMenuItem => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").hint("⌫").danger(true),
+            )?
+            .stable_id(),
+        Component::AnchoredActionMenu => {
+            let menu = document.context_mut().create_component(
+                document_id,
+                RuntimeAnchoredActionMenu::new(24.0, 36.0)
+                    .menu_size(200.0, 0.0)
+                    .open(true),
+            )?;
+            let rename = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
+            let delete = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").danger(true),
+            )?;
+            document.context_mut().append_child(menu, rename)?;
+            document.context_mut().append_child(menu, delete)?;
+            menu.stable_id()
+        }
+        Component::ContextMenu => {
+            let menu = document.context_mut().create_component(
+                document_id,
+                RuntimeContextMenu::new(24.0, 36.0)
+                    .items([
+                        RuntimeContextMenuItem::new("rename", "Rename"),
+                        RuntimeContextMenuItem::new("delete", "Delete").danger(true),
+                    ])
+                    .open(true),
+            )?;
+            let rename = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
+            let delete = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeActionMenuItem::new("Delete").danger(true),
+            )?;
+            document.context_mut().append_child(menu, rename)?;
+            document.context_mut().append_child(menu, delete)?;
+            menu.stable_id()
+        }
+        Component::SidebarFrame => mount_runtime_sidebar_frame(&mut document, fixture)?,
+        Component::SidebarSection => mount_runtime_sidebar_section(
+            &mut document,
+            fixture.state != "collapsed",
+            &["外观", "工作区"],
+            true,
+        )?,
+        Component::SidebarFooter => {
+            let footer = document
+                .context_mut()
+                .create_component(document_id, RuntimeSidebarFooter::new())?;
+            let settings = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true),
+            )?;
+            let search = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeSidebarFooterButton::new("搜索", Icon::Search),
+            )?;
+            document.context_mut().append_child(footer, settings)?;
+            document.context_mut().append_child(footer, search)?;
+            footer.stable_id()
+        }
+        Component::AppearanceSection => {
+            let mut appearance = AppearanceSettings::default();
+            if fixture.state != "solid" {
+                let _ = appearance.set_window_material(WindowMaterialMode::Translucent);
+            }
+            let section = document.context_mut().create_component(
+                document_id,
+                RuntimeAppearanceSection::new(theme, appearance),
+            )?;
+            document
+                .context_mut()
+                .assemble_appearance_section(section)?;
+            section.stable_id()
+        }
+        Component::AboutSection => {
+            let section = document.context_mut().create_component(
+                document_id,
+                RuntimeAboutSection::new(
+                    RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
+                        .description("Injected product metadata for the about card."),
+                ),
+            )?;
+            document.context_mut().assemble_about_section(section)?;
+            section.stable_id()
+        }
+        Component::SettingsCollapsibleCard => {
+            let summary = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("高级选项"))?;
+            let details = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeText::new("折叠后应隐藏这段说明。"),
+            )?;
+            let card = document.context_mut().create_component(
+                document_id,
+                RuntimeSettingsCollapsibleCard::new(fixture.state != "collapsed")
+                    .summary(summary.stable_id())
+                    .details(details.stable_id()),
+            )?;
+            document
+                .context_mut()
+                .assemble_settings_collapsible_card(card)?;
+            card.stable_id()
+        }
+        Component::CommandPalette => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeCommandPalette::new(
+                    "命令面板",
+                    [
+                        CommandPaletteItem::new(ActionId::new("rename"), "重命名"),
+                        CommandPaletteItem::new(ActionId::new("delete"), "删除"),
+                    ],
+                ),
+            )?
+            .stable_id(),
+        Component::OverlayHost => {
+            let host = document
+                .context_mut()
+                .create_component(document_id, RuntimeOverlayHost::new())?;
+            let base = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Base surface"))?;
+            document.context_mut().append_child(host, base)?;
+            host.stable_id()
+        }
+        Component::Dropdown => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeDropdown::single(Some("code"))
+                    .placeholder("Choose view")
+                    .options([
+                        RuntimeDropdownOption::new("code", "Code"),
+                        RuntimeDropdownOption::new("split", "Split").disabled(true),
+                        RuntimeDropdownOption::new("preview", "Preview"),
+                    ]),
+            )?
+            .stable_id(),
+        Component::SearchDropdown => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeSearchDropdown::new(Some("code"))
+                    .placeholder("Search views")
+                    .options([
+                        RuntimeSearchDropdownOption::new("code", "Code"),
+                        RuntimeSearchDropdownOption::new("preview", "Preview"),
+                    ]),
+            )?
+            .stable_id(),
+        Component::TreeView => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeTreeView::new([
+                    TreeNode::branch(
+                        std::sync::Arc::<str>::from("src"),
+                        "src",
+                        true,
+                        [
+                            TreeNode::leaf(std::sync::Arc::<str>::from("main"), "main.rs")
+                                .selected(true),
+                        ],
+                    ),
+                    TreeNode::leaf(std::sync::Arc::<str>::from("readme"), "README.md"),
+                ]),
+            )?
+            .stable_id(),
+        Component::SidebarRow => {
+            let leading = document.context_mut().create_detached_component(
+                document_id,
+                nana_ui::runtime::SidebarRowIcon::new(Icon::Workspace),
+            )?;
+            let row = document.context_mut().create_component(
+                document_id,
+                RuntimeSidebarRow::new("工作区")
+                    .state(nana_ui::runtime::SidebarRowState::Active)
+                    .slots(nana_ui::runtime::ListItemSlots {
+                        leading: Some(leading.stable_id()),
+                        content: None,
+                        trailing: None,
+                    }),
+            )?;
+            document.context_mut().append_child(row, leading)?;
+            row.stable_id()
+        }
+        Component::Settings => {
+            let control = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("暗色"))?;
+            let row = document.context_mut().mount_settings_leaf_row(
+                document_id,
+                "主题",
+                Some("选择应用配色，立即生效"),
+                control.stable_id(),
+            )?;
+            let card = document
+                .context_mut()
+                .create_component(document_id, RuntimeSettingsCard::new("外观"))?;
+            document.context_mut().append_child(card, row)?;
+            card.stable_id()
+        }
+        Component::Workspace => mount_runtime_workspace(&mut document)?,
+        Component::Dock => mount_runtime_dock(&mut document)?,
+        Component::DockPanel => {
+            let title = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeText::new("Inspector"))?;
+            let hint = document.context_mut().create_detached_component(
+                document_id,
+                RuntimeText::new("Selection").style({
+                    let mut style = NodeStyle::default();
+                    style.foreground = Some(SemanticColorRole::Muted);
+                    Arc::make_mut(&mut style.layout).font_size = Some(10.0);
+                    style
+                }),
+            )?;
+            let mut body_style = NodeStyle::default();
+            {
+                let layout = Arc::make_mut(&mut body_style.layout);
+                layout.direction = Some(nana_ui_core::FlexDirection::Column);
+                layout.gap = Some(LengthSpec::Px(4.0));
+            }
+            let body = document
+                .context_mut()
+                .create_detached_component(document_id, RuntimeList::new().style(body_style))?;
+            document.context_mut().append_child(body, title)?;
+            document.context_mut().append_child(body, hint)?;
+            let panel = document.context_mut().create_component(
+                document_id,
+                RuntimeDockPanel::new()
+                    .padding(10.0)
+                    .content(body.stable_id()),
+            )?;
+            document.context_mut().append_child(panel, body)?;
+            panel.stable_id()
+        }
+        Component::SplitPane => mount_runtime_split_pane(&mut document)?,
+        Component::PaneChrome => mount_runtime_pane_chrome(&mut document)?,
+        Component::PaneTree => mount_runtime_pane_tree(&mut document)?,
+        Component::AppShell => mount_runtime_app_shell(&mut document)?,
+        Component::AppTitleBar => document
+            .context_mut()
+            .create_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?
+            .stable_id(),
+        Component::GpuTextureView => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeGpuTextureView::new(gpu::SNAPSHOT_GPU_SLOT),
+            )?
+            .stable_id(),
+        Component::GpuView => {
+            let colors = theme.colors();
+            document
+                .context_mut()
+                .create_component(
+                    document_id,
+                    RuntimeGpuView::new(1).palette(RuntimeGpuViewPalette {
+                        background: [
+                            colors.background.r,
+                            colors.background.g,
+                            colors.background.b,
+                            colors.background.a,
+                        ],
+                        accent: [
+                            colors.accent_strong.r,
+                            colors.accent_strong.g,
+                            colors.accent_strong.b,
+                            colors.accent_strong.a,
+                        ],
+                    }),
+                )?
+                .stable_id()
+        }
     };
     let mut hierarchy = MutationQueue::new();
     hierarchy.insert(root.stable_id(), target, None);
@@ -1847,6 +3550,322 @@ fn runtime_fixture(
         segmented_requests,
         next_deadline,
     })
+}
+
+fn iced_search_state() -> &'static IcedSearchDropdownState<&'static str> {
+    static STATE: std::sync::OnceLock<IcedSearchDropdownState<&'static str>> =
+        std::sync::OnceLock::new();
+    STATE.get_or_init(|| {
+        IcedSearchDropdownState::new([
+            IcedSearchDropdownOption::new("code", "Code"),
+            IcedSearchDropdownOption::new("preview", "Preview"),
+        ])
+    })
+}
+
+fn mount_runtime_sidebar_section(
+    document: &mut RuntimeDocument,
+    expanded: bool,
+    labels: &[&str],
+    collapsible: bool,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let spec = RuntimeSidebarSection::new("资源")
+        .count(3)
+        .collapsible(collapsible)
+        .expanded(expanded);
+    let disclosure = if collapsible {
+        Some(
+            document
+                .context_mut()
+                .create_detached_component(document_id, spec.disclosure_mark())?,
+        )
+    } else {
+        None
+    };
+    let title = document
+        .context_mut()
+        .create_detached_component(document_id, spec.title_label())?;
+    let count = document
+        .context_mut()
+        .create_detached_component(document_id, spec.count_label())?;
+    let spec = spec
+        .title_slot(title.stable_id())
+        .count_slot(count.stable_id());
+    let spec = match &disclosure {
+        Some(disclosure) => spec.disclosure(disclosure.stable_id()),
+        None => spec,
+    };
+    let header = document
+        .context_mut()
+        .create_detached_component(document_id, spec.header_item())?;
+    let body = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarSection::body_port())?;
+    for label in labels {
+        let row = document
+            .context_mut()
+            .create_detached_component(document_id, RuntimeSidebarRow::new(*label))?;
+        document.context_mut().append_child(body, row)?;
+    }
+    if let Some(disclosure) = disclosure {
+        document.context_mut().append_child(header, disclosure)?;
+    }
+    document.context_mut().append_child(header, title)?;
+    document.context_mut().append_child(header, count)?;
+    let section = document.context_mut().create_component(
+        document_id,
+        spec.header(header.stable_id()).body(body.stable_id()),
+    )?;
+    document.context_mut().append_child(section, header)?;
+    document.context_mut().append_child(section, body)?;
+    Ok(section.stable_id())
+}
+
+fn slot_label_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    let inset = LengthSpec::Px(SLOT_INSET);
+    layout.padding_left = Some(inset);
+    layout.padding_right = Some(inset);
+    layout.padding_top = Some(inset);
+    layout.padding_bottom = Some(inset);
+    style
+}
+
+fn mount_runtime_label(
+    document: &mut RuntimeDocument,
+    label: &str,
+) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
+    mount_runtime_label_styled(document, label, NodeStyle::default())
+}
+
+fn mount_runtime_slot_label(
+    document: &mut RuntimeDocument,
+    label: &str,
+) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
+    mount_runtime_label_styled(document, label, slot_label_style())
+}
+
+fn mount_runtime_label_styled(
+    document: &mut RuntimeDocument,
+    label: &str,
+    style: NodeStyle,
+) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    Ok(document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(label).style(style))?)
+}
+
+fn mount_runtime_workspace(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let nav = mount_runtime_slot_label(document, "Nav")?;
+    let files = mount_runtime_slot_label(document, "Files")?;
+    let toolbar = mount_runtime_slot_label(document, "Toolbar")?;
+    let primary = mount_runtime_slot_label(document, "Primary")?;
+    let inspector = mount_runtime_slot_label(document, "Inspector")?;
+    let diagnostics = mount_runtime_slot_label(document, "Diagnostics")?;
+    let workspace = document.context_mut().create_component(
+        document_id,
+        RuntimeWorkspace::from_model(
+            &WorkspaceModel::new(),
+            [
+                WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
+                WorkspaceRegionSlot::new(RegionId::Diagnostics, diagnostics.stable_id()),
+            ],
+        ),
+    )?;
+    document.context_mut().append_child(workspace, nav)?;
+    document.context_mut().append_child(workspace, files)?;
+    document.context_mut().append_child(workspace, toolbar)?;
+    document.context_mut().append_child(workspace, primary)?;
+    document.context_mut().append_child(workspace, inspector)?;
+    document
+        .context_mut()
+        .append_child(workspace, diagnostics)?;
+    document.context_mut().assemble_workspace(workspace)?;
+    Ok(workspace.stable_id())
+}
+
+fn mount_runtime_dock(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let nav = mount_runtime_slot_label(document, "Nav")?;
+    let files = mount_runtime_slot_label(document, "Files")?;
+    let primary = mount_runtime_slot_label(document, "Primary")?;
+    let dock = document.context_mut().create_component(
+        document_id,
+        RuntimeDock::new(RuntimeDockNode::split(
+            nana_ui::runtime::DockAxis::Horizontal,
+            0.35,
+            RuntimeDockNode::tabs(
+                ["nav", "files"],
+                "nav",
+                [
+                    ("nav", Some(nav.stable_id())),
+                    ("files", Some(files.stable_id())),
+                ],
+            ),
+            RuntimeDockNode::item("primary", Some(primary.stable_id())),
+        ))
+        .title("nav", "Nav")
+        .title("files", "Files")
+        .title("primary", "Primary"),
+    )?;
+    document.context_mut().append_child(dock, nav)?;
+    document.context_mut().append_child(dock, files)?;
+    document.context_mut().append_child(dock, primary)?;
+    document.context_mut().assemble_dock(dock)?;
+    Ok(dock.stable_id())
+}
+
+fn mount_runtime_split_pane(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let first = mount_runtime_slot_label(document, "First")?;
+    let second = mount_runtime_slot_label(document, "Second")?;
+    let handle = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(""))?;
+    let indicator = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(""))?;
+    let pane = document.context_mut().create_component(
+        document_id,
+        RuntimeSplitPane::from_model(
+            &SplitPaneModel::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0),
+            first.stable_id(),
+            second.stable_id(),
+        )
+        .handle(handle.stable_id()),
+    )?;
+    document.context_mut().append_child(pane, first)?;
+    document.context_mut().append_child(handle, indicator)?;
+    document.context_mut().append_child(pane, handle)?;
+    document.context_mut().append_child(pane, second)?;
+    document.context_mut().update_component(pane, |_, _| {})?;
+    Ok(pane.stable_id())
+}
+
+fn mount_runtime_pane_chrome(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let header = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeText::new(""))?;
+    let tabs = mount_runtime_label(document, "editor.rs")?;
+    let body = mount_runtime_label(document, "Body")?;
+    let close = mount_runtime_label(document, "关闭")?;
+    let chrome = document.context_mut().create_component(
+        document_id,
+        RuntimePaneChrome::new()
+            .header(header.stable_id())
+            .tabs(tabs.stable_id())
+            .body(body.stable_id())
+            .actions([nana_ui::runtime::PaneChromeAction::new(
+                nana_ui::runtime::PaneChromeActionKind::CloseItem,
+                "关闭",
+            )
+            .target(close.stable_id())])
+            .active(true),
+    )?;
+    document.context_mut().append_child(chrome, header)?;
+    document.context_mut().append_child(header, tabs)?;
+    document.context_mut().append_child(header, close)?;
+    document.context_mut().append_child(chrome, body)?;
+    Ok(chrome.stable_id())
+}
+
+fn mount_runtime_pane_tree(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let left = mount_runtime_slot_label(document, "left")?;
+    let right = mount_runtime_slot_label(document, "right")?;
+    let document_id = document.document();
+    let tree = document.context_mut().create_component(
+        document_id,
+        RuntimePaneTree::new(RuntimePaneTreeNode::split(
+            "root",
+            SplitAxis::Horizontal,
+            0.4,
+            RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
+            RuntimePaneTreeNode::leaf_content("right", right.stable_id()),
+        )),
+    )?;
+    document.context_mut().append_child(tree, left)?;
+    document.context_mut().append_child(tree, right)?;
+    Ok(tree.stable_id())
+}
+
+fn mount_runtime_app_shell(
+    document: &mut RuntimeDocument,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let title = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?;
+    let body = mount_runtime_label(document, "Workspace")?;
+    let shell = document.context_mut().create_component(
+        document_id,
+        RuntimeAppShell::new()
+            .title_bar(title.stable_id())
+            .body(body.stable_id()),
+    )?;
+    document.context_mut().append_child(shell, title)?;
+    document.context_mut().append_child(shell, body)?;
+    Ok(shell.stable_id())
+}
+
+fn mount_runtime_sidebar_frame(
+    document: &mut RuntimeDocument,
+    _fixture: Fixture,
+) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    let top = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarRow::new("返回"))?;
+    let body = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarFrame::vertical_body_scroll())?;
+    let section = mount_runtime_sidebar_section(
+        document,
+        true,
+        &["外观", "工作区", "设置", "关于", "日志", "调试"],
+        false,
+    )?;
+    document.context_mut().append_child(
+        body,
+        Entity::<RuntimeSidebarSection>::from_stable_id(section),
+    )?;
+    let footer = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeSidebarFooter::new())?;
+    let settings = document.context_mut().create_detached_component(
+        document_id,
+        RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true),
+    )?;
+    document.context_mut().append_child(footer, settings)?;
+    let frame = document.context_mut().create_component(
+        document_id,
+        RuntimeSidebarFrame::new()
+            .top(top.stable_id())
+            .body(body.stable_id())
+            .footer(footer.stable_id()),
+    )?;
+    document.context_mut().append_child(frame, top)?;
+    document.context_mut().append_child(frame, body)?;
+    document.context_mut().append_child(frame, footer)?;
+    Ok(frame.stable_id())
 }
 
 fn exercise_segmented_contract(
@@ -2371,7 +4390,8 @@ fn apply_runtime_state(
                 &pointer(PointerPhase::Move, center_x, center_y),
             )?
             .prevent_default),
-        "tooltip-delay" | "tooltip-edge" => {
+        "open" if !matches!(fixture.component, Component::Tooltip) => Ok(true),
+        "tooltip-delay" | "tooltip-edge" | "open" | "edge" => {
             adapter.dispatch_at(
                 context,
                 document_id,
@@ -2382,7 +4402,27 @@ fn apply_runtime_state(
             if let Some(deadline) = deadline {
                 context.advance_animations(deadline);
             }
-            Ok(deadline.is_some())
+            Ok(if matches!(fixture.state, "open" | "edge") {
+                context
+                    .world()
+                    .overlay_host(target)
+                    .is_some_and(|host| host.active.is_some())
+            } else {
+                deadline.is_some()
+            })
+        }
+        "delay" if fixture.component == Component::Tooltip => {
+            adapter.dispatch_at(
+                context,
+                document_id,
+                &pointer(PointerPhase::Move, center_x, center_y),
+                Duration::ZERO,
+            )?;
+            Ok(context.next_animation_deadline().is_some()
+                && context
+                    .world()
+                    .overlay_host(target)
+                    .is_some_and(|host| host.active.is_none()))
         }
         "pressed" | "selected-pressed" => Ok(adapter
             .dispatch(
@@ -2391,7 +4431,18 @@ fn apply_runtime_state(
                 &pointer(PointerPhase::Down, center_x, center_y),
             )?
             .prevent_default),
-        "focused" => Ok(context.focus_node(document_id, target)?),
+        "focused" => {
+            let target = if fixture.component == Component::Tabs {
+                context
+                    .world()
+                    .node(target)
+                    .and_then(|node| node.children.first().copied())
+                    .unwrap_or(target)
+            } else {
+                target
+            };
+            Ok(context.focus_node(document_id, target)?)
+        }
         "invalid" if fixture.component == Component::TextInput => {
             Ok(context.focus_node(document_id, target)?)
         }
@@ -2682,6 +4733,8 @@ fn write_evidence(
                     caret,
                     preedit,
                     focus_ring,
+                    border,
+                    border_width,
                     ..
                 }),
             ) => {
@@ -2706,12 +4759,17 @@ fn write_evidence(
                             has_own_clip(primitive)
                                 && matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
                         })
-                        && focus_ring.is_some()
-                        && primitive(7).is_some_and(|primitive| {
-                            matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
-                        })
+                        && focus_ring.is_none()
+                        && primitive(7).is_none()
                 } else {
                     caret.is_none() && primitive(4).is_none() && focus_ring.is_none()
+                };
+                let border_ok = match fixture.state {
+                    "invalid-focused" => {
+                        focus_ring.is_none() && border.is_some() && *border_width >= 2.0
+                    }
+                    "disabled" => focus_ring.is_none(),
+                    _ => focus_ring.is_none() && (*border_width - 1.0).abs() < 0.01,
                 };
                 let selection_count_ok = match fixture.state {
                     "selection" => selection.len() == 1,
@@ -2756,6 +4814,7 @@ fn write_evidence(
                     && selection_count_ok
                     && selection_scene_ok
                     && caret_scene_ok
+                    && border_ok
                     && preedit.is_empty()
                     && primitive(5).is_none()
                     && clipped_ok
@@ -3059,17 +5118,20 @@ fn write_evidence(
                 | Component::LabeledValue
         ),
     };
-    let tooltip = (fixture.component == Component::IconButton)
-        .then(|| {
-            runtime
-                .document
-                .context()
-                .icon_button_tooltip(Entity::<RuntimeIconButton>::from_stable_id(runtime.target))
-                .ok()
-                .flatten()
-                .map(|tooltip| tooltip.stable_id())
-        })
-        .flatten();
+    let tooltip = matches!(
+        fixture.component,
+        Component::IconButton | Component::Tooltip
+    )
+    .then(|| {
+        runtime
+            .document
+            .context()
+            .icon_button_tooltip(Entity::<RuntimeIconButton>::from_stable_id(runtime.target))
+            .ok()
+            .flatten()
+            .map(|tooltip| tooltip.stable_id())
+    })
+    .flatten();
     let active_overlay = world
         .overlay_host(runtime.target)
         .and_then(|host| host.active);
@@ -3100,6 +5162,20 @@ fn write_evidence(
             | Component::ValidationMessage
             | Component::EmptyState
             | Component::LabeledValue
+            | Component::Progress
+            | Component::Spinner
+            | Component::Skeleton
+            | Component::LevelMeter
+            | Component::FormField
+            | Component::Workspace
+            | Component::Dock
+            | Component::DockPanel
+            | Component::SplitPane
+            | Component::PaneChrome
+            | Component::PaneTree
+            | Component::AppShell
+            | Component::AppTitleBar
+            | Component::GpuTextureView
     ) {
         hit != Some(runtime.target)
     } else if expects_hit {
@@ -3124,6 +5200,9 @@ fn write_evidence(
                 | "keyboard-activation"
                 | "tooltip-delay"
                 | "tooltip-edge"
+                | "open"
+                | "delay"
+                | "edge"
                 | "pointer-toggle"
                 | "space-toggle"
                 | "accessibility-toggle"
@@ -3147,9 +5226,24 @@ fn write_evidence(
             | Component::Button
             | Component::TextInput
             | Component::Textarea
+            | Component::HostedTextarea
             | Component::Checkbox
             | Component::IconButton
+            | Component::Tooltip
             | Component::SegmentedControl
+            | Component::Tabs
+            | Component::Spinner
+            | Component::Skeleton
+            | Component::Workspace
+            | Component::Dock
+            | Component::DockPanel
+            | Component::SplitPane
+            | Component::PaneChrome
+            | Component::PaneTree
+            | Component::AppShell
+            | Component::AppTitleBar
+            | Component::GpuTextureView
+            | Component::GpuView
     ) || geometry.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
@@ -3164,13 +5258,19 @@ fn write_evidence(
             (bounds.width - 380.0).abs() < 0.01
                 && (bounds.height - text_input_control_size(fixture.state).height()).abs() < 0.01
         }
-        Component::Textarea => {
+        Component::Textarea | Component::HostedTextarea => {
             (bounds.width - 380.0).abs() < 0.01 && (bounds.height - 96.0).abs() < 0.01
         }
         Component::SegmentedControl => {
             (bounds.height - segmented_control_size(fixture.state).height()).abs() < 0.01
         }
         Component::Checkbox => bounds.height >= ControlSize::Medium.height(),
+        Component::Dialog | Component::ConfirmDialog | Component::Drawer => {
+            matches!(
+                geometry,
+                Some(nana_ui::runtime::ComponentGeometry::ModalFrame { .. })
+            )
+        }
         _ => true,
     });
     let runtime_ok = bounds.is_some()
@@ -3223,8 +5323,30 @@ fn write_evidence(
                     }
                     _ => true,
                 }))
-        && (!matches!(fixture.state, "tooltip-delay" | "tooltip-edge")
-            || (tooltip.is_some() && tooltip == active_overlay));
+        && match (fixture.component, fixture.state) {
+            (Component::Tooltip, "delay") => {
+                tooltip.is_some()
+                    && active_overlay.is_none()
+                    && runtime.next_deadline.is_some()
+                    && tooltip.is_some_and(|id| {
+                        world.accessibility(id).is_some_and(|node| {
+                            node.role == nana_ui::runtime::AccessibilityRole::Tooltip
+                                && node.label.as_deref() == Some("Add source")
+                        })
+                    })
+            }
+            (Component::Tooltip, "open" | "edge") | (_, "tooltip-delay" | "tooltip-edge") => {
+                tooltip.is_some()
+                    && tooltip == active_overlay
+                    && tooltip.is_some_and(|id| {
+                        world.accessibility(id).is_some_and(|node| {
+                            node.role == nana_ui::runtime::AccessibilityRole::Tooltip
+                                && node.label.as_deref() == Some("Add source")
+                        })
+                    })
+            }
+            _ => true,
+        };
     let iced_verdict =
         if fixture.component == Component::Textarea && textarea_is_focused(fixture.state) {
             "deterministic compatibility content and focus state rendered for manual review"
@@ -3292,9 +5414,82 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
             "manual-required",
             "Review the generated dark and light compatibility and Runtime images for placeholder, multiline, focus, selection, invalid, disabled, clipping and scrolling semantics; IME remains a real Hosted gate",
         ),
-        (Component::SegmentedControl, _) => (
+        (Component::HostedTextarea, _) => (
             "manual-required",
-            "Review the generated dark and light compatibility and Runtime images for density, icon alignment, selected interaction layers, external focus outline, disabled checked state and empty geometry; behavior and accessibility remain machine-gated",
+            "Review the generated dark and light images for Runtime presenter spans on committed rust text; Iced highlighter is a leftover reference, not the product path",
+        ),
+        (
+            Component::CalendarHeatmap
+            | Component::TimeSeriesChart
+            | Component::ReorderList
+            | Component::NativeMarkdown
+            | Component::SelectableRichText
+            | Component::ImageViewer
+            | Component::GraphCanvas
+            | Component::KeyCaptureLayer
+            | Component::KeymapLayer,
+            _,
+        ) => (
+            "manual-required",
+            "Review Runtime Scene quads against design tokens; Iced canvas/widget output is a reference, not a pixel oracle",
+        ),
+        (Component::GpuTextureView | Component::GpuView, _) => (
+            "manual-required",
+            "Review host-texture sampling and gpu-view Scene paint; Iced shader output is a reference, not a pixel oracle",
+        ),
+        (Component::Tooltip, _) => (
+            "manual-required",
+            "Review the generated dark and light Iced Tooltip and Runtime overlay images for open, delay-not-open and edge placement; public default stays Iced until visual and platform review",
+        ),
+        (Component::Dialog | Component::ConfirmDialog | Component::Drawer, _) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime modal images for scrim, surface, title and slotted body or actions; public default stays Iced until overlay-host review",
+        ),
+        (Component::Toast | Component::XYPad | Component::QrCode, _) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime images; public default stays Iced until visual review",
+        ),
+        (
+            Component::Select
+            | Component::Popover
+            | Component::ActionMenu
+            | Component::ActionMenuItem
+            | Component::AnchoredActionMenu
+            | Component::ContextMenu,
+            _,
+        ) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime images for select fields and anchored menus; public default stays Iced until visual review",
+        ),
+        (
+            Component::Workspace
+            | Component::Dock
+            | Component::DockPanel
+            | Component::SplitPane
+            | Component::PaneChrome
+            | Component::PaneTree
+            | Component::AppShell
+            | Component::AppTitleBar,
+            _,
+        ) => (
+            "manual-required",
+            "Review the generated dark and light Iced and Runtime workspace-family images; Iced remains the composer reference until windowed A/B",
+        ),
+        (
+            Component::SidebarFrame
+            | Component::SidebarSection
+            | Component::SidebarFooter
+            | Component::AppearanceSection
+            | Component::AboutSection
+            | Component::SettingsCollapsibleCard,
+            _,
+        ) => (
+            "pass",
+            "2026-08-16 windowed A/B and side-by-side review preferred Runtime (right): frame top/footer stay outside the scrolling body, section collapse uses ChevronRight, footer hugs 28px icon actions, Appearance/About assemble SettingsRow children, and Iced uppercase title / missing radius track are Iced-side",
+        ),
+        (Component::SegmentedControl, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment, disabled fade and the 2px external focus ring",
         ),
         (Component::Text, _) => (
             "pass",
@@ -3314,19 +5509,39 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ),
         (Component::StatusBadge, _) => (
             "pass",
-            "Fresh dark and light review confirms all five semantic tones, compact pill geometry, indicator spacing and readable medium-weight labels",
+            "2026-08-15 side-by-side review preferred Runtime (right): five tones, compact pill and indicator contrast are accepted without Iced pixel match",
         ),
         (Component::ValidationMessage, _) => (
             "pass",
-            "Fresh dark and light review confirms warning and danger contrast, outlined indicators, regular text weight and stable inline spacing",
+            "2026-08-15 side-by-side review preferred Runtime (right): warning and danger contrast and inline spacing are accepted",
         ),
         (Component::EmptyState, _) => (
             "pass",
-            "Fresh dark and light review confirms normal and compact alignment, intrinsic icon/title/message order, an idle real action, CJK and emoji wrapping, and intentional extreme-width clipping without overflow",
+            "2026-08-15 side-by-side review preferred Runtime (right): icon/title/message order, compact layout, CJK wrap and solid Primary action are accepted",
         ),
         (Component::LabeledValue, _) => (
             "pass",
-            "Fresh dark and light review confirms label/value hierarchy, normal versus strong weight, aligned real action content and no parent interaction chrome",
+            "2026-08-15 side-by-side review preferred Runtime (right): label/value hierarchy and end-aligned action child are accepted",
+        ),
+        (Component::Progress | Component::Spinner, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): determinate track/fill, optional label and host-sampled spinner are accepted",
+        ),
+        (Component::Tabs, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): independent tab surface without a segmented focus ring",
+        ),
+        (Component::Skeleton | Component::LevelMeter, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): Subtle placeholder and tone-colored meter are accepted",
+        ),
+        (Component::FormField, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): enabled field, centered value and danger support with indicator",
+        ),
+        (Component::InteractiveCard, _) => (
+            "pass",
+            "2026-08-15 side-by-side review preferred Runtime (right): selected surface and centered child content",
         ),
         _ => (
             "pass",
@@ -3346,14 +5561,103 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         (Component::RangeField, _) => {
             "intentional: Runtime reserves dedicated label, value and track regions instead of copying the Iced inline geometry"
         }
+        (Component::SegmentedControl, "focused") => {
+            "intentional: Runtime keeps the 2px external focus ring; Iced focus is nearly invisible"
+        }
+        (Component::Tabs, "focused") => {
+            "intentional: Tabs keep selected surface only; they do not paint the segmented 2px focus ring"
+        }
         (Component::SegmentedControl, "no-selection" | "all-disabled") => {
             "intentional: the compatibility widget requires a value while Runtime supports controlled no-selection and derives tab stops only from enabled options"
+        }
+        (Component::SegmentedControl, _) => {
+            "intentional: Runtime selected pill and option contrast are the accepted visual; Iced is reference only"
+        }
+        (Component::EmptyState, "complete-action") => {
+            "intentional: Runtime paints a solid Primary action; Iced renders a weaker outlined control"
+        }
+        (Component::LabeledValue, "action") => {
+            "intentional: Runtime end-aligns the action child; Iced places it beside the value"
         }
         (Component::Card, _) => {
             "intentional: Runtime preserves the authored title casing while Iced uppercases its compatibility heading"
         }
+        (Component::Tooltip, _) => {
+            "intentional: Runtime Tooltip is a compact pointer-bound hover card hosted by the trigger; Iced wraps arbitrary content. Visual review is the qualification gate"
+        }
+        (Component::Dialog | Component::ConfirmDialog | Component::Drawer, _) => {
+            "intentional: Runtime ModalFrame owns scrim, surface and slotted children; Iced composes the same product chrome. Visual review is the qualification gate"
+        }
+        (Component::Select, "opened") => {
+            "intentional: Runtime paints the opened menu in the same leaf; Iced pick-list overlay is not captured in this snapshot"
+        }
+        (
+            Component::Select
+            | Component::Popover
+            | Component::ActionMenu
+            | Component::ActionMenuItem
+            | Component::AnchoredActionMenu
+            | Component::ContextMenu,
+            _,
+        ) => {
+            "intentional: Runtime keeps disabled select options visible and owns anchored menu chrome; Iced pick-list omits disabled popup rows. Visual review is the qualification gate"
+        }
+        (Component::SidebarSection, _) => {
+            "intentional: Runtime header is ListItem chrome with ChevronDown/ChevronRight; Iced paints a tracked uppercase title and a rotating canvas chevron. Scene adapter cannot paint letter-spacing or rotation"
+        }
+        (Component::AppearanceSection | Component::AboutSection, _) => {
+            "intentional: Runtime assembles qualified SettingsRow children; Iced composes the same host snapshot"
+        }
+        (Component::SettingsCollapsibleCard, _) => {
+            "intentional: Runtime disclosure is non-interactive chrome; the card remains the single activation target"
+        }
+        (Component::GraphCanvas, _) => {
+            "intentional: Runtime Scene approximates Bézier edges as quad samples and 1px grid lines; Iced strokes paths. Port discs use the Iced 4/5px radius, not the 8px hit target"
+        }
+        (Component::GpuTextureView, _) => {
+            "intentional: Iced GpuTextureView samples the same host texture as Runtime nana.host-texture; layout chrome may differ"
+        }
+        (Component::GpuView, _) => {
+            "intentional: Iced GpuView shader is inline; Runtime paints via a fixture SceneGpuRenderer using the same WGSL. CustomRenderNode does not encode palette; the snapshot renderer uses the fixture theme"
+        }
         _ => fixture.divergence,
     }
+}
+
+fn snapshot_graph() -> GraphModel {
+    let source = GraphNode::new(
+        "source",
+        "In",
+        GraphPoint::new(16.0, 36.0),
+        GraphSize::new(96.0, 48.0),
+    )
+    .with_port(GraphPort::new(
+        "out",
+        "Out",
+        GraphPortKind::Output,
+        GraphPortSide::Right,
+    ));
+    let target = GraphNode::new(
+        "target",
+        "Out",
+        GraphPoint::new(180.0, 36.0),
+        GraphSize::new(96.0, 48.0),
+    )
+    .with_port(GraphPort::new(
+        "in",
+        "In",
+        GraphPortKind::Input,
+        GraphPortSide::Left,
+    ));
+    GraphModel::new(
+        vec![source, target],
+        vec![GraphEdge::new(
+            "link",
+            GraphEndpoint::new("source", "out"),
+            GraphEndpoint::new("target", "in"),
+        )],
+    )
+    .expect("snapshot graph is valid")
 }
 
 fn set_full_width(style: &mut NodeStyle) {
@@ -3433,6 +5737,13 @@ fn textarea_value(state: &str) -> &'static str {
             "First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line stays"
         }
         _ => "First line\nSecond line\nThird line",
+    }
+}
+
+fn hosted_textarea_value(state: &str) -> &'static str {
+    match state {
+        "placeholder" => "",
+        _ => "fn main() {\n    let ready = true;\n}\n",
     }
 }
 

@@ -1,12 +1,11 @@
-//! Android MVP **Nana shell** stub — workspace geometry + chrome band plan.
+//! Frozen Android **Nana shell** stub — workspace geometry + chrome band plan.
 //!
 //! NanaUI owns shell layout and optional generic Iced controls. Vue apps keep CSS, custom
 //! components, and renderer freedom via [`nana_ui_vue::VueHost`] — this stub does not restrict
 //! Vue widget types. Desktop [`nana_ui::DesktopShell`] composes the same regions with Iced;
 //! this stub keeps [`WorkspaceLayout`] / [`WorkspaceGeometry`] from `nana-ui-core` so Primary
-//! viewport sizing matches desktop. Full Iced shell paint is still open; hosts can already
-//! present [`ShellChromeBand`] fills via scissor + solid-color pipeline
-//! (title / resources / primary) without Iced.
+//! viewport sizing matches desktop. Hosts can present [`ShellChromeBand`] fills via scissor
+//! + solid-color pipeline (title / resources / primary).
 
 use nana_ui_core::{PhysicalRect, RegionId, TITLE_BAR_HEIGHT, WorkspaceGeometry, WorkspaceLayout};
 

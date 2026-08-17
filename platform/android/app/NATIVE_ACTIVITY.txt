@@ -14,8 +14,8 @@
 #   → target-android/apk/nana-android-host-debug.apk
 #
 # KeyEvent typing evidence (2026-08-10): emulator AVD nana_api34_arm64 +
-# adb install + keyevent → logcat `iced slot Input len=`. Soft IME still open.
-# See docs/android-arm64.md「模拟器 KeyEvent 证据」.
+# adb install + keyevent → logcat `iced slot Input len=`.
+# NativeActivity has no InputConnection. See docs/android-arm64.md.
 
 minSdk=24
 targetSdk=34

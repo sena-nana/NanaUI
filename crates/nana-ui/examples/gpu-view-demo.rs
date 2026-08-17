@@ -1,11 +1,12 @@
 use iced::widget::{button, column, container, row, shader, text};
 use iced::{Element, Length, Subscription, Task};
 use nana_ui::ThemeModeExt;
+use nana_ui::compatibility::AppTitleBar;
+use nana_ui::compatibility::{GpuView, GpuViewMode, GpuViewPalette};
 use nana_ui::widgets::{button_style, card_style};
 use nana_ui::{
-    AppTitleBar, ButtonKind, CardKind, GpuView, GpuViewMode, GpuViewPalette, ThemeMode, UI_METRICS,
-    WindowChromeEvent, WindowChromeState, custom_title_bar_window, ui_font, ui_font_defaults,
-    ui_font_sources,
+    ButtonKind, CardKind, ThemeMode, UI_METRICS, WindowChromeEvent, WindowChromeState,
+    custom_title_bar_window, ui_font, ui_font_defaults, ui_font_sources,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -4,8 +4,8 @@
 //! bottom-aligned row on the **full window viewport** — **not** [`nana_ui::DesktopShell`].
 //! Hit-testing must use [`crate::iced_slot::iced_control_slot_paint_bounds`] (same geometry).
 //! Pointer + KeyEvent input is applied through iced `UserInterface::update` with
-//! [`iced::window::Headless`]. Soft IME (`UnsupportedIme`) is still open; hardware /
-//! soft-keyboard `KeyEvent` characters reach the focused Input.
+//! [`iced::window::Headless`]. Hardware / soft-keyboard `KeyEvent` characters reach the
+//! focused Input. NativeActivity has no InputConnection.
 
 use iced::keyboard::{self, Modifiers};
 use iced::widget::{Space, column, container};
@@ -37,7 +37,7 @@ pub struct IcedSlotPainter {
     pub press_count: u32,
     /// Switch toggled state (shell strip).
     pub switch_on: bool,
-    /// Editable field value for the slot [`nana_ui::Input`].
+    /// Editable field value for the slot [`nana_ui::compatibility::Input`].
     pub input_value: String,
     /// Last touch was inside the control-slot geometry (diagnostics).
     last_touch_in_slot: bool,

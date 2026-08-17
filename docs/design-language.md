@@ -30,9 +30,9 @@ Iced 可读取的 TTF 后由 `ui_font_sources()` 统一注册；标题使用 0.2
 层级。
 
 共享控件样式位于 `crates/nana-ui/src/widgets.rs`。输入框采用 13px 文本、默认
-6px 控件圆角和 32px 中档高度，hover 使用 `border-strong`；有效的 focused /
-opened 状态只使用 1px `border-soft` 浅边框，不改变字段背景；invalid 状态优先
-使用 `danger`，聚焦或打开时保持 2px 错误边框。复选框为 16px、4px 圆角，开关为
+6px 控件圆角和 32px 中档高度，hover 与 focused 使用 1px `border-strong`
+（深色更亮、浅色更暗），不改变字段背景；opened 状态使用 1px `border-soft`；
+invalid 状态优先使用 `danger`，聚焦或打开时保持 2px 错误边框。复选框为 16px、4px 圆角，开关为
 30px 级宽度，滑轨为 4px，进度条为 6px。disabled、loading、invalid 和 selection
 只通过语义令牌表达，深色与浅色主题保持相同的尺寸和状态层级。
 

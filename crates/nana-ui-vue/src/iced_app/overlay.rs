@@ -4,6 +4,15 @@ fn overlay_is_open(props: &crate::bridge::WidgetProps) -> bool {
     props.active || props.toggled
 }
 
+fn is_action_menu_props(props: &WidgetProps) -> bool {
+    props.class_names.iter().any(|class| {
+        matches!(
+            class.as_str(),
+            "nana-action-menu" | "action-menu" | "nana-actionmenu"
+        )
+    })
+}
+
 fn overlay_dialog<'a, Message>(
     snap: &'a SemanticSnapshot,
     widget: &'a SemanticWidget,

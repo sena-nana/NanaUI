@@ -130,6 +130,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         focused: false,
         ime: None,
         text_input: None,
+        text_spans: Vec::new(),
         standard_visual: None,
         component_geometry: None,
         standard_visual_foreground: None,

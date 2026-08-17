@@ -1,12 +1,12 @@
 # Issue #7 Phase 1：Monorepo / Compatibility Boundary
 
-本阶段在 `2026-08-14`、NanaUI `f5687685197e337f0c8e245197722efcc170bf74` 上审核并收口。目标是把 Iced 固定为可退出的兼容实现，而不是在 UiWorld 尚未建立前提前删除现有 working path。
+本阶段在 `2026-08-14` 审核并收口，对应仓内 Iced 快照接入之后的历史点。目标是把 Iced 固定为可退出的兼容实现，而不是在 UiWorld 尚未建立前提前删除现有 working path。
 
 ## 验收结论
 
 | Issue #7 要求 | 结果 | 证据 |
 | --- | --- | --- |
-| Iced fork 合仓 | 通过 | `engine/iced` 为仓内源码；`f568768` 以 `31bde4e` 为第二父提交保留 fork 历史 |
+| Iced fork 合仓 | 通过 | `engine/iced` 为仓内源码；来源 SHA 记录在 [`iced-engine.md`](iced-engine.md)，不把 iced fork 历史作为本仓库 merge ancestry |
 | public API 隔离 Iced types | 通过迁移边界 | backend-neutral contract 位于 `nana-ui-core`、`nana-ui-platform`、`nana-window` 和 JS/Web API crates；现有 `nana-ui` Iced `Element` API 明确定义为 compatibility adapter，不作为新增 Nana-native contract |
 | compatibility adapter | 通过 | Issue #7 范围内仅 `nana-ui`、`nana-ui-vue` 直接接入 Iced；仓内既有 `nana-android-host` 不属于本 Issue 的产品范围，也不作为未来移动端架构先例；其他 `nana-*` package 禁止新增非 dev Iced 依赖 |
 | upstream sync 流程 | 通过 | [`iced-engine.md`](iced-engine.md) 记录来源、共同祖先、保留 patch、拒绝的 draft patch、同步步骤、验证和退出指标 |
@@ -38,7 +38,7 @@ cargo tree --locked -p nana-ui -i iced_wgpu
 
 同次审计发现 `nana-ui-platform` 的基础输入/IME/window 合同被无条件 HTTPS `ureq/ring` 和 clipboard 依赖拖入 cross-build。现已拆为默认开启的 `fetch` / `clipboard` features：默认消费者行为不变，`--no-default-features` 可只构建 platform core。backend-neutral core 的可移植构建不据此声称任何目标平台 backend 已验收。
 
-- 已确认 fork 来源不是仅复制文件：`f568768` 的父提交同时包含 NanaUI 合仓提交与原 fork revision。
+- 已确认 fork 来源可审计：[`iced-engine.md`](iced-engine.md) 记录 Nana fork 头、共同祖先、保留 patch 与未导入的 draft；本仓库不再保留 iced 上游 merge ancestry。
 - 已确认 workspace 不再从远程 git 解析 Iced，正式 `nana-ui` 路径只消费仓内 compatibility engine。
 - 已补齐反向门禁：原检查只能阻止 `engine/iced -> nana-*`，现在也能阻止 Iced 依赖继续扩散到新的中立 Nana package。
 - 已消除门禁冗余：双向规则共用一个脚本、一次 root metadata 和一个 CI 入口。
