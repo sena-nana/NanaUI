@@ -182,7 +182,8 @@ surface/AccessKit 并发送 `WindowEvent::Closed`。Runtime 先消费 IME，再�
 - Windows/Linux 实机未跑，不记为通过。
 
 当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime/UiScene；`nana-ui-vue` 的
-`iced-view` / `hosted` feature 接入同一 Scene host，而不是 `iced::Element` 树。
+`scene-view` / `hosted` feature 接入同一 Scene host（`iced-view` 为历史别名），
+而不是 `iced::Element` 树。
 Android 不属于 NanaUI 当前产品范围；未来移动端必须由 Android 原生组件拥有平台
 生命周期、IME、accessibility 与原生控件，NanaUI 仅作为嵌入渲染内容参与混合合成，
 不直接调用 Android API。无法忠实表达的 affine/text/custom primitive 显式失败。

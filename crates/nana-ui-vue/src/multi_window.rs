@@ -210,9 +210,9 @@ struct VueRuntimeState {
     canvas: nana_ui_web_api::SharedCanvasRuntime,
     local_storage: nana_ui_web_api::SharedStorage,
     stylesheets: Vec<String>,
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     components: crate::NativeComponentRegistry,
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     host_textures: nana_ui::HostTextureRegistry,
     #[cfg(feature = "hosted")]
     webgpu: Option<crate::JsWebGpuRuntime>,
@@ -249,7 +249,7 @@ impl VueRuntimeState {
             Arc::clone(&self.canvas),
             Arc::clone(&self.local_storage),
         );
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         {
             host.share_components(self.components.clone());
             host.share_host_textures(self.host_textures.clone());
@@ -346,13 +346,13 @@ impl VueRuntime {
             Arc::clone(&canvas),
             Arc::clone(&local_storage),
         );
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         let mut primary = primary;
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         let components = crate::NativeComponentRegistry::new();
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         let host_textures = nana_ui::HostTextureRegistry::new();
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         {
             primary.share_components(components.clone());
             primary.share_host_textures(host_textures.clone());
@@ -384,9 +384,9 @@ impl VueRuntime {
                 canvas,
                 local_storage,
                 stylesheets: Vec::new(),
-                #[cfg(feature = "iced-view")]
+                #[cfg(feature = "scene-view")]
                 components,
-                #[cfg(feature = "iced-view")]
+                #[cfg(feature = "scene-view")]
                 host_textures,
                 #[cfg(feature = "hosted")]
                 webgpu: None,
@@ -411,7 +411,7 @@ impl VueRuntime {
             .collect()
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn components(&self) -> crate::NativeComponentRegistry {
         self.state
             .lock()
@@ -420,10 +420,10 @@ impl VueRuntime {
             .clone()
     }
 
-    /// Move view-time Rust/Iced failures onto the owning V8 event queue. The
+    /// Move view-time native component failures onto the owning V8 event queue. The
     /// JS runtime turns these into component-local `error` events and a global
     /// `Nana.components.onError` notification.
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn flush_native_component_failures(&self) -> Result<usize, JsEngineError> {
         let failures = self.components().drain_failures();
         let count = failures.len();
@@ -458,7 +458,7 @@ impl VueRuntime {
         Ok(count)
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn has_native_component_failures(&self) -> bool {
         self.components().has_failures()
     }
@@ -1627,7 +1627,7 @@ mod tests {
         )));
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     #[test]
     fn native_component_render_failure_keeps_identity_and_structured_error() {
         let runtime = VueRuntime::default();
@@ -1672,7 +1672,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     #[test]
     fn native_component_failure_is_retried_when_reliable_queue_is_full() {
         let runtime = VueRuntime::default();

@@ -8,9 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iced::Size;
-use iced_wgpu::wgpu;
-use iced_winit::futures::futures::executor;
 use live2d_core::{
     BlendColor, ClippingInfo, DrawableId, FrameDirtyFlags, ModelDynamicFrame, ModelGeometryFrame,
     ModelStaticData, RenderObject, RuntimeFrame, TextureAsset, Vertex,
@@ -35,6 +32,8 @@ use serde::Serialize;
 mod offscreen;
 #[path = "ui_snapshots/write.rs"]
 mod write;
+
+use write::Size;
 
 const WIDTH: u32 = 900;
 const HEIGHT: u32 = 640;
@@ -269,7 +268,7 @@ fn run(screenshot_path: &Path) -> Report {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
@@ -277,7 +276,7 @@ fn run(screenshot_path: &Path) -> Report {
     }))
     .expect("acceptance requires a WGPU adapter");
     let adapter_info = adapter.get_info();
-    let (device, queue) = executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("NanaUI Live2D acceptance device"),
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits::default(),

@@ -4,7 +4,6 @@ use std::sync::Arc;
 use component_gallery::{
     GalleryContextMenuEvent, GalleryMessage, GallerySection, GalleryState, SurfaceView,
 };
-use iced::{Point, Size};
 use nana_ui::runtime::{
     AppShell, AppTitleBar, AppTitleBarControls, Button as RuntimeButton, Card as RuntimeCard,
     Checkbox as RuntimeCheckbox, Dock as RuntimeDock, DockAxis, DockDropZone, DockNode, DocumentId,
@@ -22,7 +21,7 @@ use nana_ui::{
 use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole};
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
-use crate::write;
+use crate::write::{self, Size};
 
 #[path = "render/gpu.rs"]
 mod gpu;
@@ -68,7 +67,7 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             "titlebar-custom-dark.png",
             ThemeMode::Dark,
             WindowChrome::custom(),
-            Some(Point::new(880.0, 18.0)),
+            Some(LogicalPoint::new(880.0, 18.0)),
         )?,
         titlebar_snapshot(
             &mut snapshots,
@@ -216,14 +215,14 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &output,
         "gallery-sidebar-tools-dark.png",
         &mut controls,
-        Point::new(180.0, 60.0),
+        LogicalPoint::new(180.0, 60.0),
     )?);
     paths.push(gallery_snapshot_with_cursor(
         &mut snapshots,
         &output,
         "gallery-sidebar-tools-light.png",
         &mut controls_light,
-        Point::new(180.0, 60.0),
+        LogicalPoint::new(180.0, 60.0),
     )?);
 
     let mut loading = GalleryState::new();
@@ -1053,7 +1052,7 @@ fn titlebar_snapshot(
     name: &str,
     theme: ThemeMode,
     chrome: WindowChrome,
-    hover: Option<Point>,
+    hover: Option<LogicalPoint>,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(900, 120);
     let mut document = titlebar_document(theme, chrome)?;
@@ -1320,7 +1319,7 @@ fn gallery_snapshot_with_cursor(
     output: &Path,
     name: &str,
     state: &mut GalleryState,
-    cursor: Point,
+    cursor: LogicalPoint,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     state.flush_snapshot_scene();
     state.snapshot_hover(cursor.x, cursor.y);
@@ -1403,7 +1402,7 @@ fn dispatch_pointer(
     document: &mut RuntimeDocument,
     size: Size<u32>,
     phase: PointerPhase,
-    point: Point,
+    point: LogicalPoint,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let document_id = document.document();
     RuntimeInputAdapter::default().dispatch(

@@ -1,6 +1,6 @@
 /**
  * NanaTabs — horizontal tab list.
- * Semantic peer of Rust `Tabs` (`nana-tabs` host node → Iced Tabs).
+ * Semantic peer of Rust `Tabs` (`nana-tabs` host node → Runtime / Scene host).
  */
 import { h } from "@vue/runtime-core";
 

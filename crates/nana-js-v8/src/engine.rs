@@ -1659,32 +1659,29 @@ mod tests {
         with_serial_v8_tests(|| {
             use std::sync::Arc;
 
-            use iced::futures::executor;
-            use iced::wgpu;
             use nana_ui::HostedGpuResources;
+            use pollster::block_on;
 
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::from_env().unwrap_or_default(),
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
             });
-            let adapter =
-                executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::LowPower,
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
-                    apply_limit_buckets: false,
-                }))
-                .expect("headless WGPU adapter required for WebGPU behavior test");
-            let (device, queue) =
-                executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                    label: Some("Nana JS WebGPU test device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                    trace: wgpu::Trace::Off,
-                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                }))
-                .expect("headless WGPU device");
+            let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+                apply_limit_buckets: false,
+            }))
+            .expect("headless WGPU adapter required for WebGPU behavior test");
+            let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("Nana JS WebGPU test device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            }))
+            .expect("headless WGPU device");
             let resources =
                 HostedGpuResources::from_existing(adapter, Arc::new(device), Arc::new(queue));
 

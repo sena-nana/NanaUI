@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Enforce the complete NanaUI <-> in-tree Iced compatibility boundary."""
+"""Enforce the NanaUI <-> in-tree Iced engine boundary.
+
+engine/iced must not depend on Nana packages or paths outside itself. Workspace
+iced / iced-wgpu / iced-winit must resolve to engine/iced. Product nana-* crates
+must not take a non-dev Iced dependency; only the experimental Android host
+remains on that allowlist. Non-nana example/tool crates are not gated here.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +18,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = (ROOT / "engine" / "iced").resolve()
 ICED_PACKAGES = {"iced", "iced-wgpu", "iced-winit"}
-COMPATIBILITY_PACKAGES = {
+# nana-ui / nana-ui-vue are product crates and must not depend on Iced.
+ICED_ALLOWED_NANA_PACKAGES = {
     "nana-android-host",
-    "nana-ui",
-    "nana-ui-vue",
 }
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
 GPU_BACKEND_PACKAGES = {
@@ -104,12 +109,12 @@ def main() -> int:
                 )
             if (
                 package["name"].startswith("nana-")
-                and package["name"] not in COMPATIBILITY_PACKAGES
+                and package["name"] not in ICED_ALLOWED_NANA_PACKAGES
                 and dependency.get("kind") != "dev"
             ):
                 failures.append(
                     f'{package["name"]} has non-dev Iced dependency '
-                    f'{dependency["name"]}; only compatibility adapters may depend on Iced'
+                    f'{dependency["name"]}; product nana-* crates must not depend on Iced'
                 )
 
     if failures:
@@ -118,10 +123,10 @@ def main() -> int:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    adapters = ", ".join(sorted(COMPATIBILITY_PACKAGES))
+    allowed = ", ".join(sorted(ICED_ALLOWED_NANA_PACKAGES))
     neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
     print(
-        f"Iced compatibility boundary: OK (adapters: {adapters}; "
+        f"Iced engine boundary: OK (nana-* iced allowlist: {allowed}; "
         f"backend-neutral: {neutral})"
     )
     return 0

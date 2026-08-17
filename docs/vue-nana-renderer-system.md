@@ -15,12 +15,13 @@ Custom Renderer hostOps
         └─ L2 nana component props ├─> MessageBridge / Style Model
                                   │
                                   ▼
-                         NanaUI → Iced/WGPU
+                         Runtime / UiScene → SceneWgpuPainter
 ```
 
 L1 是 WebView Vue 源码的 Nana 兼容子集，不是 WebView，也不是 Tauri。L2
 `nanavue-components` 和 L3 Rust API 保留；L1/L2 可写入同一棵树，L3 宿主可把语义
-快照嵌入自己的 Workspace Region。所有可见内容仍只有一条 Iced/WGPU 绘制路径。
+快照嵌入自己的 Workspace Region。桌面可见内容走同一条 Runtime/UiScene 绘制路径；
+`scene-view` 是正式 feature 名（`iced-view` 为历史别名），接入 Scene host 适配。
 
 ## 模块所有权
 
@@ -32,7 +33,7 @@ L1 是 WebView Vue 源码的 Nana 兼容子集，不是 WebView，也不是 Taur
 | `nana-ui-web-api` | window/document/EventTarget/timer/fetch 缓冲子集 |
 | `nana-ui-platform` | clipboard、Fetch 策略和真实阻塞 HTTP(S) 后端 |
 | `nana-ui-vue` | 树、MessageBridge、CSS 映射、语义快照与帧泵 |
-| `nana-ui` | 公共 Rust UI 与唯一绘制实现 |
+| `nana-ui` | 公共 Rust UI 与 Scene host（`run_runtime` / `SceneWgpuPainter`） |
 
 消费应用拥有业务状态、业务 Host API、鉴权、网络 origin 白名单、配置持久化和窗口。
 `VueHost` 不内置 workspace/secret/GitHub 命令。

@@ -12,7 +12,7 @@
 2. **参照**：fixture 内嵌 `expected`（CSS 正确期望），或 `webview-ref` 下 WKWebView/`wry` 的 `getBoundingClientRect`
 3. **断言**：对应节点盒在容差内一致（默认 **±2px**，用例可覆盖）
 
-语义对齐 iced `row`/`column` + `LayoutStyle` 子集，**不是**完整 CSS 引擎；无 Blitz。
+语义对齐 `LayoutStyle` 子集（历史上曾对照 iced `row`/`column`），**不是**完整 CSS 引擎；无 Blitz。
 
 ## 如何跑
 
@@ -193,7 +193,7 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 | 定位子集 | relative；absolute 脱流+inset；**fixed 视口子集**（脱流+inset+z-index） | T-P01–P17 |
 | 可见性 | `display:none` / `visibility:hidden` → Nana 均跳过 | T-V01–V02 |
 | Shell hints | Fill 链、侧栏+主区、settings-row | T-L01–L03 |
-| Typography（2026-08-11） | `font-size`/`weight`/`family`、`line-height`、`letter-spacing`（row 近似）、`color` → iced Text | `css_map` + iced-view typography 测；路线图 **A-05** |
+| Typography（2026-08-11） | `font-size`/`weight`/`family`、`line-height`、`letter-spacing`（row 近似）、`color` → iced Text | `css_map` + scene-view typography 测；路线图 **A-05** |
 | Button chrome | padding / border / radius / bg / color / gap → `Button`/`IconButton` 内层；外层 `consume` 跳过双层 | `ButtonPaintOverride` 行为测试 |
 
 ### 明确 defer / skip（勿假实现）
@@ -261,7 +261,7 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 | CSS 布局 | fixture 逻辑盒合同与声明容差 | 绿 |
 | Gallery 视觉 | 主题语义、字体、状态层级和人工评审正确 | 绿 |
 | `pixel_ssim_compare` | 可选诊断指标，不判定正确性 | 非门禁 |
-| `nana-ui-vue` iced-view lib | 功能测试通过 | 绿 |
+| `nana-ui-vue` scene-view lib | 功能测试通过 | 绿 |
 | editor_store | 本轮未改 | — |
 
 ### 盘点备注
@@ -285,7 +285,7 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 | 切片 | 宣称 | 状态 | 验收 |
 |------|------|------|------|
 | Flex / 盒 / wrap / 定位子集（含 fixed 视口） / 1D grid `repeat(N)` | L1 measure 子集 | **原面闭合** | `cargo run -p nana-css-parity -- compare` |
-| Typography（size/weight/family/lh/tracking/color） | iced Text 子集（A-05） | **闭合（2026-08-11）** | iced-view typography 测；`bolder`/`lighter`/动态字体/原生 tracking **仍 defer** |
+| Typography（size/weight/family/lh/tracking/color） | iced Text 子集（A-05） | **闭合（2026-08-11）** | scene-view typography 测；`bolder`/`lighter`/动态字体/原生 tracking **仍 defer** |
 | Button/IconButton CSS chrome | pad/border/radius/bg/color/gap 内层消费 | **闭合** | `button_layout_chrome_*` 行为测试 |
 | Repo 页证据 + 同子集轨 | 扩展 **X1/X2** | **闭合（X1/X2）** | Repo QJS↔V8 evidence + css-parity；见 fidelity-gap |
 | `repeat(auto-fit\|fill)` / 2D auto-flow | — | **仍 defer** | Unsupported 非静默；勿升宣称 |
@@ -301,8 +301,8 @@ nana-ui-vue            —— LayoutStyle + measure_layout（公开测量 API）
 nana-css-parity        —— 仅测试；feature webview-ref 可选
 ```
 
-- 产品绘制仍走 MessageBridge → `iced_app` → NanaUI widgets。
-- `measure_layout` 供测试/诊断；不替代 iced 布局引擎。
+- 产品绘制走 MessageBridge → Runtime/UiScene → `SceneWgpuPainter`。
+- `measure_layout` 供测试/诊断；不替代 Runtime layout。
 - 新缺口：fixture `status: ignore` + `gap: P0-x|P1-x`，测试加 `#[ignore = "…"]`。
 
 ## 目录结构

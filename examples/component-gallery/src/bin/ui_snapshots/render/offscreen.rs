@@ -4,15 +4,13 @@
 
 #![allow(dead_code)]
 
-use iced::Size;
-use iced_wgpu::wgpu;
 use nana_ui::runtime::UiScene;
 use nana_ui::{
     HostTextureRegistry, SceneGpuRendererRegistry, ScenePaintError, ScenePaintViewport,
     SceneWgpuPainter,
 };
 
-use crate::write;
+use crate::write::{self, Size};
 
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 

@@ -2,8 +2,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use component_gallery::{GalleryMessage, GallerySection, GalleryState};
-use iced_wgpu::wgpu;
-use iced_winit::futures::futures::executor;
 use nana_ui::runtime::{
     ContextMenu, ContextMenuItem, DocumentId, Dropdown, DropdownOption, LayoutViewport, LengthSpec,
     List, ListItem, NodeStyle, RuntimeDocument, ScrollAxes, ScrollView, SearchDropdown,
@@ -28,7 +26,7 @@ pub fn run() -> BenchmarkReport {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
@@ -36,7 +34,7 @@ pub fn run() -> BenchmarkReport {
     }))
     .expect("benchmark must find a headless WGPU adapter");
     let adapter_info = adapter.get_info();
-    let (device, queue) = executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("nana-ui benchmark device"),
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits::default(),

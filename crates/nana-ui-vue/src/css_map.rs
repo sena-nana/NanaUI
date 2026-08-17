@@ -44,7 +44,7 @@
 //! `writing-mode` 竖排 / 双向复杂链 **defer**（勿假翻轴）。
 //!
 //! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them.
-//!（feature `iced-view`）。
+//!（feature `scene-view`; `iced-view` is the historical alias）。
 
 pub use nana_ui_core::box_layout::{
     AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,

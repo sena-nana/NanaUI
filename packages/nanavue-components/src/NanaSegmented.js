@@ -1,6 +1,6 @@
 /**
  * NanaSegmented — compact mutually-exclusive control.
- * Semantic peer of Rust `SegmentedControl` (`nana-segmented` → Iced).
+ * Semantic peer of Rust `SegmentedControl` (`nana-segmented` → Runtime / Scene host).
  */
 import { h } from "@vue/runtime-core";
 

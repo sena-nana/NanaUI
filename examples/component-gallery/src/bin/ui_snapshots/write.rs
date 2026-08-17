@@ -2,7 +2,18 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use iced::Size;
+/// Physical pixel size for snapshot PNG encode and GPU readback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size<T = u32> {
+    pub width: T,
+    pub height: T,
+}
+
+impl<T> Size<T> {
+    pub const fn new(width: T, height: T) -> Self {
+        Self { width, height }
+    }
+}
 
 pub fn png(path: &Path, size: Size<u32>, pixels: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {

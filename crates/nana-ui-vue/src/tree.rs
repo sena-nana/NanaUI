@@ -6,7 +6,7 @@
 //! this module retains only Vue compatibility metadata.
 //!
 //! Vue mixed-tree layout writers are Style-Model [`crate::measure_layout`]
-//! (pre-paint / first insert) and Iced `LayoutProbe` writeback after paint.
+//! (pre-paint / first insert) and Runtime writeback after paint.
 //! [`LayoutBoxStore`] is the JS paint projection. Those boxes are adapted into
 //! `UiWorld` for Scene extraction and hit-test. A Scene/`run_runtime` host also
 //! flushes the same [`RuntimeDocument`], so `RuntimeLayoutEngine` writes the
@@ -410,7 +410,7 @@ struct Node {
 /// Shared handle to one window's [`RuntimeDocument`].
 ///
 /// JS host ops keep [`NanaTreeDocument`] behind a mutex while
-/// [`crate::VueHostedProgram`] must return `&RuntimeDocument`. Both sides clone
+/// [`crate::VueRuntimeProgram`] must return `&RuntimeDocument`. Both sides clone
 /// this `Arc` and see the same tree. Access is single-threaded on the UI/JS
 /// loop; overlapping exclusive borrows are a programming error.
 pub struct SharedRuntimeDocument {
@@ -2169,7 +2169,7 @@ impl NanaTreeDocument {
             .runtime_document_mut()
             .flush_with(|context, work| {
                 context.world_mut().reconcile_focus(&work.focus_ime);
-                #[cfg(feature = "iced-view")]
+                #[cfg(feature = "scene-view")]
                 context
                     .shape_text(&work.text, &mut nana_ui::NanaTextShaper::default())
                     .expect("Nana shaping produces finite metrics");

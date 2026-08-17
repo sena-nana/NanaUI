@@ -1,6 +1,6 @@
 /**
  * NanaInput — single-line text field.
- * Semantic peer of Rust `Input` (`nana-input` → Iced Input).
+ * Semantic peer of Rust `Input` (`nana-input` → Runtime / Scene host).
  */
 import { h } from "@vue/runtime-core";
 

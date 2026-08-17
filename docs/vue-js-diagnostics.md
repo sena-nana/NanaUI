@@ -24,7 +24,7 @@ diagnostics.set_resource_count(
 diagnostics.set_resource_counts("vue", vue_host.resource_counts());
 ```
 
-实现 `HostedProgram::frame_diagnostics` 时，可将 `HostedFrameMetrics` 转发给
+宿主可在 present 后将帧间隔转发给
 `DevtoolsSession::record_frame`。宿主提供目标刷新间隔，诊断器据实际 present 间隔估算
 丢帧；WGPU GPU timestamp query 仍由需要它的渲染器显式启用。
 

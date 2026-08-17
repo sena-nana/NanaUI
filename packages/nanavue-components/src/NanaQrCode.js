@@ -2,7 +2,7 @@
  * NanaQrCode — QR payload / label host.
  * Semantic peer of Runtime `QrCode` (`nana-qr-code`).
  *
- * Vue supplies `payload` and `label` only. Encoding stays on Iced
+ * Vue supplies `payload` and `label` only. Encoding stays on the Scene host
  * `QrCodeCanvas`; this wrapper does not include a JS encoder.
  */
 import { h } from "@vue/runtime-core";

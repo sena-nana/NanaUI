@@ -322,7 +322,7 @@ fn engine_label() -> &'static str {
 mod windowed {
     use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
     use nana_ui::{HostedRunError, RuntimeWindowSettings};
-    use nana_ui_vue::VueHostedProgram;
+    use nana_ui_vue::VueRuntimeProgram;
 
     use super::{SEMANTIC_COUNTER_JS, engine_label};
 
@@ -337,7 +337,7 @@ mod windowed {
         #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
         let engine = nana_js_v8::V8Engine::new();
         let title = format!("Vue Counter NanaUI bridge ({})", engine_label());
-        VueHostedProgram::<CounterEngine>::run(
+        VueRuntimeProgram::<CounterEngine>::run(
             RuntimeWindowSettings::new(title)
                 .initial_size(480.0, 360.0)
                 .minimum_size(360.0, 240.0),

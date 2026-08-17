@@ -1,6 +1,6 @@
 /**
  * NanaRangeField — semantic peer of Rust `RangeField`.
- * Host node `nana-range` draws as Iced RangeField (not DOM track paint).
+ * Host node `nana-range` draws as Runtime RangeField (not DOM track paint).
  */
 import { h } from "@vue/runtime-core";
 

@@ -1,6 +1,6 @@
 /**
  * NanaChip — compact selectable chip (Button Selected/Subtle variant).
- * Semantic peer of NanaUI chip styling via `nana-chip` → Iced Button.
+ * Semantic peer of NanaUI chip styling via `nana-chip` → Runtime Button.
  */
 import { computed, h } from "@vue/runtime-core";
 

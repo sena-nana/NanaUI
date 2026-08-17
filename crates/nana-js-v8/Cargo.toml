@@ -32,3 +32,5 @@ v8 = { workspace = true, optional = true }
 nana-ui-vue = { path = "../nana-ui-vue", default-features = false, features = ["hosted"] }
 nana-ui-web-api.workspace = true
 nana-ui = { workspace = true, features = ["hosted"] }
+pollster = "0.4"
+wgpu.workspace = true

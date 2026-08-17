@@ -1,10 +1,10 @@
 # NanaUI
 
 NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。产品保留与渲染合同是
-Runtime（`nana-ui-runtime`）和 UiScene（`nana-ui-scene`）。Iced/WGPU
-（`engine/iced`、`nana-ui` 适配器）是当前兼容绘制与桌面宿主后端，不是长期应用
-编程模型。Vue + JS 是一等 L1/L2 消费方。不把 WebView 作为产品 UI 路径。宿主拥有
-Window、Surface、Device 与 Queue，并保持单一 WGPU 主版本。
+Runtime（`nana-ui-runtime`）和 UiScene（`nana-ui-scene`）。桌面绘制由
+`nana-ui` 的 `SceneWgpuPainter` 完成。仓内 `engine/iced` 是兼容资产与 Android
+实验槽，不是长期应用编程模型。Vue + JS 是一等 L1/L2 消费方。不把 WebView 作为
+产品 UI 路径。宿主拥有 Window、Surface、Device 与 Queue，并保持单一 WGPU 主版本。
 
 ## 工作区框架
 
@@ -39,7 +39,7 @@ Window、Surface、Device 与 Queue，并保持单一 WGPU 主版本。
 序列化。NanaUI 不选择配置目录或自行写盘，消费应用负责将这些状态组合进自己的
 配置文件。
 
-消费应用创建 Iced application 时应注册 `ui_font_sources()` 并将
+消费应用接入 `run_runtime` 时应注册 `ui_font_sources()` 并将
 `ui_font(Normal)` 设为默认字体；仓库中的所有 Demo 和离屏 renderer 已执行该
 注册。字体文件由 LiliaUI 使用的同一组 Noto Sans SC WOFF2 无损转换为 TTF，
 许可见 `crates/nana-ui/assets/fonts/OFL.txt`。
@@ -86,7 +86,7 @@ cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
 ```
 
 `hosted-gpu-demo` 由宿主创建 `winit::Window`、事件循环、WGPU
-`Instance`、`Device`、`Queue` 与 `Surface`。Iced 和宿主场景复用同一 GPU
+`Instance`、`Device`、`Queue` 与 `Surface`。`SceneWgpuPainter` 和宿主场景复用同一 GPU
 上下文，宿主纹理通过 `GpuTextureView` 直接进入 UI 合成，没有 CPU 回读、
 图片编码或第二套 Device。
 
@@ -96,8 +96,9 @@ cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
 WebView 或 Tauri 运行时。消费应用以 Vite 编译 SFC、TypeScript 与 CSS，在自己的
 入口中从 `@nanaui/nanavue-runtime` 调用 `createNanaApp()`；产出的 IIFE 由
 QuickJS 或 V8 执行；stable identity、hierarchy、text、focus、layout 与 render
-extraction 进入同一 Nana Runtime/UiScene。迁移期标准控件仍由仓内 Iced/WGPU
-compatibility backend 绘制，custom GPU node 已由同一 Scene frame graph 解析。
+extraction 进入同一 Nana Runtime/UiScene。桌面标准控件由 `SceneWgpuPainter`
+绘制；仓内 Iced 仍是兼容资产与 Android 实验槽，不是应用编程模型。custom GPU
+node 已由同一 Scene frame graph 解析。
 Runtime/Scene 合同与退出门禁见
 [`docs/runtime-scene.md`](docs/runtime-scene.md)。
 

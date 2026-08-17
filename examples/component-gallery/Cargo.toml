@@ -15,11 +15,10 @@ default = ["bundled-fonts"]
 bundled-fonts = ["nana-ui/bundled-fonts"]
 benchmark = [
     "bundled-fonts",
-    "dep:iced",
-    "dep:iced_wgpu",
-    "dep:iced_winit",
+    "dep:pollster",
     "dep:serde",
     "dep:serde_json",
+    "dep:wgpu",
 ]
 live2d-acceptance = [
     "benchmark",
@@ -29,26 +28,20 @@ live2d-acceptance = [
     "dep:live2d-test-support",
     "dep:live2d-wgpu",
     "dep:png",
-    "dep:pollster",
 ]
 snapshots = [
     "bundled-fonts",
     "nana-ui/gpu",
     "nana-ui/hosted",
     "nana-ui/syntax-highlighting",
-    "dep:iced",
-    "dep:iced_wgpu",
-    "dep:iced_winit",
     "dep:nana-ui-core",
     "dep:nana-ui-scene",
     "dep:png",
     "dep:pollster",
+    "dep:wgpu",
 ]
 
 [dependencies]
-iced = { workspace = true, optional = true }
-iced_wgpu = { workspace = true, optional = true }
-iced_winit = { workspace = true, optional = true }
 glam = { version = "0.33.3", optional = true }
 live2d-core = { git = "https://github.com/sena-nana/live2d-rs.git", rev = "71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033", optional = true }
 live2d-test-support = { git = "https://github.com/sena-nana/live2d-rs.git", rev = "71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033", optional = true }
@@ -65,6 +58,7 @@ png = { version = "0.18.1", optional = true }
 pollster = { version = "0.4", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
+wgpu = { workspace = true, optional = true }
 
 [[bin]]
 name = "component-gallery"

@@ -4,7 +4,7 @@
 //! Uses crates.io `v8 = "150.4.0"` (rusty_v8 successor).
 //!
 //! Stops at JS execution + HostApiRegistry callbacks. Product retained/render is
-//! Runtime/UiScene; Iced (`iced-view`) is the compatibility view used by windowed apps.
+//! Runtime/UiScene; windowed apps use the `scene-view` Scene host (`iced-view` is the historical alias).
 
 use std::env;
 use std::time::{Duration, Instant};

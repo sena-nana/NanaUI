@@ -20,7 +20,7 @@ use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 use nana_ui_vue::{
     BridgeEvent, NativeComponentCommand, NativeComponentDescriptor, NativeComponentFactory,
-    NativePropSchema, NativePropType, VueHostedProgram, VueHostedRuntime, WidgetId,
+    NativePropSchema, NativePropType, VueHostedRuntime, VueRuntimeProgram, WidgetId,
 };
 
 #[derive(Clone)]
@@ -59,7 +59,7 @@ impl NativeComponentFactory for AcceptanceProbe {
 }
 
 struct AcceptanceProgram {
-    inner: VueHostedProgram<nana_js_v8::V8Engine>,
+    inner: VueRuntimeProgram<nana_js_v8::V8Engine>,
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
@@ -159,7 +159,7 @@ impl RuntimeProgram for AcceptanceProgram {
         )?;
         Ok((
             Self {
-                inner: VueHostedProgram::from_runtime(runtime),
+                inner: VueRuntimeProgram::from_runtime(runtime),
             },
             Vec::new(),
         ))
