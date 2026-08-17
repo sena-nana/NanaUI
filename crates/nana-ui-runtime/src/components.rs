@@ -536,7 +536,7 @@ pub enum ComponentGeometry {
         separators: Vec<LayoutBox>,
         ports: Vec<(LayoutBox, [f32; 4], [f32; 4], f32)>,
         port_labels: Vec<(ComponentTextRegion, crate::TextHorizontalAlignment)>,
-        edges: Vec<(LayoutBox, [f32; 4])>,
+        edges: Vec<(Vec<[f32; 2]>, [f32; 4])>,
         edge_labels: Vec<ComponentTextRegion>,
         grid: Vec<LayoutBox>,
         background: [f32; 4],

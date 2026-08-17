@@ -102,6 +102,11 @@ pub enum ScenePrimitiveKind {
         phase: u8,
         color: Option<[f32; 4]>,
     },
+    Stroke {
+        points: Vec<[f32; 2]>,
+        width: f32,
+        color: [f32; 4],
+    },
     Custom(CustomRenderNode),
 }
 
@@ -2325,30 +2330,17 @@ impl UiScene {
                             },
                         ));
                     }
-                    let mut edge_groups: Vec<([f32; 4], Vec<SceneRect>)> = Vec::new();
-                    for (edge, color) in edges {
-                        match edge_groups
-                            .iter_mut()
-                            .find(|(existing, _)| existing == color)
-                        {
-                            Some((_, rects)) => rects.push(scene_rect(*edge)),
-                            None => edge_groups.push((*color, vec![scene_rect(*edge)])),
-                        }
-                    }
-                    for (index, (color, rects)) in edge_groups.into_iter().enumerate() {
-                        if rects.is_empty() {
+                    for (index, (points, color)) in edges.iter().enumerate() {
+                        if points.len() < 2 {
                             continue;
                         }
-                        self.insert_primitive(visual_quad_batch(
+                        self.insert_primitive(visual_stroke(
                             &context,
                             12u8.saturating_add(index as u8),
-                            rects,
-                            VisualQuadStyle {
-                                background: Some(color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: 0.0,
-                            },
+                            bounds,
+                            points.clone(),
+                            1.6,
+                            *color,
                         ));
                     }
                     for (index, (node_bounds, label, fill, border)) in
@@ -3479,6 +3471,34 @@ fn visual_quad(
             border_width: style.border_width,
             corner_radius: style.corner_radius,
             shadow: None,
+        },
+    }
+}
+
+fn visual_stroke(
+    context: &VisualPrimitiveContext<'_>,
+    slot: u8,
+    bounds: SceneRect,
+    points: Vec<[f32; 2]>,
+    width: f32,
+    color: [f32; 4],
+) -> ScenePrimitive {
+    ScenePrimitive {
+        id: PrimitiveId {
+            node: context.node,
+            slot,
+        },
+        node: context.node,
+        bounds,
+        transform: context.transform,
+        clips: context.clips.to_vec(),
+        opacity: context.opacity,
+        z_index: context.z_index,
+        document_order: context.document_order,
+        kind: ScenePrimitiveKind::Stroke {
+            points,
+            width,
+            color,
         },
     }
 }
@@ -5476,13 +5496,8 @@ mod tests {
 
     #[test]
     fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
-        let edge = LayoutBox {
-            x: 8.0,
-            y: 20.0,
-            width: 40.0,
-            height: 2.0,
-        };
-        let geometry = |edges: Vec<(LayoutBox, [f32; 4])>| ComponentGeometry::GraphCanvas {
+        let edge = vec![[8.0, 20.0], [48.0, 22.0]];
+        let geometry = |edges: Vec<(Vec<[f32; 2]>, [f32; 4])>| ComponentGeometry::GraphCanvas {
             nodes: Vec::new(),
             separators: Vec::new(),
             ports: Vec::new(),
@@ -5511,7 +5526,7 @@ mod tests {
             viewport_offset_y: 0.0,
             viewport_zoom: 1.0,
         });
-        canvas.component_geometry = Some(geometry(vec![(edge, [0.5, 0.5, 0.5, 1.0])]));
+        canvas.component_geometry = Some(geometry(vec![(edge.clone(), [0.5, 0.5, 0.5, 1.0])]));
 
         let mut scene = UiScene::new();
         scene.apply_delta([canvas.clone()], []);
@@ -5519,8 +5534,8 @@ mod tests {
         assert!(!scene.primitives().any(|primitive| primitive.id.slot == 13));
 
         canvas.component_geometry = Some(geometry(vec![
-            (edge, [0.5, 0.5, 0.5, 1.0]),
-            (edge, [0.2, 0.6, 1.0, 1.0]),
+            (edge.clone(), [0.5, 0.5, 0.5, 1.0]),
+            (edge.clone(), [0.2, 0.6, 1.0, 1.0]),
         ]));
         scene.apply_delta([canvas.clone()], []);
         assert!(
