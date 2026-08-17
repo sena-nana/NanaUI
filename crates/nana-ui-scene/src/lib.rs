@@ -17,5 +17,5 @@ pub use icon::{IconGeometry, IconPathCommand, IconShape, icon_geometry};
 pub use runtime_document::{RuntimeDocument, RuntimeFrameUpdate};
 pub use scene::{
     AffineTransform, ClipRegion, PrimitiveId, SceneDelta, ScenePrimitive, ScenePrimitiveKind,
-    SceneRect, UiScene,
+    SceneRect, SceneTextSpan, UiScene,
 };

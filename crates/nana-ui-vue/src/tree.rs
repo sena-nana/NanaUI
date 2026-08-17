@@ -5,25 +5,37 @@
 //! focus, style, interaction, and layout live in `nana_ui_runtime::UiWorld`;
 //! this module retains only Vue compatibility metadata.
 //!
-//! Headless geometry is measured from the same [`crate::MessageBridge`] Style
-//! Model consumed by iced-view. After iced paints, `LayoutProbe` writes the
-//! resulting viewport boxes back to Runtime; [`LayoutBoxStore`] is only the
-//! transform-aware hit-test projection of those boxes.
-//!
-//! There are exactly two geometry phases: Style-Model measurement before paint,
-//! then iced layout writeback after paint. Neither phase introduces another
-//! retained tree or layout algorithm.
+//! Vue mixed-tree layout writers are Style-Model [`crate::measure_layout`]
+//! (pre-paint / first insert) and Iced `LayoutProbe` writeback after paint.
+//! [`LayoutBoxStore`] is the JS paint projection. Those boxes are adapted into
+//! `UiWorld` for Scene extraction and hit-test. `RuntimeLayoutEngine` is the
+//! writer for `run_runtime` documents and is not run on Vue trees.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
+    ActionMenu as RuntimeActionMenu, ActionMenuItem as RuntimeActionMenuItem,
     Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox, ComponentView,
-    CustomRenderNode, IconButton as RuntimeIconButton, ImeComposition, InteractionState,
-    LayoutBox as RuntimeLayoutBox, ListItem as RuntimeListItem, ListItemSlots, MutationQueue,
-    NodeKind, NodeStyle, RangeField as RuntimeRangeField, StableNodeId, Switch as RuntimeSwitch,
-    TextContent, TextInput as RuntimeTextInput, TextInputState, UiWorld,
+    ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
+    ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode, Dialog as RuntimeDialog,
+    Drawer as RuntimeDrawer, EmptyState as RuntimeEmptyState, FormField as RuntimeFormField,
+    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton, ImeComposition,
+    InteractionState, InteractiveCard as RuntimeInteractiveCard,
+    LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox,
+    LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem, ListItemSlots, ModalSurface,
+    MutationQueue, NodeKind, NodeStyle, Popover as RuntimePopover, Progress as RuntimeProgress,
+    QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
+    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
+    Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome,
+    SettingsCard as RuntimeSettingsCard, SettingsRow as RuntimeSettingsRow,
+    SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
+    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, StableNodeId,
+    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextArea as RuntimeTextArea,
+    TextContent, TextInput as RuntimeTextInput, TextInputState, Toast as RuntimeToast,
+    Tooltip as RuntimeTooltip, UiWorld, ValidationMessage as RuntimeValidationMessage,
+    ValueEmphasis, XYPad as RuntimeXYPad,
 };
 use nana_ui_scene::UiScene;
 
@@ -51,7 +63,7 @@ impl From<nana_ui_runtime::StableNodeId> for NodeHandle {
     }
 }
 
-/// Stable document id for diagnostics (not a Blitz id).
+/// Vue window document id for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentId(pub u64);
 
@@ -540,7 +552,89 @@ impl NanaTreeDocument {
         }
         let mut mutations = MutationQueue::new();
         mutations.set_scroll_offset(id, offset);
-        self.runtime.commit(mutations).is_ok()
+        if self.runtime.commit(mutations).is_err() {
+            return false;
+        }
+        self.flush_runtime_systems();
+        true
+    }
+
+    /// Route a logical-pixel wheel delta to the nearest Runtime `ScrollView`.
+    ///
+    /// `is_scroll_view` identifies projected scrollports (Vue sidebar-frame
+    /// body). At a clamped edge the event bubbles to an enclosing match.
+    pub(crate) fn scroll_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta: nana_ui_runtime::ScrollOffset,
+        mut is_scroll_view: impl FnMut(NodeHandle) -> bool,
+    ) -> Option<NodeHandle> {
+        if !x.is_finite() || !y.is_finite() || !delta.x.is_finite() || !delta.y.is_finite() {
+            return None;
+        }
+        let mut current = self.hit_test(x, y);
+        while let Some(node) = current {
+            if is_scroll_view(node) && self.scroll_by(node, delta) {
+                return Some(node);
+            }
+            current = self.parent_node(node);
+        }
+        None
+    }
+
+    pub(crate) fn scroll_by(
+        &mut self,
+        node: NodeHandle,
+        delta: nana_ui_runtime::ScrollOffset,
+    ) -> bool {
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return false;
+        }
+        self.publish_scroll_metrics_from_layout(node);
+        let current = self.scroll_offset(node);
+        self.set_scroll_offset(
+            node,
+            nana_ui_runtime::ScrollOffset {
+                x: (current.x + delta.x).max(0.0),
+                y: (current.y + delta.y).max(0.0),
+            },
+        )
+    }
+
+    fn publish_scroll_metrics_from_layout(&mut self, node: NodeHandle) {
+        let Some(metrics) = self.layout_scroll_metrics(node) else {
+            return;
+        };
+        let Ok(id) = StableNodeId::try_from(node) else {
+            return;
+        };
+        if self.runtime.scroll_metrics(id) == Some(metrics) {
+            return;
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_metrics(id, Some(metrics));
+        let _ = self.runtime.commit(mutations);
+    }
+
+    fn layout_scroll_metrics(&self, node: NodeHandle) -> Option<nana_ui_runtime::ScrollMetrics> {
+        let viewport = self.layout_box(node)?;
+        let mut content_width = viewport.width;
+        let mut content_height = viewport.height;
+        let mut stack = self.children_of(node);
+        while let Some(child) = stack.pop() {
+            if let Some(box_) = self.layout_box(child) {
+                content_width = content_width.max(box_.x + box_.width - viewport.x);
+                content_height = content_height.max(box_.y + box_.height - viewport.y);
+            }
+            stack.extend(self.children_of(child));
+        }
+        Some(nana_ui_runtime::ScrollMetrics {
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
+            content_width: content_width.max(0.0),
+            content_height: content_height.max(0.0),
+        })
     }
 
     pub(crate) fn sync_scroll_viewport(
@@ -668,17 +762,48 @@ impl NanaTreeDocument {
             // a generic style/interaction/accessibility state first only to
             // overwrite it in the same transaction doubles validation, dirty
             // propagation and commit work for large component trees.
-            if !matches!(widget.kind, crate::WidgetKind::Input)
-                && matches!(
-                    widget.kind,
-                    crate::WidgetKind::Button
-                        | crate::WidgetKind::Checkbox
-                        | crate::WidgetKind::Switch
-                        | crate::WidgetKind::Card
-                        | crate::WidgetKind::ListItem
-                        | crate::WidgetKind::Range
-                )
-                && self.runtime.text_input(id).is_some()
+            if !matches!(
+                widget.kind,
+                crate::WidgetKind::Input
+                    | crate::WidgetKind::Textarea
+                    | crate::WidgetKind::ContextMenu
+                    | crate::WidgetKind::Select
+            ) && matches!(
+                widget.kind,
+                crate::WidgetKind::Button
+                    | crate::WidgetKind::Checkbox
+                    | crate::WidgetKind::Switch
+                    | crate::WidgetKind::Card
+                    | crate::WidgetKind::ListItem
+                    | crate::WidgetKind::Range
+                    | crate::WidgetKind::StatusBadge
+                    | crate::WidgetKind::ValidationMessage
+                    | crate::WidgetKind::EmptyState
+                    | crate::WidgetKind::LabeledValue
+                    | crate::WidgetKind::Segmented
+                    | crate::WidgetKind::Tabs
+                    | crate::WidgetKind::Progress
+                    | crate::WidgetKind::Spinner
+                    | crate::WidgetKind::FormField
+                    | crate::WidgetKind::InteractiveCard
+                    | crate::WidgetKind::SidebarFrame
+                    | crate::WidgetKind::SidebarRow
+                    | crate::WidgetKind::SettingsRow
+                    | crate::WidgetKind::SettingsCard
+                    | crate::WidgetKind::Skeleton
+                    | crate::WidgetKind::LevelMeter
+                    | crate::WidgetKind::Select
+                    | crate::WidgetKind::Dialog
+                    | crate::WidgetKind::Drawer
+                    | crate::WidgetKind::Popover
+                    | crate::WidgetKind::ContextMenu
+                    | crate::WidgetKind::Toast
+                    | crate::WidgetKind::Tooltip
+                    | crate::WidgetKind::ActionMenu
+                    | crate::WidgetKind::ActionMenuItem
+                    | crate::WidgetKind::XYPad
+                    | crate::WidgetKind::QrCode
+            ) && self.runtime.text_input(id).is_some()
             {
                 // Queue before the new component projection: SetTextInput(None)
                 // clears the old committed value, then Button/ListItem may publish
@@ -1879,6 +2004,10 @@ impl NanaTreeDocument {
     }
 }
 
+fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
+    crate::scroll::is_runtime_scroll_body(&widget.props)
+}
+
 fn project_migrating_component(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
@@ -1886,6 +2015,9 @@ fn project_migrating_component(
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) -> bool {
+    if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
+        return true;
+    }
     match widget.kind {
         crate::WidgetKind::Button => {
             let icon = widget
@@ -1955,6 +2087,302 @@ fn project_migrating_component(
                 component = component.label(Arc::<str>::from(widget.props.label.as_str()));
             }
             component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Textarea => {
+            let mut state = world
+                .text_input(id)
+                .cloned()
+                .unwrap_or_else(|| TextInputState::new(&widget.props.value));
+            if state.value != widget.props.value {
+                state.replace_value(&widget.props.value);
+            }
+            let placeholder = if widget.props.placeholder.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.placeholder.as_str()
+            };
+            if let Some(language) = crate::widget_map::highlight_language(&widget.props) {
+                let mut component = RuntimeHostedTextarea::new("", language)
+                    .placeholder(Arc::<str>::from(placeholder))
+                    .disabled(widget.props.disabled)
+                    .invalid(widget.props.invalid);
+                if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
+                    component = component.height(height);
+                }
+                if !widget.props.label.is_empty() {
+                    component = component.label(Arc::<str>::from(widget.props.label.as_str()));
+                }
+                component.state = state;
+                component.project(id, world, mutations);
+            } else {
+                let mut component = RuntimeTextArea::new("")
+                    .placeholder(Arc::<str>::from(placeholder))
+                    .disabled(widget.props.disabled)
+                    .invalid(widget.props.invalid);
+                if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
+                    component = component.height(height);
+                }
+                if !widget.props.label.is_empty() {
+                    component = component.label(Arc::<str>::from(widget.props.label.as_str()));
+                }
+                component.state = state;
+                component.project(id, world, mutations);
+            }
+            true
+        }
+        crate::WidgetKind::Select => {
+            let placeholder = if widget.props.placeholder.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.placeholder.as_str()
+            };
+            if crate::widget_map::is_search_dropdown(&widget.props) {
+                let value = (!widget.props.value.is_empty()).then_some(widget.props.value.as_str());
+                let query = world
+                    .text_input(id)
+                    .map(|state| state.value.clone())
+                    .unwrap_or_default();
+                let mut component = nana_ui_runtime::SearchDropdown::new(value)
+                    .options(widget.props.options.iter().map(|option| {
+                        nana_ui_runtime::SearchDropdownOption::new(
+                            option.value.as_str(),
+                            option.label.as_str(),
+                        )
+                    }))
+                    .query(query)
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .opened(widget.props.active || widget.props.toggled);
+                if !placeholder.is_empty() {
+                    component = component.placeholder(Arc::<str>::from(placeholder));
+                }
+                component.project(id, world, mutations);
+            } else if crate::widget_map::is_dropdown_field(&widget.props) {
+                let multiple = widget.props.attrs.contains_key("multiple");
+                let mut component = if multiple {
+                    let values = if widget.props.value.is_empty() {
+                        Vec::new()
+                    } else {
+                        widget
+                            .props
+                            .value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .collect::<Vec<_>>()
+                    };
+                    nana_ui_runtime::Dropdown::multiple(values)
+                } else {
+                    nana_ui_runtime::Dropdown::single(
+                        (!widget.props.value.is_empty()).then_some(widget.props.value.as_str()),
+                    )
+                };
+                component = component
+                    .options(widget.props.options.iter().map(|option| {
+                        nana_ui_runtime::DropdownOption::new(
+                            option.value.as_str(),
+                            option.label.as_str(),
+                        )
+                        .disabled(option.disabled)
+                    }))
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .opened(widget.props.active || widget.props.toggled);
+                if !placeholder.is_empty() {
+                    component = component.placeholder(Arc::<str>::from(placeholder));
+                }
+                component.project(id, world, mutations);
+            } else {
+                let value = (!widget.props.value.is_empty()).then_some(widget.props.value.as_str());
+                let mut component = RuntimeSelect::new(value)
+                    .options(widget.props.options.iter().map(|option| {
+                        RuntimeSelectOption::new(option.value.as_str(), option.label.as_str())
+                            .disabled(option.disabled)
+                    }))
+                    .size(widget.props.size)
+                    .disabled(widget.props.disabled)
+                    .loading(widget.props.loading)
+                    .invalid(widget.props.invalid)
+                    .opened(widget.props.active || widget.props.toggled);
+                if !placeholder.is_empty() {
+                    component = component.placeholder(Arc::<str>::from(placeholder));
+                }
+                component.project(id, world, mutations);
+            }
+            true
+        }
+        crate::WidgetKind::Dialog => {
+            if vue_confirm_dialog(&widget.props) {
+                let message = if !widget.props.hint.is_empty() {
+                    widget.props.hint.as_str()
+                } else {
+                    widget.props.value.as_str()
+                };
+                let mut component =
+                    RuntimeConfirmDialog::new(widget.props.display_label(), message);
+                component.danger = vue_confirm_danger(&widget.props);
+                component.busy = widget.props.loading;
+                component.project(id, world, mutations);
+            } else {
+                let mut component = RuntimeDialog::new(widget.props.display_label());
+                if !widget.props.hint.is_empty() {
+                    component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
+                }
+                if let Some(body) = widget.children.first().copied().and_then(StableNodeId::new) {
+                    component.slots.body = Some(body);
+                }
+                component.project(id, world, mutations);
+            }
+            true
+        }
+        crate::WidgetKind::Drawer => {
+            let mut component = RuntimeDrawer::new(widget.props.display_label())
+                .side(vue_drawer_side(&widget.props));
+            if !widget.props.hint.is_empty() {
+                component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            if let Some(body) = widget.children.first().copied().and_then(StableNodeId::new) {
+                component.slots_mut().body = Some(body);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Popover => {
+            RuntimePopover::new()
+                .trigger(widget.props.display_label())
+                .open(widget.props.active || widget.props.toggled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::ContextMenu => {
+            let searchable = widget.props.options.len() >= 6
+                || widget
+                    .props
+                    .class_names
+                    .iter()
+                    .any(|class| class.contains("search"));
+            let query = if searchable {
+                world
+                    .text_input(id)
+                    .map(|state| state.value.clone())
+                    .or_else(|| {
+                        crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default()
+            } else {
+                crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
+                    .unwrap_or("")
+                    .to_string()
+            };
+            RuntimeContextMenu::new(widget.props.anchor_x, widget.props.anchor_y)
+                .items(widget.props.options.iter().map(|option| {
+                    RuntimeContextMenuItem::new(option.value.as_str(), option.label.as_str())
+                        .disabled(option.disabled)
+                }))
+                .query(query)
+                .searchable(searchable)
+                .open(widget.props.active || widget.props.toggled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Toast => {
+            let mut component = RuntimeToast::new(
+                widget.props.display_label(),
+                crate::widget_map::toast_tone_from_props(&widget.props),
+            )
+            .dismissible(crate::widget_map::toast_dismissible(&widget.props));
+            if !widget.props.hint.is_empty() {
+                component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Tooltip => {
+            let label = if !widget.props.display_label().is_empty() {
+                widget.props.display_label()
+            } else {
+                widget.props.hint.as_str()
+            };
+            RuntimeTooltip::new(label).project(id, world, mutations);
+            if world.standard_visual(id).is_some() {
+                mutations.set_standard_visual(id, None);
+            }
+            true
+        }
+        crate::WidgetKind::ActionMenu => {
+            RuntimeActionMenu::new()
+                .trigger(widget.props.display_label())
+                .open(widget.props.active || widget.props.toggled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::ActionMenuItem => {
+            let mut component = RuntimeActionMenuItem::new(widget.props.display_label())
+                .active(widget.props.active)
+                .danger(crate::widget_map::action_menu_item_danger(&widget.props))
+                .disabled(widget.props.disabled)
+                .size(widget.props.size);
+            if !widget.props.hint.is_empty() {
+                component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::XYPad => {
+            let ((x_min, x_max), (y_min, y_max)) = crate::widget_map::xy_pad_ranges(&widget.props);
+            let mut component = RuntimeXYPad::new(crate::widget_map::xy_pad_value(&widget.props))
+                .x_range(x_min, x_max)
+                .y_range(y_min, y_max)
+                .size(widget.props.size)
+                .disabled(widget.props.disabled)
+                .loading(widget.props.loading)
+                .invalid(widget.props.invalid);
+            if widget.props.step.is_finite() && widget.props.step > 0.0 {
+                component = component.step(widget.props.step);
+            }
+            let label = widget.props.display_label();
+            if !label.is_empty() {
+                component = component.label(Arc::<str>::from(label));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::QrCode => {
+            let label = if widget.props.display_label().is_empty() {
+                "QR code"
+            } else {
+                widget.props.display_label()
+            };
+            let size = match widget.props.layout.width {
+                Some(nana_ui_core::LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => px,
+                _ => RuntimeQrCode::DEFAULT_SIZE,
+            };
+            if let Some((modules, width)) = qr_modules_from_props(&widget.props)
+                && let Ok(component) = RuntimeQrCode::from_modules(modules, width, size)
+            {
+                component
+                    .label(Arc::<str>::from(label))
+                    .project(id, world, mutations);
+                return true;
+            }
+            let payload =
+                crate::widget_map::attr_value(&widget.props, &["payload", "data-payload", "value"])
+                    .unwrap_or(widget.props.value.as_str());
+            if !payload.is_empty()
+                && let Ok(component) = RuntimeQrCode::encode(payload, size)
+            {
+                component
+                    .label(Arc::<str>::from(label))
+                    .project(id, world, mutations);
+                return true;
+            }
+            RuntimeLabeledValue::new(label, payload).project(id, world, mutations);
             true
         }
         crate::WidgetKind::Checkbox => {
@@ -2061,7 +2489,293 @@ fn project_migrating_component(
             component.project(id, world, mutations);
             true
         }
+        crate::WidgetKind::StatusBadge => {
+            RuntimeStatusBadge::new(
+                widget.props.display_label(),
+                crate::widget_map::status_tone_from_props(&widget.props),
+            )
+            .compact(crate::widget_map::class_has_compact(&widget.props))
+            .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::ValidationMessage => {
+            let message = if !widget.props.hint.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.display_label()
+            };
+            RuntimeValidationMessage::new(
+                message,
+                crate::widget_map::validation_intent_from_props(&widget.props),
+            )
+            .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::EmptyState => {
+            let mut component = RuntimeEmptyState::new(widget.props.display_label());
+            if !widget.props.hint.is_empty() {
+                component = component.message(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            if let Some(icon) = empty_state_icon(widget, snapshot) {
+                component = component.icon(icon);
+            }
+            component = component.compact(crate::widget_map::class_has_compact(&widget.props));
+            if let Some(action) = crate::widget_map::first_button_child_id(snapshot, widget)
+                .and_then(StableNodeId::new)
+            {
+                component = component.action_child(action);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::LabeledValue => {
+            let label = crate::widget_map::labeled_value_caption(snapshot, widget);
+            let emphasis = if widget.props.muted {
+                ValueEmphasis::Muted
+            } else {
+                ValueEmphasis::Strong
+            };
+            let mut component = RuntimeLabeledValue::new(label, widget.props.value.as_str())
+                .emphasis(emphasis)
+                .compact(crate::widget_map::class_has_compact(&widget.props));
+            if let Some(action) = crate::widget_map::first_button_child_id(snapshot, widget)
+                .and_then(StableNodeId::new)
+            {
+                component = component.action_child(action);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Segmented | crate::WidgetKind::Tabs => {
+            let mut control = if widget.kind == crate::WidgetKind::Tabs {
+                RuntimeSegmentedControl::tabs()
+                    .size(widget.props.size)
+                    .fill(widget.props.fill)
+            } else {
+                RuntimeSegmentedControl::new().size(widget.props.size)
+            };
+            if !widget.props.label.is_empty() {
+                control = control.label(Arc::<str>::from(widget.props.label.as_str()));
+            }
+            let chrome = control.chrome_value();
+            control.project(id, world, mutations);
+            for (child, option) in widget.children.iter().zip(widget.props.options.iter()) {
+                let Some(child_id) = StableNodeId::new(*child) else {
+                    continue;
+                };
+                project_segmented_option(
+                    child_id,
+                    option,
+                    option.value == widget.props.value,
+                    widget.props.size,
+                    chrome,
+                    widget.kind == crate::WidgetKind::Tabs && widget.props.fill,
+                    world,
+                    mutations,
+                );
+            }
+            true
+        }
+        crate::WidgetKind::Progress => {
+            let mut component = RuntimeProgress::new(
+                f64::from(widget.props.progress),
+                f64::from(widget.props.progress_max.max(1.0)),
+            );
+            let label = widget.props.display_label();
+            if !label.is_empty() {
+                component = component.label(Arc::<str>::from(label));
+            }
+            component =
+                component.cancellable(crate::widget_map::progress_cancellable(&widget.props));
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Spinner => {
+            RuntimeSpinner::new(widget.props.display_label()).project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::FormField => {
+            let mut component =
+                RuntimeFormField::new(widget.props.display_label()).size(widget.props.size);
+            let (hint, error) = crate::widget_map::form_field_support(&widget.props);
+            if let Some(hint) = hint {
+                component = component.hint(Arc::<str>::from(hint));
+            }
+            if let Some(error) = error {
+                component = component.error(Arc::<str>::from(error));
+            }
+            if let Some(control) = crate::widget_map::form_field_control_child_id(snapshot, widget)
+                .and_then(StableNodeId::new)
+            {
+                component = component.control_child(control);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::InteractiveCard => {
+            RuntimeInteractiveCard::new()
+                .selected(widget.props.active)
+                .disabled(widget.props.disabled)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Column | crate::WidgetKind::Box if is_sidebar_frame_body(widget) => {
+            RuntimeSidebarFrame::scroll_body(widget.props.layout.clone())
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SidebarFrame => {
+            let (top, body, footer) = crate::widget_map::sidebar_frame_slots(snapshot, widget);
+            let mut component = RuntimeSidebarFrame::new().gap(widget.props.layout.gap_or(14.0));
+            if let Some(top) = top.and_then(StableNodeId::new) {
+                component = component.top(top);
+            }
+            if let Some(body) = body.and_then(StableNodeId::new) {
+                component = component.body(body);
+            }
+            if let Some(footer) = footer.and_then(StableNodeId::new) {
+                component = component.footer(footer);
+            }
+            component.style.layout = Arc::new(widget.props.layout.clone());
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SidebarRow => {
+            let slot = |name: &str| {
+                widget.children.iter().find_map(|child| {
+                    let child = snapshot.get(*child)?;
+                    (child.props.attrs.get("data-slot").map(String::as_str) == Some(name))
+                        .then(|| StableNodeId::new(child.id))
+                        .flatten()
+                })
+            };
+            let leading = slot("leading").or_else(|| slot("list-item-leading"));
+            let trailing = slot("trailing").or_else(|| slot("list-item-trailing"));
+            let content = slot("content")
+                .or_else(|| slot("list-item-content"))
+                .or_else(|| {
+                    widget.children.iter().find_map(|child| {
+                        let child_id = StableNodeId::new(*child)?;
+                        (Some(child_id) != leading && Some(child_id) != trailing)
+                            .then_some(child_id)
+                    })
+                });
+            let mut component = RuntimeSidebarRow::new(widget.props.display_label())
+                .slots(ListItemSlots {
+                    leading,
+                    content,
+                    trailing,
+                })
+                .gap(widget.props.layout.gap_or(6.0))
+                .size(widget.props.size)
+                .state(crate::widget_map::sidebar_row_state(&widget.props))
+                .tone(crate::widget_map::sidebar_row_tone(&widget.props))
+                .depth(crate::widget_map::sidebar_row_depth(&widget.props));
+            if let Some(expanded) = crate::widget_map::attr_value(
+                &widget.props,
+                &["expanded", "data-expanded", "disclosure"],
+            )
+            .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => Some(true),
+                "false" | "0" | "no" => Some(false),
+                _ => None,
+            }) {
+                component = component.disclosure(expanded);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SettingsRow => {
+            let (stacked, divided, loose, first, last) =
+                crate::widget_map::settings_row_flags(&widget.props);
+            let slots = crate::widget_map::settings_row_slots(snapshot, widget);
+            let slot_text = |slot: Option<crate::WidgetId>, fallback: &str| {
+                if !fallback.is_empty() {
+                    return fallback.to_string();
+                }
+                slot.map(|id| crate::widget_map::settings_row_plain_text(snapshot, id))
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_default()
+            };
+            let label = slot_text(slots.label, widget.props.display_label());
+            let hint = slot_text(slots.hint, widget.props.hint.as_str());
+            let mut component = RuntimeSettingsRow::new(label)
+                .stacked(stacked)
+                .divided(divided)
+                .loose(loose);
+            if !hint.is_empty() {
+                component = component.hint(Arc::<str>::from(hint));
+            }
+            if first {
+                component = component.first_in_group();
+            }
+            if last {
+                component = component.last_in_group();
+            }
+            if let Some(control) =
+                crate::widget_map::settings_row_control_child_id(snapshot, widget)
+                    .and_then(StableNodeId::new)
+            {
+                component = component.control_child(control);
+            }
+            if let Some(copy) = slots.copy.and_then(StableNodeId::new) {
+                component = component.copy_slot(copy);
+            }
+            if let Some(label_slot) = slots.label.and_then(StableNodeId::new) {
+                component = component.label_slot(label_slot);
+            }
+            if let Some(hint_slot) = slots.hint.and_then(StableNodeId::new) {
+                component = component.hint_slot(hint_slot);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::SettingsCard => {
+            let mut component = RuntimeSettingsCard::new(widget.props.display_label());
+            let has_title_child = widget.children.iter().any(|child| {
+                snapshot.get(*child).is_some_and(|child| {
+                    child.props.class_names.iter().any(|class| {
+                        class.contains("nana-settings-card__title")
+                            || class.contains("settings-card__title")
+                    })
+                })
+            });
+            if has_title_child {
+                component.title = Arc::from("");
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Skeleton => {
+            let width = widget
+                .props
+                .layout
+                .width
+                .unwrap_or(nana_ui_core::LengthSpec::Fill);
+            let height = match widget.props.layout.height {
+                Some(nana_ui_core::LengthSpec::Px(h)) if h.is_finite() && h > 0.0 => h,
+                _ => 16.0,
+            };
+            RuntimeSkeleton::new(width, height).project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::LevelMeter => {
+            let mut component =
+                RuntimeLevelMeter::new(crate::widget_map::level_meter_value(&widget.props))
+                    .tone(crate::widget_map::status_tone_from_props(&widget.props));
+            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height
+                && height.is_finite()
+                && height > 0.0
+            {
+                component = component.height(height);
+            }
+            component.project(id, world, mutations);
+            true
+        }
         _ => {
+            if project_aligned_segmented_option(widget, snapshot, id, world, mutations) {
+                return true;
+            }
             if matches!(
                 world.standard_visual(id),
                 Some(
@@ -2071,6 +2785,33 @@ fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::Switch { .. }
                         | nana_ui_runtime::StandardVisual::Range { .. }
                         | nana_ui_runtime::StandardVisual::Card { .. }
+                        | nana_ui_runtime::StandardVisual::StatusBadge { .. }
+                        | nana_ui_runtime::StandardVisual::ValidationMessage { .. }
+                        | nana_ui_runtime::StandardVisual::EmptyState { .. }
+                        | nana_ui_runtime::StandardVisual::LabeledValue { .. }
+                        | nana_ui_runtime::StandardVisual::SelectionOption { .. }
+                        | nana_ui_runtime::StandardVisual::Progress { .. }
+                        | nana_ui_runtime::StandardVisual::Spinner { .. }
+                        | nana_ui_runtime::StandardVisual::LevelMeter { .. }
+                        | nana_ui_runtime::StandardVisual::FormField { .. }
+                        | nana_ui_runtime::StandardVisual::Toast { .. }
+                        | nana_ui_runtime::StandardVisual::XYPad { .. }
+                        | nana_ui_runtime::StandardVisual::QrCode { .. }
+                        | nana_ui_runtime::StandardVisual::Select { .. }
+                        | nana_ui_runtime::StandardVisual::MenuSurface { .. }
+                        | nana_ui_runtime::StandardVisual::ActionMenuItem { .. }
+                        | nana_ui_runtime::StandardVisual::TreeView { .. }
+                        | nana_ui_runtime::StandardVisual::CommandPalette { .. }
+                        | nana_ui_runtime::StandardVisual::ModalFrame { .. }
+                        | nana_ui_runtime::StandardVisual::CalendarHeatmap { .. }
+                        | nana_ui_runtime::StandardVisual::TimeSeriesChart { .. }
+                        | nana_ui_runtime::StandardVisual::ReorderList { .. }
+                        | nana_ui_runtime::StandardVisual::NativeMarkdown { .. }
+                        | nana_ui_runtime::StandardVisual::SelectableRichText { .. }
+                        | nana_ui_runtime::StandardVisual::GraphCanvas { .. }
+                        | nana_ui_runtime::StandardVisual::ImageViewer { .. }
+                        | nana_ui_runtime::StandardVisual::KeyCaptureLayer { .. }
+                        | nana_ui_runtime::StandardVisual::KeymapLayer
                 )
             ) {
                 mutations.set_standard_visual(id, None);
@@ -2078,6 +2819,151 @@ fn project_migrating_component(
             false
         }
     }
+}
+
+fn qr_modules_from_props(props: &crate::WidgetProps) -> Option<(Arc<[bool]>, usize)> {
+    let raw = crate::widget_map::attr_value(props, &["modules", "data-modules"])?;
+    let width_hint = crate::widget_map::attr_value(
+        props,
+        &["module-width", "modules-width", "data-module-width"],
+    )
+    .and_then(|raw| raw.trim().parse().ok());
+    parse_qr_module_matrix(raw, width_hint)
+}
+
+fn parse_qr_module_matrix(raw: &str, width_hint: Option<usize>) -> Option<(Arc<[bool]>, usize)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let cells: Vec<bool> = if trimmed.chars().all(|c| c == '0' || c == '1') {
+        trimmed.chars().map(|c| c == '1').collect()
+    } else {
+        trimmed
+            .split(|c: char| matches!(c, '[' | ']' | ',' | ';' | ' ' | '\n' | '\t' | '\r'))
+            .filter(|part| !part.is_empty())
+            .map(|part| match part {
+                "1" | "true" | "TRUE" => Some(true),
+                "0" | "false" | "FALSE" => Some(false),
+                _ => None,
+            })
+            .collect::<Option<_>>()?
+    };
+    if cells.is_empty() {
+        return None;
+    }
+    let width = width_hint.or_else(|| {
+        let root = (cells.len() as f64).sqrt() as usize;
+        (root > 0 && root.saturating_mul(root) == cells.len()).then_some(root)
+    })?;
+    if width == 0 || width.checked_mul(width) != Some(cells.len()) {
+        return None;
+    }
+    Some((Arc::<[bool]>::from(cells), width))
+}
+
+fn vue_confirm_dialog(props: &crate::WidgetProps) -> bool {
+    if props.role.eq_ignore_ascii_case("alertdialog") {
+        return true;
+    }
+    if matches!(props.button_kind, nana_ui_core::ButtonKind::Danger) {
+        return true;
+    }
+    if props.attrs.get("data-variant").is_some_and(|value| {
+        value.eq_ignore_ascii_case("confirm") || value.eq_ignore_ascii_case("alertdialog")
+    }) {
+        return true;
+    }
+    props.class_names.iter().any(|class| {
+        matches!(
+            class.as_str(),
+            "nana-confirm" | "nana-confirm-dialog" | "nana-alertdialog"
+        )
+    })
+}
+
+fn vue_confirm_danger(props: &crate::WidgetProps) -> bool {
+    matches!(props.button_kind, nana_ui_core::ButtonKind::Danger)
+}
+
+fn vue_drawer_side(props: &crate::WidgetProps) -> nana_ui_core::DrawerSide {
+    match props.side.to_ascii_lowercase().as_str() {
+        "left" | "start" => nana_ui_core::DrawerSide::Left,
+        _ => nana_ui_core::DrawerSide::Right,
+    }
+}
+
+fn empty_state_icon(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Option<nana_ui_core::Icon> {
+    widget
+        .children
+        .iter()
+        .filter_map(|child| snapshot.get(*child))
+        .find(|child| child.kind == crate::WidgetKind::Icon)
+        .and_then(|child| {
+            nana_ui_core::Icon::parse_name(child.props.display_label())
+                .or_else(|| nana_ui_core::Icon::parse_name(&child.props.value))
+        })
+        .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value))
+}
+
+fn project_segmented_option(
+    id: StableNodeId,
+    option: &crate::SelectOptionProp,
+    selected: bool,
+    size: nana_ui_core::ControlSize,
+    chrome: SelectionChrome,
+    fill: bool,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) {
+    RuntimeSegmentedOption::new(Arc::<str>::from(option.label.as_str()))
+        .disabled(option.disabled)
+        .with_selected(selected)
+        .surface(size, chrome, fill)
+        .project(id, world, mutations);
+}
+
+fn project_aligned_segmented_option(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    id: StableNodeId,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) -> bool {
+    let Some(parent) = widget.parent.and_then(|parent| snapshot.get(parent)) else {
+        return false;
+    };
+    if !matches!(
+        parent.kind,
+        crate::WidgetKind::Segmented | crate::WidgetKind::Tabs
+    ) {
+        return false;
+    }
+    let Some(index) = parent.children.iter().position(|child| *child == widget.id) else {
+        return false;
+    };
+    let Some(option) = parent.props.options.get(index) else {
+        return false;
+    };
+    let chrome = if parent.kind == crate::WidgetKind::Tabs {
+        SelectionChrome::Tabs
+    } else {
+        SelectionChrome::Segmented
+    };
+    project_segmented_option(
+        id,
+        option,
+        option.value == parent.props.value,
+        parent.props.size,
+        chrome,
+        parent.kind == crate::WidgetKind::Tabs && parent.props.fill,
+        world,
+        mutations,
+    );
+    true
 }
 
 fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> AccessibilityRole {
@@ -2110,11 +2996,21 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::Switch => AccessibilityRole::Switch,
         crate::WidgetKind::Range => AccessibilityRole::Slider,
         crate::WidgetKind::Select => AccessibilityRole::ComboBox,
-        crate::WidgetKind::Progress => AccessibilityRole::ProgressIndicator,
+        crate::WidgetKind::Progress | crate::WidgetKind::LevelMeter => {
+            AccessibilityRole::ProgressIndicator
+        }
+        crate::WidgetKind::InteractiveCard => AccessibilityRole::Button,
         crate::WidgetKind::ListItem | crate::WidgetKind::SidebarRow => AccessibilityRole::ListItem,
         crate::WidgetKind::Tabs | crate::WidgetKind::Segmented => AccessibilityRole::TabList,
+        crate::WidgetKind::StatusBadge | crate::WidgetKind::ValidationMessage => {
+            AccessibilityRole::Text
+        }
         crate::WidgetKind::Dialog => AccessibilityRole::Dialog,
-        crate::WidgetKind::ContextMenu => AccessibilityRole::Menu,
+        crate::WidgetKind::ContextMenu | crate::WidgetKind::ActionMenu => AccessibilityRole::Menu,
+        crate::WidgetKind::ActionMenuItem => AccessibilityRole::MenuItem,
+        crate::WidgetKind::Tooltip => AccessibilityRole::Tooltip,
+        crate::WidgetKind::XYPad => AccessibilityRole::Slider,
+        crate::WidgetKind::QrCode => AccessibilityRole::Image,
         crate::WidgetKind::Icon => AccessibilityRole::Image,
         _ => AccessibilityRole::Generic,
     }
@@ -2916,6 +3812,490 @@ mod tests {
     }
 
     #[test]
+    fn feedback_hosts_project_retained_visuals_including_action_children() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let badge = doc.create_element("nana-status");
+        let validation = doc.create_element("nana-validation");
+        let empty = doc.create_element("nana-empty-state");
+        let action = doc.create_element("nana-button");
+        let labeled = doc.create_element("nana-labeled-value");
+        let progress = doc.create_element("nana-progress");
+        let spinner = doc.create_element("nana-spinner");
+        doc.insert(badge, doc.mount_root(), None);
+        doc.insert(validation, doc.mount_root(), None);
+        doc.insert(empty, doc.mount_root(), None);
+        doc.insert(action, empty, None);
+        doc.insert(labeled, doc.mount_root(), None);
+        doc.insert(progress, doc.mount_root(), None);
+        doc.insert(spinner, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut badge_props = crate::WidgetProps {
+            label: "Offline".into(),
+            class_names: vec![
+                "nana-status".into(),
+                "nana-status--danger".into(),
+                "compact".into(),
+            ],
+            ..Default::default()
+        };
+        badge_props.attrs.insert("tone".into(), "danger".into());
+        bridge.register(badge.0, crate::WidgetKind::StatusBadge, badge_props);
+        bridge.register(
+            validation.0,
+            crate::WidgetKind::ValidationMessage,
+            crate::WidgetProps {
+                hint: "A project is required".into(),
+                invalid: true,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            empty.0,
+            crate::WidgetKind::EmptyState,
+            crate::WidgetProps {
+                label: "No projects".into(),
+                hint: "Create the first project".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            action.0,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                label: "Create".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(action.0, empty.0, None);
+        bridge.register(
+            labeled.0,
+            crate::WidgetKind::LabeledValue,
+            crate::WidgetProps {
+                label: "Revision".into(),
+                value: "42".into(),
+                muted: true,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            progress.0,
+            crate::WidgetKind::Progress,
+            crate::WidgetProps {
+                label: "Copying".into(),
+                progress: 40.0,
+                progress_max: 100.0,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            spinner.0,
+            crate::WidgetKind::Spinner,
+            crate::WidgetProps {
+                label: "Loading".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let badge_id = StableNodeId::try_from(badge).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(badge_id),
+            Some(nana_ui_runtime::StandardVisual::StatusBadge {
+                tone: nana_ui_core::StatusTone::Danger,
+                compact: true,
+                ..
+            })
+        ));
+        let validation_id = StableNodeId::try_from(validation).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(validation_id),
+            Some(nana_ui_runtime::StandardVisual::ValidationMessage {
+                intent: nana_ui_core::ValidationIntent::Danger,
+                ..
+            })
+        ));
+        let empty_id = StableNodeId::try_from(empty).unwrap();
+        let action_id = StableNodeId::try_from(action).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(empty_id),
+            Some(nana_ui_runtime::StandardVisual::EmptyState {
+                action: Some(id),
+                ..
+            }) if id == action_id
+        ));
+        let labeled_id = StableNodeId::try_from(labeled).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(labeled_id),
+            Some(nana_ui_runtime::StandardVisual::LabeledValue {
+                value_weight: 400,
+                ..
+            })
+        ));
+        let progress_id = StableNodeId::try_from(progress).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(progress_id),
+            Some(nana_ui_runtime::StandardVisual::Progress {
+                value_ratio,
+                ..
+            }) if (value_ratio - 0.4).abs() < 0.001
+        ));
+        let spinner_id = StableNodeId::try_from(spinner).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(spinner_id),
+            Some(nana_ui_runtime::StandardVisual::Spinner { .. })
+        ));
+    }
+
+    #[test]
+    fn qualified_surface_hosts_project_runtime_visuals() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let field = doc.create_element("nana-form-field");
+        let input = doc.create_element("nana-input");
+        let card = doc.create_element("nana-interactive-card");
+        let skeleton = doc.create_element("nana-skeleton");
+        let meter = doc.create_element("nana-level-meter");
+        doc.insert(field, doc.mount_root(), None);
+        doc.insert(input, field, None);
+        doc.insert(card, doc.mount_root(), None);
+        doc.insert(skeleton, doc.mount_root(), None);
+        doc.insert(meter, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            field.0,
+            crate::WidgetKind::FormField,
+            crate::WidgetProps {
+                label: "Email".into(),
+                hint: "Required".into(),
+                invalid: true,
+                size: nana_ui_core::ControlSize::Small,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            input.0,
+            crate::WidgetKind::Input,
+            crate::WidgetProps {
+                value: "a@b.c".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(input.0, field.0, None);
+        bridge.register(
+            card.0,
+            crate::WidgetKind::InteractiveCard,
+            crate::WidgetProps {
+                active: true,
+                disabled: true,
+                ..Default::default()
+            },
+        );
+        let mut skeleton_props = crate::WidgetProps::default();
+        skeleton_props.layout.width = Some(nana_ui_core::LengthSpec::Px(120.0));
+        skeleton_props.layout.height = Some(nana_ui_core::LengthSpec::Px(18.0));
+        bridge.register(skeleton.0, crate::WidgetKind::Skeleton, skeleton_props);
+        let mut meter_props = crate::WidgetProps {
+            progress: 0.65,
+            ..Default::default()
+        };
+        meter_props.attrs.insert("tone".into(), "warning".into());
+        meter_props.layout.height = Some(nana_ui_core::LengthSpec::Px(8.0));
+        bridge.register(meter.0, crate::WidgetKind::LevelMeter, meter_props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let field_id = StableNodeId::try_from(field).unwrap();
+        let input_id = StableNodeId::try_from(input).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(field_id),
+            Some(nana_ui_runtime::StandardVisual::FormField {
+                ref label,
+                hint: None,
+                error: Some(ref error),
+                size: nana_ui_core::ControlSize::Small,
+                control: Some(control),
+            }) if &**label == "Email" && &**error == "Required" && control == input_id
+        ));
+        let card_id = StableNodeId::try_from(card).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(card_id),
+            Some(nana_ui_runtime::StandardVisual::Card {
+                kind: nana_ui_core::CardKind::Selected,
+                title: None,
+                loading: false,
+                ..
+            })
+        ));
+        assert!(doc.runtime.accessibility(card_id).unwrap().disabled);
+        let skeleton_id = StableNodeId::try_from(skeleton).unwrap();
+        assert_eq!(doc.runtime.standard_visual(skeleton_id), None);
+        let skeleton_style = doc.runtime.node_style(skeleton_id).unwrap();
+        assert_eq!(
+            skeleton_style.layout.width,
+            Some(nana_ui_core::LengthSpec::Px(120.0))
+        );
+        assert_eq!(
+            skeleton_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Px(18.0))
+        );
+        let meter_id = StableNodeId::try_from(meter).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(meter_id),
+            Some(nana_ui_runtime::StandardVisual::LevelMeter {
+                value_ratio,
+                girth,
+                tone: nana_ui_core::StatusTone::Warning,
+            }) if (value_ratio - 0.65).abs() < 0.001 && (girth - 8.0).abs() < 0.001
+        ));
+    }
+
+    #[test]
+    fn qualified_candidate_leaves_project_runtime_visuals() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let area = doc.create_element("nana-textarea");
+        let select = doc.create_element("nana-select");
+        let dialog = doc.create_element("nana-dialog");
+        let confirm = doc.create_element("nana-confirm-dialog");
+        let drawer = doc.create_element("nana-drawer");
+        doc.insert(area, doc.mount_root(), None);
+        doc.insert(select, doc.mount_root(), None);
+        doc.insert(dialog, doc.mount_root(), None);
+        doc.insert(confirm, doc.mount_root(), None);
+        doc.insert(drawer, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            area.0,
+            crate::WidgetKind::Textarea,
+            crate::WidgetProps {
+                value: "line\nbreak".into(),
+                placeholder: "Notes".into(),
+                invalid: true,
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            select.0,
+            crate::WidgetKind::Select,
+            crate::WidgetProps {
+                value: "code".into(),
+                options: vec![crate::SelectOptionProp {
+                    value: "code".into(),
+                    label: "Code".into(),
+                    disabled: false,
+                }],
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            dialog.0,
+            crate::WidgetKind::Dialog,
+            crate::WidgetProps {
+                label: "Rename".into(),
+                hint: "Choose a name".into(),
+                ..Default::default()
+            },
+        );
+        let mut confirm_props = crate::WidgetProps {
+            label: "Delete".into(),
+            hint: "This cannot be undone.".into(),
+            ..Default::default()
+        };
+        confirm_props.class_names.push("nana-confirm-dialog".into());
+        bridge.register(confirm.0, crate::WidgetKind::Dialog, confirm_props);
+        bridge.register(
+            drawer.0,
+            crate::WidgetKind::Drawer,
+            crate::WidgetProps {
+                label: "Inspector".into(),
+                side: "left".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let area_id = StableNodeId::try_from(area).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(area_id),
+            Some(nana_ui_runtime::StandardVisual::TextInput { invalid: true, .. })
+        ));
+        assert_eq!(
+            doc.runtime
+                .text_input(area_id)
+                .map(|state| state.value.as_str()),
+            Some("line\nbreak")
+        );
+        let select_id = StableNodeId::try_from(select).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(select_id),
+            Some(nana_ui_runtime::StandardVisual::Select { .. })
+        ));
+        let dialog_id = StableNodeId::try_from(dialog).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(dialog_id),
+            Some(nana_ui_runtime::StandardVisual::ModalFrame {
+                kind: nana_ui_runtime::ModalSurfaceKind::Dialog(_),
+                ..
+            })
+        ));
+        let confirm_id = StableNodeId::try_from(confirm).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(confirm_id),
+            Some(nana_ui_runtime::StandardVisual::ModalFrame {
+                kind: nana_ui_runtime::ModalSurfaceKind::Confirm(_),
+                ..
+            })
+        ));
+        let drawer_id = StableNodeId::try_from(drawer).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(drawer_id),
+            Some(nana_ui_runtime::StandardVisual::ModalFrame {
+                kind: nana_ui_runtime::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn qualified_runtime_leaves_project_toast_menu_xypad_and_qr() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let toast = doc.create_element("nana-toast");
+        let tooltip = doc.create_element("nana-tooltip");
+        let menu = doc.create_element("nana-action-menu");
+        let item = doc.create_element("nana-action-menu-item");
+        let pad = doc.create_element("nana-xy-pad");
+        let qr = doc.create_element("nana-qr-code");
+        let qr_payload = doc.create_element("nana-qr");
+        doc.insert(toast, doc.mount_root(), None);
+        doc.insert(tooltip, doc.mount_root(), None);
+        doc.insert(menu, doc.mount_root(), None);
+        doc.insert(item, menu, None);
+        doc.insert(pad, doc.mount_root(), None);
+        doc.insert(qr, doc.mount_root(), None);
+        doc.insert(qr_payload, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut toast_props = crate::WidgetProps {
+            label: "Saved".into(),
+            hint: "Project exported".into(),
+            ..Default::default()
+        };
+        toast_props.attrs.insert("tone".into(), "success".into());
+        toast_props
+            .attrs
+            .insert("dismissible".into(), String::new());
+        bridge.register(toast.0, crate::WidgetKind::Toast, toast_props);
+        bridge.register(
+            tooltip.0,
+            crate::WidgetKind::Tooltip,
+            crate::WidgetProps {
+                label: "Hint".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            menu.0,
+            crate::WidgetKind::ActionMenu,
+            crate::WidgetProps {
+                label: "Actions".into(),
+                active: true,
+                ..Default::default()
+            },
+        );
+        let mut item_props = crate::WidgetProps {
+            label: "Delete".into(),
+            hint: "⌫".into(),
+            active: true,
+            disabled: false,
+            button_kind: nana_ui_core::ButtonKind::Danger,
+            ..Default::default()
+        };
+        item_props.attrs.insert("danger".into(), String::new());
+        bridge.register(item.0, crate::WidgetKind::ActionMenuItem, item_props);
+        let mut pad_props = crate::WidgetProps {
+            number: 0.25,
+            min: 0.0,
+            max: 1.0,
+            step: 0.0,
+            invalid: true,
+            disabled: true,
+            loading: true,
+            label: "Pan".into(),
+            ..Default::default()
+        };
+        pad_props.attrs.insert("y".into(), "0.75".into());
+        bridge.register(pad.0, crate::WidgetKind::XYPad, pad_props);
+        let mut qr_props = crate::WidgetProps {
+            label: "Pairing".into(),
+            ..Default::default()
+        };
+        qr_props.attrs.insert("modules".into(), "1,0,0,1".into());
+        qr_props.attrs.insert("module-width".into(), "2".into());
+        bridge.register(qr.0, crate::WidgetKind::QrCode, qr_props);
+        let mut payload_props = crate::WidgetProps {
+            label: "Pairing".into(),
+            value: "nana://pair".into(),
+            ..Default::default()
+        };
+        payload_props
+            .attrs
+            .insert("payload".into(), "nana://pair".into());
+        bridge.register(qr_payload.0, crate::WidgetKind::QrCode, payload_props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let toast_id = StableNodeId::try_from(toast).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(toast_id),
+            Some(nana_ui_runtime::StandardVisual::Toast {
+                tone: nana_ui_core::ToastTone::Success,
+                dismissible: true,
+                ..
+            })
+        ));
+        let tooltip_id = StableNodeId::try_from(tooltip).unwrap();
+        // Runtime Tooltip is label + a11y only; no StandardVisual leaf.
+        assert_eq!(doc.runtime.standard_visual(tooltip_id), None);
+        assert_eq!(doc.runtime.text(tooltip_id), Some("Hint"));
+        assert_eq!(
+            doc.runtime.accessibility(tooltip_id).unwrap().role,
+            AccessibilityRole::Tooltip
+        );
+        let menu_id = StableNodeId::try_from(menu).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(menu_id),
+            Some(nana_ui_runtime::StandardVisual::MenuSurface {
+                kind: nana_ui_runtime::MenuSurfaceKind::ActionMenu,
+                ..
+            })
+        ));
+        let item_id = StableNodeId::try_from(item).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(item_id),
+            Some(nana_ui_runtime::StandardVisual::ActionMenuItem {
+                danger: true,
+                active: true,
+                disabled: false,
+                ..
+            })
+        ));
+        let pad_id = StableNodeId::try_from(pad).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(pad_id),
+            Some(nana_ui_runtime::StandardVisual::XYPad {
+                invalid: true,
+                disabled: true,
+                ..
+            })
+        ));
+        let qr_id = StableNodeId::try_from(qr).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(qr_id),
+            Some(nana_ui_runtime::StandardVisual::QrCode { width: 2, .. })
+        ));
+        let payload_id = StableNodeId::try_from(qr_payload).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(payload_id),
+            Some(nana_ui_runtime::StandardVisual::QrCode { width, .. }) if width >= 21
+        ));
+    }
+
+    #[test]
     fn runtime_is_authoritative_for_semantic_hierarchy_and_unchanged_style_is_idle() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let child = doc.create_element("button");
@@ -2956,6 +4336,184 @@ mod tests {
         snapshot.theme = nana_ui_core::ThemeMode::Dark;
         doc.sync_semantic_styles(&snapshot);
         assert_eq!(doc.runtime.theme_mode(), nana_ui_core::ThemeMode::Dark);
+    }
+
+    #[test]
+    fn sidebar_frame_body_projects_as_vertical_scroll_view() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let frame = doc.create_element("nana-sidebar-frame");
+        let top = doc.create_element("nana-column");
+        let body = doc.create_element("nana-column");
+        let footer = doc.create_element("nana-column");
+        doc.insert(frame, doc.mount_root(), None);
+        doc.insert(top, frame, None);
+        doc.insert(body, frame, None);
+        doc.insert(footer, frame, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut frame_props = crate::WidgetProps::default();
+        frame_props.class_names = vec!["nana-sidebar-frame".into()];
+        bridge.register(frame.0, crate::WidgetKind::SidebarFrame, frame_props);
+        let mut top_props = crate::WidgetProps::default();
+        top_props.class_names = vec!["nana-sidebar-frame__top".into()];
+        top_props
+            .attrs
+            .insert("data-slot".into(), "sidebar-top".into());
+        bridge.register(top.0, crate::WidgetKind::Column, top_props);
+        let mut body_props = crate::WidgetProps::default();
+        body_props.class_names = vec!["nana-sidebar-frame__body".into()];
+        body_props
+            .attrs
+            .insert("data-slot".into(), "sidebar-body".into());
+        bridge.register(body.0, crate::WidgetKind::Column, body_props);
+        let mut footer_props = crate::WidgetProps::default();
+        footer_props.class_names = vec!["nana-sidebar-frame__footer".into()];
+        footer_props
+            .attrs
+            .insert("data-slot".into(), "sidebar-footer".into());
+        bridge.register(footer.0, crate::WidgetKind::Column, footer_props);
+        bridge.insert_child(top.0, frame.0, None);
+        bridge.insert_child(body.0, frame.0, None);
+        bridge.insert_child(footer.0, frame.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let body_id = StableNodeId::try_from(body).unwrap();
+        let top_id = StableNodeId::try_from(top).unwrap();
+        let footer_id = StableNodeId::try_from(footer).unwrap();
+        assert_eq!(
+            doc.runtime.node_style(body_id).unwrap().layout.overflow_y,
+            nana_ui_core::OverflowSpec::Scroll
+        );
+        assert!(
+            doc.runtime
+                .node_style(body_id)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert!(doc.runtime.interaction(body_id).unwrap().pointer_events);
+        assert!(
+            !doc.runtime
+                .node_style(top_id)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert!(
+            !doc.runtime
+                .node_style(footer_id)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+    }
+
+    fn register_settings_row(
+        doc: &mut NanaTreeDocument,
+        bridge: &mut crate::MessageBridge,
+        label: &str,
+        hint: Option<&str>,
+        nest_hint_text: bool,
+    ) -> (NodeHandle, NodeHandle, Option<NodeHandle>) {
+        let row = doc.create_element("nana-settings-row");
+        let copy = doc.create_element("div");
+        let label_node = doc.create_element("span");
+        let control = doc.create_element("div");
+        doc.insert(row, doc.mount_root(), None);
+        doc.insert(copy, row, None);
+        doc.insert(label_node, copy, None);
+        doc.insert(control, row, None);
+        let mut row_props = crate::WidgetProps::default();
+        row_props.class_names = vec!["nana-settings-row".into()];
+        row_props.label = label.into();
+        bridge.register(row.0, crate::WidgetKind::SettingsRow, row_props);
+        let mut copy_props = crate::WidgetProps::default();
+        copy_props.class_names = vec!["nana-settings-row__label".into()];
+        bridge.register(copy.0, crate::WidgetKind::Column, copy_props);
+        let mut label_props = crate::WidgetProps::default();
+        label_props.label = label.into();
+        bridge.register(label_node.0, crate::WidgetKind::Text, label_props);
+        let hint_text = hint.filter(|_| nest_hint_text).map(|value| {
+            let hint = doc.create_element("div");
+            let text = doc.create_text(value);
+            doc.insert(hint, copy, None);
+            doc.insert(text, hint, None);
+            let mut hint_props = crate::WidgetProps::default();
+            hint_props.class_names = vec!["nana-settings-row__hint".into()];
+            bridge.register(hint.0, crate::WidgetKind::Column, hint_props);
+            let mut text_props = crate::WidgetProps::default();
+            text_props.label = value.into();
+            bridge.register(text.0, crate::WidgetKind::Text, text_props);
+            bridge.insert_child(hint.0, copy.0, None);
+            bridge.insert_child(text.0, hint.0, None);
+            (hint, text)
+        });
+        let mut control_props = crate::WidgetProps::default();
+        control_props.class_names = vec!["nana-settings-row__control".into()];
+        bridge.register(control.0, crate::WidgetKind::Column, control_props);
+        bridge.insert_child(copy.0, row.0, None);
+        bridge.insert_child(label_node.0, copy.0, None);
+        bridge.insert_child(control.0, row.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        (
+            label_node,
+            hint_text.map(|(hint, _)| hint).unwrap_or(label_node),
+            hint_text.map(|(_, text)| text),
+        )
+    }
+
+    #[test]
+    fn settings_row_projects_label_and_nested_hint_once() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let (label, hint, hint_text) = register_settings_row(
+            &mut doc,
+            &mut bridge,
+            "主题",
+            Some("选择应用配色，立即生效"),
+            true,
+        );
+        let label_style = doc
+            .runtime
+            .node_style(StableNodeId::try_from(label).unwrap())
+            .unwrap();
+        assert_eq!(label_style.layout.font_size, Some(13.0));
+        assert_eq!(label_style.layout.font_weight, Some(500));
+        let hint_text_id = StableNodeId::try_from(hint_text.unwrap()).unwrap();
+        let hint_style = doc.runtime.node_style(hint_text_id).unwrap();
+        assert_eq!(
+            hint_style.foreground,
+            Some(nana_ui_core::SemanticColorRole::Muted)
+        );
+        assert_eq!(hint_style.layout.font_size, Some(12.0));
+        assert_eq!(
+            doc.runtime.text(hint_text_id),
+            Some("选择应用配色，立即生效")
+        );
+        let hint_box = doc
+            .runtime
+            .node_style(StableNodeId::try_from(hint).unwrap())
+            .unwrap();
+        assert_ne!(
+            hint_box.foreground,
+            Some(nana_ui_core::SemanticColorRole::Muted)
+        );
+    }
+
+    #[test]
+    fn settings_row_without_hint_still_projects_label() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let (label, _, _) = register_settings_row(&mut doc, &mut bridge, "工作区边缘", None, false);
+        let label_style = doc
+            .runtime
+            .node_style(StableNodeId::try_from(label).unwrap())
+            .unwrap();
+        assert!(!label_style.layout.hidden);
+        assert_eq!(label_style.layout.font_size, Some(13.0));
+        assert_eq!(label_style.layout.font_weight, Some(500));
     }
 
     #[test]

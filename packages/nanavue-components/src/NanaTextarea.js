@@ -14,6 +14,8 @@ export const NanaTextarea = {
     size: { type: String, default: "medium" },
     /** Optional fixed height in px (maps to layout height). */
     height: { type: [Number, String], default: undefined },
+    /** Runtime syntax language (`rs`, `js`, …). Empty keeps solid committed text. */
+    language: { type: String, default: "" },
   },
   emits: ["update:modelValue", "input"],
   setup(props, { emit, attrs }) {
@@ -35,6 +37,7 @@ export const NanaTextarea = {
         disabled: props.disabled,
         invalid: props.invalid,
         size: props.size,
+        language: props.language || undefined,
         "data-agent-id": attrs["data-agent-id"] || "nana.textarea",
         onInput: (ev) => {
           const value = ev?.value ?? ev ?? "";

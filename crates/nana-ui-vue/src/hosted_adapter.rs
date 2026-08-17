@@ -839,6 +839,12 @@ impl<E: JsEngine + 'static> HostedProgram for VueHostedProgram<E> {
         self.runtime.hosted_window_event(event)
     }
 
+    fn text_input_request(&self, id: HostedWindowId) -> Option<nana_ui_platform::TextInputRequest> {
+        let host = self.runtime.vue.host(VueWindowId(id.0))?;
+        let host = host.lock().ok()?;
+        host.text_input_request()
+    }
+
     fn input_event(
         &mut self,
         id: HostedWindowId,

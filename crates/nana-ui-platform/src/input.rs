@@ -56,11 +56,22 @@ pub enum PointerPhase {
     Cancel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PointerType {
+    #[default]
     Mouse,
     Touch,
     Pen,
+}
+
+impl PointerType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mouse => "mouse",
+            Self::Touch => "touch",
+            Self::Pen => "pen",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

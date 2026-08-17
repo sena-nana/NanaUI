@@ -6,6 +6,16 @@ use nana_ui_core::{
     SwitchControlPosition, UI_BASE_TEXT_SIZE,
 };
 
+pub(crate) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
+    match tone {
+        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
+        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
+        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
+        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
+        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
+    }
+}
+
 use crate::{NodeKind, StableNodeId};
 
 static DEFAULT_LAYOUT_STYLE: LazyLock<Arc<LayoutStyle>> =
@@ -67,6 +77,7 @@ pub enum StandardVisual {
     ModalFrame {
         title: Arc<str>,
         description: Option<Arc<str>>,
+        body_text: Option<Arc<str>>,
         kind: crate::ModalSurfaceKind,
         busy: bool,
         danger: bool,
@@ -157,7 +168,148 @@ pub enum StandardVisual {
         selected: bool,
         disabled: bool,
         size: ControlSize,
+        show_focus_ring: bool,
     },
+    Progress {
+        value_ratio: f32,
+        label: Option<Arc<str>>,
+        cancellable: bool,
+    },
+    Spinner {
+        label: Arc<str>,
+        size: f32,
+        phase: f32,
+    },
+    LevelMeter {
+        value_ratio: f32,
+        girth: f32,
+        tone: nana_ui_core::StatusTone,
+    },
+    FormField {
+        label: Arc<str>,
+        hint: Option<Arc<str>>,
+        error: Option<Arc<str>>,
+        size: ControlSize,
+        control: Option<StableNodeId>,
+    },
+    QrCode {
+        modules: Arc<[bool]>,
+        width: usize,
+    },
+    Toast {
+        title: Arc<str>,
+        description: Option<Arc<str>>,
+        tone: nana_ui_core::ToastTone,
+        dismissible: bool,
+    },
+    XYPad {
+        value: nana_ui_core::XYPadValue,
+        nx: f32,
+        ny: f32,
+        size: ControlSize,
+        invalid: bool,
+        disabled: bool,
+    },
+    Select {
+        label: Arc<str>,
+        placeholder: bool,
+        size: ControlSize,
+        opened: bool,
+        invalid: bool,
+        loading: bool,
+        options: Arc<[SelectOptionData]>,
+        highlighted: Option<usize>,
+    },
+    MenuSurface {
+        kind: MenuSurfaceKind,
+        trigger: Option<Arc<str>>,
+        gap: f32,
+        query: Option<Arc<str>>,
+        rows: Arc<[SelectOptionData]>,
+        highlighted: Option<usize>,
+    },
+    ActionMenuItem {
+        label: Arc<str>,
+        hint: Option<Arc<str>>,
+        icon: Option<Icon>,
+        danger: bool,
+        active: bool,
+        disabled: bool,
+        size: ControlSize,
+    },
+    TreeView {
+        rows: Arc<[crate::tree_view::TreeRowData]>,
+        size: ControlSize,
+    },
+    CommandPalette {
+        title: Arc<str>,
+        query: Arc<str>,
+        placeholder: Arc<str>,
+        empty: Option<Arc<str>>,
+        rows: Arc<[crate::command_palette::PaletteRowData]>,
+    },
+    CalendarHeatmap {
+        cells: Arc<[crate::calendar::CalendarHeatmapCellPaint]>,
+        month_labels: Arc<[crate::calendar::CalendarHeatmapLabelPaint]>,
+        day_labels: Arc<[crate::calendar::CalendarHeatmapLabelPaint]>,
+        cell_size: f32,
+        cell_radius: f32,
+        max_level: u8,
+        active: Option<usize>,
+    },
+    TimeSeriesChart {
+        values: Arc<[f64]>,
+    },
+    ReorderList {
+        rows: Arc<[crate::reorder_list::ReorderRowPaint]>,
+        size: ControlSize,
+        spacing: f32,
+        insert: Option<LayoutBox>,
+    },
+    NativeMarkdown {
+        text: Arc<str>,
+        selection: Option<(usize, usize)>,
+    },
+    SelectableRichText {
+        text: Arc<str>,
+        selection: Option<(usize, usize)>,
+    },
+    GraphCanvas {
+        nodes: Arc<[crate::graph_canvas::GraphNodePaint]>,
+        ports: Arc<[crate::graph_canvas::GraphPortPaint]>,
+        edges: Arc<[crate::graph_canvas::GraphEdgePaint]>,
+        connecting: Option<crate::graph_canvas::GraphEdgePaint>,
+        grid_spacing: f32,
+        viewport_offset_x: f32,
+        viewport_offset_y: f32,
+        viewport_zoom: f32,
+    },
+    ImageViewer {
+        name: Option<Arc<str>>,
+        metadata: Option<Arc<str>>,
+        zoom: f32,
+        offset_x: f32,
+        offset_y: f32,
+    },
+    KeyCaptureLayer {
+        recording: bool,
+    },
+    KeymapLayer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectOptionData {
+    pub label: Arc<str>,
+    pub hint: Option<Arc<str>>,
+    pub disabled: bool,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuSurfaceKind {
+    Popover,
+    ActionMenu,
+    ContextMenu,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -184,6 +336,7 @@ pub enum ComponentGeometry {
         body: LayoutBox,
         title: ComponentTextRegion,
         description: Option<ComponentTextRegion>,
+        body_text: Option<ComponentTextRegion>,
         background: [f32; 4],
         border: [f32; 4],
         elevation: ComponentElevation,
@@ -264,6 +417,157 @@ pub enum ComponentGeometry {
         label: ComponentTextRegion,
         focus_ring: Option<[f32; 4]>,
     },
+    Progress {
+        track: LayoutBox,
+        fill: LayoutBox,
+        label: Option<ComponentTextRegion>,
+        cancel: Option<LayoutBox>,
+        corner_radius: f32,
+    },
+    FormField {
+        label: ComponentTextRegion,
+        support: Option<ComponentTextRegion>,
+        indicator: Option<(LayoutBox, [f32; 4])>,
+        control: Option<LayoutBox>,
+    },
+    QrCode {
+        field: LayoutBox,
+        module_size: f32,
+        dark: Vec<LayoutBox>,
+    },
+    Toast {
+        indicator: LayoutBox,
+        title: ComponentTextRegion,
+        description: Option<ComponentTextRegion>,
+        dismiss: Option<LayoutBox>,
+    },
+    XYPad {
+        pad: LayoutBox,
+        thumb: LayoutBox,
+        h_axis: LayoutBox,
+        v_axis: LayoutBox,
+        background: Option<[f32; 4]>,
+        border: Option<[f32; 4]>,
+        border_width: f32,
+        thumb_color: [f32; 4],
+        axis_color: [f32; 4],
+    },
+    Select {
+        label: ComponentTextRegion,
+        handle: LayoutBox,
+        handle_color: [f32; 4],
+        background: Option<[f32; 4]>,
+        border: Option<[f32; 4]>,
+        border_width: f32,
+        menu: Option<SelectMenuGeometry>,
+    },
+    MenuSurface {
+        trigger: Option<ComponentTextRegion>,
+        surface: LayoutBox,
+        search: Option<ComponentTextRegion>,
+        search_field: Option<LayoutBox>,
+        options: Vec<SelectOptionGeometry>,
+        elevation: ComponentElevation,
+        background: [f32; 4],
+        border: [f32; 4],
+    },
+    ActionMenuItem {
+        icon: Option<(Icon, LayoutBox, [f32; 4])>,
+        label: ComponentTextRegion,
+        hint: Option<ComponentTextRegion>,
+        background: Option<[f32; 4]>,
+    },
+    TreeView {
+        rows: Vec<crate::tree_view::TreeRowGeometry>,
+    },
+    CommandPalette {
+        scrim: LayoutBox,
+        surface: LayoutBox,
+        title: ComponentTextRegion,
+        input: ComponentTextRegion,
+        empty: Option<ComponentTextRegion>,
+        rows: Vec<crate::command_palette::PaletteRowGeometry>,
+        background: [f32; 4],
+        input_background: [f32; 4],
+        input_border: [f32; 4],
+        elevation: ComponentElevation,
+    },
+    CalendarHeatmap {
+        cells: Vec<(LayoutBox, [f32; 4])>,
+        labels: Vec<ComponentTextRegion>,
+    },
+    TimeSeriesChart {
+        grid: Vec<LayoutBox>,
+        area: Vec<LayoutBox>,
+        line: Vec<LayoutBox>,
+        grid_color: [f32; 4],
+        area_color: [f32; 4],
+        line_color: [f32; 4],
+    },
+    ReorderList {
+        rows: Vec<(LayoutBox, ComponentTextRegion, Option<[f32; 4]>)>,
+        insert: Option<(LayoutBox, [f32; 4])>,
+    },
+    NativeMarkdown {
+        text: ComponentTextRegion,
+        selection: Vec<LayoutBox>,
+        selection_color: [f32; 4],
+    },
+    SelectableRichText {
+        text: ComponentTextRegion,
+        selection: Vec<LayoutBox>,
+        selection_color: [f32; 4],
+    },
+    GraphCanvas {
+        nodes: Vec<(LayoutBox, ComponentTextRegion, [f32; 4], Option<[f32; 4]>)>,
+        separators: Vec<LayoutBox>,
+        ports: Vec<(LayoutBox, [f32; 4], [f32; 4], f32)>,
+        port_labels: Vec<(ComponentTextRegion, crate::TextHorizontalAlignment)>,
+        edges: Vec<(LayoutBox, [f32; 4])>,
+        edge_labels: Vec<ComponentTextRegion>,
+        grid: Vec<LayoutBox>,
+        background: [f32; 4],
+        grid_color: [f32; 4],
+        separator_color: [f32; 4],
+    },
+    ImageViewer {
+        scrim: LayoutBox,
+        surface: LayoutBox,
+        stage: LayoutBox,
+        close: LayoutBox,
+        name: Option<ComponentTextRegion>,
+        metadata: Option<ComponentTextRegion>,
+        content: LayoutBox,
+        scrim_color: [f32; 4],
+        surface_color: [f32; 4],
+        stage_color: [f32; 4],
+    },
+    KeyCaptureLayer {
+        badge: ComponentTextRegion,
+        background: Option<[f32; 4]>,
+    },
+    KeymapLayer {
+        badge: ComponentTextRegion,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectMenuGeometry {
+    pub surface: LayoutBox,
+    pub elevation: ComponentElevation,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+    pub options: Vec<SelectOptionGeometry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectOptionGeometry {
+    pub bounds: LayoutBox,
+    pub label: ComponentTextRegion,
+    pub selected: bool,
+    pub checked: bool,
+    pub disabled: bool,
+    pub background: Option<[f32; 4]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -375,6 +679,7 @@ pub(crate) struct EmptyStateTextPresentation {
 pub(crate) struct ModalTextPresentation {
     pub title: TextMetrics,
     pub description: Option<TextMetrics>,
+    pub body: Option<TextMetrics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -574,6 +879,7 @@ pub struct ModalLayoutInput {
     pub slots: crate::ModalSlots,
     pub title: TextMetrics,
     pub description: Option<TextMetrics>,
+    pub body_text: Option<TextMetrics>,
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
@@ -919,8 +1225,17 @@ pub struct ExtractedNode {
     pub focused: bool,
     pub ime: Option<ImeComposition>,
     pub text_input: Option<TextInputState>,
+    pub text_spans: Vec<ExtractedTextSpan>,
     pub standard_visual: Option<StandardVisual>,
     pub component_geometry: Option<ComponentGeometry>,
     pub standard_visual_foreground: Option<[f32; 4]>,
     pub custom_render: Option<CustomRenderNode>,
+}
+
+/// Theme-resolved committed-text span ready for Scene paint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtractedTextSpan {
+    pub start: usize,
+    pub end: usize,
+    pub color: [f32; 4],
 }

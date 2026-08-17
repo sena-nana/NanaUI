@@ -50,13 +50,25 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 | `#text` / `span` / `p` / `h*` | Text | iced text |
 | `li` | ListItem | `ListItem` |
 | class `card` / `nana-card` | Card | `Card` |
-| `nana-select` / `<select>` | Select | `nana_ui::Select` |
+| `nana-select` / `<select>` | Select | Runtime `Select` |
+| `nana-dropdown` | Select (`nana-dropdown`) | Runtime `Dropdown` |
+| `nana-search` | Select (`nana-search`) | Runtime `SearchDropdown` |
 | `nana-textarea` / `<textarea>` | Textarea | `Textarea` + EditorStore |
 | `nana-dialog` / role=dialog | Dialog | `Dialog`（`open`/`active`） |
 | `nana-dialog` + role=alertdialog / class confirm | Dialog | `ConfirmDialog` |
 | `nana-drawer` / sheet | Drawer | `Drawer`（`side`/`width`/`footer`） |
 | `nana-popover` | Popover | `Popover` |
 | `nana-context-menu` | ContextMenu | ActionMenuItem 列表 / MenuStore |
+| `nana-toast` | Toast | Runtime `Toast` |
+| `nana-tooltip` | Tooltip | Runtime `Tooltip`（无 StandardVisual） |
+| `nana-action-menu` | ActionMenu | Runtime `ActionMenu` |
+| `nana-action-menu-item` | ActionMenuItem | Runtime `ActionMenuItem` |
+| `nana-xy-pad` / `nana-xypad` / `xy-pad` | XYPad | Runtime `XYPad` |
+| `nana-qr-code` / `nana-qr` / `qr-code` | QrCode | Runtime `QrCode`（有 modules）或 LabeledValue 占位 |
+| `nana-form-field` / `nana-form` | FormField | Runtime `FormField`（子控件走 composer） |
+| `nana-interactive-card` | InteractiveCard | Runtime `InteractiveCard`（内容子树走 composer） |
+| `nana-skeleton` | Skeleton | Runtime `Skeleton` / Scene leaf |
+| `nana-level-meter` / `nana-level` | LevelMeter | Runtime `LevelMeter` / Scene leaf |
 
 ## NanaButton ↔ `Button`
 
@@ -97,6 +109,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 |-----|------|
 | `NanaSelect` `modelValue` + `options` | `Select` + `BridgeEvent::SelectValue` |
 | `NanaTextarea` `modelValue` | `Textarea` + `BridgeEvent::Input` / `Editor` |
+| `NanaTextarea` `language` | Runtime `HostedTextarea` + `"highlight"` presenter |
 
 ## NanaDialog / NanaDrawer / NanaPopover / NanaContextMenu
 
@@ -108,16 +121,34 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到真正
 | `NanaContextMenu` `options` / `anchorX`/`anchorY` | `ContextMenu` + MenuStore；嵌套 `parent/child` |
 | `NanaContextMenuHost` | 绑定 Lilia `useContextMenu` → `NanaContextMenu`（禁 Teleport/`fixed`） |
 | `NanaDropdown` / `@lilia/ui/search` alias | `NanaSelect` → iced `Select`（禁 CSS fixed 菜单） |
+| `NanaToast` `title` / `description` / `tone` / `dismissible` | Runtime `Toast` |
+| `NanaTooltip` `label` | Runtime `Tooltip` |
+| `NanaActionMenu` trigger `label` + `nana-action-menu-item` | Runtime `ActionMenu` / `ActionMenuItem` |
+| `NanaXyPad` `x`/`y` / `min`/`max` | Runtime `XYPad` |
+| `NanaQrCode` `payload` / `label` | 仅载荷；不编码。有 `modules` 时 Runtime `QrCode` |
 
 浮层关闭：宿主 `Toggle false` / `SelectValue` → Vue `change` + `update:modelValue` / `update:open`。
 
 Lilia `UiDialog` / `.modal`（`aria-modal`）presence → Dialog open；**不**兑现 CSS `fixed`/`sticky`。
 
+## FormField / InteractiveCard / Skeleton / LevelMeter
+
+无独立 Vue 包装组件：用 `nana-*` 标签或 class 进入 Runtime 投影。
+
+| Vue | Runtime |
+|-----|---------|
+| `nana-form-field` / `nana-form` `label` / `hint` / `invalid` / `size` | `FormField`；`invalid` 时 `hint` 为 error；控件 = 首个非 Text 或 input-like 子节点 |
+| `nana-interactive-card` `active` / `disabled` | `InteractiveCard` `selected` / `disabled` |
+| `nana-skeleton` 布局宽高 | `Skeleton` width/height |
+| `nana-level-meter` / `nana-level` `progress`/`value`（0..=1）+ `tone` | `LevelMeter` |
+
+FormField / InteractiveCard 承载子节点，不 Scene 路由。Skeleton / LevelMeter 是 Scene leaf。
+
 ## NanaSidebar* / Settings*
 
 | Vue | Rust |
 |-----|------|
-| `NanaSidebarFrame` | 布局 Column（槽位组合） |
+| `NanaSidebarFrame` | Runtime `SidebarFrame` |
 | `NanaSidebarRow` | `SidebarRow` |
 | `NanaSettingsRow` / Card / Page | Settings 行/卡组合 |
 

@@ -1,8 +1,8 @@
 /**
- * Phase 2 dual-engine probe: real `@vue/runtime-core` + stub host renderer ops.
+ * Dual-engine Vue `@vue/runtime-core` probe with stub host renderer ops.
  *
- * Phase 3 will replace these stubs with Rust DOM + Blitz paint. This artifact only
- * proves both JS engines can load runtime-core and share one HostApiRegistry surface.
+ * Proves both JS engines can load runtime-core and share one HostApiRegistry
+ * surface. Product UI is retained in UiWorld/UiScene; this artifact does not paint.
  */
 import { createRenderer, ref, h } from "@vue/runtime-core";
 

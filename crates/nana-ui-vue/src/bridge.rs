@@ -58,8 +58,15 @@ pub enum WidgetKind {
     Card,
     ListItem,
     EmptyState,
+    StatusBadge,
+    ValidationMessage,
+    LabeledValue,
     Progress,
     Spinner,
+    FormField,
+    InteractiveCard,
+    Skeleton,
+    LevelMeter,
     SidebarFrame,
     SidebarRow,
     SettingsRow,
@@ -71,10 +78,21 @@ pub enum WidgetKind {
     Drawer,
     /// Anchored popover → `nana_ui::Popover`.
     Popover,
-    /// Context menu → OverlayHost + ContextMenuHost when [`crate::MenuStore`] is
-    /// prepared (`anchor-x` / `anchor-y`, search when ≥6 options or `search` class;
-    /// nested via `parent/child` option values). Falls back to AnchoredActionMenu.
+    /// Context menu → Runtime `ContextMenu` (`anchor-x` / `anchor-y`, search
+    /// when ≥6 options or `search` class; nested via `parent/child` values).
     ContextMenu,
+    /// Outlined notification → Runtime `Toast`.
+    Toast,
+    /// Compact label-only hover card → Runtime `Tooltip`.
+    Tooltip,
+    /// Trigger-bound action menu → Runtime `ActionMenu`.
+    ActionMenu,
+    /// Selectable menu row → Runtime `ActionMenuItem`.
+    ActionMenuItem,
+    /// Two-axis pad → Runtime `XYPad`.
+    XYPad,
+    /// Scanner-safe QR matrix → Runtime `QrCode` when modules are supplied.
+    QrCode,
 }
 
 impl WidgetKind {
@@ -93,15 +111,23 @@ impl WidgetKind {
             "textarea" => Self::Textarea,
             "checkbox" | "check" => Self::Checkbox,
             "switch" | "toggle" => Self::Switch,
-            "select" | "pick-list" | "picklist" => Self::Select,
+            "select" | "pick-list" | "picklist" | "dropdown" => Self::Select,
+            "search" | "search-dropdown" | "searchdropdown" => Self::Select,
             "tabs" | "tab-list" | "tablist" => Self::Tabs,
             "segmented" | "segmented-control" => Self::Segmented,
             "range" | "range-field" | "slider" => Self::Range,
             "card" => Self::Card,
             "list-item" | "listitem" | "li" => Self::ListItem,
             "empty" | "empty-state" | "emptystate" => Self::EmptyState,
+            "status" | "status-badge" | "statusbadge" => Self::StatusBadge,
+            "validation" | "validation-message" | "validationmessage" => Self::ValidationMessage,
+            "labeled-value" | "labeledvalue" => Self::LabeledValue,
             "progress" => Self::Progress,
             "spinner" | "loading" => Self::Spinner,
+            "form-field" | "formfield" | "form" => Self::FormField,
+            "interactive-card" | "interactivecard" => Self::InteractiveCard,
+            "skeleton" => Self::Skeleton,
+            "level-meter" | "levelmeter" | "level" => Self::LevelMeter,
             "sidebar-frame" | "sidebarframe" | "sidebar_frame" => Self::SidebarFrame,
             "sidebar-row" | "sidebarrow" | "sidebar_row" => Self::SidebarRow,
             "settings-row" | "settingsrow" => Self::SettingsRow,
@@ -111,6 +137,12 @@ impl WidgetKind {
             "drawer" | "sheet" => Self::Drawer,
             "popover" => Self::Popover,
             "context-menu" | "contextmenu" => Self::ContextMenu,
+            "toast" => Self::Toast,
+            "tooltip" => Self::Tooltip,
+            "action-menu" | "actionmenu" => Self::ActionMenu,
+            "action-menu-item" | "actionmenuitem" => Self::ActionMenuItem,
+            "xy-pad" | "xypad" | "xy_pad" => Self::XYPad,
+            "qr-code" | "qr" | "qrcode" => Self::QrCode,
             _ => return None,
         })
     }
@@ -134,8 +166,15 @@ impl WidgetKind {
             Self::Card => "card",
             Self::ListItem => "list-item",
             Self::EmptyState => "empty-state",
+            Self::StatusBadge => "status-badge",
+            Self::ValidationMessage => "validation-message",
+            Self::LabeledValue => "labeled-value",
             Self::Progress => "progress",
             Self::Spinner => "spinner",
+            Self::FormField => "form-field",
+            Self::InteractiveCard => "interactive-card",
+            Self::Skeleton => "skeleton",
+            Self::LevelMeter => "level-meter",
             Self::SidebarFrame => "sidebar-frame",
             Self::SidebarRow => "sidebar-row",
             Self::SettingsRow => "settings-row",
@@ -145,6 +184,12 @@ impl WidgetKind {
             Self::Drawer => "drawer",
             Self::Popover => "popover",
             Self::ContextMenu => "context-menu",
+            Self::Toast => "toast",
+            Self::Tooltip => "tooltip",
+            Self::ActionMenu => "action-menu",
+            Self::ActionMenuItem => "action-menu-item",
+            Self::XYPad => "xy-pad",
+            Self::QrCode => "qr-code",
         }
     }
 
@@ -167,8 +212,15 @@ impl WidgetKind {
             Self::Card => "nana-card",
             Self::ListItem => "nana-list-item",
             Self::EmptyState => "nana-empty-state",
+            Self::StatusBadge => "nana-status-badge",
+            Self::ValidationMessage => "nana-validation-message",
+            Self::LabeledValue => "nana-labeled-value",
             Self::Progress => "nana-progress",
             Self::Spinner => "nana-spinner",
+            Self::FormField => "nana-form-field",
+            Self::InteractiveCard => "nana-interactive-card",
+            Self::Skeleton => "nana-skeleton",
+            Self::LevelMeter => "nana-level-meter",
             Self::SidebarFrame => "nana-sidebar-frame",
             Self::SidebarRow => "nana-sidebar-row",
             Self::SettingsRow => "nana-settings-row",
@@ -178,6 +230,12 @@ impl WidgetKind {
             Self::Drawer => "nana-drawer",
             Self::Popover => "nana-popover",
             Self::ContextMenu => "nana-context-menu",
+            Self::Toast => "nana-toast",
+            Self::Tooltip => "nana-tooltip",
+            Self::ActionMenu => "nana-action-menu",
+            Self::ActionMenuItem => "nana-action-menu-item",
+            Self::XYPad => "nana-xy-pad",
+            Self::QrCode => "nana-qr-code",
         }
     }
 
@@ -197,7 +255,13 @@ impl WidgetKind {
     pub fn is_overlay(self) -> bool {
         matches!(
             self,
-            Self::Dialog | Self::Drawer | Self::Popover | Self::ContextMenu
+            Self::Dialog
+                | Self::Drawer
+                | Self::Popover
+                | Self::ContextMenu
+                | Self::Toast
+                | Self::Tooltip
+                | Self::ActionMenu
         )
     }
 }
@@ -499,6 +563,86 @@ impl WidgetProps {
             }
             "muted" => self.muted = host_truthy(value),
             "invalid" => self.invalid = host_truthy(value),
+            "danger" => {
+                if host_truthy(value) {
+                    self.button_kind = ButtonKind::Danger;
+                    self.attrs.insert("danger".into(), String::new());
+                } else {
+                    self.attrs.remove("danger");
+                }
+            }
+            "dismissible" | "closable" => {
+                if host_truthy(value) {
+                    self.attrs.insert(key.clone(), String::new());
+                } else {
+                    self.attrs.remove(&key);
+                }
+            }
+            "ondismiss" | "on-dismiss" => {
+                self.attrs.insert("ondismiss".into(), String::new());
+            }
+            "x" => {
+                self.number = host_f32(value, self.number);
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("x");
+                } else {
+                    self.attrs.insert("x".into(), s);
+                }
+            }
+            "y" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("y");
+                } else {
+                    self.attrs.insert("y".into(), s);
+                }
+            }
+            "x-min" | "xmin" | "x-max" | "xmax" | "y-min" | "ymin" | "y-max" | "ymax" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove(&key);
+                } else {
+                    self.attrs.insert(key, s);
+                }
+            }
+            "modules" => {
+                let encoded = encode_qr_modules_attr(value);
+                if encoded.is_empty() {
+                    self.attrs.remove("modules");
+                } else {
+                    self.attrs.insert("modules".into(), encoded);
+                }
+            }
+            "payload" => {
+                let s = host_string(value);
+                self.attrs.insert("payload".into(), s.clone());
+                if self.value.is_empty() {
+                    self.value = s;
+                }
+            }
+            "module-width" | "modules-width" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("module-width");
+                } else {
+                    self.attrs.insert("module-width".into(), s);
+                }
+            }
+            "tone" | "data-tone" => {
+                let s = host_string(value);
+                self.attrs.insert("tone".into(), s.clone());
+                if key == "data-tone" {
+                    self.attrs.insert("data-tone".into(), s);
+                }
+            }
+            "intent" | "data-intent" => {
+                let s = host_string(value);
+                self.attrs.insert("intent".into(), s.clone());
+                if key == "data-intent" {
+                    self.attrs.insert("data-intent".into(), s);
+                }
+            }
             "fill" => {
                 // SVG `fill="…color…"` vs flex `fill` truthy flag.
                 let s = host_string(value);
@@ -759,6 +903,13 @@ impl WidgetProps {
                     self.attrs.insert("hidden".into(), String::new());
                 } else {
                     self.attrs.remove("hidden");
+                }
+            }
+            "multiple" => {
+                if host_truthy(value) {
+                    self.attrs.insert("multiple".into(), String::new());
+                } else {
+                    self.attrs.remove("multiple");
                 }
             }
             other => {
@@ -2528,8 +2679,8 @@ impl MessageBridge {
 
     /// Resolve the pre-paint document geometry from the canonical semantic tree.
     ///
-    /// This is the only headless layout entry used by Vue host ops. Iced layout
-    /// writeback replaces these boxes after paint.
+    /// Headless entry for first insert and for nodes Iced has not painted yet.
+    /// Painted Iced probe boxes stay authoritative for those nodes.
     pub(crate) fn resolve_document_layout(&mut self, doc: &mut crate::tree::NanaTreeDocument) {
         let (logical_w, logical_h) = doc.logical_size();
         self.reparent_orphans();
@@ -2537,6 +2688,25 @@ impl MessageBridge {
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
         let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
         doc.apply_layout_boxes(&boxes);
+    }
+
+    /// Measure only nodes that still have no Runtime layout box.
+    pub(crate) fn resolve_missing_document_layout(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
+        let (logical_w, logical_h) = doc.logical_size();
+        self.reparent_orphans();
+        self.sync_sidebar_footer_into_document(doc);
+        self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
+        let missing: Vec<_> = boxes
+            .into_iter()
+            .filter(|(handle, _)| doc.layout_box(*handle).is_none())
+            .collect();
+        if !missing.is_empty() {
+            doc.apply_layout_boxes(&missing);
+        }
     }
 
     fn write_containing_block(
@@ -3112,7 +3282,7 @@ impl MessageBridge {
                 self.push_event(BridgeEvent::Press { id });
                 vec!["press", "click"]
             }
-            WidgetKind::SidebarRow | WidgetKind::ListItem => {
+            WidgetKind::SidebarRow | WidgetKind::ListItem | WidgetKind::InteractiveCard => {
                 self.push_event(BridgeEvent::Select { id });
                 vec!["select", "click"]
             }
@@ -3549,6 +3719,26 @@ fn overlay_presence_implies_open(props: &WidgetProps) -> bool {
                 || open.eq_ignore_ascii_case("true")
                 || open.eq_ignore_ascii_case("open")
         })
+}
+
+fn encode_qr_modules_attr(value: &nana_js_engine::HostValue) -> String {
+    match value {
+        nana_js_engine::HostValue::Array(items) => items
+            .iter()
+            .map(|item| {
+                if matches!(item, nana_js_engine::HostValue::Number(n) if *n != 0.0)
+                    || host_truthy(item)
+                    || host_string(item) == "1"
+                {
+                    "1"
+                } else {
+                    "0"
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        _ => host_string(value),
+    }
 }
 
 fn host_f32(value: &nana_js_engine::HostValue, default: f32) -> f32 {

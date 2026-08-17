@@ -2,11 +2,11 @@ use super::{
     ContextAction, ContextMenuEvent, GalleryMessage, GalleryOverlay, GallerySection, GalleryState,
     SurfaceView,
 };
+use nana_ui::compatibility::PaneChromeActionKind;
 use nana_ui::{
     ActionId, ActionPickerNavigation, AppearanceSettings, BackdropTarget, CommandPaletteEvent,
-    DockAction, DockHostEffect, DockId, KeyModifiers, KeyStroke, MaterialOutcome,
-    PaneChromeActionKind, RegionId, SelectionMove, SplitPaneAction, ThemeMode, TreeViewEvent,
-    WindowMaterialMode, WorkspaceAction,
+    DockAction, DockHostEffect, DockId, KeyModifiers, KeyStroke, MaterialOutcome, RegionId,
+    SelectionMove, SplitPaneAction, ThemeMode, TreeViewEvent, WindowMaterialMode, WorkspaceAction,
 };
 
 #[test]

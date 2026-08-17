@@ -208,11 +208,11 @@ impl HostResourceHandle {
     }
 }
 
-/// Weak reference placeholder for Phase 3 DOM/node handles.
+/// Weak reference placeholder for host DOM/node handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct JsWeakRef(pub u64);
 
-/// Module specifier string used when loading ES modules (Phase 3+).
+/// Module specifier string used when loading ES modules.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModuleSpecifier(pub String);
 
@@ -1198,10 +1198,10 @@ impl fmt::Debug for HostApiRegistry {
 
 /// Unified JS engine contract used by `nana-ui-vue`.
 ///
-/// Phase 3 will keep this surface and add DOM/Custom Renderer wiring on top;
-/// Blitz paint stays outside this trait.
+/// Paint and retained UI stay in Runtime/UiScene; this trait is JS execution only.
+/// Iced is the current compatibility view, not part of this interface.
 pub trait JsEngine {
-    /// Evaluate / load a runtime artifact (Phase 2: UTF-8 JS source).
+    /// Evaluate / load a runtime artifact (UTF-8 JS source).
     fn initialize(&mut self, artifact: RuntimeArtifact) -> Result<(), JsEngineError>;
 
     /// Install host callbacks as `globalThis.__nanaHost.call(name, args)`.
@@ -1244,11 +1244,11 @@ pub mod probe {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    /// Pre-bundled `@vue/runtime-core` probe used by both engines (Phase 2 stub host ops).
+    /// Pre-bundled `@vue/runtime-core` probe used by both engines (stub host ops).
     pub const VUE_RUNTIME_PROBE_JS: &str =
         include_str!("../fixtures/vue-runtime-probe/dist/vue-runtime-probe.iife.js");
 
-    /// Phase 3 Custom Renderer apps (Counter/Todo) — hostOps return Rust DOM handles.
+    /// Counter/Todo custom-renderer artifact — hostOps return Rust node handles.
     pub const VUE_PHASE3_JS: &str =
         include_str!("../fixtures/vue-runtime-probe/dist/vue-phase3.iife.js");
 

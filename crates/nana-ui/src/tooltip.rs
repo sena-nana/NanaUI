@@ -1,4 +1,5 @@
 use iced::Element;
+use iced::Length;
 use iced::widget::{container, tooltip};
 
 use crate::theme::Colors;
@@ -8,6 +9,7 @@ pub use nana_ui_core::{TooltipConfig, TooltipPlacement};
 
 fn iced_tooltip_position(placement: TooltipPlacement) -> iced::widget::tooltip::Position {
     match placement {
+        TooltipPlacement::FollowCursor => iced::widget::tooltip::Position::FollowCursor,
         TooltipPlacement::Top => iced::widget::tooltip::Position::Top,
         TooltipPlacement::Right => iced::widget::tooltip::Position::Right,
         TooltipPlacement::Bottom => iced::widget::tooltip::Position::Bottom,
@@ -23,7 +25,9 @@ pub(crate) fn tooltip_view<'a, Message: 'a>(
 ) -> Element<'a, Message> {
     tooltip(
         trigger,
-        container(content).width(config.max_width).padding([4, 7]),
+        container(content)
+            .width(Length::Fit.max(config.max_width))
+            .padding([TooltipConfig::PADDING_Y, TooltipConfig::PADDING_X]),
         iced_tooltip_position(config.placement),
     )
     .gap(config.gap)

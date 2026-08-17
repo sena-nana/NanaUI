@@ -7,7 +7,8 @@ use std::borrow::Cow;
 
 use iced::widget::{row, text};
 use iced::{Alignment, Element, Length};
-use nana_ui::{Button, Icon, Input, Switch, ThemeTokens, icon};
+use nana_ui::compatibility::{Button, Input, Switch};
+use nana_ui::{Icon, ThemeTokens, icon};
 
 /// Label on the Primary slot Button.
 pub const SLOT_BUTTON_LABEL: &str = "Nana";

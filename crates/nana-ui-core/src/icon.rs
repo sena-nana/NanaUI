@@ -10,6 +10,8 @@ pub enum Icon {
     Appearance,
     ArrowLeft,
     ArrowRight,
+    ChevronDown,
+    ChevronRight,
     Chart,
     Close,
     Eye,
@@ -49,7 +51,9 @@ impl Icon {
             "add" | "plus" | "plus-circle" => Self::Add,
             "appearance" | "palette" | "sun" | "sun-medium" | "paintbrush" => Self::Appearance,
             "arrow-left" | "arrowleft" | "back" | "chevron-left" => Self::ArrowLeft,
-            "arrow-right" | "arrowright" | "chevron-right" => Self::ArrowRight,
+            "arrow-right" | "arrowright" => Self::ArrowRight,
+            "chevron-right" => Self::ChevronRight,
+            "chevron-down" | "arrow-down" => Self::ChevronDown,
             "chart" | "line-chart" | "linechart" => Self::Chart,
             "close" | "x" | "x-mark" | "x-circle" | "circle-x" | "xcircle" => Self::Close,
             "eye" | "visibility" | "eye-off" | "eyeoff" => Self::Eye,
@@ -90,7 +94,15 @@ mod tests {
         );
         assert_eq!(
             Icon::parse_name("lucide-chevron-right"),
-            Some(Icon::ArrowRight)
+            Some(Icon::ChevronRight)
+        );
+        assert_eq!(Icon::parse_name("chevron-right"), Some(Icon::ChevronRight));
+        assert_eq!(Icon::parse_name("arrow-right"), Some(Icon::ArrowRight));
+        assert_eq!(Icon::parse_name("chevron-down"), Some(Icon::ChevronDown));
+        assert_eq!(Icon::parse_name("arrow-down"), Some(Icon::ChevronDown));
+        assert_eq!(
+            Icon::parse_name("lucide-chevron-down"),
+            Some(Icon::ChevronDown)
         );
         assert_eq!(Icon::parse_name("lucide-minus"), Some(Icon::Minimize));
         assert_eq!(Icon::parse_name("lucide-square"), Some(Icon::Maximize));

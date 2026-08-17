@@ -1,6 +1,6 @@
 ---
 name: nanaui-gpu-integration
-description: Maintain NanaUI's host-owned Iced and WGPU integration. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, Iced or WGPU dependencies, or NanaShader and Live2D integration boundaries.
+description: Maintain NanaUI's host-owned WGPU integration. Iced is injected as the current compatibility renderer, not the product contract. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, Iced or WGPU dependencies, or NanaShader and Live2D integration boundaries.
 ---
 
 # NanaUI GPU Integration
@@ -11,8 +11,8 @@ description: Maintain NanaUI's host-owned Iced and WGPU integration. Use when ch
   rendering boundary.
 - Inspect manifests, lockfile, and dependency graph before dependency work; keep one WGPU major
   version across shared types.
-- Keep Window, Surface, Device, Queue, and frame scheduling host-owned. Inject the existing GPU
-  context into Iced.
+- Keep Window, Surface, Device, Queue, and frame scheduling host-owned. Inject Iced as the
+  current compatibility renderer into that GPU context.
 - Preserve `GpuView` Inline/Standalone pass semantics and `HostTexture` identity/generation-based
   invalidation. Remove unused resources and redraw only on real state or content changes.
 - Keep CPU readback and PNG encoding inside snapshot tooling. Never use a second Device/Queue or

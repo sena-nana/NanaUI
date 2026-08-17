@@ -1,9 +1,10 @@
 //! Stable platform-input routing for Nana-native Runtime components.
 
 use nana_ui_core::TableNavigation;
-use nana_ui_platform::{InputDisposition, InputEvent, PointerPhase};
+use nana_ui_platform::{ImeEvent, InputDisposition, InputEvent, PointerPhase};
 use nana_ui_runtime::{
-    AppContext, DocumentId, FrameworkError, RangeAdjustment, RovingFocusIntent, ScrollOffset,
+    AppContext, DocumentId, FrameworkError, GraphCanvasAdjustment, GraphPointerButton,
+    GraphScrollDelta, RangeAdjustment, RovingFocusIntent, ScrollOffset, XYPadAdjustment,
 };
 use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
 use std::time::Duration;
@@ -129,6 +130,7 @@ impl RuntimeInputAdapter {
                 y,
                 button,
                 is_primary,
+                modifiers,
                 ..
             } => {
                 let overlay_phase = match phase {
@@ -145,25 +147,86 @@ impl RuntimeInputAdapter {
                 let overlay =
                     context.route_overlay_pointer(document, *pointer_id, overlay_phase, *x, *y)?;
                 let target = overlay.target;
+                context.set_pointer_location(document, *pointer_id, Some((*x, *y)));
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
+                let graph_button = match *button {
+                    1 => GraphPointerButton::Middle,
+                    _ => GraphPointerButton::Primary,
+                };
                 let component_handled = match phase {
                     PointerPhase::Move => {
-                        context.update_range_drag(document, *pointer_id, *x)? || target.is_some()
+                        context.update_range_drag(document, *pointer_id, *x)?
+                            || context.update_xy_pad_drag(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                modifiers.shift,
+                            )?
+                            || context.update_graph_canvas_pointer(document, *pointer_id, *x, *y)?
+                            || context.update_split_resize(document, *pointer_id, *x, *y)?
+                            || target
+                                .map(|target| context.hover_graph_canvas(target, *x, *y))
+                                .transpose()?
+                                .unwrap_or(false)
+                            || context.hover_split_handle(
+                                context.split_handle_near(document, *x, *y).or(target),
+                            )?
+                            || target.is_some()
                     }
-                    PointerPhase::Down if *is_primary && *button == 0 => {
-                        if let Some(target) = target {
+                    PointerPhase::Down if (*is_primary && *button == 0) || *button == 1 => {
+                        context.dismiss_detached_menus(target)?;
+                        let split_handle = context.split_handle_near(document, *x, *y);
+                        if let Some(target) = split_handle.or(target) {
                             context.focus_node(document, target)?;
-                            context.press_pointer(document, *pointer_id, target)?;
-                            if context.is_range_field(target) {
-                                context.begin_range_drag(document, *pointer_id, target, *x)?;
+                            if context.is_graph_canvas(target) {
+                                context.begin_graph_canvas_pointer(
+                                    document,
+                                    *pointer_id,
+                                    target,
+                                    *x,
+                                    *y,
+                                    graph_button,
+                                )?;
+                            } else if context.is_split_handle(target) && *button == 0 {
+                                context.begin_split_resize(
+                                    document,
+                                    *pointer_id,
+                                    target,
+                                    *x,
+                                    *y,
+                                )?;
+                            } else if *button == 0 {
+                                context.press_pointer(document, *pointer_id, target)?;
+                                if context.is_range_field(target) {
+                                    context.begin_range_drag(document, *pointer_id, target, *x)?;
+                                } else if context.is_xy_pad(target) {
+                                    context.begin_xy_pad_drag(
+                                        document,
+                                        *pointer_id,
+                                        target,
+                                        *x,
+                                        *y,
+                                    )?;
+                                }
                             }
                             true
                         } else {
                             false
                         }
                     }
-                    PointerPhase::Up if *is_primary && *button == 0 => {
-                        if context.end_range_drag(document, *pointer_id, false)? {
+                    PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
+                        if context.end_range_drag(document, *pointer_id, false)?
+                            || context.end_xy_pad_drag(document, *pointer_id, false)?
+                            || context.end_graph_canvas_pointer(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                false,
+                            )?
+                            || context.end_split_resize(document, *pointer_id, false)?
+                        {
                             context.release_pointer(document, *pointer_id);
                             return Ok(InputDisposition {
                                 prevent_default: true,
@@ -172,7 +235,7 @@ impl RuntimeInputAdapter {
                         let pressed = context.release_pointer(document, *pointer_id);
                         if let Some(pressed) = pressed {
                             if Some(pressed) == target {
-                                context.activate_node(pressed)?;
+                                context.activate_node_at(pressed, *x, *y)?;
                             }
                             true
                         } else {
@@ -181,9 +244,18 @@ impl RuntimeInputAdapter {
                     }
                     PointerPhase::Cancel => {
                         let range = context.end_range_drag(document, *pointer_id, true)?;
+                        let xy_pad = context.end_xy_pad_drag(document, *pointer_id, true)?;
+                        let graph = context.end_graph_canvas_pointer(
+                            document,
+                            *pointer_id,
+                            *x,
+                            *y,
+                            true,
+                        )?;
+                        let split = context.end_split_resize(document, *pointer_id, true)?;
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
                         context.set_pointer_hover_at(document, *pointer_id, None, now)?;
-                        range || pressed
+                        range || xy_pad || graph || split || pressed
                     }
                     _ => false,
                 };
@@ -218,6 +290,12 @@ impl RuntimeInputAdapter {
                     *x,
                     *y,
                 )?;
+                let graph_delta = if *line_delta {
+                    GraphScrollDelta::Lines { y: -dy }
+                } else {
+                    GraphScrollDelta::Pixels { y: -dy }
+                };
+                let graph_target = context.pointer_target(document, *x, *y);
                 let scrolled = if overlay.prevent_default {
                     overlay
                         .target
@@ -225,6 +303,14 @@ impl RuntimeInputAdapter {
                         .transpose()?
                         .flatten()
                         .is_some()
+                } else if graph_target.is_some_and(|target| context.is_graph_canvas(target)) {
+                    context.scroll_graph_canvas(
+                        document,
+                        graph_target.expect("graph target"),
+                        *x,
+                        *y,
+                        graph_delta,
+                    )?
                 } else {
                     context.scroll_at(document, *x, *y, delta)?.is_some()
                 };
@@ -256,6 +342,121 @@ impl RuntimeInputAdapter {
                     return Ok(InputDisposition {
                         prevent_default: true,
                     });
+                }
+                let xy_adjustment = (!primary)
+                    .then_some(match key.as_str() {
+                        "ArrowLeft" => Some(XYPadAdjustment::Left),
+                        "ArrowRight" => Some(XYPadAdjustment::Right),
+                        "ArrowUp" => Some(XYPadAdjustment::Up),
+                        "ArrowDown" => Some(XYPadAdjustment::Down),
+                        _ => None,
+                    })
+                    .flatten();
+                if let Some(adjustment) = xy_adjustment
+                    && context.adjust_focused_xy_pad(document, adjustment)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+                let graph_adjustment = (!primary)
+                    .then_some(match key.as_str() {
+                        "ArrowLeft" => Some(GraphCanvasAdjustment::PanLeft),
+                        "ArrowRight" => Some(GraphCanvasAdjustment::PanRight),
+                        "ArrowUp" => Some(GraphCanvasAdjustment::PanUp),
+                        "ArrowDown" => Some(GraphCanvasAdjustment::PanDown),
+                        "Home" | "0" => Some(GraphCanvasAdjustment::Fit),
+                        "+" | "=" => Some(GraphCanvasAdjustment::ZoomIn),
+                        "-" => Some(GraphCanvasAdjustment::ZoomOut),
+                        "Escape" => Some(GraphCanvasAdjustment::ClearSelection),
+                        _ => None,
+                    })
+                    .flatten();
+                if let Some(adjustment) = graph_adjustment
+                    && context.adjust_focused_graph_canvas(document, adjustment)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+                let split_direction = (!primary)
+                    .then_some(match key.as_str() {
+                        "ArrowLeft" | "ArrowUp" => Some(-1.0),
+                        "ArrowRight" | "ArrowDown" => Some(1.0),
+                        _ => None,
+                    })
+                    .flatten();
+                if let Some(direction) = split_direction
+                    && context.adjust_focused_split(document, direction)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+                if !primary {
+                    let palette_nav = match key.as_str() {
+                        "ArrowUp" => Some(nana_ui_runtime::ActionPickerNavigation::Previous),
+                        "ArrowDown" => Some(nana_ui_runtime::ActionPickerNavigation::Next),
+                        "Home" => Some(nana_ui_runtime::ActionPickerNavigation::First),
+                        "End" => Some(nana_ui_runtime::ActionPickerNavigation::Last),
+                        "Enter" => Some(nana_ui_runtime::ActionPickerNavigation::Confirm),
+                        "Escape" => Some(nana_ui_runtime::ActionPickerNavigation::Dismiss),
+                        _ => None,
+                    };
+                    if let Some(navigation) = palette_nav
+                        && context.navigate_focused_command_palette(document, navigation)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    let select_delta = match key.as_str() {
+                        "ArrowUp" => Some(-1),
+                        "ArrowDown" => Some(1),
+                        _ => None,
+                    };
+                    if let Some(delta) = select_delta
+                        && (context.adjust_focused_select(document, delta)?
+                            || context.adjust_focused_dropdown(document, delta)?
+                            || context.adjust_focused_search_dropdown(document, delta)?)
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    if matches!(key.as_str(), " " | "Space" | "Enter")
+                        && (context.commit_focused_select(document)?
+                            || context.commit_focused_dropdown(document)?)
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    if matches!(key.as_str(), "Enter")
+                        && context.commit_focused_search_dropdown(document)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    let tree_nav = match key.as_str() {
+                        "ArrowUp" => Some(nana_ui_runtime::TreeNavigation::Previous),
+                        "ArrowDown" => Some(nana_ui_runtime::TreeNavigation::Next),
+                        "Home" => Some(nana_ui_runtime::TreeNavigation::First),
+                        "End" => Some(nana_ui_runtime::TreeNavigation::Last),
+                        "ArrowLeft" => Some(nana_ui_runtime::TreeNavigation::Parent),
+                        "ArrowRight" => Some(nana_ui_runtime::TreeNavigation::Child),
+                        "Enter" => Some(nana_ui_runtime::TreeNavigation::Activate),
+                        " " | "Space" => Some(nana_ui_runtime::TreeNavigation::Toggle),
+                        _ => None,
+                    };
+                    if let Some(navigation) = tree_nav
+                        && context.navigate_focused_tree(document, navigation)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
                 }
                 if !primary
                     && matches!(key.as_str(), " " | "Space" | "Enter")
@@ -298,17 +499,51 @@ impl RuntimeInputAdapter {
             prevent_default: handled || keyboard_barrier,
         })
     }
+
+    /// Route platform IME into the focused Runtime editor.
+    ///
+    /// Retained TextInput/TextArea/SearchDropdown/CommandPalette state is the
+    /// only editing authority. A
+    /// focused editable field, or a blocking overlay, consumes the event so a
+    /// second Iced IME path cannot also mutate it.
+    pub fn dispatch_ime(
+        self,
+        context: &mut AppContext,
+        document: DocumentId,
+        event: &ImeEvent,
+    ) -> Result<InputDisposition, FrameworkError> {
+        let overlay_blocks = context.has_blocking_runtime_overlay(document);
+        let owns_ime = context
+            .focused_text_input(document)
+            .is_some_and(|(target, _)| {
+                context
+                    .world()
+                    .accessibility(target)
+                    .is_some_and(|state| state.editable)
+            });
+        let handled = match event {
+            ImeEvent::Enabled => false,
+            ImeEvent::Disabled => context.clear_ime(document)?,
+            ImeEvent::Preedit { text, selection } => {
+                context.set_ime_preedit(document, text.clone(), *selection)?
+            }
+            ImeEvent::Commit(text) => context.commit_ime(document, text)?,
+        };
+        Ok(InputDisposition {
+            prevent_default: handled || owns_ime || overlay_blocks,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui_platform::{InputModifiers, PointerType};
+    use nana_ui_platform::{ImeEvent, InputModifiers, PointerType};
     use nana_ui_runtime::{
         Activate, Button, Dialog, LayoutBox, Menu, MenuItem, ModalSlots, MutationQueue,
         OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView,
         SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow,
-        TextInput,
+        TextArea, TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -627,12 +862,33 @@ mod tests {
         );
         assert_eq!(context.world().text(input.stable_id()), Some("NanaU"));
         assert!(
-            context
-                .set_ime_preedit(document, "你".into(), None)
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "你".into(),
+                        selection: None,
+                    },
+                )
                 .unwrap()
+                .prevent_default
         );
-        assert!(context.commit_ime(document, "你").unwrap());
+        assert_eq!(
+            context
+                .world()
+                .ime(input.stable_id())
+                .map(|ime| ime.text.as_str()),
+            Some("你")
+        );
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Commit("你".into()))
+                .unwrap()
+                .prevent_default
+        );
         assert_eq!(context.world().text(input.stable_id()), Some("NanaU你"));
+        assert_eq!(context.world().ime(input.stable_id()), None);
         assert!(
             adapter
                 .dispatch(&mut context, document, &key("Backspace"))
@@ -640,6 +896,72 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(input.stable_id()), Some("NanaU"));
+    }
+
+    #[test]
+    fn focused_runtime_textarea_ime_updates_multiline_state() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("第一行\n"))
+            .unwrap();
+        assert!(context.focus_node(document, area.stable_id()).unwrap());
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "第二".into(),
+                        selection: Some((0, "第".len())),
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        let composition = context
+            .world()
+            .ime(area.stable_id())
+            .expect("focused textarea keeps preedit on retained state");
+        assert_eq!(composition.text, "第二");
+        assert_eq!(composition.selection, Some((0, "第".len())));
+        assert_eq!(context.world().text(area.stable_id()), Some("第一行\n"));
+
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Commit("第二行".into()))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.world().text(area.stable_id()),
+            Some("第一行\n第二行")
+        );
+        assert_eq!(context.world().ime(area.stable_id()), None);
+
+        context
+            .update_component(area, |area, _cx| area.disabled = true)
+            .unwrap();
+        assert!(
+            !adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "三".into(),
+                        selection: None,
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.world().text(area.stable_id()),
+            Some("第一行\n第二行")
+        );
+        assert_eq!(context.world().ime(area.stable_id()), None);
     }
 
     #[test]

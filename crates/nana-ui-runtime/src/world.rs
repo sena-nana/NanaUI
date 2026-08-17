@@ -6,7 +6,10 @@ use std::time::Duration;
 use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
-use nana_ui_core::{SemanticColorRole, StyleModelRef, SwitchControlPosition, ThemeMode};
+use nana_ui_core::{
+    ControlSize, GraphPoint, GraphPortKind, GraphPortSide, SemanticColorRole, SemanticPalette,
+    StyleModelRef, SwitchControlPosition, ThemeMode, cubic_point,
+};
 
 use crate::animation::ActiveAnimation;
 use crate::components::{EmptyStateTextPresentation, ModalTextPresentation};
@@ -14,9 +17,10 @@ use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
     AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode,
-    ImeComposition, InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
-    OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
-    TextContent, TextInputPresentation, TextInputState, TextMetrics, TextShaper, UiMutation,
+    ExtractedTextSpan, HighlightRequest, ImeComposition, InteractionState, LayoutBox, LayoutInput,
+    MountState, MutationQueue, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
+    ScrollOffset, StandardVisual, TextContent, TextInputPresentation, TextInputState, TextMetrics,
+    TextPresentation, TextPresenter, TextShaper, UiMutation,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -156,6 +160,9 @@ pub enum UiWorldError {
     MissingAnimation(AnimationId),
     InvalidTextInput(StableNodeId),
     MissingTextInput(StableNodeId),
+    InvalidHighlightRequest(StableNodeId),
+    InvalidPresenter,
+    DuplicatePresenter(String),
 }
 
 impl fmt::Display for UiWorldError {
@@ -245,6 +252,17 @@ impl fmt::Display for UiWorldError {
             Self::MissingTextInput(id) => {
                 write!(formatter, "node {} has no text input state", id.get())
             }
+            Self::InvalidHighlightRequest(id) => {
+                write!(
+                    formatter,
+                    "node {} has an invalid highlight request",
+                    id.get()
+                )
+            }
+            Self::InvalidPresenter => formatter.write_str("presenter name must not be empty"),
+            Self::DuplicatePresenter(name) => {
+                write!(formatter, "presenter `{name}` is already registered")
+            }
         }
     }
 }
@@ -276,6 +294,7 @@ pub struct UiWorld {
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     style_model: StyleModelRef,
     generation: u64,
+    presenters: HashMap<String, Box<dyn TextPresenter>>,
 }
 
 impl Default for UiWorld {
@@ -303,6 +322,7 @@ impl UiWorld {
             animation_deadlines: BTreeSet::new(),
             style_model: StyleModelRef::default(),
             generation: 0,
+            presenters: HashMap::new(),
         }
     }
 
@@ -711,6 +731,93 @@ impl UiWorld {
         self.world.get::<TextInputPresentation>(entity)
     }
 
+    pub fn highlight_request(&self, id: StableNodeId) -> Option<&HighlightRequest> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<HighlightRequest>(entity)
+    }
+
+    pub fn text_presentation(&self, id: StableNodeId) -> Option<&TextPresentation> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<TextPresentation>(entity)
+    }
+
+    pub fn has_presenter(&self, name: &str) -> bool {
+        self.presenters.contains_key(name)
+    }
+
+    /// Install a named text presenter. Matching [`HighlightRequest`] nodes are
+    /// marked dirty so the next TEXT system can derive spans.
+    pub fn register_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<(), UiWorldError> {
+        let name = presenter.name().trim();
+        if name.is_empty() {
+            return Err(UiWorldError::InvalidPresenter);
+        }
+        if self.presenters.contains_key(name) {
+            return Err(UiWorldError::DuplicatePresenter(name.to_owned()));
+        }
+        let name = name.to_owned();
+        self.presenters.insert(name.clone(), presenter);
+        let ids = self.entities.keys().copied().collect::<Vec<_>>();
+        for id in ids {
+            if self
+                .world
+                .get::<HighlightRequest>(self.entities[&id])
+                .is_some_and(|request| request.presenter.as_ref() == name)
+            {
+                self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
+        }
+        Ok(())
+    }
+
+    /// Derive [`TextPresentation`] for scheduled text nodes. Committed text
+    /// only; IME preedit is ignored here and omitted from extraction.
+    pub fn resolve_presentations(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
+        for &id in ids {
+            if !self.contains(id) {
+                return Err(UiWorldError::MissingNode(id));
+            }
+            let entity = self.entities[&id];
+            let Some(request) = self.world.get::<HighlightRequest>(entity).cloned() else {
+                if self.world.get::<TextPresentation>(entity).is_some() {
+                    self.world.entity_mut(entity).remove::<TextPresentation>();
+                }
+                continue;
+            };
+            let text = self.committed_presentation_text(id);
+            let source = crate::presentation::presentation_source(&text, &request);
+            if self
+                .world
+                .get::<TextPresentation>(entity)
+                .is_some_and(|presentation| presentation.source == source)
+            {
+                continue;
+            }
+            let spans = self
+                .presenters
+                .get(request.presenter.as_ref())
+                .map(|presenter| {
+                    crate::presentation::sanitize_spans(&text, presenter.present(&text, &request))
+                })
+                .unwrap_or_default();
+            self.world
+                .entity_mut(entity)
+                .insert(TextPresentation { spans, source });
+        }
+        Ok(())
+    }
+
+    fn committed_presentation_text(&self, id: StableNodeId) -> String {
+        let entity = self.entities[&id];
+        self.world
+            .get::<TextInputState>(entity)
+            .map(|state| state.value.clone())
+            .unwrap_or_else(|| self.component::<TextContent>(id).value.clone())
+    }
+
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<TextMetrics>(entity).copied()
@@ -823,6 +930,7 @@ impl UiWorld {
         ids: &[StableNodeId],
         shaper: &mut impl TextShaper,
     ) -> Result<(), UiWorldError> {
+        self.resolve_presentations(ids)?;
         let mut shaped = Vec::with_capacity(ids.len());
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
@@ -853,6 +961,9 @@ impl UiWorld {
                 validate_text_metrics(id, intrinsic.title)?;
                 if let Some(description) = intrinsic.description {
                     validate_text_metrics(id, description)?;
+                }
+                if let Some(body) = intrinsic.body {
+                    validate_text_metrics(id, body)?;
                 }
                 modal_shaped.push((id, intrinsic));
             }
@@ -940,22 +1051,29 @@ impl UiWorld {
                 }
                 continue;
             }
-            if let Some(visual @ StandardVisual::ModalFrame { kind, .. }) =
+            if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) =
                 self.world.get::<StandardVisual>(self.entities[&id])
             {
                 if computed.visible {
                     let root = *self.component::<LayoutBox>(id);
-                    let surface = modal_surface_bounds(root, *kind, None);
-                    let intrinsic = shape_modal_text(
-                        id,
-                        visual,
-                        computed,
-                        Some((surface.width - 64.0).max(0.0)),
-                        shaper,
+                    let surface = crate::overlay_surfaces::modal_surface_bounds(root, *kind, None);
+                    let chrome = crate::overlay_surfaces::ModalChrome::measure(
+                        *kind,
+                        crate::TextMetrics::default(),
+                        None,
+                        slots.close_action.is_some(),
+                        slots.footer.is_some() || !slots.actions.is_empty(),
                     );
+                    let wrap_width =
+                        chrome.text_width(surface.width, *kind, slots.close_action.is_some());
+                    let intrinsic =
+                        shape_modal_text(id, visual, computed, Some(wrap_width), shaper);
                     validate_text_metrics(id, intrinsic.title)?;
                     if let Some(description) = intrinsic.description {
                         validate_text_metrics(id, description)?;
+                    }
+                    if let Some(body) = intrinsic.body {
+                        validate_text_metrics(id, body)?;
                     }
                     if self.world.get::<ModalTextPresentation>(self.entities[&id])
                         != Some(&intrinsic)
@@ -1165,6 +1283,7 @@ impl UiWorld {
                                 slots: slots.clone(),
                                 title: presentation.title,
                                 description: presentation.description,
+                                body_text: presentation.body,
                             })
                         }),
                 })
@@ -1250,10 +1369,23 @@ impl UiWorld {
                     id,
                     layout,
                     transform,
-                    clips: own_clips,
-                    z_index: node_style.z_index.unwrap_or_default(),
+                    clips: own_clips.clone(),
+                    z_index: self.stacking_z_index(id),
                     order,
                 });
+                if let Some(crate::ComponentGeometry::Select {
+                    menu: Some(menu), ..
+                }) = self.component_geometry(id)
+                {
+                    entries.push(HitEntry {
+                        id,
+                        layout: menu.surface,
+                        transform,
+                        clips: own_clips,
+                        z_index: self.stacking_z_index(id).max(1_000),
+                        order,
+                    });
+                }
             }
             order += 1;
         }
@@ -1404,7 +1536,7 @@ impl UiWorld {
                         TextMetrics::default(),
                         LayoutBox::default(),
                         ScrollOffset::default(),
-                        InteractionState::default(),
+                        initial_interaction(kind),
                         AccessibilityState::default(),
                         DirtyMask::all(),
                     ))
@@ -2005,7 +2137,48 @@ impl UiWorld {
                         | DirtyMask::ACCESSIBILITY,
                 );
             }
+            UiMutation::SetHighlightRequest { id, request } => {
+                let entity = self.entities[id];
+                if let Some(request) = request {
+                    self.world.entity_mut(entity).insert(request.clone());
+                } else {
+                    self.world.entity_mut(entity).remove::<HighlightRequest>();
+                    self.world.entity_mut(entity).remove::<TextPresentation>();
+                }
+                self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
         }
+    }
+
+    fn extracted_text_spans(&self, entity: Entity) -> Vec<ExtractedTextSpan> {
+        if self.world.get::<ImeComposition>(entity).is_some() {
+            return Vec::new();
+        }
+        if self
+            .world
+            .get::<TextInputPresentation>(entity)
+            .is_some_and(|presentation| presentation.placeholder)
+        {
+            return Vec::new();
+        }
+        if matches!(
+            self.world.get::<StandardVisual>(entity),
+            Some(StandardVisual::TextInput { secure: true, .. })
+        ) {
+            return Vec::new();
+        }
+        let Some(presentation) = self.world.get::<TextPresentation>(entity) else {
+            return Vec::new();
+        };
+        presentation
+            .spans
+            .iter()
+            .map(|span| ExtractedTextSpan {
+                start: span.start,
+                end: span.end,
+                color: self.style_model.palette.get(span.color).as_rgba_array(),
+            })
+            .collect()
     }
 
     fn component<T: Component>(&self, id: StableNodeId) -> &T {
@@ -2031,10 +2204,8 @@ impl UiWorld {
         let hierarchy = self.world.get::<Hierarchy>(entity)?;
         let mut standard_visual = self.world.get::<StandardVisual>(entity).cloned();
         if let Some((busy, danger, is_confirm)) = self.confirm_action_effect(id) {
-            if busy {
-                style.color = Some(self.style_model.palette.faint.as_rgba_array());
-                style.background = Some(self.style_model.palette.subtle.as_rgba_array());
-                style.border_color = Some(self.style_model.palette.border.as_rgba_array());
+            if busy && !is_confirm {
+                style.color = Some(self.style_model.palette.muted.as_rgba_array());
             }
             if is_confirm
                 && let Some(StandardVisual::Button { kind, loading, .. }) = standard_visual.as_mut()
@@ -2079,9 +2250,38 @@ impl UiWorld {
             | StandardVisual::StatusBadge { .. }
             | StandardVisual::ValidationMessage { .. }
             | StandardVisual::EmptyState { .. }
-            | StandardVisual::LabeledValue { .. } => {
-                self.style_model.palette.accent.as_rgba_array()
+            | StandardVisual::LabeledValue { .. }
+            | StandardVisual::Progress { .. }
+            | StandardVisual::Spinner { .. }
+            | StandardVisual::FormField { .. } => self.style_model.palette.accent.as_rgba_array(),
+            StandardVisual::QrCode { .. } => [0.0, 0.0, 0.0, 1.0],
+            StandardVisual::Toast { tone, .. } => self
+                .style_model
+                .palette
+                .get(status_tone_role(tone.status()))
+                .as_rgba_array(),
+            StandardVisual::XYPad { .. } => self.style_model.palette.text.as_rgba_array(),
+            StandardVisual::Select { .. }
+            | StandardVisual::MenuSurface { .. }
+            | StandardVisual::ActionMenuItem { .. }
+            | StandardVisual::TreeView { .. }
+            | StandardVisual::CommandPalette { .. } => {
+                self.style_model.palette.text.as_rgba_array()
             }
+            StandardVisual::LevelMeter { tone, .. } => self
+                .style_model
+                .palette
+                .get(status_tone_role(*tone))
+                .as_rgba_array(),
+            StandardVisual::CalendarHeatmap { .. }
+            | StandardVisual::TimeSeriesChart { .. }
+            | StandardVisual::ReorderList { .. }
+            | StandardVisual::NativeMarkdown { .. }
+            | StandardVisual::SelectableRichText { .. }
+            | StandardVisual::GraphCanvas { .. }
+            | StandardVisual::ImageViewer { .. }
+            | StandardVisual::KeyCaptureLayer { .. }
+            | StandardVisual::KeymapLayer => self.style_model.palette.text.as_rgba_array(),
         });
         Some(ExtractedNode {
             id,
@@ -2090,7 +2290,7 @@ impl UiWorld {
             children: hierarchy.children.clone(),
             layout: *self.world.get::<LayoutBox>(entity)?,
             scroll_offset: *self.world.get::<ScrollOffset>(entity)?,
-            z_index: source_style.layout.z_index.unwrap_or_default(),
+            z_index: self.stacking_z_index(id),
             source_style,
             style,
             text: if has_text {
@@ -2106,11 +2306,30 @@ impl UiWorld {
             focused: self.focused.get(&identity.document) == Some(&id),
             ime: self.world.get::<ImeComposition>(entity).cloned(),
             text_input: self.world.get::<TextInputState>(entity).cloned(),
+            text_spans: self.extracted_text_spans(entity),
             standard_visual,
             component_geometry,
             standard_visual_foreground,
             custom_render: self.world.get::<CustomRenderNode>(entity).cloned(),
         })
+    }
+
+    fn stacking_z_index(&self, id: StableNodeId) -> i32 {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if let Some(z_index) = self
+                .world
+                .get::<NodeStyle>(self.entities[&id])
+                .and_then(|style| style.layout.z_index)
+            {
+                return z_index;
+            }
+            current = self
+                .world
+                .get::<Hierarchy>(self.entities[&id])
+                .and_then(|hierarchy| hierarchy.parent);
+        }
+        0
     }
 
     fn derive_component_geometry(
@@ -2148,49 +2367,58 @@ impl UiWorld {
             StandardVisual::ModalFrame {
                 title,
                 description,
+                body_text,
                 kind,
                 slots,
                 ..
             } => {
-                let provisional = modal_surface_bounds(bounds, *kind, None);
                 let presentation = self
                     .world
                     .get::<ModalTextPresentation>(self.entities[&id])
                     .copied()
                     .unwrap_or_default();
-                let header_height = (28.0
-                    + presentation.title.height
-                    + presentation
-                        .description
-                        .map_or(0.0, |metrics| 4.0 + metrics.height))
-                .max(56.0);
-                let mut intrinsic_height = header_height + 14.0;
-                if let Some(body) = slots.body.and_then(|id| self.layout_box(id)) {
-                    intrinsic_height =
-                        intrinsic_height.max(body.y + body.height - provisional.y + 14.0);
-                }
-                if let Some(footer) = slots.footer.and_then(|id| self.layout_box(id)) {
-                    intrinsic_height =
-                        intrinsic_height.max(footer.y + footer.height - provisional.y);
-                }
-                for action in slots.actions.iter().filter_map(|id| self.layout_box(*id)) {
-                    intrinsic_height = intrinsic_height.max(
-                        action.y + action.height + (58.0 - action.height) / 2.0 - provisional.y,
-                    );
-                }
-                let surface = modal_surface_bounds(bounds, *kind, Some(intrinsic_height));
-                let LayoutBox { x, y, width, .. } = surface;
-                let text_width = (width - 64.0).max(0.0);
-                let footer_height = if slots.footer.is_some() || !slots.actions.is_empty() {
-                    58.0
+                let has_close = slots.close_action.is_some();
+                let has_footer = slots.footer.is_some() || !slots.actions.is_empty();
+                let chrome = crate::overlay_surfaces::ModalChrome::measure(
+                    *kind,
+                    presentation.title,
+                    presentation.description,
+                    has_close,
+                    has_footer,
+                );
+                let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
+                let body_slot = slots
+                    .body
+                    .and_then(|id| self.layout_box(id))
+                    .map_or(0.0, |region| region.height);
+                let body_gap = if body_copy > 0.0 && body_slot > 0.0 {
+                    8.0
                 } else {
                     0.0
                 };
-                let body = LayoutBox {
-                    x: x + 16.0,
-                    y: y + header_height,
-                    width: (width - 32.0).max(0.0),
-                    height: (surface.height - header_height - footer_height - 14.0).max(0.0),
+                let intrinsic_height = chrome.chrome_height(body_copy + body_gap + body_slot);
+                let surface = crate::overlay_surfaces::modal_surface_bounds(
+                    bounds,
+                    *kind,
+                    Some(intrinsic_height),
+                );
+                let LayoutBox { x, y, width, .. } = surface;
+                let text_width = chrome.text_width(width, *kind, has_close);
+                let body = chrome.body_box(surface);
+                let text_block = presentation.title.height
+                    + presentation.description.map_or(0.0, |metrics| {
+                        crate::overlay_surfaces::MODAL_TITLE_DESC_GAP + metrics.height
+                    });
+                let title_y = match kind {
+                    crate::ModalSurfaceKind::Drawer(_) => {
+                        y + (chrome.header_height - text_block) / 2.0
+                    }
+                    _ => y + crate::overlay_surfaces::MODAL_HEADER_PAD_TOP,
+                };
+                let shadow_alpha = if self.style_model.palette.background.as_rgba_array()[0] > 0.5 {
+                    0.28
+                } else {
+                    0.45
                 };
                 Some(crate::ComponentGeometry::ModalFrame {
                     scrim: bounds,
@@ -2198,8 +2426,8 @@ impl UiWorld {
                     body,
                     title: text_region(
                         LayoutBox {
-                            x: x + 16.0,
-                            y: y + 14.0,
+                            x: x + chrome.pad_x,
+                            y: title_y,
                             width: text_width,
                             height: presentation.title.height,
                         },
@@ -2211,8 +2439,10 @@ impl UiWorld {
                     description: description.as_ref().map(|description| {
                         text_region(
                             LayoutBox {
-                                x: x + 16.0,
-                                y: y + 14.0 + presentation.title.height + 4.0,
+                                x: x + chrome.pad_x,
+                                y: title_y
+                                    + presentation.title.height
+                                    + crate::overlay_surfaces::MODAL_TITLE_DESC_GAP,
                                 width: text_width,
                                 height: presentation.description.unwrap_or_default().height,
                             },
@@ -2222,12 +2452,26 @@ impl UiWorld {
                             None,
                         )
                     }),
+                    body_text: body_text.as_ref().map(|message| {
+                        text_region(
+                            LayoutBox {
+                                x: body.x,
+                                y: body.y,
+                                width: body.width,
+                                height: presentation.body.unwrap_or_default().height,
+                            },
+                            Arc::clone(message),
+                            false,
+                            crate::overlay_surfaces::MODAL_BODY_TEXT_SIZE,
+                            None,
+                        )
+                    }),
                     background: self.style_model.palette.surface.as_rgba_array(),
-                    border: self.style_model.palette.border_strong.as_rgba_array(),
+                    border: [0.0; 4],
                     elevation: crate::ComponentElevation {
-                        color: [0.0, 0.0, 0.0, 0.24],
-                        offset_y: 8.0,
-                        blur_radius: 24.0,
+                        color: [0.0, 0.0, 0.0, shadow_alpha],
+                        offset_y: 14.0,
+                        blur_radius: 30.0,
                     },
                 })
             }
@@ -2374,7 +2618,7 @@ impl UiWorld {
                             height: if multiline {
                                 metrics.height.max(content.height)
                             } else {
-                                content.height
+                                line_height
                             },
                         },
                         content: Arc::from(presentation.display_value.as_str()),
@@ -2394,12 +2638,19 @@ impl UiWorld {
                     preedit,
                     background: style.background,
                     border: style.border_color,
-                    border_width: if style.border_color.is_some() {
-                        source.layout.resolved_border_width()
-                    } else {
-                        0.0
+                    border_width: {
+                        let width = if style.border_color.is_some() {
+                            source.layout.resolved_border_width()
+                        } else {
+                            0.0
+                        };
+                        if multiline && focused && *invalid {
+                            width.max(2.0)
+                        } else {
+                            width
+                        }
                     },
-                    focus_ring: focused.then(|| {
+                    focus_ring: (!multiline && focused).then(|| {
                         if *invalid {
                             self.style_model.palette.danger.as_rgba_array()
                         } else {
@@ -2912,7 +3163,11 @@ impl UiWorld {
                 })
             }
             StandardVisual::SelectionOption {
-                label, icon, size, ..
+                label,
+                icon,
+                size,
+                show_focus_ring,
+                ..
             } => {
                 let icon_extent = size.icon_size().min(content.height);
                 let base_padding = size.padding_x() + 2.0;
@@ -2947,10 +3202,378 @@ impl UiWorld {
                         size.text_size(),
                         Some(500),
                     ),
-                    focus_ring: (self.focused.get(&self.component::<Identity>(id).document)
-                        == Some(&id))
+                    focus_ring: (*show_focus_ring
+                        && self.focused.get(&self.component::<Identity>(id).document) == Some(&id))
                     .then(|| self.style_model.palette.accent.as_rgba_array()),
                 })
+            }
+            StandardVisual::Progress {
+                value_ratio,
+                label,
+                cancellable,
+            } => progress_geometry(
+                bounds,
+                style,
+                *value_ratio,
+                6.0,
+                3.0,
+                label.as_ref(),
+                *cancellable,
+                self.style_model.palette.text.as_rgba_array(),
+            ),
+            StandardVisual::LevelMeter {
+                value_ratio, girth, ..
+            } => {
+                let girth = if girth.is_finite() && *girth > 0.0 {
+                    *girth
+                } else {
+                    4.0
+                };
+                progress_geometry(
+                    bounds,
+                    style,
+                    *value_ratio,
+                    girth,
+                    girth / 2.0,
+                    None,
+                    false,
+                    [0.0; 4],
+                )
+            }
+            StandardVisual::FormField {
+                label,
+                hint,
+                error,
+                size,
+                control,
+            } => form_field_geometry(
+                bounds,
+                *size,
+                label,
+                hint.as_ref(),
+                error.as_ref(),
+                *control,
+                &|id| self.layout_box(id),
+                &self.style_model.palette,
+            ),
+            StandardVisual::Toast {
+                title,
+                description,
+                dismissible,
+                ..
+            } => {
+                let pad_x = 12.0;
+                let pad_y = 10.0;
+                let indicator = 7.0;
+                let gap = 8.0;
+                let dismiss = if *dismissible { 28.0 } else { 0.0 };
+                let copy_x = bounds.x + pad_x + indicator + gap;
+                let copy_right =
+                    bounds.x + bounds.width - pad_x - if *dismissible { dismiss } else { 0.0 };
+                let copy_width = (copy_right - copy_x).max(0.0);
+                let title_height = 12.0;
+                let desc_height = 11.0;
+                let has_desc = description.is_some();
+                let title_y = if has_desc {
+                    bounds.y + pad_y
+                } else {
+                    bounds.y + (bounds.height - title_height) / 2.0
+                };
+                Some(crate::ComponentGeometry::Toast {
+                    indicator: LayoutBox {
+                        x: bounds.x + pad_x,
+                        y: bounds.y + (bounds.height - indicator) / 2.0,
+                        width: indicator,
+                        height: indicator,
+                    },
+                    title: crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: copy_x,
+                            y: title_y,
+                            width: copy_width,
+                            height: title_height,
+                        },
+                        content: Arc::clone(title),
+                        color: Some(self.style_model.palette.text.as_rgba_array()),
+                        font_size: 12.0,
+                        font_weight: Some(600),
+                    },
+                    description: description.as_ref().map(|description| {
+                        crate::ComponentTextRegion {
+                            bounds: LayoutBox {
+                                x: copy_x,
+                                y: title_y + title_height + 2.0,
+                                width: copy_width,
+                                height: desc_height,
+                            },
+                            content: Arc::clone(description),
+                            color: Some(self.style_model.palette.muted.as_rgba_array()),
+                            font_size: 11.0,
+                            font_weight: None,
+                        }
+                    }),
+                    dismiss: dismissible.then(|| LayoutBox {
+                        x: bounds.x + bounds.width - pad_x - dismiss,
+                        y: bounds.y + (bounds.height - dismiss) / 2.0,
+                        width: dismiss,
+                        height: dismiss,
+                    }),
+                })
+            }
+            StandardVisual::XYPad { nx, ny, .. } => {
+                let pad = bounds;
+                let thumb = 8.0;
+                let nx = nx.clamp(0.0, 1.0);
+                let ny = ny.clamp(0.0, 1.0);
+                Some(crate::ComponentGeometry::XYPad {
+                    pad,
+                    thumb: LayoutBox {
+                        x: pad.x + nx * pad.width - thumb / 2.0,
+                        y: pad.y + ny * pad.height - thumb / 2.0,
+                        width: thumb,
+                        height: thumb,
+                    },
+                    h_axis: LayoutBox {
+                        x: pad.x,
+                        y: pad.y + pad.height / 2.0 - 0.5,
+                        width: pad.width,
+                        height: 1.0,
+                    },
+                    v_axis: LayoutBox {
+                        x: pad.x + pad.width / 2.0 - 0.5,
+                        y: pad.y,
+                        width: 1.0,
+                        height: pad.height,
+                    },
+                    background: style.background,
+                    border: style.border_color,
+                    border_width: if style.border_color.is_some() {
+                        source.layout.resolved_border_width()
+                    } else {
+                        0.0
+                    },
+                    thumb_color: self.style_model.palette.accent.as_rgba_array(),
+                    axis_color: self.style_model.palette.border.as_rgba_array(),
+                })
+            }
+            StandardVisual::Select {
+                label,
+                placeholder,
+                size,
+                opened,
+                options,
+                highlighted,
+                ..
+            } => Some(crate::select::select_geometry(
+                bounds,
+                label,
+                *placeholder,
+                *size,
+                *opened,
+                options,
+                *highlighted,
+                style,
+                source,
+                &self.style_model.palette,
+            )),
+            StandardVisual::MenuSurface {
+                kind: crate::MenuSurfaceKind::ContextMenu,
+                query,
+                rows,
+                highlighted,
+                ..
+            } if query.is_some() || !rows.is_empty() => Some(crate::menus::context_menu_geometry(
+                bounds,
+                query.as_ref(),
+                rows,
+                *highlighted,
+                &self.style_model.palette,
+            )),
+            StandardVisual::MenuSurface { trigger, gap, .. } => {
+                Some(crate::popover::menu_surface_geometry(
+                    bounds,
+                    trigger.as_ref(),
+                    *gap,
+                    &self.style_model.palette,
+                ))
+            }
+            StandardVisual::ActionMenuItem {
+                label,
+                hint,
+                icon,
+                danger,
+                disabled,
+                size,
+                ..
+            } => Some(crate::menus::action_menu_item_geometry(
+                bounds,
+                label,
+                hint.as_ref(),
+                *icon,
+                *danger,
+                *disabled,
+                *size,
+                style,
+                &self.style_model.palette,
+            )),
+            StandardVisual::TreeView { rows, size } => Some(crate::tree_view::tree_view_geometry(
+                bounds,
+                rows,
+                *size,
+                &self.style_model.palette,
+            )),
+            StandardVisual::CommandPalette {
+                title,
+                query,
+                placeholder,
+                empty,
+                rows,
+            } => Some(crate::command_palette::command_palette_geometry(
+                bounds,
+                title,
+                query,
+                placeholder,
+                empty.as_ref(),
+                rows,
+                &self.style_model.palette,
+            )),
+            StandardVisual::QrCode { modules, width } => {
+                let (module_size, (ox, oy)) = crate::qr_code::module_geometry(bounds, *width);
+                let quiet = crate::qr_code::QUIET_ZONE_MODULES as f32;
+                let dark = modules
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, dark)| **dark)
+                    .map(|(index, _)| {
+                        let x = index % *width;
+                        let y = index / *width;
+                        LayoutBox {
+                            x: bounds.x + ox + (x as f32 + quiet) * module_size,
+                            y: bounds.y + oy + (y as f32 + quiet) * module_size,
+                            width: module_size,
+                            height: module_size,
+                        }
+                    })
+                    .collect();
+                Some(crate::ComponentGeometry::QrCode {
+                    field: LayoutBox {
+                        x: bounds.x + ox,
+                        y: bounds.y + oy,
+                        width: module_size * (*width as f32 + quiet * 2.0),
+                        height: module_size * (*width as f32 + quiet * 2.0),
+                    },
+                    module_size,
+                    dark,
+                })
+            }
+            StandardVisual::CalendarHeatmap {
+                cells,
+                month_labels,
+                day_labels,
+                cell_size,
+                max_level,
+                active,
+                ..
+            } => Some(calendar_heatmap_geometry(
+                bounds,
+                cells,
+                month_labels,
+                day_labels,
+                *cell_size,
+                *max_level,
+                *active,
+                self.style_model.theme_mode,
+                &self.style_model.palette,
+            )),
+            StandardVisual::TimeSeriesChart { values } => Some(time_series_geometry(
+                bounds,
+                values,
+                self.style_model.theme_mode,
+            )),
+            StandardVisual::ReorderList {
+                rows,
+                size,
+                spacing,
+                insert,
+            } => Some(reorder_list_geometry(
+                bounds,
+                rows,
+                *size,
+                *spacing,
+                *insert,
+                &self.style_model.palette,
+            )),
+            StandardVisual::NativeMarkdown { text, selection } => {
+                let (text, selection, selection_color) = selectable_text_regions(
+                    content,
+                    text,
+                    *selection,
+                    style,
+                    &self.style_model.palette,
+                );
+                Some(crate::ComponentGeometry::NativeMarkdown {
+                    text,
+                    selection,
+                    selection_color,
+                })
+            }
+            StandardVisual::SelectableRichText { text, selection } => {
+                let (text, selection, selection_color) = selectable_text_regions(
+                    content,
+                    text,
+                    *selection,
+                    style,
+                    &self.style_model.palette,
+                );
+                Some(crate::ComponentGeometry::SelectableRichText {
+                    text,
+                    selection,
+                    selection_color,
+                })
+            }
+            StandardVisual::GraphCanvas {
+                nodes,
+                ports,
+                edges,
+                connecting,
+                grid_spacing,
+                viewport_offset_x,
+                viewport_offset_y,
+                viewport_zoom,
+            } => Some(graph_canvas_geometry(
+                bounds,
+                nodes,
+                ports,
+                edges,
+                connecting.as_ref(),
+                *grid_spacing,
+                *viewport_offset_x,
+                *viewport_offset_y,
+                *viewport_zoom,
+                &self.style_model.palette,
+            )),
+            StandardVisual::ImageViewer {
+                name,
+                metadata,
+                zoom,
+                offset_x,
+                offset_y,
+            } => Some(image_viewer_geometry(
+                bounds,
+                name.as_ref(),
+                metadata.as_ref(),
+                *zoom,
+                *offset_x,
+                *offset_y,
+                &self.style_model.palette,
+            )),
+            StandardVisual::KeyCaptureLayer { recording } => Some(key_capture_geometry(
+                content,
+                *recording,
+                &self.style_model.palette,
+            )),
+            StandardVisual::KeymapLayer => {
+                Some(keymap_geometry(content, &self.style_model.palette))
             }
             _ => None,
         }
@@ -3310,7 +3933,7 @@ impl UiWorld {
         if self.focused.get(&identity.document) == Some(&id) {
             paint = paint.overlay(local.interaction.focused);
         }
-        if accessibility.disabled {
+        if accessibility.disabled && !accessibility.busy {
             paint = paint.overlay(local.interaction.disabled);
         }
         let foreground = paint.foreground.unwrap_or(inherited.foreground);
@@ -3597,7 +4220,10 @@ fn shape_modal_text(
     shaper: &mut impl TextShaper,
 ) -> ModalTextPresentation {
     let StandardVisual::ModalFrame {
-        title, description, ..
+        title,
+        description,
+        body_text,
+        ..
     } = visual
     else {
         return ModalTextPresentation::default();
@@ -3616,6 +4242,10 @@ fn shape_modal_text(
     description_style.font_size = 12.0;
     description_style.font_weight = None;
     description_style.line_height = None;
+    let mut body_style = inherited.clone();
+    body_style.font_size = crate::overlay_surfaces::MODAL_BODY_TEXT_SIZE;
+    body_style.font_weight = None;
+    body_style.line_height = None;
     ModalTextPresentation {
         title: shaper.shape(
             id,
@@ -3635,67 +4265,161 @@ fn shape_modal_text(
                 constraints,
             )
         }),
+        body: body_text.as_ref().map(|value| {
+            shaper.shape(
+                id,
+                &TextContent {
+                    value: value.to_string(),
+                },
+                &body_style,
+                constraints,
+            )
+        }),
     }
 }
 
-fn modal_surface_bounds(
+fn progress_geometry(
     bounds: LayoutBox,
-    kind: crate::ModalSurfaceKind,
-    intrinsic_height: Option<f32>,
-) -> LayoutBox {
-    let margin = 16.0_f32.min(bounds.width / 2.0).min(bounds.height / 2.0);
-    let available_width = (bounds.width - margin * 2.0).max(0.0);
-    let available_height = (bounds.height - margin * 2.0).max(0.0);
-    match kind {
-        crate::ModalSurfaceKind::Dialog(size) | crate::ModalSurfaceKind::Confirm(size) => {
-            let width = size.max_width().min(available_width);
-            let max_height = (bounds.height * 0.76).min(available_height);
-            let height = intrinsic_height.unwrap_or(max_height).min(max_height);
-            LayoutBox {
-                x: bounds.x + (bounds.width - width) / 2.0,
-                y: bounds.y + bounds.height * 0.12,
-                width,
-                height,
-            }
+    style: &ComputedStyle,
+    value_ratio: f32,
+    girth: f32,
+    corner_radius: f32,
+    label: Option<&Arc<str>>,
+    cancellable: bool,
+    default_label_color: [f32; 4],
+) -> Option<crate::ComponentGeometry> {
+    let ratio = value_ratio.clamp(0.0, 1.0);
+    let girth = if girth.is_finite() && girth > 0.0 {
+        girth
+    } else {
+        6.0
+    };
+    let cancel_size = 24.0_f32.min(bounds.height).min(bounds.width);
+    let heading = if label.is_some() || cancellable {
+        12.0_f32.max(if cancellable { cancel_size } else { 0.0 })
+    } else {
+        0.0
+    };
+    let cancel = cancellable.then(|| LayoutBox {
+        x: bounds.x + (bounds.width - cancel_size).max(0.0),
+        y: bounds.y + (heading - cancel_size).max(0.0) / 2.0,
+        width: cancel_size,
+        height: cancel_size,
+    });
+    let label_width = cancel
+        .map(|cancel| (cancel.x - bounds.x - 8.0).max(0.0))
+        .unwrap_or(bounds.width);
+    let label_region = label.map(|label| crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x: bounds.x,
+            y: bounds.y + (heading - 12.0).max(0.0) / 2.0,
+            width: label_width,
+            height: 12.0_f32.min(bounds.height),
+        },
+        content: Arc::clone(label),
+        color: Some(style.color.unwrap_or(default_label_color)),
+        font_size: 12.0,
+        font_weight: Some(500),
+    });
+    let track = if heading > 0.0 {
+        let track_y = bounds.y + heading + 6.0;
+        LayoutBox {
+            x: bounds.x,
+            y: track_y,
+            width: bounds.width,
+            height: girth.min((bounds.y + bounds.height - track_y).max(0.0)),
         }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left) => {
-            let width = 420.0_f32.min(bounds.width * 0.92);
-            LayoutBox {
+    } else {
+        LayoutBox {
+            x: bounds.x,
+            y: bounds.y + (bounds.height - girth).max(0.0) / 2.0,
+            width: bounds.width,
+            height: girth.min(bounds.height),
+        }
+    };
+    Some(crate::ComponentGeometry::Progress {
+        fill: LayoutBox {
+            width: track.width * ratio,
+            ..track
+        },
+        track,
+        label: label_region,
+        cancel,
+        corner_radius: corner_radius.max(0.0),
+    })
+}
+
+fn form_field_geometry(
+    bounds: LayoutBox,
+    size: ControlSize,
+    label: &Arc<str>,
+    hint: Option<&Arc<str>>,
+    error: Option<&Arc<str>>,
+    control: Option<crate::StableNodeId>,
+    layout_box: &dyn Fn(crate::StableNodeId) -> Option<LayoutBox>,
+    palette: &SemanticPalette,
+) -> Option<crate::ComponentGeometry> {
+    let (label_size, _gap, label_role, label_weight) =
+        crate::form_surfaces::form_field_density(size);
+    let label_height = label_size * 1.2;
+    let support = error.or(hint);
+    let support_role = if error.is_some() {
+        SemanticColorRole::Danger
+    } else {
+        SemanticColorRole::Muted
+    };
+    let support_height = 12.0_f32.min(bounds.height);
+    let support_y = (bounds.y + bounds.height - support_height).max(bounds.y);
+    let (indicator, support_x) = if error.is_some() {
+        let slot = 12.0;
+        let diameter = slot * 10.0 / 24.0;
+        (
+            Some((
+                LayoutBox {
+                    x: bounds.x + (slot - diameter) / 2.0,
+                    y: support_y + (support_height - diameter) / 2.0,
+                    width: diameter,
+                    height: diameter,
+                },
+                palette.get(support_role).as_rgba_array(),
+            )),
+            bounds.x + slot + 5.0,
+        )
+    } else {
+        (None, bounds.x)
+    };
+    Some(crate::ComponentGeometry::FormField {
+        label: crate::ComponentTextRegion {
+            bounds: LayoutBox {
                 x: bounds.x,
                 y: bounds.y,
-                width,
-                height: bounds.height,
-            }
-        }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Right) => {
-            let width = 420.0_f32.min(bounds.width * 0.92);
-            LayoutBox {
-                x: bounds.x + bounds.width - width,
-                y: bounds.y,
-                width,
-                height: bounds.height,
-            }
-        }
-        crate::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Bottom) => {
-            let height = (bounds.height * 0.55).min(520.0).min(bounds.height);
-            LayoutBox {
-                x: bounds.x,
-                y: bounds.y + bounds.height - height,
                 width: bounds.width,
-                height,
-            }
-        }
-    }
+                height: label_height.min(bounds.height),
+            },
+            content: Arc::clone(label),
+            color: Some(palette.get(label_role).as_rgba_array()),
+            font_size: label_size,
+            font_weight: Some(label_weight),
+        },
+        support: support.map(|message| crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: support_x,
+                y: support_y,
+                width: (bounds.x + bounds.width - support_x).max(0.0),
+                height: support_height,
+            },
+            content: Arc::clone(message),
+            color: Some(palette.get(support_role).as_rgba_array()),
+            font_size: 11.0,
+            font_weight: None,
+        }),
+        indicator,
+        control: control.and_then(|id| layout_box(id)),
+    })
 }
 
 fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
-    match tone {
-        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
-        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
-        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
-        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
-        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
-    }
+    crate::components::status_tone_role(tone)
 }
 
 #[derive(Debug, Clone)]
@@ -3904,6 +4628,16 @@ fn text_input_decorations(
             .into_iter()
             .collect();
         (selection, preedit)
+    }
+}
+
+fn initial_interaction(kind: &NodeKind) -> InteractionState {
+    match kind {
+        NodeKind::Text | NodeKind::Comment => InteractionState {
+            pointer_events: false,
+            focusable: false,
+        },
+        NodeKind::Document | NodeKind::Element { .. } => InteractionState::default(),
     }
 }
 
@@ -4148,8 +4882,17 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetStandardVisual { id, visual } => {
                     self.node(*id)?;
-                    if matches!(visual, Some(StandardVisual::Slider { ratio }) if !ratio.is_finite() || !(0.0..=1.0).contains(ratio))
-                    {
+                    let invalid_ratio = match visual {
+                        Some(StandardVisual::Slider { ratio })
+                        | Some(StandardVisual::Progress {
+                            value_ratio: ratio, ..
+                        })
+                        | Some(StandardVisual::LevelMeter {
+                            value_ratio: ratio, ..
+                        }) => !ratio.is_finite() || !(0.0..=1.0).contains(ratio),
+                        _ => false,
+                    };
+                    if invalid_ratio {
                         return Err(UiWorldError::InvalidStandardVisual(*id));
                     }
                 }
@@ -4289,6 +5032,15 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidTextInput(*id));
                     }
                     self.text_inputs.insert(*id, Some(state));
+                }
+                UiMutation::SetHighlightRequest { id, request } => {
+                    self.node(*id)?;
+                    if request
+                        .as_ref()
+                        .is_some_and(|request| request.presenter.trim().is_empty())
+                    {
+                        return Err(UiWorldError::InvalidHighlightRequest(*id));
+                    }
                 }
             }
         }
@@ -4728,6 +5480,674 @@ impl<'a> ValidationPlan<'a> {
         );
         Ok(())
     }
+}
+
+fn calendar_heatmap_geometry(
+    bounds: LayoutBox,
+    cells: &[crate::CalendarHeatmapCellPaint],
+    month_labels: &[crate::CalendarHeatmapLabelPaint],
+    day_labels: &[crate::CalendarHeatmapLabelPaint],
+    cell_size: f32,
+    max_level: u8,
+    active: Option<usize>,
+    mode: ThemeMode,
+    palette: &SemanticPalette,
+) -> crate::ComponentGeometry {
+    let cells = cells
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| {
+            let is_active = Some(index) == active;
+            let fill = if is_active && cell.level >= max_level {
+                palette.accent
+            } else {
+                let level = if is_active {
+                    cell.level.saturating_add(1).max(1)
+                } else {
+                    cell.level
+                };
+                crate::calendar_cell_fill(mode, level, max_level)
+            };
+            (
+                LayoutBox {
+                    x: bounds.x + cell.x,
+                    y: bounds.y + cell.y,
+                    width: cell_size,
+                    height: cell_size,
+                },
+                fill.as_rgba_array(),
+            )
+        })
+        .collect();
+    let mut labels = Vec::with_capacity(month_labels.len() + day_labels.len());
+    labels.extend(
+        month_labels
+            .iter()
+            .map(|label| axis_label_region(bounds, &label.text, label.x, label.y, 10.0, palette)),
+    );
+    labels.extend(
+        day_labels
+            .iter()
+            .map(|label| axis_label_region(bounds, &label.text, label.x, label.y, 11.0, palette)),
+    );
+    crate::ComponentGeometry::CalendarHeatmap { cells, labels }
+}
+
+fn axis_label_region(
+    bounds: LayoutBox,
+    text: &Arc<str>,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    palette: &SemanticPalette,
+) -> crate::ComponentTextRegion {
+    crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x: bounds.x + x,
+            y: bounds.y + y,
+            width: estimated_text_width(text, font_size),
+            height: font_size + 2.0,
+        },
+        content: Arc::clone(text),
+        color: Some(palette.muted.as_rgba_array()),
+        font_size,
+        font_weight: None,
+    }
+}
+
+fn time_series_geometry(
+    bounds: LayoutBox,
+    values: &[f64],
+    mode: ThemeMode,
+) -> crate::ComponentGeometry {
+    let chart = crate::TimeSeriesChart::new(values.iter().copied());
+    let paint = crate::time_series_paint(mode);
+    let local = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: bounds.width,
+        height: bounds.height,
+    };
+    let inset_x = crate::TimeSeriesChart::INSET_X;
+    let grid = crate::TimeSeriesChart::grid_ys(local)
+        .into_iter()
+        .map(|y| LayoutBox {
+            x: bounds.x + inset_x,
+            y: bounds.y + y,
+            width: (bounds.width - inset_x * 2.0).max(0.0),
+            height: 1.0,
+        })
+        .collect();
+    let points = chart
+        .points(local)
+        .into_iter()
+        .map(|(x, y)| (bounds.x + x, bounds.y + y))
+        .collect::<Vec<_>>();
+    let baseline = bounds.y
+        + (bounds.height - crate::TimeSeriesChart::INSET_Y).max(crate::TimeSeriesChart::INSET_Y);
+    crate::ComponentGeometry::TimeSeriesChart {
+        grid,
+        area: area_under_polyline(&points, baseline),
+        line: stroke_polyline(&points, 2.0),
+        grid_color: paint.grid.as_rgba_array(),
+        area_color: paint.area.as_rgba_array(),
+        line_color: paint.line.as_rgba_array(),
+    }
+}
+
+fn reorder_list_geometry(
+    bounds: LayoutBox,
+    rows: &[crate::ReorderRowPaint],
+    size: ControlSize,
+    spacing: f32,
+    insert: Option<LayoutBox>,
+    palette: &SemanticPalette,
+) -> crate::ComponentGeometry {
+    let height = size.height();
+    let spacing = spacing.max(0.0);
+    let pad = 8.0;
+    let rows = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let row_bounds = LayoutBox {
+                x: bounds.x,
+                y: bounds.y + index as f32 * (height + spacing),
+                width: bounds.width,
+                height,
+            };
+            let label = crate::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: row_bounds.x + pad,
+                    y: row_bounds.y,
+                    width: (row_bounds.width - pad * 2.0).max(0.0),
+                    height: row_bounds.height,
+                },
+                content: Arc::clone(&row.label),
+                color: Some(if row.disabled {
+                    palette.muted.as_rgba_array()
+                } else {
+                    palette.text.as_rgba_array()
+                }),
+                font_size: size.text_size(),
+                font_weight: None,
+            };
+            let fill = row.selected.then_some(palette.selected.as_rgba_array());
+            (row_bounds, label, fill)
+        })
+        .collect();
+    crate::ComponentGeometry::ReorderList {
+        rows,
+        insert: insert.map(|line| (line, palette.accent.as_rgba_array())),
+    }
+}
+
+fn selectable_text_regions(
+    content: LayoutBox,
+    text: &Arc<str>,
+    selection: Option<(usize, usize)>,
+    style: &ComputedStyle,
+    palette: &SemanticPalette,
+) -> (crate::ComponentTextRegion, Vec<LayoutBox>, [f32; 4]) {
+    let region = crate::ComponentTextRegion {
+        bounds: content,
+        content: Arc::clone(text),
+        color: Some(style.color.unwrap_or_else(|| palette.text.as_rgba_array())),
+        font_size: style.font_size,
+        font_weight: style.font_weight,
+    };
+    let highlights = if selection.is_some() {
+        vec![content]
+    } else {
+        Vec::new()
+    };
+    (region, highlights, palette.accent_soft.as_rgba_array())
+}
+
+fn graph_canvas_geometry(
+    bounds: LayoutBox,
+    nodes: &[crate::GraphNodePaint],
+    ports: &[crate::GraphPortPaint],
+    edges: &[crate::GraphEdgePaint],
+    connecting: Option<&crate::GraphEdgePaint>,
+    grid_spacing: f32,
+    viewport_offset_x: f32,
+    viewport_offset_y: f32,
+    viewport_zoom: f32,
+    palette: &SemanticPalette,
+) -> crate::ComponentGeometry {
+    let mut painted_edges = Vec::new();
+    let mut edge_labels = Vec::new();
+    for edge in edges.iter().chain(connecting) {
+        let color = graph_edge_stroke_color(palette, edge);
+        painted_edges.extend(
+            stroke_curve(bounds, edge.curve, 1.6)
+                .into_iter()
+                .filter_map(|quad| intersect_layout_boxes(bounds, quad))
+                .map(|quad| (quad, color)),
+        );
+        if !edge.connecting
+            && viewport_zoom >= 0.7
+            && let Some(label) = edge.label.as_ref()
+        {
+            let center = cubic_point(edge.curve, 0.5);
+            if let Some(label_bounds) = intersect_layout_boxes(
+                bounds,
+                LayoutBox {
+                    x: bounds.x + center.x - 40.0,
+                    y: bounds.y + center.y - 16.0,
+                    width: 80.0,
+                    height: 12.0,
+                },
+            ) {
+                edge_labels.push(crate::ComponentTextRegion {
+                    bounds: label_bounds,
+                    content: Arc::clone(label),
+                    color: Some(palette.muted.as_rgba_array()),
+                    font_size: 10.0,
+                    font_weight: None,
+                });
+            }
+        }
+    }
+    let mut separators = Vec::new();
+    let nodes = nodes
+        .iter()
+        .filter_map(|node| {
+            let raw = LayoutBox {
+                x: bounds.x + node.x,
+                y: bounds.y + node.y,
+                width: node.width.max(0.0),
+                height: node.height.max(0.0),
+            };
+            let node_bounds = intersect_layout_boxes(bounds, raw)?;
+            let title_height = node.title_height.clamp(18.0, node_bounds.height.max(18.0));
+            if node_bounds.width >= 32.0 && node_bounds.height >= title_height {
+                if let Some(separator) = intersect_layout_boxes(
+                    bounds,
+                    LayoutBox {
+                        x: node_bounds.x,
+                        y: node_bounds.y + title_height,
+                        width: node_bounds.width,
+                        height: 1.0,
+                    },
+                ) {
+                    separators.push(separator);
+                }
+            }
+            let label = crate::ComponentTextRegion {
+                bounds: intersect_layout_boxes(
+                    bounds,
+                    LayoutBox {
+                        x: raw.x + 10.0,
+                        y: raw.y,
+                        width: (raw.width - 20.0).max(0.0),
+                        height: title_height.min(raw.height),
+                    },
+                )
+                .unwrap_or(LayoutBox {
+                    x: node_bounds.x,
+                    y: node_bounds.y,
+                    width: 0.0,
+                    height: 0.0,
+                }),
+                content: Arc::clone(&node.label),
+                color: Some(palette.text.as_rgba_array()),
+                font_size: (12.0 * viewport_zoom).clamp(9.0, 13.0),
+                font_weight: Some(500),
+            };
+            let fill = if node.selected {
+                palette.selected.as_rgba_array()
+            } else if node.hovered {
+                palette.hover.as_rgba_array()
+            } else {
+                palette.surface.as_rgba_array()
+            };
+            let border = if node.selected {
+                Some(palette.border_strong.as_rgba_array())
+            } else {
+                Some(palette.border.as_rgba_array())
+            };
+            Some((node_bounds, label, fill, border))
+        })
+        .collect();
+    let mut port_labels = Vec::new();
+    let ports = ports
+        .iter()
+        .filter_map(|port| {
+            let radius = port.radius.max(0.0);
+            let disc = intersect_layout_boxes(
+                bounds,
+                LayoutBox {
+                    x: bounds.x + port.x - radius,
+                    y: bounds.y + port.y - radius,
+                    width: radius * 2.0,
+                    height: radius * 2.0,
+                },
+            )?;
+            let kind = match port.kind {
+                GraphPortKind::Input => palette.muted.as_rgba_array(),
+                GraphPortKind::Output => palette.accent.as_rgba_array(),
+                GraphPortKind::Bidirectional => palette.warning.as_rgba_array(),
+            };
+            if viewport_zoom >= 0.72 && !port.label.is_empty() {
+                let (mut label, alignment) =
+                    port_label_region(bounds, port, palette.muted.as_rgba_array());
+                if let Some(clipped) = intersect_layout_boxes(bounds, label.bounds) {
+                    label.bounds = clipped;
+                    port_labels.push((label, alignment));
+                }
+            }
+            Some((
+                disc,
+                palette.background.as_rgba_array(),
+                kind,
+                if port.selected { 2.4 } else { 1.6 },
+            ))
+        })
+        .collect();
+    crate::ComponentGeometry::GraphCanvas {
+        nodes,
+        separators,
+        ports,
+        port_labels,
+        edges: painted_edges,
+        edge_labels,
+        grid: graph_grid_lines(
+            bounds,
+            grid_spacing,
+            viewport_offset_x,
+            viewport_offset_y,
+            viewport_zoom,
+        ),
+        background: palette.background.as_rgba_array(),
+        grid_color: {
+            let mut color = palette.border_soft.as_rgba_array();
+            color[3] *= 0.72;
+            color
+        },
+        separator_color: palette.border_soft.as_rgba_array(),
+    }
+}
+
+fn graph_edge_stroke_color(palette: &SemanticPalette, edge: &crate::GraphEdgePaint) -> [f32; 4] {
+    if edge.connecting {
+        let mut accent = palette.accent.as_rgba_array();
+        accent[3] *= 0.8;
+        accent
+    } else if edge.selected {
+        palette.text.as_rgba_array()
+    } else if edge.hovered {
+        palette.muted.as_rgba_array()
+    } else {
+        palette.border_strong.as_rgba_array()
+    }
+}
+
+fn stroke_curve(bounds: LayoutBox, curve: [GraphPoint; 4], thickness: f32) -> Vec<LayoutBox> {
+    const SAMPLES: u32 = 32;
+    let mut quads = Vec::with_capacity(SAMPLES as usize);
+    let mut previous = curve[0];
+    for index in 1..=SAMPLES {
+        let next = cubic_point(curve, index as f32 / SAMPLES as f32);
+        if let Some(quad) = stroke_box(
+            bounds.x + previous.x,
+            bounds.y + previous.y,
+            bounds.x + next.x,
+            bounds.y + next.y,
+            thickness,
+        ) {
+            quads.push(quad);
+        }
+        previous = next;
+    }
+    quads
+}
+
+fn graph_grid_lines(
+    bounds: LayoutBox,
+    base_spacing: f32,
+    offset_x: f32,
+    offset_y: f32,
+    zoom: f32,
+) -> Vec<LayoutBox> {
+    if !base_spacing.is_finite() || base_spacing <= 0.0 {
+        return Vec::new();
+    }
+    let mut spacing = base_spacing
+        * if zoom.is_finite() && zoom > 0.0 {
+            zoom
+        } else {
+            1.0
+        };
+    while spacing < 16.0 {
+        spacing *= 2.0;
+    }
+    while spacing > 96.0 {
+        spacing *= 0.5;
+    }
+    if !spacing.is_finite() || spacing < 1.0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut x = offset_x.rem_euclid(spacing);
+    while x <= bounds.width {
+        lines.push(LayoutBox {
+            x: bounds.x + x,
+            y: bounds.y,
+            width: 1.0,
+            height: bounds.height,
+        });
+        x += spacing;
+    }
+    let mut y = offset_y.rem_euclid(spacing);
+    while y <= bounds.height {
+        lines.push(LayoutBox {
+            x: bounds.x,
+            y: bounds.y + y,
+            width: bounds.width,
+            height: 1.0,
+        });
+        y += spacing;
+    }
+    lines
+}
+
+fn port_label_region(
+    bounds: LayoutBox,
+    port: &crate::GraphPortPaint,
+    color: [f32; 4],
+) -> (crate::ComponentTextRegion, crate::TextHorizontalAlignment) {
+    let (x, y, width, height, align) = match port.side {
+        GraphPortSide::Top => (
+            port.x - 40.0,
+            port.y + 8.0,
+            80.0,
+            12.0,
+            crate::TextHorizontalAlignment::Center,
+        ),
+        GraphPortSide::Right => (
+            port.x - 88.0,
+            port.y - 7.0,
+            80.0,
+            14.0,
+            crate::TextHorizontalAlignment::End,
+        ),
+        GraphPortSide::Bottom => (
+            port.x - 40.0,
+            port.y - 20.0,
+            80.0,
+            12.0,
+            crate::TextHorizontalAlignment::Center,
+        ),
+        GraphPortSide::Left => (
+            port.x + 8.0,
+            port.y - 7.0,
+            80.0,
+            14.0,
+            crate::TextHorizontalAlignment::Start,
+        ),
+    };
+    (
+        crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: bounds.x + x,
+                y: bounds.y + y,
+                width,
+                height,
+            },
+            content: Arc::clone(&port.label),
+            color: Some(color),
+            font_size: 9.5,
+            font_weight: None,
+        },
+        align,
+    )
+}
+
+fn image_viewer_geometry(
+    bounds: LayoutBox,
+    name: Option<&Arc<str>>,
+    metadata: Option<&Arc<str>>,
+    zoom: f32,
+    offset_x: f32,
+    offset_y: f32,
+    palette: &SemanticPalette,
+) -> crate::ComponentGeometry {
+    let mut viewer = crate::ImageViewer::new(crate::ImageViewerContent::None);
+    if let Some(name) = name {
+        viewer = viewer.name(Arc::clone(name));
+    }
+    if let Some(metadata) = metadata {
+        viewer = viewer.metadata(Arc::clone(metadata));
+    }
+    viewer.zoom = zoom;
+    viewer.offset = crate::ImageViewerOffset::new(offset_x, offset_y);
+    let geometry = viewer.geometry(bounds);
+    let mut scrim = palette.background.as_rgba_array();
+    scrim[3] = 0.94;
+    let mut stage = palette.background.as_rgba_array();
+    stage[3] = 0.34;
+    crate::ComponentGeometry::ImageViewer {
+        scrim: geometry.scrim,
+        surface: geometry.surface,
+        stage: geometry.stage,
+        close: geometry.close,
+        name: name
+            .zip(geometry.name)
+            .map(|(text, region)| crate::ComponentTextRegion {
+                bounds: region,
+                content: Arc::clone(text),
+                color: Some(palette.text.as_rgba_array()),
+                font_size: 12.0,
+                font_weight: Some(600),
+            }),
+        metadata: metadata.zip(geometry.metadata).map(|(text, region)| {
+            crate::ComponentTextRegion {
+                bounds: region,
+                content: Arc::clone(text),
+                color: Some(palette.muted.as_rgba_array()),
+                font_size: 11.0,
+                font_weight: None,
+            }
+        }),
+        content: geometry.content,
+        scrim_color: scrim,
+        surface_color: palette.surface.as_rgba_array(),
+        stage_color: stage,
+    }
+}
+
+fn key_capture_geometry(
+    content: LayoutBox,
+    recording: bool,
+    palette: &SemanticPalette,
+) -> crate::ComponentGeometry {
+    let label: Arc<str> = if recording {
+        Arc::from("Recording")
+    } else {
+        Arc::from("Idle")
+    };
+    crate::ComponentGeometry::KeyCaptureLayer {
+        badge: key_badge_region(content, &label, !recording, palette),
+        background: Some(if recording {
+            palette.accent_soft.as_rgba_array()
+        } else {
+            palette.subtle.as_rgba_array()
+        }),
+    }
+}
+
+fn keymap_geometry(content: LayoutBox, palette: &SemanticPalette) -> crate::ComponentGeometry {
+    crate::ComponentGeometry::KeymapLayer {
+        badge: key_badge_region(content, "Keymap", false, palette),
+    }
+}
+
+fn key_badge_region(
+    origin: LayoutBox,
+    label: &str,
+    muted: bool,
+    palette: &SemanticPalette,
+) -> crate::ComponentTextRegion {
+    const HEIGHT: f32 = 28.0;
+    const PAD: f32 = 8.0;
+    let font_size = 12.0;
+    crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x: origin.x,
+            y: origin.y,
+            width: (estimated_text_width(label, font_size) + PAD * 2.0).max(64.0),
+            height: HEIGHT.min(origin.height.max(HEIGHT)),
+        },
+        content: Arc::from(label),
+        color: Some(if muted {
+            palette.muted.as_rgba_array()
+        } else {
+            palette.text.as_rgba_array()
+        }),
+        font_size,
+        font_weight: Some(600),
+    }
+}
+
+fn estimated_text_width(text: &str, font_size: f32) -> f32 {
+    (text.chars().count() as f32 * font_size * 0.62).max(font_size)
+}
+
+fn area_under_polyline(points: &[(f32, f32)], baseline: f32) -> Vec<LayoutBox> {
+    const STRIP: f32 = 2.0;
+    let mut strips = Vec::new();
+    for pair in points.windows(2) {
+        let (x0, y0) = pair[0];
+        let (x1, y1) = pair[1];
+        let span = x1 - x0;
+        if !span.is_finite() || span.abs() < f32::EPSILON {
+            continue;
+        }
+        let left = x0.min(x1);
+        let right = x0.max(x1);
+        let mut x = left;
+        while x < right {
+            let width = STRIP.min(right - x);
+            let mid = x + width * 0.5;
+            let t = (mid - x0) / span;
+            let y = y0 + (y1 - y0) * t;
+            let top = y.min(baseline);
+            let height = (baseline - top).max(0.0);
+            if height > 0.0 {
+                strips.push(LayoutBox {
+                    x,
+                    y: top,
+                    width,
+                    height,
+                });
+            }
+            x += STRIP;
+        }
+    }
+    strips
+}
+
+fn stroke_polyline(points: &[(f32, f32)], thickness: f32) -> Vec<LayoutBox> {
+    if points.len() == 1 {
+        let (x, y) = points[0];
+        return vec![LayoutBox {
+            x: x - thickness * 0.5,
+            y: y - thickness * 0.5,
+            width: thickness,
+            height: thickness,
+        }];
+    }
+    let mut quads = Vec::new();
+    for pair in points.windows(2) {
+        let (x0, y0) = pair[0];
+        let (x1, y1) = pair[1];
+        if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+            continue;
+        }
+        let vertical = (x1 - x0).abs() < (y1 - y0).abs();
+        quads.push(LayoutBox {
+            x: x0.min(x1) - if vertical { thickness * 0.5 } else { 0.0 },
+            y: y0.min(y1) - if vertical { 0.0 } else { thickness * 0.5 },
+            width: (x1 - x0).abs().max(thickness),
+            height: (y1 - y0).abs().max(thickness),
+        });
+    }
+    quads
+}
+
+fn stroke_box(x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32) -> Option<LayoutBox> {
+    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+        return None;
+    }
+    let pad = thickness * 0.5;
+    Some(LayoutBox {
+        x: x0.min(x1) - pad,
+        y: y0.min(y1) - pad,
+        width: (x1 - x0).abs() + thickness,
+        height: (y1 - y0).abs() + thickness,
+    })
 }
 
 #[cfg(test)]
@@ -6679,6 +8099,193 @@ mod tests {
                 constraints
             ),
             (0.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn new_standard_visuals_derive_scene_geometry() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "calendar-heatmap".into(),
+            },
+        );
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "time-series-chart".into(),
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 10.0,
+                y: 20.0,
+                width: 200.0,
+                height: 120.0,
+            },
+        );
+        queue.write_layout(
+            node(2),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 108.0,
+                height: 120.0,
+            },
+        );
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::CalendarHeatmap {
+                cells: Arc::from([
+                    crate::CalendarHeatmapCellPaint {
+                        x: 42.0,
+                        y: 14.0,
+                        level: 0,
+                    },
+                    crate::CalendarHeatmapCellPaint {
+                        x: 42.0,
+                        y: 28.0,
+                        level: 4,
+                    },
+                ]),
+                month_labels: Arc::from([crate::CalendarHeatmapLabelPaint {
+                    text: Arc::from("6月"),
+                    x: 47.5,
+                    y: 0.0,
+                }]),
+                day_labels: Arc::from([crate::CalendarHeatmapLabelPaint {
+                    text: Arc::from("周一"),
+                    x: 0.0,
+                    y: 24.0,
+                }]),
+                cell_size: 11.0,
+                cell_radius: 2.0,
+                max_level: 4,
+                active: Some(1),
+            }),
+        );
+        queue.set_standard_visual(
+            node(2),
+            Some(StandardVisual::TimeSeriesChart {
+                values: Arc::from([0.0, 5.0, 10.0]),
+            }),
+        );
+        world.commit(queue).unwrap();
+
+        let crate::ComponentGeometry::CalendarHeatmap { cells, labels } = world
+            .component_geometry(node(1))
+            .expect("calendar geometry")
+        else {
+            panic!("expected calendar heatmap geometry");
+        };
+        assert_eq!(cells.len(), 2);
+        assert_eq!(
+            cells[0].0,
+            LayoutBox {
+                x: 52.0,
+                y: 34.0,
+                width: 11.0,
+                height: 11.0,
+            }
+        );
+        assert_eq!(
+            cells[1].0,
+            LayoutBox {
+                x: 52.0,
+                y: 48.0,
+                width: 11.0,
+                height: 11.0,
+            }
+        );
+        assert_ne!(
+            cells[0].1, cells[1].1,
+            "active cell uses a stronger fill than the idle cell"
+        );
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].bounds.x, 57.5);
+        assert_eq!(labels[0].bounds.y, 20.0);
+        assert_eq!(labels[0].content.as_ref(), "6月");
+        assert_eq!(labels[1].bounds.x, 10.0);
+        assert_eq!(labels[1].content.as_ref(), "周一");
+
+        let crate::ComponentGeometry::TimeSeriesChart {
+            grid, area, line, ..
+        } = world.component_geometry(node(2)).expect("chart geometry")
+        else {
+            panic!("expected time series geometry");
+        };
+        assert_eq!(grid.len(), 4);
+        assert_eq!(grid[0].x, 8.0);
+        assert_eq!(grid[0].height, 1.0);
+        assert!(!area.is_empty());
+        assert!(!line.is_empty());
+        assert!(area.iter().all(|strip| strip.width <= 2.0 + f32::EPSILON));
+        assert!(line.iter().all(|segment| {
+            segment.height <= 2.0 + f32::EPSILON || segment.width <= 2.0 + f32::EPSILON
+        }));
+    }
+
+    #[test]
+    fn diagonal_stroke_segments_overlap_so_curves_do_not_break() {
+        let boxes = stroke_curve(
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 120.0,
+            },
+            [
+                GraphPoint::new(10.0, 40.0),
+                GraphPoint::new(80.0, 40.0),
+                GraphPoint::new(120.0, 80.0),
+                GraphPoint::new(190.0, 80.0),
+            ],
+            1.6,
+        );
+        assert!(boxes.len() > 1);
+        assert!(
+            boxes
+                .windows(2)
+                .all(|pair| intersect_layout_boxes(pair[0], pair[1]).is_some()),
+            "adjacent stroke boxes must overlap at joints"
+        );
+    }
+
+    #[test]
+    fn hovered_graph_edge_uses_muted_gray_instead_of_accent() {
+        let paint = |hovered, selected| crate::GraphEdgePaint {
+            curve: [GraphPoint::ZERO; 4],
+            selected,
+            hovered,
+            connecting: false,
+            label: None,
+        };
+        let dark = SemanticPalette::dark();
+        assert_eq!(
+            graph_edge_stroke_color(&dark, &paint(true, false)),
+            dark.muted.as_rgba_array()
+        );
+        assert_ne!(
+            graph_edge_stroke_color(&dark, &paint(true, false)),
+            dark.accent.as_rgba_array()
+        );
+        assert_eq!(
+            graph_edge_stroke_color(&dark, &paint(false, true)),
+            dark.text.as_rgba_array()
+        );
+        let light = SemanticPalette::light();
+        assert_eq!(
+            graph_edge_stroke_color(&light, &paint(true, false)),
+            light.muted.as_rgba_array()
+        );
+        assert_ne!(
+            graph_edge_stroke_color(&light, &paint(true, false)),
+            light.accent.as_rgba_array()
         );
     }
 }

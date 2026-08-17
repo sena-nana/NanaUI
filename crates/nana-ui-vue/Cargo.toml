@@ -13,8 +13,7 @@ path = "src/lib.rs"
 [features]
 default = []
 benchmark = ["dep:serde", "dep:serde_json"]
-# Draw semantic trees with real NanaUI Iced widgets (layout + base control variants).
-# Blitz-era empty flags (`layout` / `paint-stub` / `paint-vello`) were removed — use iced-view.
+# Enable the Iced compatibility view of Runtime/UiScene (layout + base control variants).
 iced-view = [
     "dep:iced",
     "dep:nana-ui",
@@ -24,6 +23,8 @@ iced-view = [
     "nana-ui/overlays",
     "nana-ui/popover",
     "nana-ui/gpu",
+    "nana-ui/syntax-highlighting",
+    "nana-ui-runtime/syntax-highlighting",
 ]
 # Direct adapter into nana-ui's existing multi-window hosted runtime.
 hosted = ["iced-view", "nana-ui/hosted"]
@@ -39,7 +40,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 iced = { workspace = true, optional = true }
 nana-ui = { path = "../nana-ui", optional = true, default-features = false }
-# Intentionally NOT depending on nana-js-quickjs, nana-js-v8, or nana-ui-blitz.
+# Intentionally NOT depending on nana-js-quickjs or nana-js-v8.
 
 [[bin]]
 name = "nana-vue-runtime-benchmark"

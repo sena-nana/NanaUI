@@ -11,7 +11,8 @@ use iced_winit::futures::futures::executor;
 use iced_winit::runtime::UserInterface;
 use iced_winit::runtime::user_interface;
 use nana_ui::compatibility::{
-    Button as LegacyButton, Checkbox as LegacyCheckbox, Input as LegacyInput,
+    AppTitleBar, Button as LegacyButton, Checkbox as LegacyCheckbox, Input as LegacyInput,
+    PaneChromeActionKind,
 };
 use nana_ui::runtime::{
     AppContext, Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
@@ -23,11 +24,11 @@ use nana_ui::runtime::{
     TextArea as RuntimeTextArea, TextInput as RuntimeTextInput, TextVerticalAlignment,
 };
 use nana_ui::{
-    AppTitleBar, ButtonKind, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
+    ButtonKind, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
     DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
-    FloatingDock, LayoutBounds, LayoutProbe, PaneChromeActionKind, RegionId, SettingsTabId,
-    ThemeMode, ThemeModeExt, UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState,
-    WorkspaceAction, dock_window_workspace, dock_workspace,
+    FloatingDock, LayoutBounds, LayoutProbe, RegionId, SettingsTabId, ThemeMode, ThemeModeExt,
+    UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
+    dock_window_workspace, dock_workspace,
 };
 use nana_ui::{CommandPaletteEvent, ContextMenuEvent};
 use nana_ui_core::{LayoutStyle, SemanticColorRole};
@@ -35,6 +36,8 @@ use nana_ui_scene::UiScene;
 
 use crate::write;
 
+#[path = "render/gpu.rs"]
+mod gpu;
 #[path = "render/migration_next.rs"]
 mod migration_next;
 
@@ -66,6 +69,8 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         trace: wgpu::Trace::Off,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
     }))?;
+    let snapshot_device = device.clone();
+    let snapshot_queue = queue.clone();
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
     let engine = Engine::new(
         &adapter,
@@ -156,6 +161,8 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             &mut renderer,
             &output,
             theme,
+            &snapshot_device,
+            &snapshot_queue,
         )?);
     }
 

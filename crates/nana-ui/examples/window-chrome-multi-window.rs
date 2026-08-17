@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use iced::widget::{button, column, container, text};
 use iced::{Alignment, Element, Fill, Point, Subscription, Task, window};
+use nana_ui::compatibility::AppTitleBar;
 use nana_ui::{
-    AppTitleBar, ThemeMode, ThemeModeExt, WindowChrome, WindowChromeEvent, WindowChromeState,
-    ui_font, ui_font_defaults, ui_font_sources,
+    ThemeMode, ThemeModeExt, WindowChrome, WindowChromeEvent, WindowChromeState, ui_font,
+    ui_font_defaults, ui_font_sources,
 };
 
 fn main() -> iced::Result {

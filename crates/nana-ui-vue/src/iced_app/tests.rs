@@ -38,7 +38,10 @@ mod tests {
 
         assert_eq!(
             recorded.containers,
-            [Rectangle::new(Point::new(40.0, 10.0), Size::new(40.0, 30.0))]
+            [Rectangle::new(
+                Point::new(40.0, 10.0),
+                Size::new(40.0, 30.0)
+            )]
         );
     }
 
@@ -80,8 +83,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn qualified_runtime_scene_route_never_falls_back_to_an_iced_widget() {
+    fn qualified_runtime_scene_route_does_not_panic_without_bounds() {
         let mut bridge = MessageBridge::new();
         bridge.register(
             1,
@@ -98,6 +100,624 @@ mod tests {
         let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
             &snap,
             tokens,
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn status_badge_and_validation_with_empty_scene_do_not_panic() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::StatusBadge,
+            WidgetProps {
+                label: "Live".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::ValidationMessage,
+            WidgetProps {
+                hint: "A project is required".into(),
+                invalid: true,
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn empty_state_with_button_child_is_not_swallowed_by_scene() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::EmptyState,
+            WidgetProps {
+                label: "No projects".into(),
+                hint: "Create the first project".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Create".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn empty_state_without_button_and_placeholder_leaves_do_not_panic() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::EmptyState,
+            WidgetProps {
+                label: "No projects".into(),
+                hint: "Create the first project".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(2, WidgetKind::Skeleton, WidgetProps::default());
+        bridge.register(
+            3,
+            WidgetKind::LevelMeter,
+            WidgetProps {
+                progress: 0.4,
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    fn select_option(value: &str, label: &str) -> crate::bridge::SelectOptionProp {
+        crate::bridge::SelectOptionProp {
+            value: value.into(),
+            label: label.into(),
+            disabled: false,
+        }
+    }
+
+    fn assert_scene_route(snap: &SemanticSnapshot, id: WidgetId, scene: &UiScene) {
+        let widget = snap.get(id).expect("widget");
+        with_active_scene(Some(scene), || {
+            assert!(
+                matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(snap, widget),
+                    QualifiedSceneRoute::Scene(_)
+                ),
+                "widget {id} must paint through Scene when bounds exist"
+            );
+        });
+    }
+
+    fn paint_overlay_scene(
+        snap: &SemanticSnapshot,
+        scene: &UiScene,
+        viewport: (f32, f32),
+    ) -> Element<'static, BridgeEvent> {
+        view_semantic_tree_static_with_scene(
+            snap,
+            ThemeMode::Light.tokens(),
+            Some(viewport),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(scene),
+            None,
+            |event| event,
+        )
+    }
+
+    #[test]
+    fn dialog_with_button_child_routes_to_scene_without_panic() {
+        let mut document = crate::tree::NanaTreeDocument::new(400, 300, 1.0);
+        let dialog = document.create_element("nana-dialog");
+        let button = document.create_element("nana-button");
+        document.insert(dialog, document.mount_root(), None);
+        document.insert(button, dialog, None);
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            dialog.0,
+            WidgetKind::Dialog,
+            WidgetProps {
+                label: "Rename".into(),
+                hint: "Choose a name".into(),
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            button.0,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Save".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(button.0, dialog.0, None);
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(dialog.0).unwrap()),
+            Some(nana_ui::component_ids::DIALOG)
+        );
+
+        document.sync_semantic_styles(&snap);
+        document.apply_layout_boxes(&[(
+            dialog,
+            crate::LayoutBox {
+                handle: dialog,
+                x: 40.0,
+                y: 32.0,
+                width: 280.0,
+                height: 180.0,
+            },
+        )]);
+        assert!(
+            document
+                .scene()
+                .node_bounds(nana_ui_runtime::StableNodeId::new(dialog.0).unwrap())
+                .is_some()
+        );
+        assert_scene_route(&snap, dialog.0, document.scene());
+        let _: Element<'static, BridgeEvent> =
+            paint_overlay_scene(&snap, document.scene(), (400.0, 300.0));
+    }
+
+    #[test]
+    fn drawer_and_popover_route_to_scene_when_qualified() {
+        let mut document = crate::tree::NanaTreeDocument::new(480, 320, 1.0);
+        let drawer = document.create_element("nana-drawer");
+        let popover = document.create_element("nana-popover");
+        document.insert(drawer, document.mount_root(), None);
+        document.insert(popover, document.mount_root(), None);
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            drawer.0,
+            WidgetKind::Drawer,
+            WidgetProps {
+                label: "Inspector".into(),
+                side: "left".into(),
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            popover.0,
+            WidgetKind::Popover,
+            WidgetProps {
+                label: "More".into(),
+                hint: "Details".into(),
+                toggled: true,
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(drawer.0).unwrap()),
+            Some(nana_ui::component_ids::DRAWER)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(popover.0).unwrap()),
+            Some(nana_ui::component_ids::POPOVER)
+        );
+
+        document.sync_semantic_styles(&snap);
+        document.apply_layout_boxes(&[
+            (
+                drawer,
+                crate::LayoutBox {
+                    handle: drawer,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 280.0,
+                    height: 320.0,
+                },
+            ),
+            (
+                popover,
+                crate::LayoutBox {
+                    handle: popover,
+                    x: 120.0,
+                    y: 48.0,
+                    width: 200.0,
+                    height: 120.0,
+                },
+            ),
+        ]);
+        assert_scene_route(&snap, drawer.0, document.scene());
+        assert_scene_route(&snap, popover.0, document.scene());
+        let _: Element<'static, BridgeEvent> =
+            paint_overlay_scene(&snap, document.scene(), (480.0, 320.0));
+    }
+
+    #[test]
+    fn searchable_context_menu_scene_routes_through_runtime() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                options: (0..6)
+                    .map(|i| select_option(&format!("item-{i}"), &format!("Item {i}")))
+                    .collect(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                class_names: vec!["search".into()],
+                options: vec![select_option("cut", "Cut")],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                options: vec![
+                    select_option("file", "File"),
+                    select_option("file/rename", "Rename"),
+                ],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            4,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                options: vec![select_option("cut", "Cut"), select_option("copy", "Copy")],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            5,
+            WidgetKind::ContextMenu,
+            WidgetProps {
+                active: true,
+                class_names: vec!["nana-action-menu".into()],
+                options: vec![select_option("rename", "Rename")],
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::CONTEXT_MENU),
+            "6+ options keep the Runtime search field"
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::CONTEXT_MENU),
+            "search class keeps the Runtime search field"
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(3).unwrap()),
+            Some(nana_ui::component_ids::CONTEXT_MENU),
+            "nested parent/child options Scene-route through Runtime"
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(4).unwrap()),
+            Some(nana_ui::component_ids::CONTEXT_MENU)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(5).unwrap()),
+            Some(nana_ui::component_ids::ACTION_MENU)
+        );
+
+        let scene = UiScene::new();
+        with_active_scene(Some(&scene), || {
+            assert!(
+                !matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(1).unwrap()),
+                    QualifiedSceneRoute::Compatibility
+                ),
+                "searchable menus Scene-route through Runtime"
+            );
+            assert!(
+                !matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(2).unwrap()),
+                    QualifiedSceneRoute::Compatibility
+                ),
+                "search class menus Scene-route through Runtime"
+            );
+            assert!(
+                !matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(3).unwrap()),
+                    QualifiedSceneRoute::Compatibility
+                ),
+                "nested parent/child options must not stay on ContextMenuHost"
+            );
+        });
+        let _: Element<'static, BridgeEvent> = paint_overlay_scene(&snap, &scene, (320.0, 200.0));
+    }
+
+    #[test]
+    fn dropdown_search_tabs_and_hosts_scene_route() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Select,
+            WidgetProps {
+                element_tag: "nana-dropdown".into(),
+                class_names: vec!["nana-dropdown".into()],
+                options: vec![select_option("code", "Code")],
+                value: "code".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Select,
+            WidgetProps {
+                element_tag: "nana-search".into(),
+                class_names: vec!["nana-search".into()],
+                options: vec![select_option("alpha", "Alpha")],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::Tabs,
+            WidgetProps {
+                options: vec![select_option("one", "One"), select_option("two", "Two")],
+                value: "one".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            4,
+            WidgetKind::FormField,
+            WidgetProps {
+                label: "Email".into(),
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::DROPDOWN)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::SEARCH_DROPDOWN)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(3).unwrap()),
+            Some(nana_ui::component_ids::TABS)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(4).unwrap()),
+            Some(nana_ui::component_ids::FORM_FIELD)
+        );
+    }
+
+    #[test]
+    fn sidebar_and_settings_scene_route() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::SidebarRow,
+            WidgetProps {
+                label: "工作区".into(),
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::SettingsRow,
+            WidgetProps {
+                label: "主题".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::SettingsCard,
+            WidgetProps {
+                label: "外观".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(4, WidgetKind::SidebarFrame, WidgetProps::default());
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::SIDEBAR_ROW)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::SETTINGS)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(3).unwrap()),
+            Some(nana_ui::component_ids::SETTINGS)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(4).unwrap()),
+            Some(nana_ui::component_ids::SIDEBAR_FRAME)
+        );
+        assert!(
+            nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME),
+            "sidebar-frame Scene default-routing follows catalog qualification"
+        );
+        let scene = UiScene::new();
+        with_active_scene(Some(&scene), || {
+            assert!(
+                matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(4).unwrap()),
+                    QualifiedSceneRoute::Pending
+                ),
+                "empty UiScene has no node bounds, so qualified SidebarFrame stays Pending"
+            );
+        });
+    }
+
+    #[test]
+    fn sidebar_frame_body_is_runtime_owned_scrollport() {
+        let mut body = WidgetProps::default();
+        body.class_names = vec!["nana-sidebar-frame__body".into()];
+        body.attrs.insert("data-slot".into(), "sidebar-body".into());
+        body.layout.overflow_y = OverflowSpec::Auto;
+        assert!(crate::scroll::is_runtime_scroll_body(&body));
+        assert!(body.layout.scrolls_y());
+
+        let mut generic = WidgetProps::default();
+        generic.layout.overflow_y = OverflowSpec::Auto;
+        assert!(!crate::scroll::is_runtime_scroll_body(&generic));
+        assert!(generic.layout.scrolls_y());
+    }
+
+    #[test]
+    fn form_field_and_interactive_card_hosts_stay_on_composer() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::FormField,
+            WidgetProps {
+                label: "Email".into(),
+                hint: "Required".into(),
+                invalid: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Input,
+            WidgetProps {
+                value: "a@b.c".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.register(
+            3,
+            WidgetKind::InteractiveCard,
+            WidgetProps {
+                active: true,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            4,
+            WidgetKind::Text,
+            WidgetProps {
+                label: "Surface".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(4, 3, None);
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
+            Some((320.0, 200.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&scene),
+            None,
+            |event| event,
+        );
+    }
+
+    #[test]
+    fn scene_does_not_swallow_card_or_html_text_hosts() {
+        let mut bridge = MessageBridge::new();
+        let mut card = WidgetProps::default();
+        card.label = "Panel".into();
+        bridge.register(1, WidgetKind::Card, card);
+        let mut heading = WidgetProps::default();
+        heading.label = String::new();
+        bridge.register(2, WidgetKind::Text, heading);
+        let mut title = WidgetProps::default();
+        title.label = "Heading".into();
+        bridge.register(3, WidgetKind::Text, title);
+        let mut area = WidgetProps::default();
+        area.value = "notes".into();
+        bridge.register(4, WidgetKind::Textarea, area);
+        bridge.insert_child(2, 1, None);
+        bridge.insert_child(3, 2, None);
+        bridge.insert_child(4, 1, None);
+        let snap = bridge.snapshot();
+        let scene = UiScene::new();
+
+        let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
+            &snap,
+            ThemeMode::Light.tokens(),
             Some((320.0, 200.0)),
             None,
             None,
@@ -161,16 +781,64 @@ mod tests {
     }
 
     #[test]
+    fn missing_nodes_are_measured_without_replacing_iced_boxes() {
+        let mut document = crate::tree::NanaTreeDocument::new(320, 200, 1.0);
+        let painted = document.create_element("nana-button");
+        let fresh = document.create_element("nana-button");
+        document.insert(painted, document.mount_root(), None);
+        document.insert(fresh, document.mount_root(), None);
+        document.apply_layout_boxes(&[(
+            painted,
+            crate::LayoutBox {
+                handle: painted,
+                x: 8.0,
+                y: 8.0,
+                width: 40.0,
+                height: 28.0,
+            },
+        )]);
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            painted.0,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Painted".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            fresh.0,
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Fresh".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(fresh.0, painted.0, None);
+        bridge.resolve_missing_document_layout(&mut document);
+
+        let painted_box = document.layout_box(painted).expect("iced box stays");
+        assert_eq!(
+            (
+                painted_box.x,
+                painted_box.y,
+                painted_box.width,
+                painted_box.height
+            ),
+            (8.0, 8.0, 40.0, 28.0)
+        );
+        assert!(document.layout_box(fresh).is_some());
+    }
+
+    #[test]
     fn definite_scroll_extent_uses_parent_or_viewport() {
         assert_eq!(
             definite_scroll_extent(Some(640.0), 800.0),
             Length::Fixed(640.0)
         );
         // Former `> 1.0` gate treated 1px as invalid → Fill collapse.
-        assert_eq!(
-            definite_scroll_extent(Some(1.0), 800.0),
-            Length::Fixed(1.0)
-        );
+        assert_eq!(definite_scroll_extent(Some(1.0), 800.0), Length::Fixed(1.0));
         assert_eq!(
             definite_scroll_extent(Some(0.0), 800.0),
             Length::Fixed(800.0),
@@ -380,10 +1048,7 @@ mod tests {
         assert_eq!(w, Some(130.0), "outer Fixed width must include pad+border");
         assert_eq!(h, Some(70.0), "outer Fixed height must include pad+border");
         // Same chrome as measure's content-box expansion.
-        assert_eq!(
-            content_box_outer_fixed(100.0, 10.0, 10.0, 5.0),
-            130.0
-        );
+        assert_eq!(content_box_outer_fixed(100.0, 10.0, 10.0, 5.0), 130.0);
         assert_eq!(content_box_outer_fixed(40.0, 10.0, 10.0, 5.0), 70.0);
     }
 
@@ -407,31 +1072,17 @@ mod tests {
         );
         // Default CSS medium = 16px → content 160×40; Fixed before chrome.
         match length_from_spec(layout.width, None, &layout, false) {
-            Length::Fixed(px) => assert!(
-                (px - 160.0).abs() < 0.01,
-                "10em → Fixed(160), got {px}"
-            ),
+            Length::Fixed(px) => assert!((px - 160.0).abs() < 0.01, "10em → Fixed(160), got {px}"),
             other => panic!("expected Fixed from 10em, got {other:?}"),
         }
         match length_from_spec(layout.height, None, &layout, true) {
-            Length::Fixed(px) => assert!(
-                (px - 40.0).abs() < 0.01,
-                "2.5rem → Fixed(40), got {px}"
-            ),
+            Length::Fixed(px) => assert!((px - 40.0).abs() < 0.01, "2.5rem → Fixed(40), got {px}"),
             other => panic!("expected Fixed from 2.5rem, got {other:?}"),
         }
         let (w, h) = content_box_outer_axes(&layout, None);
         // 160×40 + pad 10×2 → border-box 180×60
-        assert_eq!(
-            w,
-            Some(180.0),
-            "content-box em Fixed must expand by pad"
-        );
-        assert_eq!(
-            h,
-            Some(60.0),
-            "content-box rem Fixed must expand by pad"
-        );
+        assert_eq!(w, Some(180.0), "content-box em Fixed must expand by pad");
+        assert_eq!(h, Some(60.0), "content-box rem Fixed must expand by pad");
     }
 
     #[test]
@@ -638,9 +1289,7 @@ mod tests {
         let mut box_css = WidgetProps::default();
         box_css.label = "box-css".into();
         box_css.size = ControlSize::Medium;
-        box_css
-            .layout
-            .apply_css_text("font-size:18px", None, None);
+        box_css.layout.apply_css_text("font-size:18px", None, None);
         bridge.register(3, WidgetKind::Box, box_css);
 
         let snap = bridge.snapshot();
@@ -790,8 +1439,7 @@ mod tests {
         assert_eq!(in_flow, vec![2, 4], "fixed must leave iced flow");
         assert!(snap.get(3).unwrap().props.layout.is_fixed());
         assert_eq!(collect_css_fixed_ids(&snap), vec![3]);
-        let (x, y, w, h) =
-            resolve_fixed_box(&snap.get(3).unwrap().props.layout, 200.0, 120.0);
+        let (x, y, w, h) = resolve_fixed_box(&snap.get(3).unwrap().props.layout, 200.0, 120.0);
         assert!((x - 148.0).abs() < 0.01);
         assert!((y - 8.0).abs() < 0.01);
         assert!((w - 40.0).abs() < 0.01);
@@ -874,10 +1522,7 @@ mod tests {
             child_box.height.is_none() || child_box.height == Some(0.0),
             "auto height must stay indefinite before shrink-to-fit"
         );
-        assert_eq!(
-            layout.main_gap_against(FlexDirection::Row, child_box),
-            12.0
-        );
+        assert_eq!(layout.main_gap_against(FlexDirection::Row, child_box), 12.0);
         assert_eq!(
             layout.cross_gap_against(FlexDirection::Row, child_box),
             20.0,
@@ -896,7 +1541,10 @@ mod tests {
         );
         assert_eq!(layout.flex_wrap, FlexWrap::WrapReverse);
         let child_box = layout.resolve_content_box(ParentBox::from_viewport(200.0, 160.0));
-        assert_eq!(layout.cross_gap_against(FlexDirection::Row, child_box), 20.0);
+        assert_eq!(
+            layout.cross_gap_against(FlexDirection::Row, child_box),
+            20.0
+        );
         assert_eq!(layout.main_gap_against(FlexDirection::Row, child_box), 12.0);
     }
 
@@ -974,11 +1622,9 @@ mod tests {
         for (id, label) in [(2u64, "a"), (3, "b")] {
             let mut child = WidgetProps::default();
             child.label = label.into();
-            child.layout.apply_css_text(
-                "width:150px;flex-shrink:1;height:40px",
-                None,
-                None,
-            );
+            child
+                .layout
+                .apply_css_text("width:150px;flex-shrink:1;height:40px", None, None);
             bridge.register(id, WidgetKind::Box, child);
             bridge.insert_child(id, 1, None);
         }
@@ -1007,7 +1653,9 @@ mod tests {
         auto_bridge.register(11, WidgetKind::Column, title);
         auto_bridge.insert_child(11, 10, None);
         let mut actions = WidgetProps::default();
-        actions.layout.apply_css_text("flex:0 0 auto;height:auto", None, None);
+        actions
+            .layout
+            .apply_css_text("flex:0 0 auto;height:auto", None, None);
         auto_bridge.register(12, WidgetKind::Row, actions);
         auto_bridge.insert_child(12, 10, None);
         let auto_snap = auto_bridge.snapshot();
@@ -1027,7 +1675,11 @@ mod tests {
 
         // T-F19: min-width freeze → 120+80
         let mut a = snap.get(2).unwrap().props.layout.clone();
-        a.apply_css_text("width:150px;flex-shrink:1;min-width:120px;height:40px", None, None);
+        a.apply_css_text(
+            "width:150px;flex-shrink:1;min-width:120px;height:40px",
+            None,
+            None,
+        );
         let b = snap.get(3).unwrap().props.layout.clone();
         let styles = [&a, &b];
         let frozen = crate::measure::resolve_flex_children_main_sizes(
@@ -1562,8 +2214,17 @@ mod tests {
         let outers = resolve_grid_track_outers(tracks, 460.0, 12.0, 0.0, &[0.0, 0.0]);
         // budget 460, gap 12 → free split 1.3:1
         assert_eq!(outers.len(), 2);
-        assert!(outers[0] > outers[1], "1.3fr > 1fr: {} vs {}", outers[0], outers[1]);
-        assert!(outers[1] > 100.0, "second track must stay definite, got {}", outers[1]);
+        assert!(
+            outers[0] > outers[1],
+            "1.3fr > 1fr: {} vs {}",
+            outers[0],
+            outers[1]
+        );
+        assert!(
+            outers[1] > 100.0,
+            "second track must stay definite, got {}",
+            outers[1]
+        );
         let ratio = outers[0] / outers[1];
         assert!((ratio - 1.3).abs() < 0.05, "ratio={ratio}");
     }
@@ -1615,7 +2276,11 @@ mod tests {
         );
 
         let mut column = LayoutStyle::default();
-        column.apply_css_text("display:flex;flex-direction:column;align-items:center", None, None);
+        column.apply_css_text(
+            "display:flex;flex-direction:column;align-items:center",
+            None,
+            None,
+        );
         assert!(text_host_column_axis(&column));
 
         let block = LayoutStyle::default();
@@ -1631,10 +2296,7 @@ mod tests {
         // height:auto must be re-pinned to Shrink or headings eat siblings.
         let layout = LayoutStyle::default();
         let col = iced::widget::column![].width(Length::Fill);
-        let children: Vec<Element<'_, ()>> = vec![
-            text("heading").into(),
-            text("chart").into(),
-        ];
+        let children: Vec<Element<'_, ()>> = vec![text("heading").into(), text("chart").into()];
         let col = push_justified(col, children, JustifySpec::SpaceBetween, 8.0);
         let pinned = pin_flex_container_main_length(
             col,
@@ -1666,10 +2328,7 @@ mod tests {
     fn auto_height_row_stays_shrink_after_space_between_push() {
         let layout = LayoutStyle::default();
         let row = iced::widget::row![].width(Length::Fill);
-        let children: Vec<Element<'_, ()>> = vec![
-            text("left").into(),
-            text("right").into(),
-        ];
+        let children: Vec<Element<'_, ()>> = vec![text("left").into(), text("right").into()];
         let row = push_justified_row(row, children, JustifySpec::SpaceBetween, 10.0);
         let pinned = pin_flex_row_cross_or_main_height(row, None, &layout);
         assert_eq!(
@@ -1708,11 +2367,7 @@ mod tests {
             Length::FillPortion(p) => p,
             other => panic!("expected FillPortion, got {other:?}"),
         };
-        assert_eq!(
-            pct * 4,
-            fr,
-            "25% 1fr fallback ratio must be 1:4, not 1:100"
-        );
+        assert_eq!(pct * 4, fr, "25% 1fr fallback ratio must be 1:4, not 1:100");
     }
 
     #[test]
@@ -1881,7 +2536,10 @@ mod tests {
             &snap.get(2).unwrap().children,
             ThemeMode::Light.tokens(),
         );
-        assert!(leading.is_some(), "sidebar row must resolve leading SVG/glyph");
+        assert!(
+            leading.is_some(),
+            "sidebar row must resolve leading SVG/glyph"
+        );
         assert_eq!(label, "仓库名");
 
         let mut list = WidgetProps {
@@ -2328,6 +2986,33 @@ mod tests {
     }
 
     #[test]
+    fn textarea_language_routes_to_runtime_hosted_highlighter() {
+        let mut bridge = MessageBridge::new();
+        let mut highlighted = WidgetProps {
+            value: "fn main() {}".into(),
+            ..WidgetProps::default()
+        };
+        highlighted
+            .attrs
+            .insert("language".into(), "rs".into());
+        bridge.register(1, WidgetKind::Textarea, highlighted);
+        bridge.register(2, WidgetKind::Textarea, WidgetProps::default());
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::HOSTED_TEXTAREA)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::TEXTAREA)
+        );
+        assert_eq!(
+            crate::widget_map::highlight_language(&snap.get(1).unwrap().props),
+            Some("rs")
+        );
+    }
+
+    #[test]
     fn context_menu_uses_host_owned_menu_store() {
         use crate::menu_store::MenuStore;
 
@@ -2385,11 +3070,9 @@ mod tests {
         props
             .layout
             .apply_css_property("background-color", "#f0f0f5", None, None);
-        props.layout.apply_css_text(
-            "border-radius:12px;padding:8px",
-            None,
-            None,
-        );
+        props
+            .layout
+            .apply_css_text("border-radius:12px;padding:8px", None, None);
         assert!(props.layout.background.is_some());
         bridge.register(2, WidgetKind::Column, props);
         bridge.insert_child(2, 1, None);

@@ -10,6 +10,7 @@
 //!
 //! `layoutBox` / `getBoundingClientRect` **优先**读 iced 盒；本模块供
 //! `VueHost::resolve_layout` 在尚未 paint 时填充文档缓存，并与 css-parity 对齐。
+//! `RuntimeLayoutEngine` 不写 Vue 混合树。
 //!
 //! 盒边 / content-box / inset / gap 解析消费 `nana-ui-core::box_layout`
 //!（[`LayoutStyle::resolve_content_box`]、[`LayoutStyle::resolve_inset`]、

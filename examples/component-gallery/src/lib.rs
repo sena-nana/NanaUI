@@ -11,22 +11,29 @@ use nana_ui::command::{
     KeymapState,
 };
 use nana_ui::compatibility::{
-    Button as UiButton, Card as UiCard, Checkbox as UiCheckbox, IconButton as UiIconButton,
-    Input as UiInput, ListItem as UiListItem, RangeField as UiRangeField, Switch as UiSwitch,
+    AppTitleBar, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
+};
+use nana_ui::compatibility::{
+    Button as UiButton, Card as UiCard, Checkbox as UiCheckbox, ConfirmDialog as UiConfirmDialog,
+    IconButton as UiIconButton, Input as UiInput, InteractiveCard as UiInteractiveCard,
+    ListItem as UiListItem, Popover as UiPopover, Progress as UiProgress,
+    RangeField as UiRangeField, SegmentedControl as UiSegmentedControl, Switch as UiSwitch,
+    Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip, XYPad as UiXYPad,
+};
+use nana_ui::compatibility::{
+    CalendarHeatmap as UiCalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapDatum,
+    CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapOptions, GraphCanvas,
+    ImageViewer as UiImageViewer, ImageViewerSource, NativeMarkdown, build_calendar_heatmap_model,
+};
+use nana_ui::compatibility::{
+    CommandPalette as UiCommandPalette, Dropdown as UiDropdown, DropdownOption,
+    SearchDropdown as UiSearchDropdown, SearchDropdownOption, SearchDropdownState,
+    TreeView as UiTreeView,
 };
 use nana_ui::components::{
-    AboutMetadata, AboutSection, AnchoredMenuPlacement, AnchoredMenuPosition, AppearanceEvent,
-    AppearanceSection, CalendarHeatmap as UiCalendarHeatmap, CalendarHeatmapActiveCell,
-    CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel, CalendarHeatmapOptions,
-    CommandPalette as UiCommandPalette, CommandPaletteEvent, CommandPaletteItem,
-    ConfirmDialog as UiConfirmDialog, ContextMenuAnchor, ContextMenuEvent, ContextMenuHost,
-    ContextMenuItem, ContextMenuTrigger, ControlSize, Dropdown as UiDropdown, DropdownEvent,
-    DropdownOption, ImageViewer as UiImageViewer, ImageViewerSource,
-    InteractiveCard as UiInteractiveCard, NativeMarkdown, Popover as UiPopover,
-    Progress as UiProgress, SearchDropdown as UiSearchDropdown, SearchDropdownOption,
-    SearchDropdownState, SegmentedControl as UiSegmentedControl, SelectionOption,
-    SettingsCollapsibleCard, Tabs as UiTabs, Textarea as UiTextarea, Tooltip as UiTooltip,
-    TreeNode, TreeView as UiTreeView, TreeViewEvent, XYPad as UiXYPad, XYPadEvent, XYPadValue,
+    AnchoredMenuPlacement, AnchoredMenuPosition, CommandPaletteEvent, CommandPaletteItem,
+    ContextMenuAnchor, ContextMenuEvent, ContextMenuHost, ContextMenuItem, ContextMenuTrigger,
+    ControlSize, DropdownEvent, SelectionOption, TreeNode, TreeViewEvent, XYPadEvent, XYPadValue,
 };
 use nana_ui::dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 use nana_ui::icons::{Icon, icon, status_indicator};
@@ -40,9 +47,6 @@ use nana_ui::settings::{
     AppearanceSettings, BackdropTarget, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
     WindowMaterialMode, settings_page, settings_sidebar as settings_sidebar_view,
 };
-use nana_ui::sidebar::{
-    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarSection,
-};
 use nana_ui::theme::{Colors, ThemeMode, ThemeModeExt, ThemeTokens, UI_METRICS, ui_font};
 use nana_ui::tooltip::TooltipConfig;
 use nana_ui::widgets::{
@@ -52,14 +56,13 @@ use nana_ui::widgets::{
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
-    AppTitleBar, DesktopShell, DockAction, DockAxis, DockChromeStyle, DockContents, DockController,
-    DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId, FallbackColor,
-    GraphCanvas, GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
+    AppearanceEvent, DesktopShell, DockAction, DockAxis, DockChromeStyle, DockContents,
+    DockController, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
+    FallbackColor, GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
     GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    MaterialOutcome, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
-    PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction, SplitPaneController,
-    WindowAppearance, apply_system_material, clear_system_material, dock_workspace,
-    ratio_pane_split,
+    MaterialOutcome, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
+    SplitPaneController, WindowAppearance, apply_system_material, clear_system_material,
+    dock_workspace, ratio_pane_split,
 };
 
 #[path = "views/controls.rs"]
@@ -198,7 +201,7 @@ fn overlay_event(
     let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event else {
         return None;
     };
-    ActionPickerNavigation::from_iced_key(&key).map(GalleryMessage::NavigateCommandPalette)
+    nana_ui::action_picker_from_iced_key(&key).map(GalleryMessage::NavigateCommandPalette)
 }
 
 fn command_shortcut_event(
@@ -790,7 +793,7 @@ impl GalleryState {
         context
     }
 
-    fn palette_items(&self) -> Vec<CommandPaletteItem<'static>> {
+    fn palette_items(&self) -> Vec<CommandPaletteItem> {
         let context = self.action_context();
         self.action_registry
             .search(self.action_picker.query(), &context)
@@ -842,7 +845,6 @@ impl GalleryState {
                 self.action_picker.dismiss();
                 self.overlay.dismiss();
             }
-            CommandPaletteEvent::Interaction => {}
         }
     }
 
@@ -1036,7 +1038,7 @@ fn gallery_layout(show_workspace: bool) -> WorkspaceLayout {
 }
 
 fn gallery_calendar_model() -> CalendarHeatmapModel {
-    nana_ui::build_calendar_heatmap_model(
+    build_calendar_heatmap_model(
         &(0..84)
             .map(|offset| {
                 let day = 1 + offset;

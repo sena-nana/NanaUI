@@ -1,15 +1,16 @@
 #![recursion_limit = "256"]
 
-//! Vue backend host coordination — L1/L2 bridge into Nana Style Model → Iced.
+//! Vue backend host coordination — first-class L1/L2 consumer of Runtime/UiScene.
 //!
 //! ## Three-layer compatibility
 //!
 //! ```text
 //! L1 CSS 子集 ──► Nana Style Model（Tokens + Semantics + Layout）
 //! L2 Vue props ─► 同一套 Model
-//! L3 Rust API ──► 同一套 Model（nana-ui）
+//! L3 Rust API ──► 同一套 Model（nana-ui 适配器）
 //!                  ▼
-//!            唯一绘制：nana-ui widgets
+//!            保留权威：UiWorld / UiScene
+//!            兼容绘制：iced_app → nana-ui → Iced
 //! ```
 //!
 //! ## Internal pipeline (adapter only — not a second paint core)
@@ -30,9 +31,9 @@
 //!
 //! Cascade SoT for `LayoutStyle` is [`MessageBridge`] stylesheet rules.
 //! `NanaTreeDocument::stylesheets` is diagnostics-only (count for host ops).
-//! Product geometry SoT after paint is iced [`LayoutBoxStore`]; `measure` is
-//! the pre-paint fallback + `nana-css-parity` harness. There is no separate
-//! synthetic layout branch. See
+//! Retained geometry lives in UiWorld/UiScene; iced [`LayoutBoxStore`] is the
+//! compatibility view after paint. `measure` is the pre-paint fallback +
+//! `nana-css-parity` harness. There is no separate synthetic layout branch. See
 //! [`docs/css-layout-engine-boundary.md`](../../../docs/css-layout-engine-boundary.md).
 //!
 //! This crate is the **L1/L2 adapter** (not the paint core):
@@ -43,7 +44,7 @@
 //! - `style` → L1 paint value parsing only（不拥有 layout / hit-test）
 //! - `widget_map` → Semantics (`WidgetKind` + props)
 //! - `layout_map` → Layout direction / Column·Row defaults
-//! - `iced_app` → L3 NanaUI widgets (feature `iced-view`)
+//! - `iced_app` → Iced compatibility view of Runtime/Scene (feature `iced-view`)
 //! - Theme tiers → Tokens via `nana-ui` / core（arbitrary CSS hex ≠ token factory）
 //!
 //! Dependency direction:
@@ -54,17 +55,15 @@
 //!      ├────────► renderer / tree     (Custom Renderer hostOps)
 //!      ├────────► widget_map / layout_map / css_map / shell_contract / css_cascade / measure
 //!      ├────────► MessageBridge                       ← L1+L2 同树
-//!      ├────────► iced_app            (→ NanaUI widgets → Iced)  ← L3 绘制
+//!      ├────────► iced_app            (Iced compatibility view of Runtime/Scene)
 //!      └────────► nana-ui-web-api     ← L1 Web API 兼容（非 WebView）
 //! ```
 //!
 //! See [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
 //!
-//! **All visible UI draws through NanaUI foundations** (layout primitives + base
-//! controls and their variants). Vue may compose custom components and drive
-//! logic, but those compose Nana kinds — not a separate paint engine.
-//! CustomContent / CPU raster paint has been removed. Do not restore Blitz/stylo
-//! or open a WebView paint path. L1 SVG/`path` chart handling in `svg_icon` /
+//! Unique retained authority is UiWorld/UiScene. `iced_app` (feature `iced-view`)
+//! is the Iced compatibility view of that Scene, including Runtime Scene leaves.
+//! WebView is not the product UI path. L1 SVG/`path` handling in `svg_icon` /
 //! `iced_app` is a temporary adapter exception — prefer sinking to L3 widgets.
 //!
 //! Applications choose one JS engine:
@@ -368,6 +367,10 @@ pub struct VueHost {
     event_window_id: Option<u64>,
     input: Arc<Mutex<input::InputState>>,
     file_drag_target: Option<NodeHandle>,
+    /// Last IME field and preedit. Runtime removes [`nana_ui_runtime::ImeComposition`]
+    /// when focus leaves, so leftover `ImeEvent::Disabled` still knows the original.
+    ime_target: Option<NodeHandle>,
+    ime_preedit: String,
     /// Host-owned multi-line editor buffers (L2 Textarea → text_editor::Content).
     #[cfg(feature = "iced-view")]
     editors: EditorStore,
@@ -491,6 +494,8 @@ impl VueHost {
             event_window_id: None,
             input: Arc::new(Mutex::new(input::InputState::default())),
             file_drag_target: None,
+            ime_target: None,
+            ime_preedit: String::new(),
             #[cfg(feature = "iced-view")]
             editors: EditorStore::new(),
             #[cfg(feature = "iced-view")]
@@ -1157,7 +1162,7 @@ impl VueHost {
     ) -> Result<(), JsEngineError> {
         self.event_window_id = None;
         self.fire_event = Some(engine.resolve_function("__nanaFireEvent")?);
-        // Drain helper is optional for Phase 3 Counter (shim may still install it).
+        // Drain helper is optional (counter fixture / shim may still install it).
         self.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
         self.drain_fetch = engine.resolve_function("__nanaDrainFetch").ok();
         self.apply_theme = engine.resolve_function("__nanaApplyTheme").ok();
@@ -1191,18 +1196,18 @@ impl VueHost {
     }
 
     pub fn resolve_layout(&mut self) {
-        // After iced has painted, writeback is authoritative (chrome/scroll offsets).
         let iced = self.layout_boxes.snapshot();
-        if !iced.is_empty() {
-            let bridge = self.bridge.lock().expect("vue bridge");
+        if iced.is_empty() {
+            let mut bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
-            doc.apply_layout_boxes(&iced);
-            reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
+            bridge.resolve_document_layout(&mut doc);
             return;
         }
         let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
-        bridge.resolve_document_layout(&mut doc);
+        doc.apply_layout_boxes(&iced);
+        reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
+        bridge.resolve_missing_document_layout(&mut doc);
     }
 
     /// Copy iced paint boxes into the document cache (call after a frame draws).
@@ -1214,10 +1219,11 @@ impl VueHost {
         if iced.is_empty() {
             return;
         }
-        let bridge = self.bridge.lock().expect("vue bridge");
+        let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
         doc.apply_layout_boxes(&iced);
         reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
+        bridge.resolve_missing_document_layout(&mut doc);
     }
 
     /// Shared iced layout writeback buffer (same as probes / `layoutBox`).
@@ -1353,8 +1359,8 @@ impl VueHost {
 
     /// Pump a host window lifecycle event into the shim EventTarget surface.
     ///
-    /// No-op (returns `Ok(false)`) when `__nanaPumpLifecycle` is absent (e.g. Phase 3
-    /// counter without web-api shim). After dispatch, runs microtasks so listeners
+    /// No-op (returns `Ok(false)`) when `__nanaPumpLifecycle` is absent (e.g. counter
+    /// fixture without web-api shim). After dispatch, runs microtasks so listeners
     /// scheduled via `queueMicrotask` / promises settle.
     pub fn pump_lifecycle<E: JsEngine + ?Sized>(
         &mut self,
@@ -1790,7 +1796,7 @@ impl VueHost {
                 id: target.0,
                 value: quantize_range_value(&widget.props, value),
             }),
-            WidgetKind::ListItem | WidgetKind::SidebarRow => {
+            WidgetKind::ListItem | WidgetKind::SidebarRow | WidgetKind::InteractiveCard => {
                 Some(BridgeEvent::Select { id: target.0 })
             }
             WidgetKind::Button | WidgetKind::Chip => Some(BridgeEvent::Press { id: target.0 }),
@@ -2081,10 +2087,30 @@ impl VueHost {
         let allowed = self.fire_dom_event(engine, target, "wheel", input.detail())?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
+        let mut consumed = !allowed;
+        if allowed {
+            let delta = crate::scroll::wheel_scroll_delta(&input);
+            let scrolled = {
+                let mut document = self.document.lock().expect("vue doc");
+                let bridge = self.bridge.lock().expect("vue bridge");
+                crate::scroll::apply_runtime_wheel(
+                    &mut document,
+                    &bridge,
+                    input.client_x,
+                    input.client_y,
+                    delta,
+                )
+                .is_some()
+            };
+            // Candidate frames still paint through Iced scrollable. Consume only
+            // after catalog qualification, when Scene owns the offset/clip.
+            consumed |=
+                scrolled && nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME);
+        }
         Ok(HostedInputResult {
             targeted: true,
             default_prevented: !allowed,
-            consumed: !allowed,
+            consumed,
         })
     }
 
@@ -2161,7 +2187,8 @@ impl VueHost {
                     WidgetKind::Button
                     | WidgetKind::Chip
                     | WidgetKind::ListItem
-                    | WidgetKind::SidebarRow => {
+                    | WidgetKind::SidebarRow
+                    | WidgetKind::InteractiveCard => {
                         !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
                     }
                     WidgetKind::Switch | WidgetKind::Checkbox => {
@@ -2392,16 +2419,68 @@ impl VueHost {
         let Some(target) = self.document.lock().expect("vue doc").focused() else {
             return Ok(false);
         };
-        let next = {
-            let doc = self.document.lock().expect("vue doc");
-            let mut state = doc.text_input_state(target).unwrap_or_else(|| {
-                TextInputState::new(doc.get_attribute(target, "value").unwrap_or_default())
-            });
-            if !state.replace_selection(text) {
-                return Ok(false);
-            }
-            state
+        self.commit_text_on(engine, target, text, input_type)
+    }
+
+    /// Commit text into a specific field. Used so leftover IME after blur
+    /// cannot retarget the newly focused node.
+    fn commit_text_on<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        text: &str,
+        input_type: &str,
+    ) -> Result<bool, JsEngineError> {
+        if self.text_commit_blocked(target) {
+            return Ok(false);
+        }
+        let (widget_editable, existing, fallback_value, tag, contenteditable) = {
+            let widget_editable = self
+                .bridge
+                .lock()
+                .expect("vue bridge")
+                .get(target.0)
+                .is_some_and(|widget| {
+                    matches!(
+                        widget.kind,
+                        WidgetKind::Input
+                            | WidgetKind::Textarea
+                            | WidgetKind::ContextMenu
+                            | WidgetKind::Select
+                    )
+                });
+            let document = self.document.lock().expect("vue doc");
+            (
+                widget_editable,
+                document.text_input_state(target),
+                document.get_attribute(target, "value").unwrap_or_default(),
+                document.element_tag(target),
+                document.get_attribute(target, "contenteditable"),
+            )
         };
+        let editable = widget_editable
+            || matches!(
+                tag.as_deref(),
+                Some(
+                    "input"
+                        | "textarea"
+                        | "nana-input"
+                        | "nana-textarea"
+                        | "nana-context-menu"
+                        | "nana-search"
+                        | "nana-dropdown"
+                )
+            )
+            || contenteditable.is_some_and(|value| value != "false");
+        let Some(mut state) =
+            existing.or_else(|| editable.then(|| TextInputState::new(fallback_value)))
+        else {
+            return Ok(false);
+        };
+        if !state.replace_selection(text) {
+            return Ok(false);
+        }
+        let next = state;
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(text));
         detail.insert("inputType".into(), HostValue::string(input_type));
@@ -2417,10 +2496,71 @@ impl VueHost {
             }
             document.set_attribute(target, "value", &next.value);
         }
+        #[cfg(feature = "iced-view")]
+        {
+            let is_menu = self
+                .bridge
+                .lock()
+                .expect("vue bridge")
+                .get(target.0)
+                .is_some_and(|widget| widget.kind == WidgetKind::ContextMenu);
+            if is_menu {
+                self.menus.set_query(target.0, next.value.clone());
+            }
+        }
         self.fire_dom_event(engine, target, "input", detail)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(true)
+    }
+
+    fn text_commit_blocked(&self, target: NodeHandle) -> bool {
+        if self
+            .bridge
+            .lock()
+            .expect("vue bridge")
+            .get(target.0)
+            .is_some_and(|widget| widget.props.disabled || widget.props.read_only)
+        {
+            return true;
+        }
+        let document = self.document.lock().expect("vue doc");
+        document.element_tag(target).is_none()
+            || document.get_attribute(target, "disabled").is_some()
+            || document.get_attribute(target, "readonly").is_some()
+    }
+
+    fn remember_ime_target(&mut self, target: NodeHandle, preedit: String) {
+        self.ime_target = Some(target);
+        self.ime_preedit = preedit;
+    }
+
+    fn clear_ime_target(&mut self) {
+        self.ime_target = None;
+        self.ime_preedit.clear();
+    }
+
+    fn ime_composition_target(document: &NanaTreeDocument) -> Option<NodeHandle> {
+        document
+            .collect_element_preorder(document.html_root())
+            .into_iter()
+            .map(NodeHandle)
+            .find(|&node| document.ime_composition(node).is_some())
+    }
+
+    /// Composition target and leftover preedit. Runtime drops `ImeComposition`
+    /// on blur, so the remembered field wins over current focus.
+    fn take_ime_leftover(&mut self) -> Option<(NodeHandle, String)> {
+        let remembered = self.ime_target.take();
+        let remembered_text = std::mem::take(&mut self.ime_preedit);
+        let mut document = self.document.lock().expect("vue doc");
+        let target = Self::ime_composition_target(&document).or(remembered)?;
+        let data = document
+            .ime_composition(target)
+            .map(|ime| ime.text)
+            .unwrap_or(remembered_text);
+        document.set_ime_composition(target, None);
+        Some((target, data))
     }
 
     pub fn dispatch_composition<E: JsEngine + ?Sized>(
@@ -2454,6 +2594,14 @@ impl VueHost {
                 return Err(JsEngineError::new("invalid composition state"));
             }
         }
+        match input.kind {
+            CompositionEventKind::Start | CompositionEventKind::Update => {
+                self.remember_ime_target(target, input.data.clone());
+            }
+            CompositionEventKind::End => {
+                self.clear_ime_target();
+            }
+        }
         self.dispatch_composition_event(engine, target, input)
     }
 
@@ -2472,7 +2620,7 @@ impl VueHost {
         self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
         engine.run_microtasks()?;
         if input.kind == CompositionEventKind::End && !input.data.is_empty() {
-            return self.commit_text(engine, &input.data, "insertCompositionText");
+            return self.commit_text_on(engine, target, &input.data, "insertCompositionText");
         }
         let _ = self.pump_frame(engine)?;
         Ok(true)
@@ -2480,20 +2628,22 @@ impl VueHost {
 
     /// Forwards desktop winit IME lifecycle into Vue composition events.
     ///
-    /// Commit text itself continues through the retained Iced input/editor and
-    /// [`BridgeEvent::Input`], avoiding a duplicate insertion while still giving
-    /// Vue the browser composition lifecycle.
+    /// Preedit stays on Runtime [`nana_ui_runtime::ImeComposition`]. Commit and
+    /// leftover Disabled preedit update Runtime [`TextInputState`] on the
+    /// original composition field through [`Self::commit_text_on`], matching
+    /// [`Self::dispatch_composition`] End even if focus has moved. This path
+    /// does not write Iced `text_editor::Content`.
     pub fn dispatch_native_ime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         event: &ImeEvent,
     ) -> Result<bool, JsEngineError> {
-        let Some(target) = self.focused() else {
-            return Ok(false);
-        };
         match event {
-            ImeEvent::Enabled => Ok(true),
+            ImeEvent::Enabled => Ok(self.focused().is_some()),
             ImeEvent::Preedit { text, selection } => {
+                let Some(target) = self.focused() else {
+                    return Ok(false);
+                };
                 let started = {
                     let mut document = self.document.lock().expect("vue doc");
                     if document.text_input_state(target).is_none() {
@@ -2516,6 +2666,7 @@ impl VueHost {
                     }
                     started
                 };
+                self.remember_ime_target(target, text.clone());
                 if started {
                     self.dispatch_composition_event(
                         engine,
@@ -2530,41 +2681,33 @@ impl VueHost {
                 )
             }
             ImeEvent::Commit(text) => {
+                let Some(target) = self.focused() else {
+                    return Ok(false);
+                };
+                self.clear_ime_target();
                 self.document
                     .lock()
                     .expect("vue doc")
                     .set_ime_composition(target, None);
-                // Browser compositionend carries committed text. The Iced
-                // editor's ensuing Input message owns the value mutation.
-                let mut detail = BTreeMap::new();
-                detail.insert("data".into(), HostValue::string(text));
-                detail.insert("isComposing".into(), HostValue::Bool(false));
-                self.fire_dom_event(engine, target, "compositionend", detail)?;
-                engine.run_microtasks()?;
-                let _ = self.pump_frame(engine)?;
-                Ok(true)
+                self.dispatch_composition_event(
+                    engine,
+                    target,
+                    &CompositionInput::new(CompositionEventKind::End, text),
+                )
             }
             ImeEvent::Disabled => {
-                let data = {
-                    let mut document = self.document.lock().expect("vue doc");
-                    let data = document.ime_composition(target).map(|ime| ime.text);
-                    document.set_ime_composition(target, None);
-                    data
+                let leftover = self.take_ime_leftover();
+                let Some((target, data)) = leftover else {
+                    return Ok(self.focused().is_some());
                 };
-                let Some(data) = data else {
+                if self.text_commit_blocked(target) {
                     return Ok(true);
-                };
-                let target = self.document.lock().expect("vue doc").focused();
-                let Some(target) = target else {
-                    return Ok(false);
-                };
-                let mut detail = BTreeMap::new();
-                detail.insert("data".into(), HostValue::string(data));
-                detail.insert("isComposing".into(), HostValue::Bool(false));
-                self.fire_dom_event(engine, target, "compositionend", detail)?;
-                engine.run_microtasks()?;
-                let _ = self.pump_frame(engine)?;
-                Ok(true)
+                }
+                self.dispatch_composition_event(
+                    engine,
+                    target,
+                    &CompositionInput::new(CompositionEventKind::End, data),
+                )
             }
         }
     }
@@ -2593,6 +2736,47 @@ impl VueHost {
 
     pub fn focused(&self) -> Option<NodeHandle> {
         self.document.lock().expect("vue doc").focused()
+    }
+
+    /// Platform IME request for a focused Runtime Input/Textarea.
+    ///
+    /// When this is enabled, the hosted window must not also feed winit IME
+    /// into an Iced editor.
+    pub fn text_input_request(&self) -> Option<nana_ui_platform::TextInputRequest> {
+        let target = self.focused()?;
+        let document = self.document.lock().ok()?;
+        let _ = document.text_input_state(target)?;
+        let widget = self.bridge.lock().ok()?.get(target.0).cloned();
+        let (disabled, read_only, secure) = widget
+            .as_ref()
+            .map(|widget| {
+                (
+                    widget.props.disabled,
+                    widget.props.read_only,
+                    widget.props.secure,
+                )
+            })
+            .unwrap_or((false, false, false));
+        if disabled || read_only {
+            return Some(nana_ui_platform::TextInputRequest {
+                enabled: false,
+                cursor_area: None,
+                purpose: nana_ui_platform::TextInputPurpose::Normal,
+            });
+        }
+        let cursor_area =
+            crate::get_layout_box_from(&self.layout_boxes, &document, target).map(|layout| {
+                nana_ui_core::LogicalRect::new(layout.x, layout.y, layout.width, layout.height)
+            });
+        Some(nana_ui_platform::TextInputRequest {
+            enabled: true,
+            cursor_area,
+            purpose: if secure {
+                nana_ui_platform::TextInputPurpose::Password
+            } else {
+                nana_ui_platform::TextInputPurpose::Normal
+            },
+        })
     }
 
     #[cfg(feature = "iced-view")]
@@ -2836,6 +3020,24 @@ mod tests {
         (first, second)
     }
 
+    fn install_textarea_node(host: &mut VueHost, value: &str) -> NodeHandle {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        let root = doc.mount_root();
+        let area = doc.create_element("textarea");
+        doc.set_attribute(area, "value", value);
+        assert!(doc.set_text_input_state(area, TextInputState::new(value)));
+        doc.insert(area, root, None);
+        doc.set_focus(area);
+        drop(doc);
+
+        let store = host.layout_box_store();
+        store.begin_frame();
+        store.record(area, 0.0, 0.0, 160.0, 80.0);
+        host.sync_iced_layout_boxes();
+        area
+    }
+
     fn install_semantic_switch(host: &mut VueHost) -> NodeHandle {
         let node = {
             let document = host.document();
@@ -3005,6 +3207,188 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    fn install_sidebar_frame(
+        host: &mut VueHost,
+    ) -> (NodeHandle, NodeHandle, NodeHandle, NodeHandle) {
+        let (frame, top, body, footer, content) = {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            let root = doc.mount_root();
+            let frame = doc.create_element("nana-sidebar-frame");
+            let top = doc.create_element("nana-column");
+            let body = doc.create_element("nana-column");
+            let footer = doc.create_element("nana-column");
+            let content = doc.create_element("nana-sidebar-row");
+            doc.set_attribute(body, "class", "nana-sidebar-frame__body");
+            doc.set_attribute(body, "data-slot", "sidebar-body");
+            doc.insert(frame, root, None);
+            doc.insert(top, frame, None);
+            doc.insert(body, frame, None);
+            doc.insert(footer, frame, None);
+            doc.insert(content, body, None);
+            (frame, top, body, footer, content)
+        };
+
+        {
+            let mut bridge = host.bridge.lock().expect("bridge");
+            let mut frame_props = WidgetProps::default();
+            frame_props.class_names = vec!["nana-sidebar-frame".into()];
+            frame_props
+                .layout
+                .apply_class_layout_hints(&frame_props.class_names);
+            bridge.register(frame.0, WidgetKind::SidebarFrame, frame_props);
+
+            let mut top_props = WidgetProps::default();
+            top_props.class_names = vec!["nana-sidebar-frame__top".into()];
+            top_props
+                .attrs
+                .insert("data-slot".into(), "sidebar-top".into());
+            top_props
+                .layout
+                .apply_class_layout_hints(&top_props.class_names);
+            bridge.register(top.0, WidgetKind::Column, top_props);
+
+            let mut body_props = WidgetProps::default();
+            body_props.class_names = vec!["nana-sidebar-frame__body".into()];
+            body_props
+                .attrs
+                .insert("data-slot".into(), "sidebar-body".into());
+            body_props
+                .layout
+                .apply_class_layout_hints(&body_props.class_names);
+            bridge.register(body.0, WidgetKind::Column, body_props);
+
+            let mut footer_props = WidgetProps::default();
+            footer_props.class_names = vec!["nana-sidebar-frame__footer".into()];
+            footer_props
+                .attrs
+                .insert("data-slot".into(), "sidebar-footer".into());
+            footer_props
+                .layout
+                .apply_class_layout_hints(&footer_props.class_names);
+            bridge.register(footer.0, WidgetKind::Column, footer_props);
+
+            let mut content_props = WidgetProps::default();
+            content_props.label = "工作区".into();
+            bridge.register(content.0, WidgetKind::SidebarRow, content_props);
+
+            bridge.insert_child(top.0, frame.0, None);
+            bridge.insert_child(body.0, frame.0, None);
+            bridge.insert_child(footer.0, frame.0, None);
+            bridge.insert_child(content.0, body.0, None);
+        }
+
+        let snapshot = host.bridge.lock().expect("bridge").snapshot();
+        let store = host.layout_box_store();
+        store.begin_frame();
+        store.record(frame, 0.0, 0.0, 220.0, 320.0);
+        store.record(top, 0.0, 0.0, 220.0, 40.0);
+        store.record(body, 0.0, 40.0, 220.0, 200.0);
+        store.record(content, 0.0, 40.0, 220.0, 400.0);
+        store.record(footer, 0.0, 250.0, 220.0, 40.0);
+        {
+            let mut doc = host.document.lock().expect("document");
+            doc.sync_semantic_styles(&snapshot);
+            doc.apply_layout_boxes(&store.snapshot());
+        }
+        (frame, top, body, footer)
+    }
+
+    #[test]
+    fn sidebar_frame_wheel_updates_runtime_body_without_moving_chrome() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (_frame, top, body, footer) = install_sidebar_frame(&mut host);
+        let mut engine = RecordingEngine::default();
+
+        let top_before = host
+            .document
+            .lock()
+            .expect("document")
+            .layout_box(top)
+            .expect("top box");
+        let footer_before = host
+            .document
+            .lock()
+            .expect("document")
+            .layout_box(footer)
+            .expect("footer box");
+        assert_eq!(
+            host.document
+                .lock()
+                .expect("document")
+                .scroll_offset(body)
+                .y,
+            0.0
+        );
+        assert_eq!(
+            host.document.lock().expect("document").scroll_offset(top).y,
+            0.0
+        );
+        assert_eq!(
+            host.document
+                .lock()
+                .expect("document")
+                .scroll_offset(footer)
+                .y,
+            0.0
+        );
+
+        let result = host
+            .dispatch_wheel_result(&mut engine, WheelInput::pixels(20.0, 80.0, 0.0, -48.0))
+            .expect("wheel");
+        assert!(result.targeted);
+        assert!(!result.default_prevented);
+        assert_eq!(
+            result.consumed,
+            nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME),
+            "consume hosted wheel only when Scene owns SidebarFrame paint"
+        );
+
+        let document = host.document.lock().expect("document");
+        assert!(
+            document.scroll_offset(body).y > 0.0,
+            "body Runtime scroll_offset must move"
+        );
+        assert_eq!(document.scroll_offset(top).y, 0.0);
+        assert_eq!(document.scroll_offset(footer).y, 0.0);
+        assert_eq!(document.layout_box(top).expect("top after"), top_before);
+        assert_eq!(
+            document.layout_box(footer).expect("footer after"),
+            footer_before
+        );
+        drop(document);
+        assert!(
+            crate::scroll::shared_scroll_offset_store()
+                .take_pending()
+                .is_empty(),
+            "sidebar body must not depend on iced pending scroll tasks"
+        );
+    }
+
+    #[test]
+    fn sidebar_frame_wheel_prevent_default_does_not_scroll_runtime() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (_frame, top, body, footer) = install_sidebar_frame(&mut host);
+        let mut engine = RecordingEngine {
+            prevent_event: Some("wheel".into()),
+            ..Default::default()
+        };
+
+        let result = host
+            .dispatch_wheel_result(&mut engine, WheelInput::pixels(20.0, 80.0, 0.0, -48.0))
+            .expect("wheel");
+        assert!(result.targeted);
+        assert!(result.default_prevented);
+        assert!(result.consumed);
+
+        let document = host.document.lock().expect("document");
+        assert_eq!(document.scroll_offset(body).y, 0.0);
+        assert_eq!(document.scroll_offset(top).y, 0.0);
+        assert_eq!(document.scroll_offset(footer).y, 0.0);
     }
 
     #[test]
@@ -3374,7 +3758,7 @@ mod tests {
     }
 
     #[test]
-    fn native_ime_emits_composition_without_double_committing_iced_value() {
+    fn native_ime_commit_updates_runtime_value_and_emits_input() {
         let mut host = VueHost::new();
         host.fire_event = Some(JsFunctionId(1));
         let (input, _) = install_input_nodes(&mut host);
@@ -3394,24 +3778,38 @@ mod tests {
             },
         )
         .expect("preedit");
-        assert_eq!(
-            host.document()
-                .lock()
-                .expect("document")
+        {
+            let document = host.document();
+            let document = document.lock().expect("document");
+            let composition = document
                 .ime_composition(input)
-                .expect("runtime preedit")
-                .selection,
-            Some((3, 3))
-        );
+                .expect("runtime preedit stays on ImeComposition");
+            assert_eq!(composition.text, "世");
+            assert_eq!(composition.selection, Some((3, 3)));
+            assert_eq!(
+                document.get_attribute(input, "value").as_deref(),
+                Some("Nana"),
+                "preedit must not mutate committed Runtime value"
+            );
+        }
         host.dispatch_native_ime(&mut engine, &ImeEvent::Commit("世界".into()))
             .expect("commit lifecycle");
-        assert!(
-            host.document()
-                .lock()
-                .expect("document")
-                .ime_composition(input)
-                .is_none()
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert!(document.ime_composition(input).is_none());
+        let state = document
+            .text_input_state(input)
+            .expect("runtime text input state");
+        assert_eq!(state.value, "Nana世界");
+        assert_eq!(
+            state.selection,
+            nana_ui_runtime::TextSelection::caret("Nana世界".len())
         );
+        assert_eq!(
+            document.get_attribute(input, "value").as_deref(),
+            Some("Nana世界")
+        );
+        drop(document);
 
         let events = fired_events(&engine);
         assert_eq!(
@@ -3419,23 +3817,411 @@ mod tests {
                 .iter()
                 .map(|(_, name, _)| name.as_str())
                 .collect::<Vec<_>>(),
-            ["compositionstart", "compositionupdate", "compositionend"]
+            [
+                "compositionstart",
+                "compositionupdate",
+                "compositionend",
+                "beforeinput",
+                "input"
+            ]
+        );
+        let input_event = events.last().expect("input event");
+        assert_eq!(input_event.0, input.0);
+        assert_eq!(
+            input_event.2.get("value").and_then(HostValue::as_str),
+            Some("Nana世界")
+        );
+        assert_eq!(
+            input_event.2.get("inputType").and_then(HostValue::as_str),
+            Some("insertCompositionText")
+        );
+        assert_eq!(
+            events.iter().filter(|(_, name, _)| name == "input").count(),
+            1,
+            "native IME commit must not double-insert"
+        );
+    }
+
+    #[test]
+    fn native_ime_commit_updates_runtime_textarea_multiline_state() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let area = install_textarea_node(&mut host, "第一行\n");
+        let mut engine = RecordingEngine::default();
+
+        host.dispatch_native_ime(
+            &mut engine,
+            &ImeEvent::Preedit {
+                text: "第二".into(),
+                selection: Some((0, "第".len())),
+            },
+        )
+        .expect("textarea preedit");
+        {
+            let document = host.document();
+            let document = document.lock().expect("document");
+            let composition = document
+                .ime_composition(area)
+                .expect("textarea keeps CJK preedit selection");
+            assert_eq!(composition.text, "第二");
+            assert_eq!(composition.selection, Some((0, "第".len())));
+            assert_eq!(
+                document
+                    .text_input_state(area)
+                    .expect("textarea state")
+                    .value,
+                "第一行\n"
+            );
+        }
+
+        host.dispatch_native_ime(&mut engine, &ImeEvent::Commit("第二行".into()))
+            .expect("textarea commit");
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert!(document.ime_composition(area).is_none());
+        let state = document
+            .text_input_state(area)
+            .expect("textarea runtime state");
+        assert_eq!(state.value, "第一行\n第二行");
+        assert_eq!(
+            state.selection,
+            nana_ui_runtime::TextSelection::caret("第一行\n第二行".len())
+        );
+        assert_eq!(
+            document.get_attribute(area, "value").as_deref(),
+            Some("第一行\n第二行")
+        );
+        drop(document);
+
+        let events = fired_events(&engine);
+        assert_eq!(
+            events
+                .iter()
+                .map(|(_, name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "compositionstart",
+                "compositionupdate",
+                "compositionend",
+                "beforeinput",
+                "input"
+            ]
+        );
+        let input_event = events.last().expect("textarea input event");
+        assert_eq!(input_event.0, area.0);
+        assert_eq!(
+            input_event.2.get("value").and_then(HostValue::as_str),
+            Some("第一行\n第二行")
+        );
+        assert_eq!(
+            input_event.2.get("inputType").and_then(HostValue::as_str),
+            Some("insertCompositionText")
+        );
+        assert_eq!(
+            events.iter().filter(|(_, name, _)| name == "input").count(),
+            1,
+            "textarea IME commit must not double-insert"
+        );
+    }
+
+    #[test]
+    fn focused_runtime_textarea_advertises_hosted_ime_request() {
+        let mut host = VueHost::new();
+        let area = install_textarea_node(&mut host, "第一行\n");
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_focus(area);
+        }
+        let request = host
+            .text_input_request()
+            .expect("focused textarea owns IME");
+        assert!(request.enabled);
+        assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
+    }
+
+    #[test]
+    fn native_ime_disabled_commits_leftover_runtime_preedit() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "Nana");
+            doc.set_focus(input);
+        }
+        let mut engine = RecordingEngine::default();
+
+        host.dispatch_native_ime(
+            &mut engine,
+            &ImeEvent::Preedit {
+                text: "世".into(),
+                selection: Some((0, "世".len())),
+            },
+        )
+        .expect("preedit");
+        host.dispatch_native_ime(&mut engine, &ImeEvent::Disabled)
+            .expect("disabled leftover");
+
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert!(document.ime_composition(input).is_none());
+        let state = document
+            .text_input_state(input)
+            .expect("runtime text input state");
+        assert_eq!(state.value, "Nana世");
+        assert_eq!(
+            document.get_attribute(input, "value").as_deref(),
+            Some("Nana世")
+        );
+        drop(document);
+
+        let events = fired_events(&engine);
+        assert_eq!(
+            events
+                .iter()
+                .map(|(_, name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "compositionstart",
+                "compositionupdate",
+                "compositionend",
+                "beforeinput",
+                "input"
+            ]
         );
         assert_eq!(
             events
                 .last()
-                .and_then(|(_, _, detail)| detail.get("data"))
+                .and_then(|(_, _, detail)| detail.get("inputType"))
                 .and_then(HostValue::as_str),
-            Some("世界")
+            Some("insertCompositionText")
         );
+    }
+
+    #[test]
+    fn commit_text_ignores_disabled_and_read_only_input() {
+        for (disabled, read_only) in [(true, false), (false, true)] {
+            let mut host = VueHost::new();
+            host.fire_event = Some(JsFunctionId(1));
+            let (input, next) = install_input_nodes(&mut host);
+            host.bridge().lock().expect("bridge").register(
+                input.0,
+                WidgetKind::Input,
+                WidgetProps {
+                    value: "Nana".into(),
+                    disabled,
+                    read_only,
+                    ..WidgetProps::default()
+                },
+            );
+            {
+                let document = host.document();
+                let mut doc = document.lock().expect("document");
+                doc.set_attribute(input, "value", "Nana");
+                doc.set_focus(input);
+                assert!(doc.set_text_input_state(input, TextInputState::new("Nana")));
+            }
+            let mut engine = RecordingEngine::default();
+            assert!(
+                !host.commit_text(&mut engine, "界", "insertText").unwrap(),
+                "disabled={disabled} read_only={read_only}"
+            );
+            assert!(
+                host.dispatch_key(&mut engine, "a", "KeyA", Some(input))
+                    .unwrap()
+            );
+            {
+                let document = host.document();
+                let doc = document.lock().expect("document");
+                assert_eq!(
+                    doc.text_input_state(input).expect("text input state").value,
+                    "Nana"
+                );
+                assert_eq!(doc.get_attribute(input, "value").as_deref(), Some("Nana"));
+            }
+            assert!(
+                fired_events(&engine)
+                    .iter()
+                    .all(|(_, name, _)| name != "beforeinput" && name != "input"),
+                "disabled/read-only commit must not fire input events"
+            );
+
+            host.document().lock().expect("document").set_focus(next);
+            assert!(
+                !host.commit_text(&mut engine, "x", "insertText").unwrap(),
+                "non-editable focus must not invent text input state"
+            );
+            assert!(
+                host.document()
+                    .lock()
+                    .expect("document")
+                    .text_input_state(next)
+                    .is_none()
+            );
+        }
+
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "Nana");
+            doc.set_attribute(input, "readonly", "");
+            doc.set_focus(input);
+            assert!(doc.set_text_input_state(input, TextInputState::new("Nana")));
+        }
+        let mut engine = RecordingEngine::default();
+        assert!(!host.commit_text(&mut engine, "界", "insertText").unwrap());
         assert_eq!(
             host.document()
                 .lock()
                 .expect("document")
                 .get_attribute(input, "value")
                 .as_deref(),
-            Some("Nana"),
-            "Iced BridgeEvent::Input remains the single value-commit path"
+            Some("Nana")
+        );
+        assert!(
+            fired_events(&engine)
+                .iter()
+                .all(|(_, name, _)| name != "beforeinput" && name != "input")
+        );
+    }
+
+    #[test]
+    fn native_ime_disabled_after_blur_commits_original_field() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, next) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "Nana");
+            doc.set_focus(input);
+        }
+        let mut engine = RecordingEngine::default();
+
+        host.dispatch_native_ime(
+            &mut engine,
+            &ImeEvent::Preedit {
+                text: "世".into(),
+                selection: Some((0, "世".len())),
+            },
+        )
+        .expect("preedit");
+        host.document().lock().expect("document").set_focus(next);
+        host.dispatch_native_ime(&mut engine, &ImeEvent::Disabled)
+            .expect("disabled leftover after blur");
+
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert!(document.ime_composition(input).is_none());
+        let state = document
+            .text_input_state(input)
+            .expect("original IME field");
+        assert_eq!(state.value, "Nana世");
+        assert_eq!(
+            document.get_attribute(input, "value").as_deref(),
+            Some("Nana世")
+        );
+        assert!(document.text_input_state(next).is_none());
+        assert!(document.get_attribute(next, "value").is_none());
+        drop(document);
+
+        let events = fired_events(&engine);
+        assert!(
+            events
+                .iter()
+                .any(|(target, name, _)| *target == input.0 && name == "compositionend")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|(target, name, _)| *target == input.0 && name == "beforeinput")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|(target, name, _)| *target == input.0 && name == "input")
+        );
+        assert!(
+            !events.iter().any(|(target, name, _)| {
+                *target == next.0
+                    && matches!(name.as_str(), "compositionend" | "beforeinput" | "input")
+            }),
+            "leftover preedit must not insert into the new focus"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .rev()
+                .find(|(_, name, _)| name == "input")
+                .and_then(|(_, _, detail)| detail.get("inputType"))
+                .and_then(HostValue::as_str),
+            Some("insertCompositionText")
+        );
+    }
+
+    #[test]
+    fn native_ime_disabled_clears_blocked_original_without_commit() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, next) = install_input_nodes(&mut host);
+        host.bridge().lock().expect("bridge").register(
+            input.0,
+            WidgetKind::Input,
+            WidgetProps {
+                value: "Nana".into(),
+                ..WidgetProps::default()
+            },
+        );
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "Nana");
+            doc.set_focus(input);
+        }
+        let mut engine = RecordingEngine::default();
+        host.dispatch_native_ime(
+            &mut engine,
+            &ImeEvent::Preedit {
+                text: "世".into(),
+                selection: Some((0, "世".len())),
+            },
+        )
+        .expect("preedit");
+        host.bridge()
+            .lock()
+            .expect("bridge")
+            .get_mut(input.0)
+            .expect("registered input")
+            .props
+            .disabled = true;
+        host.document().lock().expect("document").set_focus(next);
+        host.dispatch_native_ime(&mut engine, &ImeEvent::Disabled)
+            .expect("disabled leftover on blocked field");
+
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert!(document.ime_composition(input).is_none());
+        assert_eq!(
+            document
+                .text_input_state(input)
+                .expect("original field")
+                .value,
+            "Nana"
+        );
+        assert_eq!(
+            document.get_attribute(input, "value").as_deref(),
+            Some("Nana")
+        );
+        drop(document);
+        assert!(
+            !fired_events(&engine)
+                .iter()
+                .any(|(_, name, _)| name == "beforeinput" || name == "input")
         );
     }
 

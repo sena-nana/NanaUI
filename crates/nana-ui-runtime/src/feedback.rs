@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     AccessibilityRole, AccessibilityState, AlignSpec, ComponentView, FlexDirection,
     InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind, NodeStyle,
-    SemanticColorRole, StableNodeId, StandardVisual, TextContent, UiWorld,
+    SemanticColorRole, StableNodeId, StandardVisual, TextContent, TextVerticalAlignment, UiWorld,
 };
 use nana_ui_core::Icon;
 
@@ -52,13 +52,7 @@ fn project_accessibility(
 }
 
 fn status_foreground(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
-    match tone {
-        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
-        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
-        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
-        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
-        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
-    }
+    crate::components::status_tone_role(tone)
 }
 
 fn status_background(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
@@ -456,10 +450,289 @@ impl ComponentView for LabeledValue {
     }
 }
 
+const PROGRESS_GIRTH: f32 = 6.0;
+const PROGRESS_LABEL_SIZE: f32 = 12.0;
+const PROGRESS_GAP: f32 = 6.0;
+const PROGRESS_CANCEL_SIZE: f32 = 24.0;
+const SPINNER_DEFAULT_SIZE: f32 = 14.0;
+const SPINNER_LABEL_SIZE: f32 = 12.0;
+const SPINNER_GAP: f32 = 6.0;
+
+fn sanitize_progress_max(max: f64) -> f64 {
+    if max.is_finite() && max > 0.0 {
+        max
+    } else {
+        f64::MIN_POSITIVE
+    }
+}
+
+fn sanitize_spinner_size(size: f32) -> f32 {
+    if size.is_finite() && size > 0.0 {
+        size
+    } else {
+        SPINNER_DEFAULT_SIZE
+    }
+}
+
+/// Cancel request from a cancellable progress control. Progress does not own a timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressCancelled;
+
+/// Determinate progress track (Subtle rail, Accent fill, 6px girth).
+///
+/// Optional cancel is a real hit target, matching the Iced compatibility control.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progress {
+    pub value: f64,
+    pub max: f64,
+    pub label: Option<Arc<str>>,
+    pub cancellable: bool,
+    pub style: NodeStyle,
+}
+
+impl Progress {
+    pub fn new(value: f64, max: f64) -> Self {
+        Self {
+            value,
+            max: sanitize_progress_max(max),
+            label: None,
+            cancellable: false,
+            style: NodeStyle::default(),
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn cancellable(mut self, cancellable: bool) -> Self {
+        self.cancellable = cancellable;
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    fn resolved_max(&self) -> f64 {
+        sanitize_progress_max(self.max)
+    }
+
+    fn displayed_value(&self) -> f64 {
+        let max = self.resolved_max();
+        if self.value.is_finite() {
+            self.value.clamp(0.0, max)
+        } else {
+            0.0
+        }
+    }
+
+    fn value_ratio(&self) -> f32 {
+        let ratio = (self.displayed_value() / self.resolved_max()) as f32;
+        if ratio.is_finite() {
+            ratio.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    fn heading_height(&self) -> f32 {
+        if self.label.is_some() || self.cancellable {
+            PROGRESS_LABEL_SIZE.max(if self.cancellable {
+                PROGRESS_CANCEL_SIZE
+            } else {
+                0.0
+            })
+        } else {
+            0.0
+        }
+    }
+
+    fn effective_style(&self) -> NodeStyle {
+        let mut style = self.style.clone();
+        style.foreground = Some(SemanticColorRole::Text);
+        style.background = Some(SemanticColorRole::Subtle);
+        style.border = None;
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Fill);
+        let heading = self.heading_height();
+        layout.height = Some(LengthSpec::Px(if heading > 0.0 {
+            heading + PROGRESS_GAP + PROGRESS_GIRTH
+        } else {
+            PROGRESS_GIRTH
+        }));
+        layout.direction = Some(FlexDirection::Column);
+        layout.gap = Some(LengthSpec::Px(PROGRESS_GAP));
+        layout.padding_left = Some(LengthSpec::Px(0.0));
+        layout.padding_right = Some(LengthSpec::Px(0.0));
+        layout.padding_top = Some(LengthSpec::Px(0.0));
+        layout.padding_bottom = Some(LengthSpec::Px(0.0));
+        layout.border_width = Some(0.0);
+        if self.label.is_some() {
+            layout.font_size = Some(PROGRESS_LABEL_SIZE);
+            layout.font_weight = Some(500);
+        }
+        style
+    }
+}
+
+impl ComponentView for Progress {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "progress".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let value = self.displayed_value();
+        let max = self.resolved_max();
+        let ratio = self.value_ratio();
+        let percent = (f64::from(ratio) * 100.0).round();
+        project_visual(
+            id,
+            world,
+            mutations,
+            "",
+            self.effective_style(),
+            StandardVisual::Progress {
+                value_ratio: ratio,
+                label: self.label.clone(),
+                cancellable: self.cancellable,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::ProgressIndicator,
+                label: self.label.clone(),
+                value: Some(Arc::from(format!("{percent:.0}%"))),
+                numeric_minimum: Some(0.0),
+                numeric_maximum: Some(max),
+                numeric_value: Some(value),
+                ..AccessibilityState::default()
+            },
+        );
+        let interaction = InteractionState {
+            pointer_events: self.cancellable,
+            focusable: self.cancellable,
+        };
+        if world.interaction(id) != Some(interaction) {
+            mutations.set_interaction(id, interaction);
+        }
+    }
+}
+
+/// Indeterminate loading indicator with an optional muted label.
+///
+/// `phase` is stored on the visual and defaults to `0`. The host animation
+/// clock advances it; this component does not start a timer or fake dirty frames.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spinner {
+    pub label: Arc<str>,
+    pub size: f32,
+    pub phase: f32,
+    pub style: NodeStyle,
+}
+
+impl Spinner {
+    pub fn new(label: impl Into<Arc<str>>) -> Self {
+        Self {
+            label: label.into(),
+            size: SPINNER_DEFAULT_SIZE,
+            phase: 0.0,
+            style: NodeStyle::default(),
+        }
+    }
+
+    pub fn size(mut self, size: f32) -> Self {
+        self.size = sanitize_spinner_size(size);
+        self
+    }
+
+    pub fn phase(mut self, phase: f32) -> Self {
+        self.phase = if phase.is_finite() { phase } else { 0.0 };
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    fn resolved_size(&self) -> f32 {
+        sanitize_spinner_size(self.size)
+    }
+
+    fn resolved_phase(&self) -> f32 {
+        if self.phase.is_finite() {
+            self.phase
+        } else {
+            0.0
+        }
+    }
+
+    fn effective_style(&self) -> NodeStyle {
+        let size = self.resolved_size();
+        let mut style = self.style.clone();
+        style.foreground = Some(SemanticColorRole::Muted);
+        style.background = None;
+        style.border = None;
+        style.text_vertical_alignment = TextVerticalAlignment::Center;
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Shrink);
+        layout.min_width = Some(LengthSpec::Px(size));
+        layout.height = Some(LengthSpec::Px(size.max(SPINNER_DEFAULT_SIZE)));
+        layout.direction = Some(FlexDirection::Row);
+        layout.align_items = AlignSpec::Center;
+        layout.gap = Some(LengthSpec::Px(SPINNER_GAP));
+        layout.padding_left = Some(LengthSpec::Px(if self.label.is_empty() {
+            0.0
+        } else {
+            size + SPINNER_GAP
+        }));
+        layout.padding_right = Some(LengthSpec::Px(0.0));
+        layout.padding_top = Some(LengthSpec::Px(0.0));
+        layout.padding_bottom = Some(LengthSpec::Px(0.0));
+        layout.border_width = Some(0.0);
+        layout.font_size = Some(SPINNER_LABEL_SIZE);
+        style
+    }
+}
+
+impl ComponentView for Spinner {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "spinner".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_visual(
+            id,
+            world,
+            mutations,
+            self.label.as_ref(),
+            self.effective_style(),
+            StandardVisual::Spinner {
+                label: Arc::clone(&self.label),
+                size: self.resolved_size(),
+                phase: self.resolved_phase(),
+            },
+            AccessibilityState {
+                role: AccessibilityRole::ProgressIndicator,
+                label: Some(Arc::clone(&self.label)),
+                busy: true,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, Button, DocumentId, FrameworkError, StandardVisual};
+    use crate::{
+        AppContext, Button, DocumentId, FrameworkError, ProgressCancelled, StandardVisual,
+    };
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use unicode_segmentation::UnicodeSegmentation;
@@ -1374,6 +1647,149 @@ mod tests {
                 .unwrap()
                 .children
                 .is_empty()
+        );
+    }
+
+    fn progress_ratio(context: &AppContext, id: StableNodeId) -> f32 {
+        match context.world().standard_visual(id) {
+            Some(StandardVisual::Progress { value_ratio, .. }) => value_ratio,
+            other => panic!("progress visual: {other:?}"),
+        }
+    }
+
+    fn progress_fill_width(context: &AppContext, id: StableNodeId) -> (f32, f32) {
+        let crate::ComponentGeometry::Progress { track, fill, .. } =
+            context.world().component_geometry(id).unwrap()
+        else {
+            panic!("progress geometry")
+        };
+        (track.width, fill.width)
+    }
+
+    #[test]
+    fn progress_clamps_value_and_fill_width() {
+        let mut context = AppContext::new();
+        let progress = context
+            .create_component(document(), Progress::new(-5.0, 100.0))
+            .unwrap();
+        let id = progress.stable_id();
+        assert_eq!(progress_ratio(&context, id), 0.0);
+        assert!(Progress::new(1.0, 0.0).max > 0.0);
+        assert!(Progress::new(1.0, f64::NAN).max.is_finite());
+        assert!(Progress::new(1.0, f64::INFINITY).max.is_finite());
+
+        context
+            .update_component(progress, |progress, _| {
+                progress.value = 50.0;
+            })
+            .unwrap();
+        assert_eq!(progress_ratio(&context, id), 0.5);
+        layout(&mut context, id, 100.0, 6.0);
+        let (track, fill) = progress_fill_width(&context, id);
+        assert_eq!(track, 100.0);
+        assert!((fill - 50.0).abs() < 0.01);
+
+        context
+            .update_component(progress, |progress, _| {
+                progress.value = 0.0;
+            })
+            .unwrap();
+        layout(&mut context, id, 100.0, 6.0);
+        let (_, fill) = progress_fill_width(&context, id);
+        assert_eq!(fill, 0.0);
+
+        context
+            .update_component(progress, |progress, _| {
+                progress.value = 125.0;
+            })
+            .unwrap();
+        assert_eq!(progress_ratio(&context, id), 1.0);
+        layout(&mut context, id, 100.0, 6.0);
+        let (track, fill) = progress_fill_width(&context, id);
+        assert_eq!(fill, track);
+    }
+
+    #[test]
+    fn progress_cancellable_reserves_cancel_hit_target() {
+        let mut context = AppContext::new();
+        let progress = context
+            .create_component(
+                document(),
+                Progress::new(40.0, 100.0)
+                    .label("Copying")
+                    .cancellable(true),
+            )
+            .unwrap();
+        let id = progress.stable_id();
+        layout(&mut context, id, 160.0, 36.0);
+        let crate::ComponentGeometry::Progress {
+            cancel: Some(cancel),
+            label: Some(label),
+            ..
+        } = context.world().component_geometry(id).unwrap()
+        else {
+            panic!("cancellable progress geometry");
+        };
+        assert!(cancel.width > 0.0);
+        assert!(label.bounds.width < 160.0);
+        assert!(context.world().interaction(id).unwrap().pointer_events);
+
+        let cancelled = Arc::new(Mutex::new(false));
+        let flag = Arc::clone(&cancelled);
+        context
+            .on(
+                progress,
+                move |_progress, _event: &ProgressCancelled, _cx| {
+                    *flag.lock().unwrap() = true;
+                },
+            )
+            .unwrap();
+        assert!(context.cancel_progress(progress).unwrap());
+        assert!(*cancelled.lock().unwrap());
+    }
+
+    #[test]
+    fn progress_idle_project_does_not_dirty() {
+        let mut context = AppContext::new();
+        let progress = context
+            .create_component(document(), Progress::new(40.0, 100.0).label("Copying"))
+            .unwrap();
+        let _ = context.take_system_work();
+        context.update_component(progress, |_, _| {}).unwrap();
+        assert!(context.take_system_work().is_empty());
+        let accessibility = context.world().accessibility(progress.stable_id()).unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::ProgressIndicator);
+        assert_eq!(accessibility.value.as_deref(), Some("40%"));
+        assert_eq!(accessibility.label.as_deref(), Some("Copying"));
+    }
+
+    #[test]
+    fn spinner_projects_visual_and_label() {
+        let mut context = AppContext::new();
+        let spinner = context
+            .create_component(document(), Spinner::new("Loading"))
+            .unwrap();
+        let id = spinner.stable_id();
+        assert_eq!(context.world().text(id), Some("Loading"));
+        match context.world().standard_visual(id) {
+            Some(StandardVisual::Spinner { label, size, phase }) => {
+                assert_eq!(&*label, "Loading");
+                assert_eq!(size, 14.0);
+                assert_eq!(phase, 0.0);
+            }
+            other => panic!("spinner visual: {other:?}"),
+        }
+        let accessibility = context.world().accessibility(id).unwrap();
+        assert_eq!(accessibility.role, AccessibilityRole::ProgressIndicator);
+        assert!(accessibility.busy);
+        assert_eq!(accessibility.label.as_deref(), Some("Loading"));
+        assert_eq!(
+            context.world().node_style(id).unwrap().foreground,
+            Some(SemanticColorRole::Muted)
+        );
+        assert_eq!(
+            context.world().node_style(id).unwrap().layout.height,
+            Some(LengthSpec::Px(14.0))
         );
     }
 }

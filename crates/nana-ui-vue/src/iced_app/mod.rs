@@ -1,7 +1,9 @@
-//! Semantic snapshot → real NanaUI (Iced) widgets (`iced_app`).
+//! Semantic snapshot → Iced compatibility view of the Vue/Runtime tree.
 //!
-//! Every mapped kind draws through `nana_ui::*` foundations. Vue custom UI is
-//! expressed as layout composition + control variants — not a paint bypass.
+//! Qualified leaf controls paint through `IcedSceneView` when a Scene is
+//! active. Hosts such as Text/Card/ListItem stay on the Iced composer so
+//! nested compatibility widgets keep input. Vue custom UI is layout
+//! composition + control variants — not a paint bypass.
 //! CSS 子集经 [`crate::css_map::LayoutStyle`] 落到 iced Length / padding / gap /
 //! justify spacer / scrollable / 主轴 flex。
 //!
@@ -33,17 +35,16 @@ use iced::widget::{Space, column, container, row, scrollable, space, stack, text
 use iced::{Alignment, Background, Border, Color, Element, Event, Length, Padding, Shadow, Size};
 use iced::{Point, Rectangle, Renderer, Theme};
 use nana_ui::compatibility::{
-    Button, Card, Checkbox, IconButton, Input, ListItem, RangeField, Switch,
+    ActionMenuItem, AnchoredActionMenu, Button, Card, Checkbox, ConfirmDialog, Dialog, Drawer,
+    EmptyState, FormField, IconButton, Input, InteractiveCard, LabeledValue, LevelMeter, ListItem,
+    OverlayHost, Popover, Progress, RangeField, SegmentedControl, Select, SettingsCard,
+    SettingsRow, SidebarRow, SidebarRowState, SidebarRowTone, Skeleton, Spinner, StatusBadge,
+    Switch, Tabs, Textarea, Tooltip, ValidationMessage,
 };
 use nana_ui::{
-    ActionMenuItem, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ConfirmDialog,
-    ControlSize, Dialog, Drawer, DrawerSide, EmptyState, HostTextureBinding, HostTextureRegistry,
-    Icon, Popover, Progress, SegmentedControl, Select, SelectionOption, SettingsCard, SettingsRow,
-    SidebarRow, SidebarRowState, SidebarRowTone, Spinner, Tabs, Textarea, ThemeTokens, Tooltip,
-    TooltipConfig, TooltipPlacement, icon, ui_font,
-};
-use nana_ui::{
-    AnchoredActionMenu, AnchoredMenuPlacement, ContextMenuEvent, ContextMenuHost, OverlayHost,
+    AnchoredMenuPlacement, AnchoredMenuPosition, ButtonKind, ButtonPaintOverride, ContextMenuEvent,
+    ContextMenuHost, ControlSize, DrawerSide, HostTextureBinding, HostTextureRegistry, Icon,
+    SelectionOption, ThemeTokens, TooltipConfig, TooltipPlacement, icon, ui_font,
 };
 use nana_ui_scene::UiScene;
 use nana_ui_web_api::{CanvasBitmap, SharedCanvasRuntime};
@@ -59,6 +60,11 @@ use crate::editor_store::EditorStore;
 use crate::menu_store::MenuStore;
 use crate::native_component::NativeComponentRegistry;
 use crate::tree::{LayoutBoxStore, NodeHandle, shared_layout_box_store};
+use crate::widget_map::{
+    first_button_child_id, form_field_control_child_id, form_field_support, is_dropdown_field,
+    is_search_dropdown, labeled_value_caption, level_meter_value, progress_cancellable,
+    validation_message_text,
+};
 
 pub(crate) fn hosted_text_widget_id(id: WidgetId) -> String {
     format!("nana-vue-text-{id}")
@@ -758,12 +764,11 @@ fn runtime_component_for_widget(
     snap: &SemanticSnapshot,
     widget: &SemanticWidget,
 ) -> Option<nana_ui::ComponentId> {
+    // Scene leaves only. Vue Text/Card/ListItem host Iced children
+    // (textarea, select, nested labels) and stay on the composer.
     match widget.kind {
-        WidgetKind::Text => Some(nana_ui::component_ids::TEXT),
         WidgetKind::Checkbox => Some(nana_ui::component_ids::CHECKBOX),
         WidgetKind::Switch => Some(nana_ui::component_ids::SWITCH),
-        WidgetKind::Card => Some(nana_ui::component_ids::CARD),
-        WidgetKind::ListItem => Some(nana_ui::component_ids::LIST_ITEM),
         WidgetKind::Range => Some(nana_ui::component_ids::RANGE_FIELD),
         WidgetKind::Button => {
             let (icon, label) =
@@ -779,49 +784,151 @@ fn runtime_component_for_widget(
             )
         }
         WidgetKind::Input => Some(nana_ui::component_ids::TEXT_INPUT),
+        WidgetKind::Textarea => Some(
+            if crate::widget_map::highlight_language(&widget.props).is_some() {
+                nana_ui::component_ids::HOSTED_TEXTAREA
+            } else {
+                nana_ui::component_ids::TEXTAREA
+            },
+        ),
+        WidgetKind::Select if is_search_dropdown(&widget.props) => {
+            Some(nana_ui::component_ids::SEARCH_DROPDOWN)
+        }
+        WidgetKind::Select if is_dropdown_field(&widget.props) => {
+            Some(nana_ui::component_ids::DROPDOWN)
+        }
+        WidgetKind::Select => Some(nana_ui::component_ids::SELECT),
+        WidgetKind::Tabs => Some(nana_ui::component_ids::TABS),
+        WidgetKind::Segmented => Some(nana_ui::component_ids::SEGMENTED_CONTROL),
+        WidgetKind::FormField => Some(nana_ui::component_ids::FORM_FIELD),
+        WidgetKind::InteractiveCard => Some(nana_ui::component_ids::INTERACTIVE_CARD),
+        // SettingsRow/Card and SidebarRow compose existing Scene paint.
+        // SidebarFrame maps to catalog SIDEBAR_FRAME for Scene default-routing.
+        WidgetKind::SettingsRow | WidgetKind::SettingsCard => {
+            Some(nana_ui::component_ids::SETTINGS)
+        }
+        WidgetKind::SidebarRow => Some(nana_ui::component_ids::SIDEBAR_ROW),
+        WidgetKind::SidebarFrame => Some(nana_ui::component_ids::SIDEBAR_FRAME),
+        // Scene paints the Runtime subtree, so Dialog/Drawer/Popover may have
+        // children. Searchable ContextMenu now keeps its filter field in Runtime.
+        WidgetKind::Dialog => Some(if is_confirm_dialog_props(&widget.props) {
+            nana_ui::component_ids::CONFIRM_DIALOG
+        } else {
+            nana_ui::component_ids::DIALOG
+        }),
+        WidgetKind::Drawer => Some(nana_ui::component_ids::DRAWER),
+        WidgetKind::Popover => Some(nana_ui::component_ids::POPOVER),
+        WidgetKind::ContextMenu => Some(if is_action_menu_props(&widget.props) {
+            nana_ui::component_ids::ACTION_MENU
+        } else {
+            nana_ui::component_ids::CONTEXT_MENU
+        }),
+        WidgetKind::ActionMenu => Some(nana_ui::component_ids::ACTION_MENU),
+        WidgetKind::ActionMenuItem => Some(nana_ui::component_ids::ACTION_MENU_ITEM),
+        WidgetKind::Toast => Some(nana_ui::component_ids::TOAST),
+        WidgetKind::Tooltip => Some(nana_ui::component_ids::TOOLTIP),
+        WidgetKind::XYPad => Some(nana_ui::component_ids::XY_PAD),
+        WidgetKind::QrCode => Some(nana_ui::component_ids::QR_CODE),
+        WidgetKind::StatusBadge => Some(nana_ui::component_ids::STATUS_BADGE),
+        WidgetKind::ValidationMessage => Some(nana_ui::component_ids::VALIDATION_MESSAGE),
+        WidgetKind::LabeledValue => Some(nana_ui::component_ids::LABELED_VALUE),
+        WidgetKind::EmptyState => Some(nana_ui::component_ids::EMPTY_STATE),
+        WidgetKind::Progress => Some(nana_ui::component_ids::PROGRESS),
+        WidgetKind::Spinner => Some(nana_ui::component_ids::SPINNER),
+        WidgetKind::Skeleton => Some(nana_ui::component_ids::SKELETON),
+        WidgetKind::LevelMeter => Some(nana_ui::component_ids::LEVEL_METER),
         _ => None,
     }
+}
+
+fn skeleton_iced_width(layout: &crate::css_map::LayoutStyle) -> Length {
+    match layout.width {
+        Some(LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => Length::Fixed(px),
+        Some(LengthSpec::Shrink) => Length::Shrink,
+        _ => Length::Fill,
+    }
+}
+
+fn skeleton_height(layout: &crate::css_map::LayoutStyle) -> f32 {
+    match layout.height {
+        Some(LengthSpec::Px(h)) if h.is_finite() && h > 0.0 => h,
+        _ => 16.0,
+    }
+}
+
+fn empty_state_icon(snap: &SemanticSnapshot, widget: &SemanticWidget) -> Option<Icon> {
+    widget
+        .children
+        .iter()
+        .filter_map(|child| snap.get(*child))
+        .find(|child| child.kind == WidgetKind::Icon)
+        .and_then(|child| resolve_icon_from_props(&child.props))
+        .or_else(|| Icon::parse_name(&widget.props.value))
+}
+
+enum QualifiedSceneRoute<'a, Message> {
+    Scene(Element<'a, Message>),
+    Pending,
+    Compatibility,
+}
+
+fn pending_qualified_placeholder<'a, Message: 'a>(widget: &SemanticWidget) -> Element<'a, Message> {
+    let height = widget.props.size.height();
+    let width = match widget.props.layout.width {
+        Some(LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => Length::Fixed(px),
+        _ => Length::Shrink,
+    };
+    space().width(width).height(Length::Fixed(height)).into()
 }
 
 fn qualified_runtime_scene_view<'a, Message>(
     snap: &SemanticSnapshot,
     widget: &SemanticWidget,
-) -> Option<Element<'a, Message>>
+) -> QualifiedSceneRoute<'a, Message>
 where
     Message: 'a,
 {
-    let component = runtime_component_for_widget(snap, widget)
-        .filter(|id| nana_ui::component_uses_runtime(*id))?;
-    // Public view helpers without a Scene are the explicit compatibility
-    // adapter. Once a hosted Runtime Scene is active, a qualified component
-    // must remain on that route: missing retained state is an invariant
-    // violation, never a reason to manufacture an Iced tree.
-    ACTIVE_SCENE.with(|active| {
-        active.borrow().clone().map(|scene| {
-            let id = nana_ui_runtime::StableNodeId::new(widget.id)
-                .expect("Vue widget identity must be non-zero");
-            let bounds = scene.node_bounds(id).unwrap_or_else(|| {
-                panic!(
-                    "qualified Runtime component `{}` is missing Scene node {}",
-                    component.as_str(),
-                    widget.id
-                )
-            });
-            nana_ui::IcedSceneView::from_shared_node(
-                scene,
-                id,
-                None,
-                Size::new(bounds.width, bounds.height),
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "qualified Runtime component `{}` cannot create its Scene view: {error}",
-                    component.as_str()
-                )
-            })
-            .into()
-        })
-    })
+    let Some(_) = runtime_component_for_widget(snap, widget)
+        .filter(|id| nana_ui::component_uses_runtime(*id))
+    else {
+        return QualifiedSceneRoute::Compatibility;
+    };
+    // No Scene: public helpers stay on the Iced composer.
+    // Active Scene: never rebuild a qualified leaf as an Iced widget.
+    // Missing bounds: reserve space until measure/probe writeback; do not panic.
+    let Some(scene) = ACTIVE_SCENE.with(|active| active.borrow().clone()) else {
+        return QualifiedSceneRoute::Compatibility;
+    };
+    let Some(id) = nana_ui_runtime::StableNodeId::new(widget.id) else {
+        return QualifiedSceneRoute::Pending;
+    };
+    let Some(bounds) = scene.node_bounds(id) else {
+        return QualifiedSceneRoute::Pending;
+    };
+    match nana_ui::IcedSceneView::from_shared_node(
+        scene,
+        id,
+        None,
+        Size::new(bounds.width, bounds.height),
+    ) {
+        Ok(view) => QualifiedSceneRoute::Scene(view.into()),
+        Err(_) => QualifiedSceneRoute::Pending,
+    }
+}
+
+fn scene_or_composer_content<'a, Message>(
+    snap: &'a SemanticSnapshot,
+    widget: &SemanticWidget,
+    compose: impl FnOnce() -> Element<'a, Message>,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    match qualified_runtime_scene_view(snap, widget) {
+        QualifiedSceneRoute::Scene(view) => view,
+        QualifiedSceneRoute::Pending => pending_qualified_placeholder(widget),
+        QualifiedSceneRoute::Compatibility => compose(),
+    }
 }
 
 fn view_widget<'a, Message>(
@@ -864,10 +971,7 @@ where
             | WidgetKind::Row
             | WidgetKind::Card
     );
-    let runtime_view = qualified_runtime_scene_view(snap, widget);
-    let content = if let Some(runtime_view) = runtime_view {
-        runtime_view
-    } else {
+    let content = scene_or_composer_content(snap, widget, || {
         match widget.kind {
             WidgetKind::Box | WidgetKind::Column
                 if let Some(chart) = crate::svg_icon::try_svg_chart_element(snap, widget.id) =>
@@ -1103,10 +1207,68 @@ where
             WidgetKind::SettingsRow => {
                 settings_row_view(snap, widget, tokens, parent_box, editors, menus, map_event)
             }
+            WidgetKind::StatusBadge => StatusBadge::new(
+                widget.props.display_label(),
+                crate::widget_map::status_tone_from_props(&widget.props),
+            )
+            .view(tokens),
+            WidgetKind::ValidationMessage => ValidationMessage::new(
+                validation_message_text(&widget.props),
+                crate::widget_map::validation_intent_from_props(&widget.props),
+            )
+            .view(tokens),
+            WidgetKind::LabeledValue => {
+                let caption = labeled_value_caption(snap, widget);
+                let value = LabeledValue::new(caption, widget.props.value.as_str())
+                    .emphasized(!widget.props.muted)
+                    .view(tokens);
+                if let Some(action_id) = first_button_child_id(snap, widget) {
+                    row![
+                        value,
+                        view_widget(
+                            snap,
+                            action_id,
+                            tokens,
+                            parent_box,
+                            parent_direction,
+                            parent_align_items,
+                            editors,
+                            menus,
+                            main_override,
+                            map_event,
+                        )
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into()
+                } else {
+                    value
+                }
+            }
             WidgetKind::EmptyState => {
                 let mut empty = EmptyState::new(widget.props.display_label());
                 if !widget.props.hint.is_empty() {
                     empty = empty.message(widget.props.hint.as_str());
+                }
+                if crate::widget_map::class_has_compact(&widget.props) {
+                    empty = empty.compact();
+                }
+                if let Some(icon) = empty_state_icon(snap, widget) {
+                    empty = empty.icon(icon);
+                }
+                if let Some(action_id) = first_button_child_id(snap, widget) {
+                    empty = empty.action(view_widget(
+                        snap,
+                        action_id,
+                        tokens,
+                        parent_box,
+                        parent_direction,
+                        parent_align_items,
+                        editors,
+                        menus,
+                        main_override,
+                        map_event,
+                    ));
                 }
                 empty.view(tokens)
             }
@@ -1116,13 +1278,93 @@ where
                 if !widget.props.display_label().is_empty() {
                     progress = progress.label(widget.props.display_label());
                 }
+                if progress_cancellable(&widget.props) {
+                    let id = widget.id;
+                    let map = map_event.clone();
+                    progress = progress.on_cancel(map(BridgeEvent::Press { id }));
+                }
                 progress.view(tokens)
             }
             WidgetKind::Spinner => {
                 Spinner::new(widget.props.display_label(), 0).view(tokens.colors)
             }
+            WidgetKind::FormField => {
+                let control = if let Some(child) = form_field_control_child_id(snap, widget) {
+                    view_widget(
+                        snap,
+                        child,
+                        tokens,
+                        parent_box,
+                        parent_direction,
+                        parent_align_items,
+                        editors,
+                        menus,
+                        main_override,
+                        map_event,
+                    )
+                } else {
+                    space().width(Length::Fill).height(Length::Shrink).into()
+                };
+                let mut field =
+                    FormField::new(widget.props.display_label(), control).size(widget.props.size);
+                let (hint, error) = form_field_support(&widget.props);
+                if let Some(hint) = hint {
+                    field = field.hint(hint);
+                }
+                if let Some(error) = error {
+                    field = field.error(error);
+                }
+                field.view(tokens)
+            }
+            WidgetKind::InteractiveCard => {
+                let id = widget.id;
+                let map = map_event.clone();
+                let body =
+                    layout_column(snap, widget, tokens, parent_box, editors, menus, map_event);
+                InteractiveCard::new(body)
+                    .selected(widget.props.active)
+                    .disabled(widget.props.disabled)
+                    .on_select(map(BridgeEvent::Select { id }))
+                    .view(tokens)
+            }
+            WidgetKind::Skeleton => Skeleton::new(
+                skeleton_iced_width(&widget.props.layout),
+                skeleton_height(&widget.props.layout),
+            )
+            .view(tokens),
+            WidgetKind::LevelMeter => {
+                let mut meter = LevelMeter::new(level_meter_value(&widget.props))
+                    .tone(crate::widget_map::status_tone_from_props(&widget.props));
+                if let Some(LengthSpec::Px(height)) = widget.props.layout.height
+                    && height.is_finite()
+                    && height > 0.0
+                {
+                    meter = meter.height(height);
+                }
+                meter.view(tokens)
+            }
+            // Scene routing for Toast / Tooltip / ActionMenu* / XYPad / QrCode
+            // is wired separately; keep a labeled compatibility slot until then.
+            WidgetKind::Toast
+            | WidgetKind::Tooltip
+            | WidgetKind::ActionMenu
+            | WidgetKind::ActionMenuItem
+            | WidgetKind::XYPad
+            | WidgetKind::QrCode => {
+                let label = widget.props.display_label();
+                if label.is_empty() {
+                    space().width(Length::Shrink).height(Length::Shrink).into()
+                } else {
+                    label_text(
+                        label.to_string(),
+                        widget.props.size,
+                        &widget.props.layout,
+                        parent_box.width,
+                    )
+                }
+            }
         }
-    };
+    });
     let sized = if is_layout_chrome {
         // layout_* already applied padding / scroll / size chrome.
         apply_flex_child_sizing(
@@ -1285,8 +1527,10 @@ where
         let transformed = apply_paint_transform(faded, props.layout.transform);
         probe_transformed_layout(wid, transformed, props.layout.transform)
     };
-    if let Some(runtime_view) = qualified_runtime_scene_view(snap, widget) {
-        return finish(runtime_view);
+    match qualified_runtime_scene_view(snap, widget) {
+        QualifiedSceneRoute::Scene(view) => return finish(view),
+        QualifiedSceneRoute::Pending => return finish(pending_qualified_placeholder(widget)),
+        QualifiedSceneRoute::Compatibility => {}
     }
     let content = match kind {
         _ if props.native_component.is_some() => {
@@ -1882,10 +2126,70 @@ where
         WidgetKind::SettingsRow => settings_row_view_owned(
             snap, &props, &children, tokens, parent_box, editors, menus, viewport, map_event,
         ),
+        WidgetKind::StatusBadge => StatusBadge::new(
+            owned_display(&props),
+            crate::widget_map::status_tone_from_props(&props),
+        )
+        .view(tokens),
+        WidgetKind::ValidationMessage => ValidationMessage::new(
+            validation_message_text(&props),
+            crate::widget_map::validation_intent_from_props(&props),
+        )
+        .view(tokens),
+        WidgetKind::LabeledValue => {
+            let caption = labeled_value_caption(snap, widget);
+            let value = LabeledValue::new(caption, props.value.clone())
+                .emphasized(!props.muted)
+                .view(tokens);
+            if let Some(action_id) = first_button_child_id(snap, widget) {
+                row![
+                    value,
+                    view_widget_owned(
+                        snap,
+                        action_id,
+                        tokens,
+                        parent_box,
+                        parent_direction,
+                        parent_align_items,
+                        editors,
+                        menus,
+                        viewport,
+                        main_override,
+                        map_event,
+                    )
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into()
+            } else {
+                value
+            }
+        }
         WidgetKind::EmptyState => {
             let mut empty = EmptyState::new(owned_display(&props));
             if !props.hint.is_empty() {
                 empty = empty.message(props.hint.clone());
+            }
+            if crate::widget_map::class_has_compact(&props) {
+                empty = empty.compact();
+            }
+            if let Some(icon) = empty_state_icon(snap, widget) {
+                empty = empty.icon(icon);
+            }
+            if let Some(action_id) = first_button_child_id(snap, widget) {
+                empty = empty.action(view_widget_owned(
+                    snap,
+                    action_id,
+                    tokens,
+                    parent_box,
+                    parent_direction,
+                    parent_align_items,
+                    editors,
+                    menus,
+                    viewport,
+                    main_override,
+                    map_event,
+                ));
             }
             empty.view(tokens)
         }
@@ -1895,9 +2199,94 @@ where
             if !label.is_empty() {
                 progress = progress.label(label);
             }
+            if progress_cancellable(&props) {
+                let map = map_event.clone();
+                progress = progress.on_cancel(map(BridgeEvent::Press { id: wid }));
+            }
             progress.view(tokens)
         }
         WidgetKind::Spinner => Spinner::new(owned_display(&props), 0).view(tokens.colors),
+        WidgetKind::FormField => {
+            let control = if let Some(child) = form_field_control_child_id(snap, widget) {
+                view_widget_owned(
+                    snap,
+                    child,
+                    tokens,
+                    parent_box,
+                    parent_direction,
+                    parent_align_items,
+                    editors,
+                    menus,
+                    viewport,
+                    main_override,
+                    map_event,
+                )
+            } else {
+                space().width(Length::Fill).height(Length::Shrink).into()
+            };
+            let mut field = FormField::new(owned_display(&props), control).size(props.size);
+            let (hint, error) = form_field_support(&props);
+            if let Some(hint) = hint {
+                field = field.hint(hint.to_string());
+            }
+            if let Some(error) = error {
+                field = field.error(error.to_string());
+            }
+            field.view(tokens)
+        }
+        WidgetKind::InteractiveCard => {
+            let map = map_event.clone();
+            let body = wrap_layout_owned(
+                true,
+                &props,
+                children,
+                snap,
+                tokens,
+                parent_box,
+                parent_direction,
+                editors,
+                menus,
+                viewport,
+                Some(wid),
+                map_event,
+            );
+            InteractiveCard::new(body)
+                .selected(props.active)
+                .disabled(props.disabled)
+                .on_select(map(BridgeEvent::Select { id: wid }))
+                .view(tokens)
+        }
+        WidgetKind::Skeleton => Skeleton::new(
+            skeleton_iced_width(&props.layout),
+            skeleton_height(&props.layout),
+        )
+        .view(tokens),
+        WidgetKind::LevelMeter => {
+            let mut meter = LevelMeter::new(level_meter_value(&props))
+                .tone(crate::widget_map::status_tone_from_props(&props));
+            if let Some(LengthSpec::Px(height)) = props.layout.height
+                && height.is_finite()
+                && height > 0.0
+            {
+                meter = meter.height(height);
+            }
+            meter.view(tokens)
+        }
+        // Scene routing for Toast / Tooltip / ActionMenu* / XYPad / QrCode
+        // is wired separately; keep a labeled compatibility slot until then.
+        WidgetKind::Toast
+        | WidgetKind::Tooltip
+        | WidgetKind::ActionMenu
+        | WidgetKind::ActionMenuItem
+        | WidgetKind::XYPad
+        | WidgetKind::QrCode => {
+            let label = owned_display(&props);
+            if label.is_empty() {
+                space().width(Length::Shrink).height(Length::Shrink).into()
+            } else {
+                label_text(label, props.size, &props.layout, parent_box.width)
+            }
+        }
     };
     finish(content)
 }

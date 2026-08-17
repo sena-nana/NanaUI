@@ -1,11 +1,12 @@
-# NanaUI Android ARM64 host (no WebView)
+# NanaUI Android ARM64 host (experimental, frozen)
 
-Rust owns QuickJS + **Vue custom renderer** (`VueHost`) + wgpu Vulkan Surface clear +
-**`AndroidShellStub`** (Nana shell geometry). There is **no** System WebView and **no** Blitz.
+This crate is an **experimental, frozen** NativeActivity host. **Android is not a
+current NanaUI product target.** Resume only after desktop Runtime/Vue stabilize.
+Do not migrate this host to Runtime, and do not treat Iced slot paint as a
+shipping feature.
 
-**Architecture:** NanaUI = shell layout + optional generic Iced controls. Vue apps keep CSS,
-custom components, and business logic — not limited to Nana widget types. What is still open on
-Android is **Nana Iced shell paint** on the Surface, not Vue rendering itself.
+Rust owns QuickJS + Vue custom renderer (`VueHost`) + wgpu Vulkan Surface +
+`AndroidShellStub` (Nana shell geometry). There is no System WebView.
 
 ## Layout
 
@@ -24,24 +25,26 @@ Android is **Nana Iced shell paint** on the Surface, not Vue rendering itself.
 # From repo root:
 ./scripts/setup-android-ndk.sh          # once
 source scripts/android-env.sh           # bash
-./scripts/check-android-arm64.sh        # cargo check (no Blitz / paint-stub)
+./scripts/check-android-arm64.sh        # cargo check
 ./scripts/check-android-arm64.sh --build
 ```
 
 Artifact: `target-android/aarch64-linux-android/debug/libnana_android_host.so`
 
-Host-side shell contract tests (no NDK UI):
+Host-side compile/smoke (no NDK UI):
 
 ```bash
-cargo test -p nana-android-host --locked
+cargo check -p nana-android-host --locked
+cargo test -p nana-android-host --lib --locked
 ```
 
 ## Features
 
-- `engine-quickjs` (default) — Android MVP engine; do not enable V8 here.
+- `engine-quickjs` (default) — historical Android host engine; do not enable V8 here.
 - **`AndroidShellStub`** sizes Primary viewport from the same `nana-ui-core` geometry as desktop
   `DesktopShell`. `VueHost` resolves layout in that viewport. Frame presentation is wgpu clear
-  until Nana Iced shell paint lands on the shared Surface.
+  plus a frozen Iced control-slot strip; this is not DesktopShell and is not a shipping paint
+  path.
 
 ## Packaging
 
@@ -59,27 +62,27 @@ repo’s root `Cargo.toml` (multiline inline tables). Use the script above inste
 Metadata under `[package.metadata.android]` remains for documentation / future tools.
 Requires SDK `build-tools` (e.g. `build-tools;34.0.0`).
 
-## Iced control slot (pre-DesktopShell)
+## Iced control slot (frozen host test)
 
 - Geometry: `iced_control_slot` / `chrome_present_bands`
 - Widget strip: `IcedSlotPainter` draws **Icon + Text + Input + Switch + Button**
-  via host-owned `iced_wgpu`. `iced_shell_available()` stays `false`.
+  via host-owned `iced_wgpu` and `nana_ui::compatibility` adapters.
+  `iced_shell_available()` stays `false`.
 - Pointer: NativeActivity `MotionEvent` → iced update; Button / Switch / Input
   messages update `press_count` / `switch_on` / `input_value`.
 - Keyboard: NativeActivity `KeyEvent` → iced text (US-QWERTY subset + Backspace /
-  arrows). Soft IME without KeyEvent stays open: NativeActivity has **no**
-  InputConnection (`text_input_*` NOP); do not claim `ime=true` via show-only.
+  arrows). NativeActivity has no InputConnection (`text_input_*` NOP).
 - Cross-compile: workspace patches `vendor/arboard` + `vendor/iced_winit` (see root `Cargo.toml`).
 
-## Device / KeyEvent evidence
+## Device / KeyEvent notes
 
 | Prerequisite | Status (2026-08-10) |
 |--------------|---------------------|
 | NDK + `.so` + debug APK script | OK — APK buildable |
-| Android Emulator AVD | **OK** — `nana_api34_arm64` (`system-images;android-34;google_apis;arm64-v8a`) |
-| `adb install` + launch | **OK** on emulator (`-gpu host`) |
-| KeyEvent → iced Input | **OK** — logcat `iced slot Input len=… in_slot=true` |
-| Soft IME (`ime=true`) | Still **deferred** (no InputConnection) |
+| Android Emulator AVD | OK — `nana_api34_arm64` (`system-images;android-34;google_apis;arm64-v8a`) |
+| `adb install` + launch | OK on emulator (`-gpu host`) |
+| KeyEvent → iced Input | OK — logcat `iced slot Input len=… in_slot=true` |
+| Soft IME (`ime=true`) | NativeActivity has no InputConnection |
 
 Reproduce (emulator):
 
@@ -95,10 +98,4 @@ adb logcat -s nana-android-host
 # expect: iced slot Input len=
 ```
 
-Headless `-gpu swiftshader_indirect` boots but hit a goldfish Vulkan hang on this host — use `-gpu host` for wgpu evidence. Details: `docs/android-arm64.md`「模拟器 KeyEvent 证据」.
-
-## Next (P2)
-
-1. Optional physical device cross-check.
-2. IME milestone: GameActivity / InputConnection — separate from NativeActivity MVP.
-3. See `docs/android-arm64.md`「整体收敛状态」.
+Headless `-gpu swiftshader_indirect` boots but hit a goldfish Vulkan hang on this host — use `-gpu host` for wgpu evidence. Details: `docs/android-arm64.md`.

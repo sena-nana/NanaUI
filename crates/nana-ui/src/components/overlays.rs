@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use iced::widget::{button, column, container, mouse_area, row, space, text};
+use iced::widget::{button, column, container, mouse_area, row, space, stack, text};
 use iced::{Alignment, Element, Length, Padding, font};
 
 use crate::components::ControlSize;
@@ -94,18 +94,38 @@ where
         if let Some(description) = self.description {
             heading = heading.push(text(description).size(12).color(colors.muted));
         }
-        let mut header = row![heading].spacing(12).align_y(Alignment::Start);
         if !self.close_hidden {
-            header = header.push(dialog_close_button(self.on_close.clone(), tokens));
+            heading = heading.padding(Padding {
+                right: 12.0 + ControlSize::Small.height_in(tokens.metrics),
+                ..Padding::ZERO
+            });
         }
+        let header = container(heading).width(Length::Fill).padding(Padding {
+            top: 14.0,
+            right: 16.0,
+            bottom: 8.0,
+            left: 16.0,
+        });
+        let header: Element<'a, Message> = if self.close_hidden {
+            header.into()
+        } else {
+            stack![
+                header,
+                container(dialog_close_button(self.on_close.clone(), tokens))
+                    .width(Length::Fill)
+                    .align_right(Length::Fill)
+                    .align_top(Length::Fill)
+                    .padding(Padding {
+                        top: 14.0,
+                        right: 16.0,
+                        ..Padding::ZERO
+                    }),
+            ]
+            .into()
+        };
 
         let mut surface = column![
-            container(header).padding(Padding {
-                top: 14.0,
-                right: 16.0,
-                bottom: 8.0,
-                left: 16.0,
-            }),
+            header,
             container(self.body).width(Length::Fill).padding(Padding {
                 top: 8.0,
                 right: 16.0,

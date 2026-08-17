@@ -203,7 +203,7 @@ impl HostState {
 
     /// NativeActivity KeyEvent → iced keyboard (US-QWERTY subset + editing keys).
     ///
-    /// System keys (Back, …) stay `Unhandled`. Soft IME without KeyEvent is still open.
+    /// System keys (Back, …) stay `Unhandled`. NativeActivity has no InputConnection.
     /// Keys are Handled only while the iced slot holds keyboard focus (last Down
     /// was inside the slot); otherwise they remain available to VueHost.
     fn handle_key(
