@@ -538,8 +538,8 @@ fn has_authored_grid_axis(layout: &LayoutStyle) -> bool {
 }
 
 /// Host WebView may mark `<nana-gpu>` with slate `#1e293b` until a texture
-/// composites. On iced-view that navy void is not a texture — drop it so the
-/// light placeholder can paint.
+/// composites. On the Scene host that navy void is not a texture — drop it so
+/// the light placeholder can paint.
 fn is_gpu_host_marker_bg(c: [f32; 4]) -> bool {
     // #1e293b ≈ rgb(30, 41, 59)
     (c[0] - 30.0 / 255.0).abs() < 0.04

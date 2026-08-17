@@ -1,6 +1,6 @@
 /**
  * NanaSelect — single-value pick list.
- * Semantic peer of Rust `Select` (`nana-select` → Iced Select).
+ * Semantic peer of Rust `Select` (`nana-select` → Runtime / Scene host).
  */
 import { h } from "@vue/runtime-core";
 

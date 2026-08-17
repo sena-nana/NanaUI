@@ -3,7 +3,7 @@
 原生材质由 `nana-window` 管理，NanaUI 控件不读取窗口句柄，也不直接调用平台 API。宿主先创建透明窗口，再把实现 `raw_window_handle::HasWindowHandle` 的窗口交给 `apply_system_material`。
 
 自绘标题栏的布局、状态和动作语义是独立合同：`nana-ui::AppTitleBar` 发出窗口
-动作，Iced 或 Winit 宿主负责执行。macOS 必须通过原生句柄关闭系统标题区的隐式
+动作，Scene host / Winit 宿主负责执行。macOS 必须通过原生句柄关闭系统标题区的隐式
 控件拖拽：窗口默认不可由系统标题区隐式移动，只有空白父区域收到按下事件后才启动
 AppKit 原生拖拽；这些无状态平台桥接函数位于 `nana-window`，不拥有按钮或窗口
 控制状态。transparent titlebar / full-size content view 与 Windows/Linux 的
@@ -24,12 +24,11 @@ undecorated window 都由宿主创建窗口时设置，材质应用、清理和�
 一致。侧边栏透明时，`titlebar_follows_sidebar` 决定标题栏是否共用该 alpha：关闭后
 标题栏保持不透明，侧栏仍可半透明。`BackdropTarget` 在侧栏与主内容区之间切换透明区域。
 
-`run_hosted` 会为主窗口和每个工具窗口分别应用、刷新与清理材质；业务通过
-`HostedProgram::window_material_mode` / `backdrop_target` /
-`titlebar_follows_sidebar` / `backdrop_opacity` 声明偏好，不接触原生句柄。macOS Hosted GPU 路径在 CAMetalLayer 与 Vibrancy 冲突时返回 `NativeMaterialUnavailable` 实色回退，不崩溃。设备恢复会保留现有窗口，并在重建其 Surface 与 Iced
-renderer 后重新应用材质。窗口标题栏由 `HostedWindowSettings::title_bar_mode`
-显式选择：主窗口默认使用 NanaUI 自绘标题栏；`tool_window()` 默认保留系统装饰和
-原生拖动区域；需要与主窗口一致的浮动面板可显式请求 custom titlebar。
+`run_runtime` 会为主窗口和每个工具窗口分别应用、刷新与清理材质。业务通过
+`AppearanceSettings` 声明窗口材质与 backdrop 偏好，不接触原生句柄。macOS Scene
+GPU 路径在 CAMetalLayer 与 Vibrancy 冲突时返回 `NativeMaterialUnavailable` 实色
+回退，不崩溃。设备恢复会保留现有窗口，并在重建其 Surface 与 Scene painter 后
+重新应用材质。主窗口默认使用 NanaUI 自绘标题栏。
 
 当前本机 macOS 26.5.2 运行验证返回 `Vibrancy`，WGPU Surface 使用受支持的预乘
 或后乘 Alpha 模式。Workspace 真机截图确认只有一层标题栏、交通灯未遮挡内容；

@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iced::Size;
 use nana_ui::runtime::{
     AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
     AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
@@ -63,7 +62,7 @@ use nana_ui_core::{
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 use nana_ui_scene::ScenePrimitiveKind;
 
-use crate::write;
+use crate::write::{self, Size};
 
 use super::gpu::{self, SnapshotGpu};
 use super::{pixel_difference, side_by_side};

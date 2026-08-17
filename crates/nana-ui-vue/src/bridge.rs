@@ -456,7 +456,7 @@ impl WidgetProps {
         props
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub(crate) fn attach_native_component(
         &mut self,
         name: String,
@@ -1155,13 +1155,13 @@ pub enum BridgeEvent {
         payload: nana_js_engine::HostValue,
     },
     /// Context-menu search query.
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     MenuSearch {
         id: WidgetId,
         query: String,
     },
     /// Context-menu open submenu path (host-owned [`crate::MenuStore`]).
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     MenuPath {
         id: WidgetId,
         path: Vec<usize>,
@@ -1179,7 +1179,7 @@ impl BridgeEvent {
             | Self::Change { id, .. }
             | Self::Scroll { id, .. }
             | Self::Native { id, .. } => *id,
-            #[cfg(feature = "iced-view")]
+            #[cfg(feature = "scene-view")]
             Self::MenuSearch { id, .. } | Self::MenuPath { id, .. } => *id,
         }
     }
@@ -1195,9 +1195,9 @@ impl BridgeEvent {
             Self::Change { .. } => "change",
             Self::Scroll { .. } => "scroll",
             Self::Native { name, .. } => name,
-            #[cfg(feature = "iced-view")]
+            #[cfg(feature = "scene-view")]
             Self::MenuSearch { .. } => "input",
-            #[cfg(feature = "iced-view")]
+            #[cfg(feature = "scene-view")]
             Self::MenuPath { .. } => "press",
         }
     }
@@ -4280,7 +4280,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     #[test]
     fn snapshot_theme_tokens_honor_backdrop_and_titlebar_follow() {
         use crate::theme_tokens_from_snapshot;

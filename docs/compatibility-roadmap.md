@@ -4,7 +4,8 @@
 
 Nana 的 L1 是“WebView 中常见 Vue 3 + JavaScript 源码”的兼容子集：消费应用用
 Nana 专用 Vite 入口构建 SFC、TypeScript 和 CSS，IIFE 在 QuickJS 或 V8 中执行，
-Custom Renderer 把结果映射到 Nana Style Model，最终只由 Iced/WGPU 绘制。
+Custom Renderer 把结果映射到 Nana Style Model，最终由 Runtime/UiScene 保留，
+并由 `SceneWgpuPainter` 绘制。
 
 三层输入仍可混合：
 
@@ -12,7 +13,7 @@ Custom Renderer 把结果映射到 Nana Style Model，最终只由 Iced/WGPU 绘
 | --- | --- | --- |
 | L1 | Vue SFC/TS/JS + DOM/CSS/Web API 子集 | 支持；边界见下文 |
 | L2 | `nanavue-components` 语义组件 | 保留，可与 L1 同树 |
-| L3 | Rust `nana-ui` | 唯一绘制实现 |
+| L3 | Rust `nana-ui` | Runtime 入口；Scene host 绘制 |
 
 ## 明确非目标
 
@@ -62,7 +63,7 @@ L1 CSS 继续只映射到 Style Model 的已记录子集。Flex、盒模型、�
 (cd crates/nana-js-engine/fixtures/vue-sfc-compat && npm ci && npm run build)
 cargo test -p nana-ui-platform --lib --locked
 cargo test -p nana-ui-web-api --lib --locked
-cargo test -p nana-ui-vue --features iced-view --locked
+cargo test -p nana-ui-vue --features scene-view --locked
 cargo test -p nana-js-quickjs --lib --locked
 cargo test -p nana-js-v8 --features engine --lib --locked -- --test-threads=1
 cargo check -p vue-counter --all-targets --features windowed --locked

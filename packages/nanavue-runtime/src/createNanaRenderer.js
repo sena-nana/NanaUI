@@ -3,7 +3,9 @@
  *
  * - L1: `createElement` + class/inline style → Rust `css_map` / `widget_map`
  * - L2: `createWidget` / `nana-*` semantic props → same MessageBridge (skip CSS)
- * Both share one forest; draw path is Nana iced-view only (no WebView paint).
+ * Both share one forest; draw path is Runtime/UiScene via the Scene host
+ * (`scene-view` is the official feature; `iced-view` is the historical alias;
+ * no Iced widget tree, no WebView paint).
  *
  * Also enhances host nodes with Element-like stubs so @lilia/ui template refs
  * (getBoundingClientRect, style, classList, dataset, …) do not throw.
@@ -868,7 +870,7 @@ export function wrapNode(id, kind, tag) {
     configurable: true,
   });
   // Keep the object-literal `value` / `checked` accessors above — they read
-  // through host `getAttribute` so Iced→bridge→tree patches stay visible.
+  // through host `getAttribute` so Runtime/bridge→tree patches stay visible.
   // Do not redefine them with attributes-only stubs.
   defineLayoutMetrics(node, nid);
   nodeCache.set(nid, node);
@@ -1257,7 +1259,7 @@ export const hostOps = {
         invoker.value = handler;
         invokers[key] = invoker;
         addNanaListener(nid, event, invoker, options);
-        // Alias press ↔ click for NanaButton / Iced bridge.
+        // Alias press ↔ click for NanaButton / MessageBridge.
         if (event === "press") addNanaListener(nid, "click", invoker, options);
         if (event === "click") addNanaListener(nid, "press", invoker, options);
       }

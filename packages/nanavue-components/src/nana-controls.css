@@ -7,7 +7,7 @@
  *
  * Radius policy (documented in docs/vue-nana-renderer-system.md):
  *   - Vue / Blitz host → Lilia CSS scale (--radius-sm ≈ 12px)
- *   - Iced Gallery → UI_METRICS (radius_sm = 6, radius_md = 10)
+ *   - Gallery / UI_METRICS (radius_sm = 6, radius_md = 10)
  */
 
 .nana-btn {

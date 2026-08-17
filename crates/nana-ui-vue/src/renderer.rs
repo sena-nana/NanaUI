@@ -11,7 +11,7 @@ use nana_js_engine::{HostApiRegistry, HostValue, JsException};
 use nana_ui_web_api::{SharedWebApiState, shared_web_api_state};
 
 use crate::bridge::{MessageBridge, WidgetKind, WidgetProps, resolve_kind_from_hints, widget_id};
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 use crate::native_component::{NativeComponentRegistry, normalize_component_name};
 use crate::scroll::{
     ScrollIntoViewOptions, ScrollOffset, scroll_into_view, set_scroll_offset,
@@ -31,7 +31,7 @@ pub struct HostDocs {
     pub bridge: Arc<Mutex<MessageBridge>>,
     pub web_api: SharedWebApiState,
     pub layout_boxes: Arc<LayoutBoxStore>,
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub components: Option<NativeComponentRegistry>,
 }
 
@@ -69,13 +69,13 @@ pub(crate) fn register_dom_host_ops_with_bridge_and_layout(
         bridge,
         web_api,
         layout_boxes,
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         components: None,
     };
     register_all(api, host);
 }
 
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 pub fn register_dom_host_ops_with_components(
     api: &mut HostApiRegistry,
     doc: Arc<Mutex<NanaTreeDocument>>,
@@ -93,7 +93,7 @@ pub fn register_dom_host_ops_with_components(
     );
 }
 
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 pub(crate) fn register_dom_host_ops_with_components_and_layout(
     api: &mut HostApiRegistry,
     doc: Arc<Mutex<NanaTreeDocument>>,
@@ -166,7 +166,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 Some(map) => WidgetProps::from_map(map),
                 _ => WidgetProps::default(),
             };
-            #[cfg(feature = "iced-view")]
+            #[cfg(feature = "scene-view")]
             if let Some(name) = native_name {
                 let empty = std::collections::BTreeMap::new();
                 props.attach_native_component(name.clone(), prop_map.unwrap_or(&empty));
@@ -336,7 +336,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let el = arg_handle(args, 0)?;
             let key = arg_str(args, 1).unwrap_or_default();
             let value = args.get(2).cloned().unwrap_or(HostValue::Null);
-            #[cfg(feature = "iced-view")]
+            #[cfg(feature = "scene-view")]
             if let Some(registry) = &host.components {
                 let bridge = lock_bridge(&host.bridge)?;
                 if let Some(widget) = bridge.get(widget_id(el))
@@ -900,7 +900,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut guard = lock_doc(&host.document)?;
             guard.set_gpu_slot(el, &slot);
             drop(guard);
-            // The Iced adapter renders MessageBridge snapshots, not the raw
+            // The Scene host paints MessageBridge snapshots, not the raw
             // document side table. Mirror the slot into semantic props so the
             // real HostTexture can be resolved during composition.
             lock_bridge(&host.bridge)?.patch_prop(el.0, "data-nana-gpu", &HostValue::String(slot));
@@ -956,7 +956,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     }
 }
 
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 fn normalize_native_component(host: &HostDocs, raw: &str) -> Option<String> {
     let name = normalize_component_name(raw);
     host.components
@@ -965,12 +965,12 @@ fn normalize_native_component(host: &HostDocs, raw: &str) -> Option<String> {
         .map(|_| name)
 }
 
-#[cfg(not(feature = "iced-view"))]
+#[cfg(not(feature = "scene-view"))]
 fn normalize_native_component(_host: &HostDocs, _raw: &str) -> Option<String> {
     None
 }
 
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 fn unmount_native_subtree(host: &HostDocs, root: u64) -> Result<(), JsException> {
     fn collect(bridge: &MessageBridge, id: u64, mounted: &mut Vec<(String, u64)>) {
         let Some(widget) = bridge.get(id) else {
@@ -998,7 +998,7 @@ fn unmount_native_subtree(host: &HostDocs, root: u64) -> Result<(), JsException>
     Ok(())
 }
 
-#[cfg(not(feature = "iced-view"))]
+#[cfg(not(feature = "scene-view"))]
 fn unmount_native_subtree(_host: &HostDocs, _root: u64) -> Result<(), JsException> {
     Ok(())
 }

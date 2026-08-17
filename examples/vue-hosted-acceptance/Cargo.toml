@@ -18,6 +18,6 @@ nana-ui = { path = "../../crates/nana-ui", default-features = false, features = 
 nana-ui-platform.workspace = true
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
-nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false, features = ["iced-view", "hosted"] }
+nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false, features = ["scene-view", "hosted"] }
 pollster = "0.4"
 wgpu.workspace = true

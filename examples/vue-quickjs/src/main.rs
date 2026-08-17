@@ -3,7 +3,7 @@
 //! Mutually exclusive with `examples/vue-v8` — this binary never links V8.
 //!
 //! Stops at JS execution + HostApiRegistry callbacks. Product retained/render is
-//! Runtime/UiScene; Iced (`iced-view`) is the compatibility view used by windowed apps.
+//! Runtime/UiScene; windowed apps use the `scene-view` Scene host (`iced-view` is the historical alias).
 
 use std::env;
 use std::time::{Duration, Instant};

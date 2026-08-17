@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use iced_wgpu::wgpu;
 use nana_ui::Color;
 use nana_ui::runtime::GPU_VIEW_RENDERER;
 use nana_ui::{

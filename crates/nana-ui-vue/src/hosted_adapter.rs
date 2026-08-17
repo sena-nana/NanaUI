@@ -536,14 +536,20 @@ fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPos
     })
 }
 
-/// Ready-to-run hosted program owning one [`VueHostedRuntime`].
-pub struct VueHostedProgram<E: JsEngine> {
+/// Vue application as a [`RuntimeProgram`].
+///
+/// Owns one [`VueHostedRuntime`] and enters `run_runtime` / `SceneWgpuPainter`.
+/// This does not build an Iced widget tree.
+pub struct VueRuntimeProgram<E: JsEngine> {
     runtime: VueHostedRuntime<E>,
     documents: HashMap<WindowId, Arc<SharedRuntimeDocument>>,
     theme: ThemeMode,
 }
 
-impl<E: JsEngine> VueHostedProgram<E> {
+/// Historical name for [`VueRuntimeProgram`].
+pub type VueHostedProgram<E> = VueRuntimeProgram<E>;
+
+impl<E: JsEngine> VueRuntimeProgram<E> {
     pub fn bootstrap(
         context: &RuntimeProgramContext<BridgeEvent>,
         engine: E,
@@ -634,7 +640,7 @@ impl<E: JsEngine> VueHostedProgram<E> {
     }
 }
 
-impl<E: JsEngine + 'static> VueHostedProgram<E> {
+impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
     /// Production entry for caller-owned engines. Release applications pass a
     /// `nana_js_v8::V8Engine` here, keeping one engine for every Vue window.
     pub fn run(
@@ -650,7 +656,7 @@ impl<E: JsEngine + 'static> VueHostedProgram<E> {
     }
 }
 
-impl<E: JsEngine + 'static> RuntimeProgram for VueHostedProgram<E> {
+impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
     type Message = BridgeEvent;
     type Error = JsEngineError;
 
@@ -667,7 +673,7 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueHostedProgram<E> {
             .map(|boxed| *boxed)
             .ok_or_else(|| {
                 JsEngineError::new(
-                    "VueHostedProgram::run must supply the engine and runtime artifact",
+                    "VueRuntimeProgram::run must supply the engine and runtime artifact",
                 )
             })?;
         Self::bootstrap(context, engine, artifact, application_api)

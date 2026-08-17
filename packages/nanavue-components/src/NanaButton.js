@@ -3,7 +3,7 @@
  *
  * Props (`kind` / `size` / …) map to Style Model Semantics; skips CSS parsing.
  * Renders a `nana-button` host node so Rust `MessageBridge` mirrors props and
- * Iced draws the real control. Mixable with L1 `createElement` in the same tree.
+ * the Scene host draws the real control. Mixable with L1 `createElement` in the same tree.
  */
 import { computed, h } from "@vue/runtime-core";
 

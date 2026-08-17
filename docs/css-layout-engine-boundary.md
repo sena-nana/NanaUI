@@ -19,22 +19,23 @@ L1  neutral parse                声明 / 长度 / var / 网格轨 → LayoutSty
 L2  cascade                      stylesheet match → LayoutStyle（MatchContext 注入树）
 L3  measure                      LayoutStyle 树 → MeasuredBox（测试 + 预绘制回退）
 L4  shell_contract（非中立）     nana-* / 工具 class → 部分 LayoutStyle（留 vue）
-L5  iced_app adapter             LayoutStyle → iced Length / Row·Column（薄）
+L5  Scene/Runtime adapter        LayoutStyle / Semantics → UiWorld / UiScene
 ```
 
 现状：L0 已在 core；L1–L3 在 `nana-ui-vue`（`css_map` / `css_cascade` / `measure`）；
 L4 = `shell_contract`（`css_map::LayoutStyleCss::apply_class_layout_hints` 薄委托）；
-L5 = `iced_app`（另有 SVG/canvas 旁路例外）。
+L5 = Scene host（正式 feature 名 `scene-view`，`iced-view` 为历史别名）。历史 `iced_app` 是旧 Iced widget
+适配，不再是产品绘制环。
 
 ## 权威事实源
 
 | 数据 | SoT | 备注 |
 |------|-----|------|
 | Stylesheet → `LayoutStyle` | `MessageBridge` + `css_cascade` | `NanaTreeDocument::stylesheets` 仅诊断计数 |
-| 产品几何盒 | iced `LayoutProbe` → `LayoutBoxStore` | paint 后权威 |
-| 预绘制 / parity / hit-test 盒 | `MessageBridge::resolve_document_layout` → `measure_layout` | 无 iced 盒时回退；与 css-parity 共用算法 |
+| 产品几何盒 | Runtime/UiScene → `LayoutBoxStore` | paint 后 JS 投影；权威在 Runtime |
+| 预绘制 / parity / hit-test 盒 | `MessageBridge::resolve_document_layout` → `measure_layout` | 无 paint 盒时回退；与 css-parity 共用算法 |
 
-几何只保留两个阶段：paint 前 Style Model measure，paint 后 iced writeback。
+几何只保留两个阶段：paint 前 Style Model measure，paint 后 Runtime writeback。
 `NanaTreeDocument` 只缓存两者结果，不再拥有 `StyleIntent + resolve_now` 合成布局。
 
 迁移旧诊断 API 时，调用宿主 `resolveLayout` / `VueHost::resolve_layout` 获取同一
@@ -65,7 +66,7 @@ Style Model 的预绘制盒；`BoxSnapshot` 不再暴露另一套合成背景结
 | 模块头标明 cascade SoT、measure 角色、shell 非中立 | ✅ |
 | `apply_class_layout_hints` → `shell_contract.rs`；`css_map` 中立 parse + 薄委托 | ✅ |
 | 删除 `StyleIntent` / `resolve_now` 合成几何；host `resolveLayout`、stylesheet、theme、viewport 统一走 `resolve_document_layout` | ✅ |
-| measure / iced 两阶段 SoT 写进 `measure.rs` / `tree.rs` / `box_layout` 头 | ✅ |
+| measure / Runtime 两阶段 SoT 写进 `measure.rs` / `tree.rs` / `box_layout` 头 | ✅ |
 | 共享盒助手留在 `nana-ui-core::box_layout`（content-box / inset / padding·margin·gap） | ✅（标明；未另抽 crate） |
 
 **仍属短期、勿抽 crate：**
@@ -74,9 +75,10 @@ Style Model 的预绘制盒；`BoxSnapshot` 不再暴露另一套合成背景结
 2. ~~selector 匹配索引 / dirty 子树 cascade~~ → **声明 entries 已缓存**（`StyleRule.declaration_entries`；match 不再重切；document `--*` 从 rules 重建，不刮 raw）；inject 空 sheet 跳过全树；完整 dirty 子树 / 选择器索引仍待
 3. ~~`iced_app` 按文件切分~~ → 见下方 **L2 规范化进度**
 
-## L2 规范化进度（Vue 适配 / 树→控件→iced）
+## L2 规范化进度（Vue 适配 / 树→Runtime）
 
-> 与上节 L1 并行；互不删除对方段落。L2 = 语义树 → `widget_map` → `iced_app` → `nana_ui`。
+> 与上节 L1 并行；互不删除对方段落。L2 = 语义树 → `widget_map` → Runtime/UiScene → `nana_ui` Scene host。
+> 下表中的 `iced_app` 切分是历史完成项，不是当前产品绘制环。
 
 **已完成（本回合）：**
 
@@ -108,13 +110,13 @@ nana-layout
 nana-ui-vue
   shell_contract/  ← apply_class_layout_hints（已就位）
   bridge/          ← MatchContext 构建
-  iced_app/        ← 薄适配；收敛 L1 SVG/canvas 例外
+  Scene host       ← Runtime/UiScene 适配（`scene-view`；`iced-view` 为别名）
 ```
 
 **验收：**
 
 - `cargo test -p nana-css-parity` / `compare` 零回归
-- `cargo test -p nana-ui-vue --features iced-view --lib`
+- `cargo test -p nana-ui-vue --features scene-view --lib`
 - `cargo test -p nana-ui-core --lib`
 - `nana-ui` / `nana-ui-core` **不**新增 CSS parse 依赖
 

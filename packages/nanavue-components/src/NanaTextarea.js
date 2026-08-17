@@ -1,6 +1,6 @@
 /**
  * NanaTextarea — multi-line text field.
- * Semantic peer of Rust `Textarea` (`nana-textarea` → Iced Textarea / EditorStore).
+ * Semantic peer of Rust `Textarea` (`nana-textarea` → Runtime Textarea / EditorStore).
  */
 import { h } from "@vue/runtime-core";
 

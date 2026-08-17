@@ -60,8 +60,9 @@
 //!
 //! See [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
 //!
-//! Unique retained authority is UiWorld/UiScene. Feature `iced-view` enables the
-//! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves.
+//! Unique retained authority is UiWorld/UiScene. Feature `scene-view` enables the
+//! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves
+//! (`iced-view` is the historical alias).
 //! WebView is not the product UI path.
 //!
 //! Applications choose one JS engine:
@@ -86,7 +87,7 @@ mod input;
 mod layout_map;
 mod measure;
 mod multi_window;
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 mod native_component;
 mod renderer;
 mod scroll;
@@ -106,7 +107,7 @@ use nana_js_engine::{
     HostApiRegistry, HostCallObserver, HostValue, JsDiagnosticEvent, JsDiagnosticLevel,
     JsDiagnosticSink, JsEngine, JsEngineError, JsFunctionId, RuntimeArtifact,
 };
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
 pub use nana_ui_platform::ImeEvent;
 use nana_ui_runtime::TextInputState;
@@ -141,7 +142,7 @@ pub use css_map::{
     resolve_grid_track_sizes, resolve_paint_color,
 };
 #[cfg(feature = "hosted")]
-pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime};
+pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime, VueRuntimeProgram};
 pub use input::{
     CompositionEventKind, CompositionInput, HostedInputResult, InputModifiers, KeyboardEventKind,
     KeyboardInput, PointerEventKind, PointerInput, PointerType, WheelInput,
@@ -157,13 +158,13 @@ pub use multi_window::{
 };
 pub use nana_ui_core::ThemeMode;
 pub use nana_ui_web_api::{compose_runtime_artifact as compose_vue_artifact, shim_artifact};
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 pub use native_component::{
     NativeComponentCommand, NativeComponentContext, NativeComponentDescriptor,
     NativeComponentFactory, NativeComponentFailure, NativeComponentRegistry, NativePropSchema,
     NativePropType,
 };
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 pub use renderer::register_dom_host_ops_with_components;
 pub use renderer::{HostDocs, register_dom_host_ops, register_dom_host_ops_with_bridge};
 pub use scroll::{
@@ -183,7 +184,7 @@ pub use webgpu::JsWebGpuRuntime;
 /// Stable JS-facing descriptor for a host-owned texture. The `slot` is an
 /// internal routing key accepted by `<nana-gpu :source="handle">`; callers do
 /// not need to manufacture it themselves.
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NanaTextureHandle {
     pub slot: String,
@@ -195,7 +196,7 @@ pub struct NanaTextureHandle {
     pub alpha_mode: HostTextureAlphaMode,
 }
 
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 impl NanaTextureHandle {
     pub fn to_host_value(&self) -> HostValue {
         HostValue::Object(
@@ -224,7 +225,7 @@ impl NanaTextureHandle {
 /// Build L3 [`nana_ui::ThemeTokens`] from a semantic snapshot + native material flag.
 ///
 /// Applies Appearance `backdrop_*` / `titlebar_follows_sidebar` into region alphas.
-#[cfg(feature = "iced-view")]
+#[cfg(feature = "scene-view")]
 pub fn theme_tokens_from_snapshot(
     snap: &SemanticSnapshot,
     native_material: bool,
@@ -347,11 +348,11 @@ pub struct VueHost {
     /// these remember the previous JS view so blur/over events still fire.
     js_focus: Option<NodeHandle>,
     js_pointer_hover: BTreeMap<u64, Option<NodeHandle>>,
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     components: NativeComponentRegistry,
     /// Window-local bindings for host, Canvas, and JS WebGPU textures. Views
-    /// are sampled by Iced on the same renderer Device/Queue.
-    #[cfg(feature = "iced-view")]
+    /// are sampled by the Scene host on the same Device/Queue.
+    #[cfg(feature = "scene-view")]
     host_textures: HostTextureRegistry,
     #[cfg(feature = "hosted")]
     webgpu: Option<JsWebGpuRuntime>,
@@ -469,9 +470,9 @@ impl VueHost {
             ime_preedit: String::new(),
             js_focus: None,
             js_pointer_hover: BTreeMap::new(),
-            #[cfg(feature = "iced-view")]
+            #[cfg(feature = "scene-view")]
             components: NativeComponentRegistry::new(),
-            #[cfg(feature = "iced-view")]
+            #[cfg(feature = "scene-view")]
             host_textures: HostTextureRegistry::new(),
             #[cfg(feature = "hosted")]
             webgpu: None,
@@ -521,7 +522,7 @@ impl VueHost {
                 .map(|runtime| runtime.active_resource_count())
                 .unwrap_or_default(),
         );
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         counts.insert("hostTexture".into(), self.host_textures.len());
         #[cfg(feature = "hosted")]
         if let Some(webgpu) = &self.webgpu {
@@ -545,12 +546,12 @@ impl VueHost {
         self.diagnostics = DiagnosticBindings { sink, host_calls };
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn host_textures(&self) -> &HostTextureRegistry {
         &self.host_textures
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn register_host_texture(
         &self,
         slot: impl Into<String>,
@@ -581,12 +582,12 @@ impl VueHost {
 
     /// Content update boundary. A true result means callers should request a
     /// redraw from the hosted runtime.
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn invalidate_host_texture(&self, slot: &str) -> bool {
         self.host_textures.invalidate(slot).is_some()
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn remove_host_texture(&self, slot: &str) -> bool {
         let removed = self.host_textures.remove(slot).is_some();
         if removed {
@@ -601,7 +602,7 @@ impl VueHost {
     }
 
     /// Device-loss boundary: all prior texture descriptors become invalid.
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn invalidate_host_textures(&self) -> usize {
         self.host_textures.invalidate_all()
     }
@@ -697,7 +698,7 @@ impl VueHost {
         Ok(generation)
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     fn report_diagnostic(
         &self,
         source: &str,
@@ -729,7 +730,7 @@ impl VueHost {
         self.document.lock().expect("vue doc").mount_root()
     }
 
-    /// Snapshot of the semantic widget forest for Iced `view`.
+    /// Snapshot of the semantic widget forest for Runtime/UiScene.
     ///
     /// Syncs Appearance backdrop fields from the L1 web-api document state so
     /// ThemeTokens can honor `backdrop_*` / `titlebar_follows_sidebar`.
@@ -753,22 +754,22 @@ impl VueHost {
     }
 
     /// Registry shared by the Vue host and native component commands.
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub fn components(&self) -> &NativeComponentRegistry {
         &self.components
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub(crate) fn share_components(&mut self, components: NativeComponentRegistry) {
         self.components = components;
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     pub(crate) fn share_host_textures(&mut self, textures: HostTextureRegistry) {
         self.host_textures = textures;
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     fn unmount_all_native_components(&self) {
         let mounted = self
             .bridge
@@ -860,7 +861,7 @@ impl VueHost {
     pub fn host_api_registry(&self) -> HostApiRegistry {
         let mut api = HostApiRegistry::new();
         api.set_observer(self.diagnostics.host_calls.clone());
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         crate::renderer::register_dom_host_ops_with_components_and_layout(
             &mut api,
             Arc::clone(&self.document),
@@ -869,7 +870,7 @@ impl VueHost {
             self.components.clone(),
             Arc::clone(&self.layout_boxes),
         );
-        #[cfg(not(feature = "iced-view"))]
+        #[cfg(not(feature = "scene-view"))]
         crate::renderer::register_dom_host_ops_with_bridge_and_layout(
             &mut api,
             Arc::clone(&self.document),
@@ -877,7 +878,7 @@ impl VueHost {
             Arc::clone(&self.web_api),
             Arc::clone(&self.layout_boxes),
         );
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         {
             let components = self.components.clone();
             api.register("componentList", move |_| {
@@ -890,7 +891,7 @@ impl VueHost {
                 ))
             });
         }
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         {
             let components = self.components.clone();
             let bridge = Arc::clone(&self.bridge);
@@ -1387,7 +1388,7 @@ impl VueHost {
         Ok(allowed)
     }
 
-    /// Route an Iced widget action into the bridge queue and JS event listeners.
+    /// Route a Runtime/bridge action into the queue and JS event listeners.
     pub fn dispatch_bridge_event<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -1457,14 +1458,14 @@ impl VueHost {
                 BridgeEvent::Input { id, value } => bridge.note_input(*id, value.clone()),
                 BridgeEvent::Change { id, value } => bridge.note_change(*id, *value),
                 BridgeEvent::Scroll { .. } | BridgeEvent::Native { .. } => Vec::new(),
-                #[cfg(feature = "iced-view")]
+                #[cfg(feature = "scene-view")]
                 BridgeEvent::MenuSearch { .. } | BridgeEvent::MenuPath { .. } => {
                     // Host-only menu chrome; no JS listener required.
                     Vec::new()
                 }
             }
         };
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         if matches!(
             &event,
             BridgeEvent::MenuSearch { .. } | BridgeEvent::MenuPath { .. }
@@ -2042,14 +2043,14 @@ impl VueHost {
                 )
                 .is_some()
             };
-            // Candidate frames still paint through Iced scrollable. Consume only
-            // after catalog qualification, when Scene owns the offset/clip.
+            // Consume only after catalog qualification, when Scene owns the
+            // offset/clip.
             consumed |= scrolled && {
-                #[cfg(feature = "iced-view")]
+                #[cfg(feature = "scene-view")]
                 {
                     nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME)
                 }
-                #[cfg(not(feature = "iced-view"))]
+                #[cfg(not(feature = "scene-view"))]
                 {
                     true
                 }
@@ -2475,7 +2476,7 @@ impl VueHost {
             }
             document.set_attribute(target, "value", &next.value);
         }
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         {
             let is_menu = self
                 .bridge
@@ -2661,7 +2662,7 @@ impl VueHost {
     /// leftover Disabled preedit update Runtime [`TextInputState`] on the
     /// original composition field through [`Self::commit_text_on`], matching
     /// [`Self::dispatch_composition`] End even if focus has moved. This path
-    /// does not write Iced `text_editor::Content`.
+    /// does not write a second editor buffer.
     pub fn dispatch_native_ime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -2814,7 +2815,7 @@ impl VueHost {
     /// Platform IME request for a focused Runtime Input/Textarea.
     ///
     /// When this is enabled, the hosted window must not also feed winit IME
-    /// into an Iced editor.
+    /// into a second editor.
     pub fn text_input_request(&self) -> Option<nana_ui_platform::TextInputRequest> {
         let target = self.focused()?;
         let document = self.document.lock().ok()?;
@@ -2852,7 +2853,7 @@ impl VueHost {
         })
     }
 
-    #[cfg(feature = "iced-view")]
+    #[cfg(feature = "scene-view")]
     fn native_component_name(&self, id: WidgetId) -> Option<String> {
         self.bridge
             .lock()
@@ -2861,7 +2862,7 @@ impl VueHost {
             .and_then(|widget| widget.props.native_component.clone())
     }
 
-    #[cfg(not(feature = "iced-view"))]
+    #[cfg(not(feature = "scene-view"))]
     fn native_component_name(&self, _id: u64) -> Option<String> {
         None
     }
@@ -2914,7 +2915,7 @@ fn file_drag_detail(
 
 impl Drop for VueHost {
     fn drop(&mut self) {
-        #[cfg(feature = "iced-view")]
+        #[cfg(feature = "scene-view")]
         self.unmount_all_native_components();
     }
 }
@@ -3417,11 +3418,11 @@ mod tests {
         assert_eq!(
             result.consumed,
             {
-                #[cfg(feature = "iced-view")]
+                #[cfg(feature = "scene-view")]
                 {
                     nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME)
                 }
-                #[cfg(not(feature = "iced-view"))]
+                #[cfg(not(feature = "scene-view"))]
                 {
                     true
                 }

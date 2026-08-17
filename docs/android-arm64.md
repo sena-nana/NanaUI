@@ -1,7 +1,9 @@
 # Android ARM64：无 WebView 的 Vue/QuickJS 宿主
 
-Android 路径继续使用 Rust-owned QuickJS、Nana Style Model 与 Iced/WGPU，不创建系统
-WebView。V8 不是 Android 必需依赖；平台 MVP 以 QuickJS 交叉编译为门禁。
+Android 仍是实验路径，不是 NanaUI 当前产品目标。该槽继续使用 Rust-owned
+QuickJS、Nana Style Model 与 Iced/WGPU 实验 slot，不创建系统 WebView，也不把
+桌面 `run_runtime` / `SceneWgpuPainter` 产品环搬到 Android。V8 不是 Android
+必需依赖；平台 MVP 以 QuickJS 交叉编译为门禁。
 
 ## 边界
 
