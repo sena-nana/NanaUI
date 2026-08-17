@@ -48,6 +48,7 @@ impl DropdownOption {
             hint: self.hint.clone(),
             disabled: self.disabled,
             checked: false,
+            icon: None,
         })
     }
 }
@@ -282,6 +283,7 @@ impl Dropdown {
                     }
                     DropdownSelection::Single(_) => false,
                 },
+                icon: None,
             })
             .collect()
     }

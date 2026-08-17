@@ -5,53 +5,14 @@ use nana_ui::compatibility::{
 
 impl GalleryState {
     pub fn view(&self) -> Element<'_, GalleryMessage> {
-        let tokens = self.theme_tokens();
-        let colors = tokens.colors;
-        let shell = if self.settings_open {
-            DesktopShell::new(
-                self.title_bar(tokens),
-                self.settings_workspace.clone(),
-                self.settings_content(colors),
-                GalleryMessage::Workspace,
-                tokens,
-            )
-            .region(RegionId::Resources, self.settings_sidebar())
+        let base = if self.settings_open {
+            self.settings_runtime_view()
         } else {
-            let mut shell = DesktopShell::new(
-                self.title_bar(tokens),
-                self.workspace.clone(),
-                self.gallery_content(colors),
-                GalleryMessage::Workspace,
-                tokens,
-            )
-            .region(RegionId::Resources, self.gallery_sidebar(colors));
-            if self.section == GallerySection::Workspace {
-                shell = shell
-                    .region(RegionId::PrimaryToolbar, self.workspace_toolbar(colors))
-                    .inspector(self.workspace_inspector(colors))
-                    .bottom(self.workspace_bottom(colors));
-            }
-            shell
+            self.gallery_runtime_view()
         };
-        let shell = if self.overlay.contains(&GalleryOverlay::ContextMenu) {
-            shell.overlay(self.context_menu(colors))
-        } else {
-            shell
-        };
-        let base = shell.view();
 
-        if self.overlay.contains(&GalleryOverlay::CommandPalette) {
-            stack![base, self.command_palette(tokens)]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        } else if self.overlay.contains(&GalleryOverlay::Dialog) {
-            stack![base, self.dialog(colors)]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        } else if self.overlay.contains(&GalleryOverlay::ImageViewer) {
-            stack![base, self.image_viewer(colors)]
+        if self.overlay.is_open() {
+            stack![base, self.overlay_runtime_view()]
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
@@ -68,6 +29,7 @@ impl GalleryState {
         }
     }
 
+    #[allow(dead_code)]
     fn command_palette(&self, tokens: ThemeTokens) -> Element<'_, GalleryMessage> {
         UiCommandPalette::new(
             "命令",
@@ -92,6 +54,7 @@ impl GalleryState {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn title_bar(&self, tokens: ThemeTokens) -> Element<'_, GalleryMessage> {
         let colors = tokens.colors;
         let active_workspace = self.active_workspace();
@@ -148,6 +111,7 @@ impl GalleryState {
             .view()
     }
 
+    #[allow(dead_code)]
     pub(super) fn gallery_sidebar(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         let mut section = SidebarSection::new("Gallery").count(6).tools(
@@ -188,6 +152,7 @@ impl GalleryState {
             .view(colors)
     }
 
+    #[allow(dead_code)]
     pub(super) fn gallery_content(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         match self.section {
             GallerySection::Controls => self.controls(colors),
@@ -197,15 +162,5 @@ impl GalleryState {
             GallerySection::Graph => self.graph_gallery(colors),
             GallerySection::Workspace => self.workspace_gallery(colors),
         }
-    }
-
-    pub(super) fn settings_sidebar(&self) -> Element<'_, GalleryMessage> {
-        settings_sidebar_view(
-            &self.settings_model,
-            &self.settings,
-            GalleryMessage::BackFromSettings,
-            GalleryMessage::SelectSettingsTab,
-            self.theme_tokens(),
-        )
     }
 }

@@ -16,6 +16,8 @@ mod async_runtime;
 pub mod command;
 pub mod component_support;
 pub mod components;
+#[cfg(feature = "gpu")]
+mod default_gpu_view;
 pub mod dialog;
 pub mod dock;
 mod drag_handle;
@@ -39,6 +41,8 @@ pub mod menu;
 pub mod overlay;
 pub mod pane;
 mod runtime_animation;
+#[cfg(feature = "hosted")]
+mod runtime_dock;
 #[cfg(feature = "hosted")]
 mod runtime_host;
 mod runtime_input;
@@ -236,6 +240,11 @@ pub use nana_ui_runtime::{
 #[cfg(feature = "xy-pad")]
 pub use components::xy_pad::XYPadState;
 
+#[cfg(feature = "gpu")]
+pub use default_gpu_view::{
+    DefaultGpuViewRenderer, default_scene_gpu_renderers, default_scene_gpu_renderers_with_host,
+    resolve_scene_gpu_renderers,
+};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockContents, DockController,
@@ -300,9 +309,10 @@ pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::{
     AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppShell,
     AppTitleBar, AppTitleBarControls, AppearanceSection, Button, Card, Checkbox, CommandPalette,
-    ConfirmDialog, ContextMenu, Dialog, Dock, DockPanel, Drawer, Dropdown, DropdownEvent,
-    DropdownOption, DropdownSelection, EmptyState, FormField, HostedTextarea, IconButton,
-    InteractiveCard, LabeledValue, LevelMeter, ListItem, OverlayHost, PaneChrome, PaneChromeAction,
+    ConfirmDialog, ContextMenu, Dialog, Dock, DockFloatingSurface, DockPanel, DockSurfaceSpec,
+    DockWorkspace, DockWorkspaceEvent, Drawer, Dropdown, DropdownEvent, DropdownOption,
+    DropdownSelection, EmptyState, FormField, HostedTextarea, IconButton, InteractiveCard,
+    LabeledValue, LevelMeter, ListItem, OverlayHost, PaneChrome, PaneChromeAction,
     PaneChromeActionKind, PaneTree, PaneTreeNode, Popover, Progress, ProgressCancelled, QrCode,
     QrCodeError, RangeField, SearchDropdown, SearchDropdownEvent, SearchDropdownOption,
     SegmentedControl, Select, SelectOption, SettingsCard, SettingsCollapsibleCard, SettingsRow,
@@ -326,6 +336,8 @@ pub use nana_window::{
 pub use overlay::ExclusiveOverlay;
 pub use pane::ratio_pane_split;
 pub use runtime_animation::RuntimeAnimationClock;
+#[cfg(feature = "hosted")]
+pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError,

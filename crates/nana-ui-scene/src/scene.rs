@@ -1766,7 +1766,7 @@ impl UiScene {
                     });
                     let mut title_text = component_text_primitive(
                         id,
-                        2,
+                        20,
                         title,
                         TextHorizontalAlignment::Start,
                         false,
@@ -1798,7 +1798,7 @@ impl UiScene {
                     ));
                     let mut input_text = component_text_primitive(
                         id,
-                        3,
+                        21,
                         input,
                         TextHorizontalAlignment::Start,
                         true,
@@ -1813,7 +1813,7 @@ impl UiScene {
                     if let Some(empty) = empty {
                         let mut empty_text = component_text_primitive(
                             id,
-                            4,
+                            22,
                             empty,
                             TextHorizontalAlignment::Start,
                             false,
@@ -1838,7 +1838,7 @@ impl UiScene {
                                     z_index: overlay_z,
                                     document_order: node_order,
                                 },
-                                20u8.saturating_add(index),
+                                23u8.saturating_add(index),
                                 scene_rect(row.bounds),
                                 VisualQuadStyle {
                                     background: Some(background),
@@ -1994,6 +1994,25 @@ impl UiScene {
                                 },
                             ));
                         }
+                        if let Some((icon, icon_bounds, color)) = option.icon {
+                            self.insert_primitive(ScenePrimitive {
+                                id: PrimitiveId {
+                                    node: id,
+                                    slot: 80u8.saturating_add(index as u8),
+                                },
+                                node: id,
+                                bounds: scene_rect(icon_bounds),
+                                transform,
+                                clips: clips.clone(),
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                                kind: ScenePrimitiveKind::Icon {
+                                    icon,
+                                    color: Some(color),
+                                },
+                            });
+                        }
                         self.insert_primitive(component_text_primitive(
                             id,
                             40u8.saturating_add(index as u8),
@@ -2008,7 +2027,11 @@ impl UiScene {
                         ));
                     }
                 }
-                Some(ComponentGeometry::CalendarHeatmap { cells, labels }) => {
+                Some(ComponentGeometry::CalendarHeatmap {
+                    cells,
+                    labels,
+                    hover,
+                }) => {
                     let mut groups: Vec<([f32; 4], Vec<SceneRect>)> = Vec::new();
                     for (cell, color) in cells {
                         match groups.iter_mut().find(|(existing, _)| existing == color) {
@@ -2045,7 +2068,51 @@ impl UiScene {
                             40u8.saturating_add(index as u8),
                             label,
                             TextHorizontalAlignment::Start,
-                            true,
+                            false,
+                            &node,
+                            transform,
+                            clips.clone(),
+                            opacity,
+                            node_order,
+                        ));
+                    }
+                    if let Some(hover) = hover {
+                        let hover_context = VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &clips,
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                        };
+                        self.insert_primitive(visual_quad(
+                            &hover_context,
+                            70,
+                            scene_rect(hover.ring),
+                            VisualQuadStyle {
+                                background: None,
+                                border_color: Some(hover.ring_color),
+                                border_width: 1.5,
+                                corner_radius: UI_METRICS.radius_xs + 1.0,
+                            },
+                        ));
+                        self.insert_primitive(visual_quad(
+                            &hover_context,
+                            71,
+                            scene_rect(hover.tooltip),
+                            VisualQuadStyle {
+                                background: Some(hover.tooltip_fill),
+                                border_color: Some(hover.tooltip_border),
+                                border_width: 1.0,
+                                corner_radius: nana_ui_core::TooltipConfig::RADIUS,
+                            },
+                        ));
+                        self.insert_primitive(component_text_primitive(
+                            id,
+                            72,
+                            &hover.title,
+                            TextHorizontalAlignment::Start,
+                            false,
                             &node,
                             transform,
                             clips.clone(),
@@ -3726,6 +3793,162 @@ mod tests {
     }
 
     #[test]
+    fn menu_surface_paints_row_icon_and_iconless_labels() {
+        let mut menu = node(3, None, &[]);
+        menu.layout = LayoutBox {
+            x: 8.0,
+            y: 12.0,
+            width: 200.0,
+            height: 72.0,
+        };
+        menu.standard_visual = Some(StandardVisual::MenuSurface {
+            kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
+            trigger: None,
+            gap: 0.0,
+            query: None,
+            rows: Arc::from([
+                nana_ui_runtime::SelectOptionData {
+                    label: Arc::from("Add"),
+                    hint: None,
+                    disabled: false,
+                    checked: false,
+                    icon: Some(nana_ui_core::Icon::Add),
+                },
+                nana_ui_runtime::SelectOptionData {
+                    label: Arc::from("Rename"),
+                    hint: None,
+                    disabled: false,
+                    checked: false,
+                    icon: None,
+                },
+            ]),
+            highlighted: None,
+        });
+        menu.component_geometry = Some(ComponentGeometry::MenuSurface {
+            trigger: None,
+            surface: LayoutBox {
+                x: 8.0,
+                y: 12.0,
+                width: 200.0,
+                height: 72.0,
+            },
+            search: None,
+            search_field: None,
+            options: vec![
+                nana_ui_runtime::SelectOptionGeometry {
+                    bounds: LayoutBox {
+                        x: 12.0,
+                        y: 16.0,
+                        width: 192.0,
+                        height: 26.0,
+                    },
+                    label: ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: 33.0,
+                            y: 16.0,
+                            width: 163.0,
+                            height: 26.0,
+                        },
+                        content: Arc::from("Add"),
+                        color: Some([1.0, 1.0, 1.0, 1.0]),
+                        font_size: 12.0,
+                        font_weight: Some(500),
+                    },
+                    selected: false,
+                    checked: false,
+                    disabled: false,
+                    background: None,
+                    icon: Some((
+                        nana_ui_core::Icon::Add,
+                        LayoutBox {
+                            x: 20.0,
+                            y: 22.0,
+                            width: 13.0,
+                            height: 13.0,
+                        },
+                        [0.7, 0.7, 0.7, 1.0],
+                    )),
+                },
+                nana_ui_runtime::SelectOptionGeometry {
+                    bounds: LayoutBox {
+                        x: 12.0,
+                        y: 43.0,
+                        width: 192.0,
+                        height: 26.0,
+                    },
+                    label: ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: 20.0,
+                            y: 43.0,
+                            width: 176.0,
+                            height: 26.0,
+                        },
+                        content: Arc::from("Rename"),
+                        color: Some([1.0, 1.0, 1.0, 1.0]),
+                        font_size: 12.0,
+                        font_weight: Some(500),
+                    },
+                    selected: false,
+                    checked: false,
+                    disabled: false,
+                    background: None,
+                    icon: None,
+                },
+            ],
+            elevation: ComponentElevation {
+                color: [0.0, 0.0, 0.0, 0.55],
+                offset_y: 4.0,
+                blur_radius: 18.0,
+            },
+            background: [0.1, 0.1, 0.1, 1.0],
+            border: [0.2, 0.2, 0.2, 1.0],
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([menu], []);
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(3),
+                    slot: 80
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Icon {
+                icon: nana_ui_core::Icon::Add,
+                ..
+            }
+        ));
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(3),
+                    slot: 40
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text { .. }
+        ));
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(3),
+                    slot: 41
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text { .. }
+        ));
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(3),
+                    slot: 81
+                })
+                .is_none()
+        );
+    }
+
+    #[test]
     fn frame_graph_rejects_conflicting_revisions_of_one_external_resource() {
         let mut first = node(1, None, &[]);
         first.custom_render = Some(CustomRenderNode {
@@ -4352,6 +4575,106 @@ mod tests {
                 })
                 .is_some()
         );
+    }
+
+    #[test]
+    fn command_palette_title_and_query_sort_above_surface_quads() {
+        let mut palette = node(60, None, &[]);
+        palette.standard_visual = Some(StandardVisual::CommandPalette {
+            title: Arc::from("命令"),
+            query: Arc::from("工作区"),
+            placeholder: Arc::from("搜索操作"),
+            empty: None,
+            rows: Arc::from([]),
+        });
+        let text = |content: &'static str, y, height, size, weight| ComponentTextRegion {
+            bounds: LayoutBox {
+                x: 24.0,
+                y,
+                width: 360.0,
+                height,
+            },
+            content: Arc::from(content),
+            color: Some([1.0; 4]),
+            font_size: size,
+            font_weight: weight,
+        };
+        palette.component_geometry = Some(ComponentGeometry::CommandPalette {
+            scrim: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            surface: LayoutBox {
+                x: 160.0,
+                y: 80.0,
+                width: 480.0,
+                height: 240.0,
+            },
+            title: text("命令", 96.0, 22.0, 16.0, Some(600)),
+            input: text("工作区", 132.0, 32.0, 13.0, None),
+            empty: Some(text("没有可用操作", 176.0, 40.0, 12.0, None)),
+            rows: Vec::new(),
+            background: [0.1, 0.1, 0.1, 1.0],
+            input_background: [0.08, 0.08, 0.08, 1.0],
+            input_border: [0.3, 0.3, 0.3, 1.0],
+            elevation: ComponentElevation {
+                color: [0.0, 0.0, 0.0, 0.4],
+                offset_y: 12.0,
+                blur_radius: 24.0,
+            },
+        });
+
+        let mut scene = UiScene::default();
+        scene.apply_delta([palette], []);
+        let node = id(60);
+        let ordered = scene
+            .primitives()
+            .filter(|primitive| primitive.node == node)
+            .collect::<Vec<_>>();
+        let position = |slot: u8| {
+            ordered
+                .iter()
+                .position(|primitive| primitive.id.slot == slot)
+                .unwrap_or_else(|| panic!("missing command-palette slot {slot}"))
+        };
+        let surface = scene.primitive(PrimitiveId { node, slot: 11 }).unwrap();
+        let input_quad = scene.primitive(PrimitiveId { node, slot: 12 }).unwrap();
+        let title = scene.primitive(PrimitiveId { node, slot: 20 }).unwrap();
+        let query = scene.primitive(PrimitiveId { node, slot: 21 }).unwrap();
+        let empty = scene.primitive(PrimitiveId { node, slot: 22 }).unwrap();
+
+        assert!(matches!(surface.kind, ScenePrimitiveKind::Quad { .. }));
+        assert!(matches!(input_quad.kind, ScenePrimitiveKind::Quad { .. }));
+        assert!(matches!(
+            &title.kind,
+            ScenePrimitiveKind::Text { content, .. } if content == "命令"
+        ));
+        assert!(matches!(
+            &query.kind,
+            ScenePrimitiveKind::Text { content, .. } if content == "工作区"
+        ));
+        assert!(matches!(&empty.kind, ScenePrimitiveKind::Text { .. }));
+        assert_eq!(title.z_index, surface.z_index);
+        assert_eq!(query.z_index, input_quad.z_index);
+        assert_eq!(title.document_order, surface.document_order);
+        assert_eq!(query.document_order, input_quad.document_order);
+        assert!(
+            position(20) > position(11) && position(20) > position(12),
+            "title must sort after surface and input quads"
+        );
+        assert!(
+            position(21) > position(11) && position(21) > position(12),
+            "query must sort after surface and input quads"
+        );
+        assert!(
+            position(22) > position(11) && position(22) > position(12),
+            "empty text must sort after surface and input quads"
+        );
+        assert!(scene.primitive(PrimitiveId { node, slot: 2 }).is_none());
+        assert!(scene.primitive(PrimitiveId { node, slot: 3 }).is_none());
+        assert!(scene.primitive(PrimitiveId { node, slot: 4 }).is_none());
     }
 
     #[test]

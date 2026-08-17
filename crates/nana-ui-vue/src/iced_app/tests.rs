@@ -314,12 +314,10 @@ mod tests {
                 height: 180.0,
             },
         )]);
-        assert!(
-            document
-                .scene()
-                .node_bounds(nana_ui_runtime::StableNodeId::new(dialog.0).unwrap())
-                .is_some()
-        );
+        assert!(document
+            .scene()
+            .node_bounds(nana_ui_runtime::StableNodeId::new(dialog.0).unwrap())
+            .is_some());
         assert_scene_route(&snap, dialog.0, document.scene());
         let _: Element<'static, BridgeEvent> =
             paint_overlay_scene(&snap, document.scene(), (400.0, 300.0));
@@ -623,6 +621,130 @@ mod tests {
     }
 
     #[test]
+    fn catalog_professional_kinds_route_to_runtime_ids() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(1, WidgetKind::CommandPalette, WidgetProps::default());
+        bridge.register(2, WidgetKind::TreeView, WidgetProps::default());
+        bridge.register(3, WidgetKind::CalendarHeatmap, WidgetProps::default());
+        bridge.register(4, WidgetKind::ImageViewer, WidgetProps::default());
+        bridge.register(5, WidgetKind::NativeMarkdown, WidgetProps::default());
+        bridge.register(10, WidgetKind::GraphCanvas, WidgetProps::default());
+        bridge.register(6, WidgetKind::Workspace, WidgetProps::default());
+        bridge.register(7, WidgetKind::Dock, WidgetProps::default());
+        bridge.register(8, WidgetKind::SplitPane, WidgetProps::default());
+        bridge.register(9, WidgetKind::AppShell, WidgetProps::default());
+        bridge.register(11, WidgetKind::SettingsPage, WidgetProps::default());
+        let snap = bridge.snapshot();
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(1).unwrap()),
+            Some(nana_ui::component_ids::COMMAND_PALETTE)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(2).unwrap()),
+            Some(nana_ui::component_ids::TREE_VIEW)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(3).unwrap()),
+            Some(nana_ui::component_ids::CALENDAR_HEATMAP)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(4).unwrap()),
+            Some(nana_ui::component_ids::IMAGE_VIEWER)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(5).unwrap()),
+            Some(nana_ui::component_ids::NATIVE_MARKDOWN)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(10).unwrap()),
+            Some(nana_ui::component_ids::GRAPH_CANVAS)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(6).unwrap()),
+            Some(nana_ui::component_ids::WORKSPACE)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(7).unwrap()),
+            Some(nana_ui::component_ids::DOCK)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(8).unwrap()),
+            Some(nana_ui::component_ids::SPLIT_PANE)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(9).unwrap()),
+            Some(nana_ui::component_ids::APP_SHELL)
+        );
+        assert_eq!(
+            runtime_component_for_widget(&snap, snap.get(11).unwrap()),
+            Some(nana_ui::component_ids::SETTINGS)
+        );
+        assert!(nana_ui::component_uses_runtime(
+            nana_ui::component_ids::COMMAND_PALETTE
+        ));
+        assert!(nana_ui::component_uses_runtime(
+            nana_ui::component_ids::TREE_VIEW
+        ));
+    }
+
+    #[test]
+    fn gpu_view_from_shared_node_is_not_dropped_without_explicit_registry() {
+        let mut context = nana_ui_runtime::AppContext::new();
+        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let gpu = context
+            .create_component(document, nana_ui::GpuView::new(1))
+            .unwrap();
+        let mut mutations = nana_ui_runtime::MutationQueue::new();
+        mutations.write_layout(
+            gpu.stable_id(),
+            nana_ui_runtime::LayoutBox {
+                x: 4.0,
+                y: 8.0,
+                width: 120.0,
+                height: 60.0,
+            },
+        );
+        context.commit_mutations(mutations).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            context.world().extract_nodes(&work.render_extraction),
+            work.render_removals,
+        );
+        let id = gpu.stable_id();
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            id.get(),
+            WidgetKind::Button,
+            WidgetProps {
+                label: "Preview".into(),
+                ..WidgetProps::default()
+            },
+        );
+        let snap = bridge.snapshot();
+        assert!(
+            nana_ui::IcedSceneView::from_shared_node(
+                std::sync::Arc::new(scene.clone()),
+                id,
+                None,
+                Size::new(120.0, 60.0),
+            )
+            .is_ok(),
+            "Vue from_shared_node must keep gpu-view without an explicit registry"
+        );
+        with_active_scene(Some(&scene), || {
+            assert!(
+                matches!(
+                    qualified_runtime_scene_view::<BridgeEvent>(&snap, snap.get(id.get()).unwrap()),
+                    QualifiedSceneRoute::Scene(_)
+                ),
+                "gpu-view must not drop to Pending solely because from_shared had no registry"
+            );
+        });
+    }
+
+    #[test]
     fn sidebar_frame_body_is_runtime_owned_scrollport() {
         let mut body = WidgetProps::default();
         body.class_names = vec!["nana-sidebar-frame__body".into()];
@@ -758,12 +880,10 @@ mod tests {
                 height: 32.0,
             },
         )]);
-        assert!(
-            document
-                .scene()
-                .node_bounds(nana_ui_runtime::StableNodeId::new(button.0).unwrap())
-                .is_some()
-        );
+        assert!(document
+            .scene()
+            .node_bounds(nana_ui_runtime::StableNodeId::new(button.0).unwrap())
+            .is_some());
 
         let _: Element<'static, BridgeEvent> = view_semantic_tree_static_with_scene(
             &snap,
@@ -2992,9 +3112,7 @@ mod tests {
             value: "fn main() {}".into(),
             ..WidgetProps::default()
         };
-        highlighted
-            .attrs
-            .insert("language".into(), "rs".into());
+        highlighted.attrs.insert("language".into(), "rs".into());
         bridge.register(1, WidgetKind::Textarea, highlighted);
         bridge.register(2, WidgetKind::Textarea, WidgetProps::default());
         let snap = bridge.snapshot();

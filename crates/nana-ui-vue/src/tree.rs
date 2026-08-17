@@ -16,26 +16,33 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
-    ActionMenu as RuntimeActionMenu, ActionMenuItem as RuntimeActionMenuItem,
-    Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox, ComponentView,
-    ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
-    ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode, Dialog as RuntimeDialog,
-    Drawer as RuntimeDrawer, EmptyState as RuntimeEmptyState, FormField as RuntimeFormField,
-    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton, ImeComposition,
-    InteractionState, InteractiveCard as RuntimeInteractiveCard,
-    LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox,
-    LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem, ListItemSlots, ModalSurface,
-    MutationQueue, NodeKind, NodeStyle, Popover as RuntimePopover, Progress as RuntimeProgress,
-    QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
-    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
-    Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome,
-    SettingsCard as RuntimeSettingsCard, SettingsRow as RuntimeSettingsRow,
+    ActionMenu as RuntimeActionMenu, ActionMenuItem as RuntimeActionMenuItem, AppContext,
+    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, Button as RuntimeButton,
+    CalendarHeatmap as RuntimeCalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions,
+    CalendarLevelStrategy, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
+    CommandPalette as RuntimeCommandPalette, ComponentView, ConfirmDialog as RuntimeConfirmDialog,
+    ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode,
+    Dialog as RuntimeDialog, Dock as RuntimeDock, DockAxis, DockNode, Drawer as RuntimeDrawer,
+    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
+    GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
+    GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
+    HighlightRequest, HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton,
+    ImageViewer as RuntimeImageViewer, ImageViewerContent, ImeComposition, InteractionState,
+    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue,
+    LayoutBox as RuntimeLayoutBox, LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem,
+    ListItemSlots, ModalSurface, MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeKind,
+    NodeStyle, Popover as RuntimePopover, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
+    RangeField as RuntimeRangeField, SegmentedControl as RuntimeSegmentedControl,
+    SegmentedOption as RuntimeSegmentedOption, Select as RuntimeSelect,
+    SelectOption as RuntimeSelectOption, SelectionChrome, SettingsCard as RuntimeSettingsCard,
+    SettingsPage as RuntimeSettingsPage, SettingsRow as RuntimeSettingsRow,
     SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
-    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, StableNodeId,
-    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextArea as RuntimeTextArea,
-    TextContent, TextInput as RuntimeTextInput, TextInputState, Toast as RuntimeToast,
-    Tooltip as RuntimeTooltip, UiWorld, ValidationMessage as RuntimeValidationMessage,
-    ValueEmphasis, XYPad as RuntimeXYPad,
+    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane,
+    StableNodeId, StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch,
+    TextArea as RuntimeTextArea, TextContent, TextInput as RuntimeTextInput, TextInputState,
+    Toast as RuntimeToast, Tooltip as RuntimeTooltip, TreeView as RuntimeTreeView, UiWorld,
+    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
+    WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
 use nana_ui_scene::UiScene;
 
@@ -398,10 +405,95 @@ struct Node {
     scope_id: Option<String>,
 }
 
+/// Vue-owned Runtime. World reads/writes forward to [`UiWorld`]; typed views
+/// and `assemble_*` live on [`AppContext`].
+struct VueRuntime {
+    context: AppContext,
+}
+
+impl VueRuntime {
+    fn new() -> Self {
+        Self {
+            context: AppContext::new(),
+        }
+    }
+
+    fn world(&self) -> &UiWorld {
+        self.context.world()
+    }
+
+    fn context(&self) -> &AppContext {
+        &self.context
+    }
+
+    fn context_mut(&mut self) -> &mut AppContext {
+        &mut self.context
+    }
+}
+
+impl std::ops::Deref for VueRuntime {
+    type Target = UiWorld;
+
+    fn deref(&self) -> &UiWorld {
+        self.context.world()
+    }
+}
+
+impl std::ops::DerefMut for VueRuntime {
+    fn deref_mut(&mut self) -> &mut UiWorld {
+        self.context.world_mut()
+    }
+}
+
+#[derive(Default)]
+struct PendingAssembly {
+    workspaces: Vec<(StableNodeId, RuntimeWorkspace)>,
+    docks: Vec<(StableNodeId, RuntimeDock)>,
+    split_panes: Vec<(StableNodeId, RuntimeSplitPane)>,
+    app_shells: Vec<(StableNodeId, RuntimeAppShell)>,
+    markdowns: Vec<(StableNodeId, RuntimeNativeMarkdown)>,
+    settings_pages: Vec<(StableNodeId, RuntimeSettingsPage)>,
+}
+
+impl PendingAssembly {
+    fn apply(self, context: &mut AppContext) {
+        for (id, component) in self.workspaces {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_workspace(entity);
+            }
+        }
+        for (id, component) in self.docks {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_dock(entity);
+            }
+        }
+        for (id, component) in self.split_panes {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_split_pane(entity);
+            }
+        }
+        for (id, component) in self.app_shells {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_app_shell(entity);
+            }
+        }
+        for (id, component) in self.markdowns {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_markdown(entity);
+            }
+        }
+        for (id, component) in self.settings_pages {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_settings_page(entity);
+            }
+        }
+    }
+}
+
 /// In-memory DOM-ish tree for Vue host ops (no CSS engine).
 pub struct NanaTreeDocument {
     id: DocumentId,
-    runtime: UiWorld,
+    runtime: VueRuntime,
     scene: UiScene,
     nodes: HashMap<u64, Node>,
     next_id: u64,
@@ -451,7 +543,7 @@ impl NanaTreeDocument {
         let logical_width = physical_width as f32 / scale;
         let logical_height = physical_height as f32 / scale;
         let mut nodes = HashMap::new();
-        let mut runtime = UiWorld::new();
+        let mut runtime = VueRuntime::new();
         let runtime_document =
             nana_ui_runtime::DocumentId::try_from(id).expect("Vue document IDs are nonzero");
         let node_base = id.node_base();
@@ -525,6 +617,16 @@ impl NanaTreeDocument {
 
     pub fn id(&self) -> DocumentId {
         self.id
+    }
+
+    /// Retained Runtime tree. Vue node identity lives here; typed views live
+    /// on [`Self::context`].
+    pub fn world(&self) -> &UiWorld {
+        self.runtime.world()
+    }
+
+    pub fn context(&self) -> &AppContext {
+        self.runtime.context()
     }
 
     pub fn runtime_generation(&self) -> u64 {
@@ -750,6 +852,7 @@ impl NanaTreeDocument {
             return;
         }
         let mut mutations = MutationQueue::new();
+        let mut pending = PendingAssembly::default();
         if self.runtime.theme_mode() != snapshot.theme {
             mutations.set_theme(snapshot.theme);
         }
@@ -768,6 +871,7 @@ impl NanaTreeDocument {
                     | crate::WidgetKind::Textarea
                     | crate::WidgetKind::ContextMenu
                     | crate::WidgetKind::Select
+                    | crate::WidgetKind::CommandPalette
             ) && matches!(
                 widget.kind,
                 crate::WidgetKind::Button
@@ -803,6 +907,17 @@ impl NanaTreeDocument {
                     | crate::WidgetKind::ActionMenuItem
                     | crate::WidgetKind::XYPad
                     | crate::WidgetKind::QrCode
+                    | crate::WidgetKind::CommandPalette
+                    | crate::WidgetKind::TreeView
+                    | crate::WidgetKind::CalendarHeatmap
+                    | crate::WidgetKind::ImageViewer
+                    | crate::WidgetKind::NativeMarkdown
+                    | crate::WidgetKind::GraphCanvas
+                    | crate::WidgetKind::Workspace
+                    | crate::WidgetKind::Dock
+                    | crate::WidgetKind::SplitPane
+                    | crate::WidgetKind::AppShell
+                    | crate::WidgetKind::SettingsPage
             ) && self.runtime.text_input(id).is_some()
             {
                 // Queue before the new component projection: SetTextInput(None)
@@ -810,7 +925,15 @@ impl NanaTreeDocument {
                 // their own visible label later in the same transaction.
                 mutations.set_text_input(id, None);
             }
-            if project_migrating_component(widget, snapshot, id, &self.runtime, &mut mutations) {
+            if project_migrating_component(
+                widget,
+                snapshot,
+                id,
+                self.runtime.context(),
+                &mut mutations,
+                &mut pending,
+            ) || is_shell_composer_slot(snapshot, widget)
+            {
                 continue;
             }
             let style = NodeStyle {
@@ -902,8 +1025,27 @@ impl NanaTreeDocument {
             }
         }
         let _ = self.runtime.commit(mutations);
+        pending.apply(self.runtime.context_mut());
+        self.adopt_runtime_allocated_ids();
         self.flush_runtime_systems();
         self.synced_semantic_revision = Some(snapshot.revision);
+    }
+
+    fn adopt_runtime_allocated_ids(&mut self) {
+        let document =
+            nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero");
+        let max = self
+            .runtime
+            .document_order(document)
+            .into_iter()
+            .map(StableNodeId::get)
+            .max()
+            .unwrap_or(0);
+        if let Some(next) = max.checked_add(1)
+            && next > self.next_id
+        {
+            self.next_id = next;
+        }
     }
 
     pub(crate) fn apply_runtime_hierarchy(&self, snapshot: &mut crate::SemanticSnapshot) {
@@ -2012,9 +2154,11 @@ fn project_migrating_component(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
     id: StableNodeId,
-    world: &UiWorld,
+    context: &AppContext,
     mutations: &mut MutationQueue,
+    pending: &mut PendingAssembly,
 ) -> bool {
+    let world = context.world();
     if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
         return true;
     }
@@ -2257,6 +2401,7 @@ fn project_migrating_component(
                 .trigger(widget.props.display_label())
                 .open(widget.props.active || widget.props.toggled)
                 .project(id, world, mutations);
+            retain_projected_children(widget, id, world, mutations);
             true
         }
         crate::WidgetKind::ContextMenu => {
@@ -2281,10 +2426,25 @@ fn project_migrating_component(
                     .to_string()
             };
             RuntimeContextMenu::new(widget.props.anchor_x, widget.props.anchor_y)
-                .items(widget.props.options.iter().map(|option| {
-                    RuntimeContextMenuItem::new(option.value.as_str(), option.label.as_str())
-                        .disabled(option.disabled)
-                }))
+                .items(
+                    widget
+                        .props
+                        .options
+                        .iter()
+                        .enumerate()
+                        .map(|(index, option)| {
+                            let mut item = RuntimeContextMenuItem::new(
+                                option.value.as_str(),
+                                option.label.as_str(),
+                            )
+                            .disabled(option.disabled);
+                            if let Some(icon) = context_menu_item_icon(&widget.props, index, option)
+                            {
+                                item = item.icon(icon);
+                            }
+                            item
+                        }),
+                )
                 .query(query)
                 .searchable(searchable)
                 .open(widget.props.active || widget.props.toggled)
@@ -2772,6 +2932,161 @@ fn project_migrating_component(
             component.project(id, world, mutations);
             true
         }
+        crate::WidgetKind::CommandPalette => {
+            let title = widget.props.display_label();
+            let placeholder = if widget.props.placeholder.is_empty() {
+                widget.props.hint.as_str()
+            } else {
+                widget.props.placeholder.as_str()
+            };
+            let query = if !widget.props.value.is_empty() {
+                widget.props.value.clone()
+            } else {
+                crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
+                    .map(str::to_string)
+                    .unwrap_or_default()
+            };
+            let mut component =
+                RuntimeCommandPalette::new(title, command_palette_items(&widget.props));
+            if !placeholder.is_empty() {
+                component = component.placeholder(Arc::<str>::from(placeholder));
+            }
+            if !query.is_empty() {
+                component = component.query(query);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::TreeView => {
+            RuntimeTreeView::new(tree_nodes_from_widget(widget, snapshot))
+                .size(widget.props.size)
+                .project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::CalendarHeatmap => {
+            let mut component =
+                RuntimeCalendarHeatmap::<()>::new(calendar_data_from_props(&widget.props))
+                    .options(calendar_options_from_props(&widget.props));
+            let label = widget.props.display_label();
+            if !label.is_empty() {
+                component = component.label(Arc::<str>::from(label));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::ImageViewer => {
+            let content = image_viewer_content(&widget.props);
+            let mut component = RuntimeImageViewer::new(content);
+            let name = widget.props.display_label();
+            if !name.is_empty() {
+                component = component.name(Arc::<str>::from(name));
+            }
+            if !widget.props.hint.is_empty() {
+                component = component.metadata(Arc::<str>::from(widget.props.hint.as_str()));
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::NativeMarkdown => {
+            let markdown =
+                RuntimeNativeMarkdown::from_source(&markdown_source_from_props(&widget.props));
+            markdown.project(id, world, mutations);
+            let request = markdown_renderer_request(&markdown, &widget.props);
+            if world.highlight_request(id) != request.as_ref() {
+                mutations.set_highlight_request(id, request);
+            }
+            pending.markdowns.push((id, markdown));
+            true
+        }
+        crate::WidgetKind::GraphCanvas => {
+            let mut component =
+                RuntimeGraphCanvas::new("main", graph_model_from_props(&widget.props));
+            if let Some(viewport) = graph_viewport_from_props(&widget.props) {
+                component = component.viewport(viewport);
+            }
+            if let Some(selection) = graph_selection_from_props(&widget.props) {
+                component = component.selection(Some(selection));
+            }
+            let label = widget.props.display_label();
+            if !label.is_empty() {
+                component = component.label(Arc::<str>::from(label));
+            }
+            if widget.props.disabled {
+                component = component.disabled(true);
+            }
+            component.project(id, world, mutations);
+            true
+        }
+        crate::WidgetKind::Workspace => {
+            let component = workspace_from_widget(widget, snapshot, context, id);
+            component.project(id, world, mutations);
+            pending.workspaces.push((id, component));
+            true
+        }
+        crate::WidgetKind::Dock => {
+            let component = dock_from_widget_bound(widget, snapshot, context, id);
+            component.project(id, world, mutations);
+            pending.docks.push((id, component));
+            true
+        }
+        crate::WidgetKind::SplitPane => {
+            let component = split_pane_from_widget(widget, snapshot, context, id);
+            component.project(id, world, mutations);
+            pending.split_panes.push((id, component));
+            true
+        }
+        crate::WidgetKind::AppShell => {
+            let title = widget.props.display_label();
+            let (title_bar, body, overlay) = app_shell_slots(widget, snapshot);
+            if let Some(title_bar) = title_bar {
+                let bar_title = if title.is_empty() {
+                    snapshot
+                        .get(title_bar.get())
+                        .map(|child| child.props.display_label().to_string())
+                        .unwrap_or_default()
+                } else {
+                    title.to_string()
+                };
+                if !bar_title.is_empty() {
+                    RuntimeAppTitleBar::new(bar_title).project(title_bar, world, mutations);
+                }
+            }
+            let mut component = RuntimeAppShell::new();
+            if let Some(title_bar) = title_bar {
+                component = component.title_bar(title_bar);
+            }
+            if let Some(body) = body {
+                component = component.body(body);
+            }
+            if let Some(overlay) = overlay {
+                component = component.overlay(overlay);
+            }
+            component.project(id, world, mutations);
+            pending.app_shells.push((id, component));
+            true
+        }
+        crate::WidgetKind::SettingsPage => {
+            let Some(model) = settings_model_from_props(&widget.props) else {
+                return false;
+            };
+            let mut state = nana_ui_core::SettingsState::new(&model);
+            if let Some(tab) = settings_active_tab(&widget.props) {
+                state.select(&model, &tab);
+            }
+            let mut component = RuntimeSettingsPage::new(model, state);
+            if let Some(content) = settings_page_content_child(widget, snapshot) {
+                component = component.content(content);
+            }
+            if let Ok(existing) = context.read(
+                Entity::<RuntimeSettingsPage>::from_stable_id(id),
+                Clone::clone,
+            ) {
+                component.assembly = existing.assembly;
+            }
+            component.project(id, world, mutations);
+            pending.settings_pages.push((id, component));
+            true
+        }
         _ => {
             if project_aligned_segmented_option(widget, snapshot, id, world, mutations) {
                 return true;
@@ -3012,8 +3327,1659 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::XYPad => AccessibilityRole::Slider,
         crate::WidgetKind::QrCode => AccessibilityRole::Image,
         crate::WidgetKind::Icon => AccessibilityRole::Image,
+        crate::WidgetKind::CommandPalette | crate::WidgetKind::ImageViewer => {
+            AccessibilityRole::Dialog
+        }
+        crate::WidgetKind::TreeView => AccessibilityRole::List,
+        crate::WidgetKind::CalendarHeatmap => AccessibilityRole::Image,
+        crate::WidgetKind::NativeMarkdown => AccessibilityRole::Document,
+        crate::WidgetKind::GraphCanvas => AccessibilityRole::Generic,
         _ => AccessibilityRole::Generic,
     }
+}
+
+fn command_palette_items(props: &crate::WidgetProps) -> Vec<nana_ui_core::CommandPaletteItem> {
+    if let Some(items) = host_command_palette_items(props) {
+        return items;
+    }
+    props
+        .options
+        .iter()
+        .map(|option| {
+            nana_ui_core::CommandPaletteItem::new(option.value.as_str(), option.label.as_str())
+        })
+        .collect()
+}
+
+fn host_command_palette_items(
+    props: &crate::WidgetProps,
+) -> Option<Vec<nana_ui_core::CommandPaletteItem>> {
+    let value = props
+        .native_props
+        .get("options")
+        .or_else(|| props.native_props.get("items"))?;
+    let items = host_array(value)
+        .into_iter()
+        .filter_map(command_palette_item_from_host)
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then_some(items)
+}
+
+fn command_palette_item_from_host(
+    value: &nana_js_engine::HostValue,
+) -> Option<nana_ui_core::CommandPaletteItem> {
+    match value {
+        nana_js_engine::HostValue::Object(map) => {
+            let action = host_map_text(map, &["value", "action", "id", "key"]);
+            let label = host_map_text(map, &["label", "title", "text"]);
+            if action.is_empty() && label.is_empty() {
+                return None;
+            }
+            let identity = if action.is_empty() {
+                label.clone()
+            } else {
+                action
+            };
+            let caption = if label.is_empty() {
+                identity.clone()
+            } else {
+                label
+            };
+            let mut item = nana_ui_core::CommandPaletteItem::new(identity, caption);
+            let category = host_map_text(map, &["category", "group"]);
+            if !category.is_empty() {
+                item = item.category(category);
+            }
+            let shortcut = host_map_text(map, &["shortcut", "keys"]);
+            if !shortcut.is_empty() {
+                item = item.shortcut(shortcut);
+            }
+            Some(item)
+        }
+        nana_js_engine::HostValue::String(text) if !text.is_empty() => Some(
+            nana_ui_core::CommandPaletteItem::new(text.as_str(), text.clone()),
+        ),
+        _ => None,
+    }
+}
+
+fn tree_nodes_from_widget(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Vec<nana_ui_core::TreeNode<Arc<str>>> {
+    if let Some(nodes) = host_tree_nodes(&widget.props) {
+        return nodes;
+    }
+    if !widget.props.options.is_empty() {
+        return widget
+            .props
+            .options
+            .iter()
+            .map(|option| {
+                nana_ui_core::TreeNode::leaf(
+                    Arc::<str>::from(option.value.as_str()),
+                    option.label.as_str(),
+                )
+                .disabled(option.disabled)
+                .selected(option.value == widget.props.value && !widget.props.value.is_empty())
+            })
+            .collect();
+    }
+    widget
+        .children
+        .iter()
+        .filter_map(|child| snapshot.get(*child))
+        .map(|child| {
+            let id = if !child.props.value.is_empty() {
+                child.props.value.as_str()
+            } else if !child.props.element_id.is_empty() {
+                child.props.element_id.as_str()
+            } else {
+                child.props.display_label()
+            };
+            nana_ui_core::TreeNode::leaf(Arc::<str>::from(id), child.props.display_label())
+                .selected(child.props.active)
+                .disabled(child.props.disabled)
+        })
+        .collect()
+}
+
+fn host_tree_nodes(props: &crate::WidgetProps) -> Option<Vec<nana_ui_core::TreeNode<Arc<str>>>> {
+    let value = props
+        .native_props
+        .get("tree")
+        .or_else(|| props.native_props.get("nodes"))
+        .or_else(|| props.native_props.get("options"))?;
+    let nodes = host_array(value)
+        .into_iter()
+        .filter_map(tree_node_from_host)
+        .collect::<Vec<_>>();
+    (!nodes.is_empty()).then_some(nodes)
+}
+
+fn tree_node_from_host(
+    value: &nana_js_engine::HostValue,
+) -> Option<nana_ui_core::TreeNode<Arc<str>>> {
+    match value {
+        nana_js_engine::HostValue::Object(map) => {
+            let id = host_map_text(map, &["value", "id", "key"]);
+            let label = host_map_text(map, &["label", "title", "text"]);
+            if id.is_empty() && label.is_empty() {
+                return None;
+            }
+            let children = map
+                .get("children")
+                .map(host_array)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(tree_node_from_host)
+                .collect::<Vec<_>>();
+            let expanded = map.get("expanded").is_some_and(host_value_truthy);
+            let selected = map.get("selected").is_some_and(host_value_truthy);
+            let disabled = map.get("disabled").is_some_and(host_value_truthy);
+            let identity = if id.is_empty() { label.clone() } else { id };
+            let caption = if label.is_empty() {
+                identity.clone()
+            } else {
+                label
+            };
+            let mut node = if children.is_empty() {
+                nana_ui_core::TreeNode::leaf(Arc::<str>::from(identity.as_str()), caption)
+            } else {
+                nana_ui_core::TreeNode::branch(
+                    Arc::<str>::from(identity.as_str()),
+                    caption,
+                    expanded,
+                    children,
+                )
+            };
+            node = node.selected(selected).disabled(disabled);
+            if let Some(icon) = map
+                .get("icon")
+                .map(host_value_text)
+                .filter(|name| !name.is_empty())
+                .and_then(|name| nana_ui_core::Icon::parse_name(&name))
+            {
+                node = node.icon(icon);
+            }
+            Some(node)
+        }
+        nana_js_engine::HostValue::String(text) if !text.is_empty() => Some(
+            nana_ui_core::TreeNode::leaf(Arc::<str>::from(text.as_str()), text.clone()),
+        ),
+        _ => None,
+    }
+}
+
+fn image_viewer_content(props: &crate::WidgetProps) -> ImageViewerContent {
+    let slot = props
+        .native_props
+        .get("src")
+        .map(host_value_text)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            crate::widget_map::attr_value(props, &["src", "data-src"])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            props
+                .native_props
+                .get("value")
+                .map(host_value_text)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            let value = props.value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        });
+    match slot {
+        Some(slot) => ImageViewerContent::host_texture(slot),
+        None => ImageViewerContent::None,
+    }
+}
+
+fn calendar_data_from_props(props: &crate::WidgetProps) -> Vec<CalendarHeatmapDatum<()>> {
+    let value = props
+        .native_props
+        .get("data")
+        .filter(|value| is_calendar_data_array(value))
+        .or_else(|| {
+            props
+                .native_props
+                .get("options")
+                .filter(|value| is_calendar_data_array(value))
+        })
+        .or_else(|| props.native_props.get("value"));
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    host_array(value)
+        .into_iter()
+        .filter_map(calendar_datum_from_host)
+        .collect()
+}
+
+fn is_calendar_data_array(value: &nana_js_engine::HostValue) -> bool {
+    match value {
+        nana_js_engine::HostValue::Array(items) => items
+            .iter()
+            .any(|item| calendar_datum_from_host(item).is_some()),
+        nana_js_engine::HostValue::Object(_) => host_array(value)
+            .into_iter()
+            .any(|item| calendar_datum_from_host(item).is_some()),
+        _ => false,
+    }
+}
+
+fn calendar_options_from_props(props: &crate::WidgetProps) -> CalendarHeatmapOptions<()> {
+    let Some(value) = props.native_props.get("options") else {
+        return CalendarHeatmapOptions::default();
+    };
+    match value {
+        nana_js_engine::HostValue::Object(map) if !is_calendar_data_array(value) => {
+            calendar_options_from_map(map)
+        }
+        _ => CalendarHeatmapOptions::default(),
+    }
+}
+
+fn calendar_options_from_map(
+    map: &BTreeMap<String, nana_js_engine::HostValue>,
+) -> CalendarHeatmapOptions<()> {
+    let mut options = CalendarHeatmapOptions::default();
+    if let Some(size) = host_map_number(map, &["cellSize", "cell_size", "cell-size"]) {
+        options.cell_size = size;
+    }
+    if let Some(gap) = host_map_number(map, &["cellGap", "cell_gap", "cell-gap"]) {
+        options.cell_gap = gap;
+    }
+    if let Some(radius) = host_map_number(map, &["cellRadius", "cell_radius", "cell-radius"]) {
+        options.cell_radius = radius;
+    }
+    if let Some(width) = host_map_number(map, &["labelWidth", "label_width", "label-width"]) {
+        options.label_width = width;
+    }
+    if let Some(height) = host_map_number(
+        map,
+        &[
+            "monthLabelHeight",
+            "month_label_height",
+            "month-label-height",
+        ],
+    ) {
+        options.month_label_height = height;
+    }
+    if let Some(week) = host_map_number(map, &["weekStartsOn", "week_starts_on", "week-starts-on"])
+    {
+        options = options.week_starts_on(week as i32);
+    }
+    if let Some(labels) =
+        host_map_value(map, &["weekdayLabels", "weekday_labels", "weekday-labels"])
+            .and_then(calendar_weekday_labels)
+    {
+        options = options.weekday_labels(labels);
+    }
+    if let Some(strategy) =
+        host_map_value(map, &["levelStrategy", "level_strategy", "level-strategy"])
+            .and_then(calendar_level_strategy)
+    {
+        options = options.level_strategy(strategy);
+    }
+    if let Some(template) = calendar_string_template(host_map_value(
+        map,
+        &[
+            "monthFormat",
+            "monthFormatter",
+            "month_formatter",
+            "month-formatter",
+        ],
+    )) {
+        options = options.month_formatter(move |year, month| {
+            apply_calendar_template(
+                &template,
+                &[
+                    ("{year}", year.to_string()),
+                    ("{monthPad}", format!("{month:02}")),
+                    ("{month}", month.to_string()),
+                ],
+            )
+        });
+    }
+    if let Some(template) = calendar_string_template(host_map_value(
+        map,
+        &[
+            "titleFormat",
+            "titleFormatter",
+            "title_formatter",
+            "title-formatter",
+        ],
+    )) {
+        options = options.title_formatter(move |datum| {
+            apply_calendar_template(
+                &template,
+                &[
+                    ("{date}", datum.date.clone()),
+                    ("{value}", datum.value.to_string()),
+                ],
+            )
+        });
+    }
+    options
+}
+
+fn calendar_weekday_labels(value: &nana_js_engine::HostValue) -> Option<Vec<(u8, String)>> {
+    let items = host_array(value);
+    let mut labels = Vec::new();
+    if items.is_empty() {
+        let nana_js_engine::HostValue::Object(map) = value else {
+            return None;
+        };
+        for (key, item) in map {
+            let Ok(day) = key.parse::<u8>() else {
+                continue;
+            };
+            let label = host_value_text(item);
+            if !label.is_empty() {
+                labels.push((day % 7, label));
+            }
+        }
+        return (!labels.is_empty()).then_some(labels);
+    }
+    for (index, item) in items.into_iter().enumerate() {
+        match item {
+            nana_js_engine::HostValue::Array(pair) if pair.len() >= 2 => {
+                let day = host_value_number(&pair[0])
+                    .map(|day| day as u8)
+                    .unwrap_or(index as u8);
+                let label = host_value_text(&pair[1]);
+                if !label.is_empty() {
+                    labels.push((day % 7, label));
+                }
+            }
+            nana_js_engine::HostValue::Object(map) => {
+                let day = host_map_number(map, &["day", "index", "weekday"])
+                    .map(|day| day as u8)
+                    .unwrap_or(index as u8);
+                let label = host_map_text(map, &["label", "text", "name"]);
+                if !label.is_empty() {
+                    labels.push((day % 7, label));
+                }
+            }
+            nana_js_engine::HostValue::String(label) if !label.is_empty() => {
+                labels.push((index as u8 % 7, label.clone()));
+            }
+            _ => {}
+        }
+    }
+    (!labels.is_empty()).then_some(labels)
+}
+
+fn calendar_level_strategy(value: &nana_js_engine::HostValue) -> Option<CalendarLevelStrategy<()>> {
+    match value {
+        nana_js_engine::HostValue::Function(_) => None,
+        nana_js_engine::HostValue::Array(_) => {
+            let thresholds = host_array(value)
+                .into_iter()
+                .filter_map(host_value_number)
+                .collect::<Vec<_>>();
+            (!thresholds.is_empty()).then_some(CalendarLevelStrategy::Thresholds(thresholds))
+        }
+        nana_js_engine::HostValue::Number(number) if number.is_finite() => {
+            Some(CalendarLevelStrategy::Relative {
+                levels: (*number as u8).max(1),
+            })
+        }
+        nana_js_engine::HostValue::Object(map) => {
+            let kind = host_map_text(map, &["type", "kind", "strategy"]).to_ascii_lowercase();
+            if kind == "custom" {
+                return None;
+            }
+            if kind == "thresholds"
+                || host_map_value(map, &["thresholds", "stops"]).is_some() && kind != "relative"
+            {
+                let thresholds = host_map_value(map, &["thresholds", "stops", "values"])
+                    .map(host_array)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(host_value_number)
+                    .collect::<Vec<_>>();
+                return (!thresholds.is_empty())
+                    .then_some(CalendarLevelStrategy::Thresholds(thresholds));
+            }
+            if kind == "relative" || host_map_value(map, &["levels", "level"]).is_some() {
+                let levels = host_map_number(map, &["levels", "level"])
+                    .map(|levels| (levels as u8).max(1))
+                    .unwrap_or(5);
+                return Some(CalendarLevelStrategy::Relative { levels });
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn calendar_string_template(value: Option<&nana_js_engine::HostValue>) -> Option<String> {
+    match value? {
+        nana_js_engine::HostValue::String(template) if !template.is_empty() => {
+            Some(template.clone())
+        }
+        nana_js_engine::HostValue::Function(_) => None,
+        _ => None,
+    }
+}
+
+fn apply_calendar_template(template: &str, replacements: &[(&str, String)]) -> String {
+    let mut out = template.to_string();
+    for (needle, value) in replacements {
+        out = out.replace(needle, value);
+    }
+    out
+}
+
+fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsModel> {
+    let settings = props
+        .native_props
+        .get("settings")
+        .or_else(|| props.native_props.get("model"))?;
+    let nana_js_engine::HostValue::Object(map) = settings else {
+        return None;
+    };
+    let mut tabs = settings_tabs_from_host(host_map_value(map, &["tabs", "items"])?);
+    if tabs.is_empty() {
+        return None;
+    }
+    let full_page = settings_full_page_keys(map);
+    if !full_page.is_empty() {
+        tabs = tabs
+            .into_iter()
+            .map(|tab| {
+                let flagged =
+                    tab.full_page_value() || full_page.iter().any(|key| key == tab.id().as_str());
+                let mut next = nana_ui_core::SettingsTab::new(tab.id().clone(), tab.label());
+                if let Some(icon) = tab.icon_value() {
+                    next = next.icon(icon);
+                }
+                next.full_page(flagged)
+            })
+            .collect();
+    }
+    let default_tab = host_map_text(map, &["defaultTab", "default_tab", "default-tab"]);
+    let default_tab =
+        if default_tab.is_empty() || tabs.iter().all(|tab| tab.id().as_str() != default_tab) {
+            tabs[0].id().as_str().to_string()
+        } else {
+            default_tab
+        };
+    let mut model = nana_ui_core::SettingsModel::new(default_tab, tabs).ok()?;
+    if let Some(nana_js_engine::HostValue::Object(aliases)) =
+        host_map_value(map, &["aliases", "alias"])
+    {
+        for (alias, target) in aliases {
+            let target = host_value_text(target);
+            if target.is_empty() {
+                continue;
+            }
+            if let Ok(next) = model.clone().with_alias(alias.as_str(), target) {
+                model = next;
+            }
+        }
+    }
+    let hide_header = host_map_truthy(map, &["hideHeader", "hide_header", "hide-header"])
+        || settings_hide_header_from_props(props);
+    Some(model.hide_header(hide_header))
+}
+
+fn settings_tabs_from_host(value: &nana_js_engine::HostValue) -> Vec<nana_ui_core::SettingsTab> {
+    let items = host_array(value);
+    if !items.is_empty() {
+        return items
+            .into_iter()
+            .filter_map(settings_tab_from_host)
+            .collect();
+    }
+    if let Some(tab) = settings_tab_from_host(value) {
+        return vec![tab];
+    }
+    let nana_js_engine::HostValue::Object(map) = value else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter_map(|(key, item)| match item {
+            nana_js_engine::HostValue::String(label) if !label.is_empty() => {
+                Some(nana_ui_core::SettingsTab::new(key.as_str(), label.as_str()))
+            }
+            nana_js_engine::HostValue::Object(_) => {
+                let tab = settings_tab_from_host(item)?;
+                if tab.id().as_str().is_empty() {
+                    Some(nana_ui_core::SettingsTab::new(key.as_str(), tab.label()))
+                } else {
+                    Some(tab)
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn settings_tab_from_host(value: &nana_js_engine::HostValue) -> Option<nana_ui_core::SettingsTab> {
+    match value {
+        nana_js_engine::HostValue::String(id) if !id.is_empty() => {
+            Some(nana_ui_core::SettingsTab::new(id.as_str(), id.as_str()))
+        }
+        nana_js_engine::HostValue::Object(map) => {
+            let id = host_map_text(map, &["key", "id", "value"]);
+            if id.is_empty() {
+                return None;
+            }
+            let label = host_map_text(map, &["label", "title", "name"]);
+            let label = if label.is_empty() { id.clone() } else { label };
+            let mut tab = nana_ui_core::SettingsTab::new(id, label);
+            if let Some(icon) = nana_ui_core::Icon::parse_name(&host_map_text(
+                map,
+                &["icon", "iconName", "icon-name"],
+            )) {
+                tab = tab.icon(icon);
+            }
+            Some(tab.full_page(host_map_truthy(
+                map,
+                &["fullPage", "full_page", "full-page"],
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn settings_full_page_keys(map: &BTreeMap<String, nana_js_engine::HostValue>) -> Vec<String> {
+    host_map_value(map, &["fullPageTabs", "full_page_tabs", "full-page-tabs"])
+        .map(host_array)
+        .unwrap_or_default()
+        .into_iter()
+        .map(host_value_text)
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
+fn settings_hide_header_from_props(props: &crate::WidgetProps) -> bool {
+    if let Some(value) = props
+        .native_props
+        .get("hide-header")
+        .or_else(|| props.native_props.get("hideHeader"))
+    {
+        return host_value_truthy(value);
+    }
+    crate::widget_map::attr_value(props, &["hide-header", "hideheader", "hideHeader"]).is_some_and(
+        |value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "true" | "1" | "yes"
+            )
+        },
+    )
+}
+
+fn settings_active_tab(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsTabId> {
+    native_prop_text(props, &["tab", "value"])
+        .or_else(|| {
+            crate::widget_map::attr_value(props, &["tab", "value"])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            let value = props.value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
+        .map(nana_ui_core::SettingsTabId::from)
+}
+
+fn settings_page_content_child(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Option<StableNodeId> {
+    widget.children.iter().copied().find_map(|id| {
+        let child = snapshot.get(id)?;
+        if is_settings_page_header_child(child) {
+            return None;
+        }
+        StableNodeId::new(id)
+    })
+}
+
+fn is_settings_page_header_child(widget: &crate::SemanticWidget) -> bool {
+    let slot = widget
+        .props
+        .attrs
+        .get("data-slot")
+        .map(String::as_str)
+        .unwrap_or("");
+    if matches!(slot, "header" | "page-header" | "title") {
+        return true;
+    }
+    widget
+        .props
+        .class_names
+        .iter()
+        .any(|class| class.contains("nana-settings-page__header") || class.contains("page-header"))
+}
+
+fn calendar_datum_from_host(value: &nana_js_engine::HostValue) -> Option<CalendarHeatmapDatum<()>> {
+    match value {
+        nana_js_engine::HostValue::Object(map) => {
+            let date = host_map_text(map, &["date", "day", "key"]);
+            if date.is_empty() {
+                return None;
+            }
+            let number = map
+                .get("value")
+                .or_else(|| map.get("count"))
+                .and_then(host_value_number)
+                .unwrap_or(0.0);
+            Some(CalendarHeatmapDatum::new(date, number))
+        }
+        nana_js_engine::HostValue::Array(items) if items.len() >= 2 => {
+            let date = host_value_text(&items[0]);
+            let number = host_value_number(&items[1])?;
+            if date.is_empty() {
+                return None;
+            }
+            Some(CalendarHeatmapDatum::new(date, number))
+        }
+        _ => None,
+    }
+}
+
+fn markdown_source_from_props(props: &crate::WidgetProps) -> String {
+    if !props.value.trim().is_empty() {
+        return props.value.clone();
+    }
+    if let Some(source) = crate::widget_map::attr_value(props, &["source", "markdown", "value"]) {
+        if !source.trim().is_empty() {
+            return source.to_string();
+        }
+    }
+    for key in ["source", "markdown", "value"] {
+        if let Some(text) = props.native_props.get(key).map(host_value_text) {
+            if !text.trim().is_empty() {
+                return text;
+            }
+        }
+    }
+    String::new()
+}
+
+fn markdown_renderer_request(
+    markdown: &RuntimeNativeMarkdown,
+    props: &crate::WidgetProps,
+) -> Option<HighlightRequest> {
+    let mermaid = crate::widget_map::mermaid_renderer(props)
+        .map(str::to_string)
+        .or_else(|| native_prop_text(props, &["mermaid-renderer", "mermaidrenderer"]));
+    let math = crate::widget_map::math_renderer(props)
+        .map(str::to_string)
+        .or_else(|| native_prop_text(props, &["math-renderer", "mathrenderer"]));
+    for block in markdown.blocks() {
+        match block {
+            nana_ui_runtime::MarkdownBlock::Mermaid(source) => {
+                if let Some(name) = mermaid.as_deref() {
+                    return Some(HighlightRequest::new(name, format!("mermaid:{source}")));
+                }
+            }
+            nana_ui_runtime::MarkdownBlock::DisplayMath(source) => {
+                if let Some(name) = math.as_deref() {
+                    return Some(HighlightRequest::new(name, format!("math:{source}")));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn native_prop_text(props: &crate::WidgetProps, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        props
+            .native_props
+            .get(*key)
+            .map(host_value_text)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    })
+}
+
+fn graph_model_from_props(props: &crate::WidgetProps) -> GraphModel {
+    let model = props.native_props.get("model");
+    let nodes_value = model
+        .and_then(host_object_field("nodes"))
+        .or_else(|| props.native_props.get("nodes"));
+    let edges_value = model
+        .and_then(host_object_field("edges"))
+        .or_else(|| props.native_props.get("edges"));
+    let nodes = nodes_value
+        .map(host_array)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(graph_node_from_host)
+        .collect::<Vec<_>>();
+    let edges = edges_value
+        .map(host_array)
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, value)| graph_edge_from_host(index, value))
+        .collect::<Vec<_>>();
+    GraphModel::new(nodes.clone(), edges)
+        .or_else(|_| GraphModel::new(nodes, Vec::new()))
+        .unwrap_or_else(|_| GraphModel::empty())
+}
+
+fn graph_viewport_from_props(props: &crate::WidgetProps) -> Option<GraphViewport> {
+    let model = props.native_props.get("model");
+    let value = props
+        .native_props
+        .get("viewport")
+        .or_else(|| model.and_then(host_object_field("viewport")))?;
+    graph_viewport_from_host(value)
+}
+
+fn graph_viewport_from_host(value: &nana_js_engine::HostValue) -> Option<GraphViewport> {
+    let nana_js_engine::HostValue::Object(map) = value else {
+        return None;
+    };
+    let zoom = host_map_number(map, &["zoom"]).unwrap_or(1.0);
+    let offset = map
+        .get("offset")
+        .and_then(graph_point_from_host)
+        .unwrap_or_else(|| {
+            GraphPoint::new(
+                host_map_number(map, &["offsetX", "offset_x", "offset-x", "x"]).unwrap_or(0.0),
+                host_map_number(map, &["offsetY", "offset_y", "offset-y", "y"]).unwrap_or(0.0),
+            )
+        });
+    Some(GraphViewport::new(offset, zoom))
+}
+
+fn graph_point_from_host(value: &nana_js_engine::HostValue) -> Option<GraphPoint> {
+    match value {
+        nana_js_engine::HostValue::Object(map) => {
+            let x = host_map_number(map, &["x", "offsetX", "offset_x", "offset-x"])?;
+            let y = host_map_number(map, &["y", "offsetY", "offset_y", "offset-y"])?;
+            x.is_finite()
+                .then_some(y)
+                .filter(|y| y.is_finite())
+                .map(|y| GraphPoint::new(x, y))
+        }
+        nana_js_engine::HostValue::Array(items) if items.len() >= 2 => Some(GraphPoint::new(
+            host_value_number(&items[0])?,
+            host_value_number(&items[1])?,
+        )),
+        _ => None,
+    }
+}
+
+fn graph_selection_from_props(props: &crate::WidgetProps) -> Option<GraphSelection> {
+    let model = props.native_props.get("model");
+    let value = props
+        .native_props
+        .get("selection")
+        .or_else(|| model.and_then(host_object_field("selection")))?;
+    graph_selection_from_host(value)
+}
+
+fn graph_selection_from_host(value: &nana_js_engine::HostValue) -> Option<GraphSelection> {
+    let nana_js_engine::HostValue::Object(map) = value else {
+        return None;
+    };
+    let kind = host_map_text(map, &["kind", "type"]).to_ascii_lowercase();
+    let node = host_map_text(map, &["node", "nodeId", "node-id", "node_id"]);
+    let port = host_map_text(map, &["port", "portId", "port-id", "port_id"]);
+    let edge = host_map_text(map, &["edge", "edgeId", "edge-id", "edge_id"]);
+    let id = host_map_text(map, &["id", "key"]);
+    if kind == "port" || (!port.is_empty() && (!node.is_empty() || !id.is_empty())) {
+        let node = if node.is_empty() { id } else { node };
+        if node.is_empty() || port.is_empty() {
+            return None;
+        }
+        return Some(GraphSelection::Port {
+            node: node.into(),
+            port: port.into(),
+        });
+    }
+    if kind == "edge" || !edge.is_empty() {
+        let edge = if edge.is_empty() { id } else { edge };
+        if edge.is_empty() {
+            return None;
+        }
+        return Some(GraphSelection::Edge(edge.into()));
+    }
+    if kind == "node" || !node.is_empty() || !id.is_empty() {
+        let node = if node.is_empty() { id } else { node };
+        if node.is_empty() {
+            return None;
+        }
+        return Some(GraphSelection::Node(node.into()));
+    }
+    None
+}
+
+fn host_object_field(
+    name: &'static str,
+) -> impl Fn(&nana_js_engine::HostValue) -> Option<&nana_js_engine::HostValue> {
+    move |value| match value {
+        nana_js_engine::HostValue::Object(map) => map.get(name),
+        _ => None,
+    }
+}
+
+const DEFAULT_GRAPH_NODE_WIDTH: f32 = 160.0;
+const DEFAULT_GRAPH_NODE_HEIGHT: f32 = 80.0;
+
+fn graph_node_from_host(value: &nana_js_engine::HostValue) -> Option<GraphNode> {
+    let nana_js_engine::HostValue::Object(map) = value else {
+        return None;
+    };
+    let label = host_map_text(map, &["title", "label", "name"]);
+    let id = host_map_text(map, &["id", "key"]);
+    if id.is_empty() && label.is_empty() {
+        return None;
+    }
+    let identity = if id.is_empty() { label.clone() } else { id };
+    let caption = if label.is_empty() {
+        identity.clone()
+    } else {
+        label
+    };
+    let x = map.get("x").and_then(host_value_number).unwrap_or(0.0);
+    let y = map.get("y").and_then(host_value_number).unwrap_or(0.0);
+    let width = map
+        .get("width")
+        .and_then(host_value_number)
+        .filter(|width| width.is_finite() && *width > 0.0)
+        .unwrap_or(DEFAULT_GRAPH_NODE_WIDTH);
+    let height = map
+        .get("height")
+        .and_then(host_value_number)
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .unwrap_or(DEFAULT_GRAPH_NODE_HEIGHT);
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let mut node = GraphNode::new(
+        identity,
+        caption,
+        GraphPoint::new(x, y),
+        GraphSize::new(width, height),
+    );
+    if let Some(ports) = map.get("ports") {
+        for port in host_array(ports)
+            .into_iter()
+            .filter_map(graph_port_from_host)
+        {
+            node = node.with_port(port);
+        }
+    }
+    Some(node)
+}
+
+fn graph_port_from_host(value: &nana_js_engine::HostValue) -> Option<GraphPort> {
+    let nana_js_engine::HostValue::Object(map) = value else {
+        return None;
+    };
+    let id = host_map_text(map, &["id", "key"]);
+    if id.is_empty() {
+        return None;
+    }
+    let label = host_map_text(map, &["label", "title", "name"]);
+    let caption = if label.is_empty() { id.clone() } else { label };
+    let kind = parse_graph_port_kind(&host_map_text(map, &["kind", "type"]));
+    let side = parse_graph_port_side(&host_map_text(map, &["side"]), kind);
+    Some(GraphPort::new(id, caption, kind, side))
+}
+
+fn graph_edge_from_host(index: usize, value: &nana_js_engine::HostValue) -> Option<GraphEdge> {
+    let nana_js_engine::HostValue::Object(map) = value else {
+        return None;
+    };
+    let source = graph_endpoint_from_map(map, "source", "from", "source-port", "source_port")?;
+    let target = graph_endpoint_from_map(map, "target", "to", "target-port", "target_port")?;
+    let mut id = host_map_text(map, &["id", "key"]);
+    if id.is_empty() {
+        id = format!(
+            "e{index}-{}:{}-{}:{}",
+            source.node, source.port, target.node, target.port
+        );
+    }
+    let mut edge = GraphEdge::new(id, source, target);
+    let label = host_map_text(map, &["label", "title"]);
+    if !label.is_empty() {
+        edge = edge.with_label(label);
+    }
+    Some(edge)
+}
+
+fn graph_endpoint_from_map(
+    map: &BTreeMap<String, nana_js_engine::HostValue>,
+    primary: &str,
+    alias: &str,
+    port_key: &str,
+    port_alias: &str,
+) -> Option<GraphEndpoint> {
+    if let Some(value) = map.get(primary).or_else(|| map.get(alias)) {
+        match value {
+            nana_js_engine::HostValue::Object(endpoint) => {
+                let node = host_map_text(endpoint, &["node", "id"]);
+                let port = host_map_text(endpoint, &["port", "id"]);
+                if node.is_empty() || port.is_empty() {
+                    return None;
+                }
+                return Some(GraphEndpoint::new(node, port));
+            }
+            other => {
+                let node = host_value_text(other);
+                let port = host_map_text(map, &[port_key, port_alias, "port"]);
+                if node.is_empty() || port.is_empty() {
+                    return None;
+                }
+                return Some(GraphEndpoint::new(node, port));
+            }
+        }
+    }
+    None
+}
+
+fn parse_graph_port_kind(raw: &str) -> GraphPortKind {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "input" | "in" => GraphPortKind::Input,
+        "bidirectional" | "both" | "inout" => GraphPortKind::Bidirectional,
+        _ => GraphPortKind::Output,
+    }
+}
+
+fn parse_graph_port_side(raw: &str, kind: GraphPortKind) -> GraphPortSide {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "top" => GraphPortSide::Top,
+        "right" => GraphPortSide::Right,
+        "bottom" => GraphPortSide::Bottom,
+        "left" => GraphPortSide::Left,
+        _ => match kind {
+            GraphPortKind::Input => GraphPortSide::Left,
+            GraphPortKind::Output | GraphPortKind::Bidirectional => GraphPortSide::Right,
+        },
+    }
+}
+
+fn host_value_number(value: &nana_js_engine::HostValue) -> Option<f32> {
+    match value {
+        nana_js_engine::HostValue::Number(number) if number.is_finite() => Some(*number as f32),
+        nana_js_engine::HostValue::String(text) => text.trim().parse().ok(),
+        nana_js_engine::HostValue::Bool(true) => Some(1.0),
+        nana_js_engine::HostValue::Bool(false) => Some(0.0),
+        _ => None,
+    }
+}
+
+fn host_array(value: &nana_js_engine::HostValue) -> Vec<&nana_js_engine::HostValue> {
+    match value {
+        nana_js_engine::HostValue::Array(items) => items.iter().collect(),
+        nana_js_engine::HostValue::Object(map) => {
+            let mut indexed = map
+                .iter()
+                .filter_map(|(key, item)| key.parse::<usize>().ok().map(|index| (index, item)))
+                .collect::<Vec<_>>();
+            if indexed.is_empty() {
+                return Vec::new();
+            }
+            indexed.sort_by_key(|(index, _)| *index);
+            indexed.into_iter().map(|(_, item)| item).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn host_map_value<'a>(
+    map: &'a BTreeMap<String, nana_js_engine::HostValue>,
+    keys: &[&str],
+) -> Option<&'a nana_js_engine::HostValue> {
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            return Some(value);
+        }
+    }
+    for key in keys {
+        if let Some((_, value)) = map
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn host_map_text(map: &BTreeMap<String, nana_js_engine::HostValue>, keys: &[&str]) -> String {
+    host_map_value(map, keys)
+        .map(host_value_text)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_default()
+}
+
+fn host_map_truthy(map: &BTreeMap<String, nana_js_engine::HostValue>, keys: &[&str]) -> bool {
+    host_map_value(map, keys).is_some_and(host_value_truthy)
+}
+
+fn host_map_number(
+    map: &BTreeMap<String, nana_js_engine::HostValue>,
+    keys: &[&str],
+) -> Option<f32> {
+    keys.iter()
+        .find_map(|key| map.get(*key).and_then(host_value_number))
+}
+
+fn host_value_text(value: &nana_js_engine::HostValue) -> String {
+    match value {
+        nana_js_engine::HostValue::String(text) => text.clone(),
+        nana_js_engine::HostValue::Number(number) if number.is_finite() => number.to_string(),
+        nana_js_engine::HostValue::Bool(flag) => flag.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn host_value_truthy(value: &nana_js_engine::HostValue) -> bool {
+    match value {
+        nana_js_engine::HostValue::Bool(flag) => *flag,
+        nana_js_engine::HostValue::Number(number) => *number != 0.0,
+        nana_js_engine::HostValue::String(text) => {
+            !text.is_empty() && !text.eq_ignore_ascii_case("false")
+        }
+        _ => false,
+    }
+}
+
+fn is_shell_composer_slot(
+    snapshot: &crate::SemanticSnapshot,
+    widget: &crate::SemanticWidget,
+) -> bool {
+    widget
+        .parent
+        .and_then(|parent| snapshot.get(parent))
+        .is_some_and(|parent| {
+            matches!(
+                parent.kind,
+                crate::WidgetKind::Workspace
+                    | crate::WidgetKind::Dock
+                    | crate::WidgetKind::SplitPane
+                    | crate::WidgetKind::AppShell
+            )
+        })
+}
+
+fn retain_projected_children(
+    widget: &crate::SemanticWidget,
+    parent: StableNodeId,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) {
+    for child in &widget.children {
+        let Some(child_id) = StableNodeId::new(*child) else {
+            continue;
+        };
+        if !world.contains(child_id) {
+            continue;
+        }
+        if world
+            .node(child_id)
+            .is_some_and(|node| node.parent != Some(parent))
+        {
+            mutations.insert(parent, child_id, None);
+        }
+    }
+}
+
+fn element_child_widgets<'a>(
+    widget: &'a crate::SemanticWidget,
+    snapshot: &'a crate::SemanticSnapshot,
+) -> Vec<&'a crate::SemanticWidget> {
+    widget
+        .children
+        .iter()
+        .filter_map(|child| snapshot.get(*child))
+        .filter(|child| child.kind != crate::WidgetKind::Text)
+        .collect()
+}
+
+fn widget_slot(widget: &crate::SemanticWidget) -> String {
+    crate::widget_map::attr_value(&widget.props, &["data-slot", "slot"])
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn widget_tag(widget: &crate::SemanticWidget) -> String {
+    widget.props.element_tag.trim().to_ascii_lowercase()
+}
+
+fn widget_class_blob(widget: &crate::SemanticWidget) -> String {
+    widget
+        .props
+        .class_names
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn is_title_bar_child(widget: &crate::SemanticWidget) -> bool {
+    let slot = widget_slot(widget);
+    if matches!(slot.as_str(), "title-bar" | "titlebar" | "app-title-bar") {
+        return true;
+    }
+    let tag = widget_tag(widget);
+    let class = widget_class_blob(widget);
+    tag.contains("title-bar")
+        || tag.contains("titlebar")
+        || tag.contains("app-title-bar")
+        || class.contains("title-bar")
+        || class.contains("titlebar")
+        || class.contains("nana-app-title-bar")
+}
+
+fn is_overlay_child(widget: &crate::SemanticWidget) -> bool {
+    let slot = widget_slot(widget);
+    if slot == "overlay" {
+        return true;
+    }
+    let tag = widget_tag(widget);
+    let class = widget_class_blob(widget);
+    tag.contains("overlay") || class.contains("nana-app-shell__overlay")
+}
+
+fn is_split_handle_child(widget: &crate::SemanticWidget) -> bool {
+    let slot = widget_slot(widget);
+    if matches!(slot.as_str(), "handle" | "split-handle") {
+        return true;
+    }
+    let tag = widget_tag(widget);
+    let class = widget_class_blob(widget);
+    tag.contains("split-handle")
+        || class.contains("nana-split-handle")
+        || class.contains("split-handle")
+}
+
+fn context_menu_item_icon(
+    props: &crate::WidgetProps,
+    index: usize,
+    option: &crate::SelectOptionProp,
+) -> Option<nana_ui_core::Icon> {
+    let options = props.native_props.get("options").map(host_array)?;
+    let host = options.get(index).copied().or_else(|| {
+        options.iter().copied().find(|item| {
+            let nana_js_engine::HostValue::Object(map) = item else {
+                return false;
+            };
+            let value = host_map_text(map, &["value", "key", "id"]);
+            !value.is_empty() && value == option.value
+        })
+    })?;
+    icon_from_host(host)
+}
+
+fn icon_from_host(value: &nana_js_engine::HostValue) -> Option<nana_ui_core::Icon> {
+    match value {
+        nana_js_engine::HostValue::Object(map) => {
+            let name = host_map_text(map, &["icon", "icon-name", "iconname", "glyph"]);
+            if name.is_empty() {
+                map.get("icon").and_then(icon_from_host)
+            } else {
+                nana_ui_core::Icon::parse_name(&name)
+            }
+        }
+        nana_js_engine::HostValue::String(name) => nana_ui_core::Icon::parse_name(name),
+        _ => None,
+    }
+}
+
+fn native_prop_number(props: &crate::WidgetProps, keys: &[&str]) -> Option<f32> {
+    keys.iter().find_map(|key| {
+        props
+            .native_props
+            .get(*key)
+            .and_then(host_value_number)
+            .filter(|number| number.is_finite())
+    })
+}
+
+fn split_axis_from_props(props: &crate::WidgetProps) -> nana_ui_core::SplitAxis {
+    let raw = native_prop_text(props, &["axis"])
+        .or_else(|| {
+            crate::widget_map::attr_value(props, &["axis", "data-axis"]).map(str::to_string)
+        })
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match raw.as_str() {
+        "vertical" | "column" | "y" => nana_ui_core::SplitAxis::Vertical,
+        _ => nana_ui_core::SplitAxis::Horizontal,
+    }
+}
+
+fn split_pane_from_widget(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    context: &AppContext,
+    id: StableNodeId,
+) -> RuntimeSplitPane {
+    let children = element_child_widgets(widget, snapshot);
+    let handle = children
+        .iter()
+        .find(|child| is_split_handle_child(child))
+        .and_then(|child| StableNodeId::new(child.id))
+        .or_else(|| {
+            (children.len() >= 3)
+                .then(|| StableNodeId::new(children[2].id))
+                .flatten()
+        })
+        .or_else(|| {
+            context
+                .read(Entity::<RuntimeSplitPane>::from_stable_id(id), |pane| {
+                    pane.handle
+                })
+                .ok()
+                .flatten()
+        });
+    let panes = children
+        .iter()
+        .filter(|child| Some(child.id) != handle.map(StableNodeId::get))
+        .filter_map(|child| StableNodeId::new(child.id))
+        .collect::<Vec<_>>();
+    let first = panes.first().copied();
+    let second = panes.get(1).copied();
+    let default_size = native_prop_number(&widget.props, &["default-size", "defaultsize"])
+        .or_else(|| native_prop_number(&widget.props, &["size"]))
+        .unwrap_or(240.0);
+    let min = native_prop_number(&widget.props, &["min"]).unwrap_or(120.0);
+    let max = native_prop_number(&widget.props, &["max"]).unwrap_or(800.0);
+    let mut model = nana_ui_core::SplitPaneModel::new(
+        split_axis_from_props(&widget.props),
+        default_size,
+        min,
+        max,
+    );
+    if let Some(size) = native_prop_number(&widget.props, &["size"])
+        && (size - model.size()).abs() > f32::EPSILON
+    {
+        model.update(nana_ui_core::SplitPaneMutation::SetSize(size));
+    }
+    match (first, second) {
+        (Some(first), Some(second)) => {
+            let mut pane = RuntimeSplitPane::from_model(&model, first, second);
+            if let Some(handle) = handle {
+                pane = pane.handle(handle);
+            }
+            pane
+        }
+        _ => RuntimeSplitPane {
+            first,
+            second,
+            handle,
+            model,
+        },
+    }
+}
+
+fn workspace_region_token(widget: &crate::SemanticWidget) -> String {
+    if !widget.props.region.is_empty() {
+        return widget.props.region.to_ascii_lowercase();
+    }
+    crate::widget_map::attr_value(
+        &widget.props,
+        &[
+            "data-region-role",
+            "data-region",
+            "region",
+            "region-role",
+            "data-region-id",
+        ],
+    )
+    .unwrap_or("")
+    .trim()
+    .to_ascii_lowercase()
+}
+
+fn region_id_from_token(token: &str) -> Option<nana_ui_core::RegionId> {
+    let token = token.trim().trim_start_matches("region-");
+    if token.is_empty() {
+        return None;
+    }
+    Some(match token {
+        "global-navigation" | "globalnavigation" | "global" => {
+            nana_ui_core::RegionId::GlobalNavigation
+        }
+        "section-navigation" | "sectionnavigation" => nana_ui_core::RegionId::SectionNavigation,
+        "resources" | "sidebar" | "files" => nana_ui_core::RegionId::Resources,
+        "primary-toolbar" | "primarytoolbar" | "toolbar" => nana_ui_core::RegionId::PrimaryToolbar,
+        "primary" | "main" => nana_ui_core::RegionId::Primary,
+        "inspector" => nana_ui_core::RegionId::Inspector,
+        "diagnostics" | "console" => nana_ui_core::RegionId::Diagnostics,
+        other => nana_ui_core::RegionId::custom(other),
+    })
+}
+
+fn workspace_from_widget(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    context: &AppContext,
+    id: StableNodeId,
+) -> RuntimeWorkspace {
+    let slots = workspace_slots_from_widget(widget, snapshot);
+    let mut component = RuntimeWorkspace::from_model(&nana_ui_core::WorkspaceModel::new(), slots);
+    if let Ok(existing) = context.read(Entity::<RuntimeWorkspace>::from_stable_id(id), Clone::clone)
+    {
+        component.middle = existing.middle;
+        component.primary_column = existing.primary_column;
+        component.primary_row = existing.primary_row;
+        component.handles = existing.handles;
+    }
+    component
+}
+
+fn workspace_slots_from_widget(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Vec<WorkspaceRegionSlot> {
+    let children = element_child_widgets(widget, snapshot);
+    let mut slots = Vec::new();
+    for (index, child) in children.iter().enumerate() {
+        let Some(content) = StableNodeId::new(child.id) else {
+            continue;
+        };
+        let token = workspace_region_token(child);
+        let region = if let Some(region) = region_id_from_token(&token) {
+            region
+        } else {
+            let fallback = if !child.props.element_id.is_empty() {
+                child.props.element_id.clone()
+            } else if !child.props.value.is_empty() {
+                child.props.value.clone()
+            } else {
+                format!("region-{index}")
+            };
+            nana_ui_core::RegionId::custom(fallback)
+        };
+        if slots
+            .iter()
+            .any(|slot: &WorkspaceRegionSlot| slot.id == region)
+        {
+            continue;
+        }
+        slots.push(WorkspaceRegionSlot::new(region, content));
+    }
+    slots
+}
+
+fn dock_item_id(widget: &crate::SemanticWidget, index: usize) -> String {
+    crate::widget_map::attr_value(&widget.props, &["data-dock-id", "dock-id", "id", "data-id"])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| (!widget.props.element_id.is_empty()).then(|| widget.props.element_id.clone()))
+        .or_else(|| (!widget.props.value.is_empty()).then(|| widget.props.value.clone()))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            let label = widget.props.display_label();
+            if label.is_empty() {
+                format!("item-{index}")
+            } else {
+                label.to_string()
+            }
+        })
+}
+
+fn dock_item_title(widget: &crate::SemanticWidget, id: &str) -> String {
+    let title = widget.props.display_label();
+    if title.is_empty() {
+        id.to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn dock_content_for_id(
+    id: &str,
+    children: &[(&crate::SemanticWidget, StableNodeId)],
+) -> Option<StableNodeId> {
+    children.iter().find_map(|(child, node)| {
+        let child_id = dock_item_id(child, 0);
+        (child_id == id).then_some(*node)
+    })
+}
+
+fn parse_dock_axis(raw: &str) -> DockAxis {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "vertical" | "column" | "y" => DockAxis::Vertical,
+        _ => DockAxis::Horizontal,
+    }
+}
+
+fn dock_node_from_host(
+    value: &nana_js_engine::HostValue,
+    children: &[(&crate::SemanticWidget, StableNodeId)],
+) -> Option<DockNode> {
+    match value {
+        nana_js_engine::HostValue::String(id) if !id.is_empty() => Some(DockNode::item(
+            id.as_str(),
+            dock_content_for_id(id, children),
+        )),
+        nana_js_engine::HostValue::Array(items) => {
+            let nodes = items
+                .iter()
+                .filter_map(|item| dock_node_from_host(item, children))
+                .collect::<Vec<_>>();
+            dock_nodes_join(nodes)
+        }
+        nana_js_engine::HostValue::Object(map) => {
+            let kind = host_map_text(map, &["type", "kind", "node"]).to_ascii_lowercase();
+            if kind == "split" || map.contains_key("first") || map.contains_key("second") {
+                let first = map
+                    .get("first")
+                    .and_then(|value| dock_node_from_host(value, children))?;
+                let second = map
+                    .get("second")
+                    .and_then(|value| dock_node_from_host(value, children))?;
+                let axis = parse_dock_axis(&host_map_text(map, &["axis"]));
+                let ratio = host_map_number(map, &["ratio", "size"]).unwrap_or(0.5);
+                return Some(DockNode::split(axis, ratio, first, second));
+            }
+            if kind == "tabs" || map.contains_key("tabs") {
+                let tab_values = map.get("tabs").map(host_array).unwrap_or_default();
+                let mut tabs = Vec::new();
+                let mut contents = Vec::new();
+                for tab in tab_values {
+                    let (id, content) = match tab {
+                        nana_js_engine::HostValue::String(id) if !id.is_empty() => {
+                            (id.clone(), dock_content_for_id(id, children))
+                        }
+                        nana_js_engine::HostValue::Object(tab_map) => {
+                            let id = host_map_text(tab_map, &["id", "key", "value"]);
+                            if id.is_empty() {
+                                continue;
+                            }
+                            (id.clone(), dock_content_for_id(&id, children))
+                        }
+                        _ => continue,
+                    };
+                    if tabs
+                        .iter()
+                        .any(|existing: &Arc<str>| existing.as_ref() == id)
+                    {
+                        continue;
+                    }
+                    let id = Arc::<str>::from(id);
+                    contents.push((Arc::clone(&id), content));
+                    tabs.push(id);
+                }
+                if tabs.is_empty() {
+                    return None;
+                }
+                let active = host_map_text(map, &["active", "value"]);
+                let active = if active.is_empty() {
+                    Arc::clone(&tabs[0])
+                } else {
+                    Arc::<str>::from(active)
+                };
+                return Some(DockNode::tabs(tabs, active, contents));
+            }
+            let id = host_map_text(map, &["id", "key", "value", "dock-id", "data-dock-id"]);
+            if id.is_empty() {
+                return None;
+            }
+            Some(DockNode::item(
+                id.as_str(),
+                dock_content_for_id(&id, children),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn dock_nodes_join(mut nodes: Vec<DockNode>) -> Option<DockNode> {
+    match nodes.len() {
+        0 => None,
+        1 => nodes.pop(),
+        _ => {
+            let ids = nodes.iter().flat_map(DockNode::flatten).collect::<Vec<_>>();
+            if ids.is_empty() {
+                return None;
+            }
+            let mut contents = Vec::new();
+            for node in &nodes {
+                collect_dock_contents(node, &mut contents);
+            }
+            let active = Arc::clone(&ids[0]);
+            Some(DockNode::tabs(ids, active, contents))
+        }
+    }
+}
+
+fn collect_dock_contents(node: &DockNode, output: &mut Vec<(Arc<str>, Option<StableNodeId>)>) {
+    match node {
+        DockNode::Item { id, content } => output.push((Arc::clone(id), *content)),
+        DockNode::Tabs { contents, .. } => output.extend(contents.iter().cloned()),
+        DockNode::Split { first, second, .. } => {
+            collect_dock_contents(first, output);
+            collect_dock_contents(second, output);
+        }
+    }
+}
+
+fn dock_root_from_children(
+    children: &[(&crate::SemanticWidget, StableNodeId)],
+) -> (DockNode, Vec<(Arc<str>, Arc<str>)>) {
+    let mut titles = Vec::new();
+    let mut items = Vec::new();
+    for (index, (child, content)) in children.iter().enumerate() {
+        let id = dock_item_id(child, index);
+        let title = dock_item_title(child, &id);
+        titles.push((Arc::<str>::from(id.as_str()), Arc::<str>::from(title)));
+        items.push((Arc::<str>::from(id), Some(*content)));
+    }
+    let root = match items.as_slice() {
+        [] => DockNode::item("dock", None),
+        [(id, content)] => DockNode::item(Arc::clone(id), *content),
+        _ => {
+            let tabs = items
+                .iter()
+                .map(|(id, _)| Arc::clone(id))
+                .collect::<Vec<_>>();
+            let active = Arc::clone(&tabs[0]);
+            DockNode::tabs(tabs, active, items)
+        }
+    };
+    (root, titles)
+}
+
+fn dock_from_widget_bound(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    context: &AppContext,
+    id: StableNodeId,
+) -> RuntimeDock {
+    let next = dock_from_widget(widget, snapshot);
+    match context.read(Entity::<RuntimeDock>::from_stable_id(id), Clone::clone) {
+        Ok(mut existing) => {
+            existing.root = next.root;
+            existing.drop_target = next.drop_target;
+            existing.locked = next.locked;
+            existing.titles = next.titles;
+            existing.style = next.style;
+            existing
+        }
+        Err(_) => next,
+    }
+}
+
+fn dock_from_widget(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> RuntimeDock {
+    let child_pairs = element_child_widgets(widget, snapshot)
+        .into_iter()
+        .filter_map(|child| StableNodeId::new(child.id).map(|id| (child, id)))
+        .collect::<Vec<_>>();
+    let host_root = widget
+        .props
+        .native_props
+        .get("root")
+        .or_else(|| widget.props.native_props.get("layout"))
+        .and_then(|value| dock_node_from_host(value, &child_pairs));
+    let (root, titles) = if let Some(root) = host_root {
+        let mut titles = Vec::new();
+        for (child, _) in &child_pairs {
+            let id = dock_item_id(child, 0);
+            let title = dock_item_title(child, &id);
+            if title != id {
+                titles.push((Arc::<str>::from(id), Arc::<str>::from(title)));
+            }
+        }
+        (root, titles)
+    } else {
+        dock_root_from_children(&child_pairs)
+    };
+    let mut dock = RuntimeDock::new(root);
+    for (id, title) in titles {
+        dock = dock.title(id, title);
+    }
+    dock
+}
+
+fn app_shell_slots(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> (
+    Option<StableNodeId>,
+    Option<StableNodeId>,
+    Option<StableNodeId>,
+) {
+    let children = element_child_widgets(widget, snapshot);
+    let title_bar = children
+        .iter()
+        .find(|child| is_title_bar_child(child))
+        .and_then(|child| StableNodeId::new(child.id));
+    let overlay = children
+        .iter()
+        .find(|child| is_overlay_child(child) && Some(child.id) != title_bar.map(StableNodeId::get))
+        .and_then(|child| StableNodeId::new(child.id));
+    let body = children
+        .iter()
+        .find(|child| {
+            let id = child.id;
+            Some(id) != title_bar.map(StableNodeId::get)
+                && Some(id) != overlay.map(StableNodeId::get)
+        })
+        .and_then(|child| StableNodeId::new(child.id));
+    (title_bar, body, overlay)
 }
 
 fn normalize_event_name(event: &str) -> String {
@@ -4293,6 +6259,1386 @@ mod tests {
             doc.runtime.standard_visual(payload_id),
             Some(nana_ui_runtime::StandardVisual::QrCode { width, .. }) if width >= 21
         ));
+    }
+
+    #[test]
+    fn command_palette_and_tree_view_project_runtime_visuals() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let palette = doc.create_element("nana-command-palette");
+        let tree = doc.create_element("nana-tree-view");
+        let calendar = doc.create_element("nana-calendar");
+        let markdown = doc.create_element("nana-markdown");
+        doc.insert(palette, doc.mount_root(), None);
+        doc.insert(tree, doc.mount_root(), None);
+        doc.insert(calendar, doc.mount_root(), None);
+        doc.insert(markdown, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            palette.0,
+            crate::WidgetKind::CommandPalette,
+            crate::WidgetProps {
+                label: "Go to".into(),
+                placeholder: "Search".into(),
+                value: "op".into(),
+                active: true,
+                options: vec![
+                    crate::SelectOptionProp {
+                        value: "open".into(),
+                        label: "Open file".into(),
+                        disabled: false,
+                    },
+                    crate::SelectOptionProp {
+                        value: "palette".into(),
+                        label: "Command palette".into(),
+                        disabled: false,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            tree.0,
+            crate::WidgetKind::TreeView,
+            crate::WidgetProps {
+                value: "src".into(),
+                options: vec![
+                    crate::SelectOptionProp {
+                        value: "src".into(),
+                        label: "src".into(),
+                        disabled: false,
+                    },
+                    crate::SelectOptionProp {
+                        value: "docs".into(),
+                        label: "docs".into(),
+                        disabled: false,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            calendar.0,
+            crate::WidgetKind::CalendarHeatmap,
+            crate::WidgetProps {
+                label: "Activity".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            markdown.0,
+            crate::WidgetKind::NativeMarkdown,
+            crate::WidgetProps {
+                value: "# Title".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let palette_id = StableNodeId::try_from(palette).unwrap();
+        assert!(matches!(
+            doc.runtime.node(palette_id).map(|node| node.kind),
+            Some(NodeKind::Element { .. })
+        ));
+        assert!(matches!(
+            doc.runtime.standard_visual(palette_id),
+            Some(nana_ui_runtime::StandardVisual::CommandPalette {
+                title,
+                query,
+                ..
+            }) if title.as_ref() == "Go to" && query.as_ref() == "op"
+        ));
+        let tree_id = StableNodeId::try_from(tree).unwrap();
+        assert!(matches!(
+            doc.runtime.node(tree_id).map(|node| node.kind),
+            Some(NodeKind::Element { .. })
+        ));
+        assert!(matches!(
+            doc.runtime.standard_visual(tree_id),
+            Some(nana_ui_runtime::StandardVisual::TreeView { rows, .. })
+                if rows.iter().any(|row| row.id.as_ref() == "src" && row.selected)
+                    && rows.iter().any(|row| row.id.as_ref() == "docs")
+        ));
+        let calendar_id = StableNodeId::try_from(calendar).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(calendar_id),
+            Some(nana_ui_runtime::StandardVisual::CalendarHeatmap { .. })
+        ));
+        let markdown_id = StableNodeId::try_from(markdown).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(markdown_id),
+            Some(nana_ui_runtime::StandardVisual::NativeMarkdown { text, .. })
+                if text.contains("Title")
+        ));
+    }
+
+    #[test]
+    fn professional_leaves_project_native_payloads() {
+        let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+        let calendar = doc.create_element("nana-calendar");
+        let markdown = doc.create_element("nana-markdown");
+        let viewer = doc.create_element("nana-image-viewer");
+        let canvas = doc.create_element("nana-graph-canvas");
+        doc.insert(calendar, doc.mount_root(), None);
+        doc.insert(markdown, doc.mount_root(), None);
+        doc.insert(viewer, doc.mount_root(), None);
+        doc.insert(canvas, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+
+        let mut calendar_props = crate::WidgetProps {
+            label: "Activity".into(),
+            ..Default::default()
+        };
+        calendar_props.apply_prop(
+            "data",
+            &nana_js_engine::HostValue::Array(vec![
+                nana_js_engine::HostValue::Object(
+                    [
+                        (
+                            "date".into(),
+                            nana_js_engine::HostValue::string("2026-06-01"),
+                        ),
+                        ("value".into(), nana_js_engine::HostValue::Number(2.0)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                nana_js_engine::HostValue::Array(vec![
+                    nana_js_engine::HostValue::string("2026-06-03"),
+                    nana_js_engine::HostValue::Number(8.0),
+                ]),
+            ]),
+        );
+        bridge.register(
+            calendar.0,
+            crate::WidgetKind::CalendarHeatmap,
+            calendar_props,
+        );
+        bridge.register(
+            markdown.0,
+            crate::WidgetKind::NativeMarkdown,
+            crate::WidgetProps {
+                value: "# Title\n\nHello **world**".into(),
+                ..Default::default()
+            },
+        );
+        let mut viewer_props = crate::WidgetProps::default();
+        viewer_props.apply_prop("src", &nana_js_engine::HostValue::string("gpu:preview"));
+        bridge.register(viewer.0, crate::WidgetKind::ImageViewer, viewer_props);
+
+        let mut canvas_props = crate::WidgetProps {
+            label: "Graph".into(),
+            ..Default::default()
+        };
+        canvas_props.apply_prop(
+            "nodes",
+            &nana_js_engine::HostValue::Array(vec![
+                nana_js_engine::HostValue::Object(
+                    [
+                        ("id".into(), nana_js_engine::HostValue::string("source")),
+                        ("title".into(), nana_js_engine::HostValue::string("Source")),
+                        ("x".into(), nana_js_engine::HostValue::Number(20.0)),
+                        ("y".into(), nana_js_engine::HostValue::Number(24.0)),
+                        ("width".into(), nana_js_engine::HostValue::Number(160.0)),
+                        ("height".into(), nana_js_engine::HostValue::Number(80.0)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                nana_js_engine::HostValue::Object(
+                    [
+                        ("id".into(), nana_js_engine::HostValue::string("sink")),
+                        ("label".into(), nana_js_engine::HostValue::string("Sink")),
+                        ("x".into(), nana_js_engine::HostValue::Number(240.0)),
+                        ("y".into(), nana_js_engine::HostValue::Number(24.0)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            ]),
+        );
+        bridge.register(canvas.0, crate::WidgetKind::GraphCanvas, canvas_props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let calendar_id = StableNodeId::try_from(calendar).unwrap();
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(calendar_id),
+                Some(nana_ui_runtime::StandardVisual::CalendarHeatmap { cells, .. })
+                    if !cells.is_empty() && cells.iter().any(|cell| cell.level > 0)
+            ),
+            "calendar with two data points must not project CalendarHeatmap::new([])"
+        );
+        let markdown_id = StableNodeId::try_from(markdown).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(markdown_id),
+            Some(nana_ui_runtime::StandardVisual::NativeMarkdown { text, .. })
+                if text.contains("Title") && text.contains("Hello world")
+        ));
+        let viewer_id = StableNodeId::try_from(viewer).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(viewer_id),
+            Some(nana_ui_runtime::StandardVisual::ImageViewer { .. })
+        ));
+        let canvas_id = StableNodeId::try_from(canvas).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(canvas_id),
+            Some(nana_ui_runtime::StandardVisual::GraphCanvas { nodes, .. })
+                if nodes.len() == 2
+        ));
+    }
+
+    #[test]
+    fn calendar_options_object_projects_heatmap_metrics() {
+        let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+        let default_calendar = doc.create_element("nana-calendar");
+        let sized_calendar = doc.create_element("nana-calendar");
+        doc.insert(default_calendar, doc.mount_root(), None);
+        doc.insert(sized_calendar, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+
+        let cells = nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+            [
+                (
+                    "date".into(),
+                    nana_js_engine::HostValue::string("2026-06-01"),
+                ),
+                ("value".into(), nana_js_engine::HostValue::Number(4.0)),
+            ]
+            .into_iter()
+            .collect(),
+        )]);
+        let mut default_props = crate::WidgetProps::default();
+        default_props.apply_prop("data", &cells);
+        bridge.register(
+            default_calendar.0,
+            crate::WidgetKind::CalendarHeatmap,
+            default_props,
+        );
+
+        let mut sized_props = crate::WidgetProps::default();
+        sized_props.apply_prop("data", &cells);
+        sized_props.apply_prop(
+            "options",
+            &nana_js_engine::HostValue::Object(
+                [
+                    ("cellSize".into(), nana_js_engine::HostValue::Number(18.0)),
+                    (
+                        "weekStartsOn".into(),
+                        nana_js_engine::HostValue::Number(0.0),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+        bridge.register(
+            sized_calendar.0,
+            crate::WidgetKind::CalendarHeatmap,
+            sized_props,
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let default_id = StableNodeId::try_from(default_calendar).unwrap();
+        let sized_id = StableNodeId::try_from(sized_calendar).unwrap();
+        let Some(nana_ui_runtime::StandardVisual::CalendarHeatmap {
+            cell_size: default_size,
+            cells: default_cells,
+            ..
+        }) = doc.runtime.standard_visual(default_id)
+        else {
+            panic!("default calendar must project a heatmap");
+        };
+        let Some(nana_ui_runtime::StandardVisual::CalendarHeatmap {
+            cell_size: sized,
+            cells: sized_cells,
+            ..
+        }) = doc.runtime.standard_visual(sized_id)
+        else {
+            panic!("options calendar must project a heatmap");
+        };
+        assert_eq!(default_size, 11.0);
+        assert_eq!(sized, 18.0);
+        let default_y = default_cells
+            .iter()
+            .find(|cell| cell.level > 0)
+            .map(|cell| cell.y);
+        let sized_y = sized_cells
+            .iter()
+            .find(|cell| cell.level > 0)
+            .map(|cell| cell.y);
+        assert_ne!(
+            default_y, sized_y,
+            "week_starts_on must shift the first active cell"
+        );
+    }
+
+    fn calendar_sample_cells() -> nana_js_engine::HostValue {
+        nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+            [
+                (
+                    "date".into(),
+                    nana_js_engine::HostValue::string("2026-06-01"),
+                ),
+                ("value".into(), nana_js_engine::HostValue::Number(4.0)),
+            ]
+            .into_iter()
+            .collect(),
+        )])
+    }
+
+    fn project_calendar_with_options(
+        options: nana_js_engine::HostValue,
+    ) -> (
+        NanaTreeDocument,
+        crate::WidgetProps,
+        nana_ui_runtime::StandardVisual,
+    ) {
+        let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+        let calendar = doc.create_element("nana-calendar");
+        doc.insert(calendar, doc.mount_root(), None);
+        let mut props = crate::WidgetProps::default();
+        props.apply_prop("data", &calendar_sample_cells());
+        props.apply_prop("options", &options);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            calendar.0,
+            crate::WidgetKind::CalendarHeatmap,
+            props.clone(),
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let visual = doc
+            .runtime
+            .standard_visual(StableNodeId::try_from(calendar).unwrap())
+            .expect("calendar must project a heatmap");
+        (doc, props, visual)
+    }
+
+    #[test]
+    fn calendar_options_weekday_labels_project_day_labels() {
+        let (_doc, _props, visual) =
+            project_calendar_with_options(nana_js_engine::HostValue::Object(
+                [(
+                    "weekdayLabels".into(),
+                    nana_js_engine::HostValue::Array(vec![
+                        nana_js_engine::HostValue::Array(vec![
+                            nana_js_engine::HostValue::Number(0.0),
+                            nana_js_engine::HostValue::string("Sun"),
+                        ]),
+                        nana_js_engine::HostValue::Object(
+                            [
+                                ("day".into(), nana_js_engine::HostValue::Number(2.0)),
+                                ("label".into(), nana_js_engine::HostValue::string("Tue")),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        ),
+                        nana_js_engine::HostValue::string("Wed"),
+                    ]),
+                )]
+                .into_iter()
+                .collect(),
+            ));
+        let nana_ui_runtime::StandardVisual::CalendarHeatmap { day_labels, .. } = visual else {
+            panic!("calendar must project a heatmap");
+        };
+        let labels: Vec<&str> = day_labels.iter().map(|label| label.text.as_ref()).collect();
+        assert!(labels.contains(&"Sun"), "pair weekday labels must project");
+        assert!(
+            labels.contains(&"Tue"),
+            "object weekday labels must project"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("周")),
+            "custom weekday labels replace the default 周* set"
+        );
+    }
+
+    #[test]
+    fn calendar_options_month_format_changes_month_label() {
+        let (_doc, default_props, default_visual) =
+            project_calendar_with_options(nana_js_engine::HostValue::Object(BTreeMap::new()));
+        let (_doc, formatted_props, formatted_visual) =
+            project_calendar_with_options(nana_js_engine::HostValue::Object(
+                [(
+                    "monthFormat".into(),
+                    nana_js_engine::HostValue::string("{year}-{monthPad}"),
+                )]
+                .into_iter()
+                .collect(),
+            ));
+        let nana_ui_runtime::StandardVisual::CalendarHeatmap {
+            month_labels: default_months,
+            ..
+        } = default_visual
+        else {
+            panic!("default calendar must project a heatmap");
+        };
+        let nana_ui_runtime::StandardVisual::CalendarHeatmap {
+            month_labels: formatted_months,
+            ..
+        } = formatted_visual
+        else {
+            panic!("formatted calendar must project a heatmap");
+        };
+        assert!(
+            default_months
+                .iter()
+                .any(|label| label.text.as_ref() == "6月"),
+            "default month formatter is {{month}}月"
+        );
+        assert!(
+            formatted_months
+                .iter()
+                .any(|label| label.text.as_ref() == "2026-06"),
+            "monthFormat {{year}}-{{monthPad}} must change the painted month label"
+        );
+        let default_model = nana_ui_runtime::build_calendar_heatmap_model(
+            &calendar_data_from_props(&default_props),
+            calendar_options_from_props(&default_props),
+        );
+        let formatted_model = nana_ui_runtime::build_calendar_heatmap_model(
+            &calendar_data_from_props(&formatted_props),
+            calendar_options_from_props(&formatted_props),
+        );
+        assert_ne!(default_model.month_labels, formatted_model.month_labels);
+    }
+
+    #[test]
+    fn calendar_options_title_format_changes_cell_title() {
+        let mut default_props = crate::WidgetProps::default();
+        default_props.apply_prop("data", &calendar_sample_cells());
+        let mut formatted_props = crate::WidgetProps::default();
+        formatted_props.apply_prop("data", &calendar_sample_cells());
+        formatted_props.apply_prop(
+            "options",
+            &nana_js_engine::HostValue::Object(
+                [(
+                    "titleFormat".into(),
+                    nana_js_engine::HostValue::string("{date}={value}"),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        );
+        let default_model = nana_ui_runtime::build_calendar_heatmap_model(
+            &calendar_data_from_props(&default_props),
+            calendar_options_from_props(&default_props),
+        );
+        let formatted_model = nana_ui_runtime::build_calendar_heatmap_model(
+            &calendar_data_from_props(&formatted_props),
+            calendar_options_from_props(&formatted_props),
+        );
+        assert!(
+            default_model
+                .cells
+                .iter()
+                .any(|cell| cell.date == "2026-06-01" && cell.title == "2026-06-01: 4"),
+            "default title formatter is {{date}}: {{value}}"
+        );
+        assert!(
+            formatted_model
+                .cells
+                .iter()
+                .any(|cell| cell.date == "2026-06-01" && cell.title == "2026-06-01=4"),
+            "titleFormat {{date}}={{value}} must change the model cell title"
+        );
+        let (_doc, _, visual) = project_calendar_with_options(nana_js_engine::HostValue::Object(
+            [(
+                "titleFormat".into(),
+                nana_js_engine::HostValue::string("{date}={value}"),
+            )]
+            .into_iter()
+            .collect(),
+        ));
+        assert!(matches!(
+            visual,
+            nana_ui_runtime::StandardVisual::CalendarHeatmap { .. }
+        ));
+    }
+
+    #[test]
+    fn calendar_options_function_formatter_keeps_default() {
+        let (_doc, props, visual) =
+            project_calendar_with_options(nana_js_engine::HostValue::Object(
+                [
+                    (
+                        "monthFormatter".into(),
+                        nana_js_engine::HostValue::Function(nana_js_engine::JsFunctionId(11)),
+                    ),
+                    (
+                        "titleFormatter".into(),
+                        nana_js_engine::HostValue::Function(nana_js_engine::JsFunctionId(12)),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ));
+        let nana_ui_runtime::StandardVisual::CalendarHeatmap { month_labels, .. } = visual else {
+            panic!("function formatters must still project a heatmap");
+        };
+        assert!(
+            month_labels
+                .iter()
+                .any(|label| label.text.as_ref() == "6月"),
+            "Function-valued monthFormatter is ignored"
+        );
+        let model = nana_ui_runtime::build_calendar_heatmap_model(
+            &calendar_data_from_props(&props),
+            calendar_options_from_props(&props),
+        );
+        assert!(
+            model
+                .cells
+                .iter()
+                .any(|cell| cell.date == "2026-06-01" && cell.title == "2026-06-01: 4"),
+            "Function-valued titleFormatter is ignored"
+        );
+    }
+
+    fn settings_page_model_value(
+        tabs: &[(&str, &str, bool)],
+        default_tab: &str,
+        hide_header: bool,
+    ) -> nana_js_engine::HostValue {
+        nana_js_engine::HostValue::Object(
+            [
+                (
+                    "tabs".into(),
+                    nana_js_engine::HostValue::Array(
+                        tabs.iter()
+                            .map(|(key, label, full_page)| {
+                                nana_js_engine::HostValue::Object(
+                                    [
+                                        ("key".into(), nana_js_engine::HostValue::string(*key)),
+                                        ("label".into(), nana_js_engine::HostValue::string(*label)),
+                                        (
+                                            "fullPage".into(),
+                                            nana_js_engine::HostValue::Bool(*full_page),
+                                        ),
+                                    ]
+                                    .into_iter()
+                                    .collect(),
+                                )
+                            })
+                            .collect(),
+                    ),
+                ),
+                (
+                    "defaultTab".into(),
+                    nana_js_engine::HostValue::string(default_tab),
+                ),
+                (
+                    "hideHeader".into(),
+                    nana_js_engine::HostValue::Bool(hide_header),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    fn sync_settings_page(
+        settings: nana_js_engine::HostValue,
+        tab: Option<&str>,
+        hide_header: Option<bool>,
+    ) -> (NanaTreeDocument, StableNodeId, StableNodeId) {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let page = doc.create_element("nana-settings-page");
+        let content = doc.create_element("div");
+        doc.insert(page, doc.mount_root(), None);
+        doc.insert(content, page, None);
+        let mut props = crate::WidgetProps::default();
+        props.apply_prop("settings", &settings);
+        if let Some(tab) = tab {
+            props.apply_prop("tab", &nana_js_engine::HostValue::string(tab));
+        }
+        if let Some(hide_header) = hide_header {
+            props.apply_prop("hide-header", &nana_js_engine::HostValue::Bool(hide_header));
+        }
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(page.0, crate::WidgetKind::SettingsPage, props);
+        bridge.register(
+            content.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.insert_child(content.0, page.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        (
+            doc,
+            StableNodeId::try_from(page).unwrap(),
+            StableNodeId::try_from(content).unwrap(),
+        )
+    }
+
+    fn settings_page_assembly(
+        doc: &NanaTreeDocument,
+        page: StableNodeId,
+    ) -> nana_ui_runtime::SettingsPageAssembly {
+        doc.context()
+            .read(
+                Entity::<RuntimeSettingsPage>::from_stable_id(page),
+                |page| page.assembly.clone().unwrap_or_default(),
+            )
+            .expect("SettingsPage must be bound after sync")
+    }
+
+    fn world_has_descendant(
+        doc: &NanaTreeDocument,
+        root: StableNodeId,
+        target: StableNodeId,
+    ) -> bool {
+        let Some(node) = doc.runtime.node(root) else {
+            return false;
+        };
+        node.children
+            .iter()
+            .any(|child| *child == target || world_has_descendant(doc, *child, target))
+    }
+
+    #[test]
+    fn settings_page_widget_kind_parses_host_tag() {
+        assert_eq!(
+            crate::WidgetKind::parse("nana-settings-page"),
+            Some(crate::WidgetKind::SettingsPage)
+        );
+        assert_eq!(
+            crate::WidgetKind::parse("settings-page"),
+            Some(crate::WidgetKind::SettingsPage)
+        );
+        assert_eq!(
+            crate::WidgetKind::parse("settingspage"),
+            Some(crate::WidgetKind::SettingsPage)
+        );
+        assert_eq!(
+            crate::WidgetKind::SettingsPage.element_tag(),
+            "nana-settings-page"
+        );
+    }
+
+    #[test]
+    fn settings_page_assembles_scroll_body_title() {
+        let (doc, page, content) = sync_settings_page(
+            settings_page_model_value(&[("appearance", "外观", false)], "appearance", false),
+            Some("appearance"),
+            None,
+        );
+        let assembly = settings_page_assembly(&doc, page);
+        let scroll = assembly
+            .scroll
+            .expect("assemble_settings_page mounts scroll");
+        let body = assembly.body.expect("assemble_settings_page mounts body");
+        let title = assembly.title.expect("assemble_settings_page mounts title");
+        assert_eq!(doc.runtime.node(page).unwrap().children, vec![scroll]);
+        assert_eq!(
+            doc.runtime.node(scroll).unwrap().kind,
+            NodeKind::Element {
+                tag: "scroll".into(),
+            }
+        );
+        assert!(
+            doc.runtime
+                .node_style(scroll)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert_eq!(doc.runtime.node(scroll).unwrap().children, vec![body]);
+        assert_eq!(
+            doc.runtime.node(body).unwrap().children,
+            vec![title, content]
+        );
+        assert_eq!(doc.runtime.text(title), Some("外观"));
+    }
+
+    #[test]
+    fn settings_page_resync_reuses_scroll_body_title() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let page = doc.create_element("nana-settings-page");
+        let content = doc.create_element("div");
+        doc.insert(page, doc.mount_root(), None);
+        doc.insert(content, page, None);
+        let mut props = crate::WidgetProps::default();
+        props.apply_prop(
+            "settings",
+            &settings_page_model_value(&[("appearance", "外观", false)], "appearance", false),
+        );
+        props.apply_prop("tab", &nana_js_engine::HostValue::string("appearance"));
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(page.0, crate::WidgetKind::SettingsPage, props.clone());
+        bridge.register(
+            content.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.insert_child(content.0, page.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let page_id = StableNodeId::try_from(page).unwrap();
+        let content_id = StableNodeId::try_from(content).unwrap();
+        let first = settings_page_assembly(&doc, page_id);
+        let scroll = first.scroll.expect("assemble_settings_page mounts scroll");
+        let body = first.body.expect("assemble_settings_page mounts body");
+        let title = first.title.expect("assemble_settings_page mounts title");
+
+        bridge.insert_child(content.0, page.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let second = settings_page_assembly(&doc, page_id);
+        assert_eq!(second.scroll, Some(scroll));
+        assert_eq!(second.body, Some(body));
+        assert_eq!(second.title, Some(title));
+        assert_eq!(
+            doc.runtime.node(body).unwrap().children,
+            vec![title, content_id]
+        );
+        assert_eq!(doc.runtime.text(title), Some("外观"));
+    }
+
+    #[test]
+    fn settings_page_hide_header_omits_title() {
+        let (doc, page, content) = sync_settings_page(
+            settings_page_model_value(&[("appearance", "外观", false)], "appearance", true),
+            Some("appearance"),
+            Some(true),
+        );
+        let assembly = settings_page_assembly(&doc, page);
+        let body = assembly.body.expect("hide-header still mounts scroll body");
+        assert_eq!(doc.runtime.node(body).unwrap().children, vec![content]);
+        assert!(
+            assembly.title.is_none() || !world_has_descendant(&doc, page, assembly.title.unwrap())
+        );
+        assert_ne!(doc.runtime.text(page), Some("外观"));
+    }
+
+    #[test]
+    fn settings_page_full_page_omits_title() {
+        let (doc, page, content) = sync_settings_page(
+            settings_page_model_value(&[("workspace", "工作区", true)], "workspace", false),
+            Some("workspace"),
+            None,
+        );
+        let assembly = settings_page_assembly(&doc, page);
+        assert_eq!(doc.runtime.node(page).unwrap().children, vec![content]);
+        assert!(
+            assembly.title.is_none() || !world_has_descendant(&doc, page, assembly.title.unwrap())
+        );
+        if let Some(scroll) = assembly.scroll {
+            assert!(!world_has_descendant(&doc, page, scroll));
+        }
+        assert_ne!(doc.runtime.text(page), Some("工作区"));
+    }
+
+    #[test]
+    fn graph_viewport_and_selection_survive_projection() {
+        let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+        let canvas = doc.create_element("nana-graph-canvas");
+        doc.insert(canvas, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps {
+            label: "Graph".into(),
+            ..Default::default()
+        };
+        props.apply_prop(
+            "nodes",
+            &nana_js_engine::HostValue::Array(vec![
+                nana_js_engine::HostValue::Object(
+                    [
+                        ("id".into(), nana_js_engine::HostValue::string("source")),
+                        ("title".into(), nana_js_engine::HostValue::string("Source")),
+                        ("x".into(), nana_js_engine::HostValue::Number(20.0)),
+                        ("y".into(), nana_js_engine::HostValue::Number(24.0)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                nana_js_engine::HostValue::Object(
+                    [
+                        ("id".into(), nana_js_engine::HostValue::string("sink")),
+                        ("label".into(), nana_js_engine::HostValue::string("Sink")),
+                        ("x".into(), nana_js_engine::HostValue::Number(240.0)),
+                        ("y".into(), nana_js_engine::HostValue::Number(24.0)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            ]),
+        );
+        props.apply_prop(
+            "viewport",
+            &nana_js_engine::HostValue::Object(
+                [
+                    (
+                        "offset".into(),
+                        nana_js_engine::HostValue::Object(
+                            [
+                                ("x".into(), nana_js_engine::HostValue::Number(12.0)),
+                                ("y".into(), nana_js_engine::HostValue::Number(-8.0)),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        ),
+                    ),
+                    ("zoom".into(), nana_js_engine::HostValue::Number(2.0)),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+        props.apply_prop(
+            "selection",
+            &nana_js_engine::HostValue::Object(
+                [
+                    ("kind".into(), nana_js_engine::HostValue::string("node")),
+                    ("id".into(), nana_js_engine::HostValue::string("source")),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+        bridge.register(canvas.0, crate::WidgetKind::GraphCanvas, props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let canvas_id = StableNodeId::try_from(canvas).unwrap();
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(canvas_id),
+                Some(nana_ui_runtime::StandardVisual::GraphCanvas {
+                    viewport_offset_x,
+                    viewport_offset_y,
+                    viewport_zoom,
+                    nodes,
+                    ..
+                }) if viewport_offset_x == 12.0
+                    && viewport_offset_y == -8.0
+                    && viewport_zoom == 2.0
+                    && nodes.iter().any(|node| node.selected)
+            ),
+            "viewport zoom/offset and selection must survive GraphCanvas projection"
+        );
+    }
+
+    #[test]
+    fn app_shell_with_title_and_child_projects_title_bar_and_body() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let shell = doc.create_element("nana-app-shell");
+        let title_bar = doc.create_element("nana-app-title-bar");
+        let body = doc.create_element("div");
+        doc.insert(shell, doc.mount_root(), None);
+        doc.insert(title_bar, shell, None);
+        doc.insert(body, shell, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut title_props = crate::WidgetProps {
+            label: "Nana".into(),
+            element_tag: "nana-app-title-bar".into(),
+            ..Default::default()
+        };
+        title_props
+            .attrs
+            .insert("data-slot".into(), "title-bar".into());
+        title_props.class_names.push("nana-app-title-bar".into());
+        bridge.register(title_bar.0, crate::WidgetKind::Column, title_props);
+        bridge.register(
+            body.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                label: "Workspace".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            shell.0,
+            crate::WidgetKind::AppShell,
+            crate::WidgetProps {
+                label: "Nana".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(title_bar.0, shell.0, None);
+        bridge.insert_child(body.0, shell.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let title_id = StableNodeId::try_from(title_bar).unwrap();
+        let body_id = StableNodeId::try_from(body).unwrap();
+        let title_style = doc.runtime.node_style(title_id).unwrap();
+        let body_style = doc.runtime.node_style(body_id).unwrap();
+        assert_eq!(
+            title_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Px(nana_ui_core::TITLE_BAR_HEIGHT))
+        );
+        assert_eq!(title_style.layout.flex_grow, Some(0.0));
+        assert_eq!(doc.runtime.text(title_id), Some("Nana"));
+        assert_eq!(body_style.layout.flex_grow, Some(1.0));
+        assert_eq!(
+            body_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+    }
+
+    #[test]
+    fn app_shell_title_bar_and_body_keep_layout_after_assemble() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let shell = doc.create_element("nana-app-shell");
+        let title_bar = doc.create_element("nana-app-title-bar");
+        let body = doc.create_element("div");
+        doc.insert(shell, doc.mount_root(), None);
+        doc.insert(title_bar, shell, None);
+        doc.insert(body, shell, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut title_props = crate::WidgetProps {
+            label: "Nana".into(),
+            element_tag: "nana-app-title-bar".into(),
+            ..Default::default()
+        };
+        title_props
+            .attrs
+            .insert("data-slot".into(), "title-bar".into());
+        title_props.class_names.push("nana-app-title-bar".into());
+        bridge.register(title_bar.0, crate::WidgetKind::Column, title_props);
+        bridge.register(
+            body.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                label: "Workspace".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            shell.0,
+            crate::WidgetKind::AppShell,
+            crate::WidgetProps {
+                label: "Nana".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(title_bar.0, shell.0, None);
+        bridge.insert_child(body.0, shell.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let shell_id = StableNodeId::try_from(shell).unwrap();
+        let title_id = StableNodeId::try_from(title_bar).unwrap();
+        let body_id = StableNodeId::try_from(body).unwrap();
+        let (bound_title, bound_body, bound_overlay) = doc
+            .context()
+            .read(
+                Entity::<RuntimeAppShell>::from_stable_id(shell_id),
+                |shell| (shell.title_bar, shell.body, shell.overlay),
+            )
+            .unwrap();
+        assert_eq!(bound_title, Some(title_id));
+        assert_eq!(bound_body, Some(body_id));
+        assert_eq!(bound_overlay, None);
+        assert_eq!(
+            doc.runtime.node(shell_id).unwrap().children,
+            vec![title_id, body_id]
+        );
+        let title_style = doc.runtime.node_style(title_id).unwrap();
+        let body_style = doc.runtime.node_style(body_id).unwrap();
+        assert_eq!(
+            title_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Px(nana_ui_core::TITLE_BAR_HEIGHT))
+        );
+        assert_eq!(title_style.layout.flex_grow, Some(0.0));
+        assert_eq!(body_style.layout.flex_grow, Some(1.0));
+        assert_eq!(
+            body_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+    }
+
+    #[test]
+    fn split_pane_two_children_vertical_sets_slots_and_axis() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let pane = doc.create_element("nana-split-pane");
+        let first = doc.create_element("div");
+        let second = doc.create_element("div");
+        doc.insert(pane, doc.mount_root(), None);
+        doc.insert(first, pane, None);
+        doc.insert(second, pane, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps {
+            element_tag: "nana-split-pane".into(),
+            ..Default::default()
+        };
+        props.apply_prop("axis", &nana_js_engine::HostValue::string("vertical"));
+        bridge.register(pane.0, crate::WidgetKind::SplitPane, props);
+        bridge.register(
+            first.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.register(
+            second.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.insert_child(first.0, pane.0, None);
+        bridge.insert_child(second.0, pane.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let pane_id = StableNodeId::try_from(pane).unwrap();
+        let first_id = StableNodeId::try_from(first).unwrap();
+        let second_id = StableNodeId::try_from(second).unwrap();
+        assert_eq!(
+            doc.runtime.node_style(pane_id).unwrap().layout.direction,
+            Some(nana_ui_core::FlexDirection::Column)
+        );
+        let first_style = doc.runtime.node_style(first_id).unwrap();
+        let second_style = doc.runtime.node_style(second_id).unwrap();
+        assert_eq!(
+            first_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Px(240.0))
+        );
+        assert_eq!(first_style.layout.flex_grow, Some(0.0));
+        assert_eq!(
+            second_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+        assert_eq!(second_style.layout.flex_grow, Some(1.0));
+    }
+
+    #[test]
+    fn split_pane_two_children_assemble_binds_resize_handle() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let pane = doc.create_element("nana-split-pane");
+        let first = doc.create_element("div");
+        let second = doc.create_element("div");
+        doc.insert(pane, doc.mount_root(), None);
+        doc.insert(first, pane, None);
+        doc.insert(second, pane, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps {
+            element_tag: "nana-split-pane".into(),
+            ..Default::default()
+        };
+        props.apply_prop("axis", &nana_js_engine::HostValue::string("vertical"));
+        bridge.register(pane.0, crate::WidgetKind::SplitPane, props);
+        bridge.register(
+            first.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.register(
+            second.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.insert_child(first.0, pane.0, None);
+        bridge.insert_child(second.0, pane.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let pane_id = StableNodeId::try_from(pane).unwrap();
+        let first_id = StableNodeId::try_from(first).unwrap();
+        let second_id = StableNodeId::try_from(second).unwrap();
+        let handle = doc
+            .context()
+            .read(
+                Entity::<RuntimeSplitPane>::from_stable_id(pane_id),
+                |pane| pane.handle,
+            )
+            .unwrap()
+            .expect("assemble_split_pane creates a handle");
+        assert!(
+            doc.context().is_split_handle(handle),
+            "assembled handle must be a split-pane resize target"
+        );
+        assert_eq!(
+            doc.runtime.node(pane_id).unwrap().children,
+            vec![first_id, handle, second_id]
+        );
+        let first_style = doc.runtime.node_style(first_id).unwrap();
+        let second_style = doc.runtime.node_style(second_id).unwrap();
+        assert_eq!(
+            first_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Px(240.0))
+        );
+        assert_eq!(
+            second_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+    }
+
+    #[test]
+    fn split_pane_resync_reuses_handle() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let pane = doc.create_element("nana-split-pane");
+        let first = doc.create_element("div");
+        let second = doc.create_element("div");
+        doc.insert(pane, doc.mount_root(), None);
+        doc.insert(first, pane, None);
+        doc.insert(second, pane, None);
+        let mut props = crate::WidgetProps {
+            element_tag: "nana-split-pane".into(),
+            ..Default::default()
+        };
+        props.apply_prop("axis", &nana_js_engine::HostValue::string("vertical"));
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(pane.0, crate::WidgetKind::SplitPane, props.clone());
+        bridge.register(
+            first.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.register(
+            second.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.insert_child(first.0, pane.0, None);
+        bridge.insert_child(second.0, pane.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let pane_id = StableNodeId::try_from(pane).unwrap();
+        let first_id = StableNodeId::try_from(first).unwrap();
+        let second_id = StableNodeId::try_from(second).unwrap();
+        let handle = doc
+            .context()
+            .read(
+                Entity::<RuntimeSplitPane>::from_stable_id(pane_id),
+                |pane| pane.handle,
+            )
+            .unwrap()
+            .expect("assemble_split_pane creates a handle");
+
+        bridge.patch_prop(
+            pane.0,
+            "axis",
+            &nana_js_engine::HostValue::string("vertical"),
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let handle_again = doc
+            .context()
+            .read(
+                Entity::<RuntimeSplitPane>::from_stable_id(pane_id),
+                |pane| pane.handle,
+            )
+            .unwrap()
+            .expect("resync keeps a handle");
+        assert_eq!(handle_again, handle);
+        assert!(
+            doc.context().is_split_handle(handle),
+            "resync must keep the same resize handle identity"
+        );
+        let children = doc.runtime.node(pane_id).unwrap().children;
+        assert!(children.contains(&handle));
+        assert!(children.contains(&first_id));
+        assert!(children.contains(&second_id));
+    }
+
+    #[test]
+    fn dock_two_item_children_are_not_dummy_dock_item() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let dock = doc.create_element("nana-dock");
+        let nav = doc.create_element("div");
+        let files = doc.create_element("div");
+        doc.insert(dock, doc.mount_root(), None);
+        doc.insert(nav, dock, None);
+        doc.insert(files, dock, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut nav_props = crate::WidgetProps {
+            label: "Nav".into(),
+            ..Default::default()
+        };
+        nav_props.attrs.insert("data-dock-id".into(), "nav".into());
+        let mut files_props = crate::WidgetProps {
+            label: "Files".into(),
+            ..Default::default()
+        };
+        files_props
+            .attrs
+            .insert("data-dock-id".into(), "files".into());
+        bridge.register(
+            dock.0,
+            crate::WidgetKind::Dock,
+            crate::WidgetProps::default(),
+        );
+        bridge.register(nav.0, crate::WidgetKind::Column, nav_props);
+        bridge.register(files.0, crate::WidgetKind::Column, files_props);
+        bridge.insert_child(nav.0, dock.0, None);
+        bridge.insert_child(files.0, dock.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let dock_id = StableNodeId::try_from(dock).unwrap();
+        let nav_id = StableNodeId::try_from(nav).unwrap();
+        let files_id = StableNodeId::try_from(files).unwrap();
+        let items = doc
+            .context()
+            .read(Entity::<RuntimeDock>::from_stable_id(dock_id), |dock| {
+                dock.flatten()
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_ne!(
+            items.as_slice(),
+            ["dock"],
+            "dock with two item children must not project DockNode::item(\"dock\", None)"
+        );
+        assert_eq!(items, ["nav", "files"]);
+        assert!(
+            doc.runtime.node_style(files_id).unwrap().layout.hidden,
+            "inactive dock tab body is hidden"
+        );
+        let children = doc.runtime.node(dock_id).unwrap().children;
+        assert!(
+            children.len() > 2,
+            "assemble_dock must mount chrome beyond the two content nodes"
+        );
+        assert!(children.contains(&nav_id));
+        assert!(children.contains(&files_id));
+        assert!(
+            children.iter().any(|child| {
+                doc.runtime
+                    .accessibility(*child)
+                    .is_some_and(|state| state.role == AccessibilityRole::TabList)
+            }),
+            "assemble_dock mounts a tab-strip chrome node"
+        );
+    }
+
+    #[test]
+    fn workspace_region_child_records_region_slot() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let workspace = doc.create_element("nana-workspace");
+        let primary = doc.create_element("div");
+        doc.insert(workspace, doc.mount_root(), None);
+        doc.insert(primary, workspace, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut region_props = crate::WidgetProps {
+            region: "primary".into(),
+            ..Default::default()
+        };
+        region_props
+            .attrs
+            .insert("data-region".into(), "primary".into());
+        bridge.register(
+            workspace.0,
+            crate::WidgetKind::Workspace,
+            crate::WidgetProps::default(),
+        );
+        bridge.register(primary.0, crate::WidgetKind::Column, region_props);
+        bridge.insert_child(primary.0, workspace.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let workspace_id = StableNodeId::try_from(workspace).unwrap();
+        let primary_id = StableNodeId::try_from(primary).unwrap();
+        let label = doc
+            .runtime
+            .accessibility(primary_id)
+            .and_then(|state| state.label.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            label.as_ref(),
+            "primary",
+            "workspace region child must be recorded as a WorkspaceRegionSlot"
+        );
+        let (middle, primary_column, primary_row) = doc
+            .context()
+            .read(
+                Entity::<RuntimeWorkspace>::from_stable_id(workspace_id),
+                |workspace| {
+                    (
+                        workspace.middle,
+                        workspace.primary_column,
+                        workspace.primary_row,
+                    )
+                },
+            )
+            .unwrap();
+        assert!(
+            middle.is_some(),
+            "assemble_workspace creates the middle track"
+        );
+        assert!(
+            primary_column.is_some(),
+            "assemble_workspace creates the primary column"
+        );
+        assert!(
+            primary_row.is_some(),
+            "assemble_workspace creates the primary row"
+        );
+        let children = doc.runtime.node(workspace_id).unwrap().children;
+        assert!(
+            children.contains(&middle.unwrap()) || children.len() > 1,
+            "assemble_workspace mounts track hosts as extra child ids"
+        );
+    }
+
+    #[test]
+    fn markdown_mermaid_and_math_fences_project_native_blocks() {
+        let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+        let markdown = doc.create_element("nana-markdown");
+        doc.insert(markdown, doc.mount_root(), None);
+        let source =
+            "# Title\n\n```mermaid\nflowchart LR\nA-->B\n```\n\n```math\n\\frac{1}{2}\n```";
+        let parsed = RuntimeNativeMarkdown::from_source(source);
+        assert!(
+            parsed
+                .blocks()
+                .iter()
+                .any(|block| matches!(block, nana_ui_runtime::MarkdownBlock::Mermaid(_)))
+        );
+        assert!(
+            parsed
+                .blocks()
+                .iter()
+                .any(|block| matches!(block, nana_ui_runtime::MarkdownBlock::DisplayMath(_)))
+        );
+
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps {
+            value: source.into(),
+            ..Default::default()
+        };
+        props.apply_prop(
+            "mermaidRenderer",
+            &nana_js_engine::HostValue::string("app-mermaid"),
+        );
+        props.apply_prop(
+            "mathRenderer",
+            &nana_js_engine::HostValue::string("app-math"),
+        );
+        bridge.register(markdown.0, crate::WidgetKind::NativeMarkdown, props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let markdown_id = StableNodeId::try_from(markdown).unwrap();
+        let expected = parsed.plain_text();
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(markdown_id),
+                Some(nana_ui_runtime::StandardVisual::NativeMarkdown { text, .. })
+                    if text.as_ref() == expected
+                        && text.contains("flowchart LR")
+                        && text.contains("\\frac{1}{2}")
+            ),
+            "Vue NativeMarkdown must project mermaid/math fences through from_source"
+        );
+        assert!(
+            doc.runtime.custom_render(markdown_id).is_none(),
+            "mermaid/math stay on NativeMarkdown; Vue must not invent a renderer"
+        );
+        let children = doc.runtime.node(markdown_id).unwrap().children;
+        assert!(
+            children.iter().any(|child| {
+                doc.runtime
+                    .highlight_request(*child)
+                    .is_some_and(|request| {
+                        request.presenter.as_ref() == RuntimeNativeMarkdown::MERMAID_PRESENTER
+                    })
+            }),
+            "assemble_markdown attaches a mermaid fence child"
+        );
+        assert!(
+            children.iter().any(|child| {
+                doc.runtime
+                    .node_style(*child)
+                    .is_some_and(|style| style.layout.hidden)
+            }),
+            "fence children stay hidden identity slots"
+        );
     }
 
     #[test]

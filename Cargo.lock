@@ -4740,6 +4740,7 @@ dependencies = [
  "bevy_ecs",
  "futures-core",
  "nana-ui-core",
+ "pulldown-cmark 0.13.4",
  "qrcode",
  "serde",
  "serde_json",

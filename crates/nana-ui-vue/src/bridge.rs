@@ -93,6 +93,28 @@ pub enum WidgetKind {
     XYPad,
     /// Scanner-safe QR matrix → Runtime `QrCode` when modules are supplied.
     QrCode,
+    /// Modal command list → Runtime `CommandPalette`.
+    CommandPalette,
+    /// Flattened disclosure tree → Runtime `TreeView`.
+    TreeView,
+    /// Contribution heatmap leaf → Runtime `CalendarHeatmap` (never SVG path-d).
+    CalendarHeatmap,
+    /// Host-texture image overlay → Runtime `ImageViewer`.
+    ImageViewer,
+    /// Parsed markdown leaf → Runtime `NativeMarkdown`.
+    NativeMarkdown,
+    /// Node/edge canvas → Runtime `GraphCanvas`.
+    GraphCanvas,
+    /// Workspace chrome → Runtime `Workspace` (region children become slots).
+    Workspace,
+    /// Dock chrome → Runtime `Dock` (children / `layout` / `root` become items).
+    Dock,
+    /// Split chrome → Runtime `SplitPane` (first two children are panes).
+    SplitPane,
+    /// App shell chrome → Runtime `AppShell` (title bar + body + overlay slots).
+    AppShell,
+    /// Settings content chrome → Runtime `SettingsPage` (header + scroll).
+    SettingsPage,
 }
 
 impl WidgetKind {
@@ -143,6 +165,17 @@ impl WidgetKind {
             "action-menu-item" | "actionmenuitem" => Self::ActionMenuItem,
             "xy-pad" | "xypad" | "xy_pad" => Self::XYPad,
             "qr-code" | "qr" | "qrcode" => Self::QrCode,
+            "command-palette" | "commandpalette" => Self::CommandPalette,
+            "tree-view" | "treeview" => Self::TreeView,
+            "calendar" | "calendar-heatmap" => Self::CalendarHeatmap,
+            "image-viewer" | "imageviewer" => Self::ImageViewer,
+            "markdown" | "native-markdown" | "nativemarkdown" => Self::NativeMarkdown,
+            "graph-canvas" | "graphcanvas" => Self::GraphCanvas,
+            "workspace" => Self::Workspace,
+            "dock" => Self::Dock,
+            "split-pane" | "splitpane" => Self::SplitPane,
+            "app-shell" | "appshell" => Self::AppShell,
+            "settings-page" | "settingspage" => Self::SettingsPage,
             _ => return None,
         })
     }
@@ -190,6 +223,17 @@ impl WidgetKind {
             Self::ActionMenuItem => "action-menu-item",
             Self::XYPad => "xy-pad",
             Self::QrCode => "qr-code",
+            Self::CommandPalette => "command-palette",
+            Self::TreeView => "tree-view",
+            Self::CalendarHeatmap => "calendar-heatmap",
+            Self::ImageViewer => "image-viewer",
+            Self::NativeMarkdown => "native-markdown",
+            Self::GraphCanvas => "graph-canvas",
+            Self::Workspace => "workspace",
+            Self::Dock => "dock",
+            Self::SplitPane => "split-pane",
+            Self::AppShell => "app-shell",
+            Self::SettingsPage => "settings-page",
         }
     }
 
@@ -236,6 +280,17 @@ impl WidgetKind {
             Self::ActionMenuItem => "nana-action-menu-item",
             Self::XYPad => "nana-xy-pad",
             Self::QrCode => "nana-qr-code",
+            Self::CommandPalette => "nana-command-palette",
+            Self::TreeView => "nana-tree-view",
+            Self::CalendarHeatmap => "nana-calendar",
+            Self::ImageViewer => "nana-image-viewer",
+            Self::NativeMarkdown => "nana-markdown",
+            Self::GraphCanvas => "nana-graph-canvas",
+            Self::Workspace => "nana-workspace",
+            Self::Dock => "nana-dock",
+            Self::SplitPane => "nana-split-pane",
+            Self::AppShell => "nana-app-shell",
+            Self::SettingsPage => "nana-settings-page",
         }
     }
 
@@ -262,6 +317,8 @@ impl WidgetKind {
                 | Self::Toast
                 | Self::Tooltip
                 | Self::ActionMenu
+                | Self::CommandPalette
+                | Self::ImageViewer
         )
     }
 }
@@ -433,6 +490,20 @@ impl WidgetProps {
             }
         }
         match key.as_str() {
+            "data" | "nodes" | "edges" | "model" | "source" | "markdown" | "tree" | "items"
+            | "viewport" | "selection" | "layout" | "root" | "axis" | "size" | "default-size"
+            | "min" | "max" | "settings" | "tab" | "hide-header" => {
+                self.persist_native_payload(&key, value);
+            }
+            "options" => {
+                self.persist_native_payload(&key, value);
+            }
+            "mermaid-renderer" | "math-renderer" => {
+                self.persist_native_payload(&key, value);
+            }
+            _ => {}
+        }
+        match key.as_str() {
             "label" | "text" | "title" => self.label = host_string(value),
             "aria-label" | "arialabel" => {
                 let s = host_string(value);
@@ -515,6 +586,12 @@ impl WidgetProps {
                 }
             }
             "value" => {
+                if matches!(
+                    value,
+                    nana_js_engine::HostValue::Array(_) | nana_js_engine::HostValue::Object(_)
+                ) {
+                    self.persist_native_payload("value", value);
+                }
                 if value.as_bool().is_some() {
                     self.toggled = host_truthy(value);
                 } else {
@@ -621,6 +698,22 @@ impl WidgetProps {
                     self.value = s;
                 }
             }
+            "src" | "data-src" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("src");
+                    if key == "data-src" {
+                        self.attrs.remove("data-src");
+                    }
+                    self.native_props.remove("src");
+                } else {
+                    self.attrs.insert("src".into(), s.clone());
+                    if key == "data-src" {
+                        self.attrs.insert("data-src".into(), s.clone());
+                    }
+                    self.persist_native_payload("src", value);
+                }
+            }
             "module-width" | "modules-width" => {
                 let s = host_string(value);
                 if s.is_empty() {
@@ -634,6 +727,34 @@ impl WidgetProps {
                 self.attrs.insert("tone".into(), s.clone());
                 if key == "data-tone" {
                     self.attrs.insert("data-tone".into(), s);
+                }
+            }
+            "mermaid-renderer" | "data-mermaid-renderer" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("mermaid-renderer");
+                    if key == "data-mermaid-renderer" {
+                        self.attrs.remove("data-mermaid-renderer");
+                    }
+                } else {
+                    self.attrs.insert("mermaid-renderer".into(), s.clone());
+                    if key == "data-mermaid-renderer" {
+                        self.attrs.insert("data-mermaid-renderer".into(), s);
+                    }
+                }
+            }
+            "math-renderer" | "data-math-renderer" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("math-renderer");
+                    if key == "data-math-renderer" {
+                        self.attrs.remove("data-math-renderer");
+                    }
+                } else {
+                    self.attrs.insert("math-renderer".into(), s.clone());
+                    if key == "data-math-renderer" {
+                        self.attrs.insert("data-math-renderer".into(), s);
+                    }
                 }
             }
             "intent" | "data-intent" => {
@@ -787,6 +908,14 @@ impl WidgetProps {
                 self.attrs.insert("role".into(), self.role.clone());
             }
             "side" | "drawer-side" | "placement" => self.side = host_string(value),
+            "axis" => {
+                let axis = host_string(value);
+                if !axis.is_empty() {
+                    self.attrs.insert("axis".into(), axis);
+                } else {
+                    self.attrs.remove("axis");
+                }
+            }
             "options" => self.options = parse_options(value),
             "min" | "aria-valuemin" => self.min = host_f32(value, self.min),
             "max" | "aria-valuemax" => self.max = host_f32(value, self.max),
@@ -937,6 +1066,17 @@ impl WidgetProps {
                     }
                 }
             }
+        }
+    }
+
+    fn persist_native_payload(&mut self, key: &str, value: &nana_js_engine::HostValue) {
+        if matches!(
+            value,
+            nana_js_engine::HostValue::Null | nana_js_engine::HostValue::Undefined
+        ) {
+            self.native_props.remove(key);
+        } else {
+            self.native_props.insert(key.to_string(), value.clone());
         }
     }
 
@@ -5047,6 +5187,115 @@ mod tests {
         assert!(names.contains(&"update:modelValue"));
         assert_eq!(bridge.get(5).unwrap().props.value, "b");
         assert!(bridge.get(5).unwrap().props.active);
+    }
+
+    #[test]
+    fn widget_kind_parses_catalog_professional_aliases() {
+        assert_eq!(
+            WidgetKind::parse("nana-command-palette"),
+            Some(WidgetKind::CommandPalette)
+        );
+        assert_eq!(
+            WidgetKind::parse("command-palette"),
+            Some(WidgetKind::CommandPalette)
+        );
+        assert_eq!(
+            WidgetKind::parse("commandpalette"),
+            Some(WidgetKind::CommandPalette)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-tree-view"),
+            Some(WidgetKind::TreeView)
+        );
+        assert_eq!(WidgetKind::parse("tree-view"), Some(WidgetKind::TreeView));
+        assert_eq!(WidgetKind::parse("treeview"), Some(WidgetKind::TreeView));
+        assert_eq!(
+            WidgetKind::parse("nana-calendar"),
+            Some(WidgetKind::CalendarHeatmap)
+        );
+        assert_eq!(
+            WidgetKind::parse("calendar-heatmap"),
+            Some(WidgetKind::CalendarHeatmap)
+        );
+        assert_eq!(
+            WidgetKind::parse("calendar"),
+            Some(WidgetKind::CalendarHeatmap)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-image-viewer"),
+            Some(WidgetKind::ImageViewer)
+        );
+        assert_eq!(
+            WidgetKind::parse("image-viewer"),
+            Some(WidgetKind::ImageViewer)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-markdown"),
+            Some(WidgetKind::NativeMarkdown)
+        );
+        assert_eq!(
+            WidgetKind::parse("native-markdown"),
+            Some(WidgetKind::NativeMarkdown)
+        );
+        assert_eq!(
+            WidgetKind::parse("markdown"),
+            Some(WidgetKind::NativeMarkdown)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-graph-canvas"),
+            Some(WidgetKind::GraphCanvas)
+        );
+        assert_eq!(
+            WidgetKind::parse("graph-canvas"),
+            Some(WidgetKind::GraphCanvas)
+        );
+        assert_eq!(
+            WidgetKind::parse("graphcanvas"),
+            Some(WidgetKind::GraphCanvas)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-workspace"),
+            Some(WidgetKind::Workspace)
+        );
+        assert_eq!(WidgetKind::parse("nana-dock"), Some(WidgetKind::Dock));
+        assert_eq!(
+            WidgetKind::parse("nana-split-pane"),
+            Some(WidgetKind::SplitPane)
+        );
+        assert_eq!(WidgetKind::parse("split-pane"), Some(WidgetKind::SplitPane));
+        assert_eq!(
+            WidgetKind::parse("nana-app-shell"),
+            Some(WidgetKind::AppShell)
+        );
+        assert_eq!(WidgetKind::parse("app-shell"), Some(WidgetKind::AppShell));
+        assert_eq!(
+            WidgetKind::parse("nana-settings-page"),
+            Some(WidgetKind::SettingsPage)
+        );
+        assert_eq!(
+            WidgetKind::parse("settings-page"),
+            Some(WidgetKind::SettingsPage)
+        );
+        assert_eq!(
+            WidgetKind::parse("settingspage"),
+            Some(WidgetKind::SettingsPage)
+        );
+        assert_eq!(WidgetKind::SettingsPage.as_str(), "settings-page");
+        assert_eq!(WidgetKind::SettingsPage.element_tag(), "nana-settings-page");
+        assert_eq!(WidgetKind::CommandPalette.as_str(), "command-palette");
+        assert_eq!(
+            WidgetKind::CommandPalette.element_tag(),
+            "nana-command-palette"
+        );
+        assert_eq!(WidgetKind::CalendarHeatmap.element_tag(), "nana-calendar");
+        assert_eq!(WidgetKind::NativeMarkdown.as_str(), "native-markdown");
+        assert_eq!(WidgetKind::GraphCanvas.element_tag(), "nana-graph-canvas");
+        assert_eq!(WidgetKind::GraphCanvas.as_str(), "graph-canvas");
+        assert!(WidgetKind::CommandPalette.is_overlay());
+        assert!(WidgetKind::ImageViewer.is_overlay());
+        assert!(!WidgetKind::GraphCanvas.is_overlay());
+        assert!(!WidgetKind::Workspace.is_overlay());
+        assert!(!WidgetKind::TreeView.is_overlay());
     }
 
     #[test]

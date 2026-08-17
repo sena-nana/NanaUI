@@ -34,6 +34,13 @@ pub fn resolve_kind_from_hints(
 
     for token in class.split_whitespace() {
         if let Some(kind) = class_token_kind(token) {
+            // Structural SVG charts keep Column; catalog CalendarHeatmap / GraphCanvas
+            // are leaves. Do not promote `calendar-heatmap` SVG class to GraphCanvas.
+            if matches!(kind, WidgetKind::CalendarHeatmap | WidgetKind::GraphCanvas)
+                && is_svg_structural_tag(&tag)
+            {
+                continue;
+            }
             return Some(kind);
         }
     }
@@ -121,6 +128,13 @@ pub fn resolve_kind_from_hints(
         _ if tag.is_empty() => WidgetKind::Column,
         _ => WidgetKind::Column,
     })
+}
+
+fn is_svg_structural_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "svg" | "g" | "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon"
+    )
 }
 
 fn is_html_tag_name(tag: &str) -> bool {
@@ -229,6 +243,17 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-action-menu-item" => WidgetKind::ActionMenuItem,
         "nana-xy-pad" | "nana-xypad" | "xy-pad" => WidgetKind::XYPad,
         "nana-qr-code" | "nana-qr" | "qr-code" => WidgetKind::QrCode,
+        "nana-command-palette" | "command-palette" => WidgetKind::CommandPalette,
+        "nana-tree-view" | "tree-view" => WidgetKind::TreeView,
+        "nana-calendar" | "nana-calendar-heatmap" => WidgetKind::CalendarHeatmap,
+        "nana-image-viewer" | "image-viewer" => WidgetKind::ImageViewer,
+        "nana-markdown" | "native-markdown" => WidgetKind::NativeMarkdown,
+        "nana-graph-canvas" | "graph-canvas" | "graphcanvas" => WidgetKind::GraphCanvas,
+        "nana-workspace" => WidgetKind::Workspace,
+        "nana-dock" => WidgetKind::Dock,
+        "nana-split-pane" | "split-pane" => WidgetKind::SplitPane,
+        "nana-app-shell" | "app-shell" => WidgetKind::AppShell,
+        "nana-settings-page" | "settings-page" => WidgetKind::SettingsPage,
         "nana-select" => WidgetKind::Select,
         "nana-dropdown" | "ui-dropdown" | "dropdown" => WidgetKind::Select,
         "nana-search" | "nana-search-dropdown" | "search-dropdown" => WidgetKind::Select,
@@ -668,6 +693,28 @@ pub(crate) fn highlight_language(props: &WidgetProps) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+pub(crate) fn mermaid_renderer(props: &WidgetProps) -> Option<&str> {
+    attr_value(
+        props,
+        &[
+            "mermaid-renderer",
+            "mermaidrenderer",
+            "data-mermaid-renderer",
+        ],
+    )
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn math_renderer(props: &WidgetProps) -> Option<&str> {
+    attr_value(
+        props,
+        &["math-renderer", "mathrenderer", "data-math-renderer"],
+    )
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+}
+
 pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&'a str> {
     for name in names {
         if let Some(value) = props.attrs.get(*name) {
@@ -887,6 +934,11 @@ mod tests {
             Some(WidgetKind::Column),
             "structural chart svg stays Column"
         );
+        assert_eq!(
+            resolve_kind_from_hints("svg", Some("graph-canvas"), None, None),
+            Some(WidgetKind::Column),
+            "structural SVG must not become GraphCanvas"
+        );
     }
 
     #[test]
@@ -1052,6 +1104,63 @@ mod tests {
         assert_eq!(
             resolve_kind_from_hints("div", Some("nana-qr-code qr-code"), None, None),
             Some(WidgetKind::QrCode)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-command-palette", None, None, None),
+            Some(WidgetKind::CommandPalette)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-tree-view tree-view"), None, None),
+            Some(WidgetKind::TreeView)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-calendar", None, None, None),
+            Some(WidgetKind::CalendarHeatmap)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-image-viewer", None, None, None),
+            Some(WidgetKind::ImageViewer)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-markdown", None, None, None),
+            Some(WidgetKind::NativeMarkdown)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-graph-canvas", None, None, None),
+            Some(WidgetKind::GraphCanvas)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("graph-canvas graphcanvas"), None, None),
+            Some(WidgetKind::GraphCanvas)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-workspace", None, None, None),
+            Some(WidgetKind::Workspace)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("nana-dock"), None, None),
+            Some(WidgetKind::Dock)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-split-pane", None, None, None),
+            Some(WidgetKind::SplitPane)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-app-shell", None, None, None),
+            Some(WidgetKind::AppShell)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-settings-page", None, None, None),
+            Some(WidgetKind::SettingsPage)
+        );
+        assert_eq!(
+            resolve_kind_from_hints(
+                "section",
+                Some("nana-settings-page settings-page"),
+                None,
+                None
+            ),
+            Some(WidgetKind::SettingsPage)
         );
         assert_eq!(
             resolve_kind_from_hints("span", None, None, None),

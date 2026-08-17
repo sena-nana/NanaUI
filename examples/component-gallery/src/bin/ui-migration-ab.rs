@@ -2,32 +2,37 @@
 //!
 //! Left = Iced compatibility composer. Right = Runtime Scene via IcedSceneView.
 //! Keys: Left/Right or 1-9 select a component, T toggles theme.
-//! Starts on GraphCanvas. GPU slots stay out of this window: they need the
-//! host Device/Queue, and this binary must not create a second wgpu context.
+//! GPU slots stay out of this window: they need the host Device/Queue, and
+//! this binary must not create a second wgpu context.
 
 use iced::keyboard::{self, Key};
 use iced::widget::{column, container, row, text};
 use iced::{Element, Event, Length, Point, Size, Subscription};
 use nana_ui::RuntimeInputAdapter;
 use nana_ui::compatibility::{
-    AppTitleBar as IcedAppTitleBar, DockPanel as IcedDockPanel, GraphCanvas as IcedGraphCanvas,
-    PaneChrome as IcedPaneChrome, PaneChromeAction as IcedPaneChromeAction,
-    PaneChromeActionKind as IcedPaneChromeActionKind, PaneTree as IcedPaneTree,
-    PaneTreeNode as IcedPaneTreeNode,
+    AppTitleBar as IcedAppTitleBar, CalendarHeatmap as IcedCalendarHeatmap,
+    CalendarHeatmapDatum as IcedCalendarHeatmapDatum,
+    CalendarHeatmapModel as IcedCalendarHeatmapModel,
+    CalendarHeatmapOptions as IcedCalendarHeatmapOptions, DockPanel as IcedDockPanel,
+    GraphCanvas as IcedGraphCanvas, PaneChrome as IcedPaneChrome,
+    PaneChromeAction as IcedPaneChromeAction, PaneChromeActionKind as IcedPaneChromeActionKind,
+    PaneTree as IcedPaneTree, PaneTreeNode as IcedPaneTreeNode, build_calendar_heatmap_model,
 };
 use nana_ui::runtime::{
-    AppShell, AppTitleBar, Dock, DockAxis, DockNode, DockPanel, DocumentId, Entity,
-    GraphCanvas as RuntimeGraphCanvas, GraphInteraction, LayoutViewport, NodeKind, PaneChrome,
-    PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, SplitPane, Text as RuntimeText,
-    Workspace, WorkspaceRegionSlot,
+    AppShell, AppTitleBar, CalendarHeatmap as RuntimeCalendarHeatmap,
+    CalendarHeatmapDatum as RuntimeCalendarHeatmapDatum, Dock, DockAxis, DockNode, DockPanel,
+    DocumentId, Entity, GraphCanvas as RuntimeGraphCanvas, GraphInteraction, LayoutViewport,
+    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, SettingsPage,
+    SplitPane, Text as RuntimeText, Workspace, WorkspaceRegionSlot,
 };
 use nana_ui::{
     DockContents, DockController, DockId, DockItemSpec, DockLayout, DockNode as IcedDockNode,
     DockSurfaceId, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort,
     GraphPortKind, GraphPortSide, GraphSize, GraphViewport, IcedSceneView, IcedTextShaper,
-    RegionId, SplitAxis, SplitPaneController, ThemeMode, ThemeModeExt, ThemeTokens,
-    WorkspaceController, WorkspaceSlots, app_shell, dock_workspace, ratio_pane_split, split_pane,
-    ui_font, ui_font_defaults, ui_font_sources, workspace_view,
+    RegionId, SettingsModel, SettingsState, SettingsTab, SplitAxis, SplitPaneController, ThemeMode,
+    ThemeModeExt, ThemeTokens, WorkspaceController, WorkspaceSlots, app_shell, dock_workspace,
+    ratio_pane_split, settings_page, split_pane, ui_font, ui_font_defaults, ui_font_sources,
+    workspace_view,
 };
 use nana_ui::{GraphCanvasEvent, GraphSelection, SplitPaneAction};
 use nana_ui_core::{SplitPaneModel, WorkspaceModel};
@@ -49,10 +54,12 @@ enum Case {
     PaneTree,
     AppShell,
     AppTitleBar,
+    SettingsPage,
+    Calendar,
 }
 
 impl Case {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 11] = [
         Self::GraphCanvas,
         Self::Workspace,
         Self::Dock,
@@ -62,6 +69,8 @@ impl Case {
         Self::PaneTree,
         Self::AppShell,
         Self::AppTitleBar,
+        Self::SettingsPage,
+        Self::Calendar,
     ];
 
     fn label(self) -> &'static str {
@@ -75,6 +84,8 @@ impl Case {
             Self::PaneTree => "pane-tree",
             Self::AppShell => "app-shell",
             Self::AppTitleBar => "app-title-bar",
+            Self::SettingsPage => "settings-page",
+            Self::Calendar => "calendar",
         }
     }
 
@@ -94,6 +105,7 @@ enum Message {
     Next,
     Prev,
     Theme,
+    Idle,
     Select(usize),
     IcedGraph(GraphCanvasEvent),
     IcedSplit(SplitPaneAction),
@@ -111,6 +123,7 @@ struct App {
     graph_viewport: GraphViewport,
     graph_selection: Option<GraphSelection>,
     split: SplitPaneController,
+    calendar_model: IcedCalendarHeatmapModel<()>,
     document: RuntimeDocument,
     canvas: Option<nana_ui::runtime::StableNodeId>,
     graph_events: Arc<Mutex<Vec<GraphCanvasEvent>>>,
@@ -153,6 +166,7 @@ impl App {
             graph_viewport,
             graph_selection: None,
             split: SplitPaneController::new(SplitAxis::Horizontal, 180.0, 80.0, 320.0),
+            calendar_model: ab_calendar_model(),
             document: RuntimeDocument::new(DocumentId::new(1).expect("document")),
             canvas: None,
             graph_events: Arc::new(Mutex::new(Vec::new())),
@@ -245,6 +259,7 @@ impl App {
                 self.case = self.case.prev();
                 self.remount_case();
             }
+            Message::Idle => {}
             Message::Theme => {
                 self.theme = match self.theme {
                     ThemeMode::Dark => ThemeMode::Light,
@@ -297,7 +312,8 @@ impl App {
                 });
             }
             Message::RuntimeKey(key) => {
-                if matches!(self.case, Case::GraphCanvas | Case::SplitPane) && self.runtime_focused
+                if matches!(self.case, Case::GraphCanvas | Case::SplitPane | Case::Dock)
+                    && self.runtime_focused
                 {
                     self.dispatch_runtime(InputEvent::Keyboard {
                         pressed: true,
@@ -383,6 +399,9 @@ impl App {
         {
             return split_cursor(axis);
         }
+        if context.is_calendar_heatmap(target) {
+            return iced::mouse::Interaction::Crosshair;
+        }
         if context.is_graph_canvas(target) {
             let entity = Entity::<RuntimeGraphCanvas>::from_stable_id(target);
             let local = context
@@ -417,6 +436,7 @@ impl App {
                 self.graph_viewport,
                 self.graph_selection.as_ref(),
                 &self.split,
+                &self.calendar_model,
             ),
         );
         let runtime_view: Element<'_, Message> = IcedSceneView::new(self.document.scene(), PANEL)
@@ -435,7 +455,7 @@ impl App {
         );
         column![
             text(format!(
-                "{}   [/] or 1-9 switch   T theme ({})   graph/split: drag on either pane",
+                "{}   [/] or 1-9 switch   T theme ({})   dock/split/calendar: interact on Runtime",
                 self.case.label(),
                 match self.theme {
                     ThemeMode::Dark => "dark",
@@ -502,6 +522,7 @@ fn iced_case<'a>(
     graph_viewport: GraphViewport,
     graph_selection: Option<&'a GraphSelection>,
     split: &'a SplitPaneController,
+    calendar: &'a IcedCalendarHeatmapModel<()>,
 ) -> Element<'a, Message> {
     match case {
         Case::GraphCanvas => IcedGraphCanvas::new(
@@ -615,6 +636,18 @@ fn iced_case<'a>(
             tokens.colors,
         ),
         Case::AppTitleBar => IcedAppTitleBar::new("NanaUI", tokens).view(),
+        Case::SettingsPage => {
+            let (model, state) = ab_settings();
+            settings_page(
+                model,
+                state,
+                text("Appearance content")
+                    .size(13)
+                    .color(tokens.colors.text),
+                tokens,
+            )
+        }
+        Case::Calendar => IcedCalendarHeatmap::new(calendar, |_| Message::Idle, tokens).view(),
     }
 }
 
@@ -729,30 +762,17 @@ fn remount(
         Case::SplitPane => {
             let first = label(document, "First")?;
             let second = label(document, "Second")?;
-            let handle = document.context_mut().create_view(
-                document_id,
-                NodeKind::Element {
-                    tag: "split-handle".into(),
-                },
-                (),
-            )?;
-            let indicator = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new(""))?;
             let pane = document.context_mut().create_component(
                 document_id,
                 SplitPane::from_model(
                     &SplitPaneModel::new(SplitAxis::Horizontal, 180.0, 80.0, 320.0),
                     first.stable_id(),
                     second.stable_id(),
-                )
-                .handle(handle.stable_id()),
+                ),
             )?;
             document.context_mut().append_child(pane, first)?;
-            document.context_mut().append_child(handle, indicator)?;
-            document.context_mut().append_child(pane, handle)?;
             document.context_mut().append_child(pane, second)?;
-            document.context_mut().update_component(pane, |_, _| {})?;
+            document.context_mut().assemble_split_pane(pane)?;
             pane.stable_id()
         }
         Case::PaneChrome => {
@@ -809,11 +829,30 @@ fn remount(
             )?;
             document.context_mut().append_child(shell, title)?;
             document.context_mut().append_child(shell, body)?;
+            document.context_mut().assemble_app_shell(shell)?;
             shell.stable_id()
         }
         Case::AppTitleBar => document
             .context_mut()
             .create_component(document_id, AppTitleBar::new("NanaUI"))?
+            .stable_id(),
+        Case::SettingsPage => {
+            let content = bare(document, "Appearance content")?;
+            let (model, state) = ab_settings();
+            let page = document.context_mut().create_component(
+                document_id,
+                SettingsPage::new(model.clone(), state.clone()).content(content.stable_id()),
+            )?;
+            document.context_mut().append_child(page, content)?;
+            document.context_mut().assemble_settings_page(page)?;
+            page.stable_id()
+        }
+        Case::Calendar => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeCalendarHeatmap::new(ab_calendar_data()).label("活动"),
+            )?
             .stable_id(),
     };
     let _ = split;
@@ -909,6 +948,42 @@ fn ab_graph() -> GraphModel {
         ],
     )
     .expect("A/B graph is valid")
+}
+
+fn ab_settings() -> (&'static SettingsModel, &'static SettingsState) {
+    static MODEL: std::sync::OnceLock<SettingsModel> = std::sync::OnceLock::new();
+    static STATE: std::sync::OnceLock<SettingsState> = std::sync::OnceLock::new();
+    let model = MODEL.get_or_init(|| {
+        SettingsModel::new(
+            "appearance",
+            [
+                SettingsTab::new("appearance", "外观"),
+                SettingsTab::new("about", "关于").full_page(true),
+            ],
+        )
+        .expect("A/B settings model")
+    });
+    let state = STATE.get_or_init(|| SettingsState::new(model));
+    (model, state)
+}
+
+fn ab_calendar_data() -> [RuntimeCalendarHeatmapDatum; 3] {
+    [
+        RuntimeCalendarHeatmapDatum::new("2026-06-01", 1.0),
+        RuntimeCalendarHeatmapDatum::new("2026-06-02", 4.0),
+        RuntimeCalendarHeatmapDatum::new("2026-06-03", 8.0),
+    ]
+}
+
+fn ab_calendar_model() -> IcedCalendarHeatmapModel<()> {
+    build_calendar_heatmap_model(
+        &[
+            IcedCalendarHeatmapDatum::new("2026-06-01", 1.0),
+            IcedCalendarHeatmapDatum::new("2026-06-02", 4.0),
+            IcedCalendarHeatmapDatum::new("2026-06-03", 8.0),
+        ],
+        IcedCalendarHeatmapOptions::default().week_starts_on(1),
+    )
 }
 
 fn split_cursor(axis: SplitAxis) -> iced::mouse::Interaction {

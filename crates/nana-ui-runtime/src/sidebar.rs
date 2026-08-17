@@ -395,7 +395,10 @@ impl SidebarRow {
         });
         style.background = None;
         style.interaction = InteractionStyle {
-            selected: SemanticPaint::default(),
+            selected: SemanticPaint {
+                background: Some(SemanticColorRole::Selected),
+                ..SemanticPaint::default()
+            },
             selected_hovered: SemanticPaint {
                 background: Some(SemanticColorRole::SelectedHover),
                 ..SemanticPaint::default()
@@ -1600,7 +1603,10 @@ mod tests {
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.foreground, Some(SemanticColorRole::Warning));
         assert_eq!(style.background, None);
-        assert_eq!(style.interaction.selected.background, None);
+        assert_eq!(
+            style.interaction.selected.background,
+            Some(SemanticColorRole::Selected)
+        );
         assert_eq!(
             style.layout.padding_left,
             Some(LengthSpec::Px(sidebar_row_depth_inset(1)))
@@ -1662,6 +1668,10 @@ mod tests {
         let active_style = context.world().node_style(active.stable_id()).unwrap();
         assert_eq!(idle_style.foreground, Some(SemanticColorRole::Faint));
         assert_eq!(active_style.foreground, Some(SemanticColorRole::Text));
+        assert_eq!(
+            active_style.interaction.selected.background,
+            Some(SemanticColorRole::Selected)
+        );
         let idle_color = idle_style.layout.color.expect("idle text color");
         let active_color = active_style.layout.color.expect("active text color");
         assert!((idle_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);

@@ -588,9 +588,19 @@ impl Default for AppContext {
 
 impl AppContext {
     pub fn new() -> Self {
+        Self::from_world(UiWorld::new())
+    }
+
+    /// Wrap an existing retained tree.
+    ///
+    /// Hosts that already own node identity (Vue) create nodes on a [`UiWorld`]
+    /// then adopt it here. The component ID allocator still starts at 1 and
+    /// skips live or retired IDs; do not treat allocated chrome IDs as host
+    /// tree identities.
+    pub fn from_world(world: UiWorld) -> Self {
         #[allow(unused_mut)]
         let mut context = Self {
-            world: UiWorld::new(),
+            world,
             views: HashMap::new(),
             event_handlers: HashMap::new(),
             actions: HashMap::new(),
@@ -623,8 +633,9 @@ impl AppContext {
         self.view_entity(target)
     }
 
-    #[cfg(test)]
-    pub(crate) fn world_mut(&mut self) -> &mut UiWorld {
+    /// Mutable retained tree for compatibility hosts that already own node
+    /// identity (Vue) and for frame systems not yet expressed on `AppContext`.
+    pub fn world_mut(&mut self) -> &mut UiWorld {
         &mut self.world
     }
 
@@ -916,6 +927,29 @@ impl AppContext {
         queue.create(id, document, component.node_kind());
         component.project(id, &self.world, &mut queue);
         self.world.commit(queue)?;
+        self.views.insert(id, Box::new(component));
+        self.sync_component_lifecycle(id)?;
+        Ok(Entity::from_stable_id(id))
+    }
+
+    /// Bind a typed component view onto an existing world node.
+    ///
+    /// The node must already exist — hosts such as Vue own identity and must
+    /// not allocate IDs through [`Self::create_component`]. This replaces any
+    /// previous view at `id`, projects `component` into the retained tree, and
+    /// commits internally so [`Self::read`], [`Self::update_component`], and
+    /// `assemble_*` can run immediately.
+    pub fn bind_component<C: ComponentView>(
+        &mut self,
+        id: StableNodeId,
+        component: C,
+    ) -> Result<Entity<C>, FrameworkError> {
+        if !self.world.contains(id) {
+            return Err(FrameworkError::MissingView(id));
+        }
+        let mut queue = MutationQueue::new();
+        component.project(id, &self.world, &mut queue);
+        self.commit_mutations(queue)?;
         self.views.insert(id, Box::new(component));
         self.sync_component_lifecycle(id)?;
         Ok(Entity::from_stable_id(id))
@@ -5491,6 +5525,30 @@ mod tests {
 
     struct Increment(usize);
     struct Cascade;
+
+    #[test]
+    fn bind_component_requires_an_existing_node_then_enables_read() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let id = StableNodeId::new(7).unwrap();
+        let button = Button::new("Go");
+        assert_eq!(
+            context.bind_component(id, button.clone()),
+            Err(FrameworkError::MissingView(id))
+        );
+        let mut queue = MutationQueue::new();
+        queue.create(id, document, button.node_kind());
+        context.commit_mutations(queue).unwrap();
+        let entity = context.bind_component(id, button).unwrap();
+        assert_eq!(entity.stable_id(), id);
+        assert_eq!(
+            context
+                .read(entity, |button| button.label.to_string())
+                .unwrap(),
+            "Go"
+        );
+        assert_eq!(context.world().text(id), Some("Go"));
+    }
 
     #[test]
     fn typed_view_update_delivers_closure_events_and_commits_one_batch() {

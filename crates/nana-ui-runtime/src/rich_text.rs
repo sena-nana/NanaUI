@@ -1,29 +1,37 @@
 //! Backend-neutral markdown blocks and selectable rich text.
 //!
-//! Runtime owns the block model, grapheme selection ranges, and leaf
-//! projection. Applications own link handling, image decode, mermaid/math
-//! rendering, and clipboard writes. The Iced parser remains in `nana-ui`;
-//! this module consumes already-parsed [`MarkdownBlock`] values.
+//! Runtime owns the block model, source parse, grapheme selection ranges, and
+//! leaf projection. Applications own link handling, image decode, mermaid/math
+//! rendering, and clipboard writes. [`NativeMarkdown::from_source`] maps GFM
+//! blocks onto [`MarkdownBlock`] / [`MarkdownSpan`]; Iced still owns view and
+//! SVG cache.
 //!
 //! [`ComponentView`] projection keeps [`TextContent`] as fallback text and
 //! writes [`StandardVisual::NativeMarkdown`] /
 //! [`StandardVisual::SelectableRichText`]. Selection ranges are half-open
 //! grapheme offsets, the same convention as [`TextSelectionSnapshot`].
 //!
-//! Code-block languages stay on [`MarkdownBlock::Code`]. A parent that can
-//! allocate child IDs should project each fenced block as a text child with
-//! [`HighlightRequest::highlight`]; this leaf does not create those children.
+//! Fenced mermaid, display-math, and code blocks stay on the leaf model.
+//! [`AppContext::assemble_markdown`] allocates one hidden text child per fence
+//! and attaches [`HighlightRequest`] (`highlight` / [`NativeMarkdown::MERMAID_PRESENTER`] /
+//! [`NativeMarkdown::MATH_PRESENTER`]). Those children are identity slots for
+//! hosts; they do not emit Scene text. [`NativeMarkdown::project`] does not
+//! invent those children.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use pulldown_cmark::{
+    Alignment as CmarkAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, HighlightRequest, InteractionState,
-    LayoutBox, LengthSpec, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
-    TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
+    FrameworkError, HighlightRequest, InteractionState, LayoutBox, LengthSpec, MutationQueue,
+    NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent, UiWorld,
 };
 
 /// Unit advance used for backend-neutral hit testing. Scene paint owns real
@@ -129,6 +137,16 @@ impl MarkdownBlock {
         }
     }
 
+    /// Fence body for mermaid, display-math, and code blocks.
+    pub fn fence_source(&self) -> Option<&str> {
+        match self {
+            Self::Code { source, .. } | Self::DisplayMath(source) | Self::Mermaid(source) => {
+                Some(source.as_str())
+            }
+            _ => None,
+        }
+    }
+
     /// Highlight intent for a fenced code block. Parent wiring attaches this
     /// to a child text node; the markdown leaf does not allocate that child.
     pub fn highlight_request(&self) -> Option<HighlightRequest> {
@@ -140,12 +158,38 @@ impl MarkdownBlock {
             _ => None,
         }
     }
+
+    /// Presenter identity for a fence child. Code uses `"highlight"` plus the
+    /// language; mermaid/math use stable presenter names and the fence source
+    /// as `language` so hosts can bind a painter.
+    pub fn fence_highlight_request(&self) -> Option<HighlightRequest> {
+        match self {
+            Self::Code { .. } => self.highlight_request(),
+            Self::Mermaid(source) => Some(HighlightRequest::new(
+                NativeMarkdown::MERMAID_PRESENTER,
+                source.as_str(),
+            )),
+            Self::DisplayMath(source) => Some(HighlightRequest::new(
+                NativeMarkdown::MATH_PRESENTER,
+                source.as_str(),
+            )),
+            _ => None,
+        }
+    }
+
+    fn fence_child(&self) -> Option<MarkdownFenceChild> {
+        Some(MarkdownFenceChild {
+            source: self.fence_source()?.to_owned(),
+            highlight: self.fence_highlight_request(),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct NativeMarkdown {
     blocks: Vec<MarkdownBlock>,
     selection: TextSelectionGroup,
+    fence_children: Vec<StableNodeId>,
     pub style: NodeStyle,
 }
 
@@ -164,10 +208,16 @@ impl Default for NativeMarkdown {
 }
 
 impl NativeMarkdown {
+    /// Presenter name hosts bind for mermaid fence children.
+    pub const MERMAID_PRESENTER: &'static str = "mermaid";
+    /// Presenter name hosts bind for display-math fence children.
+    pub const MATH_PRESENTER: &'static str = "math";
+
     pub fn new() -> Self {
         Self {
             blocks: Vec::new(),
             selection: TextSelectionGroup::new(),
+            fence_children: Vec::new(),
             style: NodeStyle::default(),
         }
     }
@@ -176,12 +226,38 @@ impl NativeMarkdown {
         Self {
             blocks: blocks.into_iter().collect(),
             selection: TextSelectionGroup::new(),
+            fence_children: Vec::new(),
             style: NodeStyle::default(),
         }
     }
 
+    /// Parse CommonMark / GFM source into native blocks.
+    pub fn from_source(source: &str) -> Self {
+        Self::parse(source)
+    }
+
+    /// Alias of [`Self::from_source`].
+    pub fn parse(source: &str) -> Self {
+        let mut parser = MarkdownParser::default();
+        let options = Options::ENABLE_GFM
+            | Options::ENABLE_TABLES
+            | Options::ENABLE_STRIKETHROUGH
+            | Options::ENABLE_TASKLISTS
+            | Options::ENABLE_MATH;
+        for event in Parser::new_ext(source, options) {
+            parser.push(event);
+        }
+        parser.finish()
+    }
+
     pub fn blocks(&self) -> &[MarkdownBlock] {
         &self.blocks
+    }
+
+    /// Text children allocated by [`AppContext::assemble_markdown`] for fence
+    /// blocks. Empty until assembly runs.
+    pub fn fence_children(&self) -> &[StableNodeId] {
+        &self.fence_children
     }
 
     pub fn selection_group(&self) -> &TextSelectionGroup {
@@ -274,6 +350,337 @@ impl NativeMarkdown {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum PendingTextKind {
+    Paragraph,
+    Heading(u8),
+    ListItem { depth: usize },
+}
+
+#[derive(Debug, Default)]
+struct MarkdownParser {
+    blocks: Vec<MarkdownBlock>,
+    spans: Vec<MarkdownSpan>,
+    pending_kind: Option<PendingTextKind>,
+    strong_depth: usize,
+    emphasis_depth: usize,
+    strike_depth: usize,
+    link: Option<String>,
+    image: Option<String>,
+    code_block: Option<(Option<String>, String)>,
+    quote_depth: usize,
+    lists: Vec<Option<u64>>,
+    table: Option<MarkdownTableBuilder>,
+    table_header: bool,
+    table_row: Vec<Vec<MarkdownSpan>>,
+    in_table_cell: bool,
+}
+
+#[derive(Debug)]
+struct MarkdownTableBuilder {
+    alignments: Vec<MarkdownTableAlignment>,
+    header: Option<Vec<Vec<MarkdownSpan>>>,
+    rows: Vec<Vec<Vec<MarkdownSpan>>>,
+}
+
+impl MarkdownParser {
+    fn push(&mut self, event: Event<'_>) {
+        if self.code_block.is_some() {
+            match event {
+                Event::Text(value) | Event::Code(value) => {
+                    self.code_block.as_mut().unwrap().1.push_str(&value);
+                }
+                Event::End(TagEnd::CodeBlock) => self.finish_code_block(),
+                _ => {}
+            }
+            return;
+        }
+
+        match event {
+            Event::Start(tag) => self.start(tag),
+            Event::End(tag) => self.end(tag),
+            Event::Text(value) => self.push_span(value.into_string(), false, false),
+            Event::Code(value) => self.push_span(value.into_string(), true, false),
+            Event::InlineMath(value) => self.push_span(value.into_string(), false, true),
+            Event::DisplayMath(value) => {
+                self.flush_text();
+                self.blocks
+                    .push(MarkdownBlock::DisplayMath(value.into_string()));
+            }
+            Event::SoftBreak | Event::HardBreak => self.push_span("\n".to_owned(), false, false),
+            Event::Rule => {
+                self.flush_text();
+                self.blocks.push(MarkdownBlock::Rule);
+            }
+            Event::TaskListMarker(done) => {
+                self.push_span(if done { "☑ " } else { "☐ " }.to_owned(), false, false)
+            }
+            Event::Html(value) | Event::InlineHtml(value) => {
+                self.push_span(value.into_string(), false, false)
+            }
+            Event::FootnoteReference(value) => {
+                self.push_span(format!("[{}]", value.into_string()), false, false)
+            }
+        }
+    }
+
+    fn start(&mut self, tag: Tag<'_>) {
+        match tag {
+            Tag::Paragraph => {
+                self.pending_kind.get_or_insert(PendingTextKind::Paragraph);
+            }
+            Tag::Heading { level, .. } => {
+                self.flush_text();
+                self.pending_kind = Some(PendingTextKind::Heading(heading_level(level)));
+            }
+            Tag::BlockQuote(_) => {
+                self.flush_text();
+                self.quote_depth += 1;
+            }
+            Tag::CodeBlock(kind) => {
+                self.flush_text();
+                let language = match kind {
+                    CodeBlockKind::Indented => None,
+                    CodeBlockKind::Fenced(value) => value
+                        .split_ascii_whitespace()
+                        .next()
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned),
+                };
+                self.code_block = Some((language, String::new()));
+            }
+            Tag::List(start) => self.lists.push(start),
+            Tag::Item => {
+                self.flush_text();
+                self.pending_kind = Some(PendingTextKind::ListItem {
+                    depth: self.lists.len().max(1),
+                });
+                let prefix = match self.lists.last_mut() {
+                    Some(Some(next)) => {
+                        let prefix = format!("{next}. ");
+                        *next = next.saturating_add(1);
+                        prefix
+                    }
+                    _ => "• ".to_owned(),
+                };
+                self.push_span(prefix, false, false);
+            }
+            Tag::Emphasis => self.emphasis_depth += 1,
+            Tag::Strong => self.strong_depth += 1,
+            Tag::Strikethrough => self.strike_depth += 1,
+            Tag::Link { dest_url, .. } => {
+                self.link = Some(dest_url.into_string());
+            }
+            Tag::Image { dest_url, .. } => self.image = Some(dest_url.into_string()),
+            Tag::Table(alignments) => {
+                self.flush_text();
+                self.table_row.clear();
+                self.table = Some(MarkdownTableBuilder {
+                    alignments: alignments.into_iter().map(table_alignment).collect(),
+                    header: None,
+                    rows: Vec::new(),
+                });
+            }
+            Tag::TableHead => self.table_header = true,
+            Tag::TableRow => self.table_row.clear(),
+            Tag::TableCell => {
+                self.spans.clear();
+                self.in_table_cell = true;
+            }
+            Tag::HtmlBlock
+            | Tag::FootnoteDefinition(_)
+            | Tag::MetadataBlock(_)
+            | Tag::DefinitionList
+            | Tag::DefinitionListTitle
+            | Tag::DefinitionListDefinition
+            | Tag::Superscript
+            | Tag::Subscript => {}
+        }
+    }
+
+    fn end(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item => self.flush_text(),
+            TagEnd::BlockQuote(_) => {
+                self.flush_text();
+                self.quote_depth = self.quote_depth.saturating_sub(1);
+            }
+            TagEnd::List(_) => {
+                self.flush_text();
+                self.lists.pop();
+            }
+            TagEnd::Emphasis => self.emphasis_depth = self.emphasis_depth.saturating_sub(1),
+            TagEnd::Strong => self.strong_depth = self.strong_depth.saturating_sub(1),
+            TagEnd::Strikethrough => self.strike_depth = self.strike_depth.saturating_sub(1),
+            TagEnd::Link => self.link = None,
+            TagEnd::Image => self.image = None,
+            TagEnd::TableCell => {
+                self.table_row.push(std::mem::take(&mut self.spans));
+                self.in_table_cell = false;
+            }
+            TagEnd::TableRow => self.finish_table_row(),
+            TagEnd::TableHead => {
+                self.finish_table_row();
+                self.table_header = false;
+            }
+            TagEnd::Table => {
+                self.finish_table_row();
+                self.finish_table();
+            }
+            TagEnd::CodeBlock
+            | TagEnd::HtmlBlock
+            | TagEnd::FootnoteDefinition
+            | TagEnd::MetadataBlock(_)
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
+            | TagEnd::Superscript
+            | TagEnd::Subscript => {}
+        }
+    }
+
+    fn push_span(&mut self, value: String, code: bool, inline_math: bool) {
+        if value.is_empty() {
+            return;
+        }
+        if self.pending_kind.is_none() && !self.in_table_cell {
+            self.pending_kind = Some(PendingTextKind::Paragraph);
+        }
+        let next = MarkdownSpan {
+            text: value,
+            strong: self.strong_depth > 0,
+            emphasis: self.emphasis_depth > 0,
+            strikethrough: self.strike_depth > 0,
+            code,
+            inline_math,
+            link: self.link.clone(),
+            image: self.image.clone(),
+        };
+        if let Some(last) = self.spans.last_mut()
+            && last.strong == next.strong
+            && last.emphasis == next.emphasis
+            && last.strikethrough == next.strikethrough
+            && last.code == next.code
+            && last.inline_math == next.inline_math
+            && last.link == next.link
+            && last.image == next.image
+        {
+            last.text.push_str(&next.text);
+        } else {
+            self.spans.push(next);
+        }
+    }
+
+    fn flush_text(&mut self) {
+        if self.in_table_cell || self.spans.is_empty() {
+            return;
+        }
+        let pending = self
+            .pending_kind
+            .take()
+            .unwrap_or(PendingTextKind::Paragraph);
+        let kind = if self.quote_depth > 0 {
+            MarkdownBlockKind::Quote
+        } else {
+            match pending {
+                PendingTextKind::Paragraph => MarkdownBlockKind::Paragraph,
+                PendingTextKind::Heading(level) => MarkdownBlockKind::Heading(level),
+                PendingTextKind::ListItem { depth } => MarkdownBlockKind::ListItem { depth },
+            }
+        };
+        self.blocks.push(MarkdownBlock::Text {
+            kind,
+            spans: std::mem::take(&mut self.spans),
+        });
+    }
+
+    fn finish_code_block(&mut self) {
+        let Some((language, source)) = self.code_block.take() else {
+            return;
+        };
+        let source = source.trim_end_matches(['\r', '\n']).to_owned();
+        if language
+            .as_deref()
+            .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "mermaid" | "mmd"))
+        {
+            self.blocks.push(MarkdownBlock::Mermaid(source));
+        } else if language.as_deref().is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "math" | "latex" | "tex"
+            )
+        }) {
+            self.blocks.push(MarkdownBlock::DisplayMath(source));
+        } else {
+            self.blocks.push(MarkdownBlock::Code { language, source });
+        }
+    }
+
+    fn finish_table_row(&mut self) {
+        if self.table_row.is_empty() {
+            return;
+        }
+        let Some(table) = self.table.as_mut() else {
+            self.table_row.clear();
+            return;
+        };
+        let row = normalize_table_row(std::mem::take(&mut self.table_row), table.alignments.len());
+        if self.table_header && table.header.is_none() {
+            table.header = Some(row);
+        } else {
+            table.rows.push(row);
+        }
+    }
+
+    fn finish_table(&mut self) {
+        let Some(table) = self.table.take() else {
+            return;
+        };
+        let header = table.header.unwrap_or_default();
+        if header.is_empty() && table.rows.is_empty() {
+            return;
+        }
+        self.blocks.push(MarkdownBlock::Table(MarkdownTable {
+            alignments: table.alignments,
+            header,
+            rows: table.rows,
+        }));
+    }
+
+    fn finish(mut self) -> NativeMarkdown {
+        self.flush_text();
+        NativeMarkdown::from_blocks(self.blocks)
+    }
+}
+
+fn heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+fn table_alignment(alignment: CmarkAlignment) -> MarkdownTableAlignment {
+    match alignment {
+        CmarkAlignment::None | CmarkAlignment::Left => MarkdownTableAlignment::Left,
+        CmarkAlignment::Center => MarkdownTableAlignment::Center,
+        CmarkAlignment::Right => MarkdownTableAlignment::Right,
+    }
+}
+
+fn normalize_table_row(
+    mut row: Vec<Vec<MarkdownSpan>>,
+    column_count: usize,
+) -> Vec<Vec<MarkdownSpan>> {
+    row.truncate(column_count);
+    row.resize_with(column_count, Vec::new);
+    row
+}
+
 impl ComponentView for NativeMarkdown {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -323,6 +730,183 @@ impl ComponentView for NativeMarkdown {
             },
         );
     }
+}
+
+/// Hidden fence identity slot. Assembly allocates these; `project` never invents IDs.
+#[derive(Clone, Debug, PartialEq)]
+struct MarkdownFenceChild {
+    source: String,
+    highlight: Option<HighlightRequest>,
+}
+
+impl ComponentView for MarkdownFenceChild {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Text
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some(self.source.as_str()) {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: self.source.clone(),
+                },
+            );
+        }
+        if world.highlight_request(id) != self.highlight.as_ref() {
+            mutations.set_highlight_request(id, self.highlight.clone());
+        }
+        if world.standard_visual(id).is_some() {
+            mutations.set_standard_visual(id, None);
+        }
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).hidden = true;
+        project_common(
+            id,
+            world,
+            mutations,
+            &style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Text,
+                value: Some(Arc::from(self.source.as_str())),
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+impl AppContext {
+    /// Allocate one hidden text child per mermaid, display-math, and code fence.
+    ///
+    /// Child text is the fence source. Code uses [`HighlightRequest::highlight`];
+    /// mermaid/math use presenters `"mermaid"` / `"math"` with the source as
+    /// `language`. Children stay identity slots (`layout.hidden`) and do not
+    /// emit Scene text or quads. Extra fence children are despawned. The
+    /// parent is re-projected after the children are attached.
+    pub fn assemble_markdown(
+        &mut self,
+        markdown: Entity<NativeMarkdown>,
+    ) -> Result<bool, FrameworkError> {
+        let parent = markdown.stable_id();
+        let document = markdown_document(self, parent)?;
+        let (slots, stored) = self.read(markdown, |markdown| {
+            (
+                markdown
+                    .blocks
+                    .iter()
+                    .filter_map(MarkdownBlock::fence_child)
+                    .collect::<Vec<_>>(),
+                markdown.fence_children.clone(),
+            )
+        })?;
+        let mut existing = stored
+            .into_iter()
+            .filter(|id| self.world().contains(*id))
+            .collect::<Vec<_>>();
+        if existing.is_empty() {
+            existing = self
+                .world()
+                .node(parent)
+                .map(|node| node.children)
+                .unwrap_or_default();
+        }
+
+        let mut next = Vec::with_capacity(slots.len());
+        let mut used = HashSet::new();
+        for (index, slot) in slots.into_iter().enumerate() {
+            if let Some(entity) = existing
+                .get(index)
+                .copied()
+                .and_then(|id| fence_child_entity(self, id))
+            {
+                let id = entity.stable_id();
+                self.update_component(entity, |child, _| {
+                    *child = slot;
+                })?;
+                next.push(id);
+                used.insert(id);
+            } else {
+                let entity = self.create_detached_component(document, slot)?;
+                let id = entity.stable_id();
+                next.push(id);
+                used.insert(id);
+            }
+        }
+        for id in existing {
+            if !used.contains(&id) {
+                drop_fence_child(self, id)?;
+            }
+        }
+
+        reconcile_markdown_children(self, markdown, &next)?;
+        self.update_component(markdown, |markdown, _| {
+            markdown.fence_children = next;
+        })?;
+        Ok(true)
+    }
+}
+
+fn markdown_document(context: &AppContext, id: StableNodeId) -> Result<DocumentId, FrameworkError> {
+    context
+        .world()
+        .node(id)
+        .map(|node| node.document)
+        .ok_or(FrameworkError::MissingView(id))
+}
+
+fn fence_child_entity(
+    context: &AppContext,
+    id: StableNodeId,
+) -> Option<Entity<MarkdownFenceChild>> {
+    let entity = Entity::from_stable_id(id);
+    context.read(entity, |_| ()).ok()?;
+    Some(entity)
+}
+
+fn drop_fence_child(context: &mut AppContext, id: StableNodeId) -> Result<(), FrameworkError> {
+    if fence_child_entity(context, id).is_some() {
+        context.remove_view(Entity::<MarkdownFenceChild>::from_stable_id(id))?;
+        return Ok(());
+    }
+    if context.world().contains(id) {
+        let mut mutations = MutationQueue::new();
+        mutations.despawn_subtree(id);
+        context.commit_mutations(mutations)?;
+    }
+    Ok(())
+}
+
+fn reconcile_markdown_children(
+    context: &mut AppContext,
+    parent: Entity<NativeMarkdown>,
+    ordered: &[StableNodeId],
+) -> Result<bool, FrameworkError> {
+    let parent_id = parent.stable_id();
+    let current = context
+        .world()
+        .node(parent_id)
+        .ok_or(FrameworkError::MissingView(parent_id))?
+        .children
+        .clone();
+    if current.as_slice() == ordered {
+        return Ok(false);
+    }
+    let keep = ordered.iter().copied().collect::<HashSet<_>>();
+    for child in &current {
+        if !keep.contains(child) {
+            drop_fence_child(context, *child)?;
+        }
+    }
+    let mut mutations = MutationQueue::new();
+    for child in ordered {
+        mutations.insert(parent_id, *child, None);
+    }
+    context.commit_mutations(mutations)?;
+    Ok(true)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1252,6 +1836,76 @@ mod tests {
     }
 
     #[test]
+    fn from_source_markdown_projects_heading_and_strong_plain_text() {
+        let markdown = NativeMarkdown::from_source("# Title\n\nHello **world**");
+        let plain = markdown.plain_text();
+        assert!(plain.contains("Title"), "{plain}");
+        assert!(plain.contains("Hello world"), "{plain}");
+        assert!(matches!(
+            markdown.blocks().first(),
+            Some(MarkdownBlock::Text {
+                kind: MarkdownBlockKind::Heading(1),
+                ..
+            })
+        ));
+        assert!(markdown.blocks().iter().any(|block| matches!(
+            block,
+            MarkdownBlock::Text {
+                kind: MarkdownBlockKind::Paragraph,
+                spans,
+            } if spans.iter().any(|span| span.strong && span.text == "world")
+        )));
+        assert_eq!(NativeMarkdown::parse("# Title").plain_text(), "Title");
+    }
+
+    #[test]
+    fn from_source_markdown_maps_list_quote_code_table_and_rule() {
+        let markdown = NativeMarkdown::from_source(
+            "> quoted\n\n- item\n\n```rust\nfn main() {}\n```\n\n| A | B |\n| --- | ---: |\n| **x** | `1` |\n\n---\n\nSee [docs](https://example.com) and ~~old~~.\n",
+        );
+        assert!(markdown.blocks().iter().any(|block| matches!(
+            block,
+            MarkdownBlock::Text {
+                kind: MarkdownBlockKind::Quote,
+                ..
+            }
+        )));
+        assert!(markdown.blocks().iter().any(|block| matches!(
+            block,
+            MarkdownBlock::Text {
+                kind: MarkdownBlockKind::ListItem { .. },
+                ..
+            }
+        )));
+        assert!(markdown.blocks().iter().any(|block| matches!(
+            block,
+            MarkdownBlock::Code {
+                language: Some(language),
+                source,
+            } if language == "rust" && source.contains("fn main")
+        )));
+        assert!(markdown.blocks().iter().any(|block| matches!(
+            block,
+            MarkdownBlock::Table(table)
+                if table.alignments.last() == Some(&MarkdownTableAlignment::Right)
+                    && table.rows[0][0].iter().any(|span| span.strong)
+                    && table.rows[0][1].iter().any(|span| span.code)
+        )));
+        assert!(
+            markdown
+                .blocks()
+                .iter()
+                .any(|block| matches!(block, MarkdownBlock::Rule))
+        );
+        assert!(markdown.blocks().iter().any(|block| matches!(
+            block,
+            MarkdownBlock::Text { spans, .. }
+                if spans.iter().any(|span| span.link.as_deref() == Some("https://example.com"))
+                    && spans.iter().any(|span| span.strikethrough)
+        )));
+    }
+
+    #[test]
     fn heading_and_paragraph_blocks_are_distinct() {
         let markdown = NativeMarkdown::from_blocks([
             MarkdownBlock::heading(1, [MarkdownSpan::plain("Title")]),
@@ -1515,5 +2169,211 @@ mod tests {
             })
         );
         assert_eq!(context.world().text(id), Some("A你e\u{301}Hello"));
+    }
+
+    #[test]
+    fn assemble_markdown_creates_fence_children_for_mermaid_math_and_code() {
+        let source = concat!(
+            "```mermaid\n",
+            "flowchart LR\n",
+            "A-->B\n",
+            "```\n\n",
+            "```math\n",
+            "\\frac{1}{2}\n",
+            "```\n\n",
+            "```rust\n",
+            "fn main() {}\n",
+            "```\n",
+        );
+        let parsed = NativeMarkdown::from_source(source);
+        assert!(matches!(
+            parsed.blocks(),
+            [
+                MarkdownBlock::Mermaid(mermaid),
+                MarkdownBlock::DisplayMath(math),
+                MarkdownBlock::Code {
+                    language: Some(language),
+                    source: rust,
+                },
+            ] if mermaid == "flowchart LR\nA-->B"
+                && math == "\\frac{1}{2}"
+                && language == "rust"
+                && rust == "fn main() {}"
+        ));
+        assert_eq!(
+            parsed.blocks()[0].fence_highlight_request(),
+            Some(HighlightRequest::new(
+                NativeMarkdown::MERMAID_PRESENTER,
+                "flowchart LR\nA-->B"
+            ))
+        );
+        assert_eq!(
+            parsed.blocks()[1].fence_highlight_request(),
+            Some(HighlightRequest::new(
+                NativeMarkdown::MATH_PRESENTER,
+                "\\frac{1}{2}"
+            ))
+        );
+        assert_eq!(
+            parsed.blocks()[2].fence_highlight_request(),
+            Some(HighlightRequest::highlight("rust"))
+        );
+
+        let mut context = AppContext::new();
+        let markdown = context.create_component(document(), parsed).unwrap();
+        let id = markdown.stable_id();
+        assert!(context.world().node(id).unwrap().children.is_empty());
+        assert!(
+            matches!(
+                context.world().standard_visual(id),
+                Some(StandardVisual::NativeMarkdown { .. })
+            ),
+            "project stays a NativeMarkdown leaf before assembly"
+        );
+
+        context.assemble_markdown(markdown).unwrap();
+        let children = context.world().node(id).unwrap().children;
+        assert_eq!(children.len(), 3);
+        assert_eq!(
+            context.read(markdown, |markdown| markdown.fence_children().to_vec()),
+            Ok(children.clone())
+        );
+        assert_eq!(
+            context.world().text(children[0]),
+            Some("flowchart LR\nA-->B")
+        );
+        assert_eq!(
+            context.world().highlight_request(children[0]),
+            Some(&HighlightRequest::new(
+                NativeMarkdown::MERMAID_PRESENTER,
+                "flowchart LR\nA-->B"
+            ))
+        );
+        assert_eq!(context.world().text(children[1]), Some("\\frac{1}{2}"));
+        assert_eq!(
+            context.world().highlight_request(children[1]),
+            Some(&HighlightRequest::new(
+                NativeMarkdown::MATH_PRESENTER,
+                "\\frac{1}{2}"
+            ))
+        );
+        assert_eq!(context.world().text(children[2]), Some("fn main() {}"));
+        assert_eq!(
+            context.world().highlight_request(children[2]),
+            Some(&HighlightRequest::highlight("rust"))
+        );
+        for child in &children {
+            assert!(
+                context
+                    .world()
+                    .node_style(*child)
+                    .is_some_and(|style| style.layout.hidden),
+                "fence children are identity slots and must not paint Scene text"
+            );
+            assert_eq!(context.world().standard_visual(*child), None);
+            assert_eq!(
+                context.world().interaction(*child),
+                Some(InteractionState {
+                    pointer_events: false,
+                    focusable: false,
+                })
+            );
+        }
+        assert!(
+            matches!(
+                context.world().standard_visual(id),
+                Some(StandardVisual::NativeMarkdown { text, selection: None })
+                    if text.contains("flowchart LR")
+                        && text.contains("\\frac{1}{2}")
+                        && text.contains("fn main() {}")
+            ),
+            "parent still projects StandardVisual::NativeMarkdown after assembly"
+        );
+        assert!(context.world().highlight_request(id).is_none());
+    }
+
+    #[test]
+    fn assemble_markdown_drops_stale_fence_children() {
+        let mut context = AppContext::new();
+        let markdown = context
+            .create_component(
+                document(),
+                NativeMarkdown::from_source(concat!(
+                    "```mermaid\n",
+                    "flowchart LR\n",
+                    "A-->B\n",
+                    "```\n\n",
+                    "```math\n",
+                    "\\frac{1}{2}\n",
+                    "```\n\n",
+                    "```rust\n",
+                    "fn main() {}\n",
+                    "```\n",
+                )),
+            )
+            .unwrap();
+        context.assemble_markdown(markdown).unwrap();
+        let first_children = context.world().node(markdown.stable_id()).unwrap().children;
+        assert_eq!(first_children.len(), 3);
+        let dropped = first_children[2];
+
+        context
+            .update_component(markdown, |markdown, _| {
+                *markdown = NativeMarkdown::from_source(concat!(
+                    "```mermaid\n",
+                    "flowchart LR\n",
+                    "A-->B\n",
+                    "```\n\n",
+                    "```math\n",
+                    "\\frac{1}{2}\n",
+                    "```\n",
+                ));
+            })
+            .unwrap();
+        context.assemble_markdown(markdown).unwrap();
+
+        let children = context.world().node(markdown.stable_id()).unwrap().children;
+        assert_eq!(children.len(), 2);
+        assert_eq!(
+            context.world().highlight_request(children[0]),
+            Some(&HighlightRequest::new(
+                NativeMarkdown::MERMAID_PRESENTER,
+                "flowchart LR\nA-->B"
+            ))
+        );
+        assert_eq!(
+            context.world().highlight_request(children[1]),
+            Some(&HighlightRequest::new(
+                NativeMarkdown::MATH_PRESENTER,
+                "\\frac{1}{2}"
+            ))
+        );
+        assert_eq!(
+            context.world().text(children[0]),
+            Some("flowchart LR\nA-->B")
+        );
+        assert_eq!(context.world().text(children[1]), Some("\\frac{1}{2}"));
+        for child in &children {
+            assert!(
+                context
+                    .world()
+                    .node_style(*child)
+                    .is_some_and(|style| style.layout.hidden),
+                "re-assembled fence children stay hidden identity slots"
+            );
+            assert_eq!(context.world().standard_visual(*child), None);
+        }
+        assert!(
+            !children.contains(&dropped),
+            "removed rust fence must not remain a child"
+        );
+        assert!(
+            !context.world().contains(dropped),
+            "stale fence children must be despawned"
+        );
+        assert!(matches!(
+            context.world().standard_visual(markdown.stable_id()),
+            Some(StandardVisual::NativeMarkdown { .. })
+        ));
     }
 }

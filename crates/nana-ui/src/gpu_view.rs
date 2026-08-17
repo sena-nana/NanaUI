@@ -6,7 +6,7 @@ use iced::{Color, Rectangle, wgpu};
 
 use crate::geometry::{LogicalRect, PhysicalRect};
 
-const SHADER_SOURCE: &str = r#"
+pub(crate) const GPU_VIEW_SHADER: &str = r#"
 struct ViewUniform {
     color_a: vec4<f32>,
     color_b: vec4<f32>,
@@ -297,7 +297,7 @@ impl shader::Pipeline for GpuViewPipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui gpu view shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
+            source: wgpu::ShaderSource::Wgsl(GPU_VIEW_SHADER.into()),
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana-ui gpu view bind group layout"),

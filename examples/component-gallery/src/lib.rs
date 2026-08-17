@@ -1,4 +1,5 @@
 use std::cell::OnceCell;
+use std::sync::Arc;
 
 use iced::widget::{
     button, container, row, scrollable, slider, space, stack, text, text_editor, toggler,
@@ -45,7 +46,7 @@ use nana_ui::overlay::ExclusiveOverlay;
 use nana_ui::selection::{SelectionMove, SingleSelection};
 use nana_ui::settings::{
     AppearanceSettings, BackdropTarget, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
-    WindowMaterialMode, settings_page, settings_sidebar as settings_sidebar_view,
+    WindowMaterialMode,
 };
 use nana_ui::theme::{Colors, ThemeMode, ThemeModeExt, ThemeTokens, UI_METRICS, ui_font};
 use nana_ui::tooltip::TooltipConfig;
@@ -56,14 +57,14 @@ use nana_ui::widgets::{
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
-    AppearanceEvent, DesktopShell, DockAction, DockAxis, DockChromeStyle, DockContents,
-    DockController, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
+    AppearanceEvent, DockAction, DockId, DockSurfaceId, DockWorkspace, DockWorkspaceEvent,
     FallbackColor, GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
     GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
     MaterialOutcome, PopupShell, PopupTitleBarFrame, SplitAxis, SplitPaneAction,
     SplitPaneController, WindowAppearance, apply_system_material, clear_system_material,
-    dock_workspace, ratio_pane_split,
+    ratio_pane_split,
 };
+use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
 
 #[path = "views/controls.rs"]
 mod controls_view;
@@ -75,6 +76,10 @@ mod graph_view;
 mod rich_text_view;
 #[path = "views/root.rs"]
 mod root_view;
+mod runtime_gallery;
+mod runtime_host;
+mod runtime_overlays;
+mod runtime_settings;
 #[path = "views/settings.rs"]
 mod settings_view;
 #[path = "views/surfaces.rs"]
@@ -176,6 +181,10 @@ pub enum GalleryMessage {
     WindowChrome(WindowChromeEvent),
     /// Host-applied [`MaterialOutcome`] from `nana-window`.
     MaterialApplied(MaterialOutcome),
+    SettingsRuntime(runtime_settings::SettingsRuntimeInput),
+    GalleryRuntime(runtime_host::RuntimeSceneInput),
+    OverlayRuntime(runtime_host::RuntimeSceneInput),
+    SetEditorText(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +228,7 @@ fn command_shortcut_event(
     KeyStroke::from_iced(&key, modifiers).map(GalleryMessage::KeyStroke)
 }
 
+#[allow(dead_code)]
 fn surface_selection_event(
     event: iced::Event,
     _status: iced::event::Status,
@@ -247,8 +257,10 @@ pub struct GalleryState {
     workspace: WorkspaceController,
     settings_workspace: WorkspaceController,
     split_pane: SplitPaneController,
-    dock: DockController,
-    dock_effects: Vec<DockHostEffect>,
+    dock: DockWorkspace,
+    dock_locked: bool,
+    dock_events: Vec<DockWorkspaceEvent>,
+    dock_window_commands: Vec<WindowCommand>,
     settings_model: SettingsModel,
     settings: SettingsState,
     section: GallerySection,
@@ -265,6 +277,7 @@ pub struct GalleryState {
     search_dropdown: SearchDropdownState<u8>,
     search_dropdown_query: String,
     search_selection: Option<u8>,
+    #[allow(dead_code)]
     calendar_model: OnceCell<CalendarHeatmapModel>,
     calendar_active: Option<CalendarHeatmapActiveCell>,
     selected_item: usize,
@@ -299,6 +312,10 @@ pub struct GalleryState {
     window_chrome: WindowChromeState,
     /// Latest material application outcome from the iced host path.
     material_outcome: MaterialOutcome,
+    window_size: Option<(f32, f32)>,
+    settings_runtime: Option<runtime_settings::GallerySettingsRuntime>,
+    gallery_runtime: Option<runtime_gallery::GalleryRuntime>,
+    overlay_runtime: Option<runtime_overlays::GalleryOverlaysRuntime>,
 }
 
 impl Default for GalleryState {
@@ -311,14 +328,16 @@ impl GalleryState {
     pub fn new() -> Self {
         let settings_model = settings_model();
         let settings = SettingsState::new(&settings_model);
-        Self {
+        let mut state = Self {
             theme: ThemeMode::Dark,
             appearance: AppearanceSettings::default(),
             workspace: WorkspaceController::with_layout(gallery_layout(false)),
             settings_workspace: WorkspaceController::with_layout(settings_layout()),
             split_pane: SplitPaneController::new(SplitAxis::Vertical, 120.0, 64.0, 280.0),
-            dock: gallery_dock(),
-            dock_effects: Vec::new(),
+            dock: gallery_dock_workspace(),
+            dock_locked: false,
+            dock_events: Vec::new(),
+            dock_window_commands: Vec::new(),
             settings_model,
             settings,
             section: GallerySection::Controls,
@@ -372,7 +391,13 @@ impl GalleryState {
             primary_clicks: 0,
             window_chrome: WindowChromeState::default(),
             material_outcome: MaterialOutcome::chosen_solid(),
-        }
+            window_size: None,
+            settings_runtime: None,
+            gallery_runtime: None,
+            overlay_runtime: None,
+        };
+        state.refresh_gallery_runtime();
+        state
     }
 
     pub fn theme_mode(&self) -> ThemeMode {
@@ -410,6 +435,7 @@ impl GalleryState {
         self.checked && self.switched
     }
 
+    #[allow(dead_code)]
     fn calendar_model(&self) -> &CalendarHeatmapModel {
         self.calendar_model.get_or_init(gallery_calendar_model)
     }
@@ -422,11 +448,14 @@ impl GalleryState {
 
     pub fn subscription(&self) -> Subscription<GalleryMessage> {
         let interaction = if self.overlay.is_open() {
-            iced::event::listen_with(overlay_event)
-        } else if !self.settings_open && self.section == GallerySection::Surfaces {
-            iced::event::listen_with(surface_selection_event)
+            Subscription::batch([
+                iced::event::listen_with(overlay_event),
+                iced::event::listen_with(runtime_overlays::overlay_runtime_key_event),
+            ])
+        } else if self.settings_open {
+            iced::event::listen_with(runtime_settings::settings_runtime_key_event)
         } else {
-            Subscription::none()
+            iced::event::listen_with(runtime_gallery::gallery_runtime_key_event)
         };
         let loading = if self.loading {
             iced::time::every(iced::time::Duration::from_millis(100))
@@ -444,7 +473,6 @@ impl GalleryState {
             self.split_pane
                 .subscription()
                 .map(GalleryMessage::SplitPane),
-            self.dock.subscription().map(GalleryMessage::Dock),
             WindowChromeState::subscription().map(GalleryMessage::WindowChrome),
         ])
     }
@@ -499,6 +527,13 @@ impl GalleryState {
     }
 
     pub fn update(&mut self, message: GalleryMessage) {
+        let runtime_input = matches!(
+            message,
+            GalleryMessage::SettingsRuntime(_)
+                | GalleryMessage::GalleryRuntime(_)
+                | GalleryMessage::OverlayRuntime(_)
+        );
+        let overlay_input = matches!(message, GalleryMessage::OverlayRuntime(_));
         match message {
             GalleryMessage::WindowChrome(event) => {
                 self.window_chrome.update(event);
@@ -506,7 +541,22 @@ impl GalleryState {
             GalleryMessage::MaterialApplied(outcome) => {
                 self.material_outcome = outcome;
             }
+            GalleryMessage::SettingsRuntime(input) => {
+                self.handle_settings_runtime_input(input);
+            }
+            GalleryMessage::GalleryRuntime(input) => {
+                self.handle_gallery_runtime_input(input);
+            }
+            GalleryMessage::OverlayRuntime(input) => {
+                self.handle_overlay_runtime_input(input);
+            }
+            GalleryMessage::SetEditorText(value) => {
+                self.editor = text_editor::Content::with_text(&value);
+            }
             GalleryMessage::Workspace(action) => {
+                if let WorkspaceAction::WindowResized { width, height } = &action {
+                    self.window_size = Some((*width, *height));
+                }
                 let synchronize_viewport = matches!(
                     &action,
                     WorkspaceAction::WindowResized { .. }
@@ -527,10 +577,7 @@ impl GalleryState {
             GalleryMessage::SplitPane(action) => {
                 self.split_pane.update(action);
             }
-            GalleryMessage::Dock(action) => {
-                let update = self.dock.update(action);
-                self.dock_effects.extend(update.effects);
-            }
+            GalleryMessage::Dock(action) => self.apply_dock_action(action),
             GalleryMessage::ToggleTheme => self.theme = self.theme.toggle(),
             GalleryMessage::SetTheme(theme) => self.theme = theme,
             GalleryMessage::SetStandardRadius(radius) => {
@@ -783,6 +830,134 @@ impl GalleryState {
                 }
             }
         }
+        if self.settings_open && !runtime_input {
+            self.refresh_settings_runtime();
+        } else if !self.settings_open && !runtime_input {
+            self.refresh_gallery_runtime();
+        }
+        if !overlay_input {
+            self.refresh_overlay_runtime();
+        }
+    }
+
+    fn apply_dock_action(&mut self, action: DockAction) {
+        if self.dock_locked && !dock_action_allowed_when_locked(&action) {
+            return;
+        }
+        match action {
+            DockAction::ActivateTab(id) => {
+                activate_runtime_dock_tab_in_workspace(&mut self.dock, id.as_str());
+            }
+            DockAction::SurfaceResized {
+                surface,
+                width,
+                height,
+            } => {
+                if let Some(id) = floating_surface_id(surface) {
+                    let Some(existing) = self
+                        .dock
+                        .floating
+                        .iter()
+                        .find(|item| item.id == id)
+                        .cloned()
+                    else {
+                        return;
+                    };
+                    self.apply_dock_workspace_event(DockWorkspaceEvent::MoveFloating {
+                        id,
+                        x: existing.x,
+                        y: existing.y,
+                        width,
+                        height,
+                    });
+                }
+            }
+            DockAction::SurfaceGeometry { surface, bounds }
+            | DockAction::SurfaceLayout { surface, bounds } => {
+                if let Some(id) = floating_surface_id(surface) {
+                    if self.dock.floating.iter().any(|item| item.id == id) {
+                        self.apply_dock_workspace_event(DockWorkspaceEvent::MoveFloating {
+                            id,
+                            x: bounds.x,
+                            y: bounds.y,
+                            width: bounds.width,
+                            height: bounds.height,
+                        });
+                    }
+                }
+            }
+            DockAction::Hide(id) => {
+                let _ = self.dock.hide(id.as_str());
+            }
+            DockAction::Show(id) => {
+                let _ = self.dock.show(id.as_str());
+            }
+            DockAction::Float { id, bounds, .. } => {
+                if id.as_str() == DOCK_CENTER {
+                    return;
+                }
+                let Some(event) = self.dock.float_item_at(
+                    id.as_str(),
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    bounds.height,
+                ) else {
+                    return;
+                };
+                self.record_dock_workspace_events([event]);
+            }
+            DockAction::Focus(id) => {
+                activate_runtime_dock_tab_in_workspace(&mut self.dock, id.as_str());
+                if let Some(surface) = floating_surface_for_item(&self.dock, id.as_str()) {
+                    self.apply_dock_workspace_event(DockWorkspaceEvent::FocusFloating(surface));
+                }
+            }
+            DockAction::CloseSurface(surface) => {
+                if let Some(id) = floating_surface_id(surface) {
+                    if self.dock.floating.iter().any(|item| item.id == id) {
+                        self.apply_dock_workspace_event(DockWorkspaceEvent::CloseFloating(id));
+                    }
+                }
+            }
+            DockAction::SetLocked(locked) => {
+                self.dock_locked = locked;
+            }
+            DockAction::Reset => {
+                let closing = self
+                    .dock
+                    .floating
+                    .iter()
+                    .map(|surface| DockWorkspaceEvent::CloseFloating(Arc::clone(&surface.id)))
+                    .collect::<Vec<_>>();
+                self.dock = gallery_dock_workspace();
+                self.dock_locked = false;
+                self.record_dock_workspace_events(closing);
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_dock_workspace_event(&mut self, event: DockWorkspaceEvent) {
+        self.dock.apply(event.clone());
+        self.record_dock_workspace_events([event]);
+    }
+
+    fn record_dock_workspace_events(
+        &mut self,
+        events: impl IntoIterator<Item = DockWorkspaceEvent>,
+    ) {
+        let events = events.into_iter().collect::<Vec<_>>();
+        if events.is_empty() {
+            return;
+        }
+        self.dock_window_commands
+            .extend(runtime_dock_window_commands(events.iter().cloned()));
+        self.dock_events.extend(events);
+    }
+
+    fn dock_is_visible(&self, id: &str) -> bool {
+        self.dock.is_visible(id)
     }
 
     fn action_context(&self) -> KeyContext {
@@ -923,16 +1098,113 @@ impl GalleryState {
     }
 }
 
-fn gallery_dock() -> DockController {
+const FLOATING_MIN_WIDTH: f64 = 160.0;
+const FLOATING_MIN_HEIGHT: f64 = 120.0;
+const DOCK_WINDOW_TITLE: &str = "NanaUI Gallery";
+const DOCK_CENTER: &str = "gallery.primary";
+
+fn dock_action_allowed_when_locked(action: &DockAction) -> bool {
+    matches!(
+        action,
+        DockAction::SetLocked(_)
+            | DockAction::Focus(_)
+            | DockAction::ActivateTab(_)
+            | DockAction::SurfaceResized { .. }
+            | DockAction::SurfaceGeometry { .. }
+            | DockAction::SurfaceLayout { .. }
+            | DockAction::CardHover(..)
+    )
+}
+
+fn floating_surface_id(surface: DockSurfaceId) -> Option<Arc<str>> {
+    (surface.0 != 0).then(|| Arc::<str>::from(surface.0.to_string()))
+}
+
+fn floating_surface_for_item(workspace: &DockWorkspace, id: &str) -> Option<Arc<str>> {
+    workspace
+        .floating
+        .iter()
+        .find(|surface| surface.root.contains(id))
+        .map(|surface| Arc::clone(&surface.id))
+}
+
+fn activate_runtime_dock_tab_in_workspace(workspace: &mut DockWorkspace, id: &str) {
+    if activate_runtime_dock_tab(&mut workspace.main, id) {
+        return;
+    }
+    for surface in &mut workspace.floating {
+        if activate_runtime_dock_tab(&mut surface.root, id) {
+            return;
+        }
+    }
+}
+
+fn activate_runtime_dock_tab(node: &mut nana_ui::runtime::DockNode, id: &str) -> bool {
+    match node {
+        nana_ui::runtime::DockNode::Item { .. } => false,
+        nana_ui::runtime::DockNode::Tabs { tabs, active, .. } => {
+            if tabs.iter().any(|tab| tab.as_ref() == id) && active.as_ref() != id {
+                *active = Arc::from(id);
+                true
+            } else {
+                false
+            }
+        }
+        nana_ui::runtime::DockNode::Split { first, second, .. } => {
+            activate_runtime_dock_tab(first, id) || activate_runtime_dock_tab(second, id)
+        }
+    }
+}
+
+/// Maps Runtime floating-dock events the same way as
+/// `nana_ui::runtime_dock_window_update` (hosted). Gallery records the
+/// commands; the Iced host does not open extra daemon windows.
+fn runtime_dock_window_commands(
+    events: impl IntoIterator<Item = DockWorkspaceEvent>,
+) -> Vec<WindowCommand> {
+    events
+        .into_iter()
+        .map(|event| match event {
+            DockWorkspaceEvent::OpenFloating(surface) => WindowCommand::Open {
+                id: WindowId(nana_ui::runtime::dock_surface_window_key(&surface.id)),
+                settings: WindowSettings {
+                    title: DOCK_WINDOW_TITLE.to_owned(),
+                    initial_size: (f64::from(surface.width), f64::from(surface.height)),
+                    minimum_size: (FLOATING_MIN_WIDTH, FLOATING_MIN_HEIGHT),
+                    initial_position: Some((f64::from(surface.x), f64::from(surface.y))),
+                    maximized: false,
+                    transparent: false,
+                    always_on_top: false,
+                    resizable: true,
+                    role: WindowRole::Tool,
+                    modal: false,
+                    parent: None,
+                },
+            },
+            DockWorkspaceEvent::CloseFloating(id) => {
+                WindowCommand::Close(WindowId(nana_ui::runtime::dock_surface_window_key(&id)))
+            }
+            DockWorkspaceEvent::MoveFloating { id, x, y, .. } => WindowCommand::Move {
+                id: WindowId(nana_ui::runtime::dock_surface_window_key(&id)),
+                position: (x, y),
+            },
+            DockWorkspaceEvent::FocusFloating(id) => {
+                WindowCommand::Focus(WindowId(nana_ui::runtime::dock_surface_window_key(&id)))
+            }
+        })
+        .collect()
+}
+
+fn gallery_dock_workspace() -> DockWorkspace {
+    use nana_ui::runtime::{DockAxis, DockNode};
+
     let main = DockNode::split(
         DockAxis::Horizontal,
         0.26,
         DockNode::tabs(
-            [
-                DockId::from("gallery.navigation"),
-                DockId::from("gallery.assets"),
-            ],
+            ["gallery.navigation", "gallery.assets"],
             "gallery.navigation",
+            [("gallery.navigation", None), ("gallery.assets", None)],
         ),
         DockNode::split(
             DockAxis::Vertical,
@@ -940,41 +1212,28 @@ fn gallery_dock() -> DockController {
             DockNode::split(
                 DockAxis::Horizontal,
                 0.72,
-                DockNode::item("gallery.primary"),
+                DockNode::item("gallery.primary", None),
                 DockNode::tabs(
-                    [
-                        DockId::from("gallery.inspector"),
-                        DockId::from("gallery.outline"),
-                    ],
+                    ["gallery.inspector", "gallery.outline"],
                     "gallery.inspector",
+                    [("gallery.inspector", None), ("gallery.outline", None)],
                 ),
             ),
             DockNode::tabs(
-                [
-                    DockId::from("gallery.console"),
-                    DockId::from("gallery.problems"),
-                    DockId::from("gallery.output"),
-                ],
+                ["gallery.console", "gallery.problems", "gallery.output"],
                 "gallery.console",
+                [
+                    ("gallery.console", None),
+                    ("gallery.problems", None),
+                    ("gallery.output", None),
+                ],
             ),
         ),
     );
-    let specs = [
-        DockItemSpec::new("gallery.primary", "Primary").limits(360.0, 240.0),
-        DockItemSpec::new("gallery.navigation", "Navigation").limits(150.0, 120.0),
-        DockItemSpec::new("gallery.assets", "Assets").limits(150.0, 120.0),
-        DockItemSpec::new("gallery.inspector", "Inspector").limits(180.0, 140.0),
-        DockItemSpec::new("gallery.outline", "Outline").limits(180.0, 140.0),
-        DockItemSpec::new("gallery.console", "Console").limits(240.0, 120.0),
-        DockItemSpec::new("gallery.problems", "Problems").limits(140.0, 120.0),
-        DockItemSpec::new("gallery.output", "Output").limits(140.0, 120.0),
-    ];
-    let mut dock = DockController::new("gallery.primary", specs, DockLayout::new(main))
-        .expect("gallery dock definition is valid");
-    dock.set_chrome_style(DockChromeStyle::Card);
-    dock
+    DockWorkspace::new(main).primary(DOCK_CENTER)
 }
 
+#[allow(dead_code)]
 fn section_heading<'a, Message>(
     title: &'a str,
     trailing: Option<Element<'a, Message>>,
@@ -1037,6 +1296,7 @@ fn gallery_layout(show_workspace: bool) -> WorkspaceLayout {
     .expect("gallery workspace region ids are unique")
 }
 
+#[allow(dead_code)]
 fn gallery_calendar_model() -> CalendarHeatmapModel {
     build_calendar_heatmap_model(
         &(0..84)
@@ -1177,7 +1437,7 @@ fn apply_gallery_window_material(
     }
 }
 
-fn section_label(section: GallerySection) -> &'static str {
+pub(crate) fn section_label(section: GallerySection) -> &'static str {
     match section {
         GallerySection::Controls => "控件",
         GallerySection::Surfaces => "表面",

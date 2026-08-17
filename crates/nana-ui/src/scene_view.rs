@@ -34,7 +34,7 @@ use crate::icons::{paint_icon_geometry, paint_spinner_geometry};
 use crate::scene_gpu::SceneGpuPrimitive;
 use crate::{
     HostTextureBinding, HostTextureLayer, HostTextureRegistry, SceneGpuNode,
-    SceneGpuRendererRegistry,
+    SceneGpuRendererRegistry, default_scene_gpu_renderers,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,8 +123,10 @@ impl HostTextureSceneResolver {
             let ScenePrimitiveKind::Custom(custom) = &primitive.kind else {
                 continue;
             };
+            // Scene GPU painters such as `"gpu-view"` are resolved by
+            // `IcedSceneView`, not this host-texture lookup.
             if custom.renderer.as_ref() != "nana.host-texture" {
-                return Err(ScenePaintError::UnsupportedCustomRenderer(*id));
+                continue;
             }
             let binding = host_textures
                 .get(custom.resource.as_ref())
@@ -168,7 +170,7 @@ impl SceneSource<'_> {
 
 impl<'scene> IcedSceneView<'scene> {
     pub fn new(scene: &'scene UiScene, size: Size) -> Result<Self, ScenePaintError> {
-        Self::borrowed(scene, None, None, size)
+        Self::borrowed(scene, None, Some(default_scene_gpu_renderers()), size)
     }
 
     /// Paint exactly one retained Runtime subtree inside an Iced layout slot.
@@ -179,7 +181,7 @@ impl<'scene> IcedSceneView<'scene> {
         node: StableNodeId,
         size: Size,
     ) -> Result<Self, ScenePaintError> {
-        let mut view = Self::borrowed(scene, None, None, size)?;
+        let mut view = Self::borrowed(scene, None, Some(default_scene_gpu_renderers()), size)?;
         view.restrict_to_node(node)?;
         Ok(view)
     }
@@ -209,6 +211,11 @@ impl<'scene> IcedSceneView<'scene> {
         Self::borrowed(scene, host_textures, gpu_renderers, size)
     }
 
+    /// Shared-scene constructor used by Vue `from_shared_node` and other hosts.
+    ///
+    /// Installs the same default `"gpu-view"` registry as [`Self::new`]. Pass
+    /// [`Self::from_shared_with_renderers`] with `Some(registry)` to keep a
+    /// caller-owned set, including an empty one.
     pub fn from_shared(
         scene: Arc<UiScene>,
         host_textures: Option<HostTextureRegistry>,
@@ -228,12 +235,18 @@ impl<'scene> IcedSceneView<'scene> {
         Ok(view)
     }
 
+    /// Shared-scene constructor with an optional GPU renderer registry.
+    ///
+    /// `None` installs [`default_scene_gpu_renderers`]. `Some(registry)` is
+    /// used unchanged. This is construction, not draw: the default painter
+    /// still needs the host Device/Queue to emit GPU.
     pub fn from_shared_with_renderers(
         scene: Arc<UiScene>,
         host_textures: Option<HostTextureRegistry>,
         gpu_renderers: Option<SceneGpuRendererRegistry>,
         size: Size,
     ) -> Result<IcedSceneView<'static>, ScenePaintError> {
+        let gpu_renderers = gpu_renderers.or_else(|| Some(default_scene_gpu_renderers()));
         let operations = validate_scene(&scene, host_textures.as_ref(), gpu_renderers.as_ref())?;
         Ok(IcedSceneView {
             scene: SceneSource::Shared(scene),
@@ -759,7 +772,7 @@ fn supported_family(family: Option<&str>) -> bool {
 mod tests {
     use nana_ui_runtime::{
         AppContext, Button as RuntimeButton, Card as RuntimeCard, CustomRenderNode, DocumentId,
-        LayoutBox, MutationQueue,
+        GPU_VIEW_RENDERER, GpuView, LayoutBox, MutationQueue,
     };
 
     use super::*;
@@ -877,6 +890,161 @@ mod tests {
                 node: button.stable_id(),
                 slot: 1,
             }
+        )));
+    }
+
+    fn gpu_view_scene() -> (UiScene, nana_ui_runtime::StableNodeId) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let view = context.create_component(document, GpuView::new(1)).unwrap();
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            view.stable_id(),
+            LayoutBox {
+                x: 4.0,
+                y: 8.0,
+                width: 120.0,
+                height: 60.0,
+            },
+        );
+        context.commit_mutations(mutations).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            context.world().extract_nodes(&work.render_extraction),
+            work.render_removals,
+        );
+        (scene, view.stable_id())
+    }
+
+    #[test]
+    fn iced_scene_view_new_accepts_gpu_view() {
+        let (scene, id) = gpu_view_scene();
+        let view = IcedSceneView::new(&scene, Size::new(160.0, 100.0)).unwrap();
+        assert!(view.operations.iter().any(|operation| matches!(
+            operation,
+            RenderOperation::InvokeCustom(primitive) if primitive.node == id
+                && scene.primitive(*primitive).is_some_and(|primitive| {
+                    matches!(
+                        &primitive.kind,
+                        ScenePrimitiveKind::Custom(custom)
+                            if custom.renderer.as_ref() == GPU_VIEW_RENDERER
+                    )
+                })
+        )));
+        let node_view = IcedSceneView::for_node(&scene, id, Size::new(160.0, 100.0)).unwrap();
+        assert!(node_view.operations.iter().any(|operation| matches!(
+            operation,
+            RenderOperation::InvokeCustom(primitive) if primitive.node == id
+        )));
+    }
+
+    #[test]
+    fn iced_scene_view_with_gpu_resources_none_still_fails_for_gpu_view() {
+        let (scene, _) = gpu_view_scene();
+        assert!(matches!(
+            IcedSceneView::with_gpu_resources(&scene, None, None, Size::new(160.0, 100.0)),
+            Err(ScenePaintError::UnsupportedCustomRenderer(_))
+        ));
+    }
+
+    fn assert_gpu_view_operation(view: &IcedSceneView<'_>, scene: &UiScene, id: StableNodeId) {
+        assert!(
+            view.gpu_renderers
+                .as_ref()
+                .is_some_and(|registry| registry.get(GPU_VIEW_RENDERER).is_some()
+                    && registry.get("gpu-view").is_some())
+        );
+        assert!(view.operations.iter().any(|operation| matches!(
+            operation,
+            RenderOperation::InvokeCustom(primitive) if primitive.node == id
+                && scene.primitive(*primitive).is_some_and(|primitive| {
+                    matches!(
+                        &primitive.kind,
+                        ScenePrimitiveKind::Custom(custom)
+                            if custom.renderer.as_ref() == GPU_VIEW_RENDERER
+                    )
+                })
+        )));
+    }
+
+    #[test]
+    fn from_shared_registry_contains_gpu_view() {
+        let (scene, id) = gpu_view_scene();
+        let view =
+            IcedSceneView::from_shared(Arc::new(scene.clone()), None, Size::new(160.0, 100.0))
+                .unwrap();
+        assert_gpu_view_operation(&view, &scene, id);
+    }
+
+    #[test]
+    fn from_shared_with_renderers_keeps_explicit_empty_registry() {
+        let (scene, _) = gpu_view_scene();
+        assert!(matches!(
+            IcedSceneView::from_shared_with_renderers(
+                Arc::new(scene),
+                None,
+                Some(SceneGpuRendererRegistry::new()),
+                Size::new(160.0, 100.0),
+            ),
+            Err(ScenePaintError::UnsupportedCustomRenderer(_))
+        ));
+
+        let empty = IcedSceneView::from_shared_with_renderers(
+            Arc::new(UiScene::new()),
+            None,
+            Some(SceneGpuRendererRegistry::new()),
+            Size::new(160.0, 100.0),
+        )
+        .unwrap();
+        let registry = empty
+            .gpu_renderers
+            .as_ref()
+            .expect("explicit empty registry is retained");
+        assert!(registry.is_empty());
+        assert!(registry.get(GPU_VIEW_RENDERER).is_none());
+        assert!(registry.get("gpu-view").is_none());
+    }
+
+    #[test]
+    fn host_texture_resolver_skips_gpu_view_custom_nodes() {
+        let (scene, _) = gpu_view_scene();
+        HostTextureSceneResolver::new(&scene, &HostTextureRegistry::new()).unwrap();
+    }
+
+    #[test]
+    fn from_shared_node_installs_default_gpu_view_painter() {
+        let (scene, id) = gpu_view_scene();
+        let view = IcedSceneView::from_shared_node(
+            Arc::new(scene.clone()),
+            id,
+            None,
+            Size::new(160.0, 100.0),
+        )
+        .unwrap();
+        assert_gpu_view_operation(&view, &scene, id);
+    }
+
+    #[test]
+    fn default_gpu_view_renderer_lets_iced_scene_view_accept_gpu_view() {
+        let (scene, id) = gpu_view_scene();
+        let view = IcedSceneView::with_gpu_renderers(
+            &scene,
+            crate::default_scene_gpu_renderers(),
+            Size::new(160.0, 100.0),
+        )
+        .unwrap();
+        assert!(view.operations.iter().any(|operation| matches!(
+            operation,
+            RenderOperation::InvokeCustom(primitive) if primitive.node == id
+                && scene.primitive(*primitive).is_some_and(|primitive| {
+                    matches!(
+                        &primitive.kind,
+                        ScenePrimitiveKind::Custom(custom)
+                            if custom.renderer.as_ref() == GPU_VIEW_RENDERER
+                    )
+                })
         )));
     }
 

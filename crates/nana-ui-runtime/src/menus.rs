@@ -532,6 +532,7 @@ impl crate::ComponentView for ContextMenu {
                 hint: item.hint,
                 disabled: item.disabled,
                 checked: false,
+                icon: item.icon,
             })
             .collect();
         if self.open {
@@ -590,25 +591,14 @@ pub(crate) fn action_menu_item_geometry(
     palette: &SemanticPalette,
 ) -> ComponentGeometry {
     let pad = size.padding_x();
-    let icon_size = size.icon_size();
-    let mut cursor = bounds.x + pad;
-    let icon = icon.map(|icon| {
-        let box_ = LayoutBox {
-            x: cursor,
-            y: bounds.y + (bounds.height - icon_size) / 2.0,
-            width: icon_size,
-            height: icon_size,
-        };
-        cursor += icon_size + ICON_GAP;
-        let color = if disabled {
-            palette.faint.as_rgba_array()
-        } else if danger {
-            palette.danger.as_rgba_array()
-        } else {
-            palette.muted.as_rgba_array()
-        };
-        (icon, box_, color)
-    });
+    let icon_color = if disabled {
+        palette.faint.as_rgba_array()
+    } else if danger {
+        palette.danger.as_rgba_array()
+    } else {
+        palette.muted.as_rgba_array()
+    };
+    let (cursor, icon) = menu_option_icon(bounds, icon, size, icon_color);
     let hint_width = hint
         .map(|hint| (hint.len() as f32) * size.text_size() * 0.45)
         .unwrap_or(0.0);
@@ -725,6 +715,7 @@ pub(crate) fn context_menu_geometry(
         bounds.y + MENU_PADDING
     };
     let item_height = ControlSize::Small.height();
+    let size = ControlSize::Small;
     let options = rows
         .iter()
         .enumerate()
@@ -737,13 +728,20 @@ pub(crate) fn context_menu_geometry(
                 width: (bounds.width - MENU_PADDING * 2.0).max(0.0),
                 height: item_height,
             };
+            let icon_color = if option.disabled {
+                palette.faint.as_rgba_array()
+            } else {
+                palette.muted.as_rgba_array()
+            };
+            let (label_x, icon) = menu_option_icon(row, option.icon, size, icon_color);
+            let label_right = row.x + row.width - size.padding_x();
             crate::SelectOptionGeometry {
                 bounds: row,
                 label: ComponentTextRegion {
                     bounds: LayoutBox {
-                        x: row.x + ControlSize::Small.padding_x(),
+                        x: label_x,
                         y: row.y,
-                        width: (row.width - ControlSize::Small.padding_x() * 2.0).max(0.0),
+                        width: (label_right - label_x).max(0.0),
                         height: row.height,
                     },
                     content: crate::select::menu_option_label(option),
@@ -752,13 +750,14 @@ pub(crate) fn context_menu_geometry(
                     } else {
                         palette.text.as_rgba_array()
                     }),
-                    font_size: ControlSize::Small.text_size(),
+                    font_size: size.text_size(),
                     font_weight: Some(500),
                 },
                 selected,
                 checked: option.checked,
                 disabled: option.disabled,
                 background: selected.then_some(palette.hover.as_rgba_array()),
+                icon,
             }
         })
         .collect();
@@ -789,6 +788,27 @@ pub(crate) fn context_menu_option_at(
     options
         .iter()
         .position(|option| !option.disabled && option.bounds.contains(x, y))
+}
+
+fn menu_option_icon(
+    row: LayoutBox,
+    icon: Option<Icon>,
+    size: ControlSize,
+    color: [f32; 4],
+) -> (f32, Option<(Icon, LayoutBox, [f32; 4])>) {
+    let icon_size = size.icon_size();
+    let mut cursor = row.x + size.padding_x();
+    let icon = icon.map(|icon| {
+        let bounds = LayoutBox {
+            x: cursor,
+            y: row.y + (row.height - icon_size) / 2.0,
+            width: icon_size,
+            height: icon_size,
+        };
+        cursor += icon_size + ICON_GAP;
+        (icon, bounds, color)
+    });
+    (cursor, icon)
 }
 
 fn value_segments(value: &str) -> Vec<&str> {
@@ -1014,6 +1034,74 @@ mod tests {
             panic!("searchable menu height");
         };
         assert!(searchable_height > context_menu_height(1, false));
+    }
+
+    #[test]
+    fn context_menu_projects_item_icons_into_menu_surface_rows() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0).items([
+                    ContextMenuItem::new("add", "Add").icon(Icon::Add),
+                    ContextMenuItem::new("rename", "Rename"),
+                ]),
+            )
+            .unwrap();
+        match context.world().standard_visual(menu.stable_id()) {
+            Some(StandardVisual::MenuSurface { rows, .. }) => {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].icon, Some(Icon::Add));
+                assert_eq!(rows[1].icon, None);
+            }
+            other => panic!("context menu visual: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_menu_geometry_reserves_icon_box_and_keeps_iconless_rows() {
+        let palette = SemanticPalette::for_mode(nana_ui_core::ThemeMode::Dark);
+        let rows = [
+            SelectOptionData {
+                label: Arc::from("Add"),
+                hint: None,
+                disabled: false,
+                checked: false,
+                icon: Some(Icon::Add),
+            },
+            SelectOptionData {
+                label: Arc::from("Rename"),
+                hint: None,
+                disabled: false,
+                checked: false,
+                icon: None,
+            },
+        ];
+        let ComponentGeometry::MenuSurface { options, .. } = context_menu_geometry(
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+            },
+            None,
+            &rows,
+            None,
+            &palette,
+        ) else {
+            panic!("context menu geometry");
+        };
+        assert_eq!(options.len(), 2);
+        let Some((Icon::Add, icon_box, _)) = options[0].icon else {
+            panic!("expected Add icon geometry");
+        };
+        assert!(icon_box.width > 0.0 && icon_box.height > 0.0);
+        assert!(options[0].label.bounds.x >= icon_box.x + icon_box.width);
+        assert!(options[0].label.bounds.width > 0.0);
+        assert_eq!(options[1].icon, None);
+        assert!(options[1].label.bounds.width > 0.0);
+        assert!(options[1].label.bounds.height > 0.0);
+        assert!(options[1].label.bounds.x < options[0].label.bounds.x);
     }
 
     #[test]

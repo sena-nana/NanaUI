@@ -36,7 +36,6 @@ snapshots = [
     "dep:iced_wgpu",
     "dep:iced_winit",
     "dep:nana-ui-core",
-    "dep:nana-ui-platform",
     "dep:nana-ui-scene",
     "dep:png",
 ]
@@ -52,10 +51,10 @@ live2d-wgpu = { git = "https://github.com/sena-nana/live2d-rs.git", rev = "71e92
 nana-ui = {
     path = "../../crates/nana-ui",
     default-features = false,
-    features = ["components"],
+    features = ["components", "gpu"],
 }
 nana-ui-core = { workspace = true, optional = true }
-nana-ui-platform = { workspace = true, optional = true }
+nana-ui-platform.workspace = true
 nana-ui-scene = { workspace = true, optional = true }
 png = { version = "0.18.1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }

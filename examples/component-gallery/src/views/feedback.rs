@@ -2,6 +2,7 @@ use super::*;
 use iced::widget::column;
 
 impl GalleryState {
+    #[allow(dead_code)]
     pub(super) fn feedback(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let tokens = self.theme_tokens();
         let control_height = ControlSize::Medium.height_in(tokens.metrics);
@@ -147,6 +148,7 @@ impl GalleryState {
         content.into()
     }
 
+    #[allow(dead_code)]
     pub(super) fn context_menu(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let (width, height) = self.active_workspace().viewport_geometry().logical_size;
         let viewport = Size::new(width, height);
@@ -174,6 +176,7 @@ impl GalleryState {
             .view()
     }
 
+    #[allow(dead_code)]
     pub(super) fn dialog(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         UiConfirmDialog::new(
             "确认操作",
@@ -190,6 +193,7 @@ impl GalleryState {
         .view(colors)
     }
 
+    #[allow(dead_code)]
     pub(super) fn image_viewer(&self, colors: Colors) -> Element<'_, GalleryMessage> {
         let preview = container(
             stack![

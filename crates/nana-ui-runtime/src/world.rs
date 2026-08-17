@@ -8,7 +8,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use nana_ui_core::{
     ControlSize, GraphPoint, GraphPortKind, GraphPortSide, SemanticColorRole, SemanticPalette,
-    StyleModelRef, SwitchControlPosition, ThemeMode, cubic_point,
+    StyleModelRef, SwitchControlPosition, ThemeMode, TooltipConfig, cubic_point,
 };
 
 use crate::animation::ActiveAnimation;
@@ -3473,6 +3473,7 @@ impl UiWorld {
                 cell_size,
                 max_level,
                 active,
+                active_title,
                 ..
             } => Some(calendar_heatmap_geometry(
                 bounds,
@@ -3482,6 +3483,7 @@ impl UiWorld {
                 *cell_size,
                 *max_level,
                 *active,
+                active_title.as_deref(),
                 self.style_model.theme_mode,
                 &self.style_model.palette,
             )),
@@ -5490,10 +5492,11 @@ fn calendar_heatmap_geometry(
     cell_size: f32,
     max_level: u8,
     active: Option<usize>,
+    active_title: Option<&str>,
     mode: ThemeMode,
     palette: &SemanticPalette,
 ) -> crate::ComponentGeometry {
-    let cells = cells
+    let painted = cells
         .iter()
         .enumerate()
         .map(|(index, cell)| {
@@ -5518,19 +5521,80 @@ fn calendar_heatmap_geometry(
                 fill.as_rgba_array(),
             )
         })
-        .collect();
+        .collect::<Vec<_>>();
     let mut labels = Vec::with_capacity(month_labels.len() + day_labels.len());
-    labels.extend(
-        month_labels
-            .iter()
-            .map(|label| axis_label_region(bounds, &label.text, label.x, label.y, 10.0, palette)),
-    );
-    labels.extend(
-        day_labels
-            .iter()
-            .map(|label| axis_label_region(bounds, &label.text, label.x, label.y, 11.0, palette)),
-    );
-    crate::ComponentGeometry::CalendarHeatmap { cells, labels }
+    labels.extend(month_labels.iter().map(|label| {
+        axis_label_region(bounds, &label.text, label.x, label.y, 10.0, true, palette)
+    }));
+    labels.extend(day_labels.iter().map(|label| {
+        axis_label_region(bounds, &label.text, label.x, label.y, 11.0, false, palette)
+    }));
+    let hover = active.and_then(|index| cells.get(index)).map(|cell| {
+        calendar_hover_chrome(bounds, cell, cell_size, active_title.unwrap_or(""), palette)
+    });
+    crate::ComponentGeometry::CalendarHeatmap {
+        cells: painted,
+        labels,
+        hover,
+    }
+}
+
+fn calendar_hover_chrome(
+    bounds: LayoutBox,
+    cell: &crate::CalendarHeatmapCellPaint,
+    cell_size: f32,
+    title: &str,
+    palette: &SemanticPalette,
+) -> crate::CalendarHoverGeometry {
+    let pad_x = TooltipConfig::PADDING_X;
+    let pad_y = TooltipConfig::PADDING_Y;
+    let font_size = TooltipConfig::FONT_SIZE;
+    let gap = TooltipConfig::default().gap;
+    let max_width = TooltipConfig::default().max_width;
+    let text_width = estimated_text_width(title, font_size);
+    let tooltip_width = (text_width + pad_x * 2.0).clamp(font_size + pad_x * 2.0, max_width);
+    let tooltip_height = font_size + pad_y * 2.0;
+    let ring = LayoutBox {
+        x: bounds.x + cell.x - 1.0,
+        y: bounds.y + cell.y - 1.0,
+        width: cell_size + 2.0,
+        height: cell_size + 2.0,
+    };
+    let tooltip_x = if cell.x > bounds.width / 2.0 {
+        (cell.x + cell_size - tooltip_width).max(0.0)
+    } else {
+        cell.x.min((bounds.width - tooltip_width).max(0.0))
+    };
+    let tooltip_y = if cell.y < bounds.height / 2.0 {
+        (cell.y + cell_size + gap).min((bounds.height - tooltip_height).max(0.0))
+    } else {
+        (cell.y - tooltip_height - gap).max(0.0)
+    };
+    let tooltip = LayoutBox {
+        x: bounds.x + tooltip_x,
+        y: bounds.y + tooltip_y,
+        width: tooltip_width,
+        height: tooltip_height,
+    };
+    crate::CalendarHoverGeometry {
+        ring,
+        tooltip,
+        title: crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: tooltip.x + pad_x,
+                y: tooltip.y + pad_y,
+                width: (tooltip_width - pad_x * 2.0).max(0.0),
+                height: font_size,
+            },
+            content: Arc::from(title),
+            color: Some(palette.text.as_rgba_array()),
+            font_size,
+            font_weight: None,
+        },
+        ring_color: palette.text.as_rgba_array(),
+        tooltip_fill: palette.surface.as_rgba_array(),
+        tooltip_border: palette.border_soft.as_rgba_array(),
+    }
 }
 
 fn axis_label_region(
@@ -5539,13 +5603,15 @@ fn axis_label_region(
     x: f32,
     y: f32,
     font_size: f32,
+    center: bool,
     palette: &SemanticPalette,
 ) -> crate::ComponentTextRegion {
+    let width = estimated_text_width(text, font_size) + 2.0;
     crate::ComponentTextRegion {
         bounds: LayoutBox {
-            x: bounds.x + x,
+            x: bounds.x + x - if center { width * 0.5 } else { 0.0 },
             y: bounds.y + y,
-            width: estimated_text_width(text, font_size),
+            width,
             height: font_size + 2.0,
         },
         content: Arc::clone(text),
@@ -6072,7 +6138,16 @@ fn key_badge_region(
 }
 
 fn estimated_text_width(text: &str, font_size: f32) -> f32 {
-    (text.chars().count() as f32 * font_size * 0.62).max(font_size)
+    text.chars()
+        .map(|ch| {
+            if ch.is_ascii() {
+                font_size * 0.62
+            } else {
+                font_size
+            }
+        })
+        .sum::<f32>()
+        .max(font_size)
 }
 
 fn area_under_polyline(points: &[(f32, f32)], baseline: f32) -> Vec<LayoutBox> {
@@ -8167,6 +8242,7 @@ mod tests {
                 cell_radius: 2.0,
                 max_level: 4,
                 active: Some(1),
+                active_title: Some(Arc::from("2026-06-03: 8")),
             }),
         );
         queue.set_standard_visual(
@@ -8177,7 +8253,11 @@ mod tests {
         );
         world.commit(queue).unwrap();
 
-        let crate::ComponentGeometry::CalendarHeatmap { cells, labels } = world
+        let crate::ComponentGeometry::CalendarHeatmap {
+            cells,
+            labels,
+            hover,
+        } = world
             .component_geometry(node(1))
             .expect("calendar geometry")
         else {
@@ -8207,11 +8287,25 @@ mod tests {
             "active cell uses a stronger fill than the idle cell"
         );
         assert_eq!(labels.len(), 2);
-        assert_eq!(labels[0].bounds.x, 57.5);
-        assert_eq!(labels[0].bounds.y, 20.0);
         assert_eq!(labels[0].content.as_ref(), "6月");
+        assert_eq!(labels[0].bounds.y, 20.0);
+        assert!(
+            (labels[0].bounds.x + labels[0].bounds.width * 0.5 - 57.5).abs() < 0.01,
+            "month labels stay centered on the first week cell"
+        );
+        assert!(
+            labels[0].bounds.width >= 10.0 + 10.0 * 0.62,
+            "month CJK must not use the Latin 0.62em estimate"
+        );
         assert_eq!(labels[1].bounds.x, 10.0);
         assert_eq!(labels[1].content.as_ref(), "周一");
+        assert!(
+            labels[1].bounds.width >= 22.0,
+            "weekday CJK must keep a full-em box so 周一 is not clipped"
+        );
+        let hover = hover.expect("active cell paints hover chrome");
+        assert_eq!(hover.title.content.as_ref(), "2026-06-03: 8");
+        assert!(hover.tooltip.width < 176.0);
 
         let crate::ComponentGeometry::TimeSeriesChart {
             grid, area, line, ..

@@ -2,7 +2,7 @@
 //!
 //! [`GpuTextureView`] projects a [`CustomRenderNode`] that `IcedSceneView` can
 //! bind as `"nana.host-texture"`. [`GpuView`] projects [`GPU_VIEW_RENDERER`];
-//! default `IcedSceneView::new` fails unless the host registers that painter.
+//! default `IcedSceneView::new` / `from_shared` install a host painter.
 //! Device, Queue, Surface, and any WGPU objects stay host-owned; Runtime never
 //! constructs a second renderer.
 
@@ -18,9 +18,9 @@ use crate::{
 
 /// Scene renderer key for [`GpuView`].
 ///
-/// This is not a built-in IcedSceneView painter. [`GpuView::project`] attaches
-/// [`GpuView::custom_render`], so default `IcedSceneView::new` / `from_shared`
-/// fail unless the host registers a matching Scene GPU renderer.
+/// [`GpuView::project`] attaches [`GpuView::custom_render`]. Default
+/// `IcedSceneView::new` / `from_shared` install a `"gpu-view"` painter;
+/// an explicit empty registry still leaves the node unpaintable.
 pub const GPU_VIEW_RENDERER: &str = "gpu-view";
 /// Scene renderer key for [`GpuTextureView`].
 ///

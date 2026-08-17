@@ -12,14 +12,15 @@ use crate::tabs::{TabOption, Tabs};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
-    FrameworkError, InteractionState, InteractionStyle, MutationQueue, NodeKind, NodeStyle,
-    SemanticPaint, StableNodeId, TextContent, TextVerticalAlignment, UiWorld,
+    FrameworkError, InteractionState, InteractionStyle, LayoutBox, MutationQueue, NodeKind,
+    NodeStyle, SemanticPaint, StableNodeId, TextContent, TextVerticalAlignment, UiWorld,
 };
 
 pub(crate) const DOCK_TITLE_BAR_HEIGHT: f32 = 28.0;
 pub(crate) const DOCK_DIVIDER_HIT_SIZE: f32 = 8.0;
 pub(crate) const MIN_SPLIT_RATIO: f32 = 0.05;
 pub(crate) const MAX_SPLIT_RATIO: f32 = 0.95;
+pub(crate) const DOCK_SPLIT_KEYBOARD_STEP: f32 = MIN_SPLIT_RATIO;
 
 const HANDLE_INDICATOR: f32 = 2.0;
 const TITLE_PADDING_X: f32 = 6.0;
@@ -102,6 +103,14 @@ impl DockNode {
         ids
     }
 
+    pub fn contains(&self, id: &str) -> bool {
+        match self {
+            Self::Item { id: item, .. } => item.as_ref() == id,
+            Self::Tabs { tabs, .. } => tabs.iter().any(|tab| tab.as_ref() == id),
+            Self::Split { first, second, .. } => first.contains(id) || second.contains(id),
+        }
+    }
+
     pub fn clamp_ratios(&mut self) {
         match self {
             Self::Item { .. } => {}
@@ -121,12 +130,239 @@ impl DockNode {
         }
     }
 
+    /// Move `dragged_id` before or after `target_id` when they share a Tabs strip.
+    pub fn reorder_tab(&mut self, dragged_id: &str, target_id: &str, before: bool) -> bool {
+        reorder_dock_tab(self, dragged_id, target_id, before)
+    }
+
     #[cfg(test)]
     fn split_ratio(&self) -> Option<f32> {
         match self {
             Self::Split { ratio, .. } => Some(*ratio),
             _ => None,
         }
+    }
+}
+
+/// Host window identity for the primary dock surface.
+pub const MAIN_SURFACE_ID: &str = "0";
+
+const DEFAULT_FLOATING_X: f32 = 120.0;
+const DEFAULT_FLOATING_Y: f32 = 120.0;
+const DEFAULT_FLOATING_WIDTH: f32 = 360.0;
+const DEFAULT_FLOATING_HEIGHT: f32 = 280.0;
+
+/// One floating dock window. Hosts open a window and assemble a [`Dock`] on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockFloatingSurface {
+    pub id: Arc<str>,
+    pub root: DockNode,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl DockFloatingSurface {
+    pub fn window_key(&self) -> u64 {
+        dock_surface_window_key(&self.id)
+    }
+}
+
+/// Deterministic window identity for a dock surface id.
+///
+/// Decimal strings map to themselves so [`MAIN_SURFACE_ID`] is the primary
+/// window. Other ids use a stable non-zero FNV-1a key.
+pub fn dock_surface_window_key(id: &str) -> u64 {
+    if let Ok(parsed) = id.parse::<u64>() {
+        return parsed;
+    }
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    if hash == 0 { 1 } else { hash }
+}
+
+/// One surface the host should mount as an `Entity<Dock>` on that window's document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockSurfaceSpec {
+    pub id: Arc<str>,
+    pub root: DockNode,
+    pub bounds: Option<(f32, f32, f32, f32)>,
+}
+
+/// Host-applied floating window effects. Iced dock host effects stay in `nana-ui`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DockWorkspaceEvent {
+    OpenFloating(DockFloatingSurface),
+    CloseFloating(Arc<str>),
+    MoveFloating {
+        id: Arc<str>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    FocusFloating(Arc<str>),
+}
+
+/// Main tree plus floating surfaces. [`Dock`] remains one in-tree surface.
+///
+/// Hosts should create one `Entity<Dock>` per [`DockSurfaceSpec`] on the
+/// `RuntimeDocument` that owns that window, then call [`AppContext::assemble_dock`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockWorkspace {
+    pub main: DockNode,
+    pub floating: Vec<DockFloatingSurface>,
+    /// Items omitted from [`Self::surfaces`] until [`Self::show`].
+    pub hidden: Vec<Arc<str>>,
+    /// Center item that cannot hide, matching Gallery `gallery.primary`.
+    pub primary: Option<Arc<str>>,
+    next_surface: u64,
+}
+
+impl DockWorkspace {
+    pub fn new(mut main: DockNode) -> Self {
+        main.clamp_ratios();
+        Self {
+            main,
+            floating: Vec::new(),
+            hidden: Vec::new(),
+            primary: None,
+            next_surface: 1,
+        }
+    }
+
+    pub fn primary(mut self, id: impl Into<Arc<str>>) -> Self {
+        self.primary = Some(id.into());
+        self
+    }
+
+    pub fn surfaces(&self) -> Vec<DockSurfaceSpec> {
+        let mut surfaces = Vec::with_capacity(self.floating.len() + 1);
+        surfaces.push(DockSurfaceSpec {
+            id: Arc::from(MAIN_SURFACE_ID),
+            root: filter_hidden(&self.main, &self.hidden).unwrap_or_else(|| self.main.clone()),
+            bounds: None,
+        });
+        surfaces.extend(self.floating.iter().filter_map(|surface| {
+            Some(DockSurfaceSpec {
+                id: Arc::clone(&surface.id),
+                root: filter_hidden(&surface.root, &self.hidden)?,
+                bounds: Some((surface.x, surface.y, surface.width, surface.height)),
+            })
+        }));
+        surfaces
+    }
+
+    pub fn hide(&mut self, id: impl AsRef<str>) -> bool {
+        hide_id(
+            &self.workspace_ids(),
+            &mut self.hidden,
+            self.primary.as_deref(),
+            id.as_ref(),
+        )
+    }
+
+    pub fn show(&mut self, id: impl AsRef<str>) -> bool {
+        show_id(&mut self.hidden, id.as_ref())
+    }
+
+    pub fn is_visible(&self, id: &str) -> bool {
+        !is_hidden(&self.hidden, id)
+            && (self.main.contains(id)
+                || self
+                    .floating
+                    .iter()
+                    .any(|surface| surface.root.contains(id)))
+    }
+
+    fn workspace_ids(&self) -> Vec<Arc<str>> {
+        let mut ids = self.main.flatten();
+        for surface in &self.floating {
+            ids.extend(surface.root.flatten());
+        }
+        ids
+    }
+
+    pub fn float_item(&mut self, id: impl AsRef<str>) -> Option<DockWorkspaceEvent> {
+        self.float_item_at(
+            id,
+            DEFAULT_FLOATING_X,
+            DEFAULT_FLOATING_Y,
+            DEFAULT_FLOATING_WIDTH,
+            DEFAULT_FLOATING_HEIGHT,
+        )
+    }
+
+    pub fn float_item_at(
+        &mut self,
+        id: impl AsRef<str>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<DockWorkspaceEvent> {
+        if !can_hide_id(
+            &self.main.flatten(),
+            &self.hidden,
+            self.primary.as_deref(),
+            id.as_ref(),
+        ) {
+            return None;
+        }
+        let taken = extract_item(&mut self.main, id.as_ref())?;
+        self.hidden.retain(|hidden| hidden.as_ref() != id.as_ref());
+        let surface = DockFloatingSurface {
+            id: self.allocate_surface_id(),
+            root: taken,
+            x: finite(x, DEFAULT_FLOATING_X),
+            y: finite(y, DEFAULT_FLOATING_Y),
+            width: finite(width, DEFAULT_FLOATING_WIDTH),
+            height: finite(height, DEFAULT_FLOATING_HEIGHT),
+        };
+        self.floating.push(surface.clone());
+        Some(DockWorkspaceEvent::OpenFloating(surface))
+    }
+
+    pub fn apply(&mut self, event: DockWorkspaceEvent) {
+        match event {
+            DockWorkspaceEvent::OpenFloating(surface) => {
+                if !self
+                    .floating
+                    .iter()
+                    .any(|existing| existing.id == surface.id)
+                {
+                    self.floating.push(surface);
+                }
+            }
+            DockWorkspaceEvent::CloseFloating(id) => {
+                self.floating.retain(|surface| surface.id != id);
+            }
+            DockWorkspaceEvent::MoveFloating {
+                id,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if let Some(surface) = self.floating.iter_mut().find(|surface| surface.id == id) {
+                    surface.x = x;
+                    surface.y = y;
+                    surface.width = width;
+                    surface.height = height;
+                }
+            }
+            DockWorkspaceEvent::FocusFloating(_) => {}
+        }
+    }
+
+    fn allocate_surface_id(&mut self) -> Arc<str> {
+        let id = Arc::<str>::from(self.next_surface.to_string());
+        self.next_surface = self.next_surface.saturating_add(1);
+        id
     }
 }
 
@@ -180,6 +416,412 @@ fn finite(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
+fn is_hidden(hidden: &[Arc<str>], id: &str) -> bool {
+    hidden.iter().any(|item| item.as_ref() == id)
+}
+
+fn can_hide_id(ids: &[Arc<str>], hidden: &[Arc<str>], primary: Option<&str>, id: &str) -> bool {
+    if primary == Some(id) || is_hidden(hidden, id) || !ids.iter().any(|item| item.as_ref() == id) {
+        return false;
+    }
+    ids.iter()
+        .filter(|item| !is_hidden(hidden, item.as_ref()))
+        .count()
+        > 1
+}
+
+fn hide_id(ids: &[Arc<str>], hidden: &mut Vec<Arc<str>>, primary: Option<&str>, id: &str) -> bool {
+    if !can_hide_id(ids, hidden, primary, id) {
+        return false;
+    }
+    hidden.push(Arc::from(id));
+    true
+}
+
+fn show_id(hidden: &mut Vec<Arc<str>>, id: &str) -> bool {
+    let before = hidden.len();
+    hidden.retain(|item| item.as_ref() != id);
+    hidden.len() != before
+}
+
+fn filter_hidden(node: &DockNode, hidden: &[Arc<str>]) -> Option<DockNode> {
+    match node {
+        DockNode::Item { id, content } => {
+            (!is_hidden(hidden, id)).then(|| DockNode::item(Arc::clone(id), *content))
+        }
+        DockNode::Tabs {
+            tabs,
+            active,
+            contents,
+        } => {
+            let visible = tabs
+                .iter()
+                .filter(|id| !is_hidden(hidden, id.as_ref()))
+                .cloned()
+                .collect::<Vec<_>>();
+            match visible.as_slice() {
+                [] => None,
+                [_] => {
+                    let only = visible.into_iter().next().expect("one visible tab");
+                    let content = contents
+                        .iter()
+                        .find(|(id, _)| id == &only)
+                        .and_then(|(_, content)| *content);
+                    Some(DockNode::item(only, content))
+                }
+                _ => {
+                    let pairs = visible
+                        .iter()
+                        .map(|id| {
+                            let content = contents
+                                .iter()
+                                .find(|(tab, _)| tab == id)
+                                .and_then(|(_, content)| *content);
+                            (Arc::clone(id), content)
+                        })
+                        .collect::<Vec<_>>();
+                    Some(DockNode::tabs(visible, Arc::clone(active), pairs))
+                }
+            }
+        }
+        DockNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => match (filter_hidden(first, hidden), filter_hidden(second, hidden)) {
+            (Some(first), Some(second)) => Some(DockNode::split(*axis, *ratio, first, second)),
+            (Some(only), None) | (None, Some(only)) => Some(only),
+            (None, None) => None,
+        },
+    }
+}
+
+fn insert_dock_item(root: &mut DockNode, target: &str, item: DockNode, zone: DockDropZone) -> bool {
+    match zone {
+        DockDropZone::Tab => insert_tab(root, target, item),
+        zone => insert_split(root, target, item, zone),
+    }
+}
+
+fn insert_tab(root: &mut DockNode, target: &str, item: DockNode) -> bool {
+    let DockNode::Item { id, content } = item.clone() else {
+        return false;
+    };
+    match root {
+        DockNode::Item {
+            id: current,
+            content: current_content,
+        } if current.as_ref() == target => {
+            let current = Arc::clone(current);
+            let current_content = *current_content;
+            *root = DockNode::tabs(
+                [Arc::clone(&current), Arc::clone(&id)],
+                Arc::clone(&id),
+                [(current, current_content), (id, content)],
+            );
+            true
+        }
+        DockNode::Tabs {
+            tabs,
+            active,
+            contents,
+        } if tabs.iter().any(|tab| tab.as_ref() == target) => {
+            if !tabs.iter().any(|tab| tab == &id) {
+                tabs.push(Arc::clone(&id));
+                contents.push((Arc::clone(&id), content));
+            }
+            *active = id;
+            true
+        }
+        DockNode::Split { first, second, .. } => {
+            insert_tab(first, target, item.clone()) || insert_tab(second, target, item)
+        }
+        _ => false,
+    }
+}
+
+fn reorder_dock_tab(root: &mut DockNode, dragged_id: &str, target_id: &str, before: bool) -> bool {
+    match root {
+        DockNode::Tabs { tabs, contents, .. } => {
+            if !reorder_sibling_ids(tabs, dragged_id, target_id, before) {
+                return false;
+            }
+            contents
+                .sort_by_key(|(id, _)| tabs.iter().position(|tab| tab == id).unwrap_or(usize::MAX));
+            true
+        }
+        DockNode::Split { first, second, .. } => {
+            reorder_dock_tab(first, dragged_id, target_id, before)
+                || reorder_dock_tab(second, dragged_id, target_id, before)
+        }
+        DockNode::Item { .. } => false,
+    }
+}
+
+fn reorder_sibling_ids(
+    ids: &mut Vec<Arc<str>>,
+    dragged_id: &str,
+    target_id: &str,
+    before: bool,
+) -> bool {
+    if dragged_id == target_id {
+        return false;
+    }
+    let Some(from) = ids.iter().position(|id| id.as_ref() == dragged_id) else {
+        return false;
+    };
+    if !ids.iter().any(|id| id.as_ref() == target_id) {
+        return false;
+    }
+    let item = ids.remove(from);
+    let target = ids
+        .iter()
+        .position(|id| id.as_ref() == target_id)
+        .expect("target remains after removing dragged sibling");
+    let insert_at = if before { target } else { target + 1 };
+    let changed = from != insert_at;
+    ids.insert(insert_at, item);
+    changed
+}
+
+fn insert_split(root: &mut DockNode, target: &str, item: DockNode, zone: DockDropZone) -> bool {
+    if root.contains(target) && matches!(root, DockNode::Item { .. } | DockNode::Tabs { .. }) {
+        let previous = root.clone();
+        let (axis, first, second) = match zone {
+            DockDropZone::Left => (DockAxis::Horizontal, item, previous),
+            DockDropZone::Right => (DockAxis::Horizontal, previous, item),
+            DockDropZone::Top => (DockAxis::Vertical, item, previous),
+            DockDropZone::Bottom => (DockAxis::Vertical, previous, item),
+            DockDropZone::Tab => return insert_tab(root, target, item),
+        };
+        *root = DockNode::split(axis, 0.5, first, second);
+        return true;
+    }
+    match root {
+        DockNode::Split { first, second, .. } => {
+            insert_split(first, target, item.clone(), zone)
+                || insert_split(second, target, item, zone)
+        }
+        _ => false,
+    }
+}
+
+fn point_near_box(bounds: LayoutBox, x: f32, y: f32, slop: f32) -> bool {
+    x >= bounds.x - slop
+        && y >= bounds.y - slop
+        && x <= bounds.x + bounds.width + slop
+        && y <= bounds.y + bounds.height + slop
+}
+
+fn chrome_has_handle(chrome: &DockChrome, handle: StableNodeId) -> bool {
+    match chrome {
+        DockChrome::Split {
+            handle: current,
+            first,
+            second,
+            ..
+        } => {
+            *current == handle
+                || chrome_has_handle(first, handle)
+                || chrome_has_handle(second, handle)
+        }
+        DockChrome::Item { .. } | DockChrome::Tabs { .. } => false,
+    }
+}
+
+fn chrome_has_strip(chrome: &DockChrome, strip: StableNodeId) -> bool {
+    match chrome {
+        DockChrome::Tabs { strip: current, .. } => *current == strip,
+        DockChrome::Split { first, second, .. } => {
+            chrome_has_strip(first, strip) || chrome_has_strip(second, strip)
+        }
+        DockChrome::Item { .. } => false,
+    }
+}
+
+fn chrome_has_title(chrome: &DockChrome, title: StableNodeId) -> bool {
+    match chrome {
+        DockChrome::Item { title: current, .. } => *current == title,
+        DockChrome::Split { first, second, .. } => {
+            chrome_has_title(first, title) || chrome_has_title(second, title)
+        }
+        DockChrome::Tabs { .. } => false,
+    }
+}
+
+fn split_info_for_handle(
+    chrome: &DockChrome,
+    node: &DockNode,
+    handle: StableNodeId,
+) -> Option<(StableNodeId, DockAxis, f32, Vec<Arc<str>>)> {
+    match (chrome, node) {
+        (
+            DockChrome::Split {
+                handle: current,
+                frame,
+                first,
+                second,
+                ..
+            },
+            DockNode::Split {
+                axis,
+                ratio,
+                first: first_node,
+                second: second_node,
+            },
+        ) => {
+            if *current == handle {
+                return Some((*frame, *axis, *ratio, first_node.flatten()));
+            }
+            split_info_for_handle(first, first_node, handle)
+                .or_else(|| split_info_for_handle(second, second_node, handle))
+        }
+        _ => None,
+    }
+}
+
+fn set_split_ratio_for_first_ids(node: &mut DockNode, first_ids: &[Arc<str>], ratio: f32) -> bool {
+    match node {
+        DockNode::Split {
+            first,
+            second,
+            ratio: current,
+            ..
+        } => {
+            if set_split_ratio_for_first_ids(first, first_ids, ratio)
+                || set_split_ratio_for_first_ids(second, first_ids, ratio)
+            {
+                return true;
+            }
+            let first_flat = first.flatten();
+            let owns_first = !first_ids.is_empty()
+                && first_ids
+                    .iter()
+                    .all(|id| first_flat.iter().any(|item| item == id))
+                && first_ids.iter().all(|id| !second.contains(id.as_ref()));
+            if !owns_first {
+                return false;
+            }
+            let next = clamp_ratio(ratio);
+            if (*current - next).abs() <= f32::EPSILON {
+                return false;
+            }
+            *current = next;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn title_item_id(chrome: &DockChrome, node: &DockNode, title: StableNodeId) -> Option<Arc<str>> {
+    match (chrome, node) {
+        (DockChrome::Item { title: current, .. }, DockNode::Item { id, .. })
+            if *current == title =>
+        {
+            Some(Arc::clone(id))
+        }
+        (
+            DockChrome::Split { first, second, .. },
+            DockNode::Split {
+                first: first_node,
+                second: second_node,
+                ..
+            },
+        ) => title_item_id(first, first_node, title)
+            .or_else(|| title_item_id(second, second_node, title)),
+        _ => None,
+    }
+}
+
+fn strip_containing_item(chrome: &DockChrome, node: &DockNode, id: &str) -> Option<StableNodeId> {
+    match (chrome, node) {
+        (DockChrome::Tabs { strip, .. }, DockNode::Tabs { tabs, .. })
+            if tabs.iter().any(|tab| tab.as_ref() == id) =>
+        {
+            Some(*strip)
+        }
+        (
+            DockChrome::Split { first, second, .. },
+            DockNode::Split {
+                first: first_node,
+                second: second_node,
+                ..
+            },
+        ) => strip_containing_item(first, first_node, id)
+            .or_else(|| strip_containing_item(second, second_node, id)),
+        _ => None,
+    }
+}
+
+fn strip_for_tabs(chrome: &DockChrome, node: &DockNode, strip: StableNodeId) -> Option<Arc<str>> {
+    match (chrome, node) {
+        (DockChrome::Tabs { strip: current, .. }, DockNode::Tabs { active, tabs, .. })
+            if *current == strip =>
+        {
+            Some(effective_active(tabs, active))
+        }
+        (
+            DockChrome::Split { first, second, .. },
+            DockNode::Split {
+                first: first_node,
+                second: second_node,
+                ..
+            },
+        ) => strip_for_tabs(first, first_node, strip)
+            .or_else(|| strip_for_tabs(second, second_node, strip)),
+        _ => None,
+    }
+}
+
+fn collect_drop_leaves(
+    chrome: &DockChrome,
+    node: &DockNode,
+    output: &mut Vec<(Arc<str>, StableNodeId)>,
+) {
+    match (chrome, node) {
+        (DockChrome::Item { frame, .. }, DockNode::Item { id, .. }) => {
+            output.push((Arc::clone(id), *frame));
+        }
+        (DockChrome::Tabs { frame, .. }, DockNode::Tabs { tabs, .. }) => {
+            if let Some(id) = tabs.first() {
+                output.push((Arc::clone(id), *frame));
+            }
+        }
+        (
+            DockChrome::Split { first, second, .. },
+            DockNode::Split {
+                first: first_node,
+                second: second_node,
+                ..
+            },
+        ) => {
+            collect_drop_leaves(first, first_node, output);
+            collect_drop_leaves(second, second_node, output);
+        }
+        _ => {}
+    }
+}
+
+fn drop_zone_at(bounds: LayoutBox, x: f32, y: f32) -> Option<DockDropZone> {
+    if bounds.width <= 0.0 || bounds.height <= 0.0 || !bounds.contains(x, y) {
+        return None;
+    }
+    let local_x = (x - bounds.x) / bounds.width;
+    let local_y = (y - bounds.y) / bounds.height;
+    Some(if local_x <= 0.25 {
+        DockDropZone::Left
+    } else if local_x >= 0.75 {
+        DockDropZone::Right
+    } else if local_y <= 0.25 {
+        DockDropZone::Top
+    } else if local_y >= 0.75 {
+        DockDropZone::Bottom
+    } else {
+        DockDropZone::Tab
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum DockChrome {
     Item {
@@ -224,6 +866,22 @@ impl DockChrome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct DockSplitResize {
+    handle: StableNodeId,
+    frame: StableNodeId,
+    axis: DockAxis,
+    start: Option<f32>,
+    start_ratio: f32,
+    first_ids: Vec<Arc<str>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DockItemDrag {
+    id: Arc<str>,
+    reorder: Option<(Arc<str>, bool)>,
+}
+
 /// Recursive split / tabs / item surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dock {
@@ -232,7 +890,13 @@ pub struct Dock {
     pub locked: bool,
     pub titles: Vec<(Arc<str>, Arc<str>)>,
     pub style: NodeStyle,
+    /// Items omitted from assemble / flatten until [`Self::show`].
+    pub hidden: Vec<Arc<str>>,
+    /// Center item that cannot hide, matching Gallery `gallery.primary`.
+    pub primary: Option<Arc<str>>,
     chrome: Option<DockChrome>,
+    split_resize: Option<DockSplitResize>,
+    item_drag: Option<DockItemDrag>,
 }
 
 impl Dock {
@@ -244,8 +908,17 @@ impl Dock {
             locked: false,
             titles: Vec::new(),
             style: NodeStyle::default(),
+            hidden: Vec::new(),
+            primary: None,
             chrome: None,
+            split_resize: None,
+            item_drag: None,
         }
+    }
+
+    pub fn primary(mut self, id: impl Into<Arc<str>>) -> Self {
+        self.primary = Some(id.into());
+        self
     }
 
     pub fn drop_target(mut self, id: impl Into<Arc<str>>, zone: DockDropZone) -> Self {
@@ -275,7 +948,134 @@ impl Dock {
     }
 
     pub fn flatten(&self) -> Vec<Arc<str>> {
-        self.root.flatten()
+        self.visible_root()
+            .map(|node| node.flatten())
+            .unwrap_or_default()
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.root.contains(id)
+    }
+
+    pub fn visible_root(&self) -> Option<DockNode> {
+        filter_hidden(&self.root, &self.hidden)
+    }
+
+    pub fn hide(&mut self, id: impl AsRef<str>) -> bool {
+        let changed = hide_id(
+            &self.root.flatten(),
+            &mut self.hidden,
+            self.primary.as_deref(),
+            id.as_ref(),
+        );
+        if changed {
+            self.clear_drop_if_missing();
+        }
+        changed
+    }
+
+    pub fn show(&mut self, id: impl AsRef<str>) -> bool {
+        show_id(&mut self.hidden, id.as_ref())
+    }
+
+    pub fn is_visible(&self, id: &str) -> bool {
+        self.contains(id) && !is_hidden(&self.hidden, id)
+    }
+
+    /// Move a tab before or after a sibling in the same strip. Locked docks refuse.
+    pub fn reorder_tab(
+        &mut self,
+        dragged_id: impl AsRef<str>,
+        target_id: impl AsRef<str>,
+        before: bool,
+    ) -> bool {
+        if self.locked {
+            return false;
+        }
+        reorder_dock_tab(
+            &mut self.root,
+            dragged_id.as_ref(),
+            target_id.as_ref(),
+            before,
+        )
+    }
+
+    /// Move `id` onto `target`'s `zone`. Fails when extract or insert cannot apply.
+    pub fn retarget(
+        &mut self,
+        id: impl AsRef<str>,
+        target: impl AsRef<str>,
+        zone: DockDropZone,
+    ) -> bool {
+        let id = id.as_ref();
+        let target = target.as_ref();
+        if id == target || self.primary.as_deref() == Some(id) || !self.can_take(id) {
+            return false;
+        }
+        let before = self.root.clone();
+        let Some(taken) = extract_item(&mut self.root, id) else {
+            return false;
+        };
+        self.hidden.retain(|hidden| hidden.as_ref() != id);
+        if !insert_dock_item(&mut self.root, target, taken, zone) {
+            self.root = before;
+            return false;
+        }
+        self.clear_drop_if_missing();
+        true
+    }
+
+    fn can_take(&self, id: &str) -> bool {
+        can_hide_id(
+            &self.root.flatten(),
+            &self.hidden,
+            self.primary.as_deref(),
+            id,
+        )
+    }
+
+    fn clear_drop_if_missing(&mut self) {
+        if let Some((target, _)) = &self.drop_target
+            && !self.is_visible(target.as_ref())
+        {
+            self.drop_target = None;
+        }
+    }
+
+    /// Remove `id` from this surface. Fails when the id is missing or last.
+    pub fn float_item(&mut self, id: impl AsRef<str>) -> Option<DockFloatingSurface> {
+        self.float_item_at(
+            id,
+            DEFAULT_FLOATING_X,
+            DEFAULT_FLOATING_Y,
+            DEFAULT_FLOATING_WIDTH,
+            DEFAULT_FLOATING_HEIGHT,
+        )
+    }
+
+    pub fn float_item_at(
+        &mut self,
+        id: impl AsRef<str>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<DockFloatingSurface> {
+        let id = id.as_ref();
+        if !self.can_take(id) {
+            return None;
+        }
+        let taken = extract_item(&mut self.root, id)?;
+        self.hidden.retain(|hidden| hidden.as_ref() != id);
+        self.clear_drop_if_missing();
+        Some(DockFloatingSurface {
+            id: Arc::from(id),
+            root: taken,
+            x: finite(x, DEFAULT_FLOATING_X),
+            y: finite(y, DEFAULT_FLOATING_Y),
+            width: finite(width, DEFAULT_FLOATING_WIDTH),
+            height: finite(height, DEFAULT_FLOATING_HEIGHT),
+        })
     }
 
     fn title_for(&self, id: &str) -> Arc<str> {
@@ -308,7 +1108,7 @@ impl ComponentView for Dock {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let mut root = self.root.clone();
+        let mut root = self.visible_root().unwrap_or_else(|| self.root.clone());
         root.clamp_ratios();
         if let Some(chrome) = &self.chrome {
             project_chrome(self, chrome, &root, world, mutations);
@@ -398,6 +1198,7 @@ fn project_chrome(
             let label = dock.title_for(id);
             DockTitle {
                 label: Arc::clone(&label),
+                locked: dock.locked,
             }
             .project(*title, world, mutations);
             DockItemFrame { id: Arc::clone(id) }.project(*frame, world, mutations);
@@ -647,6 +1448,7 @@ fn item_frame_style(grow: Option<f32>) -> NodeStyle {
 #[derive(Debug, Clone, PartialEq)]
 struct DockTitle {
     label: Arc<str>,
+    locked: bool,
 }
 
 impl ComponentView for DockTitle {
@@ -671,7 +1473,7 @@ impl ComponentView for DockTitle {
             mutations,
             &title_style(),
             InteractionState {
-                pointer_events: false,
+                pointer_events: !self.locked,
                 focusable: false,
             },
             AccessibilityState {
@@ -1075,8 +1877,104 @@ impl ComponentView for DockPanel {
     }
 }
 
+fn extract_item(root: &mut DockNode, id: &str) -> Option<DockNode> {
+    let (remaining, taken) = take_item_node(root.clone(), id);
+    let (Some(remaining), Some(taken)) = (remaining, taken) else {
+        return None;
+    };
+    *root = remaining;
+    Some(taken)
+}
+
+fn take_item_node(node: DockNode, id: &str) -> (Option<DockNode>, Option<DockNode>) {
+    match node {
+        DockNode::Item { id: item, content } => {
+            if item.as_ref() == id {
+                (None, Some(DockNode::Item { id: item, content }))
+            } else {
+                (Some(DockNode::Item { id: item, content }), None)
+            }
+        }
+        DockNode::Tabs {
+            tabs,
+            active,
+            contents,
+        } => {
+            if !tabs.iter().any(|tab| tab.as_ref() == id) {
+                return (
+                    Some(DockNode::Tabs {
+                        tabs,
+                        active,
+                        contents,
+                    }),
+                    None,
+                );
+            }
+            let taken_content = contents
+                .iter()
+                .find(|(tab, _)| tab.as_ref() == id)
+                .and_then(|(_, content)| *content);
+            let taken = DockNode::item(Arc::<str>::from(id), taken_content);
+            let tabs = tabs
+                .into_iter()
+                .filter(|tab| tab.as_ref() != id)
+                .collect::<Vec<_>>();
+            let contents = contents
+                .into_iter()
+                .filter(|(tab, _)| tab.as_ref() != id)
+                .collect::<Vec<_>>();
+            let remaining = match tabs.as_slice() {
+                [] => None,
+                [_] => {
+                    let only = tabs.into_iter().next().expect("one remaining tab");
+                    let content = contents
+                        .into_iter()
+                        .find(|(tab, _)| tab == &only)
+                        .and_then(|(_, content)| content);
+                    Some(DockNode::item(only, content))
+                }
+                _ => Some(DockNode::Tabs {
+                    active: effective_active(&tabs, &active),
+                    tabs,
+                    contents,
+                }),
+            };
+            (remaining, Some(taken))
+        }
+        DockNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => match take_item_node(*first, id) {
+            (remaining_first, Some(taken)) => {
+                let remaining = match remaining_first {
+                    Some(first) => Some(DockNode::split(axis, ratio, first, *second)),
+                    None => Some(*second),
+                };
+                (remaining, Some(taken))
+            }
+            (Some(first), None) => match take_item_node(*second, id) {
+                (remaining_second, Some(taken)) => {
+                    let remaining = match remaining_second {
+                        Some(second) => Some(DockNode::split(axis, ratio, first, second)),
+                        None => Some(first),
+                    };
+                    (remaining, Some(taken))
+                }
+                (Some(second), None) => (Some(DockNode::split(axis, ratio, first, second)), None),
+                (None, None) => (Some(first), None),
+            },
+            (None, None) => take_item_node(*second, id),
+        },
+    }
+}
+
 impl AppContext {
     /// Mount retained chrome for `dock`. Host content slots are reparented, not recreated.
+    ///
+    /// One [`Dock`] is one window surface. Floating surfaces are additional
+    /// `Entity<Dock>` values assembled on the document that owns that window.
     pub fn assemble_dock(&mut self, dock: Entity<Dock>) -> Result<bool, FrameworkError> {
         let document = document_of(self, dock.stable_id())?;
         let snapshot = self.read(dock, |dock| {
@@ -1086,10 +1984,12 @@ impl AppContext {
                 dock.locked,
                 dock.titles.clone(),
                 dock.chrome.clone(),
+                dock.hidden.clone(),
             )
         })?;
-        let (mut root, drop_target, locked, titles, old) = snapshot;
+        let (mut root, drop_target, locked, titles, old, hidden) = snapshot;
         root.clamp_ratios();
+        let visible = filter_hidden(&root, &hidden).unwrap_or_else(|| root.clone());
         let hosts = host_content_ids(&root);
         if let Some(old) = old.as_ref() {
             park_hosts(self, old, &hosts)?;
@@ -1098,7 +1998,7 @@ impl AppContext {
             self,
             document,
             dock.stable_id(),
-            &root,
+            &visible,
             old,
             &drop_target,
             locked,
@@ -1106,12 +2006,615 @@ impl AppContext {
             &hosts,
             true,
         )?;
-        let children = branch_children(&chrome, &root);
+        let children = branch_children(&chrome, &visible);
         self.update_component(dock, |dock, _| {
             dock.root = root.clone();
             dock.chrome = Some(chrome.clone());
         })?;
         reconcile_children(self, dock, &children)
+    }
+
+    /// Float `id` off `dock` and rebuild that surface. The host opens the window.
+    pub fn float_dock_item(
+        &mut self,
+        dock: Entity<Dock>,
+        id: impl AsRef<str>,
+    ) -> Result<Option<DockWorkspaceEvent>, FrameworkError> {
+        let id = id.as_ref();
+        let event = self.update_component(dock, |dock, _| {
+            dock.float_item(id).map(DockWorkspaceEvent::OpenFloating)
+        })?;
+        if event.is_some() {
+            self.assemble_dock(dock)?;
+        }
+        Ok(event)
+    }
+
+    pub fn is_dock(&self, id: StableNodeId) -> bool {
+        self.read(Entity::<Dock>::from_stable_id(id), |_| ())
+            .is_ok()
+    }
+
+    pub fn is_dock_handle(&self, id: StableNodeId) -> bool {
+        self.dock_handle_id(id).is_some()
+    }
+
+    pub fn is_dock_title(&self, id: StableNodeId) -> bool {
+        self.dock_title_id(id).is_some()
+    }
+
+    pub fn is_dock_tab_strip(&self, id: StableNodeId) -> bool {
+        self.dock_tab_strip_id(id).is_some()
+    }
+
+    /// Handle under the pointer, including a few pixels of slop around the 8px bar.
+    pub fn dock_handle_near(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
+        const SLOP: f32 = 6.0;
+        if let Some(target) = self.pointer_target(document, x, y) {
+            if let Some(handle) = self.unlocked_dock_handle(target) {
+                return Some(handle);
+            }
+            if let Some(parent) = self.world().node(target).and_then(|node| node.parent)
+                && let Some(handle) = self.unlocked_dock_handle(parent)
+            {
+                return Some(handle);
+            }
+        }
+        self.world()
+            .document_order(document)
+            .into_iter()
+            .find(|&id| {
+                self.unlocked_dock_handle(id).is_some()
+                    && self
+                        .world()
+                        .layout_box(id)
+                        .is_some_and(|bounds| point_near_box(bounds, x, y, SLOP))
+            })
+    }
+
+    /// Tab strip under the pointer, including option children of assembled chrome.
+    pub fn dock_tab_strip_near(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Option<StableNodeId> {
+        if let Some(target) = self.pointer_target(document, x, y) {
+            if let Some(strip) = self.unlocked_dock_tab_strip(target) {
+                return Some(strip);
+            }
+            let mut current = Some(target);
+            while let Some(id) = current {
+                if let Some(strip) = self.unlocked_dock_tab_strip(id) {
+                    return Some(strip);
+                }
+                current = self.world().node(id).and_then(|node| node.parent);
+            }
+        }
+        self.world()
+            .document_order(document)
+            .into_iter()
+            .find(|&id| {
+                self.unlocked_dock_tab_strip(id).is_some()
+                    && self
+                        .world()
+                        .layout_box(id)
+                        .is_some_and(|bounds| bounds.contains(x, y))
+            })
+    }
+
+    pub fn begin_dock_split_resize(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(handle) = self.dock_handle_id(target) else {
+            return Ok(false);
+        };
+        let Some(dock) = self.dock_entity_of(handle) else {
+            return Ok(false);
+        };
+        if self.read(dock, |dock| dock.locked)? {
+            return Ok(false);
+        }
+        let Some((frame, axis, ratio, first_ids)) = self.read(dock, |dock| {
+            let chrome = dock.chrome.as_ref()?;
+            let visible = dock.visible_root()?;
+            split_info_for_handle(chrome, &visible, handle)
+        })?
+        else {
+            return Ok(false);
+        };
+        let start = match axis {
+            DockAxis::Horizontal => x,
+            DockAxis::Vertical => y,
+        };
+        self.update_component(dock, |dock, cx| {
+            dock.item_drag = None;
+            dock.split_resize = Some(DockSplitResize {
+                handle,
+                frame,
+                axis,
+                start: Some(start),
+                start_ratio: ratio,
+                first_ids,
+            });
+            cx.mutations().request_focus(document, Some(handle));
+            cx.mutations().capture_pointer(pointer_id, handle);
+            true
+        })
+    }
+
+    pub fn update_dock_split_resize(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(handle) = self.dock_handle_id(target) else {
+            return Ok(false);
+        };
+        let Some(dock) = self.dock_entity_of(handle) else {
+            return Ok(false);
+        };
+        let Some((frame, axis, start, start_ratio, first_ids)) = self.read(dock, |dock| {
+            dock.split_resize.as_ref().map(|session| {
+                (
+                    session.frame,
+                    session.axis,
+                    session.start,
+                    session.start_ratio,
+                    session.first_ids.clone(),
+                )
+            })
+        })?
+        else {
+            return Ok(false);
+        };
+        if self.read(dock, |dock| dock.locked)? {
+            return Ok(false);
+        }
+        let Some(bounds) = self.world().layout_box(frame) else {
+            return Ok(false);
+        };
+        let extent = match axis {
+            DockAxis::Horizontal => bounds.width,
+            DockAxis::Vertical => bounds.height,
+        } - DOCK_DIVIDER_HIT_SIZE;
+        let position = match axis {
+            DockAxis::Horizontal => x,
+            DockAxis::Vertical => y,
+        };
+        if !position.is_finite() {
+            return Ok(false);
+        }
+        let start = start.unwrap_or(position);
+        let ratio = clamp_ratio(start_ratio + (position - start) / extent.max(1.0));
+        self.update_component(dock, |dock, _| {
+            set_split_ratio_for_first_ids(&mut dock.root, &first_ids, ratio)
+        })
+    }
+
+    pub fn end_dock_split_resize(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(handle) = self.dock_handle_id(target) else {
+            return Ok(false);
+        };
+        let Some(dock) = self.dock_entity_of(handle) else {
+            return Ok(false);
+        };
+        self.update_component(dock, |dock, cx| {
+            let Some(session) = dock.split_resize.take() else {
+                return false;
+            };
+            if cancel {
+                set_split_ratio_for_first_ids(
+                    &mut dock.root,
+                    &session.first_ids,
+                    session.start_ratio,
+                );
+            }
+            cx.mutations().release_pointer(pointer_id, handle);
+            true
+        })
+    }
+
+    /// Nudge the focused dock split handle by one keyboard step. Locked docks refuse.
+    pub fn adjust_focused_dock_split(
+        &mut self,
+        document: DocumentId,
+        direction: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        let Some(handle) = self.dock_handle_id(focused) else {
+            return Ok(false);
+        };
+        let Some(dock) = self.dock_entity_of(handle) else {
+            return Ok(false);
+        };
+        if self.read(dock, |dock| dock.locked)? {
+            return Ok(false);
+        }
+        let Some((_, _, ratio, first_ids)) = self.read(dock, |dock| {
+            let chrome = dock.chrome.as_ref()?;
+            let visible = dock.visible_root()?;
+            split_info_for_handle(chrome, &visible, handle)
+        })?
+        else {
+            return Ok(false);
+        };
+        if !direction.is_finite() || direction == 0.0 {
+            return Ok(false);
+        }
+        let next = clamp_ratio(ratio + direction * DOCK_SPLIT_KEYBOARD_STEP);
+        let changed = self.update_component(dock, |dock, _| {
+            set_split_ratio_for_first_ids(&mut dock.root, &first_ids, next)
+        })?;
+        if changed {
+            self.assemble_dock(dock)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn begin_dock_item_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        _x: f32,
+        _y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self
+            .world()
+            .node(target)
+            .is_none_or(|node| node.document != document)
+        {
+            return Ok(false);
+        }
+        let Some(dock) = self.dock_entity_of(target) else {
+            return Ok(false);
+        };
+        if self.read(dock, |dock| dock.locked)? {
+            return Ok(false);
+        }
+        let Some(id) = self.dock_item_for_target(dock, target)? else {
+            return Ok(false);
+        };
+        if self.read(dock, |dock| dock.primary.as_deref() == Some(id.as_ref()))? {
+            return Ok(false);
+        }
+        self.update_component(dock, |dock, cx| {
+            activate_runtime_dock_tab(&mut dock.root, id.as_ref());
+            dock.split_resize = None;
+            dock.drop_target = None;
+            dock.item_drag = Some(DockItemDrag { id, reorder: None });
+            cx.mutations().capture_pointer(pointer_id, target);
+            true
+        })
+    }
+
+    pub fn update_dock_item_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(dock) = self.dock_entity_of(target) else {
+            return Ok(false);
+        };
+        let Some(dragged) = self.read(dock, |dock| {
+            dock.item_drag.as_ref().map(|drag| Arc::clone(&drag.id))
+        })?
+        else {
+            return Ok(false);
+        };
+        if self.read(dock, |dock| dock.locked)? {
+            return Ok(false);
+        }
+        let next_reorder = self.dock_reorder_at(dock, dragged.as_ref(), x, y)?;
+        let next_zone = if next_reorder.is_some() {
+            None
+        } else {
+            self.dock_drop_target_at(dock, dragged.as_ref(), x, y)?
+        };
+        let changed = self.update_component(dock, |dock, _| {
+            let Some(drag) = dock.item_drag.as_mut() else {
+                return false;
+            };
+            let changed = dock.drop_target != next_zone || drag.reorder != next_reorder;
+            dock.drop_target = next_zone;
+            drag.reorder = next_reorder;
+            changed
+        })?;
+        if changed {
+            self.assemble_dock(dock)?;
+        }
+        Ok(true)
+    }
+
+    pub fn end_dock_item_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(dock) = self.dock_entity_of(target) else {
+            return Ok(false);
+        };
+        let Some((dragged, reorder)) = self.read(dock, |dock| {
+            dock.item_drag
+                .as_ref()
+                .map(|drag| (Arc::clone(&drag.id), drag.reorder.clone()))
+        })?
+        else {
+            return Ok(false);
+        };
+        let drop_target = self.read(dock, |dock| dock.drop_target.clone())?;
+        let locked = self.read(dock, |dock| dock.locked)?;
+        let outside = self
+            .world()
+            .layout_box(dock.stable_id())
+            .is_none_or(|bounds| !bounds.contains(x, y));
+        self.update_component(dock, |dock, cx| {
+            dock.item_drag = None;
+            dock.drop_target = None;
+            cx.mutations().release_pointer(pointer_id, target);
+            if cancel || locked {
+                return;
+            }
+            if let Some((target_id, before)) = reorder {
+                reorder_dock_tab(&mut dock.root, dragged.as_ref(), target_id.as_ref(), before);
+            } else if let Some((target_id, zone)) = drop_target {
+                dock.retarget(dragged.as_ref(), target_id.as_ref(), zone);
+            } else if outside {
+                let _ = dock.float_item_at(
+                    dragged.as_ref(),
+                    x,
+                    y,
+                    DEFAULT_FLOATING_WIDTH,
+                    DEFAULT_FLOATING_HEIGHT,
+                );
+            }
+        })?;
+        self.assemble_dock(dock)?;
+        Ok(true)
+    }
+
+    pub fn is_dock_item_source(&self, id: StableNodeId) -> bool {
+        self.dock_title_id(id).is_some()
+            || self
+                .dock_entity_of(id)
+                .and_then(|dock| self.dock_item_for_target(dock, id).ok().flatten())
+                .is_some()
+    }
+
+    fn dock_entity_of(&self, id: StableNodeId) -> Option<Entity<Dock>> {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self.is_dock(id) {
+                return Some(Entity::from_stable_id(id));
+            }
+            current = self.world().node(id).and_then(|node| node.parent);
+        }
+        None
+    }
+
+    fn dock_is_locked(&self, id: StableNodeId) -> bool {
+        self.dock_entity_of(id)
+            .and_then(|dock| self.read(dock, |dock| dock.locked).ok())
+            .unwrap_or(false)
+    }
+
+    fn unlocked_dock_handle(&self, id: StableNodeId) -> Option<StableNodeId> {
+        let handle = self.dock_handle_id(id)?;
+        (!self.dock_is_locked(handle)).then_some(handle)
+    }
+
+    fn unlocked_dock_tab_strip(&self, id: StableNodeId) -> Option<StableNodeId> {
+        let strip = self.dock_tab_strip_id(id)?;
+        (!self.dock_is_locked(strip)).then_some(strip)
+    }
+
+    fn dock_handle_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+        if self
+            .read(Entity::<DockHandle>::from_stable_id(id), |_| ())
+            .is_ok()
+        {
+            let dock = self.dock_entity_of(id)?;
+            return self
+                .read(dock, |dock| {
+                    dock.chrome
+                        .as_ref()
+                        .is_some_and(|chrome| chrome_has_handle(chrome, id))
+                })
+                .ok()
+                .filter(|matches| *matches)
+                .map(|_| id);
+        }
+        let parent = self.world().node(id)?.parent?;
+        if self
+            .read(Entity::<DockHandle>::from_stable_id(parent), |_| ())
+            .is_ok()
+        {
+            return self.dock_handle_id(parent);
+        }
+        None
+    }
+
+    fn dock_title_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+        if self
+            .read(Entity::<DockTitle>::from_stable_id(id), |_| ())
+            .is_err()
+        {
+            return None;
+        }
+        let dock = self.dock_entity_of(id)?;
+        self.read(dock, |dock| {
+            dock.chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome_has_title(chrome, id))
+        })
+        .ok()
+        .filter(|matches| *matches)
+        .map(|_| id)
+    }
+
+    fn dock_tab_strip_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+        if self
+            .read(Entity::<Tabs>::from_stable_id(id), |_| ())
+            .is_ok()
+        {
+            let dock = self.dock_entity_of(id)?;
+            return self
+                .read(dock, |dock| {
+                    dock.chrome
+                        .as_ref()
+                        .is_some_and(|chrome| chrome_has_strip(chrome, id))
+                })
+                .ok()
+                .filter(|matches| *matches)
+                .map(|_| id);
+        }
+        None
+    }
+
+    fn dock_item_for_target(
+        &self,
+        dock: Entity<Dock>,
+        target: StableNodeId,
+    ) -> Result<Option<Arc<str>>, FrameworkError> {
+        let chrome = self.read(dock, |dock| dock.chrome.clone())?;
+        let visible = self.read(dock, Dock::visible_root)?;
+        let (Some(chrome), Some(visible)) = (chrome, visible) else {
+            return Ok(None);
+        };
+        if let Some(id) = title_item_id(&chrome, &visible, target) {
+            return Ok(Some(id));
+        }
+        let mut current = Some(target);
+        while let Some(id) = current {
+            if chrome_has_strip(&chrome, id) {
+                if let Some(value) = self
+                    .read(Entity::<Tabs>::from_stable_id(id), |tabs| {
+                        tabs.option_nodes()
+                            .iter()
+                            .find(|(_, option)| *option == target)
+                            .map(|(value, _)| Arc::clone(value))
+                            .or_else(|| tabs.selected.clone())
+                    })
+                    .ok()
+                    .flatten()
+                {
+                    return Ok(Some(value));
+                }
+                return Ok(strip_for_tabs(&chrome, &visible, id));
+            }
+            current = self.world().node(id).and_then(|node| node.parent);
+        }
+        Ok(None)
+    }
+
+    fn dock_reorder_at(
+        &self,
+        dock: Entity<Dock>,
+        dragged: &str,
+        x: f32,
+        y: f32,
+    ) -> Result<Option<(Arc<str>, bool)>, FrameworkError> {
+        let chrome = self.read(dock, |dock| dock.chrome.clone())?;
+        let visible = self.read(dock, Dock::visible_root)?;
+        let (Some(chrome), Some(visible)) = (chrome, visible) else {
+            return Ok(None);
+        };
+        let Some(strip) = strip_containing_item(&chrome, &visible, dragged) else {
+            return Ok(None);
+        };
+        let options = self
+            .read(Entity::<Tabs>::from_stable_id(strip), |tabs| {
+                tabs.option_nodes().to_vec()
+            })
+            .unwrap_or_default();
+        for (id, option) in options {
+            let Some(bounds) = self.world().layout_box(option) else {
+                continue;
+            };
+            if !bounds.contains(x, y) {
+                continue;
+            }
+            let before = x < bounds.x + bounds.width * 0.5;
+            return Ok(Some((id, before)));
+        }
+        Ok(None)
+    }
+
+    fn dock_drop_target_at(
+        &self,
+        dock: Entity<Dock>,
+        dragged: &str,
+        x: f32,
+        y: f32,
+    ) -> Result<Option<(Arc<str>, DockDropZone)>, FrameworkError> {
+        let chrome = self.read(dock, |dock| dock.chrome.clone())?;
+        let visible = self.read(dock, Dock::visible_root)?;
+        let (Some(chrome), Some(visible)) = (chrome, visible) else {
+            return Ok(None);
+        };
+        let mut leaves = Vec::new();
+        collect_drop_leaves(&chrome, &visible, &mut leaves);
+        for (id, frame) in leaves {
+            if id.as_ref() == dragged {
+                continue;
+            }
+            let Some(bounds) = self.world().layout_box(frame) else {
+                continue;
+            };
+            if let Some(zone) = drop_zone_at(bounds, x, y) {
+                return Ok(Some((id, zone)));
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn activate_runtime_dock_tab(node: &mut DockNode, id: &str) -> bool {
+    match node {
+        DockNode::Item { id: item, .. } => item.as_ref() == id,
+        DockNode::Tabs { tabs, active, .. } => {
+            if tabs.iter().any(|tab| tab.as_ref() == id) {
+                *active = Arc::from(id);
+                true
+            } else {
+                false
+            }
+        }
+        DockNode::Split { first, second, .. } => {
+            activate_runtime_dock_tab(first, id) || activate_runtime_dock_tab(second, id)
+        }
     }
 }
 
@@ -1144,6 +2647,7 @@ fn assemble_branch(
             *content,
             old,
             drop_zone_for(drop_target, std::slice::from_ref(id)),
+            locked,
             titles,
             hosts,
             at_root,
@@ -1161,6 +2665,7 @@ fn assemble_branch(
             contents,
             old,
             drop_zone_for(drop_target, tabs),
+            locked,
             titles,
             hosts,
             at_root,
@@ -1214,6 +2719,7 @@ fn assemble_item(
     content: Option<StableNodeId>,
     old: Option<DockChrome>,
     zone: Option<DockDropZone>,
+    locked: bool,
     titles: &[(Arc<str>, Arc<str>)],
     hosts: &HashSet<StableNodeId>,
     at_root: bool,
@@ -1252,11 +2758,12 @@ fn assemble_item(
         let entity = Entity::<DockTitle>::from_stable_id(title);
         context.update_component(entity, |title, _| {
             title.label = Arc::clone(&label);
+            title.locked = locked;
         })?;
         title
     } else {
         context
-            .create_detached_component(document, DockTitle { label })?
+            .create_detached_component(document, DockTitle { label, locked })?
             .stable_id()
     };
     let overlay = ensure_overlay(
@@ -1289,6 +2796,7 @@ fn assemble_tabs(
     contents: &[(Arc<str>, Option<StableNodeId>)],
     old: Option<DockChrome>,
     zone: Option<DockDropZone>,
+    locked: bool,
     titles: &[(Arc<str>, Arc<str>)],
     hosts: &HashSet<StableNodeId>,
     at_root: bool,
@@ -1320,7 +2828,7 @@ fn assemble_tabs(
     let active = effective_active(tabs, active);
     let options = tabs
         .iter()
-        .map(|id| TabOption::new(Arc::clone(id), title_lookup(titles, id)))
+        .map(|id| TabOption::new(Arc::clone(id), title_lookup(titles, id)).draggable(!locked))
         .collect::<Vec<_>>();
     let strip = if let Some((_, strip, _)) = reused {
         context.update_component(Entity::<Tabs>::from_stable_id(strip), |strip, _| {
@@ -1708,7 +3216,7 @@ fn reconcile_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DocumentId, Text};
+    use crate::{DocumentId, LayoutBox, MutationQueue, Text};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -2064,5 +3572,829 @@ mod tests {
         context.update_component(dock, |_, _| {}).unwrap();
         context.update_component(panel, |_, _| {}).unwrap();
         assert!(context.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn float_item_removes_branch_from_main_and_returns_spec() {
+        let mut dock = Dock::new(DockNode::split(
+            DockAxis::Horizontal,
+            0.4,
+            DockNode::item("inspector", None),
+            DockNode::item("console", None),
+        ));
+
+        let surface = dock.float_item("console").expect("float console");
+        assert_eq!(surface.id.as_ref(), "console");
+        assert_eq!(surface.root, DockNode::item("console", None));
+        assert_eq!(
+            (surface.x, surface.y, surface.width, surface.height),
+            (
+                DEFAULT_FLOATING_X,
+                DEFAULT_FLOATING_Y,
+                DEFAULT_FLOATING_WIDTH,
+                DEFAULT_FLOATING_HEIGHT
+            )
+        );
+        assert!(!dock.contains("console"));
+        assert_eq!(dock.flatten(), vec![Arc::from("inspector")]);
+        assert!(dock.float_item("missing").is_none());
+        assert!(dock.float_item("inspector").is_none());
+        assert!(dock.contains("inspector"));
+    }
+
+    #[test]
+    fn float_item_from_tabs_collapses_remaining_item() {
+        let mut dock = Dock::new(DockNode::tabs(
+            ["code", "preview"],
+            "preview",
+            [("code", None), ("preview", None)],
+        ));
+        let surface = dock.float_item("preview").expect("float preview");
+        assert_eq!(surface.root, DockNode::item("preview", None));
+        assert_eq!(dock.root, DockNode::item("code", None));
+    }
+
+    #[test]
+    fn reassembled_dock_omits_floated_id() {
+        let mut context = AppContext::new();
+        let inspector = body(&mut context, "inspector-body");
+        let console = body(&mut context, "console-body");
+        let dock = context
+            .create_component(
+                document(),
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(inspector)),
+                    DockNode::item("console", Some(console)),
+                )),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+
+        let event = context
+            .float_dock_item(dock, "console")
+            .unwrap()
+            .expect("floated");
+        let DockWorkspaceEvent::OpenFloating(surface) = event else {
+            panic!("open floating");
+        };
+        assert_eq!(surface.id.as_ref(), "console");
+        assert_eq!(surface.root, DockNode::item("console", Some(console)));
+        assert_eq!(
+            context.read(dock, |dock| dock.flatten()).unwrap(),
+            vec![Arc::from("inspector")]
+        );
+
+        context.assemble_dock(dock).unwrap();
+        assert_eq!(
+            context.read(dock, |dock| dock.flatten()).unwrap(),
+            vec![Arc::from("inspector")]
+        );
+        assert!(!context.read(dock, |dock| dock.contains("console")).unwrap());
+        assert_eq!(
+            context.world().node(inspector).unwrap().parent,
+            Some(dock.stable_id())
+        );
+        assert!(!descendants(&context, dock.stable_id()).contains(&console));
+    }
+
+    #[test]
+    fn workspace_float_item_tracks_a_new_surface() {
+        let mut workspace = DockWorkspace::new(DockNode::split(
+            DockAxis::Vertical,
+            0.5,
+            DockNode::item("editor", None),
+            DockNode::item("terminal", None),
+        ));
+        let event = workspace.float_item("terminal").expect("float terminal");
+        let DockWorkspaceEvent::OpenFloating(surface) = &event else {
+            panic!("open floating");
+        };
+        assert_eq!(surface.id.as_ref(), "1");
+        assert_eq!(surface.window_key(), 1);
+        assert!(!workspace.main.contains("terminal"));
+        assert_eq!(workspace.floating.len(), 1);
+        assert_eq!(workspace.surfaces().len(), 2);
+        assert_eq!(workspace.surfaces()[0].id.as_ref(), MAIN_SURFACE_ID);
+        assert_eq!(workspace.surfaces()[0].bounds, None);
+        assert_eq!(
+            workspace.surfaces()[1].bounds,
+            Some((
+                DEFAULT_FLOATING_X,
+                DEFAULT_FLOATING_Y,
+                DEFAULT_FLOATING_WIDTH,
+                DEFAULT_FLOATING_HEIGHT
+            ))
+        );
+
+        workspace.apply(DockWorkspaceEvent::MoveFloating {
+            id: Arc::from("1"),
+            x: 80.0,
+            y: 90.0,
+            width: 360.0,
+            height: 280.0,
+        });
+        assert_eq!(workspace.floating[0].x, 80.0);
+        workspace.apply(DockWorkspaceEvent::CloseFloating(Arc::from("1")));
+        assert!(workspace.floating.is_empty());
+        assert_eq!(dock_surface_window_key(MAIN_SURFACE_ID), 0);
+        assert_ne!(dock_surface_window_key("inspector"), 0);
+    }
+
+    #[test]
+    fn hide_omits_item_from_assemble_and_last_cannot_hide() {
+        let mut context = AppContext::new();
+        let inspector = body(&mut context, "inspector-body");
+        let console = body(&mut context, "console-body");
+        let dock = context
+            .create_component(
+                document(),
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(inspector)),
+                    DockNode::item("console", Some(console)),
+                ))
+                .primary("inspector"),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        assert_eq!(
+            context.read(dock, |dock| dock.flatten()).unwrap(),
+            vec![Arc::from("inspector"), Arc::from("console")]
+        );
+
+        context
+            .update_component(dock, |dock, _| {
+                assert!(!dock.hide("inspector"));
+                assert!(dock.hide("console"));
+                assert!(!dock.hide("console"));
+                assert!(!dock.hide("inspector"));
+            })
+            .unwrap();
+        assert_eq!(
+            context.read(dock, |dock| dock.flatten()).unwrap(),
+            vec![Arc::from("inspector")]
+        );
+        assert!(context.read(dock, |dock| dock.contains("console")).unwrap());
+        assert!(
+            !context
+                .read(dock, |dock| dock.is_visible("console"))
+                .unwrap()
+        );
+        context.assemble_dock(dock).unwrap();
+        assert_eq!(find_tag(&context, dock.stable_id(), "dock-title").len(), 1);
+        assert!(!descendants(&context, dock.stable_id()).contains(&console));
+        assert_eq!(
+            context.world().node(inspector).unwrap().parent,
+            Some(dock.stable_id())
+        );
+
+        context
+            .update_component(dock, |dock, _| {
+                assert!(dock.show("console"));
+                assert!(!dock.show("console"));
+            })
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        assert_eq!(
+            context.read(dock, |dock| dock.flatten()).unwrap(),
+            vec![Arc::from("inspector"), Arc::from("console")]
+        );
+        assert_eq!(find_tag(&context, dock.stable_id(), "dock-title").len(), 2);
+        assert!(descendants(&context, dock.stable_id()).contains(&console));
+
+        let mut only = Dock::new(DockNode::item("only", None));
+        assert!(!only.hide("only"));
+        assert!(only.is_visible("only"));
+    }
+
+    #[test]
+    fn begin_update_end_split_drag_changes_ratio() {
+        let mut context = AppContext::new();
+        let first = body(&mut context, "first");
+        let second = body(&mut context, "second");
+        let dock = context
+            .create_component(
+                document(),
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(first)),
+                    DockNode::item("console", Some(second)),
+                )),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let chrome = context
+            .read(dock, |dock| dock.chrome.clone())
+            .unwrap()
+            .unwrap();
+        let (first_frame, handle, second_frame) = chrome.split_children().unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            dock.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            first_frame,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 156.8,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            handle,
+            LayoutBox {
+                x: 156.8,
+                y: 0.0,
+                width: DOCK_DIVIDER_HIT_SIZE,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            second_frame,
+            LayoutBox {
+                x: 164.8,
+                y: 0.0,
+                width: 235.2,
+                height: 200.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+
+        assert!(
+            context
+                .begin_dock_split_resize(document(), 1, handle, 160.0, 20.0)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_dock_split_resize(document(), 1, 200.0, 20.0)
+                .unwrap()
+        );
+        assert!(context.end_dock_split_resize(document(), 1, false).unwrap());
+        let ratio = context
+            .read(dock, |dock| match &dock.root {
+                DockNode::Split { ratio, .. } => *ratio,
+                _ => panic!("split"),
+            })
+            .unwrap();
+        assert!((ratio - clamp_ratio(0.4 + 40.0 / (400.0 - DOCK_DIVIDER_HIT_SIZE))).abs() < 0.001);
+        assert!(context.world().pointer_capture(document(), 1).is_none());
+    }
+
+    #[test]
+    fn drop_onto_left_and_tab_mutates_tree() {
+        let mut context = AppContext::new();
+        let first = body(&mut context, "first");
+        let second = body(&mut context, "second");
+        let dock = context
+            .create_component(
+                document(),
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(first)),
+                    DockNode::item("console", Some(second)),
+                )),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let chrome = context
+            .read(dock, |dock| dock.chrome.clone())
+            .unwrap()
+            .unwrap();
+        let (first_frame, _handle, second_frame) = chrome.split_children().unwrap();
+        let titles = find_tag(&context, dock.stable_id(), "dock-title");
+        let inspector_title = titles[0];
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            dock.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            first_frame,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 196.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            second_frame,
+            LayoutBox {
+                x: 204.0,
+                y: 0.0,
+                width: 196.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            inspector_title,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 196.0,
+                height: DOCK_TITLE_BAR_HEIGHT,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+
+        assert!(
+            context
+                .begin_dock_item_drag(document(), 1, inspector_title, 20.0, 10.0)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_dock_item_drag(document(), 1, 302.0, 100.0)
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(dock, |dock| dock.drop_target.clone()).unwrap(),
+            Some((Arc::from("console"), DockDropZone::Tab))
+        );
+        assert!(
+            context
+                .end_dock_item_drag(document(), 1, 302.0, 100.0, false)
+                .unwrap()
+        );
+        assert!(matches!(
+            context.read(dock, |dock| dock.root.clone()).unwrap(),
+            DockNode::Tabs { .. }
+        ));
+        assert_eq!(
+            context.read(dock, |dock| dock.flatten()).unwrap(),
+            vec![Arc::from("console"), Arc::from("inspector")]
+        );
+
+        context
+            .update_component(dock, |dock, _| {
+                dock.root = DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(first)),
+                    DockNode::item("console", Some(second)),
+                );
+            })
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let chrome = context
+            .read(dock, |dock| dock.chrome.clone())
+            .unwrap()
+            .unwrap();
+        let (first_frame, _handle, second_frame) = chrome.split_children().unwrap();
+        let titles = find_tag(&context, dock.stable_id(), "dock-title");
+        let console_title = titles[1];
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            dock.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            first_frame,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 196.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            second_frame,
+            LayoutBox {
+                x: 204.0,
+                y: 0.0,
+                width: 196.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            console_title,
+            LayoutBox {
+                x: 204.0,
+                y: 0.0,
+                width: 196.0,
+                height: DOCK_TITLE_BAR_HEIGHT,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+
+        assert!(
+            context
+                .begin_dock_item_drag(document(), 2, console_title, 220.0, 10.0)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_dock_item_drag(document(), 2, 20.0, 100.0)
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(dock, |dock| dock.drop_target.clone()).unwrap(),
+            Some((Arc::from("inspector"), DockDropZone::Left))
+        );
+        assert!(
+            context
+                .end_dock_item_drag(document(), 2, 20.0, 100.0, false)
+                .unwrap()
+        );
+        match context.read(dock, |dock| dock.root.clone()).unwrap() {
+            DockNode::Split {
+                axis,
+                first,
+                second,
+                ..
+            } => {
+                assert_eq!(axis, DockAxis::Horizontal);
+                assert_eq!(first.flatten()[0].as_ref(), "console");
+                assert_eq!(second.flatten()[0].as_ref(), "inspector");
+            }
+            other => panic!("expected split, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workspace_hide_show_and_primary() {
+        let mut workspace = DockWorkspace::new(DockNode::split(
+            DockAxis::Horizontal,
+            0.4,
+            DockNode::item("gallery.primary", None),
+            DockNode::item("assets", None),
+        ))
+        .primary("gallery.primary");
+        assert!(!workspace.hide("gallery.primary"));
+        assert!(workspace.hide("assets"));
+        assert!(!workspace.is_visible("assets"));
+        assert_eq!(
+            workspace.surfaces()[0].root.flatten(),
+            vec![Arc::from("gallery.primary")]
+        );
+        assert!(workspace.show("assets"));
+        assert!(workspace.is_visible("assets"));
+        assert_eq!(workspace.surfaces()[0].root.flatten().len(), 2);
+    }
+
+    fn tab_option_nodes(
+        context: &AppContext,
+        dock: crate::Entity<Dock>,
+    ) -> Vec<(Arc<str>, StableNodeId)> {
+        let chrome = context
+            .read(dock, |dock| dock.chrome.clone())
+            .unwrap()
+            .unwrap();
+        let strip = match chrome {
+            DockChrome::Tabs { strip, .. } => strip,
+            _ => panic!("expected tabs chrome"),
+        };
+        context
+            .read(Entity::<Tabs>::from_stable_id(strip), |tabs| {
+                tabs.option_nodes().to_vec()
+            })
+            .unwrap()
+    }
+
+    fn layout_two_tab_strip(
+        context: &mut AppContext,
+        dock: crate::Entity<Dock>,
+        first: StableNodeId,
+        second: StableNodeId,
+    ) {
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            dock.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 200.0,
+            },
+        );
+        layout.write_layout(
+            first,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: DOCK_TITLE_BAR_HEIGHT,
+            },
+        );
+        layout.write_layout(
+            second,
+            LayoutBox {
+                x: 80.0,
+                y: 0.0,
+                width: 80.0,
+                height: DOCK_TITLE_BAR_HEIGHT,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+    }
+
+    fn two_tab_dock(
+        context: &mut AppContext,
+        locked: bool,
+    ) -> (crate::Entity<Dock>, StableNodeId, StableNodeId) {
+        let first_body = body(context, "first-body");
+        let second_body = body(context, "second-body");
+        let dock = context
+            .create_component(
+                document(),
+                Dock::new(DockNode::tabs(
+                    ["first", "second"],
+                    "first",
+                    [("first", Some(first_body)), ("second", Some(second_body))],
+                ))
+                .locked(locked),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let options = tab_option_nodes(context, dock);
+        assert_eq!(options.len(), 2);
+        (dock, options[0].1, options[1].1)
+    }
+
+    #[test]
+    fn reorder_dock_tab_moves_before_or_after_sibling() {
+        let mut root = DockNode::tabs(
+            ["first", "second"],
+            "first",
+            [("first", None), ("second", None)],
+        );
+        assert!(reorder_dock_tab(&mut root, "first", "second", false));
+        assert_eq!(
+            root.flatten(),
+            vec![Arc::from("second"), Arc::from("first")]
+        );
+        assert!(reorder_dock_tab(&mut root, "first", "second", true));
+        assert_eq!(
+            root.flatten(),
+            vec![Arc::from("first"), Arc::from("second")]
+        );
+        assert!(!reorder_dock_tab(&mut root, "first", "second", true));
+        assert!(!reorder_dock_tab(&mut root, "first", "first", false));
+    }
+
+    #[test]
+    fn drag_first_tab_onto_second_reorders_by_before_after() {
+        let mut context = AppContext::new();
+        let (dock, first_tab, second_tab) = two_tab_dock(&mut context, false);
+        layout_two_tab_strip(&mut context, dock, first_tab, second_tab);
+
+        assert!(
+            context
+                .begin_dock_item_drag(document(), 1, first_tab, 20.0, 10.0)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_dock_item_drag(document(), 1, 140.0, 10.0)
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .read(dock, |dock| {
+                    dock.item_drag
+                        .as_ref()
+                        .and_then(|drag| drag.reorder.clone())
+                })
+                .unwrap(),
+            Some((Arc::from("second"), false))
+        );
+        assert!(
+            context
+                .read(dock, |dock| dock.drop_target.clone())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            context
+                .end_dock_item_drag(document(), 1, 140.0, 10.0, false)
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(dock, |dock| dock.root.flatten()).unwrap(),
+            vec![Arc::from("second"), Arc::from("first")]
+        );
+
+        context
+            .update_component(dock, |dock, _| {
+                dock.root = DockNode::tabs(
+                    ["first", "second"],
+                    "first",
+                    [("first", None), ("second", None)],
+                );
+            })
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let options = tab_option_nodes(&context, dock);
+        layout_two_tab_strip(&mut context, dock, options[0].1, options[1].1);
+        assert!(
+            context
+                .begin_dock_item_drag(document(), 2, options[0].1, 20.0, 10.0)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_dock_item_drag(document(), 2, 100.0, 10.0)
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .read(dock, |dock| {
+                    dock.item_drag
+                        .as_ref()
+                        .and_then(|drag| drag.reorder.clone())
+                })
+                .unwrap(),
+            Some((Arc::from("second"), true))
+        );
+        assert!(
+            context
+                .end_dock_item_drag(document(), 2, 100.0, 10.0, false)
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(dock, |dock| dock.root.flatten()).unwrap(),
+            vec![Arc::from("first"), Arc::from("second")]
+        );
+    }
+
+    #[test]
+    fn dock_tab_reorder_is_noop_when_dropping_on_self() {
+        let mut context = AppContext::new();
+        let (dock, first_tab, second_tab) = two_tab_dock(&mut context, false);
+        layout_two_tab_strip(&mut context, dock, first_tab, second_tab);
+
+        assert!(
+            context
+                .begin_dock_item_drag(document(), 1, first_tab, 20.0, 10.0)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_dock_item_drag(document(), 1, 40.0, 10.0)
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .read(dock, |dock| {
+                    dock.item_drag
+                        .as_ref()
+                        .and_then(|drag| drag.reorder.clone())
+                })
+                .unwrap()
+                .map(|(id, _)| id),
+            Some(Arc::from("first"))
+        );
+        assert!(
+            context
+                .end_dock_item_drag(document(), 1, 40.0, 10.0, false)
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(dock, |dock| dock.root.flatten()).unwrap(),
+            vec![Arc::from("first"), Arc::from("second")]
+        );
+        assert!(matches!(
+            context.read(dock, |dock| dock.root.clone()).unwrap(),
+            DockNode::Tabs { .. }
+        ));
+    }
+
+    #[test]
+    fn locked_dock_does_not_reorder() {
+        let mut locked = Dock::new(DockNode::tabs(
+            ["first", "second"],
+            "first",
+            [("first", None), ("second", None)],
+        ))
+        .locked(true);
+        assert!(!locked.reorder_tab("first", "second", false));
+        assert_eq!(
+            locked.flatten(),
+            vec![Arc::from("first"), Arc::from("second")]
+        );
+
+        let mut context = AppContext::new();
+        let (dock, first_tab, second_tab) = two_tab_dock(&mut context, true);
+        layout_two_tab_strip(&mut context, dock, first_tab, second_tab);
+        assert!(
+            !context
+                .begin_dock_item_drag(document(), 1, first_tab, 20.0, 10.0)
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(dock, |dock| dock.root.flatten()).unwrap(),
+            vec![Arc::from("first"), Arc::from("second")]
+        );
+    }
+
+    #[test]
+    fn focused_dock_handle_adjust_changes_ratio_and_clamps() {
+        let mut context = AppContext::new();
+        let first = body(&mut context, "first");
+        let second = body(&mut context, "second");
+        let dock = context
+            .create_component(
+                document(),
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.4,
+                    DockNode::item("inspector", Some(first)),
+                    DockNode::item("console", Some(second)),
+                )),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let handle = find_tag(&context, dock.stable_id(), "dock-handle")[0];
+        assert!(context.focus_node(document(), handle).unwrap());
+
+        assert!(context.adjust_focused_dock_split(document(), 1.0).unwrap());
+        let ratio = context
+            .read(dock, |dock| dock.root.split_ratio())
+            .unwrap()
+            .unwrap();
+        assert!((ratio - (0.4 + DOCK_SPLIT_KEYBOARD_STEP)).abs() < f32::EPSILON);
+
+        context
+            .update_component(dock, |dock, _| {
+                if let DockNode::Split { ratio, .. } = &mut dock.root {
+                    *ratio = 0.94;
+                }
+            })
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        if context.world().focused(document()) != Some(handle) {
+            assert!(context.focus_node(document(), handle).unwrap());
+        }
+        assert!(context.adjust_focused_dock_split(document(), 1.0).unwrap());
+        assert_eq!(
+            context
+                .read(dock, |dock| dock.root.split_ratio())
+                .unwrap()
+                .unwrap(),
+            MAX_SPLIT_RATIO
+        );
+        assert!(!context.adjust_focused_dock_split(document(), 1.0).unwrap());
+
+        context
+            .update_component(dock, |dock, _| {
+                if let DockNode::Split { ratio, .. } = &mut dock.root {
+                    *ratio = 0.06;
+                }
+            })
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        if context.world().focused(document()) != Some(handle) {
+            assert!(context.focus_node(document(), handle).unwrap());
+        }
+        assert!(context.adjust_focused_dock_split(document(), -1.0).unwrap());
+        assert_eq!(
+            context
+                .read(dock, |dock| dock.root.split_ratio())
+                .unwrap()
+                .unwrap(),
+            MIN_SPLIT_RATIO
+        );
+        assert!(!context.adjust_focused_dock_split(document(), -1.0).unwrap());
+
+        context
+            .update_component(dock, |dock, _| {
+                dock.locked = true;
+                if let DockNode::Split { ratio, .. } = &mut dock.root {
+                    *ratio = 0.4;
+                }
+            })
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        assert!(!context.adjust_focused_dock_split(document(), 1.0).unwrap());
+        assert_eq!(
+            context
+                .read(dock, |dock| dock.root.split_ratio())
+                .unwrap()
+                .unwrap(),
+            0.4
+        );
     }
 }

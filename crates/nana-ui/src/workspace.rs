@@ -63,6 +63,10 @@ impl WorkspaceController {
         }
     }
 
+    pub fn model(&self) -> &nana_ui_core::WorkspaceModel {
+        &self.model
+    }
+
     pub fn layout(&self) -> &WorkspaceLayout {
         self.model.layout()
     }

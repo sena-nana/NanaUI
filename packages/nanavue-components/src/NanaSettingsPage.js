@@ -1,9 +1,16 @@
 /**
- * NanaSettingsPage — settings content container (peer of Lilia `SettingsPage`).
+ * NanaSettingsPage — host tag for Runtime `SettingsPage` (`nana-settings-page`).
  * Resolves active tab from settings model prop / inject("liliaSettings") + tab prop.
+ * Header / scroll chrome is assembled by Runtime; this wrapper only hosts content.
  */
 import { computed, h, inject } from "@vue/runtime-core";
 import { getLiliaSettings } from "./appearance.js";
+
+function flatten(nodes) {
+  return (Array.isArray(nodes) ? nodes : nodes == null ? [] : [nodes])
+    .flat(Infinity)
+    .filter(Boolean);
+}
 
 function normalizeTab(model, value) {
   const candidate = Array.isArray(value) ? value[0] : value;
@@ -24,7 +31,7 @@ function resolveView(model, value) {
       ? fullPageTabs.has(key)
       : Array.isArray(fullPageTabs)
         ? fullPageTabs.includes(key)
-        : false;
+        : !!tab?.fullPage;
   return {
     key,
     label: tab?.label || "",
@@ -39,8 +46,9 @@ export const NanaSettingsPage = {
   props: {
     tab: { type: [String, Array], default: undefined },
     settings: { type: Object, default: null },
+    hideHeader: { type: Boolean, default: undefined },
   },
-  setup(props, { attrs }) {
+  setup(props, { attrs, slots }) {
     const injected = inject("liliaSettings", null);
     const model = computed(
       () => props.settings || injected || getLiliaSettings() || globalThis.__nanaLiliaSettings,
@@ -49,41 +57,30 @@ export const NanaSettingsPage = {
 
     return () => {
       const view = activeView.value;
-      if (!view.section) {
-        return h(
-          "section",
-          {
-            class: "nana-settings-page settings-page",
-            "data-agent-id": attrs["data-agent-id"] || "nana.settings.page.empty",
-          },
-          [h("div", { class: "nana-settings-page__empty" }, "No settings section")],
-        );
-      }
-      if (view.fullPage) {
-        return h(view.section, {
-          ...view.props,
-          "data-agent-id": "settings.full-page-section",
-        });
-      }
-      const hideHeader = !!model.value?.hideHeader;
+      const hideHeader =
+        props.hideHeader !== undefined ? !!props.hideHeader : !!model.value?.hideHeader;
+      const slotted = flatten(slots.default?.());
+      const content = slotted.length
+        ? slotted
+        : view.section
+          ? [h(view.section, { ...view.props })]
+          : [h("div", { class: "nana-settings-page__empty" }, "No settings section")];
       return h(
-        "section",
+        "nana-settings-page",
         {
           ...attrs,
           class: ["nana-settings-page", "settings-page", attrs.class]
+            .flat()
             .filter(Boolean)
             .join(" "),
+          settings: props.settings != null ? props.settings : model.value,
+          tab: props.tab !== undefined ? props.tab : view.key,
+          "hide-header": hideHeader,
           "data-agent-id":
-            attrs["data-agent-id"] || `settings.page.${view.key}`,
+            attrs["data-agent-id"] ||
+            (view.section ? `settings.page.${view.key}` : "nana.settings.page.empty"),
         },
-        [
-          !hideHeader
-            ? h("div", { class: "nana-settings-page__header page-header" }, [
-                h("h1", null, view.label),
-              ])
-            : null,
-          h(view.section, { ...view.props }),
-        ],
+        content,
       );
     };
   },

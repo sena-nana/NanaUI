@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
-    ControlSize, FlexDirection, Icon, LengthSpec, SemanticColorRole, ThemeMode, UI_METRICS,
-    WindowMaterialMode,
+    ControlSize, FlexDirection, Icon, LengthSpec, OverflowSpec, SemanticColorRole, SettingsModel,
+    SettingsState, SettingsTabId, ThemeMode, UI_METRICS, WindowMaterialMode,
 };
 
 use crate::view_components::{
@@ -12,9 +12,10 @@ use crate::view_components::{
 };
 use crate::{
     AccessibilityRole, AccessibilityState, Activate, AppContext, ComponentView, Entity,
-    FrameworkError, InteractionState, InteractionStyle, MutationQueue, NodeKind, NodeStyle,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, SemanticPaint, StableNodeId,
-    StandardVisual, TextContent, UiWorld,
+    FrameworkError, InteractionState, InteractionStyle, ListItemSlots, MutationQueue, NodeKind,
+    NodeStyle, ScrollAxes, ScrollView, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, SemanticPaint, SidebarFrame, SidebarRow, SidebarRowState,
+    StableNodeId, StandardVisual, TextContent, UiWorld,
 };
 
 const ROW_PADDING_Y: f32 = 10.0;
@@ -848,6 +849,346 @@ impl ComponentView for AboutSection {
             mutations.set_accessibility(id, accessibility);
         }
     }
+}
+
+const SETTINGS_SIDEBAR_GAP: f32 = 12.0;
+const SETTINGS_SIDEBAR_TAB_GAP: f32 = 1.0;
+const SETTINGS_SIDEBAR_ICON_SIZE: f32 = 15.0;
+const SETTINGS_PAGE_GAP: f32 = 16.0;
+const SETTINGS_PAGE_PADDING_TOP: f32 = 20.0;
+const SETTINGS_PAGE_PADDING_RIGHT: f32 = 24.0;
+const SETTINGS_PAGE_PADDING_BOTTOM: f32 = 24.0;
+const SETTINGS_PAGE_PADDING_LEFT: f32 = 24.0;
+const SETTINGS_PAGE_TITLE_SIZE: f32 = 18.0;
+const SETTINGS_PAGE_TITLE_WEIGHT: u16 = 600;
+
+/// Host-owned navigation snapshot. Activate emits [`SettingsBack`] / [`SettingsTabSelected`].
+#[derive(Debug, Clone)]
+pub struct SettingsSidebar {
+    pub model: SettingsModel,
+    pub state: SettingsState,
+    pub assembly: Option<SettingsSidebarAssembly>,
+}
+
+/// Retained children created by [`AppContext::assemble_settings_sidebar`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SettingsSidebarAssembly {
+    pub back_row: Option<StableNodeId>,
+    pub back_icon: Option<StableNodeId>,
+    pub body: Option<StableNodeId>,
+    pub tab_rows: HashMap<SettingsTabId, StableNodeId>,
+    pub tab_leadings: HashMap<SettingsTabId, StableNodeId>,
+}
+
+impl SettingsSidebar {
+    pub fn new(model: SettingsModel, state: SettingsState) -> Self {
+        Self {
+            model,
+            state,
+            assembly: None,
+        }
+    }
+
+    pub fn row_for_tab(&self, id: &SettingsTabId) -> Option<StableNodeId> {
+        self.assembly.as_ref()?.tab_rows.get(id).copied()
+    }
+}
+
+impl ComponentView for SettingsSidebar {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-sidebar".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let mut frame = SidebarFrame::new().gap(SETTINGS_SIDEBAR_GAP);
+        if let Some(assembly) = &self.assembly {
+            if let Some(top) = assembly.back_row {
+                frame = frame.top(top);
+            }
+            if let Some(body) = assembly.body {
+                frame = frame.body(body);
+            }
+        }
+        frame.project(id, world, mutations);
+    }
+}
+
+/// Host-owned page snapshot. Content stays application-owned.
+#[derive(Debug, Clone)]
+pub struct SettingsPage {
+    pub model: SettingsModel,
+    pub state: SettingsState,
+    pub content: Option<StableNodeId>,
+    pub assembly: Option<SettingsPageAssembly>,
+}
+
+/// Retained chrome created by [`AppContext::assemble_settings_page`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SettingsPageAssembly {
+    pub scroll: Option<StableNodeId>,
+    pub body: Option<StableNodeId>,
+    pub title: Option<StableNodeId>,
+}
+
+impl SettingsPage {
+    pub fn new(model: SettingsModel, state: SettingsState) -> Self {
+        Self {
+            model,
+            state,
+            content: None,
+            assembly: None,
+        }
+    }
+
+    pub fn content(mut self, content: StableNodeId) -> Self {
+        self.content = Some(content);
+        self
+    }
+}
+
+impl ComponentView for SettingsPage {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-page".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &settings_page_style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+/// Activate on the back row. Host owns navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsBack;
+
+/// Activate on a tab row. Host applies [`SettingsState::select`] then re-assembles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsTabSelected {
+    pub tab: SettingsTabId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsSidebarLeading {
+    icon: Option<Icon>,
+    selected: bool,
+}
+
+impl SettingsSidebarLeading {
+    fn style(&self) -> NodeStyle {
+        let mut style = NodeStyle::default();
+        style.foreground = Some(if self.selected {
+            SemanticColorRole::Text
+        } else {
+            SemanticColorRole::Muted
+        });
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(SETTINGS_SIDEBAR_ICON_SIZE));
+        layout.height = Some(LengthSpec::Px(SETTINGS_SIDEBAR_ICON_SIZE));
+        layout.min_width = Some(LengthSpec::Px(SETTINGS_SIDEBAR_ICON_SIZE));
+        layout.min_height = Some(LengthSpec::Px(SETTINGS_SIDEBAR_ICON_SIZE));
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        style
+    }
+}
+
+impl ComponentView for SettingsSidebarLeading {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-sidebar-leading".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        let visual = self.icon.map(|icon| StandardVisual::Icon {
+            icon,
+            size: SETTINGS_SIDEBAR_ICON_SIZE,
+            tooltip: None,
+        });
+        if world.standard_visual(id) != visual {
+            mutations.set_standard_visual(id, visual);
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+struct SettingsPageBody;
+
+impl SettingsPageBody {
+    fn style() -> NodeStyle {
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.direction = Some(FlexDirection::Column);
+        layout.align_items = AlignSpec::Stretch;
+        layout.width = Some(LengthSpec::Fill);
+        layout.gap = Some(LengthSpec::Px(SETTINGS_PAGE_GAP));
+        layout.padding_top = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_TOP));
+        layout.padding_right = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_RIGHT));
+        layout.padding_bottom = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_BOTTOM));
+        layout.padding_left = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_LEFT));
+        style
+    }
+}
+
+impl ComponentView for SettingsPageBody {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-page-body".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &Self::style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+fn settings_page_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.background = Some(SemanticColorRole::Background);
+    style.foreground = Some(SemanticColorRole::Text);
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.direction = Some(FlexDirection::Column);
+    layout.align_items = AlignSpec::Stretch;
+    layout.width = Some(LengthSpec::Fill);
+    layout.height = Some(LengthSpec::Fill);
+    layout.overflow_x = OverflowSpec::Hidden;
+    layout.overflow_y = OverflowSpec::Hidden;
+    style
+}
+
+fn settings_page_scroll() -> ScrollView {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.width = Some(LengthSpec::Fill);
+    layout.height = Some(LengthSpec::Fill);
+    layout.flex_grow = Some(1.0);
+    layout.flex_shrink = Some(1.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.min_height = Some(LengthSpec::Px(0.0));
+    ScrollView::new(ScrollAxes::Vertical).style(style)
+}
+
+fn settings_sidebar_body() -> ScrollView {
+    let mut scroll = SidebarFrame::vertical_body_scroll();
+    let layout = Arc::make_mut(&mut scroll.style.layout);
+    layout.direction = Some(FlexDirection::Column);
+    layout.gap = Some(LengthSpec::Px(SETTINGS_SIDEBAR_TAB_GAP));
+    scroll
+}
+
+fn page_title_text(label: &str) -> Text {
+    styled_text(
+        label,
+        SemanticColorRole::Text,
+        SETTINGS_PAGE_TITLE_SIZE,
+        SETTINGS_PAGE_TITLE_WEIGHT,
+    )
+}
+
+fn ensure_settings_leading(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    slot: &mut Option<StableNodeId>,
+    icon: Option<Icon>,
+    selected: bool,
+) -> Result<Entity<SettingsSidebarLeading>, FrameworkError> {
+    if let Some(id) = *slot {
+        let entity = Entity::<SettingsSidebarLeading>::from_stable_id(id);
+        context.update_component(entity, |leading, _| {
+            leading.icon = icon;
+            leading.selected = selected;
+        })?;
+        Ok(entity)
+    } else {
+        let entity = context
+            .create_detached_component(document, SettingsSidebarLeading { icon, selected })?;
+        *slot = Some(entity.stable_id());
+        Ok(entity)
+    }
+}
+
+fn ensure_settings_nav_row(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    slot: &mut Option<StableNodeId>,
+    label: &str,
+    state: SidebarRowState,
+    leading: StableNodeId,
+) -> Result<(Entity<SidebarRow>, bool), FrameworkError> {
+    let created = slot.is_none();
+    let row = if let Some(id) = *slot {
+        let entity = Entity::<SidebarRow>::from_stable_id(id);
+        context.update_component(entity, |row, _| {
+            row.label = Arc::from(label);
+            row.state = state;
+            row.slots.leading = Some(leading);
+        })?;
+        entity
+    } else {
+        let entity = context.create_detached_component(
+            document,
+            SidebarRow::new(label).state(state).slots(ListItemSlots {
+                leading: Some(leading),
+                content: None,
+                trailing: None,
+            }),
+        )?;
+        *slot = Some(entity.stable_id());
+        entity
+    };
+    reconcile_children(context, row, &[leading])?;
+    Ok((row, created))
 }
 
 /// Apply a host-owned appearance event. Theme is not stored on [`AppearanceSettings`].
@@ -1747,6 +2088,168 @@ impl AppContext {
         }
         reconcile_children(self, card, &ordered)
     }
+
+    /// Mount back + tab rows from the host snapshot on [`SettingsSidebar`].
+    ///
+    /// Row activation re-emits [`SettingsBack`] / [`SettingsTabSelected`] from
+    /// the sidebar. The host binds those events, updates [`SettingsState`],
+    /// writes the snapshot back, and calls this method again.
+    pub fn assemble_settings_sidebar(
+        &mut self,
+        sidebar: Entity<SettingsSidebar>,
+    ) -> Result<bool, FrameworkError> {
+        let document = document_of(self, sidebar.stable_id())?;
+        let (model, state, mut assembly) = self.read(sidebar, |sidebar| {
+            (
+                sidebar.model.clone(),
+                sidebar.state.clone(),
+                sidebar.assembly.clone().unwrap_or_default(),
+            )
+        })?;
+        let mut back_icon = assembly.back_icon;
+        let back_leading =
+            ensure_settings_leading(self, document, &mut back_icon, Some(Icon::ArrowLeft), true)?;
+        assembly.back_icon = back_icon;
+        let mut back_row = assembly.back_row;
+        let (back, created_back) = ensure_settings_nav_row(
+            self,
+            document,
+            &mut back_row,
+            "返回",
+            SidebarRowState::Idle,
+            back_leading.stable_id(),
+        )?;
+        assembly.back_row = back_row;
+        if created_back {
+            self.observe(back, sidebar, |_, _: &Activate, cx| {
+                cx.emit(SettingsBack);
+            })?;
+        }
+
+        let body = if let Some(id) = assembly.body {
+            Entity::<ScrollView>::from_stable_id(id)
+        } else {
+            let entity = self.create_detached_component(document, settings_sidebar_body())?;
+            assembly.body = Some(entity.stable_id());
+            entity
+        };
+
+        let mut tab_children = Vec::new();
+        for tab in model.tabs() {
+            let selected = state.active_tab() == tab.id();
+            let row_state = if selected {
+                SidebarRowState::Active
+            } else {
+                SidebarRowState::Idle
+            };
+            let mut leading_slot = assembly.tab_leadings.get(tab.id()).copied();
+            let leading = ensure_settings_leading(
+                self,
+                document,
+                &mut leading_slot,
+                tab.icon_value(),
+                selected,
+            )?;
+            assembly
+                .tab_leadings
+                .insert(tab.id().clone(), leading.stable_id());
+            let mut row_slot = assembly.tab_rows.get(tab.id()).copied();
+            let (row, created_row) = ensure_settings_nav_row(
+                self,
+                document,
+                &mut row_slot,
+                tab.label(),
+                row_state,
+                leading.stable_id(),
+            )?;
+            assembly.tab_rows.insert(tab.id().clone(), row.stable_id());
+            if created_row {
+                let tab_id = tab.id().clone();
+                self.observe(row, sidebar, move |_, _: &Activate, cx| {
+                    cx.emit(SettingsTabSelected {
+                        tab: tab_id.clone(),
+                    });
+                })?;
+            }
+            tab_children.push(row.stable_id());
+        }
+
+        let body_changed = reconcile_children(self, body, &tab_children)?;
+        self.update_component(sidebar, |sidebar, _| {
+            sidebar.assembly = Some(assembly.clone());
+        })?;
+        let frame_changed =
+            reconcile_children(self, sidebar, &[back.stable_id(), body.stable_id()])?;
+        Ok(body_changed || frame_changed)
+    }
+
+    /// Mount header + scroll chrome, or a fill child when the tab is full-page.
+    pub fn assemble_settings_page(
+        &mut self,
+        page: Entity<SettingsPage>,
+    ) -> Result<bool, FrameworkError> {
+        let document = document_of(self, page.stable_id())?;
+        let (model, state, content, mut assembly) = self.read(page, |page| {
+            (
+                page.model.clone(),
+                page.state.clone(),
+                page.content,
+                page.assembly.clone().unwrap_or_default(),
+            )
+        })?;
+        let tab = state.active_view(&model);
+        let full_page = tab.full_page_value();
+        let show_header = !full_page && !model.hide_header_value();
+
+        if show_header {
+            sync_text(
+                self,
+                document,
+                &mut assembly.title,
+                page_title_text(tab.label()),
+            )?;
+        }
+
+        if full_page {
+            self.update_component(page, |page, _| {
+                page.assembly = Some(assembly);
+            })?;
+            let ordered = content.into_iter().collect::<Vec<_>>();
+            return reconcile_children(self, page, &ordered);
+        }
+
+        let body = if let Some(id) = assembly.body {
+            Entity::<SettingsPageBody>::from_stable_id(id)
+        } else {
+            let entity = self.create_detached_component(document, SettingsPageBody)?;
+            assembly.body = Some(entity.stable_id());
+            entity
+        };
+        let scroll = if let Some(id) = assembly.scroll {
+            Entity::<ScrollView>::from_stable_id(id)
+        } else {
+            let entity = self.create_detached_component(document, settings_page_scroll())?;
+            assembly.scroll = Some(entity.stable_id());
+            entity
+        };
+
+        let mut column_children = Vec::new();
+        if show_header {
+            if let Some(title) = assembly.title {
+                column_children.push(title);
+            }
+        }
+        if let Some(content) = content {
+            column_children.push(content);
+        }
+        reconcile_children(self, body, &column_children)?;
+        reconcile_children(self, scroll, &[body.stable_id()])?;
+        let scroll_id = scroll.stable_id();
+        self.update_component(page, |page, _| {
+            page.assembly = Some(assembly);
+        })?;
+        reconcile_children(self, page, &[scroll_id])
+    }
 }
 
 #[cfg(test)]
@@ -2420,6 +2923,346 @@ mod tests {
                 .unwrap()
                 .layout
                 .hidden
+        );
+    }
+
+    fn settings_model(tabs: impl IntoIterator<Item = nana_ui_core::SettingsTab>) -> SettingsModel {
+        let tabs: Vec<_> = tabs.into_iter().collect();
+        let default = tabs[0].id().clone();
+        SettingsModel::new(default, tabs).expect("valid settings model")
+    }
+
+    fn is_descendant(context: &AppContext, root: StableNodeId, target: StableNodeId) -> bool {
+        let mut current = Some(target);
+        while let Some(id) = current {
+            if id == root {
+                return true;
+            }
+            current = context.world().node(id).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    fn sidebar_row_state(context: &AppContext, id: StableNodeId) -> SidebarRowState {
+        context
+            .read(Entity::<SidebarRow>::from_stable_id(id), |row| row.state)
+            .unwrap()
+    }
+
+    #[test]
+    fn settings_sidebar_mounts_back_and_tab_rows() {
+        let mut context = AppContext::new();
+        let model = settings_model([
+            nana_ui_core::SettingsTab::new("appearance", "外观").icon(Icon::Appearance),
+            nana_ui_core::SettingsTab::new("workspace", "工作区").icon(Icon::Workspace),
+        ]);
+        let state = SettingsState::new(&model);
+        let sidebar = context
+            .create_component(document(), SettingsSidebar::new(model, state))
+            .unwrap();
+        assert!(context.assemble_settings_sidebar(sidebar).unwrap());
+        let assembly = context
+            .read(sidebar, |sidebar| sidebar.assembly.clone().unwrap())
+            .unwrap();
+        let back = assembly.back_row.unwrap();
+        let body = assembly.body.unwrap();
+        let appearance = assembly
+            .tab_rows
+            .get(&SettingsTabId::from("appearance"))
+            .copied()
+            .unwrap();
+        let workspace = assembly
+            .tab_rows
+            .get(&SettingsTabId::from("workspace"))
+            .copied()
+            .unwrap();
+        assert_eq!(
+            context.world().node(sidebar.stable_id()).unwrap().children,
+            vec![back, body]
+        );
+        assert_eq!(
+            context.world().node(body).unwrap().kind,
+            NodeKind::Element {
+                tag: "scroll".into(),
+            }
+        );
+        assert_eq!(
+            context.world().node(body).unwrap().children,
+            vec![appearance, workspace]
+        );
+        assert_eq!(context.world().text(back), Some("返回"));
+        assert_eq!(
+            sidebar_row_state(&context, appearance),
+            SidebarRowState::Active
+        );
+        assert_eq!(
+            sidebar_row_state(&context, workspace),
+            SidebarRowState::Idle
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(sidebar.stable_id())
+                .unwrap()
+                .layout
+                .gap,
+            Some(LengthSpec::Px(SETTINGS_SIDEBAR_GAP))
+        );
+        assert!(
+            context
+                .world()
+                .node_style(body)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert!(
+            !context
+                .world()
+                .node_style(back)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+    }
+
+    #[test]
+    fn settings_sidebar_activate_selects_tab_and_reassemble_marks_active() {
+        let mut context = AppContext::new();
+        let model = settings_model([
+            nana_ui_core::SettingsTab::new("appearance", "外观"),
+            nana_ui_core::SettingsTab::new("workspace", "工作区"),
+        ]);
+        let state = SettingsState::new(&model);
+        let sidebar = context
+            .create_component(document(), SettingsSidebar::new(model, state))
+            .unwrap();
+        context.assemble_settings_sidebar(sidebar).unwrap();
+        let selected = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&selected);
+        context
+            .on(sidebar, move |_, event: &SettingsTabSelected, _| {
+                sink.lock().unwrap().push(event.tab.clone());
+            })
+            .unwrap();
+        let workspace = context
+            .read(sidebar, |sidebar| {
+                sidebar.row_for_tab(&SettingsTabId::from("workspace"))
+            })
+            .unwrap()
+            .unwrap();
+        assert!(
+            context
+                .activate_sidebar_row(Entity::from_stable_id(workspace))
+                .unwrap()
+        );
+        assert_eq!(
+            *selected.lock().unwrap(),
+            vec![SettingsTabId::from("workspace")]
+        );
+        context
+            .update_component(sidebar, |sidebar, _| {
+                let model = sidebar.model.clone();
+                sidebar
+                    .state
+                    .select(&model, &SettingsTabId::from("workspace"));
+            })
+            .unwrap();
+        context.assemble_settings_sidebar(sidebar).unwrap();
+        let appearance = context
+            .read(sidebar, |sidebar| {
+                sidebar.row_for_tab(&SettingsTabId::from("appearance"))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            sidebar_row_state(&context, appearance),
+            SidebarRowState::Idle
+        );
+        assert_eq!(
+            sidebar_row_state(&context, workspace),
+            SidebarRowState::Active
+        );
+    }
+
+    #[test]
+    fn settings_sidebar_missing_icon_is_spacer_without_glyph() {
+        let mut context = AppContext::new();
+        let model = settings_model([
+            nana_ui_core::SettingsTab::new("appearance", "外观").icon(Icon::Appearance),
+            nana_ui_core::SettingsTab::new("about", "关于"),
+        ]);
+        let state = SettingsState::new(&model);
+        let sidebar = context
+            .create_component(document(), SettingsSidebar::new(model, state))
+            .unwrap();
+        context.assemble_settings_sidebar(sidebar).unwrap();
+        let assembly = context
+            .read(sidebar, |sidebar| sidebar.assembly.clone().unwrap())
+            .unwrap();
+        let icon = assembly
+            .tab_leadings
+            .get(&SettingsTabId::from("appearance"))
+            .copied()
+            .unwrap();
+        let spacer = assembly
+            .tab_leadings
+            .get(&SettingsTabId::from("about"))
+            .copied()
+            .unwrap();
+        assert_eq!(
+            context.world().standard_visual(icon),
+            Some(StandardVisual::Icon {
+                icon: Icon::Appearance,
+                size: SETTINGS_SIDEBAR_ICON_SIZE,
+                tooltip: None,
+            })
+        );
+        assert_eq!(context.world().standard_visual(spacer), None);
+        let spacer_layout = &context.world().node_style(spacer).unwrap().layout;
+        assert_eq!(
+            spacer_layout.width,
+            Some(LengthSpec::Px(SETTINGS_SIDEBAR_ICON_SIZE))
+        );
+        assert_eq!(
+            spacer_layout.height,
+            Some(LengthSpec::Px(SETTINGS_SIDEBAR_ICON_SIZE))
+        );
+    }
+
+    #[test]
+    fn settings_page_header_title_and_scroll_wraps_content() {
+        let mut context = AppContext::new();
+        let model = settings_model([nana_ui_core::SettingsTab::new("appearance", "外观")]);
+        let state = SettingsState::new(&model);
+        let content = context
+            .create_component(document(), Text::new("内容"))
+            .unwrap();
+        let page = context
+            .create_component(
+                document(),
+                SettingsPage::new(model, state).content(content.stable_id()),
+            )
+            .unwrap();
+        assert!(context.assemble_settings_page(page).unwrap());
+        let assembly = context
+            .read(page, |page| page.assembly.clone().unwrap())
+            .unwrap();
+        let scroll = assembly.scroll.unwrap();
+        let body = assembly.body.unwrap();
+        let title = assembly.title.unwrap();
+        assert_eq!(
+            context.world().node(page.stable_id()).unwrap().children,
+            vec![scroll]
+        );
+        assert_eq!(
+            context.world().node(scroll).unwrap().kind,
+            NodeKind::Element {
+                tag: "scroll".into(),
+            }
+        );
+        assert!(
+            context
+                .world()
+                .node_style(scroll)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert_eq!(context.world().node(scroll).unwrap().children, vec![body]);
+        assert_eq!(
+            context.world().node(body).unwrap().children,
+            vec![title, content.stable_id()]
+        );
+        assert_eq!(context.world().text(title), Some("外观"));
+        let title_style = context.world().node_style(title).unwrap();
+        assert_eq!(title_style.layout.font_size, Some(SETTINGS_PAGE_TITLE_SIZE));
+        assert_eq!(
+            title_style.layout.font_weight,
+            Some(SETTINGS_PAGE_TITLE_WEIGHT)
+        );
+        assert_eq!(title_style.foreground, Some(SemanticColorRole::Text));
+        assert_eq!(
+            context
+                .world()
+                .node_style(page.stable_id())
+                .unwrap()
+                .background,
+            Some(SemanticColorRole::Background)
+        );
+    }
+
+    #[test]
+    fn settings_page_full_page_fills_with_content_only() {
+        let mut context = AppContext::new();
+        let model =
+            settings_model([nana_ui_core::SettingsTab::new("workspace", "工作区").full_page(true)]);
+        let state = SettingsState::new(&model);
+        let content = context
+            .create_component(document(), Text::new("整页"))
+            .unwrap();
+        let page = context
+            .create_component(
+                document(),
+                SettingsPage::new(model, state).content(content.stable_id()),
+            )
+            .unwrap();
+        assert!(context.assemble_settings_page(page).unwrap());
+        let assembly = context
+            .read(page, |page| page.assembly.clone().unwrap())
+            .unwrap();
+        assert_eq!(
+            context.world().node(page.stable_id()).unwrap().children,
+            vec![content.stable_id()]
+        );
+        assert!(
+            assembly.title.is_none()
+                || !is_descendant(&context, page.stable_id(), assembly.title.unwrap())
+        );
+        if let Some(scroll) = assembly.scroll {
+            assert!(!is_descendant(&context, page.stable_id(), scroll));
+        }
+        assert!(!is_descendant(
+            &context,
+            content.stable_id(),
+            page.stable_id()
+        ));
+    }
+
+    #[test]
+    fn settings_page_hide_header_omits_title() {
+        let mut context = AppContext::new();
+        let model = settings_model([nana_ui_core::SettingsTab::new("appearance", "外观")])
+            .hide_header(true);
+        let state = SettingsState::new(&model);
+        let content = context
+            .create_component(document(), Text::new("内容"))
+            .unwrap();
+        let page = context
+            .create_component(
+                document(),
+                SettingsPage::new(model, state).content(content.stable_id()),
+            )
+            .unwrap();
+        assert!(context.assemble_settings_page(page).unwrap());
+        let assembly = context
+            .read(page, |page| page.assembly.clone().unwrap())
+            .unwrap();
+        let body = assembly.body.unwrap();
+        assert_eq!(
+            context.world().node(body).unwrap().children,
+            vec![content.stable_id()]
+        );
+        assert!(
+            assembly.title.is_none()
+                || !is_descendant(&context, page.stable_id(), assembly.title.unwrap())
+        );
+        assert_eq!(
+            context.world().node(page.stable_id()).unwrap().children,
+            vec![assembly.scroll.unwrap()]
         );
     }
 }

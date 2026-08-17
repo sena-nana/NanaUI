@@ -2104,8 +2104,16 @@ impl VueHost {
             };
             // Candidate frames still paint through Iced scrollable. Consume only
             // after catalog qualification, when Scene owns the offset/clip.
-            consumed |=
-                scrolled && nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME);
+            consumed |= scrolled && {
+                #[cfg(feature = "iced-view")]
+                {
+                    nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME)
+                }
+                #[cfg(not(feature = "iced-view"))]
+                {
+                    true
+                }
+            };
         }
         Ok(HostedInputResult {
             targeted: true,
@@ -3343,7 +3351,16 @@ mod tests {
         assert!(!result.default_prevented);
         assert_eq!(
             result.consumed,
-            nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME),
+            {
+                #[cfg(feature = "iced-view")]
+                {
+                    nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME)
+                }
+                #[cfg(not(feature = "iced-view"))]
+                {
+                    true
+                }
+            },
             "consume hosted wheel only when Scene owns SidebarFrame paint"
         );
 

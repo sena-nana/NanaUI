@@ -14,11 +14,18 @@ function resolveOpen(props) {
 }
 
 function normalizeOptions(options) {
-  return (options || []).map((option) => ({
-    value: option.value ?? option.key ?? option.label,
-    label: option.label ?? String(option.value ?? option.key ?? ""),
-    disabled: !!option.disabled,
-  }));
+  return (options || []).map((option) => {
+    const next = {
+      value: option.value ?? option.key ?? option.label,
+      label: option.label ?? String(option.value ?? option.key ?? ""),
+      disabled: !!option.disabled,
+    };
+    // Runtime reads native_props.options[].icon via Icon::parse_name.
+    if (typeof option.icon === "string" && option.icon) {
+      next.icon = option.icon;
+    }
+    return next;
+  });
 }
 
 export const NanaContextMenu = {
