@@ -1952,20 +1952,6 @@ thread_local! {
         std::cell::RefCell::new(None);
     static ACTIVE_FONT_SIZES: std::cell::RefCell<FontSizeContext> =
         std::cell::RefCell::new(FontSizeContext::default());
-    /// When building a CSS `auto` grid track item, nested Fill/% on the track's
-    /// **main axis** must size to content — iced would otherwise expand Fill to
-    /// the parent's max during Shrink measurement and collapse `1fr`.
-    /// `Some(true)` = column/block (demote height); `Some(false)` = row/inline
-    /// (demote width); `None` = off.
-    #[cfg(feature = "iced-view")]
-    static INTRINSIC_AUTO_TRACK_VERTICAL: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
-    /// Non-auto grid track item stretch: `height:auto`/`width:auto` items fill
-    /// the grid area so nested `height:100%` / `flex:1` see a definite CB.
-    /// `Some(true)` = stretch height (row tracks); `Some(false)` = stretch width.
-    #[cfg(feature = "iced-view")]
-    static GRID_ITEM_STRETCH_MAIN_VERTICAL: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
     /// Prefer `light-dark()` dark branch when true (document `data-theme=dark`).
     static ACTIVE_COLOR_SCHEME_DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -2011,57 +1997,6 @@ pub fn with_active_viewport<R>(viewport_w: f32, viewport_h: f32, f: impl FnOnce(
 /// Currently installed viewport for length resolve (`None` if unset).
 pub fn active_viewport() -> Option<(f32, f32)> {
     ACTIVE_VIEWPORT.with(|cell| *cell.borrow())
-}
-
-/// Run `f` while nested Fill/% on the auto-track main axis demote to intrinsic.
-/// `vertical = true` demotes height (column tracks); `false` demotes width.
-#[cfg(feature = "iced-view")]
-pub fn with_intrinsic_auto_track<R>(vertical: bool, f: impl FnOnce() -> R) -> R {
-    INTRINSIC_AUTO_TRACK_VERTICAL.with(|cell| {
-        let previous = cell.replace(Some(vertical));
-        let out = f();
-        cell.set(previous);
-        out
-    })
-}
-
-/// `Some(true)` demote height Fill; `Some(false)` demote width Fill; `None` off.
-#[cfg(feature = "iced-view")]
-pub fn intrinsic_auto_track_vertical() -> Option<bool> {
-    INTRINSIC_AUTO_TRACK_VERTICAL.with(|cell| cell.get())
-}
-
-/// Run `f` while `height:auto` / `width:auto` grid items stretch into their
-/// non-auto track (CSS default `align/justify-items: stretch`).
-#[cfg(feature = "iced-view")]
-pub fn with_grid_item_stretch_main<R>(vertical: bool, f: impl FnOnce() -> R) -> R {
-    GRID_ITEM_STRETCH_MAIN_VERTICAL.with(|cell| {
-        let previous = cell.replace(Some(vertical));
-        let out = f();
-        cell.set(previous);
-        out
-    })
-}
-
-/// Clear grid-item stretch for descendant builds.
-///
-/// Stretch applies only to the grid item itself (fill the track). Leaving the
-/// TLS set while recursively building children made nested `height:auto` rows
-/// (card headings) expand to the track height and crush sibling charts.
-#[cfg(feature = "iced-view")]
-pub fn with_grid_item_stretch_cleared<R>(f: impl FnOnce() -> R) -> R {
-    GRID_ITEM_STRETCH_MAIN_VERTICAL.with(|cell| {
-        let previous = cell.replace(None);
-        let out = f();
-        cell.set(previous);
-        out
-    })
-}
-
-/// `Some(true)` stretch height; `Some(false)` stretch width; `None` off.
-#[cfg(feature = "iced-view")]
-pub fn grid_item_stretch_main_vertical() -> Option<bool> {
-    GRID_ITEM_STRETCH_MAIN_VERTICAL.with(|cell| cell.get())
 }
 
 /// Install `em`/`rem` font-size context for the duration of `f`.

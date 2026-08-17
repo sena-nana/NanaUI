@@ -1419,29 +1419,6 @@ impl VueHost {
             );
             return Ok(changed);
         }
-        #[cfg(feature = "iced-view")]
-        if let BridgeEvent::MenuSearch { id, query } = &event {}
-        #[cfg(feature = "iced-view")]
-        if let BridgeEvent::MenuPath { id, path } = &event {}
-        #[cfg(feature = "iced-view")]
-        let mut menu_confirm_armed = false;
-        #[cfg(feature = "iced-view")]
-        if let BridgeEvent::SelectValue { id, value } = &event {
-            let is_menu = {
-                let bridge = self.bridge.lock().expect("vue bridge");
-                bridge
-                    .get(*id)
-                    .is_some_and(|w| w.kind == WidgetKind::ContextMenu)
-            };
-            let _ = is_menu;
-            let _ = value;
-        }
-        #[cfg(feature = "iced-view")]
-        if let BridgeEvent::Toggle { id, value: false } = &event {}
-        #[cfg(feature = "iced-view")]
-        if menu_confirm_armed {
-            return Ok(true);
-        }
         let committed_input = match &event {
             BridgeEvent::Input { id, value } => Some((*id, value.as_str())),
             _ => None,

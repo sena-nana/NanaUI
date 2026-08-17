@@ -672,14 +672,6 @@ pub(crate) fn labeled_value_caption(
         .unwrap_or_default()
 }
 
-pub(crate) fn validation_message_text(props: &WidgetProps) -> String {
-    if !props.hint.is_empty() {
-        props.hint.clone()
-    } else {
-        props.display_label().to_string()
-    }
-}
-
 pub(crate) fn class_has_compact(props: &WidgetProps) -> bool {
     props
         .class_names
