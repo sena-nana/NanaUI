@@ -43,7 +43,7 @@
 //!（inline→left/right，block→top/bottom）。`direction:rtl` /
 //! `writing-mode` 竖排 / 双向复杂链 **defer**（勿假翻轴）。
 //!
-//! iced `Length` / `Padding` / `Alignment` / spacer 转换见 `iced_app`
+//! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them.
 //!（feature `iced-view`）。
 
 pub use nana_ui_core::box_layout::{

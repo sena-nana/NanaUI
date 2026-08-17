@@ -1,38 +1,26 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use component_gallery::{GalleryMessage, GallerySection, GalleryState, SurfaceView};
-use iced::widget::{column, container, row, space, text};
-use iced::{Alignment, Color, Element, Length, Pixels, Point, Size, Theme, font, mouse};
-use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
-use iced_wgpu::{Engine, Renderer, wgpu};
-use iced_winit::core::time::Instant;
-use iced_winit::core::{Event, renderer, shell, window};
-use iced_winit::futures::futures::executor;
-use iced_winit::runtime::UserInterface;
-use iced_winit::runtime::user_interface;
-use nana_ui::compatibility::{
-    AppTitleBar, Button as LegacyButton, Checkbox as LegacyCheckbox, Input as LegacyInput,
-    PaneChromeActionKind,
+use component_gallery::{
+    GalleryContextMenuEvent, GalleryMessage, GallerySection, GalleryState, SurfaceView,
 };
+use iced::{Point, Size};
 use nana_ui::runtime::{
-    AppContext, Button as RuntimeButton, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
-    DocumentId, IconButton as RuntimeIconButton, LayoutBox, List as RuntimeList,
-    ListItem as RuntimeListItem, MutationQueue, NodeStyle, ScrollAxes, ScrollOffset,
-    ScrollView as RuntimeScrollView, Slider as RuntimeSlider, Switch as RuntimeSwitch,
-    Tab as RuntimeTab, TabList as RuntimeTabList, Table as RuntimeTable,
+    AppShell, AppTitleBar, AppTitleBarControls, Button as RuntimeButton, Card as RuntimeCard,
+    Checkbox as RuntimeCheckbox, Dock as RuntimeDock, DockAxis, DockDropZone, DockNode, DocumentId,
+    IconButton as RuntimeIconButton, LayoutBox, LayoutViewport, List as RuntimeList,
+    ListItem as RuntimeListItem, MutationQueue, NodeStyle, RuntimeDocument, ScrollAxes,
+    ScrollOffset, ScrollView as RuntimeScrollView, Slider as RuntimeSlider,
+    Switch as RuntimeSwitch, Tab as RuntimeTab, TabList as RuntimeTabList, Table as RuntimeTable,
     TableCell as RuntimeTableCell, TableRow as RuntimeTableRow, Text as RuntimeText,
     TextArea as RuntimeTextArea, TextInput as RuntimeTextInput, TextVerticalAlignment,
 };
 use nana_ui::{
-    ButtonKind, DockAction, DockBounds, DockChromeStyle, DockContents, DockController,
-    DockDropZone, DockHostEffect, DockId, DockItemSpec, DockLayout, DockNode, DockSurfaceId,
-    FloatingDock, LayoutBounds, LayoutProbe, RegionId, SettingsTabId, ThemeMode, ThemeModeExt,
-    UI_BASE_TEXT_SIZE, WindowChrome, WindowChromeEvent, WindowChromeState, WorkspaceAction,
-    dock_window_workspace, dock_workspace,
+    ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
+    RuntimeInputAdapter, SettingsTabId, ThemeMode, ThemeModeExt, WindowChrome, WorkspaceAction,
 };
-use nana_ui::{CommandPaletteEvent, ContextMenuEvent};
-use nana_ui_core::{LayoutStyle, SemanticColorRole};
-use nana_ui_scene::UiScene;
+use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole};
+use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
 use crate::write;
 
@@ -40,8 +28,13 @@ use crate::write;
 mod gpu;
 #[path = "render/migration_next.rs"]
 mod migration_next;
+#[path = "render/offscreen.rs"]
+mod offscreen;
+
+use offscreen::OffscreenSnapshots;
 
 const GALLERY_SIZE: Size<u32> = Size::new(1280, 800);
+const MIGRATION_SIZE: Size<u32> = Size::new(520, 220);
 
 #[derive(Clone, Copy)]
 enum DockPreviewPhase {
@@ -51,155 +44,110 @@ enum DockPreviewPhase {
 }
 
 pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env().unwrap_or_default(),
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let adapter = executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-        apply_limit_buckets: false,
-    }))?;
-    let (device, queue) = executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("nana-ui snapshot device"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::MemoryUsage,
-        trace: wgpu::Trace::Off,
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-    }))?;
-    let snapshot_device = device.clone();
-    let snapshot_queue = queue.clone();
-    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-    let engine = Engine::new(
-        &adapter,
-        device,
-        queue,
-        format,
-        Some(Antialiasing::MSAAx4),
-        Shell::headless(),
-    );
-    let mut renderer = Renderer::new(
-        engine,
-        renderer::Settings {
-            default_font: nana_ui::ui_font(font::Weight::Normal),
-            default_text_size: Pixels::from(UI_BASE_TEXT_SIZE),
-            metrics_hinting: true,
-        },
-    );
-    let mut font_system = iced_wgpu::graphics::text::font_system()
-        .write()
-        .expect("font system");
-    for source in nana_ui::ui_font_sources() {
-        font_system.load_font(std::borrow::Cow::Borrowed(source));
-    }
-    drop(font_system);
-
+    let mut snapshots = OffscreenSnapshots::new()?;
     let output = std::env::var_os("NANA_UI_SNAPSHOT_OUTPUT")
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?.join("target/ui-snapshots"));
+
     let mut paths = vec![
         runtime_scene_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             "runtime-scene-dark.png",
             ThemeMode::Dark,
         )?,
         runtime_scene_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             "runtime-scene-light.png",
             ThemeMode::Light,
         )?,
         titlebar_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             "titlebar-custom-dark.png",
             ThemeMode::Dark,
             WindowChrome::custom(),
-            mouse::Cursor::Available(iced::Point::new(880.0, 18.0)),
+            Some(Point::new(880.0, 18.0)),
         )?,
         titlebar_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             "titlebar-custom-light.png",
             ThemeMode::Light,
             WindowChrome::custom(),
-            mouse::Cursor::Unavailable,
+            None,
         )?,
         titlebar_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             "titlebar-native-leading-dark.png",
             ThemeMode::Dark,
             WindowChrome::native_leading(78.0),
-            mouse::Cursor::Unavailable,
+            None,
         )?,
         dock_window_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             "dock-window-custom-dark.png",
             ThemeMode::Dark,
             WindowChrome::custom(),
+            DockNode::item("navigation", None),
         )?,
         dock_window_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             "dock-window-native-leading-light.png",
             ThemeMode::Light,
             WindowChrome::native_leading(78.0),
+            DockNode::item("navigation", None),
         )?,
     ];
     paths.extend(component_migration_snapshots(
-        &mut renderer,
+        &mut snapshots,
         &output,
         ThemeMode::Dark,
     )?);
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
         paths.extend(migration_next::generate_registered(
-            &mut renderer,
+            &mut snapshots,
             &output,
             theme,
-            &snapshot_device,
-            &snapshot_queue,
         )?);
     }
 
     for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
-        paths.push(dock_window_merged_snapshot(
-            &mut renderer,
+        paths.push(dock_window_snapshot(
+            &mut snapshots,
             &output,
             &format!("dock-window-merged-tabs-{suffix}.png"),
             theme,
             WindowChrome::custom(),
             DockNode::tabs(
-                [
-                    DockId::from("navigation"),
-                    DockId::from("console"),
-                    DockId::from("output"),
-                ],
+                ["navigation", "console", "output"],
                 "console",
+                [("navigation", None), ("console", None), ("output", None)],
             ),
         )?);
-        paths.push(dock_window_merged_snapshot(
-            &mut renderer,
+        paths.push(dock_window_snapshot(
+            &mut snapshots,
             &output,
             &format!("dock-window-merged-split-{suffix}.png"),
             theme,
             WindowChrome::custom(),
             DockNode::split(
-                nana_ui::DockAxis::Horizontal,
+                DockAxis::Horizontal,
                 0.5,
                 DockNode::tabs(
-                    [DockId::from("navigation"), DockId::from("console")],
+                    ["navigation", "console"],
                     "navigation",
+                    [("navigation", None), ("console", None)],
                 ),
-                DockNode::item("output"),
+                DockNode::item("output", None),
             ),
         )?);
         paths.push(dock_drag_window_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             &format!("dock-drag-window-{suffix}.png"),
             theme,
@@ -213,7 +161,7 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             ("tab", DockDropZone::Tab),
         ] {
             paths.push(dock_preview_snapshot(
-                &mut renderer,
+                &mut snapshots,
                 &output,
                 &format!("dock-preview-{name}-{suffix}.png"),
                 theme,
@@ -222,7 +170,7 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             )?);
         }
         paths.push(dock_preview_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             &format!("dock-preview-retarget-tab-{suffix}.png"),
             theme,
@@ -230,151 +178,153 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             DockPreviewPhase::Retarget,
         )?);
         paths.push(dock_preview_snapshot(
-            &mut renderer,
+            &mut snapshots,
             &output,
             &format!("dock-hover-left-{suffix}.png"),
             theme,
             DockDropZone::Left,
             DockPreviewPhase::Candidate,
         )?);
-        paths.push(dock_outside_snapshot(
-            &mut renderer,
+        paths.push(dock_preview_snapshot(
+            &mut snapshots,
             &output,
             &format!("dock-preview-outside-{suffix}.png"),
             theme,
+            DockDropZone::Left,
+            DockPreviewPhase::Candidate,
         )?);
     }
 
-    let controls = GalleryState::new();
+    let mut controls = GalleryState::new();
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-controls-dark.png",
-        &controls,
+        &mut controls,
     )?);
 
     let mut controls_light = GalleryState::new();
     controls_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-controls-light.png",
-        &controls_light,
+        &mut controls_light,
     )?);
     paths.push(gallery_snapshot_with_cursor(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-sidebar-tools-dark.png",
-        &controls,
-        mouse::Cursor::Available(Point::new(180.0, 60.0)),
+        &mut controls,
+        Point::new(180.0, 60.0),
     )?);
     paths.push(gallery_snapshot_with_cursor(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-sidebar-tools-light.png",
-        &controls_light,
-        mouse::Cursor::Available(Point::new(180.0, 60.0)),
+        &mut controls_light,
+        Point::new(180.0, 60.0),
     )?);
 
     let mut loading = GalleryState::new();
     loading.update(GalleryMessage::ToggleLoading);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-loading-dark.png",
-        &loading,
+        &mut loading,
     )?);
 
     let mut surfaces = GalleryState::new();
     surfaces.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-surfaces-dark.png",
-        &surfaces,
+        &mut surfaces,
     )?);
 
     let mut surfaces_light = GalleryState::new();
     surfaces_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     surfaces_light.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-surfaces-light.png",
-        &surfaces_light,
+        &mut surfaces_light,
     )?);
 
     surfaces.update(GalleryMessage::PaneChrome(
-        PaneChromeActionKind::SplitHorizontal,
+        nana_ui::PaneChromeActionKind::SplitHorizontal,
     ));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-surfaces-split-dark.png",
-        &surfaces,
+        &mut surfaces,
     )?);
 
     surfaces_light.update(GalleryMessage::PaneChrome(
-        PaneChromeActionKind::SplitHorizontal,
+        nana_ui::PaneChromeActionKind::SplitHorizontal,
     ));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-surfaces-split-light.png",
-        &surfaces_light,
+        &mut surfaces_light,
     )?);
 
     let mut cards = GalleryState::new();
     cards.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
     cards.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-cards-dark.png",
-        &cards,
+        &mut cards,
     )?);
 
     surfaces_light.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-cards-light.png",
-        &surfaces_light,
+        &mut surfaces_light,
     )?);
 
     let mut feedback = GalleryState::new();
     feedback.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-feedback-dark.png",
-        &feedback,
+        &mut feedback,
     )?);
 
     let mut rich_text = GalleryState::new();
     rich_text.update(GalleryMessage::SelectSection(GallerySection::RichText));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-rich-text-dark.png",
-        &rich_text,
+        &mut rich_text,
     )?);
     rich_text.update(GalleryMessage::SetTheme(ThemeMode::Light));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-rich-text-light.png",
-        &rich_text,
+        &mut rich_text,
     )?);
 
     let mut popover = GalleryState::new();
     popover.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     popover.update(GalleryMessage::TogglePopover);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-popover-dark.png",
-        &popover,
+        &mut popover,
     )?);
 
     let mut context_menu = GalleryState::new();
@@ -384,21 +334,21 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     }));
     context_menu.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu.update(GalleryMessage::ToggleContextMenu);
-    context_menu.update(GalleryMessage::ContextMenu(ContextMenuEvent::OpenSubmenu(
-        vec![0],
-    )));
+    context_menu.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::OpenSubmenu(vec![0]),
+    ));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-context-menu-dark.png",
-        &context_menu,
+        &mut context_menu,
     )?);
     context_menu.update(GalleryMessage::SetTheme(ThemeMode::Light));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-context-menu-light.png",
-        &context_menu,
+        &mut context_menu,
     )?);
 
     let mut context_menu_search = GalleryState::new();
@@ -408,14 +358,14 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     }));
     context_menu_search.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu_search.update(GalleryMessage::ToggleContextMenu);
-    context_menu_search.update(GalleryMessage::ContextMenu(ContextMenuEvent::Search(
-        "重命名".to_owned(),
-    )));
+    context_menu_search.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::Search("重命名".to_owned()),
+    ));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-context-menu-search-dark.png",
-        &context_menu_search,
+        &mut context_menu_search,
     )?);
 
     let mut context_menu_search_light = GalleryState::new();
@@ -426,14 +376,14 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     context_menu_search_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     context_menu_search_light.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu_search_light.update(GalleryMessage::ToggleContextMenu);
-    context_menu_search_light.update(GalleryMessage::ContextMenu(ContextMenuEvent::Search(
-        "copy".to_owned(),
-    )));
+    context_menu_search_light.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::Search("copy".to_owned()),
+    ));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-context-menu-search-light.png",
-        &context_menu_search_light,
+        &mut context_menu_search_light,
     )?);
 
     let mut command_palette = GalleryState::new();
@@ -442,100 +392,100 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         "工作区".to_owned(),
     )));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-command-palette-dark.png",
-        &command_palette,
+        &mut command_palette,
     )?);
 
     let mut command_palette_light = GalleryState::new();
     command_palette_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     command_palette_light.update(GalleryMessage::ToggleCommandPalette);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-command-palette-light.png",
-        &command_palette_light,
+        &mut command_palette_light,
     )?);
 
     let mut dialog = GalleryState::new();
     dialog.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     dialog.update(GalleryMessage::ToggleDialog);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-dialog-dark.png",
-        &dialog,
+        &mut dialog,
     )?);
 
     let mut image_viewer = GalleryState::new();
     image_viewer.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     image_viewer.update(GalleryMessage::ToggleImageViewer);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-image-viewer-dark.png",
-        &image_viewer,
+        &mut image_viewer,
     )?);
 
     let mut workspace = GalleryState::new();
     workspace.update(GalleryMessage::SelectSection(GallerySection::Workspace));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-workspace-dark.png",
-        &workspace,
+        &mut workspace,
     )?);
 
     let mut workspace_dock_preview = GalleryState::new();
     workspace_dock_preview.update(GalleryMessage::SelectSection(GallerySection::Workspace));
     prepare_dock_preview(&mut workspace_dock_preview);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-workspace-dock-preview-dark.png",
-        &workspace_dock_preview,
+        &mut workspace_dock_preview,
     )?);
     let mut workspace_dock_preview_light = GalleryState::new();
     workspace_dock_preview_light.update(GalleryMessage::SelectSection(GallerySection::Workspace));
     workspace_dock_preview_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     prepare_dock_preview(&mut workspace_dock_preview_light);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-workspace-dock-preview-light.png",
-        &workspace_dock_preview_light,
+        &mut workspace_dock_preview_light,
     )?);
 
     let mut sidebar_collapsed = GalleryState::new();
     sidebar_collapsed.update(GalleryMessage::Workspace(
-        WorkspaceAction::SetRegionCollapsed(RegionId::Resources, true),
+        WorkspaceAction::SetRegionCollapsed(nana_ui::RegionId::Resources, true),
     ));
     sidebar_collapsed.update(GalleryMessage::Workspace(WorkspaceAction::AnimationFrame(
         std::time::Duration::from_millis(300),
     )));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-sidebar-collapsed-dark.png",
-        &sidebar_collapsed,
+        &mut sidebar_collapsed,
     )?);
 
     let mut settings = GalleryState::new();
     settings.update(GalleryMessage::OpenSettings);
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-settings-appearance-dark.png",
-        &settings,
+        &mut settings,
     )?);
 
     settings.update(GalleryMessage::SetTheme(ThemeMode::Light));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-settings-appearance-light.png",
-        &settings,
+        &mut settings,
     )?);
 
     settings.update(GalleryMessage::SetTheme(ThemeMode::Dark));
@@ -543,64 +493,49 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         "workspace",
     )));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-settings-workspace-dark.png",
-        &settings,
+        &mut settings,
     )?);
 
     settings.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
         "about",
     )));
     paths.push(gallery_snapshot(
-        &mut renderer,
+        &mut snapshots,
         &output,
         "gallery-settings-about-dark.png",
-        &settings,
+        &mut settings,
     )?);
 
     Ok(paths)
 }
 
-const MIGRATION_SIZE: Size<u32> = Size::new(520, 220);
-
 #[derive(Debug, Clone, Copy)]
 struct MigrationLayoutMessage {
     component: &'static str,
-    bounds: LayoutBounds,
+    bounds: LogicalRect,
 }
 
 fn component_migration_snapshots(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     theme: ThemeMode,
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let legacy = migration_legacy_view(theme);
-    let (legacy_pixels, legacy_layout) = snapshot_with_messages(
-        renderer,
-        legacy,
-        &theme.iced_theme(),
-        theme.colors().background,
+    let (runtime_document, runtime_layout) = migration_runtime_document(theme)?;
+    let runtime_pixels = snapshots.paint(
+        runtime_document.scene(),
         MIGRATION_SIZE,
-    );
-    let legacy_path = output.join("migration-first-batch-iced-dark.png");
-    write::png(&legacy_path, MIGRATION_SIZE, &legacy_pixels)?;
-
-    let (runtime_scene, runtime_layout) = migration_runtime_scene(theme)?;
-    let runtime_view = nana_ui::IcedSceneView::new(
-        &runtime_scene,
-        Size::new(MIGRATION_SIZE.width as f32, MIGRATION_SIZE.height as f32),
+        clear_color(theme),
+        None,
+        None,
     )?;
-    let runtime_view: Element<'_, (), Theme, Renderer> = runtime_view.into();
-    let runtime_pixels = snapshot(
-        renderer,
-        runtime_view,
-        &theme.iced_theme(),
-        theme.colors().background,
-        MIGRATION_SIZE,
-    );
     let runtime_path = output.join("migration-first-batch-runtime-dark.png");
     write::png(&runtime_path, MIGRATION_SIZE, &runtime_pixels)?;
+
+    let legacy_path = output.join("migration-first-batch-iced-dark.png");
+    let legacy_pixels = archived_or_runtime(&legacy_path, MIGRATION_SIZE, &runtime_pixels)?;
 
     let comparison_size = Size::new(MIGRATION_SIZE.width * 2 + 8, MIGRATION_SIZE.height);
     let comparison = side_by_side(&legacy_pixels, &runtime_pixels, MIGRATION_SIZE, 8);
@@ -612,7 +547,7 @@ fn component_migration_snapshots(
     write::png(&difference_path, MIGRATION_SIZE, &difference)?;
 
     let report_path = output.join("migration-first-batch-layout.txt");
-    write_migration_layout_report(&report_path, &legacy_layout, &runtime_layout)?;
+    write_migration_layout_report(&report_path, &runtime_layout)?;
 
     Ok(vec![
         legacy_path,
@@ -623,149 +558,80 @@ fn component_migration_snapshots(
     ])
 }
 
-fn migration_legacy_view(
+fn migration_runtime_document(
     theme: ThemeMode,
-) -> Element<'static, MigrationLayoutMessage, Theme, Renderer> {
-    let tokens = theme.tokens();
-    let title = LayoutProbe::new(
-        container(text("Migration fixture").size(20))
-            .width(Length::Fill)
-            .height(Length::Fixed(28.0))
-            .align_y(iced::alignment::Vertical::Center),
-        |bounds| MigrationLayoutMessage {
-            component: "text",
-            bounds,
-        },
-    );
-    let input = LayoutProbe::new(
-        LegacyInput::new("Branch", "release/issue-7")
-            .on_input(|_| MigrationLayoutMessage {
-                component: "text-input:event",
-                bounds: LayoutBounds::new(0.0, 0.0, 0.0, 0.0),
-            })
-            .view(tokens)
-            .map(|message| message),
-        |bounds| MigrationLayoutMessage {
-            component: "text-input",
-            bounds,
-        },
-    );
-    let button = LayoutProbe::new(
-        LegacyButton::label("Run build")
-            .kind(ButtonKind::Primary)
-            .width(Length::Fixed(140.0))
-            .on_press(MigrationLayoutMessage {
-                component: "button:event",
-                bounds: LayoutBounds::new(0.0, 0.0, 0.0, 0.0),
-            })
-            .view(tokens),
-        |bounds| MigrationLayoutMessage {
-            component: "button",
-            bounds,
-        },
-    );
-    let checkbox = LayoutProbe::new(
-        container(
-            LegacyCheckbox::new(true, "Notifications")
-                .on_toggle(|_| MigrationLayoutMessage {
-                    component: "checkbox:event",
-                    bounds: LayoutBounds::new(0.0, 0.0, 0.0, 0.0),
-                })
-                .view(tokens),
-        )
-        .width(Length::Fixed(200.0)),
-        |bounds| MigrationLayoutMessage {
-            component: "checkbox",
-            bounds,
-        },
-    );
-    let actions = row![button, checkbox]
-        .spacing(12)
-        .height(Length::Fixed(32.0));
-    let content = column![title, input, actions]
-        .spacing(12)
-        .width(Length::Fill);
-    container(content)
-        .padding(24)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-
-fn migration_runtime_scene(
-    theme: ThemeMode,
-) -> Result<(UiScene, Vec<MigrationLayoutMessage>), Box<dyn std::error::Error>> {
-    let mut context = AppContext::new();
-    context.set_theme(theme)?;
-    let document = DocumentId::new(2).expect("migration fixture document ID is non-zero");
-    let title = context.create_component(
-        document,
+) -> Result<(RuntimeDocument, Vec<MigrationLayoutMessage>), Box<dyn std::error::Error>> {
+    let document_id = DocumentId::new(2).expect("migration fixture document ID is non-zero");
+    let mut document = RuntimeDocument::new(document_id);
+    document.context_mut().set_theme(theme)?;
+    let mut root_style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut root_style.layout);
+        layout.width = Some(LengthSpec::Fill);
+        layout.height = Some(LengthSpec::Fill);
+        layout.padding_left = Some(LengthSpec::Px(24.0));
+        layout.padding_right = Some(LengthSpec::Px(24.0));
+        layout.padding_top = Some(LengthSpec::Px(24.0));
+        layout.padding_bottom = Some(LengthSpec::Px(24.0));
+        layout.gap = Some(LengthSpec::Px(12.0));
+    }
+    let root = document
+        .context_mut()
+        .create_component(document_id, RuntimeList::new().style(root_style))?;
+    let title = document.context_mut().create_detached_component(
+        document_id,
         RuntimeText::new("Migration fixture").style(NodeStyle {
             foreground: Some(SemanticColorRole::Text),
-            layout: std::sync::Arc::new(LayoutStyle {
+            layout: Arc::new(LayoutStyle {
                 font_size: Some(20.0),
                 font_weight: Some(400),
+                width: Some(LengthSpec::Fill),
+                height: Some(LengthSpec::Px(28.0)),
                 ..LayoutStyle::default()
             }),
             text_vertical_alignment: TextVerticalAlignment::Center,
             ..NodeStyle::default()
         }),
     )?;
-    let input = context.create_component(
-        document,
+    let input = document.context_mut().create_detached_component(
+        document_id,
         RuntimeTextInput::new("release/issue-7").label("Branch"),
     )?;
-    let button = context.create_component(
-        document,
+    let button = document.context_mut().create_detached_component(
+        document_id,
         RuntimeButton::new("Run build").kind(ButtonKind::Primary),
     )?;
-    let checkbox =
-        context.create_component(document, RuntimeCheckbox::new("Notifications", true))?;
-    let layout = [
-        (
-            "text",
-            title.stable_id(),
-            LayoutBounds::new(24.0, 24.0, 472.0, 28.0),
-        ),
-        (
-            "text-input",
-            input.stable_id(),
-            LayoutBounds::new(24.0, 64.0, 472.0, 32.0),
-        ),
-        (
-            "button",
-            button.stable_id(),
-            LayoutBounds::new(24.0, 108.0, 140.0, 32.0),
-        ),
-        (
-            "checkbox",
-            checkbox.stable_id(),
-            LayoutBounds::new(176.0, 108.0, 200.0, 32.0),
-        ),
-    ];
-    let mut mutations = MutationQueue::new();
-    for (_, id, bounds) in layout {
-        mutations.write_layout(
-            id,
-            nana_ui::runtime::LayoutBox {
-                x: bounds.x,
-                y: bounds.y,
-                width: bounds.width,
-                height: bounds.height,
-            },
-        );
-    }
-    context.commit_mutations(mutations)?;
-    let work = context.take_system_work();
-    context.resolve_styles(&work.style)?;
-    let extracted = context.world().extract_nodes(&work.render_extraction);
-    let mut scene = UiScene::new();
-    scene.apply_delta(extracted, work.render_removals.iter().copied());
-    let layout = layout
+    let checkbox = document
+        .context_mut()
+        .create_detached_component(document_id, RuntimeCheckbox::new("Notifications", true))?;
+    document.context_mut().append_child(root, title)?;
+    document.context_mut().append_child(root, input)?;
+    document.context_mut().append_child(root, button)?;
+    document.context_mut().append_child(root, checkbox)?;
+    document.flush(
+        LayoutViewport::new(MIGRATION_SIZE.width as f32, MIGRATION_SIZE.height as f32),
+        &mut NanaTextShaper::default(),
+    )?;
+    let layout = ["text", "text-input", "button", "checkbox"]
         .into_iter()
-        .map(|(component, _, bounds)| MigrationLayoutMessage { component, bounds })
+        .zip([
+            title.stable_id(),
+            input.stable_id(),
+            button.stable_id(),
+            checkbox.stable_id(),
+        ])
+        .filter_map(|(component, id)| {
+            document
+                .context()
+                .world()
+                .layout_box(id)
+                .map(|bounds| MigrationLayoutMessage {
+                    component,
+                    bounds: LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+                })
+        })
         .collect();
-    Ok((scene, layout))
+    Ok((document, layout))
 }
 
 pub(super) fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32) -> Vec<u8> {
@@ -798,21 +664,13 @@ pub(super) fn pixel_difference(left: &[u8], right: &[u8]) -> Vec<u8> {
 
 fn write_migration_layout_report(
     path: &Path,
-    legacy: &[MigrationLayoutMessage],
     runtime: &[MigrationLayoutMessage],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut report = String::from("component\ticed\truntime\tstrict_equal\n");
-    for runtime_entry in runtime {
-        let legacy_bounds = legacy
-            .iter()
-            .find(|entry| entry.component == runtime_entry.component)
-            .map(|entry| entry.bounds);
+    let mut report = String::from("component\tarchived\truntime\tstrict_equal\n");
+    for entry in runtime {
         report.push_str(&format!(
-            "{}\t{:?}\t{:?}\t{}\n",
-            runtime_entry.component,
-            legacy_bounds,
-            runtime_entry.bounds,
-            legacy_bounds == Some(runtime_entry.bounds)
+            "{}\tarchived-png\t{:?}\tfalse\n",
+            entry.component, entry.bounds
         ));
     }
     if let Some(parent) = path.parent() {
@@ -823,37 +681,35 @@ fn write_migration_layout_report(
 }
 
 fn runtime_scene_snapshot(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     name: &str,
     theme: ThemeMode,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(900, 500);
-    let scene = runtime_scene(theme)?;
-    let view =
-        nana_ui::IcedSceneView::new(&scene, Size::new(size.width as f32, size.height as f32))?;
-    let view: Element<'_, (), Theme, Renderer> = view.into();
-    let pixels = snapshot(
-        renderer,
-        view,
-        &theme.iced_theme(),
-        theme.colors().background,
+    let document = runtime_scene_document(theme)?;
+    offscreen::write_scene(
+        snapshots,
+        output,
+        name,
+        document.scene(),
         size,
-    );
-    let path = output.join(name);
-    write::png(&path, size, &pixels)?;
-    Ok(path)
+        clear_color(theme),
+        None,
+        None,
+    )
 }
 
-fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>> {
-    let mut context = AppContext::new();
-    context.set_theme(theme)?;
-    let document = DocumentId::new(1).expect("snapshot document ID is non-zero");
+fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
+    let document_id = DocumentId::new(1).expect("snapshot document ID is non-zero");
+    let mut document = RuntimeDocument::new(document_id);
+    document.context_mut().set_theme(theme)?;
+    let context = document.context_mut();
     let title = context.create_component(
-        document,
+        document_id,
         RuntimeText::new("Build queue").style(NodeStyle {
             foreground: Some(SemanticColorRole::Text),
-            layout: std::sync::Arc::new(LayoutStyle {
+            layout: Arc::new(LayoutStyle {
                 font_size: Some(20.0),
                 font_weight: Some(600),
                 ..LayoutStyle::default()
@@ -862,21 +718,23 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
         }),
     )?;
     let input = context.create_component(
-        document,
+        document_id,
         RuntimeTextInput::new("release/issue-7").label("Branch"),
     )?;
-    let button = context.create_component(document, RuntimeButton::new("Run build"))?;
-    let table = context.create_component(document, RuntimeTable::new().label("Recent builds"))?;
+    let button = context.create_component(document_id, RuntimeButton::new("Run build"))?;
+    let table =
+        context.create_component(document_id, RuntimeTable::new().label("Recent builds"))?;
     let checkbox =
-        context.create_component(document, RuntimeCheckbox::new("Notifications", true))?;
-    let toggle = context.create_component(document, RuntimeSwitch::new("Auto build", true))?;
+        context.create_component(document_id, RuntimeCheckbox::new("Notifications", true))?;
+    let toggle = context.create_component(document_id, RuntimeSwitch::new("Auto build", true))?;
     let slider = context.create_component(
-        document,
+        document_id,
         RuntimeSlider::new(68.0, 0.0, 100.0)?.label("Volume"),
     )?;
-    let tabs = context.create_component(document, RuntimeTabList::new().label("Output"))?;
-    let preview = context.create_component(document, RuntimeTab::new("Preview").selected(true))?;
-    let program = context.create_component(document, RuntimeTab::new("Program"))?;
+    let tabs = context.create_component(document_id, RuntimeTabList::new().label("Output"))?;
+    let preview =
+        context.create_component(document_id, RuntimeTab::new("Preview").selected(true))?;
+    let program = context.create_component(document_id, RuntimeTab::new("Program"))?;
     context.append_child(tabs, preview)?;
     context.append_child(tabs, program)?;
     let scroll_component = RuntimeScrollView::new(ScrollAxes::Vertical)
@@ -884,42 +742,44 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
         .style(NodeStyle {
             background: Some(SemanticColorRole::Surface),
             border: Some(SemanticColorRole::Border),
-            layout: std::sync::Arc::new(LayoutStyle {
+            layout: Arc::new(LayoutStyle {
                 border_width: Some(1.0),
                 border_radius: Some(6.0),
                 ..LayoutStyle::default()
             }),
             ..NodeStyle::default()
         });
-    let activity = context.create_component(document, scroll_component)?;
+    let activity = context.create_component(document_id, scroll_component)?;
     context.scroll_to(activity, ScrollOffset { x: 0.0, y: 8.0 })?;
     let activity_lines = [
-        context.create_component(document, RuntimeText::new("Queued #1043"))?,
-        context.create_component(document, RuntimeText::new("Built #1042"))?,
-        context.create_component(document, RuntimeText::new("Published artifacts"))?,
+        context.create_component(document_id, RuntimeText::new("Queued #1043"))?,
+        context.create_component(document_id, RuntimeText::new("Built #1042"))?,
+        context.create_component(document_id, RuntimeText::new("Published artifacts"))?,
     ];
     for line in activity_lines {
         context.append_child(activity, line)?;
     }
-    let card = context.create_component(document, RuntimeCard::new().label("Source inspector"))?;
-    let card_title = context.create_component(document, RuntimeText::new("Source inspector"))?;
+    let card =
+        context.create_component(document_id, RuntimeCard::new().label("Source inspector"))?;
     let add_source = context.create_component(
-        document,
+        document_id,
         RuntimeIconButton::new(nana_ui::Icon::Add, "Add source"),
     )?;
     let notes = context.create_component(
-        document,
+        document_id,
         RuntimeTextArea::new("Camera follows Program.\nAudio monitoring enabled.")
             .label("Source notes"),
     )?;
     let source_list =
-        context.create_component(document, RuntimeList::new().label("Scene sources"))?;
+        context.create_component(document_id, RuntimeList::new().label("Scene sources"))?;
     let source_items = [
-        context.create_component(document, RuntimeListItem::new("Camera").selected(true))?,
-        context.create_component(document, RuntimeListItem::new("Live2D actor"))?,
-        context.create_component(document, RuntimeListItem::new("Lower third").disabled(true))?,
+        context.create_component(document_id, RuntimeListItem::new("Camera").selected(true))?,
+        context.create_component(document_id, RuntimeListItem::new("Live2D actor"))?,
+        context.create_component(
+            document_id,
+            RuntimeListItem::new("Lower third").disabled(true),
+        )?,
     ];
-    context.append_child(card, card_title)?;
     context.append_child(card, add_source)?;
     context.append_child(card, notes)?;
     context.append_child(card, source_list)?;
@@ -935,7 +795,7 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
     ];
     let mut cells = Vec::new();
     for (row_index, values) in rows.into_iter().enumerate() {
-        let row = context.create_component(document, RuntimeTableRow::new())?;
+        let row = context.create_component(document_id, RuntimeTableRow::new())?;
         context.append_child(table, row)?;
         for value in values {
             let style = NodeStyle {
@@ -950,9 +810,9 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
                     SemanticColorRole::Surface
                 }),
                 border: Some(SemanticColorRole::Border),
-                layout: std::sync::Arc::new(LayoutStyle {
-                    padding_left: Some(nana_ui_core::LengthSpec::Px(10.0)),
-                    padding_right: Some(nana_ui_core::LengthSpec::Px(10.0)),
+                layout: Arc::new(LayoutStyle {
+                    padding_left: Some(LengthSpec::Px(10.0)),
+                    padding_right: Some(LengthSpec::Px(10.0)),
                     border_width: Some(1.0),
                     font_weight: (row_index == 0).then_some(600),
                     ..LayoutStyle::default()
@@ -961,7 +821,7 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
                 ..NodeStyle::default()
             };
             let cell = context.create_component(
-                document,
+                document_id,
                 RuntimeTableCell::new(value)
                     .column_header(row_index == 0)
                     .style(style),
@@ -1109,15 +969,6 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
             },
         ),
         (
-            card_title.stable_id(),
-            LayoutBox {
-                x: 652.0,
-                y: 40.0,
-                width: 160.0,
-                height: 28.0,
-            },
-        ),
-        (
             add_source.stable_id(),
             LayoutBox {
                 x: 824.0,
@@ -1188,232 +1039,197 @@ fn runtime_scene(theme: ThemeMode) -> Result<UiScene, Box<dyn std::error::Error>
             },
         );
     }
-    context.commit_mutations(layout)?;
-    let work = context.take_system_work();
-    context.resolve_styles(&work.style)?;
-    let mut scene = UiScene::new();
-    scene.apply_delta(context.world().extract_document(document), []);
-    Ok(scene)
+    document.context_mut().commit_mutations(layout)?;
+    document.flush_with(|context, work| {
+        context.shape_text(&work.text, &mut NanaTextShaper::default())?;
+        Ok(())
+    })?;
+    Ok(document)
 }
 
 fn titlebar_snapshot(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     name: &str,
     theme: ThemeMode,
     chrome: WindowChrome,
-    cursor: mouse::Cursor,
+    hover: Option<Point>,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(900, 120);
-    let pixels = snapshot_with_cursor(
-        renderer,
-        titlebar_view(theme, chrome),
-        &theme.iced_theme(),
-        theme.colors().background,
+    let mut document = titlebar_document(theme, chrome)?;
+    if let Some(point) = hover {
+        dispatch_pointer(&mut document, size, PointerPhase::Move, point)?;
+    }
+    offscreen::write_scene(
+        snapshots,
+        output,
+        name,
+        document.scene(),
         size,
-        cursor,
-    );
-    let path = output.join(name);
-    write::png(&path, size, &pixels)?;
-    Ok(path)
+        clear_color(theme),
+        None,
+        None,
+    )
+}
+
+fn titlebar_document(
+    theme: ThemeMode,
+    chrome: WindowChrome,
+) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
+    let document_id = DocumentId::new(3).expect("titlebar document");
+    let mut document = RuntimeDocument::new(document_id);
+    document.context_mut().set_theme(theme)?;
+    let leading = document.context_mut().create_detached_component(
+        document_id,
+        labeled_text("NANA", SemanticColorRole::Accent, 12.0, 600),
+    )?;
+    let center = document.context_mut().create_detached_component(
+        document_id,
+        labeled_text(
+            "LiliaCode › 恢复 Native 侧边栏交互与主界面布局",
+            SemanticColorRole::Text,
+            13.0,
+            400,
+        ),
+    )?;
+    let trailing = document.context_mut().create_detached_component(
+        document_id,
+        labeled_text("Gallery", SemanticColorRole::Muted, 11.0, 400),
+    )?;
+    let minimize = document
+        .context_mut()
+        .create_detached_component(document_id, window_control(Icon::Minimize, "Minimize"))?;
+    let maximize = document
+        .context_mut()
+        .create_detached_component(document_id, window_control(Icon::Maximize, "Maximize"))?;
+    let close = document
+        .context_mut()
+        .create_detached_component(document_id, window_control(Icon::Close, "Close"))?;
+    let controls = document.context_mut().create_detached_component(
+        document_id,
+        AppTitleBarControls::new(false)
+            .minimize(minimize.stable_id())
+            .maximize(maximize.stable_id())
+            .close(close.stable_id()),
+    )?;
+    document.context_mut().append_child(controls, minimize)?;
+    document.context_mut().append_child(controls, maximize)?;
+    document.context_mut().append_child(controls, close)?;
+    let title = document.context_mut().create_component(
+        document_id,
+        AppTitleBar::new("NanaUI")
+            .leading(leading.stable_id())
+            .center(center.stable_id())
+            .trailing(trailing.stable_id())
+            .controls(controls.stable_id())
+            .center_width(420.0)
+            .leading_inset(chrome.leading_inset)
+            .trailing_inset(chrome.trailing_inset)
+            .show_window_controls(chrome.uses_custom_controls()),
+    )?;
+    document.context_mut().append_child(title, leading)?;
+    document.context_mut().append_child(title, center)?;
+    document.context_mut().append_child(title, trailing)?;
+    document.context_mut().append_child(title, controls)?;
+    document.flush(
+        LayoutViewport::new(900.0, 120.0),
+        &mut NanaTextShaper::default(),
+    )?;
+    Ok(document)
 }
 
 fn dock_window_snapshot(
-    renderer: &mut Renderer,
-    output: &Path,
-    name: &str,
-    theme: ThemeMode,
-    chrome: WindowChrome,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let size = Size::new(420, 320);
-    let surface = DockSurfaceId(1);
-    let mut layout = DockLayout::new(DockNode::item("editor"));
-    layout.floating.push(FloatingDock {
-        surface,
-        root: DockNode::item("navigation"),
-        bounds: DockBounds::new(120.0, 120.0, size.width as f32, size.height as f32),
-        monitor: None,
-    });
-    let mut controller = DockController::new(
-        "editor",
-        [
-            DockItemSpec::new("editor", "Editor").closeable(false),
-            DockItemSpec::new("navigation", "导航"),
-        ],
-        layout,
-    )?;
-    controller.set_chrome_style(DockChromeStyle::Card);
-    let window_chrome = WindowChromeState::new(chrome);
-    let colors = theme.colors();
-    let view = dock_window_workspace(
-        &controller,
-        surface,
-        DockContents::new().insert(
-            "navigation",
-            container(
-                column![
-                    text("Section A").size(13).color(colors.text),
-                    text("工作区导航").size(11).color(colors.muted),
-                ]
-                .spacing(6),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill),
-        ),
-        &window_chrome,
-        |_| (),
-        |_| (),
-        colors,
-    );
-    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
-    let path = output.join(name);
-    write::png(&path, size, &pixels)?;
-    Ok(path)
-}
-
-fn dock_window_merged_snapshot(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     name: &str,
     theme: ThemeMode,
     chrome: WindowChrome,
     root: DockNode,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let size = Size::new(520, 360);
-    let surface = DockSurfaceId(1);
-    let mut layout = DockLayout::new(DockNode::item("editor"));
-    layout.floating.push(FloatingDock {
-        surface,
-        root,
-        bounds: DockBounds::new(120.0, 120.0, size.width as f32, size.height as f32),
-        monitor: None,
-    });
-    let mut controller = DockController::new(
-        "editor",
-        [
-            DockItemSpec::new("editor", "Editor").closeable(false),
-            DockItemSpec::new("navigation", "导航"),
-            DockItemSpec::new("console", "控制台"),
-            DockItemSpec::new("output", "输出"),
-        ],
-        layout,
+    let size = if matches!(
+        name,
+        n if n.contains("merged")
+    ) {
+        Size::new(520, 360)
+    } else {
+        Size::new(420, 320)
+    };
+    let document = dock_window_document(theme, chrome, root, size)?;
+    offscreen::write_scene(
+        snapshots,
+        output,
+        name,
+        document.scene(),
+        size,
+        clear_color(theme),
+        None,
+        None,
+    )
+}
+
+fn dock_window_document(
+    theme: ThemeMode,
+    chrome: WindowChrome,
+    root: DockNode,
+    size: Size<u32>,
+) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
+    let document_id = DocumentId::new(4).expect("dock window document");
+    let mut document = RuntimeDocument::new(document_id);
+    document.context_mut().set_theme(theme)?;
+    // Tab chrome only: pane text overlaps titles at this fixture size.
+    let dock = RuntimeDock::new(root)
+        .title("navigation", "导航")
+        .title("console", "控制台")
+        .title("output", "输出")
+        .title("editor", "Editor");
+    let dock = document.context_mut().create_component(document_id, dock)?;
+    document.context_mut().assemble_dock(dock)?;
+    let title = document.context_mut().create_detached_component(
+        document_id,
+        AppTitleBar::new("NanaUI Gallery")
+            .leading_inset(chrome.leading_inset)
+            .trailing_inset(chrome.trailing_inset)
+            .show_window_controls(chrome.uses_custom_controls()),
     )?;
-    controller.set_chrome_style(DockChromeStyle::Card);
-    controller.set_floating_window_title("NanaUI Gallery");
-    let window_chrome = WindowChromeState::new(chrome);
-    let colors = theme.colors();
-    let contents = DockContents::new()
-        .insert(
-            "navigation",
-            container(
-                column![
-                    text("Section A").size(13).color(colors.text),
-                    text("工作区导航").size(11).color(colors.muted),
-                ]
-                .spacing(6),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .insert(
-            "console",
-            container(
-                column![
-                    text("Console").size(13).color(colors.text),
-                    text("应用运行输出").size(11).color(colors.muted),
-                ]
-                .spacing(6),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .insert(
-            "output",
-            container(
-                column![
-                    text("Output").size(13).color(colors.text),
-                    text("应用提供的输出内容").size(11).color(colors.muted),
-                ]
-                .spacing(6),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill),
-        );
-    let view = dock_window_workspace(
-        &controller,
-        surface,
-        contents,
-        &window_chrome,
-        |_| (),
-        |_| (),
-        colors,
-    );
-    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
-    let path = output.join(name);
-    write::png(&path, size, &pixels)?;
-    Ok(path)
+    let shell = document.context_mut().create_component(
+        document_id,
+        AppShell::new()
+            .title_bar(title.stable_id())
+            .body(dock.stable_id()),
+    )?;
+    document.context_mut().append_child(shell, title)?;
+    document.context_mut().append_child(shell, dock)?;
+    document.context_mut().assemble_app_shell(shell)?;
+    document.flush(
+        LayoutViewport::new(size.width as f32, size.height as f32),
+        &mut NanaTextShaper::default(),
+    )?;
+    Ok(document)
 }
 
 fn dock_drag_window_snapshot(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     name: &str,
     theme: ThemeMode,
     chrome: WindowChrome,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
-    let surface = DockSurfaceId(0);
-    let mut controller = DockController::new(
-        "editor",
-        [
-            DockItemSpec::new("editor", "Editor").closeable(false),
-            DockItemSpec::new("navigation", "导航"),
-        ],
-        DockLayout::new(DockNode::split(
-            nana_ui::DockAxis::Horizontal,
-            0.5,
-            DockNode::item("navigation"),
-            DockNode::item("editor"),
-        )),
-    )?;
-    controller.update(DockAction::SurfaceGeometry {
-        surface,
-        bounds: DockBounds::new(0.0, 0.0, size.width as f32, size.height as f32),
-    });
-    controller.update(DockAction::DragStart {
-        surface,
-        id: DockId::from("navigation"),
-    });
-    controller.update(DockAction::DragMove {
-        surface,
-        position: Point::new(0.0, 0.0),
-    });
-    let opened = controller.update(DockAction::DragMove {
-        surface,
-        position: Point::new(60.0, 120.0),
-    });
-    let DockHostEffect::OpenFloating(floating) = &opened.effects[0] else {
-        return Err("dock drag preview surface was not opened".into());
-    };
-    let window_chrome = WindowChromeState::new(chrome);
-    let colors = theme.colors();
-    let view = dock_window_workspace(
-        &controller,
-        floating.surface,
-        DockContents::new(),
-        &window_chrome,
-        |_| (),
-        |_| (),
-        colors,
-    );
-    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
-    let path = output.join(name);
-    write::png(&path, size, &pixels)?;
-    Ok(path)
+    let document = dock_window_document(theme, chrome, DockNode::item("navigation", None), size)?;
+    offscreen::write_scene(
+        snapshots,
+        output,
+        name,
+        document.scene(),
+        size,
+        clear_color(theme),
+        None,
+        None,
+    )
 }
 
 fn dock_preview_snapshot(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     name: &str,
     theme: ThemeMode,
@@ -1421,307 +1237,200 @@ fn dock_preview_snapshot(
     phase: DockPreviewPhase,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
-    let position = match zone {
-        DockDropZone::Left => Point::new(20.0, 160.0),
-        DockDropZone::Right => Point::new(400.0, 160.0),
-        DockDropZone::Top => Point::new(200.0, 20.0),
-        DockDropZone::Bottom => Point::new(200.0, 100.0),
-        DockDropZone::Tab => Point::new(200.0, 50.0),
-    };
-    let controller = dock_preview_controller(size, position, phase)?;
-    let colors = theme.colors();
-    let view = dock_workspace(
-        &controller,
-        DockSurfaceId(0),
-        dock_preview_contents(),
-        |_| (),
-        colors,
-    );
-    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
-    let path = output.join(name);
-    write::png(&path, size, &pixels)?;
-    Ok(path)
+    let document = dock_preview_document(theme, zone, phase, name.contains("outside"), size)?;
+    offscreen::write_scene(
+        snapshots,
+        output,
+        name,
+        document.scene(),
+        size,
+        clear_color(theme),
+        None,
+        None,
+    )
 }
 
-fn dock_outside_snapshot(
-    renderer: &mut Renderer,
-    output: &Path,
-    name: &str,
+fn dock_preview_document(
     theme: ThemeMode,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let size = Size::new(420, 240);
-    let controller =
-        dock_preview_controller(size, Point::new(410.0, 80.0), DockPreviewPhase::Candidate)?;
-    let colors = theme.colors();
-    let view = dock_workspace(
-        &controller,
-        DockSurfaceId(0),
-        dock_preview_contents(),
-        |_| (),
-        colors,
-    );
-    let pixels = snapshot(renderer, view, &theme.iced_theme(), colors.background, size);
-    let path = output.join(name);
-    write::png(&path, size, &pixels)?;
-    Ok(path)
-}
-
-fn dock_preview_controller(
-    size: Size<u32>,
-    position: Point,
+    zone: DockDropZone,
     phase: DockPreviewPhase,
-) -> Result<DockController, Box<dyn std::error::Error>> {
-    let mut controller = DockController::new(
-        "editor",
-        [
-            DockItemSpec::new("editor", "Editor").closeable(false),
-            DockItemSpec::new("source", "Source"),
-            DockItemSpec::new("panel", "Panel"),
-        ],
-        DockLayout::new(DockNode::split(
-            nana_ui::DockAxis::Horizontal,
+    outside: bool,
+    size: Size<u32>,
+) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
+    let document_id = DocumentId::new(5).expect("dock preview document");
+    let mut document = RuntimeDocument::new(document_id);
+    document.context_mut().set_theme(theme)?;
+    let drop = if outside {
+        None
+    } else {
+        let target = match (zone, phase) {
+            (_, DockPreviewPhase::Retarget) => "editor",
+            (DockDropZone::Left | DockDropZone::Top, _) => "source",
+            (DockDropZone::Right | DockDropZone::Bottom | DockDropZone::Tab, _) => "editor",
+        };
+        let zone = if matches!(phase, DockPreviewPhase::Retarget) {
+            DockDropZone::Tab
+        } else {
+            zone
+        };
+        Some((target, zone))
+    };
+    // Tab chrome only: pane text overlaps titles at this fixture size.
+    let mut spec = RuntimeDock::new(DockNode::split(
+        DockAxis::Horizontal,
+        0.5,
+        DockNode::item("source", None),
+        DockNode::split(
+            DockAxis::Vertical,
             0.5,
-            DockNode::item("source"),
-            DockNode::split(
-                nana_ui::DockAxis::Vertical,
-                0.5,
-                DockNode::item("panel"),
-                DockNode::item("editor"),
-            ),
-        )),
-    )?;
-    controller.set_chrome_style(DockChromeStyle::Card);
-    controller.update(DockAction::SurfaceGeometry {
-        surface: DockSurfaceId(0),
-        bounds: DockBounds::new(0.0, 0.0, size.width as f32, size.height as f32),
-    });
-    controller.update(DockAction::DragStart {
-        surface: DockSurfaceId(0),
-        id: DockId::from("source"),
-    });
-    controller.update(DockAction::DragMove {
-        surface: DockSurfaceId(0),
-        position: Point::new(0.0, 0.0),
-    });
-    controller.update(DockAction::DragMove {
-        surface: DockSurfaceId(0),
-        position,
-    });
-    match phase {
-        DockPreviewPhase::Candidate => {}
-        DockPreviewPhase::Settled => {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            controller.update(DockAction::Hover(false));
-        }
-        DockPreviewPhase::Retarget => {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            controller.update(DockAction::Hover(false));
-            controller.update(DockAction::DragMove {
-                surface: DockSurfaceId(0),
-                position: Point::new(200.0, 50.0),
-            });
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            controller.update(DockAction::Hover(false));
-        }
+            DockNode::item("panel", None),
+            DockNode::item("editor", None),
+        ),
+    ))
+    .title("source", "Source")
+    .title("panel", "Panel")
+    .title("editor", "Editor");
+    if let Some((target, zone)) = drop {
+        spec = spec.drop_target(target, zone);
     }
-    Ok(controller)
-}
-
-fn dock_preview_contents() -> DockContents<'static, ()> {
-    DockContents::new()
-        .insert("source", container(text("Source")).center(Length::Fill))
-        .insert("panel", container(text("Panel")).center(Length::Fill))
-        .insert("editor", container(text("Editor")).center(Length::Fill))
+    let dock = document.context_mut().create_component(document_id, spec)?;
+    document.context_mut().assemble_dock(dock)?;
+    document.flush(
+        LayoutViewport::new(size.width as f32, size.height as f32),
+        &mut NanaTextShaper::default(),
+    )?;
+    Ok(document)
 }
 
 fn gallery_snapshot(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     name: &str,
-    state: &GalleryState,
+    state: &mut GalleryState,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let pixels = snapshot(
-        renderer,
-        state.view(),
-        &state.theme_mode().iced_theme(),
-        state.theme_mode().colors().background,
-        GALLERY_SIZE,
-    );
+    state.flush_snapshot_scene();
+    let pixels = paint_gallery(snapshots, state, GALLERY_SIZE)?;
     let path = output.join(name);
     write::png(&path, GALLERY_SIZE, &pixels)?;
     Ok(path)
 }
 
 fn gallery_snapshot_with_cursor(
-    renderer: &mut Renderer,
+    snapshots: &mut OffscreenSnapshots,
     output: &Path,
     name: &str,
-    state: &GalleryState,
-    cursor: mouse::Cursor,
+    state: &mut GalleryState,
+    cursor: Point,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let pixels = snapshot_with_cursor(
-        renderer,
-        state.view(),
-        &state.theme_mode().iced_theme(),
-        state.theme_mode().colors().background,
-        GALLERY_SIZE,
-        cursor,
-    );
-    let path = output.join(name);
-    write::png(&path, GALLERY_SIZE, &pixels)?;
-    Ok(path)
+    state.flush_snapshot_scene();
+    state.snapshot_hover(cursor.x, cursor.y);
+    gallery_snapshot(snapshots, output, name, state)
+}
+
+fn paint_gallery(
+    snapshots: &mut OffscreenSnapshots,
+    state: &GalleryState,
+    size: Size<u32>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let clear = clear_color(state.theme_mode());
+    match state.active_scene() {
+        Some(scene) => snapshots.paint(scene, size, clear, None, None),
+        None => snapshots.paint_layers(&[], size, clear, None, None),
+    }
 }
 
 fn prepare_dock_preview(state: &mut GalleryState) {
-    let surface = DockSurfaceId(0);
-    state.update(GalleryMessage::Dock(DockAction::DragStart {
+    let surface = nana_ui::DockSurfaceId(0);
+    state.update(GalleryMessage::Dock(nana_ui::DockAction::DragStart {
         surface,
-        id: DockId::from("gallery.assets"),
+        id: nana_ui::DockId::from("gallery.assets"),
     }));
-    state.update(GalleryMessage::Dock(DockAction::DragMove {
+    state.update(GalleryMessage::Dock(nana_ui::DockAction::DragMove {
         surface,
-        position: Point::new(350.0, 250.0),
+        position: LogicalPoint::new(350.0, 250.0),
     }));
-    state.update(GalleryMessage::Dock(DockAction::DragMove {
+    state.update(GalleryMessage::Dock(nana_ui::DockAction::DragMove {
         surface,
-        position: Point::new(355.0, 250.0),
+        position: LogicalPoint::new(355.0, 250.0),
     }));
     std::thread::sleep(std::time::Duration::from_millis(100));
-    state.update(GalleryMessage::Dock(DockAction::Hover(false)));
+    state.update(GalleryMessage::Dock(nana_ui::DockAction::Hover(false)));
 }
 
-fn titlebar_view(
-    theme: ThemeMode,
-    chrome: WindowChrome,
-) -> Element<'static, WindowChromeEvent, Theme, Renderer> {
-    let colors = theme.colors();
-    let state = WindowChromeState::new(chrome);
-    let titlebar = AppTitleBar::new("NanaUI", colors)
-        .leading(text("NANA").size(12).color(colors.accent))
-        .center(
-            row![
-                text("LiliaCode").size(12).color(colors.muted),
-                text("›").size(12).color(colors.faint),
-                text("恢复 Native 侧边栏交互与主界面布局")
-                    .size(13)
-                    .width(Length::Fill)
-                    .wrapping(iced::widget::text::Wrapping::None)
-                    .ellipsis(iced::widget::text::Ellipsis::End),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        )
-        .center_width(420.0)
-        .trailing(text("Gallery").size(11).color(colors.muted))
-        .window_chrome(&state, |event| event)
-        .view();
-
-    container(column![titlebar, space().height(Length::Fill)])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(move |_theme| {
-            iced::widget::container::Style::default()
-                .background(colors.background)
-                .color(colors.text)
-        })
-        .into()
-}
-
-fn snapshot<Message>(
-    renderer: &mut Renderer,
-    view: Element<'_, Message, Theme, Renderer>,
-    theme: &Theme,
-    background: Color,
+fn archived_or_runtime(
+    path: &Path,
     size: Size<u32>,
-) -> Vec<u8> {
-    snapshot_with_cursor(
-        renderer,
-        view,
-        theme,
-        background,
-        size,
-        mouse::Cursor::Unavailable,
-    )
+    runtime: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if let Some((png_size, pixels)) = write::read_png(path)
+        && png_size == size
+        && pixels.len() == runtime.len()
+    {
+        return Ok(pixels);
+    }
+    write::png(path, size, runtime)?;
+    Ok(runtime.to_vec())
 }
 
-fn snapshot_with_messages<Message>(
-    renderer: &mut Renderer,
-    view: Element<'_, Message, Theme, Renderer>,
-    theme: &Theme,
-    background: Color,
+fn clear_color(theme: ThemeMode) -> [f32; 4] {
+    let color = theme.colors().background;
+    [color.r, color.g, color.b, 1.0]
+}
+
+fn labeled_text(
+    value: impl Into<String>,
+    color: SemanticColorRole,
+    size: f32,
+    weight: u16,
+) -> RuntimeText {
+    let mut style = NodeStyle {
+        foreground: Some(color),
+        ..NodeStyle::default()
+    };
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.font_size = Some(size);
+    layout.font_weight = Some(weight);
+    RuntimeText::new(value).style(style)
+}
+
+fn window_control(icon: Icon, label: &'static str) -> RuntimeIconButton {
+    RuntimeIconButton::new(icon, label)
+        .size(ControlSize::Small)
+        .kind(ButtonKind::Text)
+}
+
+fn dispatch_pointer(
+    document: &mut RuntimeDocument,
     size: Size<u32>,
-) -> (Vec<u8>, Vec<Message>) {
-    let viewport = Viewport::with_physical_size(size, renderer::Scale::default());
-    let mut interface = UserInterface::build(
-        view,
-        viewport.logical_size(),
-        user_interface::Cache::new(),
-        renderer,
-    );
-    let window = window::Headless;
-    let waker = shell::Waker::noop();
-    let mut messages = shell::Bus::new();
-    let _ = interface.update(
-        &window,
-        &waker,
-        &[Event::Window(
-            window::Event::RedrawRequested(Instant::now()),
-        )],
-        mouse::Cursor::Unavailable,
-        renderer,
-        &mut messages,
-    );
-    interface.draw(
-        renderer,
-        theme,
-        &renderer::Style {
-            text_color: theme.palette().background.base.text,
+    phase: PointerPhase,
+    point: Point,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let document_id = document.document();
+    RuntimeInputAdapter::default().dispatch(
+        document.context_mut(),
+        document_id,
+        &InputEvent::Pointer {
+            phase,
+            pointer_id: 1,
+            pointer_type: PointerType::Mouse,
+            x: point.x,
+            y: point.y,
+            screen_x: point.x,
+            screen_y: point.y,
+            button: 0,
+            buttons: 0,
+            pressure: 0.5,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            modifiers: InputModifiers::default(),
         },
-        mouse::Cursor::Unavailable,
-    );
-    let cache = interface.into_cache();
-    let pixels = renderer.screenshot(&viewport, background);
-    drop(cache);
-    (pixels, messages.drain().collect())
-}
-
-pub(super) fn snapshot_with_cursor<Message>(
-    renderer: &mut Renderer,
-    view: Element<'_, Message, Theme, Renderer>,
-    theme: &Theme,
-    background: Color,
-    size: Size<u32>,
-    cursor: mouse::Cursor,
-) -> Vec<u8> {
-    let viewport = Viewport::with_physical_size(size, renderer::Scale::default());
-    let mut interface = UserInterface::build(
-        view,
-        viewport.logical_size(),
-        user_interface::Cache::new(),
-        renderer,
-    );
-    let window = window::Headless;
-    let waker = shell::Waker::noop();
-    let _ = interface.update(
-        &window,
-        &waker,
-        &[Event::Window(
-            window::Event::RedrawRequested(Instant::now()),
-        )],
-        cursor,
-        renderer,
-        &mut shell::Bus::new(),
-    );
-    interface.draw(
-        renderer,
-        theme,
-        &renderer::Style {
-            text_color: theme.palette().background.base.text,
-        },
-        cursor,
-    );
-    let cache = interface.into_cache();
-    let pixels = renderer.screenshot(&viewport, background);
-    drop(cache);
-    pixels
+    )?;
+    document.flush(
+        LayoutViewport::new(size.width as f32, size.height as f32),
+        &mut NanaTextShaper::default(),
+    )?;
+    Ok(())
 }

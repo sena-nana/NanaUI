@@ -1,34 +1,25 @@
-//! Windowed IcedSceneView | SceneWgpuPainter A/B.
+//! Windowed Runtime fixtures painted by SceneWgpuPainter.
 //!
-//! Left = current Runtime paint through IcedSceneView.
-//! Right = the same UiScene through SceneWgpuPainter.
-//! Keys: Left/Right or 1-9 select a component, T toggles theme.
+//! The Nana Scene host (`run_runtime_scene`) is the only paint path. Keys:
+//! Left/Right or 1-9 select a component, T toggles theme.
 
-use std::sync::{Arc, Mutex};
-
-use iced::keyboard::{self, Key};
-use iced::widget::shader::{self, Viewport};
-use iced::widget::{column, container, mouse_area, row, space, text};
-use iced::{Element, Event, Length, Point, Rectangle, Size, Subscription, wgpu};
 use nana_ui::runtime::{
     AppShell, AppTitleBar, CalendarHeatmap as RuntimeCalendarHeatmap,
     CalendarHeatmapDatum as RuntimeCalendarHeatmapDatum, Dock, DockAxis, DockNode, DockPanel,
-    DocumentId, GraphCanvas as RuntimeGraphCanvas, LayoutViewport, PaneChrome, PaneChromeAction,
+    DocumentId, FrameworkError, GraphCanvas as RuntimeGraphCanvas, PaneChrome, PaneChromeAction,
     PaneChromeActionKind, PaneTree, PaneTreeNode, SettingsPage, SplitPane, Text as RuntimeText,
     Workspace, WorkspaceRegionSlot,
 };
 use nana_ui::{
     GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind,
-    GraphPortSide, GraphSelection, GraphSize, GraphViewport, IcedSceneView, IcedTextShaper,
-    RegionId, RuntimeInputAdapter, SceneGpuRendererRegistry, ScenePaintViewport, SceneWgpuPainter,
-    SettingsModel, SettingsState, SettingsTab, SplitAxis, ThemeMode, ThemeModeExt,
-    default_scene_gpu_renderers_with_host, ui_font, ui_font_defaults, ui_font_sources,
+    GraphPortSide, GraphSelection, GraphSize, GraphViewport, RegionId, RuntimeProgram,
+    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings,
+    SettingsModel, SettingsState, SettingsTab, SplitAxis, ThemeMode, run_runtime_scene,
 };
 use nana_ui_core::{SplitPaneModel, WorkspaceModel};
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
-use nana_ui_scene::{RuntimeDocument, UiScene};
+use nana_ui_platform::{InputEvent, WindowCommand, WindowId};
+use nana_ui_scene::RuntimeDocument;
 
-const PANEL: Size = Size::new(560.0, 360.0);
 const SLOT_INSET: f32 = 8.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,19 +79,6 @@ impl Case {
     }
 }
 
-#[derive(Clone, Debug)]
-enum Message {
-    Next,
-    Prev,
-    Theme,
-    Select(usize),
-    Reflow,
-    PointerMove(Point),
-    PointerDown,
-    PointerUp,
-    PointerScroll(iced::mouse::ScrollDelta),
-}
-
 struct App {
     theme: ThemeMode,
     case: Case,
@@ -108,36 +86,28 @@ struct App {
     graph_viewport: GraphViewport,
     graph_selection: Option<GraphSelection>,
     document: RuntimeDocument,
-    last_pointer: Point,
 }
 
-fn main() -> iced::Result {
-    let mut application =
-        iced::application(|| (App::new(), ui_font_defaults()), App::update, App::view)
-            .title("IcedSceneView | SceneWgpuPainter")
-            .theme(|app: &App| app.theme.iced_theme())
-            .default_font(ui_font(iced::font::Weight::Normal))
-            .subscription(App::subscription)
-            .window(iced::window::Settings {
-                size: iced::Size::new(1280.0, 720.0),
-                min_size: Some(iced::Size::new(960.0, 560.0)),
-                ..iced::window::Settings::default()
-            })
-            .centered();
-    for source in ui_font_sources() {
-        application = application.font(source);
-    }
-    application.run()
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_runtime_scene::<App>(
+        RuntimeWindowSettings::new("NanaUI Runtime SceneWgpuPainter")
+            .initial_size(1280.0, 720.0)
+            .minimum_size(960.0, 560.0),
+    )?;
+    Ok(())
 }
 
-impl App {
-    fn new() -> Self {
+impl RuntimeProgram for App {
+    type Message = ();
+    type Error = FrameworkError;
+
+    fn initialize(
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         let graph = ab_graph();
         let graph_viewport = graph
             .bounds()
-            .map(|bounds| {
-                GraphViewport::fit(bounds, GraphSize::new(PANEL.width, PANEL.height), 28.0)
-            })
+            .map(|bounds| GraphViewport::fit(bounds, GraphSize::new(1248.0, 680.0), 28.0))
             .unwrap_or_default();
         let mut app = Self {
             theme: ThemeMode::Dark,
@@ -146,187 +116,112 @@ impl App {
             graph_viewport,
             graph_selection: None,
             document: RuntimeDocument::new(DocumentId::new(1).expect("document")),
-            last_pointer: Point::ORIGIN,
         };
-        app.remount_case();
-        app
+        app.remount_case()?;
+        Ok((app, Vec::new()))
     }
 
-    fn remount_case(&mut self) {
+    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
+        (id == WindowId::PRIMARY).then_some(&self.document)
+    }
+
+    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
+        (id == WindowId::PRIMARY).then_some(&mut self.document)
+    }
+
+    fn update(
+        &mut self,
+        _message: Self::Message,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
+    fn theme_mode(&self) -> ThemeMode {
+        self.theme
+    }
+
+    fn input_event(
+        &mut self,
+        id: WindowId,
+        event: &InputEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let InputEvent::Keyboard {
+            pressed: true, key, ..
+        } = event
+        else {
+            return Ok(RuntimeProgramUpdate::redraw(id));
+        };
+        let changed = match key.as_str() {
+            "ArrowRight" | "]" => {
+                self.case = self.case.next();
+                true
+            }
+            "ArrowLeft" | "[" => {
+                self.case = self.case.prev();
+                true
+            }
+            "t" | "T" => {
+                self.theme = match self.theme {
+                    ThemeMode::Dark => ThemeMode::Light,
+                    ThemeMode::Light => ThemeMode::Dark,
+                };
+                true
+            }
+            digit if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() => {
+                let n = digit.parse::<usize>().unwrap_or(0);
+                if (1..=9).contains(&n) {
+                    if let Some(case) = Case::ALL.get(n.saturating_sub(1)) {
+                        self.case = *case;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if !changed {
+            return Ok(RuntimeProgramUpdate::redraw(id));
+        }
+        self.remount_case()?;
+        Ok(RuntimeProgramUpdate {
+            redraw: RuntimeRedraw::Window(id),
+            window_commands: vec![WindowCommand::SetTitle {
+                id,
+                title: self.window_title(),
+            }],
+            exit: false,
+        })
+    }
+}
+
+impl App {
+    fn window_title(&self) -> String {
+        let theme = match self.theme {
+            ThemeMode::Dark => "dark",
+            ThemeMode::Light => "light",
+        };
+        format!(
+            "NanaUI Runtime SceneWgpuPainter — {} ({theme})",
+            self.case.label()
+        )
+    }
+
+    fn remount_case(&mut self) -> Result<(), FrameworkError> {
         self.document = RuntimeDocument::new(DocumentId::new(1).expect("document"));
-        let _ = remount(
+        remount(
             &mut self.document,
             self.case,
             self.theme,
             &self.graph,
             self.graph_viewport,
             self.graph_selection.as_ref(),
-        );
-        self.flush_scene();
+        )
     }
-
-    fn flush_scene(&mut self) {
-        let _ = self.document.flush(
-            LayoutViewport::new(PANEL.width, PANEL.height),
-            &mut IcedTextShaper,
-        );
-    }
-
-    fn dispatch_pointer(&mut self, phase: PointerPhase, button: i16) {
-        let point = self.last_pointer;
-        let document = self.document.document();
-        let _ = RuntimeInputAdapter::default().dispatch(
-            self.document.context_mut(),
-            document,
-            &runtime_pointer(phase, point, button),
-        );
-        self.flush_scene();
-    }
-
-    fn update(&mut self, message: Message) {
-        match message {
-            Message::Next => {
-                self.case = self.case.next();
-                self.remount_case();
-            }
-            Message::Prev => {
-                self.case = self.case.prev();
-                self.remount_case();
-            }
-            Message::Theme => {
-                self.theme = match self.theme {
-                    ThemeMode::Dark => ThemeMode::Light,
-                    ThemeMode::Light => ThemeMode::Dark,
-                };
-                self.remount_case();
-            }
-            Message::Select(index) => {
-                if let Some(case) = Case::ALL.get(index) {
-                    self.case = *case;
-                    self.remount_case();
-                }
-            }
-            Message::Reflow => self.flush_scene(),
-            Message::PointerMove(point) => {
-                self.last_pointer = point;
-                self.dispatch_pointer(PointerPhase::Move, 0);
-            }
-            Message::PointerDown => self.dispatch_pointer(PointerPhase::Down, 0),
-            Message::PointerUp => self.dispatch_pointer(PointerPhase::Up, 0),
-            Message::PointerScroll(delta) => {
-                let (delta_y, line_delta) = match delta {
-                    iced::mouse::ScrollDelta::Lines { y, .. } => (y, true),
-                    iced::mouse::ScrollDelta::Pixels { y, .. } => (y, false),
-                };
-                let document = self.document.document();
-                let _ = RuntimeInputAdapter::default().dispatch(
-                    self.document.context_mut(),
-                    document,
-                    &InputEvent::Wheel {
-                        x: self.last_pointer.x,
-                        y: self.last_pointer.y,
-                        delta_x: 0.0,
-                        delta_y,
-                        line_delta,
-                        modifiers: InputModifiers::default(),
-                    },
-                );
-                self.flush_scene();
-            }
-        }
-    }
-
-    fn subscription(&self) -> Subscription<Message> {
-        iced::event::listen_with(|event, _status, _id| match event {
-            Event::Window(iced::window::Event::Resized(_))
-            | Event::Window(iced::window::Event::Rescaled(_))
-            | Event::Window(iced::window::Event::Opened { .. }) => Some(Message::Reflow),
-            Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
-                Key::Named(keyboard::key::Named::ArrowRight) => Some(Message::Next),
-                Key::Named(keyboard::key::Named::ArrowLeft) => Some(Message::Prev),
-                Key::Character(ch) if ch.eq_ignore_ascii_case("t") => Some(Message::Theme),
-                Key::Character(ch) if ch == "[" => Some(Message::Prev),
-                Key::Character(ch) if ch == "]" => Some(Message::Next),
-                Key::Character(ch) => ch.parse::<usize>().ok().and_then(|n| {
-                    (1..=9)
-                        .contains(&n)
-                        .then_some(Message::Select(n.saturating_sub(1)))
-                }),
-                _ => None,
-            },
-            _ => None,
-        })
-    }
-
-    fn view(&self) -> Element<'_, Message> {
-        let colors = self.theme.tokens().colors;
-        let scene = self.document.shared_scene();
-        let clear_color = [
-            colors.surface.r,
-            colors.surface.g,
-            colors.surface.b,
-            colors.surface.a,
-        ];
-        let pointer = resize_pointer(&self.document, self.last_pointer);
-        let iced_view: Element<'_, Message> = IcedSceneView::new(self.document.scene(), PANEL)
-            .map(|view| view.pointer_interaction(pointer))
-            .map_or_else(
-                |_| {
-                    space()
-                        .width(Length::Fixed(PANEL.width))
-                        .height(Length::Fixed(PANEL.height))
-                        .into()
-                },
-                Into::into,
-            );
-        let host_view = iced::widget::shader(SceneWgpuProgram {
-            scene,
-            clear_color,
-            pointer,
-        })
-        .width(Length::Fixed(PANEL.width))
-        .height(Length::Fixed(PANEL.height));
-        column![
-            text(format!(
-                "{}   Left/Right or 1-9   T theme ({})",
-                self.case.label(),
-                match self.theme {
-                    ThemeMode::Dark => "dark",
-                    ThemeMode::Light => "light",
-                }
-            ))
-            .size(13)
-            .color(colors.muted),
-            row![
-                panel(colors, interact(iced_view)),
-                panel(colors, interact(host_view.into())),
-            ]
-            .spacing(12)
-            .height(Length::Fill),
-        ]
-        .padding(16)
-        .spacing(10)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-    }
-}
-
-fn panel<'a>(colors: nana_ui::Colors, content: Element<'a, Message>) -> Element<'a, Message> {
-    container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(move |_| iced::widget::container::Style::default().background(colors.surface))
-        .into()
-}
-
-fn interact(content: Element<'_, Message>) -> Element<'_, Message> {
-    mouse_area(content)
-        .on_move(Message::PointerMove)
-        .on_press(Message::PointerDown)
-        .on_release(Message::PointerUp)
-        .on_scroll(Message::PointerScroll)
-        .into()
 }
 
 fn remount(
@@ -336,7 +231,7 @@ fn remount(
     graph: &GraphModel,
     graph_viewport: GraphViewport,
     graph_selection: Option<&GraphSelection>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), FrameworkError> {
     let document_id = document.document();
     document.context_mut().set_theme(theme)?;
     let label = |document: &mut RuntimeDocument, value: &str| {
@@ -532,50 +427,6 @@ fn runtime_slot_text(value: &str) -> RuntimeText {
     RuntimeText::new(value).style(style)
 }
 
-fn resize_pointer(document: &RuntimeDocument, point: Point) -> iced::mouse::Interaction {
-    let context = document.context();
-    let document_id = document.document();
-    let handle = context
-        .split_handle_near(document_id, point.x, point.y)
-        .or_else(|| context.dock_handle_near(document_id, point.x, point.y));
-    let Some(handle) = handle else {
-        return iced::mouse::Interaction::None;
-    };
-    let Some(bounds) = context.world().layout_box(handle) else {
-        return iced::mouse::Interaction::None;
-    };
-    if bounds.width <= bounds.height {
-        iced::mouse::Interaction::ResizingHorizontally
-    } else {
-        iced::mouse::Interaction::ResizingVertically
-    }
-}
-
-fn runtime_pointer(phase: PointerPhase, point: Point, button: i16) -> InputEvent {
-    InputEvent::Pointer {
-        phase,
-        pointer_id: 1,
-        pointer_type: PointerType::Mouse,
-        x: point.x,
-        y: point.y,
-        screen_x: point.x,
-        screen_y: point.y,
-        button,
-        buttons: if matches!(phase, PointerPhase::Down | PointerPhase::Move) && button == 0 {
-            1
-        } else {
-            0
-        },
-        pressure: 0.5,
-        tangential_pressure: 0.0,
-        tilt_x: 0,
-        tilt_y: 0,
-        twist: 0,
-        is_primary: button == 0,
-        modifiers: InputModifiers::default(),
-    }
-}
-
 fn ab_graph() -> GraphModel {
     let source = GraphNode::new(
         "source",
@@ -660,146 +511,4 @@ fn ab_calendar_data() -> [RuntimeCalendarHeatmapDatum; 3] {
         RuntimeCalendarHeatmapDatum::new("2026-06-02", 4.0),
         RuntimeCalendarHeatmapDatum::new("2026-06-03", 8.0),
     ]
-}
-
-#[derive(Debug, Clone)]
-struct SceneWgpuProgram {
-    scene: Arc<UiScene>,
-    clear_color: [f32; 4],
-    pointer: iced::mouse::Interaction,
-}
-
-impl<Message> shader::Program<Message> for SceneWgpuProgram {
-    type State = ();
-    type Primitive = SceneWgpuPrimitive;
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        _cursor: iced::mouse::Cursor,
-        _bounds: Rectangle,
-    ) -> Self::Primitive {
-        SceneWgpuPrimitive {
-            scene: Arc::clone(&self.scene),
-            clear_color: self.clear_color,
-        }
-    }
-
-    fn mouse_interaction(
-        &self,
-        _state: &Self::State,
-        _bounds: Rectangle,
-        _cursor: iced::mouse::Cursor,
-    ) -> iced::mouse::Interaction {
-        self.pointer
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SceneWgpuPrimitive {
-    scene: Arc<UiScene>,
-    clear_color: [f32; 4],
-}
-
-struct SceneWgpuPipeline {
-    painter: Mutex<SceneWgpuPainter>,
-    renderers: SceneGpuRendererRegistry,
-    frame: Mutex<Option<PreparedPaint>>,
-}
-
-struct PreparedPaint {
-    scene: Arc<UiScene>,
-    viewport: ScenePaintViewport,
-}
-
-impl shader::Primitive for SceneWgpuPrimitive {
-    type Pipeline = SceneWgpuPipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        bounds: &Rectangle,
-        viewport: &Viewport,
-    ) {
-        let scale = viewport.scale_factor();
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
-        let physical = viewport.physical_size();
-        let paint_viewport = ScenePaintViewport {
-            logical_size: [bounds.width, bounds.height],
-            physical_size: [physical.width, physical.height],
-            scale_factor: scale,
-            scene_origin: [0.0, 0.0],
-            target_origin: [bounds.x, bounds.y],
-            clear_color: self.clear_color,
-            clear: false,
-        };
-        let mut frame = pipeline
-            .frame
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *frame = Some(PreparedPaint {
-            scene: Arc::clone(&self.scene),
-            viewport: paint_viewport,
-        });
-    }
-
-    fn draw(&self, _pipeline: &Self::Pipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
-        false
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        _clip_bounds: &Rectangle<u32>,
-    ) {
-        let frame = pipeline
-            .frame
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(frame) = frame.as_ref() else {
-            return;
-        };
-        let viewport = ScenePaintViewport {
-            logical_size: frame.viewport.logical_size,
-            physical_size: frame.viewport.physical_size,
-            scale_factor: frame.viewport.scale_factor,
-            scene_origin: frame.viewport.scene_origin,
-            target_origin: frame.viewport.target_origin,
-            clear_color: frame.viewport.clear_color,
-            clear: frame.viewport.clear,
-        };
-        let mut painter = pipeline
-            .painter
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = painter.paint(
-            &frame.scene,
-            encoder,
-            target,
-            viewport,
-            None,
-            Some(&pipeline.renderers),
-        );
-    }
-}
-
-impl shader::Pipeline for SceneWgpuPipeline {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self {
-            painter: Mutex::new(SceneWgpuPainter::new(device, queue, format)),
-            renderers: default_scene_gpu_renderers_with_host(
-                Arc::new(device.clone()),
-                Arc::new(queue.clone()),
-            ),
-            frame: Mutex::new(None),
-        }
-    }
 }

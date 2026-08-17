@@ -1,20 +1,14 @@
-use iced::widget::{column, container, row, space};
-use iced::{Element, Length, Point, Subscription};
-
-use crate::drag_handle::DragHandle;
-use crate::theme::ThemeTokens;
+use nana_ui_core::LogicalPoint;
 
 pub use nana_ui_core::SplitAxis;
 
-const HANDLE_SIZE: f32 = 8.0;
-
-/// Framework-owned interaction emitted by [`split_pane`].
+/// Framework-owned interaction emitted by a split pane host.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SplitPaneAction {
     SetSize(f32),
     Reset,
     ResizeStart,
-    ResizeMove(Point),
+    ResizeMove(LogicalPoint),
     ResizeEnd,
     Adjust(f32),
     Focus,
@@ -74,17 +68,6 @@ impl SplitPaneController {
         self.model.restore_layout_json(value)
     }
 
-    /// Listens for arrow-key adjustments while the separator owns keyboard focus.
-    pub fn subscription(&self) -> Subscription<SplitPaneAction> {
-        if !self.model.focused() {
-            return Subscription::none();
-        }
-        match self.axis() {
-            SplitAxis::Horizontal => iced::event::listen_with(horizontal_key_event),
-            SplitAxis::Vertical => iced::event::listen_with(vertical_key_event),
-        }
-    }
-
     /// Applies one interaction and reports whether observable state changed.
     pub fn update(&mut self, action: SplitPaneAction) -> bool {
         let mutation = match action {
@@ -107,146 +90,6 @@ impl SplitPaneController {
     }
 }
 
-/// Builds a constrained two-child split pane. Split panes can be nested freely.
-pub fn split_pane<'a, Message>(
-    controller: &SplitPaneController,
-    first: impl Into<Element<'a, Message>>,
-    second: impl Into<Element<'a, Message>>,
-    on_action: impl Fn(SplitPaneAction) -> Message + Copy + 'a,
-    theme: impl Into<ThemeTokens>,
-) -> Element<'a, Message>
-where
-    Message: Clone + 'a,
-{
-    let tokens = theme.into();
-    let color = if controller.is_active() {
-        tokens.colors.border_strong
-    } else {
-        tokens.colors.border
-    };
-    let horizontal = controller.axis() == SplitAxis::Horizontal;
-    let indicator = container(space())
-        .width(if horizontal {
-            Length::Fixed(2.0)
-        } else {
-            Length::Fill
-        })
-        .height(if horizontal {
-            Length::Fill
-        } else {
-            Length::Fixed(2.0)
-        })
-        .style(move |_theme| iced::widget::container::Style::default().background(color));
-    let handle = container(indicator)
-        .width(if horizontal {
-            Length::Fixed(HANDLE_SIZE)
-        } else {
-            Length::Fill
-        })
-        .height(if horizontal {
-            Length::Fill
-        } else {
-            Length::Fixed(HANDLE_SIZE)
-        })
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Center);
-    let handle = DragHandle::new(
-        handle,
-        on_action(SplitPaneAction::ResizeStart),
-        move |point| on_action(SplitPaneAction::ResizeMove(point)),
-        on_action(SplitPaneAction::ResizeEnd),
-        on_action(SplitPaneAction::Reset),
-        move |hovered| on_action(SplitPaneAction::Hover(hovered)),
-        if horizontal {
-            iced::mouse::Interaction::ResizingHorizontally
-        } else {
-            iced::mouse::Interaction::ResizingVertically
-        },
-    );
-    let first = container(first.into())
-        .width(if horizontal {
-            if controller.model.from_end() {
-                Length::Fill
-            } else {
-                Length::Fixed(controller.size())
-            }
-        } else {
-            Length::Fill
-        })
-        .height(if !horizontal && !controller.model.from_end() {
-            Length::Fixed(controller.size())
-        } else {
-            Length::Fill
-        })
-        .clip(true);
-    let second = container(second.into())
-        .width(if horizontal && controller.model.from_end() {
-            Length::Fixed(controller.size())
-        } else {
-            Length::Fill
-        })
-        .height(if !horizontal && controller.model.from_end() {
-            Length::Fixed(controller.size())
-        } else {
-            Length::Fill
-        })
-        .clip(true);
-
-    if horizontal {
-        row![first, handle, second]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    } else {
-        column![first, handle, second]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    }
-}
-
-fn horizontal_key_event(
-    event: iced::Event,
-    status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<SplitPaneAction> {
-    key_event(event, status, SplitAxis::Horizontal)
-}
-
-fn vertical_key_event(
-    event: iced::Event,
-    status: iced::event::Status,
-    _window: iced::window::Id,
-) -> Option<SplitPaneAction> {
-    key_event(event, status, SplitAxis::Vertical)
-}
-
-fn key_event(
-    event: iced::Event,
-    status: iced::event::Status,
-    axis: SplitAxis,
-) -> Option<SplitPaneAction> {
-    if status == iced::event::Status::Captured {
-        return None;
-    }
-    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event else {
-        return None;
-    };
-    use iced::keyboard::key::Named;
-    match (axis, key) {
-        (_, iced::keyboard::Key::Named(Named::Escape)) => Some(SplitPaneAction::Blur),
-        (SplitAxis::Horizontal, iced::keyboard::Key::Named(Named::ArrowLeft))
-        | (SplitAxis::Vertical, iced::keyboard::Key::Named(Named::ArrowUp)) => {
-            Some(SplitPaneAction::Adjust(-1.0))
-        }
-        (SplitAxis::Horizontal, iced::keyboard::Key::Named(Named::ArrowRight))
-        | (SplitAxis::Vertical, iced::keyboard::Key::Named(Named::ArrowDown)) => {
-            Some(SplitPaneAction::Adjust(1.0))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,8 +107,8 @@ mod tests {
     fn reset_restores_default_and_ends_drag() {
         let mut controller = SplitPaneController::new(SplitAxis::Vertical, 120.0, 64.0, 280.0);
         controller.update(SplitPaneAction::ResizeStart);
-        controller.update(SplitPaneAction::ResizeMove(Point::new(0.0, 10.0)));
-        controller.update(SplitPaneAction::ResizeMove(Point::new(0.0, 70.0)));
+        controller.update(SplitPaneAction::ResizeMove(LogicalPoint::new(0.0, 10.0)));
+        controller.update(SplitPaneAction::ResizeMove(LogicalPoint::new(0.0, 70.0)));
         assert_eq!(controller.size(), 180.0);
         controller.update(SplitPaneAction::Reset);
         assert_eq!(controller.size(), 120.0);
@@ -276,19 +119,19 @@ mod tests {
     fn drag_reenters_limits_at_the_current_pointer_position() {
         let mut controller = SplitPaneController::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
         controller.update(SplitPaneAction::ResizeStart);
-        controller.update(SplitPaneAction::ResizeMove(Point::new(100.0, 0.0)));
-        controller.update(SplitPaneAction::ResizeMove(Point::new(500.0, 0.0)));
+        controller.update(SplitPaneAction::ResizeMove(LogicalPoint::new(100.0, 0.0)));
+        controller.update(SplitPaneAction::ResizeMove(LogicalPoint::new(500.0, 0.0)));
         assert_eq!(controller.size(), 260.0);
-        controller.update(SplitPaneAction::ResizeMove(Point::new(130.0, 0.0)));
+        controller.update(SplitPaneAction::ResizeMove(LogicalPoint::new(130.0, 0.0)));
         assert_eq!(controller.size(), 230.0);
 
         let mut from_end =
             SplitPaneController::new(SplitAxis::Vertical, 200.0, 140.0, 260.0).from_end(true);
         from_end.update(SplitPaneAction::ResizeStart);
-        from_end.update(SplitPaneAction::ResizeMove(Point::new(0.0, 100.0)));
-        from_end.update(SplitPaneAction::ResizeMove(Point::new(0.0, 500.0)));
+        from_end.update(SplitPaneAction::ResizeMove(LogicalPoint::new(0.0, 100.0)));
+        from_end.update(SplitPaneAction::ResizeMove(LogicalPoint::new(0.0, 500.0)));
         assert_eq!(from_end.size(), 140.0);
-        from_end.update(SplitPaneAction::ResizeMove(Point::new(0.0, 70.0)));
+        from_end.update(SplitPaneAction::ResizeMove(LogicalPoint::new(0.0, 70.0)));
         assert_eq!(from_end.size(), 230.0);
     }
 

@@ -2,12 +2,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use iced::widget::shader;
-use iced::{Rectangle, wgpu};
 use nana_ui_runtime::CustomRenderNode;
 use nana_ui_scene::{PrimitiveId, ScenePrimitiveKind, UiScene};
 
-use crate::{LogicalRect, PhysicalRect, RenderSlot};
+use crate::{LogicalRect, PhysicalRect};
 
 #[derive(Debug, Clone)]
 pub struct SceneGpuNode {
@@ -197,145 +195,6 @@ impl SceneGpuRendererRegistry {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SceneGpuPrimitive {
-    node: SceneGpuNode,
-    renderer: Arc<dyn SceneGpuRenderer>,
-}
-
-impl SceneGpuPrimitive {
-    pub(crate) fn new(node: SceneGpuNode, renderer: Arc<dyn SceneGpuRenderer>) -> Self {
-        Self { node, renderer }
-    }
-}
-
-impl shader::Primitive for SceneGpuPrimitive {
-    type Pipeline = SceneGpuPipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bounds: &Rectangle,
-        viewport: &shader::Viewport,
-    ) {
-        pipeline.device = Some(device.clone());
-        pipeline.queue = Some(queue.clone());
-        let slot = RenderSlot::new(
-            self.node.id.node.get(),
-            LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
-            viewport.scale_factor(),
-        );
-        pipeline.prepared.insert(
-            self.node.id,
-            PreparedSceneGpuNode {
-                bounds: slot.physical,
-                used: true,
-            },
-        );
-        self.renderer.prepare(
-            &self.node,
-            SceneGpuPrepareContext {
-                device,
-                queue,
-                target_format: pipeline.target_format,
-                bounds: slot.logical,
-                scale_factor: viewport.scale_factor(),
-            },
-        );
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
-        let Some(prepared) = pipeline.prepared.get(&self.node.id) else {
-            return;
-        };
-        let clip = PhysicalRect {
-            x: clip_bounds.x,
-            y: clip_bounds.y,
-            width: clip_bounds.width,
-            height: clip_bounds.height,
-        };
-        let bounds = intersect(prepared.bounds, clip);
-        if bounds.width == 0 || bounds.height == 0 {
-            return;
-        }
-        self.renderer.render(
-            &self.node,
-            SceneGpuRenderContext {
-                device: pipeline
-                    .device
-                    .as_ref()
-                    .expect("scene GPU pipeline prepared before render"),
-                queue: pipeline
-                    .queue
-                    .as_ref()
-                    .expect("scene GPU pipeline prepared before render"),
-                encoder,
-                target,
-                bounds,
-                clip,
-            },
-        );
-    }
-}
-
-pub(crate) struct SceneGpuPipeline {
-    target_format: wgpu::TextureFormat,
-    device: Option<wgpu::Device>,
-    queue: Option<wgpu::Queue>,
-    prepared: HashMap<PrimitiveId, PreparedSceneGpuNode>,
-}
-
-impl shader::Pipeline for SceneGpuPipeline {
-    fn new(_device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self {
-            target_format: format,
-            device: None,
-            queue: None,
-            prepared: HashMap::new(),
-        }
-    }
-
-    fn trim(&mut self) {
-        self.prepared.retain(|_, prepared| {
-            let retain = prepared.used;
-            prepared.used = false;
-            retain
-        });
-    }
-}
-
-struct PreparedSceneGpuNode {
-    bounds: PhysicalRect,
-    used: bool,
-}
-
-fn intersect(left: PhysicalRect, right: PhysicalRect) -> PhysicalRect {
-    let x = left.x.max(right.x);
-    let y = left.y.max(right.y);
-    let right_edge = left
-        .x
-        .saturating_add(left.width)
-        .min(right.x.saturating_add(right.width));
-    let bottom_edge = left
-        .y
-        .saturating_add(left.height)
-        .min(right.y.saturating_add(right.height));
-    PhysicalRect {
-        x,
-        y,
-        width: right_edge.saturating_sub(x),
-        height: bottom_edge.saturating_sub(y),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,31 +214,5 @@ mod tests {
         assert!(registry.insert("live2d", Arc::new(NoopRenderer)).is_none());
         assert!(registry.get("live2d").is_some());
         assert!(registry.insert("live2d", Arc::new(NoopRenderer)).is_some());
-    }
-
-    #[test]
-    fn physical_bounds_intersection_is_saturating() {
-        assert_eq!(
-            intersect(
-                PhysicalRect {
-                    x: 10,
-                    y: 20,
-                    width: 30,
-                    height: 40,
-                },
-                PhysicalRect {
-                    x: 25,
-                    y: 0,
-                    width: 30,
-                    height: 30,
-                },
-            ),
-            PhysicalRect {
-                x: 25,
-                y: 20,
-                width: 15,
-                height: 10,
-            }
-        );
     }
 }

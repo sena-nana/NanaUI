@@ -1,38 +1,29 @@
-//! Backend-neutral application contract backed by the existing desktop host.
+//! Backend-neutral application contract for the Nana Scene host.
 //!
 //! Applications own [`RuntimeDocument`] values and never build an Iced tree.
-//! The private adapter below turns each retained [`UiScene`] into the hosted
-//! renderer's compatibility element at the final backend boundary.
+//! [`run_runtime`] is the product host entry and delegates to
+//! [`crate::run_runtime_scene`].
 
-use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use iced::{Element, Size};
 use nana_ui_platform::{
-    InputDisposition, InputEvent, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowRole,
-    WindowSettings,
+    InputEvent, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
 };
-use nana_ui_runtime::{
-    AccessibilityActionRequest, AccessibilityNode, AccessibilityUpdate, AnimationFrame,
-    FrameworkError, Task,
-};
+use nana_ui_runtime::{AccessibilityActionRequest, AnimationFrame, FrameworkError, Task};
 use nana_ui_scene::RuntimeDocument;
 
-use crate::{
-    HostTextureRegistry, HostedGpuResources, HostedProgram, HostedProgramContext,
-    HostedProgramUpdate, HostedRedraw, HostedWindowCommand, HostedWindowEvent,
-    HostedWindowGeometry, HostedWindowRole, HostedWindowSettings, IcedSceneView, IcedTextShaper,
-    RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry, ThemeMode,
-    default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers, run_hosted,
-};
+use crate::{HostTextureRegistry, HostedGpuResources, SceneGpuRendererRegistry, ThemeMode};
 
 pub use nana_ui_platform::WindowSettings as RuntimeWindowSettings;
 
+/// Skip the raw program input hook when Runtime already consumed the event.
+/// The Scene host does not use this gate; it always delivers `input_event`.
+#[cfg(test)]
 pub(crate) fn gated_runtime_input_update(
-    disposition: InputDisposition,
+    disposition: nana_ui_platform::InputDisposition,
     id: WindowId,
     raw_input: impl FnOnce() -> Result<RuntimeProgramUpdate, FrameworkError>,
 ) -> RuntimeProgramUpdate {
@@ -180,8 +171,7 @@ impl RuntimeProgramUpdate {
     }
 }
 
-/// Canonical retained application contract. Iced remains available only
-/// through [`HostedProgram`] for compatibility consumers.
+/// Canonical retained application contract for the Nana Scene host.
 pub trait RuntimeProgram: Sized + 'static {
     type Message: Send + 'static;
     type Error: fmt::Display;
@@ -211,17 +201,15 @@ pub trait RuntimeProgram: Sized + 'static {
     ///
     /// Returning `None` lets the hosted runtime attach a default `"gpu-view"`
     /// painter that uses stored host Device/Queue clones. `Some(registry)` is
-    /// used unchanged. [`IcedSceneView::new`], [`IcedSceneView::for_node`],
-    /// and [`IcedSceneView::from_shared`] install the same default painter when
-    /// the caller does not pass a registry; explicit `None` on
-    /// `with_gpu_resources` stays caller-controlled.
+    /// used unchanged. [`crate::SceneWgpuPainter`] consumes the resolved
+    /// registry; an explicit empty registry leaves `"gpu-view"` unpaintable.
     fn scene_gpu_renderers(&self, _id: WindowId) -> Option<SceneGpuRendererRegistry> {
         None
     }
 
     /// External texture producers encoded by the host before UiScene samples
     /// their resources. The queue submission remains ordered ahead of Iced's
-    /// presentation submission.
+    /// presentation submission. The host submits the same Device/Queue pair.
     fn scene_resource_producers(
         &self,
         _id: WindowId,
@@ -315,389 +303,6 @@ pub trait RuntimeProgram: Sized + 'static {
     }
 }
 
-struct RuntimeHosted<Program: RuntimeProgram> {
-    program: Program,
-    geometries: HashMap<WindowId, WindowGeometry>,
-    accessibility: HashMap<WindowId, AccessibilityUpdate>,
-    animation_clock: RuntimeAnimationClock,
-    tasks: SyncSender<Task<Program::Message>>,
-    gpu_device: Arc<iced_wgpu::wgpu::Device>,
-    gpu_queue: Arc<iced_wgpu::wgpu::Queue>,
-    default_scene_gpu_renderers: Option<SceneGpuRendererRegistry>,
-}
-
-enum RuntimeHostMessage<Message> {
-    App(Message),
-}
-
-impl<Program: RuntimeProgram> RuntimeHosted<Program> {
-    fn context(
-        hosted: &HostedProgramContext<RuntimeHostMessage<Program::Message>>,
-        id: WindowId,
-        geometry: WindowGeometry,
-        tasks: SyncSender<Task<Program::Message>>,
-    ) -> RuntimeProgramContext<Program::Message> {
-        let proxy = hosted.proxy().clone();
-        RuntimeProgramContext {
-            window_id: id,
-            geometry,
-            gpu: hosted.gpu().clone(),
-            dispatch: Arc::new(move |message| {
-                let _ = proxy.send_event(RuntimeHostMessage::App(message));
-            }),
-            tasks,
-        }
-    }
-
-    fn hosted_update(update: RuntimeProgramUpdate) -> HostedProgramUpdate {
-        HostedProgramUpdate {
-            redraw: match update.redraw {
-                RuntimeRedraw::None => HostedRedraw::None,
-                RuntimeRedraw::Window(WindowId::PRIMARY) => HostedRedraw::Primary,
-                RuntimeRedraw::Window(id) => HostedRedraw::Window(id),
-                RuntimeRedraw::All => HostedRedraw::All,
-            },
-            window_commands: update
-                .window_commands
-                .into_iter()
-                .map(hosted_window_command)
-                .collect(),
-            exit: update.exit,
-            ..HostedProgramUpdate::default()
-        }
-    }
-
-    fn view_for(&self, id: WindowId) -> Element<'static, RuntimeHostMessage<Program::Message>> {
-        let document = self
-            .program
-            .document(id)
-            .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0));
-        let geometry = self.geometries.get(&id).copied().unwrap_or_default();
-        IcedSceneView::from_shared_with_renderers(
-            document.shared_scene(),
-            self.program.host_textures(id),
-            resolve_scene_gpu_renderers(
-                self.program.scene_gpu_renderers(id),
-                self.default_scene_gpu_renderers.clone(),
-            ),
-            Size::new(geometry.logical_size.0, geometry.logical_size.1),
-        )
-        .unwrap_or_else(|error| panic!("RuntimeProgram produced an unpaintable UiScene: {error}"))
-        .into()
-    }
-}
-
-impl<Program: RuntimeProgram> HostedProgram for RuntimeHosted<Program> {
-    type Message = RuntimeHostMessage<Program::Message>;
-    type Error = Program::Error;
-
-    fn initialize(
-        hosted: &HostedProgramContext<Self::Message>,
-    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-        let geometry = platform_geometry(hosted.geometry());
-        let tasks = runtime_task_workers(hosted.proxy().clone());
-        let context = Self::context(hosted, WindowId::PRIMARY, geometry, tasks.clone());
-        let (program, messages) = Program::initialize(&context)?;
-        let gpu_device = Arc::clone(hosted.gpu().device());
-        let gpu_queue = Arc::clone(hosted.gpu().queue());
-        let default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
-            Arc::clone(&gpu_device),
-            Arc::clone(&gpu_queue),
-        ));
-        Ok((
-            Self {
-                program,
-                geometries: HashMap::from([(WindowId::PRIMARY, geometry)]),
-                accessibility: HashMap::new(),
-                animation_clock: RuntimeAnimationClock::now(),
-                tasks,
-                gpu_device,
-                gpu_queue,
-                default_scene_gpu_renderers,
-            },
-            messages.into_iter().map(RuntimeHostMessage::App).collect(),
-        ))
-    }
-
-    fn update(
-        &mut self,
-        message: Self::Message,
-        hosted: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        let RuntimeHostMessage::App(message) = message;
-        let geometry = self
-            .geometries
-            .get(&WindowId::PRIMARY)
-            .copied()
-            .unwrap_or_else(|| platform_geometry(hosted.geometry()));
-        let context = Self::context(hosted, WindowId::PRIMARY, geometry, self.tasks.clone());
-        Self::hosted_update(self.program.update(message, &context))
-    }
-
-    fn view(&self, _native_material: bool) -> Element<'static, Self::Message> {
-        self.view_for(WindowId::PRIMARY)
-    }
-
-    fn view_window(&self, id: WindowId, _native_material: bool) -> Element<'static, Self::Message> {
-        self.view_for(id)
-    }
-
-    fn theme_mode(&self) -> ThemeMode {
-        self.program.theme_mode()
-    }
-
-    fn prepare_window_frame(&mut self, id: WindowId, hosted: &HostedProgramContext<Self::Message>) {
-        let geometry = self
-            .geometries
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| platform_geometry(hosted.geometry()));
-        let context = Self::context(hosted, id, geometry, self.tasks.clone());
-        self.program.prepare_window_frame(id, &context);
-        let viewport =
-            nana_ui_runtime::LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
-        let update = self
-            .program
-            .document_mut(id)
-            .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0))
-            .flush(viewport, &mut IcedTextShaper)
-            .unwrap_or_else(|error| panic!("RuntimeProgram frame did not settle: {error}"));
-        if !update.accessibility.updated.is_empty() || !update.accessibility.removed.is_empty() {
-            self.accessibility
-                .insert(id, AccessibilityUpdate::Delta(update.accessibility));
-        }
-        if let Some(producers) = self.program.scene_resource_producers(id) {
-            let document = self
-                .program
-                .document(id)
-                .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0));
-            producers
-                .encode_scene(
-                    document.scene(),
-                    hosted.gpu().device().as_ref(),
-                    hosted.gpu().queue().as_ref(),
-                )
-                .unwrap_or_else(|error| {
-                    panic!("RuntimeProgram resource production failed: {error}")
-                });
-        }
-    }
-
-    fn window_frame_presented(
-        &mut self,
-        id: WindowId,
-        _material: crate::MaterialOutcome,
-        hosted: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        let geometry = self.geometries.get(&id).copied().unwrap_or_default();
-        let context = Self::context(hosted, id, geometry, self.tasks.clone());
-        Self::hosted_update(self.program.window_frame_presented(id, &context))
-    }
-
-    fn rebuild_gpu(&mut self, hosted: &HostedProgramContext<Self::Message>) {
-        self.gpu_device = Arc::clone(hosted.gpu().device());
-        self.gpu_queue = Arc::clone(hosted.gpu().queue());
-        self.default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
-            Arc::clone(&self.gpu_device),
-            Arc::clone(&self.gpu_queue),
-        ));
-        let geometry = self
-            .geometries
-            .get(&WindowId::PRIMARY)
-            .copied()
-            .unwrap_or_else(|| platform_geometry(hosted.geometry()));
-        let context = Self::context(hosted, WindowId::PRIMARY, geometry, self.tasks.clone());
-        self.program.rebuild_gpu(&context);
-    }
-
-    fn input_event(
-        &mut self,
-        id: WindowId,
-        event: InputEvent,
-        hosted: &HostedProgramContext<Self::Message>,
-    ) -> (InputDisposition, HostedProgramUpdate) {
-        let geometry = self.geometries.get(&id).copied().unwrap_or_default();
-        let context = Self::context(hosted, id, geometry, self.tasks.clone());
-        let disposition = self
-            .program
-            .document_mut(id)
-            .map(|document| {
-                let document_id = document.document();
-                RuntimeInputAdapter::default().dispatch_at(
-                    document.context_mut(),
-                    document_id,
-                    &event,
-                    self.animation_clock.runtime_time(Instant::now()),
-                )
-            })
-            .transpose()
-            .unwrap_or_else(|error| panic!("RuntimeProgram input dispatch failed: {error}"))
-            .unwrap_or_default();
-        let update = gated_runtime_input_update(disposition, id, || {
-            self.program.input_event(id, &event, &context)
-        });
-        (disposition, Self::hosted_update(update))
-    }
-
-    fn window_event(
-        &mut self,
-        event: HostedWindowEvent,
-        hosted: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        let Some(event) = platform_window_event(&event) else {
-            return HostedProgramUpdate::default();
-        };
-        let id = event_window_id(&event);
-        if let Some(geometry) = event_geometry(&event) {
-            self.geometries.insert(id, geometry);
-        }
-        if matches!(event, WindowEvent::Closed { .. }) {
-            self.geometries.remove(&id);
-            self.accessibility.remove(&id);
-        }
-        let geometry = self.geometries.get(&id).copied().unwrap_or_default();
-        let context = Self::context(hosted, id, geometry, self.tasks.clone());
-        let mut runtime_ime_owned = false;
-        let ime_changed = if let WindowEvent::Ime { event, .. } = &event {
-            self.program
-                .document_mut(id)
-                .map(|document| {
-                    runtime_ime_owned = true;
-                    let document_id = document.document();
-                    RuntimeInputAdapter::default()
-                        .dispatch_ime(document.context_mut(), document_id, event)
-                        .map(|disposition| {
-                            disposition.prevent_default
-                                && !matches!(event, nana_ui_platform::ImeEvent::Enabled)
-                        })
-                })
-                .transpose()
-                .unwrap_or_else(|error| panic!("RuntimeProgram IME dispatch failed: {error}"))
-                .unwrap_or(false)
-        } else {
-            false
-        };
-        let modal_blocks_ime = matches!(event, WindowEvent::Ime { .. })
-            && self.program.document(id).is_some_and(|document| {
-                document
-                    .context()
-                    .has_blocking_runtime_overlay(document.document())
-            });
-        let mut update = gated_runtime_window_update(runtime_ime_owned || modal_blocks_ime, || {
-            self.program.window_event(event, &context)
-        });
-        if ime_changed {
-            update = update.merge(RuntimeProgramUpdate::redraw(id));
-        }
-        Self::hosted_update(update)
-    }
-
-    fn accessibility_snapshot(&self, id: WindowId) -> Vec<AccessibilityNode> {
-        self.program
-            .document(id)
-            .map(|document| {
-                document
-                    .context()
-                    .world()
-                    .project_accessibility(document.document())
-            })
-            .unwrap_or_default()
-    }
-
-    fn accessibility_adapter_enabled(&self) -> bool {
-        true
-    }
-
-    fn accessibility_update(&mut self, id: WindowId) -> Option<AccessibilityUpdate> {
-        self.accessibility.remove(&id)
-    }
-
-    fn accessibility_actions_enabled(&self) -> bool {
-        true
-    }
-
-    fn text_input_request(&self, id: WindowId) -> Option<nana_ui_platform::TextInputRequest> {
-        self.program.document(id).map(runtime_text_input_request)
-    }
-
-    fn accessibility_action(
-        &mut self,
-        id: WindowId,
-        request: AccessibilityActionRequest,
-        hosted: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        let geometry = self.geometries.get(&id).copied().unwrap_or_default();
-        let context = Self::context(hosted, id, geometry, self.tasks.clone());
-        Self::hosted_update(
-            self.program
-                .accessibility_action(id, request, &context)
-                .unwrap_or_else(|error| {
-                    panic!("RuntimeProgram accessibility action failed: {error}")
-                }),
-        )
-    }
-
-    fn next_wakeup(&self) -> Option<Instant> {
-        let animation = self
-            .geometries
-            .keys()
-            .filter_map(|id| {
-                self.program
-                    .document(*id)
-                    .and_then(|document| self.animation_clock.next_wakeup(document.context()))
-            })
-            .min();
-        match (animation, self.program.next_wakeup()) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        }
-    }
-
-    fn wake(
-        &mut self,
-        now: Instant,
-        hosted: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        let primary_geometry = self
-            .geometries
-            .get(&WindowId::PRIMARY)
-            .copied()
-            .unwrap_or_else(|| platform_geometry(hosted.geometry()));
-        let primary_context = Self::context(
-            hosted,
-            WindowId::PRIMARY,
-            primary_geometry,
-            self.tasks.clone(),
-        );
-        let mut update = self.program.wake(now, &primary_context);
-        let ids = self.geometries.keys().copied().collect::<Vec<_>>();
-        for id in ids {
-            let frame = self
-                .program
-                .document_mut(id)
-                .map(|document| self.animation_clock.wake(document.context_mut(), now));
-            let Some(frame) = frame else {
-                continue;
-            };
-            let had_samples = frame.has_updates();
-            let geometry = self.geometries.get(&id).copied().unwrap_or_default();
-            let context = Self::context(hosted, id, geometry, self.tasks.clone());
-            update = update.merge(
-                self.program
-                    .animation_frame(id, frame, &context)
-                    .unwrap_or_else(|error| {
-                        panic!("RuntimeProgram animation handler failed: {error}")
-                    }),
-            );
-            if had_samples {
-                update = update.merge(RuntimeProgramUpdate::redraw(id));
-            }
-        }
-        Self::hosted_update(update)
-    }
-}
-
 pub(crate) fn runtime_text_input_request(
     document: &RuntimeDocument,
 ) -> nana_ui_platform::TextInputRequest {
@@ -747,183 +352,16 @@ pub(crate) fn runtime_text_input_request(
 pub fn run_runtime<Program: RuntimeProgram>(
     settings: WindowSettings,
 ) -> Result<(), crate::HostedRunError> {
-    run_hosted::<RuntimeHosted<Program>>(hosted_window_settings(settings))
-}
-
-fn runtime_task_workers<Message: Send + 'static>(
-    proxy: iced_winit::winit::event_loop::EventLoopProxy<RuntimeHostMessage<Message>>,
-) -> SyncSender<Task<Message>> {
-    const TASK_QUEUE_CAPACITY: usize = 256;
-    const TASK_WORKERS: usize = 4;
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<Task<Message>>(TASK_QUEUE_CAPACITY);
-    let receiver = Arc::new(Mutex::new(receiver));
-    for _ in 0..TASK_WORKERS {
-        let receiver = Arc::clone(&receiver);
-        let proxy = proxy.clone();
-        std::thread::spawn(move || {
-            loop {
-                let task = {
-                    let Ok(receiver) = receiver.lock() else {
-                        return;
-                    };
-                    let Ok(task) = receiver.recv() else {
-                        return;
-                    };
-                    task
-                };
-                let message = iced_winit::futures::futures::executor::block_on(task.into_future());
-                if proxy.send_event(RuntimeHostMessage::App(message)).is_err() {
-                    return;
-                }
-            }
-        });
-    }
-    sender
-}
-
-fn hosted_window_settings(settings: WindowSettings) -> HostedWindowSettings {
-    let mut hosted = HostedWindowSettings::new(settings.title)
-        .initial_size(settings.initial_size.0, settings.initial_size.1)
-        .minimum_size(settings.minimum_size.0, settings.minimum_size.1)
-        .maximized(settings.maximized)
-        .transparent(settings.transparent)
-        .always_on_top(settings.always_on_top)
-        .resizable(settings.resizable)
-        // RuntimeProgram does not expose a custom window-chrome contract.
-        // Keep application content inside the native client area on every
-        // platform instead of placing it beneath macOS traffic lights.
-        .native_title_bar();
-    if let Some((x, y)) = settings.initial_position {
-        hosted = hosted.initial_position(x, y);
-    }
-    hosted.role = match settings.role {
-        WindowRole::Main => HostedWindowRole::Main,
-        WindowRole::Tool => HostedWindowRole::Tool,
-    };
-    hosted.modal = settings.modal;
-    hosted.parent = settings.parent;
-    hosted
-}
-
-fn hosted_window_command(command: WindowCommand) -> HostedWindowCommand {
-    match command {
-        WindowCommand::Open { id, settings } => HostedWindowCommand::Open {
-            id,
-            settings: hosted_window_settings(settings),
-        },
-        WindowCommand::Close(id) => HostedWindowCommand::Close(id),
-        WindowCommand::Move { id, position } => HostedWindowCommand::Move {
-            id,
-            position: iced::Point::new(position.0, position.1),
-        },
-        WindowCommand::SetTitle { id, title } => HostedWindowCommand::SetTitle { id, title },
-        WindowCommand::SetBounds { id, position, size } => HostedWindowCommand::SetBounds {
-            id,
-            position: iced::Point::new(position.0, position.1),
-            width: size.0,
-            height: size.1,
-        },
-        WindowCommand::SetFullscreen { id, fullscreen } => {
-            HostedWindowCommand::SetFullscreen { id, fullscreen }
-        }
-        WindowCommand::SetMinimized { id, minimized } => {
-            HostedWindowCommand::SetMinimized { id, minimized }
-        }
-        WindowCommand::SetMaximized { id, maximized } => {
-            HostedWindowCommand::SetMaximized { id, maximized }
-        }
-        WindowCommand::SetAlwaysOnTop { id, always_on_top } => {
-            HostedWindowCommand::SetAlwaysOnTop { id, always_on_top }
-        }
-        WindowCommand::Focus(id) => HostedWindowCommand::Focus(id),
-    }
-}
-
-fn platform_geometry(geometry: HostedWindowGeometry) -> WindowGeometry {
-    WindowGeometry {
-        physical_position: geometry.physical_position,
-        physical_size: (geometry.physical_size.width, geometry.physical_size.height),
-        logical_position: geometry.logical_position.map(|point| (point.x, point.y)),
-        logical_size: (geometry.logical_size.width, geometry.logical_size.height),
-        scale_factor: geometry.scale_factor,
-        maximized: geometry.maximized,
-    }
-}
-
-fn platform_window_event(event: &HostedWindowEvent) -> Option<WindowEvent> {
-    Some(match event {
-        HostedWindowEvent::Ready { id, geometry, .. } => WindowEvent::Ready {
-            id: *id,
-            geometry: platform_geometry(*geometry),
-        },
-        HostedWindowEvent::Resized { id, geometry, .. } => WindowEvent::Resized {
-            id: *id,
-            geometry: platform_geometry(*geometry),
-        },
-        HostedWindowEvent::Moved { id, geometry, .. } => WindowEvent::Moved {
-            id: *id,
-            geometry: platform_geometry(*geometry),
-        },
-        HostedWindowEvent::VisibilityChanged { id, hidden, .. } => WindowEvent::VisibilityChanged {
-            id: *id,
-            hidden: *hidden,
-        },
-        HostedWindowEvent::FocusChanged { id, focused, .. } => WindowEvent::FocusChanged {
-            id: *id,
-            focused: *focused,
-        },
-        HostedWindowEvent::Ime { id, event, .. } => WindowEvent::Ime {
-            id: *id,
-            event: event.clone(),
-        },
-        HostedWindowEvent::CloseRequested { id, .. } => WindowEvent::CloseRequested { id: *id },
-        HostedWindowEvent::Closed { id, .. } => WindowEvent::Closed { id: *id },
-        HostedWindowEvent::FileHovered { .. }
-        | HostedWindowEvent::FilesHovered { .. }
-        | HostedWindowEvent::FileDropped { .. }
-        | HostedWindowEvent::FilesDropped { .. }
-        | HostedWindowEvent::FileHoverCancelled { .. }
-        | HostedWindowEvent::KeyPressed { .. } => return None,
-    })
-}
-
-fn event_window_id(event: &WindowEvent) -> WindowId {
-    match event {
-        WindowEvent::Ready { id, .. }
-        | WindowEvent::Resized { id, .. }
-        | WindowEvent::Moved { id, .. }
-        | WindowEvent::VisibilityChanged { id, .. }
-        | WindowEvent::FocusChanged { id, .. }
-        | WindowEvent::Ime { id, .. }
-        | WindowEvent::CloseRequested { id }
-        | WindowEvent::Closed { id } => *id,
-    }
-}
-
-fn event_geometry(event: &WindowEvent) -> Option<WindowGeometry> {
-    match event {
-        WindowEvent::Ready { geometry, .. }
-        | WindowEvent::Resized { geometry, .. }
-        | WindowEvent::Moved { geometry, .. } => Some(*geometry),
-        _ => None,
-    }
+    crate::run_runtime_scene::<Program>(settings)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        gated_runtime_input_update, gated_runtime_window_update, hosted_window_settings,
-        runtime_text_input_request,
+        gated_runtime_input_update, gated_runtime_window_update, runtime_text_input_request,
     };
     use nana_ui_platform::{InputDisposition, InputEvent, InputModifiers, WindowId};
     use nana_ui_runtime::{AppContext, Dialog, DocumentId, OverlayHost, TextArea};
-
-    #[test]
-    fn runtime_windows_use_native_chrome_until_a_runtime_chrome_contract_exists() {
-        let hosted = hosted_window_settings(nana_ui_platform::WindowSettings::new("Runtime"));
-
-        assert_eq!(hosted.title_bar_mode, crate::HostedTitleBarMode::Native);
-    }
 
     #[test]
     fn runtime_ime_request_uses_editability_and_secure_purpose() {
@@ -1059,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_owned_or_modal_ime_never_reaches_the_raw_window_handler() {
+    fn gated_window_update_skips_the_raw_handler_only_when_asked() {
         let mut calls = 0;
         let _ = gated_runtime_window_update(true, || {
             calls += 1;

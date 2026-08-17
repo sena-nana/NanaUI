@@ -1,7 +1,7 @@
 //! Maps Runtime dock workspace events to host window commands.
 //!
-//! Iced [`crate::dock::hosted_dock_update`] remains the DockController path.
-//! This helper does not build an Iced element or a second GPU context.
+//! [`crate::dock::hosted_dock_update`] remains the DockController path.
+//! This helper does not build a widget tree or a second GPU context.
 
 use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
 use nana_ui_runtime::{DockFloatingSurface, DockWorkspaceEvent, dock_surface_window_key};

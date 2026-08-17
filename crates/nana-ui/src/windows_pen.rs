@@ -3,7 +3,6 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::Mutex;
 
-use iced_winit::winit;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{InvalidateRect, ScreenToClient};
 use windows_sys::Win32::UI::Input::Pointer::{
@@ -17,6 +16,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERUP,
     WM_POINTERUPDATE, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
+use winit;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 const SUBCLASS_ID: usize = 0x4E_41_4E_41;

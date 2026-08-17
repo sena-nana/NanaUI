@@ -37,7 +37,6 @@ charts = []
 controls = []
 syntax-highlighting = [
     "controls",
-    "iced/highlighter",
     "nana-ui-runtime/syntax-highlighting",
 ]
 feedback = []
@@ -53,13 +52,11 @@ selects = []
 settings-components = ["controls"]
 surfaces = ["feedback"]
 xy-pad = []
-gpu = ["dep:bytemuck", "dep:cryoglyph", "dep:iced_wgpu", "dep:lyon", "dep:wgpu"]
+gpu = ["dep:bytemuck", "dep:cryoglyph", "dep:lyon", "dep:pollster", "dep:wgpu"]
 hosted = [
     "gpu",
     "dep:accesskit",
     "dep:accesskit_winit",
-    "dep:iced_wgpu",
-    "dep:iced_winit",
     "dep:image",
     "dep:raw-window-handle",
     "dep:windows",
@@ -72,10 +69,8 @@ accesskit = { version = "0.24.1", optional = true }
 bytemuck = { version = "1.24", features = ["derive"], optional = true }
 cosmic-text = "0.19"
 cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b131eda1288d08df89ad5ba56de97713308", optional = true }
-iced.workspace = true
-iced_wgpu = { workspace = true, optional = true }
-iced_winit = { workspace = true, optional = true }
 lyon = { version = "1.0", optional = true }
+pollster = { version = "0.4", optional = true }
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
@@ -121,26 +116,19 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-[dev-dependencies]
-iced_wgpu.workspace = true
-iced_winit.workspace = true
-
 [[example]]
-name = "transparent-window"
-path = "examples/transparent-window.rs"
-required-features = ["bundled-fonts"]
+name = "hosted-gpu-demo"
+required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "gpu-view-demo"
-path = "examples/gpu-view-demo.rs"
-required-features = ["bundled-fonts", "gpu"]
+required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
-name = "hosted-gpu-demo"
-path = "examples/hosted-gpu-demo.rs"
-required-features = ["bundled-fonts", "hosted"]
+name = "transparent-window"
+required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "window-chrome-multi-window"
-path = "examples/window-chrome-multi-window.rs"
-required-features = ["bundled-fonts"]
+required-features = ["hosted", "bundled-fonts"]
+

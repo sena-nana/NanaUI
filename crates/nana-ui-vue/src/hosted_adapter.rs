@@ -1,25 +1,32 @@
 //! Production controller joining one JS engine, all Vue documents, and the
-//! NanaUI hosted window/GPU runtime.
+//! NanaUI Scene/`run_runtime` host.
 
+use std::any::Any;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
-use iced::Element;
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
-    AppearanceSettings, BackdropTarget, HostedGpuResources, HostedInputDisposition,
-    HostedInputEvent, HostedPointerPhase, HostedPointerType, HostedProgram, HostedProgramContext,
-    HostedProgramUpdate, HostedRuntimeEvent, HostedTextPosition, HostedUiCommand,
-    HostedWindowCommand, HostedWindowEvent, HostedWindowId, ThemeMode, WindowMaterialMode,
+    HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode,
 };
+use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
+use nana_ui_runtime::FrameworkError;
+use nana_ui_scene::RuntimeDocument;
 
-use crate::iced_app::view_semantic_tree_static_with_scene;
 use crate::{
     BridgeEvent, FileDragEventKind, HostedInputResult, InputModifiers, KeyboardEventKind,
-    KeyboardInput, PointerEventKind, PointerInput, PointerType, VueRuntime, VueWindowId,
-    WheelInput, WindowLifecycleEvent, theme_tokens_from_snapshot,
+    KeyboardInput, PointerEventKind, PointerInput, PointerType, SharedRuntimeDocument, VueRuntime,
+    VueWindowId, WheelInput, WindowLifecycleEvent,
 };
 
-/// A single-engine Vue runtime suitable for embedding in `HostedProgram`.
+thread_local! {
+    static PENDING_VUE_BOOTSTRAP: RefCell<Option<Box<dyn Any>>> = RefCell::new(None);
+}
+
+/// A single-engine Vue runtime suitable for embedding in `RuntimeProgram`.
 pub struct VueHostedRuntime<E: JsEngine> {
     engine: E,
     vue: VueRuntime,
@@ -79,47 +86,9 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         Ok(generation)
     }
 
-    pub fn view_window(
-        &self,
-        id: HostedWindowId,
-        native_material: bool,
-    ) -> Result<Element<'static, BridgeEvent>, JsEngineError> {
-        let id = VueWindowId(id.0);
-        let host = self
-            .vue
-            .host(id)
-            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-        host.prepare_editors();
-        host.prepare_menus();
-        host.prepare_canvas_gpu();
-        let snapshot = host.semantic_snapshot();
-        let document = host.document();
-        let document = document
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue document poisoned"))?;
-        let viewport = document.logical_size();
-        let tokens = theme_tokens_from_snapshot(&snapshot, native_material);
-        Ok(view_semantic_tree_static_with_scene(
-            &snapshot,
-            tokens,
-            Some(viewport),
-            Some(host.editors()),
-            Some(host.menus()),
-            Some(host.host_textures()),
-            Some(host.canvas_runtime_ref()),
-            Some(host.components()),
-            Some(document.scene()),
-            Some(host.layout_box_store()),
-            |event| event,
-        ))
-    }
-
     pub fn dispatch_bridge_event(
         &mut self,
-        _id: HostedWindowId,
+        _id: WindowId,
         event: BridgeEvent,
     ) -> Result<bool, JsEngineError> {
         let document = crate::DocumentId::from_node(crate::NodeHandle(event.widget_id()));
@@ -135,7 +104,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
 
     pub fn accessibility_action(
         &mut self,
-        id: HostedWindowId,
+        id: WindowId,
         request: nana_ui_runtime::AccessibilityActionRequest,
     ) -> Result<bool, JsEngineError> {
         let host = self.require_host(VueWindowId(id.0))?;
@@ -159,10 +128,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         }
     }
 
-    pub fn accessibility_snapshot(
-        &self,
-        id: HostedWindowId,
-    ) -> Vec<nana_ui_runtime::AccessibilityNode> {
+    pub fn accessibility_snapshot(&self, id: WindowId) -> Vec<nana_ui_runtime::AccessibilityNode> {
         self.vue
             .host(VueWindowId(id.0))
             .and_then(|host| host.lock().ok().map(|host| host.document()))
@@ -177,7 +143,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
 
     pub fn take_accessibility_update(
         &mut self,
-        id: HostedWindowId,
+        id: WindowId,
     ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
         self.vue
             .host(VueWindowId(id.0))
@@ -190,90 +156,41 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             })
     }
 
-    pub fn hosted_accessibility_action(
-        &mut self,
-        id: HostedWindowId,
-        request: nana_ui_runtime::AccessibilityActionRequest,
-    ) -> Result<HostedProgramUpdate, JsEngineError> {
-        let selects_text = matches!(
-            &request.action,
-            nana_ui_runtime::AccessibilityAction::SetSelection(_)
-        );
-        let focuses = matches!(&request.action, nana_ui_runtime::AccessibilityAction::Focus);
-        let target = request.target;
-        let changed = self.accessibility_action(id, request)?;
-        let mut update = self.program_update(changed);
-        if changed {
-            if focuses && let Some(command) = self.text_focus_command(id, target)? {
-                update = update.with_ui_commands([command]);
-            } else if selects_text && let Some(command) = self.text_selection_command(id, target)? {
-                update = update.with_ui_commands([command]);
-            }
+    fn runtime_program_update(&self, redraw: bool) -> RuntimeProgramUpdate {
+        let window_commands = self.vue.drain_runtime_window_commands();
+        RuntimeProgramUpdate {
+            redraw: if redraw {
+                RuntimeRedraw::All
+            } else {
+                RuntimeRedraw::None
+            },
+            window_commands,
+            exit: false,
         }
-        Ok(update)
     }
 
-    fn text_focus_command(
-        &self,
-        id: HostedWindowId,
-        target: nana_ui_runtime::StableNodeId,
-    ) -> Result<Option<HostedUiCommand>, JsEngineError> {
-        let host = self.require_host(VueWindowId(id.0))?;
-        let document = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .document();
-        let is_text_input = document
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue document poisoned"))?
-            .text_input_state(crate::NodeHandle(target.get()))
-            .is_some();
-        Ok(is_text_input.then(|| HostedUiCommand::Focus {
-            window_id: id,
-            target: crate::iced_app::hosted_text_widget_id(target.get()),
-        }))
-    }
-
-    fn text_selection_command(
-        &self,
-        id: HostedWindowId,
-        target: nana_ui_runtime::StableNodeId,
-    ) -> Result<Option<HostedUiCommand>, JsEngineError> {
-        let host = self.require_host(VueWindowId(id.0))?;
-        let document = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .document();
-        let Some(state) = document
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue document poisoned"))?
-            .text_input_state(crate::NodeHandle(target.get()))
-        else {
-            // A select listener may synchronously remove its target. The
-            // Runtime/Vue mutation remains valid; there is no retained editor
-            // left to synchronize after the callback.
-            return Ok(None);
-        };
-        let anchor = hosted_text_position(&state.value, state.selection.anchor)
-            .ok_or_else(|| JsEngineError::new("invalid accessibility selection anchor"))?;
-        let focus = hosted_text_position(&state.value, state.selection.focus)
-            .ok_or_else(|| JsEngineError::new("invalid accessibility selection focus"))?;
-        Ok(Some(HostedUiCommand::SelectText {
-            window_id: id,
-            target: crate::iced_app::hosted_text_widget_id(target.get()),
-            anchor,
-            focus,
-        }))
-    }
-
-    pub fn dispatch_input(
+    pub fn runtime_input(
         &mut self,
-        id: HostedWindowId,
-        event: HostedInputEvent,
+        id: WindowId,
+        event: &InputEvent,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        match self.emit_runtime_input(VueWindowId(id.0), event) {
+            Ok(_) => Ok(self.runtime_program_update(true)),
+            Err(_) => Ok(RuntimeProgramUpdate::default()),
+        }
+    }
+
+    fn emit_runtime_input(
+        &mut self,
+        id: VueWindowId,
+        event: &InputEvent,
     ) -> Result<HostedInputResult, JsEngineError> {
-        let id = VueWindowId(id.0);
+        let host = self.require_host(id)?;
+        let mut host = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
         match event {
-            HostedInputEvent::Pointer {
+            InputEvent::Pointer {
                 phase,
                 pointer_id,
                 pointer_type,
@@ -292,96 +209,113 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 modifiers,
             } => {
                 let kind = match phase {
-                    HostedPointerPhase::Down => PointerEventKind::Down,
-                    HostedPointerPhase::Move => PointerEventKind::Move,
-                    HostedPointerPhase::Up => PointerEventKind::Up,
-                    HostedPointerPhase::Cancel => PointerEventKind::Cancel,
+                    PointerPhase::Down => PointerEventKind::Down,
+                    PointerPhase::Move => PointerEventKind::Move,
+                    PointerPhase::Up => PointerEventKind::Up,
+                    PointerPhase::Cancel => PointerEventKind::Cancel,
                 };
-                let input = PointerInput {
-                    kind,
-                    pointer_id,
-                    pointer_type: match pointer_type {
-                        HostedPointerType::Mouse => PointerType::Mouse,
-                        HostedPointerType::Touch => PointerType::Touch,
-                        HostedPointerType::Pen => PointerType::Pen,
+                host.emit_pointer_from_runtime(
+                    &mut self.engine,
+                    PointerInput {
+                        kind,
+                        pointer_id: *pointer_id,
+                        pointer_type: match pointer_type {
+                            nana_ui_platform::PointerType::Mouse => PointerType::Mouse,
+                            nana_ui_platform::PointerType::Touch => PointerType::Touch,
+                            nana_ui_platform::PointerType::Pen => PointerType::Pen,
+                        },
+                        is_primary: *is_primary,
+                        client_x: *x,
+                        client_y: *y,
+                        screen_x: *screen_x,
+                        screen_y: *screen_y,
+                        button: *button,
+                        buttons: *buttons,
+                        pressure: *pressure,
+                        tangential_pressure: *tangential_pressure,
+                        tilt_x: *tilt_x,
+                        tilt_y: *tilt_y,
+                        twist: *twist,
+                        modifiers: InputModifiers {
+                            alt: modifiers.alt,
+                            control: modifiers.control,
+                            meta: modifiers.meta,
+                            shift: modifiers.shift,
+                        },
                     },
-                    is_primary,
-                    client_x: x,
-                    client_y: y,
-                    screen_x,
-                    screen_y,
-                    button,
-                    buttons,
-                    pressure,
-                    tangential_pressure,
-                    tilt_x,
-                    tilt_y,
-                    twist,
-                    modifiers: map_modifiers(modifiers),
-                };
-                let host = self.require_host(id)?;
-                let result = host
-                    .lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_pointer_result(&mut self.engine, input)?;
-                Ok(result)
+                )
             }
-            HostedInputEvent::Wheel {
+            InputEvent::Wheel {
                 x,
                 y,
                 delta_x,
                 delta_y,
                 line_delta,
                 modifiers,
-            } => {
-                let host = self.require_host(id)?;
-                let result = host
-                    .lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_wheel_result(
-                        &mut self.engine,
-                        WheelInput {
-                            client_x: x,
-                            client_y: y,
-                            screen_x: x,
-                            screen_y: y,
-                            delta_x,
-                            delta_y,
-                            delta_mode: u8::from(line_delta),
-                            modifiers: map_modifiers(modifiers),
-                        },
-                    )?;
-                Ok(result)
-            }
-            HostedInputEvent::Keyboard {
+            } => host.emit_wheel_from_runtime(
+                &mut self.engine,
+                WheelInput {
+                    client_x: *x,
+                    client_y: *y,
+                    screen_x: *x,
+                    screen_y: *y,
+                    delta_x: *delta_x,
+                    delta_y: *delta_y,
+                    delta_mode: u8::from(*line_delta),
+                    modifiers: InputModifiers {
+                        alt: modifiers.alt,
+                        control: modifiers.control,
+                        meta: modifiers.meta,
+                        shift: modifiers.shift,
+                    },
+                },
+            ),
+            InputEvent::Keyboard {
                 pressed,
                 key,
-                text: _,
+                text,
                 code,
                 repeat,
                 modifiers,
             } => {
-                let host = self.require_host(id)?;
-                let allowed = host
-                    .lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_keyboard(
-                        &mut self.engine,
-                        &KeyboardInput {
-                            kind: if pressed {
-                                KeyboardEventKind::Down
-                            } else {
-                                KeyboardEventKind::Up
-                            },
-                            key,
-                            code,
-                            location: 0,
-                            repeat,
-                            composing: false,
-                            modifiers: map_modifiers(modifiers),
+                let allowed = host.emit_keyboard_from_runtime(
+                    &mut self.engine,
+                    &KeyboardInput {
+                        kind: if *pressed {
+                            KeyboardEventKind::Down
+                        } else {
+                            KeyboardEventKind::Up
                         },
-                        None,
-                    )?;
+                        key: key.clone(),
+                        code: code.clone(),
+                        location: 0,
+                        repeat: *repeat,
+                        composing: false,
+                        modifiers: InputModifiers {
+                            alt: modifiers.alt,
+                            control: modifiers.control,
+                            meta: modifiers.meta,
+                            shift: modifiers.shift,
+                        },
+                    },
+                    None,
+                )?;
+                if *pressed && let Some(text) = text.as_deref().filter(|text| !text.is_empty()) {
+                    if let Some(target) = host.focused() {
+                        let is_text =
+                            host.document().lock().ok().is_some_and(|document| {
+                                document.text_input_state(target).is_some()
+                            });
+                        if is_text {
+                            let _ = host.emit_text_events_from_runtime(
+                                &mut self.engine,
+                                target,
+                                text,
+                                "insertText",
+                            );
+                        }
+                    }
+                }
                 Ok(HostedInputResult {
                     targeted: true,
                     default_prevented: !allowed,
@@ -391,130 +325,72 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         }
     }
 
-    /// Dispatch raw host input and decide whether Iced should also see the event.
-    pub fn hosted_input(
-        &mut self,
-        id: HostedWindowId,
-        event: HostedInputEvent,
-    ) -> (HostedInputDisposition, HostedProgramUpdate) {
-        match self.dispatch_input(id, event) {
-            Ok(result) => (
-                HostedInputDisposition {
-                    prevent_default: result.default_prevented || result.consumed,
-                },
-                self.program_update(true),
-            ),
-            Err(_) => (
-                HostedInputDisposition::default(),
-                HostedProgramUpdate::default(),
-            ),
-        }
-    }
-
-    pub fn hosted_window_event(&mut self, event: HostedWindowEvent) -> HostedProgramUpdate {
+    pub fn runtime_window_event(&mut self, event: WindowEvent) -> RuntimeProgramUpdate {
         let close_primary = matches!(
             event,
-            HostedWindowEvent::CloseRequested {
-                id: HostedWindowId::PRIMARY,
-                ..
+            WindowEvent::CloseRequested {
+                id: WindowId::PRIMARY,
             }
         );
-        if let Err(_error) = self.handle_window_event(event) {
-            return HostedProgramUpdate::default();
+        if let Err(_error) = self.handle_platform_window_event(event) {
+            return RuntimeProgramUpdate::default();
         }
         if close_primary {
-            return HostedProgramUpdate::exit();
+            return RuntimeProgramUpdate::exit();
         }
-        self.program_update(true)
+        self.runtime_program_update(true)
     }
 
-    pub fn hosted_runtime_event(&mut self, event: HostedRuntimeEvent) -> HostedProgramUpdate {
-        if let Err(_error) = self.handle_runtime_event(event) {
-            return HostedProgramUpdate::default();
-        }
-        self.program_update(true)
-    }
-
-    pub fn hosted_rebuild_gpu(&mut self, resources: HostedGpuResources) -> HostedProgramUpdate {
-        match self
-            .vue
-            .replace_host_gpu(&mut self.engine, resources, "hosted GPU device recovered")
-        {
-            Ok(_) => {
-                let _ = self.register_complete_host_api();
-                self.program_update(true)
-            }
-            Err(_) => HostedProgramUpdate::default(),
-        }
-    }
-
-    pub fn hosted_wake(&mut self) -> HostedProgramUpdate {
-        match self.pump() {
-            Ok(work) if work > 0 => self.program_update(true),
-            _ => self.program_update(false),
-        }
-    }
-
-    fn program_update(&self, redraw: bool) -> HostedProgramUpdate {
-        let commands = self.drain_window_commands();
-        let update = if redraw {
-            HostedProgramUpdate::redraw_all()
-        } else {
-            HostedProgramUpdate::default()
-        };
-        update.with_window_commands(commands)
-    }
-
-    pub fn handle_window_event(&mut self, event: HostedWindowEvent) -> Result<(), JsEngineError> {
+    fn handle_platform_window_event(&mut self, event: WindowEvent) -> Result<(), JsEngineError> {
         match event {
-            HostedWindowEvent::Ready { id, geometry, .. } => {
+            WindowEvent::Ready { id, geometry } => {
                 let id = VueWindowId(id.0);
                 self.vue.set_viewport(
                     id,
-                    geometry.physical_size.width,
-                    geometry.physical_size.height,
-                    geometry.scale_factor,
+                    geometry.physical_size.0.max(1),
+                    geometry.physical_size.1.max(1),
+                    geometry.scale_factor.max(0.01),
                 )?;
-                self.vue.record_geometry(id, &geometry)?;
+                self.vue.record_platform_geometry(id, &geometry)?;
                 self.vue.bind_window(&mut self.engine, id)?;
                 self.vue.notify_window_ready(id)?;
                 self.vue.pump_lifecycle(
                     &mut self.engine,
                     id,
                     WindowLifecycleEvent::ResizeWithScale {
-                        width: geometry.logical_size.width as f64,
-                        height: geometry.logical_size.height as f64,
+                        width: geometry.logical_size.0 as f64,
+                        height: geometry.logical_size.1 as f64,
                         scale_factor: geometry.scale_factor as f64,
                     },
                 )?;
             }
-            HostedWindowEvent::Resized { id, geometry, .. } => {
+            WindowEvent::Resized { id, geometry } => {
                 let id = VueWindowId(id.0);
                 self.vue.set_viewport(
                     id,
-                    geometry.physical_size.width,
-                    geometry.physical_size.height,
-                    geometry.scale_factor,
+                    geometry.physical_size.0.max(1),
+                    geometry.physical_size.1.max(1),
+                    geometry.scale_factor.max(0.01),
                 )?;
-                self.vue.record_geometry(id, &geometry)?;
+                self.vue.record_platform_geometry(id, &geometry)?;
                 self.vue.pump_lifecycle(
                     &mut self.engine,
                     id,
                     WindowLifecycleEvent::ResizeWithScale {
-                        width: geometry.logical_size.width as f64,
-                        height: geometry.logical_size.height as f64,
+                        width: geometry.logical_size.0 as f64,
+                        height: geometry.logical_size.1 as f64,
                         scale_factor: geometry.scale_factor as f64,
                     },
                 )?;
             }
-            HostedWindowEvent::VisibilityChanged { id, hidden, .. } => {
+            WindowEvent::VisibilityChanged { id, hidden } => {
                 self.vue.pump_lifecycle(
                     &mut self.engine,
                     VueWindowId(id.0),
                     WindowLifecycleEvent::VisibilityChange { hidden },
                 )?;
             }
-            HostedWindowEvent::FocusChanged { id, focused, .. } => {
+            WindowEvent::FocusChanged { id, focused } => {
                 self.vue.pump_lifecycle(
                     &mut self.engine,
                     VueWindowId(id.0),
@@ -525,102 +401,87 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     },
                 )?;
             }
-            HostedWindowEvent::Ime { id, event, .. } => {
-                self.vue
-                    .dispatch_native_ime(&mut self.engine, VueWindowId(id.0), &event)?;
+            WindowEvent::Ime { id, event } => {
+                let host = self.require_host(VueWindowId(id.0))?;
+                host.lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+                    .emit_native_ime_from_runtime(&mut self.engine, &event)?;
             }
-            HostedWindowEvent::Closed { id, .. } => {
+            WindowEvent::Closed { id } => {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
-            HostedWindowEvent::Moved { id, geometry, .. } => {
-                self.vue.record_geometry(VueWindowId(id.0), &geometry)?;
+            WindowEvent::Moved { id, geometry } => {
+                self.vue
+                    .record_platform_geometry(VueWindowId(id.0), &geometry)?;
             }
-            HostedWindowEvent::CloseRequested { id, .. } => {
-                if id != HostedWindowId::PRIMARY {
+            WindowEvent::CloseRequested { id } => {
+                if id != WindowId::PRIMARY {
                     self.vue.request_close(VueWindowId(id.0))?;
                 }
             }
-            HostedWindowEvent::FileHovered {
-                id, path, position, ..
-            } => {
-                let host = self.require_host(VueWindowId(id.0))?;
-                host.lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_file_drag(
-                        &mut self.engine,
-                        FileDragEventKind::Hover,
-                        std::slice::from_ref(&path),
-                        position.map(|point| (point.x, point.y)),
-                    )?;
-            }
-            HostedWindowEvent::FilesHovered {
-                id,
-                paths,
-                position,
-                ..
-            } => {
-                let host = self.require_host(VueWindowId(id.0))?;
-                host.lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_file_drag(
-                        &mut self.engine,
-                        FileDragEventKind::Hover,
-                        &paths,
-                        position.map(|point| (point.x, point.y)),
-                    )?;
-            }
-            HostedWindowEvent::FileDropped {
-                id, path, position, ..
-            } => {
-                let host = self.require_host(VueWindowId(id.0))?;
-                host.lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_file_drag(
-                        &mut self.engine,
-                        FileDragEventKind::Drop,
-                        std::slice::from_ref(&path),
-                        position.map(|point| (point.x, point.y)),
-                    )?;
-            }
-            HostedWindowEvent::FilesDropped {
-                id,
-                paths,
-                position,
-                ..
-            } => {
-                let host = self.require_host(VueWindowId(id.0))?;
-                host.lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_file_drag(
-                        &mut self.engine,
-                        FileDragEventKind::Drop,
-                        &paths,
-                        position.map(|point| (point.x, point.y)),
-                    )?;
-            }
-            HostedWindowEvent::FileHoverCancelled { id, .. } => {
-                let host = self.require_host(VueWindowId(id.0))?;
-                host.lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .dispatch_file_drag(&mut self.engine, FileDragEventKind::Cancel, &[], None)?;
-            }
-            // Keyboard input already reaches Vue first through `HostedInputEvent`.
-            // This later host shortcut notification must not emit a duplicate JS event.
-            HostedWindowEvent::KeyPressed { .. } => {}
         }
         Ok(())
     }
 
-    pub fn handle_runtime_event(&mut self, event: HostedRuntimeEvent) -> Result<(), JsEngineError> {
-        if let HostedRuntimeEvent::WindowOpenFailed { id, message } = event {
-            self.vue
-                .notify_window_open_failed(VueWindowId(id.0), message)?;
-        }
-        Ok(())
+    pub fn runtime_accessibility_action(
+        &mut self,
+        id: WindowId,
+        request: nana_ui_runtime::AccessibilityActionRequest,
+    ) -> Result<RuntimeProgramUpdate, JsEngineError> {
+        let changed = self.accessibility_action(WindowId(id.0), request)?;
+        Ok(self.runtime_program_update(changed))
     }
 
-    pub fn drain_window_commands(&self) -> Vec<HostedWindowCommand> {
-        self.vue.drain_hosted_window_commands()
+    pub fn runtime_rebuild_gpu(&mut self, resources: HostedGpuResources) -> RuntimeProgramUpdate {
+        match self
+            .vue
+            .replace_host_gpu(&mut self.engine, resources, "hosted GPU device recovered")
+        {
+            Ok(_) => {
+                let _ = self.register_complete_host_api();
+                self.runtime_program_update(true)
+            }
+            Err(_) => RuntimeProgramUpdate::default(),
+        }
+    }
+
+    pub fn runtime_wake(&mut self) -> RuntimeProgramUpdate {
+        match self.pump() {
+            Ok(work) if work > 0 => self.runtime_program_update(true),
+            _ => self.runtime_program_update(false),
+        }
+    }
+
+    pub fn prepare_runtime_window(&self, id: WindowId) {
+        let Some(host) = self.vue.host(VueWindowId(id.0)) else {
+            return;
+        };
+        let Ok(mut host) = host.lock() else {
+            return;
+        };
+        host.prepare_canvas_gpu();
+        let snapshot = host.semantic_snapshot();
+        if let Ok(mut document) = host.document().lock() {
+            document.sync_semantic_styles(&snapshot);
+        }
+        host.resolve_layout();
+    }
+
+    pub fn host_textures_for(&self, id: WindowId) -> Option<HostTextureRegistry> {
+        let host = self.vue.host(VueWindowId(id.0))?;
+        host.lock().ok().map(|host| host.host_textures().clone())
+    }
+
+    pub fn shared_runtime_document(&self, id: WindowId) -> Option<Arc<SharedRuntimeDocument>> {
+        self.vue.shared_runtime_document(VueWindowId(id.0))
+    }
+
+    pub fn handle_window_event(&mut self, event: WindowEvent) -> Result<(), JsEngineError> {
+        self.handle_platform_window_event(event)
+    }
+
+    pub fn drain_window_commands(&self) -> Vec<crate::VueWindowCommand> {
+        self.vue.drain_window_commands()
     }
 
     pub fn next_wakeup(&self) -> Option<std::time::Instant> {
@@ -656,6 +517,12 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HostedTextPosition {
+    line: usize,
+    index: usize,
+}
+
 fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPosition> {
     if byte_offset > value.len() || !value.is_char_boundary(byte_offset) {
         return None;
@@ -669,47 +536,75 @@ fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPos
     })
 }
 
-fn map_modifiers(value: nana_ui::HostedInputModifiers) -> InputModifiers {
-    InputModifiers {
-        alt: value.alt,
-        control: value.control,
-        meta: value.meta,
-        shift: value.shift,
-    }
-}
-
 /// Ready-to-run hosted program owning one [`VueHostedRuntime`].
 pub struct VueHostedProgram<E: JsEngine> {
     runtime: VueHostedRuntime<E>,
+    documents: HashMap<WindowId, Arc<SharedRuntimeDocument>>,
     theme: ThemeMode,
-    appearance: AppearanceSettings,
 }
 
 impl<E: JsEngine> VueHostedProgram<E> {
     pub fn bootstrap(
-        context: &HostedProgramContext<BridgeEvent>,
+        context: &RuntimeProgramContext<BridgeEvent>,
         engine: E,
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
     ) -> Result<Self, JsEngineError> {
         let geometry = context.geometry();
+        Self::bootstrap_from_gpu(
+            context.gpu().clone(),
+            geometry.physical_size.0.max(1),
+            geometry.physical_size.1.max(1),
+            geometry.scale_factor.max(0.01),
+            Some(geometry),
+            engine,
+            artifact,
+            application_api,
+        )
+    }
+
+    fn bootstrap_from_gpu(
+        gpu: HostedGpuResources,
+        physical_width: u32,
+        physical_height: u32,
+        scale_factor: f32,
+        platform_geometry: Option<WindowGeometry>,
+        engine: E,
+        artifact: RuntimeArtifact,
+        application_api: HostApiRegistry,
+    ) -> Result<Self, JsEngineError> {
         let mut runtime = VueHostedRuntime::new(
             engine,
             artifact,
             application_api,
-            geometry.physical_size.width.max(1),
-            geometry.physical_size.height.max(1),
-            geometry.scale_factor.max(0.01),
+            physical_width,
+            physical_height,
+            scale_factor,
         )?;
-        runtime.bind_host_gpu(context.gpu().clone())?;
-        runtime
-            .vue
-            .record_geometry(VueWindowId::PRIMARY, &geometry)?;
-        Ok(Self {
+        runtime.bind_host_gpu(gpu)?;
+        if let Some(geometry) = platform_geometry {
+            runtime
+                .vue
+                .record_platform_geometry(VueWindowId::PRIMARY, &geometry)?;
+        }
+        let _ = runtime.inject_theme(ThemeMode::Light);
+        let mut program = Self {
             runtime,
+            documents: HashMap::new(),
             theme: ThemeMode::Light,
-            appearance: AppearanceSettings::default(),
-        })
+        };
+        program.sync_documents();
+        Ok(program)
+    }
+
+    pub fn from_runtime(runtime: VueHostedRuntime<E>) -> Self {
+        let mut program = Self {
+            runtime,
+            documents: HashMap::new(),
+            theme: ThemeMode::Light,
+        };
+        program.sync_documents();
+        program
     }
 
     pub fn runtime(&self) -> &VueHostedRuntime<E> {
@@ -719,147 +614,135 @@ impl<E: JsEngine> VueHostedProgram<E> {
     pub fn runtime_mut(&mut self) -> &mut VueHostedRuntime<E> {
         &mut self.runtime
     }
+
+    fn sync_documents(&mut self) {
+        let ids = self.runtime.vue.window_ids();
+        let live = ids
+            .iter()
+            .map(|id| WindowId(id.0))
+            .collect::<std::collections::HashSet<_>>();
+        for id in ids {
+            let window = WindowId(id.0);
+            if self.documents.contains_key(&window) {
+                continue;
+            }
+            if let Some(document) = self.runtime.shared_runtime_document(window) {
+                self.documents.insert(window, document);
+            }
+        }
+        self.documents.retain(|id, _| live.contains(id));
+    }
 }
 
 impl<E: JsEngine + 'static> VueHostedProgram<E> {
     /// Production entry for caller-owned engines. Release applications pass a
     /// `nana_js_v8::V8Engine` here, keeping one engine for every Vue window.
     pub fn run(
-        settings: nana_ui::HostedWindowSettings,
+        settings: RuntimeWindowSettings,
         engine: E,
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
     ) -> Result<(), nana_ui::HostedRunError> {
-        nana_ui::run_hosted_with::<Self, _>(settings, move |context| {
-            Self::bootstrap(context, engine, artifact, application_api)
-                .map(|program| (program, Vec::new()))
-        })
+        PENDING_VUE_BOOTSTRAP.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new((engine, artifact, application_api)));
+        });
+        nana_ui::run_runtime::<Self>(settings)
     }
 }
 
-impl<E: JsEngine + 'static> HostedProgram for VueHostedProgram<E> {
+impl<E: JsEngine + 'static> RuntimeProgram for VueHostedProgram<E> {
     type Message = BridgeEvent;
     type Error = JsEngineError;
 
     fn initialize(
-        _context: &HostedProgramContext<Self::Message>,
+        context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-        Err(JsEngineError::new(
-            "VueHostedProgram::bootstrap must create the engine and runtime artifact",
-        ))
+        let (engine, artifact, application_api) = PENDING_VUE_BOOTSTRAP
+            .with(|slot| slot.borrow_mut().take())
+            .and_then(|boxed| {
+                boxed
+                    .downcast::<(E, RuntimeArtifact, HostApiRegistry)>()
+                    .ok()
+            })
+            .map(|boxed| *boxed)
+            .ok_or_else(|| {
+                JsEngineError::new(
+                    "VueHostedProgram::run must supply the engine and runtime artifact",
+                )
+            })?;
+        Self::bootstrap(context, engine, artifact, application_api)
+            .map(|program| (program, Vec::new()))
+    }
+
+    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
+        self.documents.get(&id).map(|document| document.get())
+    }
+
+    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
+        self.sync_documents();
+        self.documents.get(&id).map(|document| document.get_mut())
     }
 
     fn update(
         &mut self,
         message: Self::Message,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.sync_documents();
         match self
             .runtime
-            .dispatch_bridge_event(HostedWindowId::PRIMARY, message)
+            .dispatch_bridge_event(WindowId::PRIMARY, message)
         {
-            Ok(_) => self.runtime.program_update(true),
-            Err(_) => HostedProgramUpdate::default(),
+            Ok(_) => {
+                self.sync_documents();
+                self.runtime.runtime_program_update(true)
+            }
+            Err(_) => RuntimeProgramUpdate::default(),
         }
-    }
-
-    fn view(&self, native_material: bool) -> Element<'static, Self::Message> {
-        self.view_window(HostedWindowId::PRIMARY, native_material)
-    }
-
-    fn view_window(
-        &self,
-        id: HostedWindowId,
-        native_material: bool,
-    ) -> Element<'static, Self::Message> {
-        self.runtime
-            .view_window(id, native_material)
-            .unwrap_or_else(|_| iced::widget::Space::new().into())
     }
 
     fn theme_mode(&self) -> ThemeMode {
         self.theme
     }
 
-    fn accessibility_snapshot(
-        &self,
-        id: HostedWindowId,
-    ) -> Vec<nana_ui_runtime::AccessibilityNode> {
-        self.runtime.accessibility_snapshot(id)
+    fn host_textures(&self, id: WindowId) -> Option<HostTextureRegistry> {
+        self.runtime.host_textures_for(id)
     }
 
-    fn accessibility_adapter_enabled(&self) -> bool {
-        true
-    }
-
-    fn accessibility_update(
+    fn prepare_window_frame(
         &mut self,
-        id: HostedWindowId,
-    ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
-        self.runtime.take_accessibility_update(id)
+        id: WindowId,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        self.sync_documents();
+        self.runtime.prepare_runtime_window(id);
     }
 
-    fn accessibility_actions_enabled(&self) -> bool {
-        true
-    }
-
-    fn accessibility_action(
-        &mut self,
-        id: HostedWindowId,
-        request: nana_ui_runtime::AccessibilityActionRequest,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        match self.runtime.hosted_accessibility_action(id, request) {
-            Ok(update) => update,
-            Err(_) => HostedProgramUpdate::default(),
-        }
-    }
-
-    fn window_material_mode(&self) -> WindowMaterialMode {
-        self.appearance.window_material()
-    }
-
-    fn backdrop_opacity(&self) -> f32 {
-        self.appearance.backdrop_opacity()
-    }
-
-    fn backdrop_target(&self) -> BackdropTarget {
-        self.appearance.backdrop_target()
-    }
-
-    fn titlebar_follows_sidebar(&self) -> bool {
-        self.appearance.titlebar_follows_sidebar()
-    }
-
-    fn window_event(
-        &mut self,
-        event: HostedWindowEvent,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        self.runtime.hosted_window_event(event)
-    }
-
-    fn text_input_request(&self, id: HostedWindowId) -> Option<nana_ui_platform::TextInputRequest> {
-        let host = self.runtime.vue.host(VueWindowId(id.0))?;
-        let host = host.lock().ok()?;
-        host.text_input_request()
+    fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
+        let _ = self.runtime.runtime_rebuild_gpu(context.gpu().clone());
     }
 
     fn input_event(
         &mut self,
-        id: HostedWindowId,
-        event: HostedInputEvent,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> (HostedInputDisposition, HostedProgramUpdate) {
-        self.runtime.hosted_input(id, event)
+        id: WindowId,
+        event: &InputEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.sync_documents();
+        let update = self.runtime.runtime_input(id, event)?;
+        self.sync_documents();
+        Ok(update)
     }
 
-    fn runtime_event(
+    fn window_event(
         &mut self,
-        event: HostedRuntimeEvent,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        self.runtime.hosted_runtime_event(event)
+        event: WindowEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.sync_documents();
+        let update = self.runtime.runtime_window_event(event);
+        self.sync_documents();
+        update
     }
 
     fn next_wakeup(&self) -> Option<Instant> {
@@ -869,19 +752,44 @@ impl<E: JsEngine + 'static> HostedProgram for VueHostedProgram<E> {
     fn wake(
         &mut self,
         _now: Instant,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        self.runtime.hosted_wake()
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.sync_documents();
+        let update = self.runtime.runtime_wake();
+        self.sync_documents();
+        update
     }
 
-    fn rebuild_gpu(&mut self, context: &HostedProgramContext<Self::Message>) {
-        let _ = self.runtime.hosted_rebuild_gpu(context.gpu().clone());
+    fn accessibility_action(
+        &mut self,
+        id: WindowId,
+        request: nana_ui_runtime::AccessibilityActionRequest,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.sync_documents();
+        Ok(self
+            .runtime
+            .runtime_accessibility_action(id, request)
+            .unwrap_or_default())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::VueHost;
+
+    #[test]
+    fn vue_window_documents_are_the_same_runtime_tree() {
+        let host = VueHost::new();
+        let shared = host.shared_runtime_document();
+        let from_tree = host.document().lock().unwrap().shared_runtime_document();
+        assert!(Arc::ptr_eq(&shared, &from_tree));
+        assert_eq!(
+            shared.get().document(),
+            nana_ui_runtime::DocumentId::new(1).unwrap()
+        );
+    }
 
     #[test]
     fn hosted_text_positions_preserve_utf8_lines_and_byte_indices() {

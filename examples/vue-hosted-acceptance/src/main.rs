@@ -1,27 +1,26 @@
-//! Release acceptance window for the Vue-first hosted runtime.
+//! Release acceptance window for the Vue-first Scene/`run_runtime` host.
 //!
 //! Pure Vue+JS mode:
 //! `cargo run -p vue-hosted-acceptance --locked`
 //!
-//! Vue + registered Rust/Iced component mode:
+//! Vue + registered native-component probe (JS/Runtime authority; no Iced chrome):
 //! `cargo run -p vue-hosted-acceptance --locked -- --hybrid`
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
-use iced::widget::{Column, button, text};
-use iced::{Element, Length};
 use nana_js_engine::probe::{VUE_SFC_COMPAT_CSS, vue_sfc_compat_artifact};
 use nana_js_engine::{HostApiRegistry, HostValue, JsEngine};
 use nana_ui::{
-    HostedInputDisposition, HostedInputEvent, HostedProgram, HostedProgramContext,
-    HostedProgramUpdate, HostedRuntimeEvent, HostedWindowEvent, HostedWindowId,
-    HostedWindowSettings, ThemeMode, WindowMaterialMode, run_hosted_with,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
+    run_runtime,
 };
+use nana_ui_platform::{InputEvent, WindowEvent, WindowId};
+use nana_ui_runtime::FrameworkError;
+use nana_ui_scene::RuntimeDocument;
 use nana_ui_vue::{
-    BridgeEvent, NativeComponentCommand, NativeComponentContext, NativeComponentDescriptor,
-    NativeComponentFactory, NativePropSchema, NativePropType, VueHostedRuntime, WidgetId,
+    BridgeEvent, NativeComponentCommand, NativeComponentDescriptor, NativeComponentFactory,
+    NativePropSchema, NativePropType, VueHostedProgram, VueHostedRuntime, WidgetId,
 };
 
 #[derive(Clone)]
@@ -30,36 +29,6 @@ struct AcceptanceProbe {
 }
 
 impl NativeComponentFactory for AcceptanceProbe {
-    fn view(
-        &self,
-        context: NativeComponentContext,
-        children: Vec<Element<'static, BridgeEvent>>,
-    ) -> Result<Element<'static, BridgeEvent>, nana_js_engine::JsException> {
-        let label = context
-            .props
-            .get("label")
-            .and_then(HostValue::as_str)
-            .unwrap_or("probe")
-            .to_owned();
-        let score = context
-            .props
-            .get("score")
-            .and_then(HostValue::as_f64)
-            .unwrap_or_default();
-        let activated = context.event(
-            "activated",
-            HostValue::Object(BTreeMap::from([("score".into(), HostValue::Number(score))])),
-        )?;
-        let mut content = Column::with_children(children)
-            .spacing(8)
-            .width(Length::Fill);
-        content = content.push(text(format!(
-            "Iced owns this component: {label} ({score:.0})"
-        )));
-        content = content.push(button("Emit native event").on_press(activated));
-        Ok(content.into())
-    }
-
     fn command(
         &self,
         command: NativeComponentCommand,
@@ -90,55 +59,20 @@ impl NativeComponentFactory for AcceptanceProbe {
 }
 
 struct AcceptanceProgram {
-    runtime: VueHostedRuntime<nana_js_v8::V8Engine>,
+    inner: VueHostedProgram<nana_js_v8::V8Engine>,
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
     nana_ui_vue::refuse_dual_js_engines!();
-    let hybrid = std::env::args().any(|argument| argument == "--hybrid");
-    let auto_windows = std::env::args().any(|argument| argument == "--windows");
-    let input_probe = std::env::args().any(|argument| argument == "--input-probe");
-    let alpha_probe = std::env::args().any(|argument| argument == "--alpha-probe");
-    run_hosted_with::<AcceptanceProgram, _>(
-        HostedWindowSettings::new(if hybrid {
-            "NanaUI Vue + Iced acceptance"
+    run_runtime::<AcceptanceProgram>(
+        RuntimeWindowSettings::new(if std::env::args().any(|argument| argument == "--hybrid") {
+            "NanaUI Vue + native probe acceptance"
         } else {
             "NanaUI pure Vue acceptance"
         })
         .initial_size(1120.0, 760.0)
-        .minimum_size(760.0, 520.0)
-        .transparent_background(alpha_probe),
-        move |context| {
-            if alpha_probe {
-                eprintln!(
-                    "NanaUI transparent surface alpha mode: {:?}",
-                    context.surface_alpha_mode()
-                );
-            }
-            AcceptanceProgram::initialize_with_mode(context, hybrid, auto_windows, input_probe)
-        },
+        .minimum_size(760.0, 520.0),
     )
-}
-
-impl AcceptanceProgram {
-    fn initialize_with_mode(
-        context: &HostedProgramContext<BridgeEvent>,
-        hybrid: bool,
-        auto_windows: bool,
-        input_probe: bool,
-    ) -> Result<(Self, Vec<BridgeEvent>), nana_js_engine::JsEngineError> {
-        let geometry = context.geometry();
-        let runtime = build_runtime(
-            context.gpu().clone(),
-            hybrid,
-            auto_windows,
-            input_probe,
-            geometry.physical_size.width.max(1),
-            geometry.physical_size.height.max(1),
-            geometry.scale_factor.max(0.01),
-        )?;
-        Ok((Self { runtime }, Vec::new()))
-    }
 }
 
 fn build_runtime(
@@ -203,152 +137,129 @@ fn build_runtime(
     Ok(runtime)
 }
 
-impl HostedProgram for AcceptanceProgram {
+impl RuntimeProgram for AcceptanceProgram {
     type Message = BridgeEvent;
     type Error = nana_js_engine::JsEngineError;
 
     fn initialize(
-        _context: &HostedProgramContext<Self::Message>,
+        context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-        Err(nana_js_engine::JsEngineError::new(
-            "use the mode-aware hosted initializer",
+        let hybrid = std::env::args().any(|argument| argument == "--hybrid");
+        let auto_windows = std::env::args().any(|argument| argument == "--windows");
+        let input_probe = std::env::args().any(|argument| argument == "--input-probe");
+        let geometry = context.geometry();
+        let runtime = build_runtime(
+            context.gpu().clone(),
+            hybrid,
+            auto_windows,
+            input_probe,
+            geometry.physical_size.0.max(1),
+            geometry.physical_size.1.max(1),
+            geometry.scale_factor.max(0.01),
+        )?;
+        Ok((
+            Self {
+                inner: VueHostedProgram::from_runtime(runtime),
+            },
+            Vec::new(),
         ))
+    }
+
+    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
+        self.inner.document(id)
+    }
+
+    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
+        self.inner.document_mut(id)
     }
 
     fn update(
         &mut self,
         message: Self::Message,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        match self
-            .runtime
-            .dispatch_bridge_event(HostedWindowId::PRIMARY, message)
-        {
-            Ok(_) => self.runtime.hosted_wake(),
-            Err(error) => {
-                eprintln!("acceptance event failed: {error}");
-                HostedProgramUpdate::default()
-            }
-        }
-    }
-
-    fn view(&self, native_material: bool) -> Element<'static, Self::Message> {
-        self.view_window(HostedWindowId::PRIMARY, native_material)
-    }
-
-    fn view_window(
-        &self,
-        id: HostedWindowId,
-        native_material: bool,
-    ) -> Element<'static, Self::Message> {
-        self.runtime
-            .view_window(id, native_material)
-            .unwrap_or_else(|error| {
-                eprintln!("acceptance view for window {} failed: {error}", id.0);
-                iced::widget::Space::new().into()
-            })
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.inner.update(message, context)
     }
 
     fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Light
+        self.inner.theme_mode()
     }
 
-    fn accessibility_snapshot(&self, id: HostedWindowId) -> Vec<nana_ui::AccessibilityNode> {
-        self.runtime.accessibility_snapshot(id)
+    fn host_textures(&self, id: WindowId) -> Option<nana_ui::HostTextureRegistry> {
+        self.inner.host_textures(id)
     }
 
-    fn accessibility_adapter_enabled(&self) -> bool {
-        true
-    }
-
-    fn accessibility_update(&mut self, id: HostedWindowId) -> Option<nana_ui::AccessibilityUpdate> {
-        self.runtime.take_accessibility_update(id)
-    }
-
-    fn accessibility_actions_enabled(&self) -> bool {
-        true
-    }
-
-    fn accessibility_action(
+    fn prepare_window_frame(
         &mut self,
-        id: HostedWindowId,
-        request: nana_ui::AccessibilityActionRequest,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        match self.runtime.hosted_accessibility_action(id, request) {
-            Ok(update) => update,
-            Err(_) => HostedProgramUpdate::default(),
-        }
+        id: WindowId,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        self.inner.prepare_window_frame(id, context);
     }
 
-    fn window_material_mode(&self) -> WindowMaterialMode {
-        WindowMaterialMode::Solid
-    }
-
-    fn window_event(
-        &mut self,
-        event: HostedWindowEvent,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        self.runtime.hosted_window_event(event)
+    fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
+        self.inner.rebuild_gpu(context);
     }
 
     fn input_event(
         &mut self,
-        id: HostedWindowId,
-        event: HostedInputEvent,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> (HostedInputDisposition, HostedProgramUpdate) {
-        self.runtime.hosted_input(id, event)
+        id: WindowId,
+        event: &InputEvent,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.inner.input_event(id, event, context)
     }
 
-    fn runtime_event(
+    fn window_event(
         &mut self,
-        event: HostedRuntimeEvent,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        self.runtime.hosted_runtime_event(event)
+        event: WindowEvent,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.inner.window_event(event, context)
     }
 
-    fn next_wakeup(&self) -> Option<Instant> {
-        self.runtime.next_wakeup()
+    fn next_wakeup(&self) -> Option<std::time::Instant> {
+        self.inner.next_wakeup()
     }
 
     fn wake(
         &mut self,
-        _now: Instant,
-        _context: &HostedProgramContext<Self::Message>,
-    ) -> HostedProgramUpdate {
-        self.runtime.hosted_wake()
+        now: std::time::Instant,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.inner.wake(now, context)
     }
 
-    fn rebuild_gpu(&mut self, context: &HostedProgramContext<Self::Message>) {
-        let _ = self.runtime.hosted_rebuild_gpu(context.gpu().clone());
+    fn accessibility_action(
+        &mut self,
+        id: WindowId,
+        request: nana_ui::AccessibilityActionRequest,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.inner.accessibility_action(id, request, context)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::futures::executor;
-    use iced::wgpu;
     use nana_ui::HostedGpuResources;
-    use nana_ui::HostedWindowGeometry;
-    use nana_ui_vue::{VueWindowId, WidgetKind};
+    use nana_ui_platform::WindowGeometry;
+    use nana_ui_vue::{VueWindowCommand, VueWindowId, WidgetKind};
 
     fn gpu() -> HostedGpuResources {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let adapter = executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
             apply_limit_buckets: false,
         }))
         .expect("headless WGPU adapter required for hosted acceptance");
-        let (device, queue) = executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Nana hosted acceptance test"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
@@ -372,7 +283,7 @@ mod tests {
             }
             let host = runtime.vue().host(VueWindowId::PRIMARY).unwrap();
             let snapshot = host.lock().unwrap().semantic_snapshot();
-            let accessibility = runtime.accessibility_snapshot(HostedWindowId::PRIMARY);
+            let accessibility = runtime.accessibility_snapshot(WindowId::PRIMARY);
             assert!(
                 accessibility
                     .iter()
@@ -450,7 +361,7 @@ mod tests {
 
                 runtime
                     .dispatch_bridge_event(
-                        HostedWindowId::PRIMARY,
+                        WindowId::PRIMARY,
                         BridgeEvent::Native {
                             id: first_id,
                             name: "activated".into(),
@@ -523,24 +434,25 @@ mod tests {
         let commands = runtime.drain_window_commands();
         assert!(commands.iter().any(|command| matches!(
             command,
-            nana_ui::HostedWindowCommand::Open {
-                id: HostedWindowId(1),
+            VueWindowCommand::Open {
+                id: VueWindowId(1),
                 ..
             }
         )));
 
-        runtime.hosted_window_event(HostedWindowEvent::Ready {
-            id: HostedWindowId(1),
-            window_id: iced::window::Id::unique(),
-            geometry: HostedWindowGeometry {
-                physical_position: Some((0, 0)),
-                physical_size: iced::Size::new(480, 300),
-                logical_position: Some(iced::Point::ORIGIN),
-                logical_size: iced::Size::new(480.0, 300.0),
-                scale_factor: 1.0,
-                maximized: false,
-            },
-        });
+        runtime
+            .handle_window_event(WindowEvent::Ready {
+                id: WindowId(1),
+                geometry: WindowGeometry {
+                    physical_position: Some((0, 0)),
+                    physical_size: (480, 300),
+                    logical_position: Some((0.0, 0.0)),
+                    logical_size: (480.0, 300.0),
+                    scale_factor: 1.0,
+                    maximized: false,
+                },
+            })
+            .unwrap();
         for _ in 0..8 {
             runtime.pump().unwrap();
         }

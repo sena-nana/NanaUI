@@ -1,7 +1,7 @@
 //! Nana-owned WGPU painter for [`UiScene`].
 //!
-//! This is the product Scene backend. It does not implement `iced::Widget` and
-//! must not go through `IcedSceneView`. The host owns Device/Queue/encoder.
+//! This is the product Scene backend. It does not implement `iced::Widget`.
+//! The host owns Device/Queue/encoder.
 
 mod clip;
 mod color;
@@ -10,18 +10,20 @@ mod host_texture;
 mod mesh;
 mod quad;
 mod text;
+mod validate;
 
 use std::sync::Arc;
 
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
-use wgpu;
 
 use crate::scene_gpu::{
     SceneGpuNode, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
     SceneGpuRendererRegistry,
 };
-use crate::scene_view::{ScenePaintError, validate_scene};
 use crate::{HostTextureRegistry, PhysicalRect};
+
+pub(crate) use validate::validate_scene;
+pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use clip::{
     LogicalRect, intersect_clips, paint_origin, physical_bounds, physical_scissor, translated_rect,
@@ -374,20 +376,18 @@ impl SceneWgpuPainter {
                         renderer,
                         bounds,
                         clip,
-                    } => {
-                        if bounds.width > 0 && bounds.height > 0 {
-                            renderer.render(
-                                node,
-                                SceneGpuRenderContext {
-                                    device: &self.device,
-                                    queue: &self.queue,
-                                    encoder,
-                                    target: dest_view,
-                                    bounds: *bounds,
-                                    clip: *clip,
-                                },
-                            );
-                        }
+                    } if bounds.width > 0 && bounds.height > 0 => {
+                        renderer.render(
+                            node,
+                            SceneGpuRenderContext {
+                                device: &self.device,
+                                queue: &self.queue,
+                                encoder,
+                                target: dest_view,
+                                bounds: *bounds,
+                                clip: *clip,
+                            },
+                        );
                     }
                     _ => {}
                 }
@@ -411,11 +411,11 @@ fn push_quad(commands: &mut Vec<DrawCommand>, index: u32, scissor: PhysicalRect)
         range,
         scissor: last,
     }) = commands.last_mut()
+        && *last == scissor
+        && range.end == index
     {
-        if *last == scissor && range.end == index {
-            range.end = index + 1;
-            return;
-        }
+        range.end = index + 1;
+        return;
     }
     commands.push(DrawCommand::Quads {
         range: index..index + 1,
@@ -455,7 +455,6 @@ mod tests {
 
     use super::*;
     use crate::HostTextureRegistry;
-    use crate::scene_view::validate_scene;
 
     #[test]
     fn empty_scene_validates() {

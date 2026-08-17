@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use iced::wgpu;
 use nana_js_engine::{HostApiRegistry, HostCompletion, HostValue, JsException};
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry, HostedGpuResources};
+use wgpu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GpuId(u64);

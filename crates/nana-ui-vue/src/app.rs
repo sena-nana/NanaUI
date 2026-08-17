@@ -88,7 +88,7 @@ pub fn mount_vue_as_nana_with_engine<E: JsEngine + ?Sized>(
     Ok(app)
 }
 
-/// 便利：取当前语义快照（供 iced_app / 测试）。
+/// 便利：取当前语义快照（供 Scene host / 测试）。
 pub fn semantic_snapshot_of(app: &NanaVueApp) -> SemanticSnapshot {
     app.semantic_snapshot()
 }

@@ -1,11 +1,11 @@
 use super::{
-    ContextAction, ContextMenuEvent, GalleryMessage, GalleryOverlay, GallerySection, GalleryState,
-    SurfaceView,
+    ContextAction, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay, GallerySection,
+    GalleryState, SurfaceView,
 };
 use crate::runtime_host::RuntimeSceneInput;
 use crate::runtime_settings::SettingsRuntimeInput;
-use iced::Point;
-use nana_ui::compatibility::PaneChromeActionKind;
+use nana_ui::LogicalPoint;
+use nana_ui::PaneChromeActionKind;
 use nana_ui::window_chrome::{WindowChromeAction, WindowChromeEvent, WindowChromeState};
 use nana_ui::{
     ActionId, ActionPickerNavigation, AppearanceSettings, BackdropTarget, CommandPaletteEvent,
@@ -23,9 +23,9 @@ fn gallery_interactions_update_real_state() {
     state.update(GalleryMessage::InputChanged("Field".to_owned()));
     state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     state.update(GalleryMessage::ToggleContextMenu);
-    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::Select(
-        ContextAction::Rename,
-    )));
+    state.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::Select("rename".into()),
+    ));
 
     assert_eq!(state.primary_clicks, 1);
     assert!(state.loading);
@@ -40,24 +40,41 @@ fn gallery_overlays_paint_a_runtime_scene() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::ToggleCommandPalette);
     assert!(state.overlay.contains(&GalleryOverlay::CommandPalette));
-    let _ = state.view();
+    assert!(state.overlay_shares_active_document());
     assert!(state.gallery_overlay_runtime_scene_populated());
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
 
     state.update(GalleryMessage::ToggleDialog);
     assert!(state.overlay.contains(&GalleryOverlay::Dialog));
     assert!(!state.overlay.contains(&GalleryOverlay::CommandPalette));
-    let _ = state.view();
     assert!(state.gallery_overlay_runtime_scene_populated());
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
 
     state.update(GalleryMessage::ToggleImageViewer);
     assert!(state.overlay.contains(&GalleryOverlay::ImageViewer));
-    let _ = state.view();
     assert!(state.gallery_overlay_runtime_scene_populated());
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
 
     state.update(GalleryMessage::ToggleContextMenu);
     assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
-    let _ = state.view();
     assert!(state.gallery_overlay_runtime_scene_populated());
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
 
     state.update(GalleryMessage::DismissOverlay);
     assert!(!state.overlay.is_open());
@@ -85,9 +102,9 @@ fn destructive_menu_action_requires_confirmation() {
     state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     state.update(GalleryMessage::ToggleContextMenu);
 
-    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::Select(
-        ContextAction::Remove,
-    )));
+    state.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::Select("remove".into()),
+    ));
     assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
     assert_eq!(
         state.menu_confirmation.pending(),
@@ -95,9 +112,9 @@ fn destructive_menu_action_requires_confirmation() {
     );
     assert_eq!(state.selected_item, 2);
 
-    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::Select(
-        ContextAction::Remove,
-    )));
+    state.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::Select("remove".into()),
+    ));
     assert!(!state.overlay.is_open());
     assert_eq!(state.context_action, Some(ContextAction::Remove));
     assert_eq!(state.selected_item, 0);
@@ -180,9 +197,9 @@ fn context_menu_maps_leaf_suffixes_and_keeps_item_icons() {
     );
 
     state.update(GalleryMessage::ToggleContextMenu);
-    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::Select(
-        ContextAction::Rename,
-    )));
+    state.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::Select("rename".into()),
+    ));
     assert_eq!(state.context_action, Some(ContextAction::Rename));
 }
 
@@ -213,9 +230,9 @@ fn context_menu_search_filters_items() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     state.update(GalleryMessage::ToggleContextMenu);
-    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::Search(
-        "重命名".to_owned(),
-    )));
+    state.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::Search("重命名".to_owned()),
+    ));
     assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
     assert_eq!(state.context_query, "重命名");
 }
@@ -225,16 +242,16 @@ fn context_menu_tracks_hovered_submenu_paths_without_closing_the_overlay() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     state.update(GalleryMessage::ToggleContextMenu);
-    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::OpenSubmenu(
-        vec![0],
-    )));
+    state.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::OpenSubmenu(vec![0]),
+    ));
 
     assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
     assert_eq!(state.context_path, vec![0]);
 
-    state.update(GalleryMessage::ContextMenu(ContextMenuEvent::OpenSubmenu(
-        Vec::new(),
-    )));
+    state.update(GalleryMessage::ContextMenu(
+        GalleryContextMenuEvent::OpenSubmenu(Vec::new()),
+    ));
     assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
     assert!(state.context_path.is_empty());
 }
@@ -453,11 +470,19 @@ fn gallery_runtime_assembles_markdown_fence_children() {
 fn gallery_main_route_paints_a_runtime_scene() {
     let mut state = GalleryState::new();
     assert!(!state.settings_open);
-    let _ = state.view();
     assert!(state.gallery_runtime_scene_populated());
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
     state.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
-    let _ = state.view();
     assert!(state.gallery_runtime_scene_populated());
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
 }
 
 #[test]
@@ -467,11 +492,20 @@ fn settings_route_paints_a_runtime_scene() {
     state.update(GalleryMessage::OpenSettings);
     assert!(state.settings_open);
     assert!(state.settings_runtime_scene_populated());
-    let _ = state.view();
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
     state.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
         "workspace",
     )));
     assert!(state.settings_runtime_scene_populated());
+    assert!(
+        state
+            .runtime_document()
+            .is_some_and(|document| !document.scene().is_empty())
+    );
     state.update(GalleryMessage::BackFromSettings);
     assert!(!state.settings_open);
 }
@@ -483,8 +517,8 @@ fn settings_runtime_title_bar_chrome_starts_window_drag() {
     assert!(state.settings_open);
     assert!(state.settings_runtime_scene_populated());
 
-    let origin = Point::new(640.0, 18.0);
-    let dragged = Point::new(648.0, 18.0);
+    let origin = LogicalPoint::new(640.0, 18.0);
+    let dragged = LogicalPoint::new(648.0, 18.0);
     state.update(GalleryMessage::SettingsRuntime(
         SettingsRuntimeInput::PointerDown {
             button: 0,
@@ -746,4 +780,36 @@ fn first_dock_split_ratio(node: &nana_ui::runtime::DockNode) -> f32 {
         nana_ui::runtime::DockNode::Split { ratio, .. } => *ratio,
         _ => panic!("gallery dock main is a split"),
     }
+}
+
+#[test]
+fn dock_float_backs_a_runtime_document_for_the_window() {
+    let mut app = super::GalleryApp::new();
+    let update = app.apply_message(GalleryMessage::Dock(DockAction::Float {
+        id: DockId::from("gallery.assets"),
+        bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
+        monitor: None,
+    }));
+    assert!(
+        update
+            .window_commands
+            .iter()
+            .any(|command| matches!(command, WindowCommand::Open { .. }))
+    );
+    let surface = app.state().dock.floating.first().expect("floated surface");
+    let id = nana_ui_platform::WindowId(nana_ui::runtime::dock_surface_window_key(&surface.id));
+    assert!(
+        nana_ui::RuntimeProgram::document(&app, id)
+            .is_some_and(|document| !document.scene().is_empty()),
+        "Open must be backed by a flushed dock document"
+    );
+
+    let close = app.apply_message(GalleryMessage::Dock(DockAction::Reset));
+    assert!(
+        close
+            .window_commands
+            .iter()
+            .any(|command| matches!(command, WindowCommand::Close(_)))
+    );
+    assert!(nana_ui::RuntimeProgram::document(&app, id).is_none());
 }

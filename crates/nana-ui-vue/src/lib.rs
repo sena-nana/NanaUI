@@ -10,7 +10,7 @@
 //! L3 Rust API ──► 同一套 Model（nana-ui 适配器）
 //!                  ▼
 //!            保留权威：UiWorld / UiScene
-//!            兼容绘制：iced_app → nana-ui → Iced
+//!            兼容绘制：nana-ui Scene host → WGPU
 //! ```
 //!
 //! ## Internal pipeline (adapter only — not a second paint core)
@@ -26,13 +26,13 @@
 //!      ↓
 //! widget_map + layout_map → Semantics
 //!      ↓
-//! iced_app (+ svg_icon L1 SVG exception) → nana-ui → Iced
+//! Runtime / UiScene → nana-ui Scene host
 //! ```
 //!
 //! Cascade SoT for `LayoutStyle` is [`MessageBridge`] stylesheet rules.
 //! `NanaTreeDocument::stylesheets` is diagnostics-only (count for host ops).
-//! Retained geometry lives in UiWorld/UiScene; iced [`LayoutBoxStore`] is the
-//! compatibility view after paint. `measure` is the pre-paint fallback +
+//! Retained geometry lives in UiWorld/UiScene. `LayoutBoxStore` is a
+//! diagnostic layout snapshot after paint. `measure` is the pre-paint fallback +
 //! `nana-css-parity` harness. There is no separate synthetic layout branch. See
 //! [`docs/css-layout-engine-boundary.md`](../../../docs/css-layout-engine-boundary.md).
 //!
@@ -44,7 +44,6 @@
 //! - `style` → L1 paint value parsing only（不拥有 layout / hit-test）
 //! - `widget_map` → Semantics (`WidgetKind` + props)
 //! - `layout_map` → Layout direction / Column·Row defaults
-//! - `iced_app` → Iced compatibility view of Runtime/Scene (feature `iced-view`)
 //! - Theme tiers → Tokens via `nana-ui` / core（arbitrary CSS hex ≠ token factory）
 //!
 //! Dependency direction:
@@ -55,16 +54,15 @@
 //!      ├────────► renderer / tree     (Custom Renderer hostOps)
 //!      ├────────► widget_map / layout_map / css_map / shell_contract / css_cascade / measure
 //!      ├────────► MessageBridge                       ← L1+L2 同树
-//!      ├────────► iced_app            (Iced compatibility view of Runtime/Scene)
+//!      ├────────► nana-ui Scene host  (Runtime/UiScene paint)
 //!      └────────► nana-ui-web-api     ← L1 Web API 兼容（非 WebView）
 //! ```
 //!
 //! See [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
 //!
-//! Unique retained authority is UiWorld/UiScene. `iced_app` (feature `iced-view`)
-//! is the Iced compatibility view of that Scene, including Runtime Scene leaves.
-//! WebView is not the product UI path. L1 SVG/`path` handling in `svg_icon` /
-//! `iced_app` is a temporary adapter exception — prefer sinking to L3 widgets.
+//! Unique retained authority is UiWorld/UiScene. Feature `iced-view` enables the
+//! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves.
+//! WebView is not the product UI path.
 //!
 //! Applications choose one JS engine:
 //! - `engine-quickjs` → `nana-js-quickjs`
@@ -82,28 +80,18 @@ mod bridge;
 mod canvas_gpu;
 mod css_cascade;
 mod css_map;
-#[cfg(feature = "iced-view")]
-pub mod editor_store;
 #[cfg(feature = "hosted")]
 mod hosted_adapter;
-#[cfg(feature = "iced-view")]
-pub mod iced_app;
 mod input;
 mod layout_map;
 mod measure;
-#[cfg(feature = "iced-view")]
-pub mod menu_store;
 mod multi_window;
 #[cfg(feature = "iced-view")]
 mod native_component;
 mod renderer;
-#[cfg(feature = "iced-view")]
-mod runtime_text;
 mod scroll;
 mod shell_contract;
 mod style;
-#[cfg(feature = "iced-view")]
-mod svg_icon;
 mod tree;
 #[cfg(feature = "hosted")]
 mod webgpu;
@@ -152,18 +140,8 @@ pub use css_map::{
     parse_grid_track_list_result, parse_inset_length, resolve_grid_column_widths,
     resolve_grid_track_sizes, resolve_paint_color,
 };
-#[cfg(feature = "iced-view")]
-pub use editor_store::EditorStore;
 #[cfg(feature = "hosted")]
 pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime};
-#[cfg(feature = "iced-view")]
-pub use iced_app::{
-    view_semantic_tree, view_semantic_tree_static, view_semantic_tree_static_with_editors,
-    view_semantic_tree_static_with_native_components, view_semantic_tree_static_with_resources,
-    view_semantic_tree_static_with_viewport, view_semantic_tree_with_editors,
-    view_semantic_tree_with_viewport, writeback_containing_blocks, writeback_iced_layout_boxes,
-    writeback_iced_layout_boxes_with_scroll,
-};
 pub use input::{
     CompositionEventKind, CompositionInput, HostedInputResult, InputModifiers, KeyboardEventKind,
     KeyboardInput, PointerEventKind, PointerInput, PointerType, WheelInput,
@@ -174,8 +152,6 @@ pub use layout_map::{
 pub use measure::{
     LayoutNode, MeasuredBox, measure_grid_auto_contribution, measure_layout, node_from_css,
 };
-#[cfg(feature = "iced-view")]
-pub use menu_store::MenuStore;
 pub use multi_window::{
     VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowOptions, VueWindowRole,
 };
@@ -190,10 +166,6 @@ pub use native_component::{
 #[cfg(feature = "iced-view")]
 pub use renderer::register_dom_host_ops_with_components;
 pub use renderer::{HostDocs, register_dom_host_ops, register_dom_host_ops_with_bridge};
-#[cfg(feature = "iced-view")]
-pub use runtime_text::IcedTextShaper;
-#[cfg(feature = "iced-view")]
-pub use scroll::drain_pending_scroll_tasks;
 pub use scroll::{
     ScrollAlign, ScrollIntoViewOptions, ScrollIntoViewResult, ScrollOffset, ScrollOffsetStore,
     is_scroll_container, reapply_scroll_translations, scroll_into_view, scrollable_widget_id,
@@ -202,8 +174,8 @@ pub use scroll::{
 pub use style::{is_non_token_css_color, map_css_color_for_tokens, parse_css_color};
 pub use tree::{
     BoxSnapshot, DocumentId, DomNodeKind, ElementNamespace, LayoutBox, LayoutBoxStore,
-    NODE_HANDLE_DOCUMENT_STRIDE, NanaTreeDocument, NodeHandle, get_layout_box, get_layout_box_from,
-    shared_layout_box_store,
+    NODE_HANDLE_DOCUMENT_STRIDE, NanaTreeDocument, NodeHandle, SharedRuntimeDocument,
+    get_layout_box, get_layout_box_from, shared_layout_box_store,
 };
 #[cfg(feature = "hosted")]
 pub use webgpu::JsWebGpuRuntime;
@@ -371,11 +343,10 @@ pub struct VueHost {
     /// when focus leaves, so leftover `ImeEvent::Disabled` still knows the original.
     ime_target: Option<NodeHandle>,
     ime_preedit: String,
-    /// Host-owned multi-line editor buffers (L2 Textarea → text_editor::Content).
-    #[cfg(feature = "iced-view")]
-    editors: EditorStore,
-    #[cfg(feature = "iced-view")]
-    menus: MenuStore,
+    /// Last focus/hover emitted to JS. Scene-host input updates Runtime first;
+    /// these remember the previous JS view so blur/over events still fire.
+    js_focus: Option<NodeHandle>,
+    js_pointer_hover: BTreeMap<u64, Option<NodeHandle>>,
     #[cfg(feature = "iced-view")]
     components: NativeComponentRegistry,
     /// Window-local bindings for host, Canvas, and JS WebGPU textures. Views
@@ -496,10 +467,8 @@ impl VueHost {
             file_drag_target: None,
             ime_target: None,
             ime_preedit: String::new(),
-            #[cfg(feature = "iced-view")]
-            editors: EditorStore::new(),
-            #[cfg(feature = "iced-view")]
-            menus: MenuStore::new(),
+            js_focus: None,
+            js_pointer_hover: BTreeMap::new(),
             #[cfg(feature = "iced-view")]
             components: NativeComponentRegistry::new(),
             #[cfg(feature = "iced-view")]
@@ -517,6 +486,13 @@ impl VueHost {
 
     pub fn document(&self) -> Arc<Mutex<NanaTreeDocument>> {
         Arc::clone(&self.document)
+    }
+
+    pub fn shared_runtime_document(&self) -> Arc<SharedRuntimeDocument> {
+        self.document
+            .lock()
+            .expect("vue doc")
+            .shared_runtime_document()
     }
 
     pub fn bridge(&self) -> Arc<Mutex<MessageBridge>> {
@@ -776,45 +752,7 @@ impl VueHost {
         snapshot
     }
 
-    /// Ensure host-owned [`EditorStore`] buffers exist for every Textarea node.
-    #[cfg(feature = "iced-view")]
-    pub fn prepare_editors(&mut self) {
-        let snap = self.semantic_snapshot();
-        for widget in &snap.widgets {
-            if widget.kind == WidgetKind::Textarea {
-                self.editors.sync_text(widget.id, &widget.props.value);
-            }
-        }
-    }
-
-    #[cfg(feature = "iced-view")]
-    pub fn editors(&self) -> &EditorStore {
-        &self.editors
-    }
-
-    #[cfg(feature = "iced-view")]
-    pub fn editors_mut(&mut self) -> &mut EditorStore {
-        &mut self.editors
-    }
-
-    /// Sync host-owned [`MenuStore`] trees for every ContextMenu node.
-    #[cfg(feature = "iced-view")]
-    pub fn prepare_menus(&mut self) {
-        let snap = self.semantic_snapshot();
-        self.menus.sync_from_snapshot(&snap);
-    }
-
-    #[cfg(feature = "iced-view")]
-    pub fn menus(&self) -> &MenuStore {
-        &self.menus
-    }
-
-    #[cfg(feature = "iced-view")]
-    pub fn menus_mut(&mut self) -> &mut MenuStore {
-        &mut self.menus
-    }
-
-    /// Registry shared by the Vue host and its Iced semantic renderer.
+    /// Registry shared by the Vue host and native component commands.
     #[cfg(feature = "iced-view")]
     pub fn components(&self) -> &NativeComponentRegistry {
         &self.components
@@ -1482,23 +1420,9 @@ impl VueHost {
             return Ok(changed);
         }
         #[cfg(feature = "iced-view")]
-        let editor_text = if let BridgeEvent::Editor { id, action } = &event {
-            self.editors.perform(*id, action.clone());
-            // Do not acknowledge_bridge here: JS v-model may lag behind host
-            // Content. prepare_editors/sync_text clears dirty only when bridge
-            // value catches up to host text.
-            Some(self.editors.text(*id))
-        } else {
-            None
-        };
+        if let BridgeEvent::MenuSearch { id, query } = &event {}
         #[cfg(feature = "iced-view")]
-        if let BridgeEvent::MenuSearch { id, query } = &event {
-            self.menus.set_query(*id, query.clone());
-        }
-        #[cfg(feature = "iced-view")]
-        if let BridgeEvent::MenuPath { id, path } = &event {
-            self.menus.set_active_path(*id, path.clone());
-        }
+        if let BridgeEvent::MenuPath { id, path } = &event {}
         #[cfg(feature = "iced-view")]
         let mut menu_confirm_armed = false;
         #[cfg(feature = "iced-view")]
@@ -1509,14 +1433,11 @@ impl VueHost {
                     .get(*id)
                     .is_some_and(|w| w.kind == WidgetKind::ContextMenu)
             };
-            if is_menu && self.menus.arm_danger_confirm(*id, value) {
-                menu_confirm_armed = true;
-            }
+            let _ = is_menu;
+            let _ = value;
         }
         #[cfg(feature = "iced-view")]
-        if let BridgeEvent::Toggle { id, value: false } = &event {
-            self.menus.set_pending(*id, None);
-        }
+        if let BridgeEvent::Toggle { id, value: false } = &event {}
         #[cfg(feature = "iced-view")]
         if menu_confirm_armed {
             return Ok(true);
@@ -1525,11 +1446,6 @@ impl VueHost {
             BridgeEvent::Input { id, value } => Some((*id, value.as_str())),
             _ => None,
         };
-        #[cfg(feature = "iced-view")]
-        let committed_input = committed_input.or_else(|| match (&event, editor_text.as_deref()) {
-            (BridgeEvent::Editor { id, .. }, Some(value)) => Some((*id, value)),
-            _ => None,
-        });
         if let Some((id, value)) = committed_input {
             let target = NodeHandle(id);
             let mut document = self.document.lock().expect("vue doc");
@@ -1565,11 +1481,6 @@ impl VueHost {
                 BridgeEvent::Change { id, value } => bridge.note_change(*id, *value),
                 BridgeEvent::Scroll { .. } | BridgeEvent::Native { .. } => Vec::new(),
                 #[cfg(feature = "iced-view")]
-                BridgeEvent::Editor { id, .. } => {
-                    let text = editor_text.clone().unwrap_or_default();
-                    bridge.note_input(*id, text)
-                }
-                #[cfg(feature = "iced-view")]
                 BridgeEvent::MenuSearch { .. } | BridgeEvent::MenuPath { .. } => {
                     // Host-only menu chrome; no JS listener required.
                     Vec::new()
@@ -1601,12 +1512,6 @@ impl VueHost {
                 }
                 BridgeEvent::Change { value, .. } => {
                     detail.insert("value".into(), HostValue::Number(*value));
-                }
-                #[cfg(feature = "iced-view")]
-                BridgeEvent::Editor { .. } => {
-                    if let Some(text) = &editor_text {
-                        detail.insert("value".into(), HostValue::string(text));
-                    }
                 }
                 _ => {}
             }
@@ -1817,6 +1722,24 @@ impl VueHost {
         engine: &mut E,
         input: PointerInput,
     ) -> Result<HostedInputResult, JsEngineError> {
+        self.dispatch_pointer_result_with(engine, input, true)
+    }
+
+    /// Fire Vue/DOM pointer events after the Scene host already applied Runtime input.
+    pub fn emit_pointer_from_runtime<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: PointerInput,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        self.dispatch_pointer_result_with(engine, input, false)
+    }
+
+    fn dispatch_pointer_result_with<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: PointerInput,
+        commit_runtime: bool,
+    ) -> Result<HostedInputResult, JsEngineError> {
         let physical_hit = {
             let doc = self.document.lock().expect("vue doc");
             doc.hit_test(input.client_x, input.client_y)
@@ -1863,11 +1786,17 @@ impl VueHost {
             PointerEventKind::Move | PointerEventKind::Cancel
         ) && captured.is_none()
         {
-            let previous = self
-                .document
-                .lock()
-                .expect("vue doc")
-                .pointer_hover(input.pointer_id);
+            let previous = if commit_runtime {
+                self.document
+                    .lock()
+                    .expect("vue doc")
+                    .pointer_hover(input.pointer_id)
+            } else {
+                self.js_pointer_hover
+                    .get(&input.pointer_id)
+                    .copied()
+                    .flatten()
+            };
             if previous != physical_hit {
                 if let Some(previous) = previous {
                     let mut transition = detail.clone();
@@ -1922,10 +1851,13 @@ impl VueHost {
                         self.fire_dom_event(engine, node, "mouseenter", transition)?;
                     }
                 }
-                self.document
-                    .lock()
-                    .expect("vue doc")
-                    .set_pointer_hover(input.pointer_id, physical_hit);
+                if commit_runtime {
+                    self.document
+                        .lock()
+                        .expect("vue doc")
+                        .set_pointer_hover(input.pointer_id, physical_hit);
+                }
+                self.js_pointer_hover.insert(input.pointer_id, physical_hit);
             }
         }
 
@@ -1946,13 +1878,19 @@ impl VueHost {
         let mut consumed = false;
         match input.kind {
             PointerEventKind::Down => {
-                if let Some(target) = target {
+                if commit_runtime && let Some(target) = target {
                     self.document
                         .lock()
                         .expect("vue doc")
                         .press_pointer(input.pointer_id, target);
                 }
-                let (previous, next) = self.focus_target_at(input.client_x, input.client_y);
+                let (previous, next) = if commit_runtime {
+                    self.focus_target_at(input.client_x, input.client_y)
+                } else {
+                    let previous = self.js_focus;
+                    let next = self.document.lock().expect("vue doc").focused();
+                    (previous, next)
+                };
                 if previous != next {
                     if let Some(previous) = previous {
                         self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
@@ -1961,13 +1899,17 @@ impl VueHost {
                         self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
                     }
                 }
+                self.js_focus = next;
             }
             PointerEventKind::Up => {
-                let pressed = self
-                    .document
-                    .lock()
-                    .expect("vue doc")
-                    .release_pointer_press(input.pointer_id);
+                let pressed = if commit_runtime {
+                    self.document
+                        .lock()
+                        .expect("vue doc")
+                        .release_pointer_press(input.pointer_id)
+                } else {
+                    target.or(physical_hit)
+                };
                 if !default_prevented && pressed.is_some() && pressed == physical_hit {
                     let click_target = pressed.expect("checked above");
                     let is_semantic = self
@@ -1994,10 +1936,12 @@ impl VueHost {
                 }
             }
             PointerEventKind::Cancel => {
-                self.document
-                    .lock()
-                    .expect("vue doc")
-                    .release_pointer_press(input.pointer_id);
+                if commit_runtime {
+                    self.document
+                        .lock()
+                        .expect("vue doc")
+                        .release_pointer_press(input.pointer_id);
+                }
             }
             PointerEventKind::Move => {}
         }
@@ -2005,16 +1949,18 @@ impl VueHost {
         self.flush_pointer_capture_events(engine)?;
 
         if matches!(input.kind, PointerEventKind::Up | PointerEventKind::Cancel) {
-            let captured = self
-                .document
-                .lock()
-                .expect("vue doc")
-                .pointer_capture(input.pointer_id);
-            if let Some(captured) = captured {
-                self.document
+            if commit_runtime {
+                let captured = self
+                    .document
                     .lock()
                     .expect("vue doc")
-                    .release_pointer(input.pointer_id, captured);
+                    .pointer_capture(input.pointer_id);
+                if let Some(captured) = captured {
+                    self.document
+                        .lock()
+                        .expect("vue doc")
+                        .release_pointer(input.pointer_id, captured);
+                }
             }
             self.flush_pointer_capture_events(engine)?;
         }
@@ -2076,6 +2022,23 @@ impl VueHost {
         engine: &mut E,
         input: WheelInput,
     ) -> Result<HostedInputResult, JsEngineError> {
+        self.dispatch_wheel_result_with(engine, input, true)
+    }
+
+    pub fn emit_wheel_from_runtime<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: WheelInput,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        self.dispatch_wheel_result_with(engine, input, false)
+    }
+
+    fn dispatch_wheel_result_with<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: WheelInput,
+        commit_runtime: bool,
+    ) -> Result<HostedInputResult, JsEngineError> {
         let target = {
             let doc = self.document.lock().expect("vue doc");
             doc.hit_event_target(input.client_x, input.client_y, "wheel")
@@ -2088,7 +2051,7 @@ impl VueHost {
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         let mut consumed = !allowed;
-        if allowed {
+        if allowed && commit_runtime {
             let delta = crate::scroll::wheel_scroll_delta(&input);
             let scrolled = {
                 let mut document = self.document.lock().expect("vue doc");
@@ -2114,6 +2077,8 @@ impl VueHost {
                     true
                 }
             };
+        } else if allowed {
+            consumed = true;
         }
         Ok(HostedInputResult {
             targeted: true,
@@ -2147,6 +2112,25 @@ impl VueHost {
         engine: &mut E,
         input: &KeyboardInput,
         target: Option<NodeHandle>,
+    ) -> Result<bool, JsEngineError> {
+        self.dispatch_keyboard_with(engine, input, target, true)
+    }
+
+    pub fn emit_keyboard_from_runtime<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: &KeyboardInput,
+        target: Option<NodeHandle>,
+    ) -> Result<bool, JsEngineError> {
+        self.dispatch_keyboard_with(engine, input, target, false)
+    }
+
+    fn dispatch_keyboard_with<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: &KeyboardInput,
+        target: Option<NodeHandle>,
+        commit_runtime: bool,
     ) -> Result<bool, JsEngineError> {
         let target = {
             let doc = self.document.lock().expect("vue doc");
@@ -2202,7 +2186,7 @@ impl VueHost {
                     WidgetKind::Switch | WidgetKind::Checkbox => {
                         !repeated && matches!(key.as_str(), " " | "space" | "spacebar")
                     }
-                    WidgetKind::Range => requested_value.is_some(),
+                    WidgetKind::Range => commit_runtime && requested_value.is_some(),
                     _ => false,
                 };
                 if activates {
@@ -2220,7 +2204,13 @@ impl VueHost {
         }
         if allowed && input.kind == KeyboardEventKind::Down && input.key.eq_ignore_ascii_case("tab")
         {
-            let (previous, next) = self.advance_tab_focus(input.modifiers.shift);
+            let (previous, next) = if commit_runtime {
+                self.advance_tab_focus(input.modifiers.shift)
+            } else {
+                let previous = self.js_focus;
+                let next = self.document.lock().expect("vue doc").focused();
+                (previous, next)
+            };
             if previous != next {
                 if let Some(previous) = previous {
                     self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
@@ -2229,6 +2219,9 @@ impl VueHost {
                     self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
                 }
             }
+            self.js_focus = next;
+        } else if !commit_runtime {
+            self.js_focus = self.document.lock().expect("vue doc").focused();
         }
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
@@ -2256,6 +2249,7 @@ impl VueHost {
             self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
         }
         self.fire_dom_event(engine, target, "focus", BTreeMap::new())?;
+        self.js_focus = Some(target);
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(true)
@@ -2512,9 +2506,7 @@ impl VueHost {
                 .expect("vue bridge")
                 .get(target.0)
                 .is_some_and(|widget| widget.kind == WidgetKind::ContextMenu);
-            if is_menu {
-                self.menus.set_query(target.0, next.value.clone());
-            }
+            if is_menu {}
         }
         self.fire_dom_event(engine, target, "input", detail)?;
         engine.run_microtasks()?;
@@ -2619,6 +2611,16 @@ impl VueHost {
         target: NodeHandle,
         input: &CompositionInput,
     ) -> Result<bool, JsEngineError> {
+        self.dispatch_composition_event_with(engine, target, input, true)
+    }
+
+    fn dispatch_composition_event_with<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        input: &CompositionInput,
+        commit_runtime: bool,
+    ) -> Result<bool, JsEngineError> {
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(&input.data));
         detail.insert(
@@ -2628,8 +2630,50 @@ impl VueHost {
         self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
         engine.run_microtasks()?;
         if input.kind == CompositionEventKind::End && !input.data.is_empty() {
-            return self.commit_text_on(engine, target, &input.data, "insertCompositionText");
+            return if commit_runtime {
+                self.commit_text_on(engine, target, &input.data, "insertCompositionText")
+            } else {
+                self.emit_text_events_from_runtime(
+                    engine,
+                    target,
+                    &input.data,
+                    "insertCompositionText",
+                )
+            };
         }
+        let _ = self.pump_frame(engine)?;
+        Ok(true)
+    }
+
+    pub(crate) fn emit_text_events_from_runtime<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        data: &str,
+        input_type: &str,
+    ) -> Result<bool, JsEngineError> {
+        let value = {
+            let document = self.document.lock().expect("vue doc");
+            document
+                .text_input_state(target)
+                .map(|state| state.value)
+                .or_else(|| document.get_attribute(target, "value"))
+                .unwrap_or_default()
+        };
+        let mut detail = BTreeMap::new();
+        detail.insert("data".into(), HostValue::string(data));
+        detail.insert("inputType".into(), HostValue::string(input_type));
+        detail.insert("value".into(), HostValue::string(&value));
+        detail.insert("isComposing".into(), HostValue::Bool(false));
+        if !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
+            return Ok(false);
+        }
+        self.document
+            .lock()
+            .expect("vue doc")
+            .set_attribute(target, "value", &value);
+        self.fire_dom_event(engine, target, "input", detail)?;
+        engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(true)
     }
@@ -2646,13 +2690,31 @@ impl VueHost {
         engine: &mut E,
         event: &ImeEvent,
     ) -> Result<bool, JsEngineError> {
+        self.dispatch_native_ime_with(engine, event, true)
+    }
+
+    /// Emit JS composition/`input` after the Scene host already applied Runtime IME.
+    pub fn emit_native_ime_from_runtime<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        event: &ImeEvent,
+    ) -> Result<bool, JsEngineError> {
+        self.dispatch_native_ime_with(engine, event, false)
+    }
+
+    fn dispatch_native_ime_with<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        event: &ImeEvent,
+        commit_runtime: bool,
+    ) -> Result<bool, JsEngineError> {
         match event {
             ImeEvent::Enabled => Ok(self.focused().is_some()),
             ImeEvent::Preedit { text, selection } => {
                 let Some(target) = self.focused() else {
                     return Ok(false);
                 };
-                let started = {
+                let started = if commit_runtime {
                     let mut document = self.document.lock().expect("vue doc");
                     if document.text_input_state(target).is_none() {
                         let value = document.get_attribute(target, "value").unwrap_or_default();
@@ -2673,48 +2735,74 @@ impl VueHost {
                         return Err(JsEngineError::new("invalid native IME preedit state"));
                     }
                     started
+                } else {
+                    self.ime_target.is_none()
                 };
                 self.remember_ime_target(target, text.clone());
                 if started {
-                    self.dispatch_composition_event(
+                    self.dispatch_composition_event_with(
                         engine,
                         target,
                         &CompositionInput::new(CompositionEventKind::Start, ""),
+                        commit_runtime,
                     )?;
                 }
-                self.dispatch_composition_event(
+                self.dispatch_composition_event_with(
                     engine,
                     target,
                     &CompositionInput::new(CompositionEventKind::Update, text),
+                    commit_runtime,
                 )
             }
             ImeEvent::Commit(text) => {
-                let Some(target) = self.focused() else {
+                let Some(target) = self.ime_target.or_else(|| self.focused()) else {
                     return Ok(false);
                 };
                 self.clear_ime_target();
-                self.document
-                    .lock()
-                    .expect("vue doc")
-                    .set_ime_composition(target, None);
-                self.dispatch_composition_event(
+                if commit_runtime {
+                    self.document
+                        .lock()
+                        .expect("vue doc")
+                        .set_ime_composition(target, None);
+                }
+                self.dispatch_composition_event_with(
                     engine,
                     target,
                     &CompositionInput::new(CompositionEventKind::End, text),
+                    commit_runtime,
                 )
             }
             ImeEvent::Disabled => {
-                let leftover = self.take_ime_leftover();
+                if commit_runtime {
+                    let leftover = self.take_ime_leftover();
+                    let Some((target, data)) = leftover else {
+                        return Ok(self.focused().is_some());
+                    };
+                    if self.text_commit_blocked(target) {
+                        return Ok(true);
+                    }
+                    return self.dispatch_composition_event_with(
+                        engine,
+                        target,
+                        &CompositionInput::new(CompositionEventKind::End, data),
+                        true,
+                    );
+                }
+                let leftover = self.ime_target.take().map(|target| {
+                    let data = std::mem::take(&mut self.ime_preedit);
+                    (target, data)
+                });
                 let Some((target, data)) = leftover else {
                     return Ok(self.focused().is_some());
                 };
-                if self.text_commit_blocked(target) {
+                if data.is_empty() {
                     return Ok(true);
                 }
-                self.dispatch_composition_event(
+                self.dispatch_composition_event_with(
                     engine,
                     target,
                     &CompositionInput::new(CompositionEventKind::End, data),
+                    false,
                 )
             }
         }

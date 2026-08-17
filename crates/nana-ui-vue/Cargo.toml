@@ -13,21 +13,16 @@ path = "src/lib.rs"
 [features]
 default = []
 benchmark = ["dep:serde", "dep:serde_json"]
-# Enable the Iced compatibility view of Runtime/UiScene (layout + base control variants).
+# Compatibility view of Runtime/UiScene. Uses nana-ui Runtime types;
+# product paint goes through UiScene.
 iced-view = [
-    "dep:iced",
     "dep:nana-ui",
-    "nana-ui/controls",
-    "nana-ui/surfaces",
-    "nana-ui/feedback",
-    "nana-ui/overlays",
-    "nana-ui/popover",
     "nana-ui/gpu",
     "nana-ui/syntax-highlighting",
     "nana-ui-runtime/syntax-highlighting",
 ]
-# Direct adapter into nana-ui's existing multi-window hosted runtime.
-hosted = ["iced-view", "nana-ui/hosted"]
+# Direct adapter into nana-ui's Scene-hosted runtime.
+hosted = ["iced-view", "nana-ui/hosted", "dep:wgpu"]
 
 [dependencies]
 nana-ui-core.workspace = true
@@ -38,8 +33,8 @@ nana-ui-web-api.workspace = true
 nana-ui-platform.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-iced = { workspace = true, optional = true }
 nana-ui = { path = "../nana-ui", optional = true, default-features = false }
+wgpu = { workspace = true, optional = true }
 # Intentionally NOT depending on nana-js-quickjs or nana-js-v8.
 
 [[bin]]
