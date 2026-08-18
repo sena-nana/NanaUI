@@ -724,6 +724,14 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         self.runtime.prepare_runtime_window(id);
     }
 
+    fn take_accessibility_update(
+        &mut self,
+        id: WindowId,
+    ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
+        self.sync_documents();
+        self.runtime.take_accessibility_update(id)
+    }
+
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
         let _ = self.runtime.runtime_rebuild_gpu(context.gpu().clone());
     }

@@ -572,7 +572,17 @@ impl RuntimeInputAdapter {
             });
         let handled = match event {
             ImeEvent::Enabled => false,
-            ImeEvent::Disabled => context.clear_ime(document)?,
+            ImeEvent::Disabled => {
+                let leftover = context
+                    .world()
+                    .focused_text_input(document)
+                    .and_then(|(id, _)| context.world().ime(id).map(|ime| ime.text.clone()))
+                    .filter(|text| !text.is_empty());
+                match leftover {
+                    Some(text) => context.commit_ime(document, &text)?,
+                    None => context.clear_ime(document)?,
+                }
+            }
             ImeEvent::Preedit { text, selection } => {
                 context.set_ime_preedit(document, text.clone(), *selection)?
             }
@@ -605,6 +615,41 @@ mod tests {
             line_delta: true,
             modifiers: InputModifiers::default(),
         }
+    }
+
+    fn focused_untyped_text_input(
+        context: &mut AppContext,
+        value: &str,
+    ) -> (DocumentId, nana_ui_runtime::StableNodeId) {
+        let document = DocumentId::new(1).unwrap();
+        let id = nana_ui_runtime::StableNodeId::new(1).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(
+            id,
+            document,
+            nana_ui_runtime::NodeKind::Element {
+                tag: "input".into(),
+            },
+        );
+        create.set_interaction(
+            id,
+            nana_ui_runtime::InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        create.set_text_input(id, Some(nana_ui_runtime::TextInputState::new(value)));
+        create.set_accessibility(
+            id,
+            nana_ui_runtime::AccessibilityState {
+                role: nana_ui_runtime::AccessibilityRole::TextInput,
+                editable: true,
+                ..nana_ui_runtime::AccessibilityState::default()
+            },
+        );
+        create.request_focus(document, Some(id));
+        context.commit_mutations(create).unwrap();
+        (document, id)
     }
 
     fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
@@ -1011,6 +1056,86 @@ mod tests {
             Some("第一行\n第二行")
         );
         assert_eq!(context.world().ime(area.stable_id()), None);
+    }
+
+    #[test]
+    fn dispatch_ime_commits_a_focused_text_input_without_a_typed_view() {
+        let mut context = AppContext::new();
+        let (document, id) = focused_untyped_text_input(&mut context, "Nana");
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "世".into(),
+                        selection: Some((0, "世".len())),
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.world().ime(id).map(|ime| ime.text.as_str()),
+            Some("世")
+        );
+        assert_eq!(
+            context
+                .world()
+                .text_input(id)
+                .map(|state| state.value.as_str()),
+            Some("Nana")
+        );
+
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Commit("世界".into()))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context
+                .world()
+                .text_input(id)
+                .map(|state| state.value.as_str()),
+            Some("Nana世界")
+        );
+        assert!(context.world().ime(id).is_none());
+    }
+
+    #[test]
+    fn dispatch_ime_disabled_commits_leftover_preedit_without_a_typed_view() {
+        let mut context = AppContext::new();
+        let (document, id) = focused_untyped_text_input(&mut context, "Nana");
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "世".into(),
+                        selection: Some((0, "世".len())),
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Disabled)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context
+                .world()
+                .text_input(id)
+                .map(|state| state.value.as_str()),
+            Some("Nana世")
+        );
+        assert!(context.world().ime(id).is_none());
     }
 
     #[test]

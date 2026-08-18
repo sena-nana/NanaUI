@@ -2083,6 +2083,7 @@ impl NanaTreeDocument {
             Some(node),
         );
         let _ = self.runtime.commit(mutations);
+        self.flush_runtime_systems();
     }
 
     pub fn clear_focus(&mut self) {
@@ -2092,6 +2093,7 @@ impl NanaTreeDocument {
             None,
         );
         let _ = self.runtime.commit(mutations);
+        self.flush_runtime_systems();
     }
 
     pub fn focused(&self) -> Option<NodeHandle> {
@@ -5339,6 +5341,33 @@ fn selector_matches(sel: &str, tag: &str, attrs: &HashMap<String, String>) -> bo
 mod tests {
     use super::*;
 
+    fn native_html_input(value: &str) -> (NanaTreeDocument, NodeHandle) {
+        let mut doc = NanaTreeDocument::new(400, 200, 1.0);
+        let input = doc.create_element("input");
+        doc.insert(input, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            input.0,
+            crate::WidgetKind::Input,
+            crate::WidgetProps {
+                value: value.into(),
+                ..crate::WidgetProps::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        doc.apply_layout_boxes(&[(
+            input,
+            LayoutBox {
+                handle: input,
+                x: 8.0,
+                y: 8.0,
+                width: 160.0,
+                height: 28.0,
+            },
+        )]);
+        (doc, input)
+    }
+
     #[test]
     fn legacy_handles_round_trip_through_runtime_ids() {
         let handle = NodeHandle(17);
@@ -5469,6 +5498,64 @@ mod tests {
             panic!("removed retained nodes must produce a delta");
         };
         assert!(removed.removed.iter().any(|id| id.get() == node.0));
+    }
+
+    #[test]
+    fn native_html_input_keeps_text_field_semantics_after_vue_drains_runtime_work() {
+        let (mut doc, input) = native_html_input("committed");
+        doc.set_focus(input);
+
+        let input_id = StableNodeId::try_from(input).unwrap();
+        let field = doc
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.id == input_id)
+            .expect("native input must enter the retained accessibility tree");
+        assert_eq!(field.role, AccessibilityRole::TextInput);
+        assert_eq!(field.value.as_deref(), Some("committed"));
+        assert!(field.editable);
+        assert!(field.focused);
+
+        assert!(
+            doc.take_accessibility_update().is_some(),
+            "Vue flush_runtime_systems must record the TextInput projection"
+        );
+        assert!(doc.take_accessibility_update().is_none());
+        let host_flush = doc
+            .runtime_document_mut()
+            .flush_with(|_, _| Ok(()))
+            .expect("host flush after Vue drain");
+        assert!(host_flush.accessibility.updated.is_empty());
+        assert!(host_flush.accessibility.removed.is_empty());
+        let field = doc
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.id == input_id)
+            .expect("world snapshot remains the AccessKit authority");
+        assert_eq!(field.role, AccessibilityRole::TextInput);
+        assert_eq!(field.value.as_deref(), Some("committed"));
+        assert!(field.focused);
+    }
+
+    #[test]
+    fn set_focus_after_vue_drain_queues_accesskit_focus_on_the_text_field() {
+        let (mut doc, input) = native_html_input("NanaUI");
+        assert!(doc.take_accessibility_update().is_some());
+        assert!(doc.take_accessibility_update().is_none());
+
+        doc.set_focus(input);
+        let Some(AccessibilityUpdate::Delta(focused)) = doc.take_accessibility_update() else {
+            panic!("set_focus must flush an AccessKit focus delta");
+        };
+        let input_id = StableNodeId::try_from(input).unwrap();
+        let field = focused
+            .updated
+            .iter()
+            .find(|node| node.id == input_id)
+            .expect("focus delta must include the TextInput");
+        assert_eq!(field.role, AccessibilityRole::TextInput);
+        assert!(field.focused);
+        assert!(doc.take_accessibility_update().is_none());
     }
 
     #[test]

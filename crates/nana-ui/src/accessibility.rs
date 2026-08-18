@@ -419,6 +419,10 @@ impl HostedAccessibility {
         }
     }
 
+    pub(crate) fn retained_generation(&self) -> Option<u64> {
+        self.projector.generation
+    }
+
     pub(crate) fn process_event(&mut self, window: &Window, event: &WindowEvent) {
         self.adapter.process_event(window, event);
     }
@@ -729,6 +733,25 @@ mod tests {
         assert_eq!(input.description(), Some("Required details"));
         assert_eq!(input.value(), Some("hello"));
         assert_eq!(input.bounds().unwrap().x1, 110.0);
+    }
+
+    #[test]
+    fn focus_delta_moves_accesskit_focus_from_generic_root_to_text_input() {
+        let root = node(1, None, &[2]);
+        let mut input = node(2, Some(1), &[]);
+        input.role = AccessibilityRole::TextInput;
+        let (mut projector, initial) =
+            AccessibilityProjector::new(vec![root, input.clone()], true, 1.0);
+        assert_eq!(initial.focus, NodeId(1));
+
+        input.focused = true;
+        let update = projector.apply(AccessibilityDelta {
+            generation: 2,
+            updated: vec![input],
+            removed: vec![],
+        });
+        assert!(update.tree.is_none());
+        assert_eq!(update.focus, NodeId(2));
     }
 
     #[test]

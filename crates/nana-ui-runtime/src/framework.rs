@@ -3171,7 +3171,33 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
             return self.commit_editable_ime(entity, text);
         }
-        Ok(false)
+        self.commit_world_text_input_ime(document, text)
+    }
+
+    fn commit_world_text_input_ime(
+        &mut self,
+        document: DocumentId,
+        text: &str,
+    ) -> Result<bool, FrameworkError> {
+        let Some((target, state)) = self.world.focused_text_input(document) else {
+            return Ok(false);
+        };
+        let mut next = state.clone();
+        if !self
+            .world
+            .accessibility(target)
+            .is_some_and(|state| state.editable)
+        {
+            return Ok(false);
+        }
+        if !next.replace_selection(text) {
+            return Ok(false);
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_ime(target, None);
+        mutations.set_text_input(target, Some(next));
+        self.world.commit(mutations)?;
+        Ok(true)
     }
 
     pub fn replace_focused_text(

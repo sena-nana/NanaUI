@@ -236,12 +236,11 @@ fn initialize<Program: RuntimeProgram>(
     }
     #[cfg(not(target_os = "android"))]
     let accessibility = {
-        let nodes = accessibility_snapshot(&program, WindowId::PRIMARY);
         Some(HostedAccessibility::new(
             event_loop,
             Arc::clone(graphics.window()),
-            None,
-            nodes,
+            accessibility_world_generation(&program, WindowId::PRIMARY),
+            accessibility_snapshot(&program, WindowId::PRIMARY),
             true,
             window.scale_factor() as f32,
         ))
@@ -782,12 +781,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let material = apply_scene_material(window.as_ref(), self.last_theme);
         #[cfg(not(target_os = "android"))]
         let accessibility = {
-            let nodes = accessibility_snapshot(&self.program, id);
             Some(HostedAccessibility::new(
                 event_loop,
                 Arc::clone(&window),
-                None,
-                nodes,
+                accessibility_world_generation(&self.program, id),
+                accessibility_snapshot(&self.program, id),
                 true,
                 window.scale_factor() as f32,
             ))
@@ -1020,6 +1018,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let Some(window) = self.window(id) else {
             return;
         };
+        if !window.has_focus() {
+            apply_text_input_request(
+                window.as_ref(),
+                Some(TextInputRequest {
+                    enabled: false,
+                    cursor_area: None,
+                    purpose: TextInputPurpose::Normal,
+                }),
+            );
+            return;
+        }
         apply_text_input_request(
             window.as_ref(),
             self.program.document(id).map(runtime_text_input_request),
@@ -1106,23 +1115,27 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .and_then(|host| host.accessibility.as_ref())
                 .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor))
         };
-        let pending = self.accessibility_pending_mut(id).take();
-        let update = if scale_factor_changed {
-            match pending {
-                Some(update @ AccessibilityUpdate::Full { .. }) => Some(update),
-                Some(AccessibilityUpdate::Delta(delta)) => Some(AccessibilityUpdate::Full {
-                    generation: Some(delta.generation),
-                    nodes: accessibility_snapshot(&self.program, id),
-                }),
-                None => Some(AccessibilityUpdate::Full {
-                    generation: None,
-                    nodes: accessibility_snapshot(&self.program, id),
-                }),
-            }
+        let projector_generation = if id == WindowId::PRIMARY {
+            self.accessibility
+                .as_ref()
+                .and_then(HostedAccessibility::retained_generation)
         } else {
-            pending
+            self.auxiliary
+                .get(&id)
+                .and_then(|host| host.accessibility.as_ref())
+                .and_then(HostedAccessibility::retained_generation)
         };
-        let Some(update) = update else {
+        let pending = self.accessibility_pending_mut(id).take();
+        let program = self.program.take_accessibility_update(id);
+        let world_generation = accessibility_world_generation(&self.program, id);
+        let Some(update) = next_accessibility_update(
+            pending,
+            program,
+            scale_factor_changed,
+            projector_generation,
+            world_generation,
+            || accessibility_snapshot(&self.program, id),
+        ) else {
             return;
         };
         if id == WindowId::PRIMARY {
@@ -1359,6 +1372,53 @@ fn accessibility_snapshot<Program: RuntimeProgram>(
                 .project_accessibility(document.document())
         })
         .unwrap_or_default()
+}
+
+#[cfg(not(target_os = "android"))]
+fn accessibility_world_generation<Program: RuntimeProgram>(
+    program: &Program,
+    id: WindowId,
+) -> Option<u64> {
+    program
+        .document(id)
+        .map(|document| document.context().world().generation())
+}
+
+#[cfg(not(target_os = "android"))]
+fn next_accessibility_update(
+    flush: Option<AccessibilityUpdate>,
+    program: Option<AccessibilityUpdate>,
+    scale_factor_changed: bool,
+    projector_generation: Option<u64>,
+    world_generation: Option<u64>,
+    snapshot: impl FnOnce() -> Vec<nana_ui_runtime::AccessibilityNode>,
+) -> Option<AccessibilityUpdate> {
+    if scale_factor_changed {
+        return Some(AccessibilityUpdate::Full {
+            generation: world_generation,
+            nodes: snapshot(),
+        });
+    }
+    if let Some(update) = flush.or(program) {
+        let queued = match &update {
+            AccessibilityUpdate::Full { generation, .. } => *generation,
+            AccessibilityUpdate::Delta(delta) => Some(delta.generation),
+        };
+        if world_generation.is_some_and(|world| queued.is_some_and(|queued| queued < world)) {
+            return Some(AccessibilityUpdate::Full {
+                generation: world_generation,
+                nodes: snapshot(),
+            });
+        }
+        return Some(update);
+    }
+    if projector_generation.is_some() && projector_generation == world_generation {
+        return None;
+    }
+    Some(AccessibilityUpdate::Full {
+        generation: world_generation,
+        nodes: snapshot(),
+    })
 }
 
 fn apply_scene_material(
@@ -1863,6 +1923,8 @@ fn platform_window_event(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "android"))]
+    use super::next_accessibility_update;
     use super::{
         InputTracker, RoutedWindowCommand, mouse_button_code, mouse_button_mask,
         platform_ime_event, platform_input_key, platform_input_modifiers, platform_window_event,
@@ -1874,6 +1936,8 @@ mod tests {
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, WindowCommand,
         WindowEvent, WindowGeometry, WindowId, WindowSettings,
     };
+    #[cfg(not(target_os = "android"))]
+    use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate};
     use winit::dpi::PhysicalPosition;
     use winit::event::{
         DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase,
@@ -1888,6 +1952,72 @@ mod tests {
             scale_factor: 2.0,
             ..WindowGeometry::default()
         }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn empty_flush_reprojects_when_the_program_already_drained_runtime_work() {
+        let Some(AccessibilityUpdate::Full { generation, nodes }) =
+            next_accessibility_update(None, None, false, None, Some(3), Vec::new)
+        else {
+            panic!("drained SystemWork must still reach AccessKit from the world");
+        };
+        assert_eq!(generation, Some(3));
+        assert!(nodes.is_empty());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn matching_generations_do_not_rebuild_an_idle_tree() {
+        assert!(
+            next_accessibility_update(None, None, false, Some(3), Some(3), || panic!(
+                "idle frames must not snapshot"
+            ))
+            .is_none()
+        );
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn program_accessibility_queue_is_the_host_source_when_flush_is_empty() {
+        let queued = AccessibilityUpdate::Delta(AccessibilityDelta {
+            generation: 2,
+            updated: Vec::new(),
+            removed: Vec::new(),
+        });
+        assert_eq!(
+            next_accessibility_update(None, Some(queued.clone()), false, None, Some(2), || panic!(
+                "queued deltas must not force a world snapshot"
+            ),),
+            Some(queued)
+        );
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn scale_change_reprojects_even_when_generations_match() {
+        let Some(AccessibilityUpdate::Full { generation, .. }) =
+            next_accessibility_update(None, None, true, Some(1), Some(1), Vec::new)
+        else {
+            panic!("DPI change must reproject the current world");
+        };
+        assert_eq!(generation, Some(1));
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn stale_program_queue_yields_to_the_current_world_snapshot() {
+        let queued = AccessibilityUpdate::Delta(AccessibilityDelta {
+            generation: 1,
+            updated: Vec::new(),
+            removed: Vec::new(),
+        });
+        let Some(AccessibilityUpdate::Full { generation, .. }) =
+            next_accessibility_update(None, Some(queued), false, Some(1), Some(3), Vec::new)
+        else {
+            panic!("stale queued delta must reproject AccessKit from the world");
+        };
+        assert_eq!(generation, Some(3));
     }
 
     #[test]
