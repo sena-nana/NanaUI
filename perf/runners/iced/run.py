@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Issue #8 Iced reference runner.
+"""Issue #8 / #12 Iced reference runner.
 
-Wraps the existing Gallery ``ui-benchmark`` binary. Gallery lists still perform
-full layout of every item; this is a legacy reference, not a virtualization
-claim.
+StaticTree invokes ``engine/iced`` ``scenario-bench``, which reads the shared
+Scenario JSON and materializes the complete-binary-heap used by Nana
+``tree_mutations`` (parent(i)=i//2, element-div, no text). That path is
+``same-scenario`` only when the report declares that generation.
 
-The current binary paints through SceneWgpuPainter. Historical Iced numbers live
-in docs/performance-baseline.md. A dedicated engine/iced adapter that builds the
-same Scenario tree is required by #8 / not implemented.
+``--from-report`` still accepts historical Gallery ``ui-benchmark`` JSON as
+``closest-legacy-reference``. Mutation, Hover, VirtualList, and Table stay
+unsupported (exit 2) until those kinds exist on the engine/iced adapter.
+
+Relative Iced/GPUI gates stay off: GPUI is still a stub.
 """
 
 from __future__ import annotations
@@ -25,12 +28,19 @@ import contract  # noqa: E402
 def plan(scenario_id: str, args: Any) -> list[str]:
     if args.from_report:
         return [f"# --from-report {args.from_report} ({scenario_id})"]
-    output = args.repo_root / "target" / "performance" / "issue8" / "ui-benchmark.json"
-    command = contract.cargo_run(
+    try:
+        scenario = contract.load_scenario(scenario_id, args.repo_root)
+    except FileNotFoundError:
+        return [f"# missing scenario file for {scenario_id}"]
+    if scenario["kind"] != "StaticTree":
+        return [
+            f"# iced unsupported for {scenario_id}; exit {contract.EXIT_UNSUPPORTED}",
+            "# engine/iced scenario-bench currently implements StaticTree only",
+        ]
+    output = args.repo_root / "target" / "performance" / "issue8" / f"iced-{scenario_id}.json"
+    command = contract.cargo_run_iced_scenario_bench(
         args.repo_root,
-        package="component-gallery",
-        binary="ui-benchmark",
-        features="benchmark",
+        scenario_path=contract.scenario_path(scenario_id, args.repo_root),
         output=output,
     )
     return [" ".join(command)]
@@ -46,37 +56,38 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
             scenario_id=scenario_id,
             unsupported_reason=f"No scenario JSON at perf/scenarios/{scenario_id}.json",
         )
-    if scenario["kind"] == "Mutation":
+    if scenario["kind"] in {
+        "Mutation",
+        "Hover",
+        "VirtualList",
+        "Table",
+        "Animation",
+        "Ime",
+        "DockWorkspace",
+        "Overlay",
+        "TextEditor",
+        "GpuScene",
+    }:
         return contract.envelope(
             runner="iced",
             status="unsupported",
             scenario_id=scenario_id,
             scenario=scenario,
             unsupported_reason=(
-                "ui-benchmark has no isolated paint-only / single-node mutation case. "
-                "Required by #8 / not implemented on the Gallery path."
+                f"engine/iced scenario-bench currently implements StaticTree only. "
+                f"{scenario['kind']} is required by #8 / not implemented. "
+                "Gallery ui-benchmark is not a substitute. Fake Iced numbers are forbidden."
             ),
         )
-    if scenario["kind"] == "Hover":
+    if scenario["kind"] != "StaticTree":
         return contract.envelope(
             runner="iced",
             status="unsupported",
             scenario_id=scenario_id,
             scenario=scenario,
             unsupported_reason=(
-                "ui-benchmark has no dedicated same-Scenario hover case. "
-                "Gallery list-100 event_update_ms is not hover.json."
-            ),
-        )
-    if scenario["kind"] == "VirtualList":
-        return contract.envelope(
-            runner="iced",
-            status="unsupported",
-            scenario_id=scenario_id,
-            scenario=scenario,
-            unsupported_reason=(
-                "Gallery lists are full-layout and are not VirtualList "
-                "{items, visible, overscan}. list-1000 is not virtual-list-10k."
+                f"engine/iced scenario-bench has no mapping for kind={scenario['kind']}. "
+                "Required by #8 / not implemented."
             ),
         )
 
@@ -85,21 +96,17 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
         payload = contract.load_json(source)
         command: list[str] = []
     else:
-        source = args.repo_root / "target" / "performance" / "issue8" / "ui-benchmark.json"
-        cache = getattr(args, "_iced_cache", None)
-        command = contract.cargo_run(
+        source = (
+            args.repo_root / "target" / "performance" / "issue8" / f"iced-{scenario_id}.json"
+        )
+        command = contract.cargo_run_iced_scenario_bench(
             args.repo_root,
-            package="component-gallery",
-            binary="ui-benchmark",
-            features="benchmark",
+            scenario_path=contract.scenario_path(scenario_id, args.repo_root),
             output=source,
         )
-        if cache is None:
-            source.parent.mkdir(parents=True, exist_ok=True)
-            contract.run_command(command, args.repo_root)
-            cache = contract.load_json(source)
-            setattr(args, "_iced_cache", cache)
-        payload = cache
+        source.parent.mkdir(parents=True, exist_ok=True)
+        contract.run_command(command, args.repo_root)
+        payload = contract.load_json(source)
 
     try:
         report = contract.extract_iced(scenario, payload, source_path=source)

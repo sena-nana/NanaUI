@@ -285,11 +285,16 @@ impl MeshPipeline {
         queue: &wgpu::Queue,
         physical_size: [u32; 2],
         scale_factor: f32,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let uniforms = Uniforms {
             transform: orthographic_scaled(physical_size[0], physical_size[1], scale_factor),
         };
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        let uniform_bytes = bytemuck::bytes_of(&uniforms);
+        queue.write_buffer(&self.uniforms, 0, uniform_bytes);
+        if let Some(work) = gpu_work {
+            work.record_upload(uniform_bytes.len());
+        }
         if !self.pending_vertices.is_empty() {
             if self.pending_vertices.len() > self.vertex_capacity {
                 self.vertex_capacity = self.pending_vertices.len().next_power_of_two();
@@ -299,12 +304,16 @@ impl MeshPipeline {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                if let Some(work) = gpu_work {
+                    work.record_realloc();
+                }
             }
-            queue.write_buffer(
-                &self.vertices,
-                0,
-                bytemuck::cast_slice(&self.pending_vertices),
-            );
+            let vertex_bytes = bytemuck::cast_slice(&self.pending_vertices);
+            queue.write_buffer(&self.vertices, 0, vertex_bytes);
+            if let Some(work) = gpu_work {
+                work.record_upload(vertex_bytes.len());
+                work.record_batch_rebuild();
+            }
         }
         if !self.pending_indices.is_empty() {
             if self.pending_indices.len() > self.index_capacity {
@@ -315,12 +324,15 @@ impl MeshPipeline {
                     usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                if let Some(work) = gpu_work {
+                    work.record_realloc();
+                }
             }
-            queue.write_buffer(
-                &self.indices,
-                0,
-                bytemuck::cast_slice(&self.pending_indices),
-            );
+            let index_bytes = bytemuck::cast_slice(&self.pending_indices);
+            queue.write_buffer(&self.indices, 0, index_bytes);
+            if let Some(work) = gpu_work {
+                work.record_upload(index_bytes.len());
+            }
         }
     }
 
@@ -329,6 +341,7 @@ impl MeshPipeline {
         pass: &mut wgpu::RenderPass<'_>,
         range: &MeshRange,
         scissor: PhysicalRect,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         if range.index_count == 0 {
             return;
@@ -343,6 +356,10 @@ impl MeshPipeline {
             0,
             0..1,
         );
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 }
 

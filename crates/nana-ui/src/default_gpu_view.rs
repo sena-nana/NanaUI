@@ -146,6 +146,9 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
             .expect("default gpu-view slot prepared");
         entry.viewport = viewport;
         queue.write_buffer(&entry.buffer, 0, bytemuck::bytes_of(&uniform));
+        if let Some(work) = context.gpu_work {
+            work.record_upload(std::mem::size_of::<ViewUniform>());
+        }
     }
 
     fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>) {
@@ -194,6 +197,11 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         render_pass.set_pipeline(&prepared.pipeline);
         render_pass.set_bind_group(0, &slot.bind_group, &[]);
         render_pass.draw(0..3, 0..1);
+        drop(render_pass);
+        if let Some(work) = context.gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 }
 

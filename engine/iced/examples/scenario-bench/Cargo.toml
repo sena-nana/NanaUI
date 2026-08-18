@@ -1,0 +1,13 @@
+[package]
+name = "scenario-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Issue #12 same-Scenario Iced adapter. Reads perf/scenarios JSON; does not depend on nana-* crates."
+
+[dependencies]
+iced.workspace = true
+iced_wgpu.workspace = true
+iced_winit.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

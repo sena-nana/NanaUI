@@ -1,0 +1,58 @@
+{
+  "catalog_workloads": [
+    {
+      "id": "ime",
+      "kind": "Ime",
+      "status": "ok",
+      "scripts": ["latin", "zh", "ja", "ko"],
+      "ime_script_count": 4,
+      "live_ui_entities": 1,
+      "preedit_ms": { "p50": 0.01, "p95": 0.02, "p99": 0.03 },
+      "commit_ms": { "p50": 0.04, "p95": 0.05, "p99": 0.06 },
+      "work": {
+        "entities_changed": 1,
+        "text_shaped": 1,
+        "layout_nodes": 0
+      }
+    },
+    {
+      "id": "dock-workspace",
+      "kind": "DockWorkspace",
+      "status": "ok",
+      "panes": 8,
+      "live_ui_entities": 24,
+      "resize_ms": { "p50": 0.2, "p95": 0.3, "p99": 0.4 },
+      "work": {
+        "entities_changed": 8,
+        "layout_nodes": 8
+      }
+    },
+    {
+      "id": "overlay",
+      "kind": "Overlay",
+      "status": "ok",
+      "overlay_kinds": ["tooltip", "context_menu", "modal", "popup"],
+      "overlay_kind_count": 4,
+      "live_ui_entities": 6,
+      "activate_ms": { "p50": 0.05, "p95": 0.06, "p99": 0.07 },
+      "work": {
+        "entities_changed": 2,
+        "layout_nodes": 0
+      }
+    },
+    {
+      "id": "text-editor",
+      "kind": "TextEditor",
+      "status": "ok",
+      "document_chars": 100000,
+      "visible_lines": 40,
+      "live_ui_entities": 1,
+      "local_edit_ms": { "p50": 0.08, "p95": 0.09, "p99": 0.1 },
+      "work": {
+        "text_shaped": 1,
+        "entities_changed": 1,
+        "layout_nodes": 0
+      }
+    }
+  ]
+}

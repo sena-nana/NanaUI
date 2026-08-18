@@ -4996,6 +4996,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-bench"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_wgpu",
+ "iced_winit",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -35,6 +35,7 @@ python3 perf/runners/gpui/run.py --scenario virtual-list-10k --output /tmp/gpui-
 GPUI is a stub: it prints `status: unsupported` and exits **2**. Exit **1** is a
 real failure. Fake GPUI numbers are forbidden.
 
-`--from-report` maps an already-produced `nana-*-benchmark` / `ui-benchmark`
-JSON without invoking cargo. Use it in tests and when another job already ran
-the binary.
+`--from-report` maps an already-produced `nana-*-benchmark` /
+`nana-gpu-scene-benchmark` / `scenario-bench` / Gallery `ui-benchmark` JSON
+without invoking cargo. Use it in tests and when another job already ran the
+binary.

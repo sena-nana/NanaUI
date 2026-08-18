@@ -3,15 +3,17 @@
 
 Does not reimplement Runtime. Invokes:
 
-- nana-runtime-benchmark (StaticTree, PaintOnly, Hover)
-- nana-framework-benchmark (VirtualList)
+- nana-runtime-benchmark (StaticTree complete-binary-heap via tree_mutations, Mutation including remaining §3.2 kinds, Hover, catalog_animation)
+- nana-framework-benchmark (VirtualList, Table / text-table, Ime, DockWorkspace, Overlay, TextEditor)
 - nana-scene-benchmark (optional StaticTree scene rows)
+- nana-gpu-scene-benchmark (gpu-scene-ui from perf/scenarios/gpu-scene-ui.json; UiOnly UI + HostTexture)
 
 Relative Iced/GPUI gates are not applied here.
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,12 @@ SCENE_BIN = {
     "features": "benchmark",
     "key": "scene",
 }
+GPU_SCENE_BIN = {
+    "package": "nana-ui",
+    "binary": "nana-gpu-scene-benchmark",
+    "features": "gpu",
+    "key": "gpu",
+}
 
 
 def _needed_bins(scenario: dict[str, Any]) -> list[dict[str, str]]:
@@ -48,8 +56,14 @@ def _needed_bins(scenario: dict[str, Any]) -> list[dict[str, str]]:
         return [RUNTIME_BIN, SCENE_BIN]
     if kind in {"Mutation", "Hover"}:
         return [RUNTIME_BIN]
-    if kind == "VirtualList":
+    if kind in {"VirtualList", "Table", "Ime", "DockWorkspace", "Overlay", "TextEditor"}:
         return [FRAMEWORK_BIN]
+    if kind == "Animation":
+        return [RUNTIME_BIN]
+    if kind == "GpuScene":
+        if scenario.get("params", {}).get("composition") == "UiOnly":
+            return [GPU_SCENE_BIN]
+        return []
     return []
 
 
@@ -67,12 +81,14 @@ def plan(scenario_id: str, args: Any) -> list[str]:
     work = args.repo_root / "target" / "performance" / "issue8"
     for spec in bins:
         output = work / f"{spec['key']}.json"
+        extra = _extra_args(scenario, spec, args.repo_root)
         command = contract.cargo_run(
             args.repo_root,
             package=spec["package"],
             binary=spec["binary"],
             features=spec["features"],
             output=output,
+            extra_args=extra,
         )
         lines.append(" ".join(command))
     return lines
@@ -90,6 +106,18 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
         )
     needed = _needed_bins(scenario)
     if not needed:
+        if scenario["kind"] == "GpuScene":
+            return contract.envelope(
+                runner="nana",
+                status="unsupported",
+                scenario_id=scenario_id,
+                scenario=scenario,
+                unsupported_reason=(
+                    f"GpuScene composition {scenario['params'].get('composition')} has no "
+                    "Nana encode/submit path. Live2D is not a Scene pass; HostTexture "
+                    "evidence is not this composition. Do not invent upload/batch zeros."
+                ),
+            )
         return contract.envelope(
             runner="nana",
             status="unsupported",
@@ -116,16 +144,33 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
         setattr(args, "_nana_cache", cache)
         for spec in needed:
             output = work / f"{spec['key']}.json"
+            extra = _extra_args(scenario, spec, args.repo_root)
             command = contract.cargo_run(
                 args.repo_root,
                 package=spec["package"],
                 binary=spec["binary"],
                 features=spec["features"],
                 output=output,
+                extra_args=extra,
             )
             commands.append(" ".join(command))
             if spec["key"] not in cache:
-                contract.run_command(command, args.repo_root)
+                try:
+                    contract.run_command(command, args.repo_root)
+                except subprocess.CalledProcessError as exc:
+                    if spec["key"] == "gpu" and exc.returncode == 2 and output.is_file():
+                        payload = contract.load_json(output)
+                        if payload.get("status") == "unsupported":
+                            return contract.envelope(
+                                runner="nana",
+                                status="unsupported",
+                                scenario_id=scenario_id,
+                                scenario=scenario,
+                                command=commands,
+                                unsupported_reason=payload.get("unsupported_reason")
+                                or "nana-gpu-scene-benchmark has no WGPU adapter",
+                            )
+                    raise
                 cache[spec["key"]] = contract.load_json(output)
             reports[spec["key"]] = cache[spec["key"]]
             paths[spec["key"]] = output
@@ -148,8 +193,24 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
     return report
 
 
+def _extra_args(scenario: dict[str, Any], spec: dict[str, str], repo_root: Path) -> list[str] | None:
+    if spec["key"] == "gpu":
+        return ["--scenario", str(contract.scenario_path(scenario["id"], repo_root))]
+    return None
+
+
 def _guess_report_key(payload: dict[str, Any]) -> str:
-    if "virtual_list_10k_materialize_ms" in payload or "virtual_scales" in payload:
+    if payload.get("gpu_work") is not None or payload.get("composition") in {
+        "UiOnly",
+        "UiLive2d",
+        "UiLive2dEffect",
+    }:
+        return "gpu"
+    if (
+        "virtual_list_10k_materialize_ms" in payload
+        or "virtual_scales" in payload
+        or "catalog_workloads" in payload
+    ):
         return "framework"
     if "rows" in payload and "phase" in payload:
         return "scene"

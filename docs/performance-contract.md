@@ -62,11 +62,12 @@ These multipliers are an engineering starting line, not an industry standard.
 They should tighten once both reference runners exist and a fixed machine is
 recording history.
 
-**Not yet enforceable.** GPUI has no adapter (stub exit 2). The Iced path is a
-Gallery `ui-benchmark` wrapper, not a same-Scenario `engine/iced` tree. Until
-both references produce real numbers on the shared schema, CI must not fail a
-PR for missing 1.15×/1.20×/1.25×/1.20× timing. Fake GPUI or Iced numbers are
-forbidden.
+**Not yet enforceable.** GPUI is a stub (exit 2). Iced StaticTree uses
+`engine/iced` `scenario-bench` on the same complete-binary-heap as Nana
+(`same-scenario` when the report declares that generation). Gallery
+`ui-benchmark` `--from-report` stays `closest-legacy-reference`. Relative
+gates stay off until GPUI also emits real same-scenario numbers. Fake GPUI
+or Iced numbers are forbidden.
 
 ## 3. Shared Scenario catalog
 
@@ -80,15 +81,26 @@ Harness files (runners consume these today):
 | `static-tree-10k` | `StaticTree` | `nodes: 10000` |
 | `static-tree-50k` | `StaticTree` | `nodes: 50000` |
 | `mutation-paint-only` | `Mutation` | `tree_nodes: 5000`, `kind: PaintOnly` |
+| `mutation-text` | `Mutation` | `tree_nodes: 5000`, `kind: Text` |
+| `mutation-layout-style` | `Mutation` | `tree_nodes: 5000`, `kind: LayoutStyle` |
+| `mutation-visibility` | `Mutation` | `tree_nodes: 5000`, `kind: Visibility` |
+| `mutation-transform` | `Mutation` | `tree_nodes: 5000`, `kind: Transform` |
+| `mutation-a11y` | `Mutation` | `tree_nodes: 5000`, `kind: Accessibility` |
 | `hover` | `Hover` | `nodes: 10000`, `size_change: false` |
 | `virtual-list-10k` | `VirtualList` | `items: 10000`, `visible: 40`, `overscan: 8`, `text_len: 32` |
 | `virtual-list-100k` | `VirtualList` | `items: 100000`, `visible: 40`, `overscan: 8`, `text_len: 32` |
+| `text-table` | `Table` | `rows: 10000`, `columns: 100`, `visible_rows: 40`, `visible_columns: 16`, `overscan_rows: 8`, `overscan_columns: 2`, `short_cell_len: 8`, `wrapped_cells: 4`, `wrapped_cell_len: 256` |
+| `animation` | `Animation` | `active: 1` |
+| `ime` | `Ime` | `scripts: ["latin", "zh", "ja", "ko"]` |
+| `dock-workspace` | `DockWorkspace` | `panes: 8` |
+| `overlay` | `Overlay` | `kinds: ["tooltip", "context_menu", "modal", "popup"]` |
+| `text-editor` | `TextEditor` | `document_chars: 100000`, `visible_lines: 40` |
 
-Issue §3 also requires the ids in `perf/scenarios/catalog.json` →
-`required_by_issue_not_in_harness` (remaining mutation kinds, 1M list gated
-on `NANA_PERF_SCALE=large`, table, editor, IME, dock, overlay, animation, GPU
-scene). Those ids are reserved. Required by #8 / not implemented as scenario
-files or runners.
+`virtual-list-1m` has a Scenario file and Nana mapping, but it stays out of `harness_ids` so default `--all` is not exit 2. The framework 1M row is skipped unless `NANA_PERF_SCALE=large`.
+
+`text-table` is in `harness_ids` and maps onto the Nana framework table 10k×100 scale (wrapped cells in the catalog). Glyph cache fields stay omitted.
+
+`animation` / `ime` / `dock-workspace` / `overlay` / `text-editor` are in `harness_ids` and map onto isolated Nana contexts (not the shared list drain). `gpu-scene-ui` materializes UiOnly from JSON on `nana-gpu-scene-benchmark`; it stays out of `harness_ids` because CI has no GPU. Live2D compositions stay unmapped (no encode path; do not emit 0).
 
 `VirtualList` parameters are the issue’s example shape:
 
@@ -109,7 +121,7 @@ count, text shape count, GPU upload, draw/batch count for lists.
 | Runner | Command | What it actually does | Status |
 | --- | --- | --- | --- |
 | Nana | `python3 perf/runners/nana/run.py --scenario <id>` | Thin map onto existing `nana-runtime-benchmark`, `nana-framework-benchmark`, `nana-scene-benchmark` | **partial** |
-| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | Thin wrap of Gallery `ui-benchmark` | **partial** (legacy reference) |
+| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | StaticTree → `engine/iced` `scenario-bench` (same complete-binary-heap as Nana). Gallery `ui-benchmark` `--from-report` stays a legacy wrap | **partial** (StaticTree same-scenario; other kinds exit 2) |
 | GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | Same CLI/schema; returns `unsupported` | **stub** |
 
 Exit codes: `0` ok, `1` error, `2` unsupported. CI must distinguish 2 from 1.
@@ -121,17 +133,14 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | StaticTree 100/1k/5k/10k | `nana-runtime-benchmark` + `nana-scene-benchmark` | enqueue, commit, initial systems (when present); scene extraction/idle/frame-graph | memory/allocations not exported |
 | StaticTree 50k | `nana-runtime-benchmark` `kind=construction` | enqueue/commit/paint/hover only | full systems pass missing |
 | PaintOnly | `nana-runtime-benchmark` `local_paint_*` at 5k | systems P50/P95/P99, `local_paint_work` WorkCounters including `layout_nodes` when present | invariant `layout_nodes == 0` is evaluable when the field is present; missing stays **not-evaluable** |
+| Text / LayoutStyle / Visibility / Transform / Accessibility | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | remaining §3.2 kinds. 5k full case only; Iced/GPUI stay unsupported |
 | Hover | `nana-runtime-benchmark` `pointer_hover_*` | only when the report has `nodes == 10000`; `pointer_hover_work` WorkCounters when present | otherwise **unsupported** (exit 2). Do not substitute a smaller tree. `layout_nodes == 0` is evaluable when the field is present |
-| VirtualList 10k/100k | `nana-framework-benchmark` `virtual_scales` (legacy `virtual_list_10k_*` fallback) | materialize/window; `live_ui_entities` when `virtual_scales` exists | overscan row count may differ from contract `overscan: 8`; 1M needs `NANA_PERF_SCALE=large` |
+| VirtualList 10k/100k/1M | `nana-framework-benchmark` `virtual_scales` (legacy `virtual_list_10k_*` fallback) | materialize/window; `live_ui_entities` when `virtual_scales` exists | overscan row count may differ from contract `overscan: 8`; 1M needs `NANA_PERF_SCALE=large` or the scale row is skipped (runner exit 2) |
+| Table / `text-table` | `nana-framework-benchmark` `virtual_scales` `kind=table` 10k×100 | materialize/window, `live_ui_entities`, WorkCounters text shaping/cache (`text_shaped`, `text_shaped_runs`, `text_layout_cache_hits`/`misses`, `text_wrap_layouts`, `cache_eviction`); catalog `wrapped_cells` copied | `glyph_cache_*` omitted (`None`); Iced/GPUI stay **unsupported** (exit 2). 100k table is extra binary coverage, not a catalog id. 1M table needs `NANA_PERF_SCALE=large` |
+| Animation / Ime / Dock / Overlay / TextEditor | `nana-runtime-benchmark` `catalog_animation` or `nana-framework-benchmark` `catalog_workloads` on isolated contexts | due samples / script counts / panes / overlay kinds / local-edit `text_shaped` | Iced/GPUI stay **unsupported**. Must not share the list-scroll AppContext (`input_hit_test==41`) |
+| GpuScene `gpu-scene-ui` | `nana-gpu-scene-benchmark` from `perf/scenarios/gpu-scene-ui.json` | UiOnly materialization + encode/submit WorkCounters (`gpu_upload_bytes`, draw/batch) | Not in `harness_ids`. Missing adapter exit 2. Live2D compositions have no path; do not emit 0 |
 
-Iced mapping: Gallery lists still layout every row. `static-tree-100` →
-`list-100` and `static-tree-1k` → `list-1000` are **closest-legacy-reference**
-only. Hover, paint-only, `virtual-list-10k`/`100k`, and StaticTree 5k/10k/50k
-are **unsupported** (exit 2): `list-100` `event_update_ms` is not hover, and
-`list-1000` is not a virtualized 10k list. Current `ui-benchmark` paints through
-`SceneWgpuPainter`; [`performance-baseline.md`](performance-baseline.md) holds
-the historical Iced Gallery series. A dedicated `engine/iced` adapter that
-builds the same Scenario JSON is required by #8 / not implemented.
+Iced mapping: `engine/iced` `scenario-bench` builds StaticTree as the same complete-binary-heap (`parent(i)=i//2`, element-div, no text). That path is `same-scenario` when the report declares the generation. Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Hover, mutation, VirtualList, Table, animation, IME, dock, overlay, editor, GPU scene, and StaticTree sizes without a scenario-bench run stay **unsupported** (exit 2). Relative gates stay off until GPUI also emits same-scenario ok.
 
 GPUI: no crate, workspace member, or adapter exists. Plug-in path is
 `perf/runners/gpui/adapter.py` implementing `run_scenario(scenario, args)`.
@@ -164,19 +173,20 @@ A single `frame_time` is not enough.
 | Accessibility | `SystemWork.accessibility` / `DirtyMask::ACCESSIBILITY` / `FrameStage::Accessibility` | incremental projection |
 | Animation | Runtime-owned animation sample / `FrameStage::Animation` | sparse sample in runtime bench |
 | Render Extract | `SystemWork.render_extraction` / `DirtyMask::RENDER` / `FrameStage::Extract` | `extract_nodes`; Scene `apply_delta` |
-| Batch | `FrameStage::Batch` | **unsupported** (`FrameStage::runtime_unsupported`) |
-| GPU Upload | `FrameStage::GpuUpload` | **unsupported** |
-| Command Encode | `FrameStage::Encode` | **unsupported** as a Runtime stage |
-| Submit | `FrameStage::Submit` | **unsupported** as a Runtime stage; Gallery `gpu_submit_wait_ms` is blocking wait |
+| Batch | `FrameStage::Batch` | **Runtime-only: unsupported**. `SceneWgpuPainter` times it after encode |
+| GPU Upload | `FrameStage::GpuUpload` | **Runtime-only: unsupported**. Observed `queue.write_buffer` on encode/submit |
+| Command Encode | `FrameStage::Encode` | **Runtime-only: unsupported**. `status=ran` after `SceneWgpuPainter::paint` |
+| Submit | `FrameStage::Submit` | **Runtime-only: unsupported**. Filled after host `record_submit` |
 | CPU Total | `FrameProfile.cpu_total` / Gallery `cpu_total_ms` | **partial** |
 | GPU UI / Live2D / Effects | weekly `ui-live2d-acceptance` totals | **partial**; not the same RenderPlan split |
 | Present / frame latency | *(none)* | **missing** |
 
 `nana_ui_core::{FrameStage, WorkCounters}` and `nana_ui_runtime::FrameProfiler`
 exist. Batch / GPU Upload / Encode / Submit report `unsupported` with zero
-duration on purpose. A host that never calls `FrameProfiler` still does not
-produce Issue §4 Frame N output. `FOCUS_IME` is an extra dirty bit, not an
-Issue §4 stage name.
+duration on Runtime-only hosts. `SceneWgpuPainter` records `GpuWorkObservation`
+and those stages after a real encode; missing adapter does not emit 0. A host
+that never calls `FrameProfiler` still does not produce Issue §4 Frame N output.
+`FOCUS_IME` is an extra dirty bit, not an Issue §4 stage name.
 
 ## 6. Dirty bits
 
@@ -218,16 +228,42 @@ Current types:
 
 - `nana_ui_core::WorkCounters` (`entities_total`, `entities_changed`,
   spawn/despawn, `style_processed`, `text_shaped`, `layout_nodes`,
-  `hit_test_candidates`, `accessibility_nodes_updated`,
-  `render_nodes_extracted`, `extracted_text_spans`);
+  `hit_test_candidates`, `input_targets`, `accessibility_nodes_updated`,
+  `render_nodes_changed`, `render_nodes_extracted`, `extracted_text_spans`,
+  `allocations`, `allocated_bytes`, `text_shaped_runs`,
+  `text_layout_cache_hits`, `text_layout_cache_misses`, `text_wrap_layouts`,
+  `glyph_cache_hits` / `glyph_cache_misses` (`None`), `cache_eviction`,
+  GPU keys `None` until encode/submit);
 - `SystemWork::counters()` and `UiWorld::last_work_counters()`;
 - `FOCUS_IME` on `SystemWork`, not on `WorkCounters`.
 
-Still missing from Issue §5: `input_targets`, `render_nodes_changed`,
-`batch_rebuilds`, `draw_batches`, `draw_calls`, allocations, allocated bytes,
-`gpu_upload_bytes`, `gpu_buffer_reallocations` (GPU bytes omitted because
-Runtime does not observe uploads). Issue §7 memory contract is **missing**
-as exported metrics.
+`allocations` / `allocated_bytes` are **CPU hot-path** payload counts Runtime
+can observe without a global allocator hook: dirty drain Vecs, layout-input
+children clones, document-order output, and text-shape temps. Empty idle
+drains report 0. They are not process-wide malloc, allocator slack, or VRAM.
+
+Text shaping/cache (Issue §3.5 / §11.4):
+
+| Field | What it measures | Status |
+| --- | --- | --- |
+| `text_shaped` | nodes with TEXT dirty this drain | drain |
+| `text_shaped_runs` | `TextShaper::shape` invocations (cache misses only) | `shape_text` / `shape_text_for_layout` |
+| `text_layout_cache_hits` | `TextLayoutCache::lookup` hits | real cache, lookup |
+| `text_layout_cache_misses` | `TextLayoutCache::insert` after a miss | real cache, insert |
+| `text_wrap_layouts` | shape calls with `wrap: true` | shaping path |
+| `cache_eviction` | `TextLayoutCache` FIFO evictions | `Some(n)` after a shaping pass; `None` until consulted |
+| `glyph_cache_hits` / `glyph_cache_misses` | glyph atlas | **`None` / omitted** — Runtime has no `GlyphCache` |
+
+Still **off / unsupported** on CPU-only drains (do not invent numbers):
+
+- process-wide allocations/frame and peak temporary bytes (no allocator hook);
+- persistent UiWorld / RenderWorld / glyph-cache **memory bytes**;
+- glyph-cache eviction (no glyph backend; do not treat `cache_eviction` as glyph trim);
+- GPU keys (`batch_rebuilds`, `draw_batches`, `draw_calls`, `gpu_upload_bytes`,
+  `gpu_buffer_reallocations`) stay `None` until `WorkCounters::record_gpu_work`
+  after encode/submit. `SceneWgpuPainter` / `nana-gpu-scene-benchmark` record
+  `Some` (including 0) only on that path. Issue §7 GPU resource memory is
+  **missing** as exported metrics.
 
 Runner stand-ins, not a substitute for PR invariants:
 
@@ -306,9 +342,16 @@ Long-term, not currently all machine-checked:
 2. Local change must not default to full-tree diff/layout/render.
 3. ECS systems must not default to a full World scan every frame.
 4. Text shaping/layout must have a stable, observable cache.
+   Runtime `TextLayoutCache` lookup/insert fills `text_layout_cache_hits` /
+   `misses` and `cache_eviction`. `glyph_cache_*` stay **`None` (omitted)**.
+
 5. Large List/Tree/Table must be virtualized.
 6. UiWorld → RenderWorld must support incremental extraction.
 7. Allocation / GPU upload / draw/batch counts must be measurable.
+   CPU hot-path `allocations` / `allocated_bytes` are measurable. GPU upload
+   and draw/batch are measurable on Scene encode/submit (`GpuWorkObservation`).
+   Runtime-only drains omit GPU keys.
+
 8. Critical workloads must keep being compared to Iced/GPUI on the same machine.
 
 ## 12. Definition of done vs this workspace
@@ -318,12 +361,12 @@ Copied from issue §16 so the contract does not drop DoD. Status is honest.
 | DoD | Status |
 | --- | --- |
 | Documented Performance Contract | **done** (this document) |
-| Iced / GPUI / NanaUI reference runners on shared workload | **partial** (Nana map + Iced Gallery wrap + GPUI stub) |
-| Every critical frame stage independently profiled | **partial** (`FrameProfiler` + `FrameStage`; GPU stages unsupported) |
-| Work counters can locate algorithm regressions | **partial** (`WorkCounters` type + `SystemWork::counters`; runner JSON still a stand-in) |
+| Iced / GPUI / NanaUI reference runners on shared workload | **partial** (Nana map + Iced scenario-bench StaticTree + Gallery wrap + GPUI stub) |
+| Every critical frame stage independently profiled | **partial** (`FrameProfiler` + `FrameStage`; GPU stages ran on Scene encode, unsupported on Runtime-only) |
+| Work counters can locate algorithm regressions | **partial** (`WorkCounters` includes `input_targets`, `render_nodes_changed`, CPU hot-path `allocations` / `allocated_bytes`, text shaping/cache, and GPU keys after encode; process-wide malloc stays omitted) |
 | ECS dirty/incremental automatic asserts | **partial** (unit tests + binary asserts + weekly semantic gates); PR invariants in progress |
-| Virtualized list/tree/table scale gates | **partial** (10k/100k `virtual_scales`; 1M opt-in; virtual tree materializer + Fenwick in `nana-ui-core` / `AppContext::materialize_virtual_tree`; scale benches still list/table) |
-| Allocation, memory, GPU upload, draw/batch recorded | **missing** as a sustained export |
+| Virtualized list/tree/table scale gates | **partial** (10k/100k `virtual_scales`; 1M harness id env-gated; virtual tree materializer + Fenwick in `nana-ui-core` / `AppContext::materialize_virtual_tree`; scale benches still list/table) |
+| Allocation, memory, GPU upload, draw/batch recorded | **partial** (CPU hot-path `allocations` / `allocated_bytes`, text shaping/cache, and GPU encode observations; process-wide malloc and peak temp bytes stay **unsupported**) |
 | Fixed benchmark machine with history | **missing**; weekly `ubuntu-latest`/`macos-latest` is not it |
 | P50/P95/P99/max and frame-budget misses comparable | **partial** on existing binaries (`frame_budget_misses` on new reports); not same-Scenario vs Iced/GPUI |
 | Native RHI vs WGPU same RenderPlan | **NO-GO / deferred by #7 Gate B** |

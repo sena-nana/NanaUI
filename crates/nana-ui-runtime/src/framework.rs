@@ -7276,6 +7276,31 @@ mod tests {
     }
 
     #[test]
+    fn scroll_view_with_forty_rows_dirties_forty_one_hit_targets() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let scroll = context
+            .create_component(document, ScrollView::new(ScrollAxes::Vertical))
+            .unwrap();
+        for index in 0..40 {
+            let row = context
+                .create_component(document, Text::new(format!("Visible row {index}")))
+                .unwrap();
+            context.append_child(scroll, row).unwrap();
+        }
+        let _ = context.take_system_work();
+        assert!(
+            context
+                .scroll_to(scroll, ScrollOffset { x: 0.0, y: 120.0 })
+                .unwrap()
+        );
+        let work = context.take_system_work();
+        assert_eq!(work.input_hit_test.len(), 41);
+        assert_eq!(work.render_extraction.len(), 41);
+        assert!(work.layout.is_empty());
+    }
+
+    #[test]
     fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();

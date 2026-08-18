@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "mutation-text",
+  "kind": "Mutation",
+  "params": {
+    "tree_nodes": 5000,
+    "kind": "Text"
+  },
+  "record": [
+    "text_shaping",
+    "layout",
+    "render_extraction",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "single_text_patch_shapes_bounded_nodes",
+      "path": "work_counters.text_shaped",
+      "op": "lte",
+      "value": 1,
+      "status": "required",
+      "note": "Issue #8 §3.2 / §12.1 requires text_shaped <= a bounded expected count. Evaluate when the runner JSON includes work_counters.text_shaped."
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "mutation-a11y",
+  "kind": "Mutation",
+  "params": {
+    "tree_nodes": 5000,
+    "kind": "Accessibility"
+  },
+  "record": [
+    "accessibility",
+    "layout",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "a11y_does_not_layout",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #8 §3.2 accessibility-state mutation must not schedule layout. Evaluate when work_counters.layout_nodes is present."
+    }
+  ]
+}

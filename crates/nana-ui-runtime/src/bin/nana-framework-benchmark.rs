@@ -1,10 +1,13 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nana_ui_core::{TableColumn, VirtualListLayout, VirtualTableLayout};
+use nana_ui_core::{LengthSpec, TableColumn, VirtualListLayout, VirtualTableLayout};
 use nana_ui_runtime::{
-    Activate, AppContext, Button, ContextPredicate, DocumentId, KeyContext, LayoutViewport, List,
-    NodeKind, ScrollAxes, ScrollOffset, ScrollView, Table, TableCell, TableRow, Text, TextContent,
-    VirtualListItems, VirtualTableItems,
+    Activate, AppContext, Button, ContextPredicate, Dialog, Dock, DockAxis, DockNode, DocumentId,
+    KeyContext, LayoutViewport, List, MeasureTextShaper, Menu, NodeKind, NodeStyle, OverlayHost,
+    Popover, ScrollAxes, ScrollOffset, ScrollView, StableNodeId, SystemWork, Table, TableCell,
+    TableRow, Text, TextArea, TextContent, TextInput, Tooltip, VirtualListItems, VirtualTableItems,
+    WorkCounters,
 };
 use serde::Serialize;
 
@@ -15,13 +18,33 @@ const SCALE_100K_WARMUP: usize = 10;
 const SCALE_100K_ITERATIONS: usize = 40;
 const SCALE_1M_WARMUP: usize = 5;
 const SCALE_1M_ITERATIONS: usize = 15;
+const WORKLOAD_WARMUP: usize = 10;
+const WORKLOAD_ITERATIONS: usize = 40;
 const LARGE_SCALE_TIMEOUT: Duration = Duration::from_secs(90);
+const IME_SCRIPTS: [(&str, &str, &str); 4] = [
+    ("latin", "hello", "hello"),
+    ("zh", "nihao", "你好"),
+    ("ja", "nihongo", "日本語"),
+    ("ko", "hangug", "한글"),
+];
+const OVERLAY_KINDS: [&str; 4] = ["tooltip", "context_menu", "modal", "popup"];
+const TEXT_EDITOR_CHARS: usize = 100_000;
+const TEXT_EDITOR_VISIBLE_LINES: usize = 40;
+const TEXT_EDITOR_LINE_PX: f32 = 20.0;
+const DOCK_PANES: usize = 8;
+const DOCK_VIEWPORT: (f32, f32) = (1_280.0, 800.0);
 const LIST_VIEWPORT: f32 = 800.0;
 const LIST_OVERSCAN: f32 = 200.0;
 const LIST_ITEM_EXTENT: f32 = 20.0;
 const TABLE_VIEWPORT: (f32, f32) = (1_280.0, 800.0);
 const TABLE_OVERSCAN: (f32, f32) = (160.0, 200.0);
 const TABLE_COLUMN_EXTENT: f32 = 80.0;
+/// `perf/scenarios/text-table.json` / catalog params. Most cells are short;
+/// each 40-row band keeps `WRAPPED_CELLS` long wrapping cells in column 0.
+const SHORT_CELL_LEN: usize = 8;
+const WRAPPED_CELLS: usize = 4;
+const WRAPPED_CELL_LEN: usize = 256;
+const TEXT_TABLE_VISIBLE_ROWS: usize = 40;
 
 /// Independent of `materialized.range`. Two-sided overscan plus one partial
 /// item on each edge. For 800+2×200 / 20 this is 62 list rows (~60).
@@ -44,6 +67,88 @@ fn table_row_cap() -> usize {
 fn table_live_entity_bound() -> usize {
     let rows = table_row_cap();
     rows + rows * table_column_cap()
+}
+
+/// Four wrapping cells per contract-visible band (column 0 of the first four rows).
+fn is_wrapped_cell(row: usize, column: usize) -> bool {
+    column == 0 && row % TEXT_TABLE_VISIBLE_ROWS < WRAPPED_CELLS
+}
+
+fn padded_cell_text(prefix: &str, row: usize, column: usize, len: usize) -> String {
+    let mut text = format!("{prefix}{row}:{column}");
+    if text.len() < len {
+        text.extend(std::iter::repeat_n('x', len - text.len()));
+    }
+    text.truncate(len);
+    text
+}
+
+fn text_table_cell(row: usize, column: usize) -> TableCell {
+    if is_wrapped_cell(row, column) {
+        TableCell::new(padded_cell_text("wrap ", row, column, WRAPPED_CELL_LEN))
+            .style(wrapped_cell_style())
+    } else {
+        TableCell::new(padded_cell_text("", row, column, SHORT_CELL_LEN))
+    }
+}
+
+fn wrapped_cell_style() -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            width: Some(LengthSpec::Px(TABLE_COLUMN_EXTENT)),
+            max_width: Some(LengthSpec::Px(TABLE_COLUMN_EXTENT)),
+            white_space_nowrap: false,
+            padding_left: Some(LengthSpec::Px(nana_ui_core::UI_METRICS.list_item_padding_x)),
+            padding_right: Some(LengthSpec::Px(nana_ui_core::UI_METRICS.list_item_padding_x)),
+            ..nana_ui_core::LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    }
+}
+
+/// Shape + wrap-measure + extract after table materialize so `text_shaped` /
+/// `extracted_text_spans` / `text_wrap_layouts` observe wrapping cells.
+fn measure_virtual_table_text(context: &mut AppContext, document: DocumentId, work: &SystemWork) {
+    let mut shaper = MeasureTextShaper;
+    let _ = context.resolve_styles(&work.style);
+    let _ = context.shape_text(&work.text, &mut shaper);
+    let _ = context.layout_document(
+        document,
+        LayoutViewport::new(TABLE_VIEWPORT.0, TABLE_VIEWPORT.1),
+    );
+    let _ = context.shape_text_for_layout(document, &mut shaper);
+    let extracted = context.world().extract_nodes(&work.render_extraction);
+    context.record_extract(&extracted);
+}
+
+/// Own AppContext so table shaping cannot dirty the shared list/scroll drain.
+fn isolated_table_text_work(logical_rows: usize, logical_columns: usize) -> ScaleWork {
+    let document = DocumentId::new(1).unwrap();
+    let mut context = AppContext::new();
+    let table = context.create_component(document, Table::new()).unwrap();
+    let mut items = VirtualTableItems::<usize, usize>::default();
+    let layout = VirtualTableLayout::new(
+        std::iter::repeat_n(20.0, logical_rows),
+        (0..logical_columns).map(|index| TableColumn::new(format!("column-{index}"), 80.0)),
+    );
+    let _ = context.take_system_work();
+    context
+        .materialize_virtual_table(
+            table,
+            &mut items,
+            &layout,
+            (0.0, 0.0),
+            TABLE_VIEWPORT,
+            TABLE_OVERSCAN,
+            |index| index,
+            |index| index,
+            |_index, _| TableRow::new(),
+            |row, _, column, _| text_table_cell(row, column),
+        )
+        .unwrap();
+    let work = context.take_system_work();
+    measure_virtual_table_text(&mut context, document, &work);
+    ScaleWork::from(context.last_work_counters())
 }
 
 #[derive(Default)]
@@ -72,6 +177,7 @@ struct Report {
     virtual_scroll_40_visible_nodes_ms: Distribution,
     canonical_layout_5000_nodes_ms: Distribution,
     virtual_scales: Vec<VirtualScaleCase>,
+    catalog_workloads: Vec<CatalogWorkloadCase>,
     virtual_tree: SkippedApi,
 }
 
@@ -99,6 +205,104 @@ struct VirtualScaleCase {
     window_ms: Option<Distribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     materialize_ms: Option<Distribution>,
+    /// Existing WorkCounters from the last table/list drain. Glyph cache
+    /// keys stay omitted: Runtime does not observe them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work: Option<ScaleWork>,
+}
+
+/// Subset of [`WorkCounters`] that this binary already observes.
+#[derive(Serialize, Clone, Copy)]
+struct ScaleWork {
+    entities_total: usize,
+    entities_changed: usize,
+    entities_spawned: usize,
+    entities_despawned: usize,
+    style_processed: usize,
+    text_shaped: usize,
+    layout_nodes: usize,
+    hit_test_candidates: usize,
+    input_targets: usize,
+    accessibility_nodes_updated: usize,
+    render_nodes_changed: usize,
+    render_nodes_extracted: usize,
+    extracted_text_spans: usize,
+    text_shaped_runs: usize,
+    text_layout_cache_hits: usize,
+    text_layout_cache_misses: usize,
+    text_wrap_layouts: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glyph_cache_hits: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glyph_cache_misses: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_eviction: Option<usize>,
+}
+
+/// Issue #8 catalog workloads that reuse existing Runtime APIs (IME, dock,
+/// overlay, editor). Glyph cache keys stay omitted.
+#[derive(Serialize)]
+struct CatalogWorkloadCase {
+    id: &'static str,
+    kind: &'static str,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skip_reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scripts: Option<Vec<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    panes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_kinds: Option<Vec<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visible_lines: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_ui_entities: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ime_script_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_kind_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preedit_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resize_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activate_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_edit_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work: Option<ScaleWork>,
+}
+
+impl From<WorkCounters> for ScaleWork {
+    fn from(counters: WorkCounters) -> Self {
+        Self {
+            entities_total: counters.entities_total,
+            entities_changed: counters.entities_changed,
+            entities_spawned: counters.entities_spawned,
+            entities_despawned: counters.entities_despawned,
+            style_processed: counters.style_processed,
+            text_shaped: counters.text_shaped,
+            layout_nodes: counters.layout_nodes,
+            hit_test_candidates: counters.hit_test_candidates,
+            input_targets: counters.input_targets,
+            accessibility_nodes_updated: counters.accessibility_nodes_updated,
+            render_nodes_changed: counters.render_nodes_changed,
+            render_nodes_extracted: counters.render_nodes_extracted,
+            extracted_text_spans: counters.extracted_text_spans,
+            text_shaped_runs: counters.text_shaped_runs,
+            text_layout_cache_hits: counters.text_layout_cache_hits,
+            text_layout_cache_misses: counters.text_layout_cache_misses,
+            text_wrap_layouts: counters.text_wrap_layouts,
+            glyph_cache_hits: counters.glyph_cache_hits,
+            glyph_cache_misses: counters.glyph_cache_misses,
+            cache_eviction: counters.cache_eviction,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -317,7 +521,7 @@ fn main() {
                 |index| index,
                 |index| index,
                 |_index, _| TableRow::new(),
-                |row, _, column, _| TableCell::new(format!("{row}:{column}")),
+                |row, _, column, _| text_table_cell(row, column),
             )
             .unwrap();
         let virtual_table_materialize_elapsed = started.elapsed();
@@ -420,6 +624,8 @@ fn main() {
         );
         let virtual_scroll_elapsed = started.elapsed();
         let scroll_work = context.take_system_work();
+        // Shared list/scroll drain only. Catalog IME/dock/overlay/editor use
+        // their own AppContext after this loop (see catalog_workloads).
         assert_eq!(scroll_work.input_hit_test.len(), 41);
         assert_eq!(scroll_work.render_extraction.len(), 41);
         assert!(scroll_work.layout.is_empty());
@@ -464,6 +670,7 @@ fn main() {
             construction_ms: None,
             window_ms: Some(summarize(&virtual_list_windows)),
             materialize_ms: Some(summarize(&virtual_list_materializations)),
+            work: None,
         },
         VirtualScaleCase {
             kind: "table",
@@ -479,6 +686,7 @@ fn main() {
             construction_ms: None,
             window_ms: Some(summarize(&virtual_table_windows)),
             materialize_ms: Some(summarize(&virtual_table_materializations)),
+            work: Some(isolated_table_text_work(10_000, 100)),
         },
         bench_virtual_list_scale(100_000, SCALE_100K_WARMUP, SCALE_100K_ITERATIONS, None),
         bench_virtual_table_scale(100_000, 100, SCALE_100K_WARMUP, SCALE_100K_ITERATIONS, None),
@@ -535,6 +743,15 @@ fn main() {
         virtual_scroll_40_visible_nodes_ms: summarize(&virtual_scroll_updates),
         canonical_layout_5000_nodes_ms: summarize(&canonical_layout_updates),
         virtual_scales,
+        catalog_workloads: vec![
+            // Each helper constructs AppContext::new(). Do not fold these
+            // into the shared list/table loop — table shaping on that
+            // context previously inflated scroll input_hit_test from 41 to 1164.
+            bench_ime(),
+            bench_dock_workspace(),
+            bench_overlay(),
+            bench_text_editor(),
+        ],
         virtual_tree: SkippedApi {
             status: "skipped",
             reason: "no scale bench this round",
@@ -626,6 +843,7 @@ fn skipped_scale(
         construction_ms: None,
         window_ms: None,
         materialize_ms: None,
+        work: None,
     }
 }
 
@@ -723,6 +941,7 @@ fn bench_virtual_list_scale(
         construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
         window_ms: Some(summarize(&windows)),
         materialize_ms: Some(summarize(&materializations)),
+        work: None,
     }
 }
 
@@ -759,6 +978,7 @@ fn bench_virtual_table_scale(
     let mut last_visible = 0;
     let mut last_overscan = 0;
     let mut last_live = 0;
+    let mut last_work = None;
     let table_bound = table_live_entity_bound();
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
@@ -790,7 +1010,7 @@ fn bench_virtual_table_scale(
                 |index| index,
                 |index| index,
                 |_index, _| TableRow::new(),
-                |row, _, column, _| TableCell::new(format!("{row}:{column}")),
+                |row, _, column, _| text_table_cell(row, column),
             )
             .unwrap();
         let materialize_elapsed = materialize_started.elapsed();
@@ -829,13 +1049,15 @@ fn bench_virtual_table_scale(
             live <= table_bound,
             "virtual table live entities {live} exceed geometric bound {table_bound}"
         );
-        let _ = context.take_system_work();
+        let table_work = context.take_system_work();
+        measure_virtual_table_text(&mut context, DocumentId::new(1).unwrap(), &table_work);
         if iteration >= warmup {
             windows.push(window_elapsed);
             materializations.push(materialize_elapsed);
             last_visible = visible;
             last_overscan = overscan;
             last_live = live;
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
         }
     }
     VirtualScaleCase {
@@ -852,5 +1074,361 @@ fn bench_virtual_table_scale(
         construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
         window_ms: Some(summarize(&windows)),
         materialize_ms: Some(summarize(&materializations)),
+        work: last_work,
+    }
+}
+
+fn drain_text(
+    context: &mut AppContext,
+    document: DocumentId,
+    work: &SystemWork,
+    viewport: LayoutViewport,
+) {
+    let mut shaper = MeasureTextShaper;
+    let _ = context.resolve_styles(&work.style);
+    let _ = context.shape_text(&work.text, &mut shaper);
+    let _ = context.layout_document(document, viewport);
+    let extracted = context.world().extract_nodes(&work.render_extraction);
+    context.record_extract(&extracted);
+}
+
+fn bench_ime() -> CatalogWorkloadCase {
+    let document = DocumentId::new(10).unwrap();
+    let mut context = AppContext::new();
+    let input = context
+        .create_component(document, TextInput::new(""))
+        .unwrap();
+    assert!(context.focus_node(document, input.stable_id()).unwrap());
+    let _ = context.take_system_work();
+    let mut preedits = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut commits = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
+    for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
+        let (script, preedit, commit) = IME_SCRIPTS[iteration % IME_SCRIPTS.len()];
+        let started = Instant::now();
+        assert!(
+            context
+                .set_ime_preedit(document, preedit.to_string(), None)
+                .unwrap(),
+            "ime preedit {script}"
+        );
+        let preedit_elapsed = started.elapsed();
+        let _ = context.take_system_work();
+        let started = Instant::now();
+        assert!(
+            context.commit_ime(document, commit).unwrap(),
+            "ime commit {script}"
+        );
+        let commit_elapsed = started.elapsed();
+        let work = context.take_system_work();
+        drain_text(
+            &mut context,
+            document,
+            &work,
+            LayoutViewport::new(320.0, 40.0),
+        );
+        if iteration >= WORKLOAD_WARMUP {
+            preedits.push(preedit_elapsed);
+            commits.push(commit_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
+        }
+    }
+    CatalogWorkloadCase {
+        id: "ime",
+        kind: "Ime",
+        status: "ok",
+        skip_reason: None,
+        scripts: Some(IME_SCRIPTS.iter().map(|(script, _, _)| *script).collect()),
+        panes: None,
+        overlay_kinds: None,
+        document_chars: None,
+        visible_lines: None,
+        live_ui_entities: Some(1),
+        ime_script_count: Some(IME_SCRIPTS.len()),
+        overlay_kind_count: None,
+        preedit_ms: Some(summarize(&preedits)),
+        commit_ms: Some(summarize(&commits)),
+        resize_ms: None,
+        activate_ms: None,
+        local_edit_ms: None,
+        work: last_work,
+    }
+}
+
+fn eight_pane_root(contents: &[StableNodeId; DOCK_PANES]) -> DockNode {
+    fn item(index: usize, content: StableNodeId) -> DockNode {
+        DockNode::item(format!("pane-{index}"), Some(content))
+    }
+    fn split(axis: DockAxis, first: DockNode, second: DockNode) -> DockNode {
+        DockNode::split(axis, 0.5, first, second)
+    }
+    split(
+        DockAxis::Horizontal,
+        split(
+            DockAxis::Vertical,
+            split(
+                DockAxis::Horizontal,
+                item(0, contents[0]),
+                item(1, contents[1]),
+            ),
+            split(
+                DockAxis::Horizontal,
+                item(2, contents[2]),
+                item(3, contents[3]),
+            ),
+        ),
+        split(
+            DockAxis::Vertical,
+            split(
+                DockAxis::Horizontal,
+                item(4, contents[4]),
+                item(5, contents[5]),
+            ),
+            split(
+                DockAxis::Horizontal,
+                item(6, contents[6]),
+                item(7, contents[7]),
+            ),
+        ),
+    )
+}
+
+fn bench_dock_workspace() -> CatalogWorkloadCase {
+    let document = DocumentId::new(11).unwrap();
+    let mut context = AppContext::new();
+    let mut contents = [StableNodeId::new(1).unwrap(); DOCK_PANES];
+    for (index, slot) in contents.iter_mut().enumerate() {
+        *slot = context
+            .create_component(document, Text::new(format!("pane {index}")))
+            .unwrap()
+            .stable_id();
+    }
+    let dock = context
+        .create_component(document, Dock::new(eight_pane_root(&contents)))
+        .unwrap();
+    context.assemble_dock(dock).unwrap();
+    let panes = context.read(dock, |dock| dock.flatten().len()).unwrap();
+    assert_eq!(panes, DOCK_PANES);
+    let work = context.take_system_work();
+    drain_text(
+        &mut context,
+        document,
+        &work,
+        LayoutViewport::new(DOCK_VIEWPORT.0, DOCK_VIEWPORT.1),
+    );
+    let handle = context
+        .world()
+        .document_order(document)
+        .into_iter()
+        .find(|&id| context.is_dock_handle(id))
+        .expect("assembled dock must expose a split handle");
+    assert!(context.focus_node(document, handle).unwrap());
+    let _ = context.take_system_work();
+    let mut resizes = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
+    for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
+        let direction = if iteration.is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
+        let started = Instant::now();
+        assert!(context.focus_node(document, handle).unwrap());
+        assert!(
+            context
+                .adjust_focused_dock_split(document, direction)
+                .unwrap(),
+            "dock splitter resize"
+        );
+        let resize_elapsed = started.elapsed();
+        let work = context.take_system_work();
+        drain_text(
+            &mut context,
+            document,
+            &work,
+            LayoutViewport::new(DOCK_VIEWPORT.0, DOCK_VIEWPORT.1),
+        );
+        if iteration >= WORKLOAD_WARMUP {
+            resizes.push(resize_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
+        }
+    }
+    let live = context.world().document_order(document).len();
+    CatalogWorkloadCase {
+        id: "dock-workspace",
+        kind: "DockWorkspace",
+        status: "ok",
+        skip_reason: None,
+        scripts: None,
+        panes: Some(panes),
+        overlay_kinds: None,
+        document_chars: None,
+        visible_lines: None,
+        live_ui_entities: Some(live),
+        ime_script_count: None,
+        overlay_kind_count: None,
+        preedit_ms: None,
+        commit_ms: None,
+        resize_ms: Some(summarize(&resizes)),
+        activate_ms: None,
+        local_edit_ms: None,
+        work: last_work,
+    }
+}
+
+fn bench_overlay() -> CatalogWorkloadCase {
+    let document = DocumentId::new(12).unwrap();
+    let mut context = AppContext::new();
+    let host = context
+        .create_component(document, OverlayHost::new())
+        .unwrap();
+    let tooltip = context
+        .create_component(document, Tooltip::new("Hint"))
+        .unwrap();
+    let menu = context
+        .create_component(document, Menu::new().label("Actions"))
+        .unwrap();
+    let dialog = context
+        .create_component(document, Dialog::new("Settings"))
+        .unwrap();
+    let popover = context
+        .create_component(document, Popover::new().trigger("Details"))
+        .unwrap();
+    context.append_child(host, tooltip).unwrap();
+    context.append_child(host, menu).unwrap();
+    context.append_child(host, dialog).unwrap();
+    let _ = context.take_system_work();
+    let mut activates = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
+    for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
+        let kind = OVERLAY_KINDS[iteration % OVERLAY_KINDS.len()];
+        let started = Instant::now();
+        match kind {
+            "tooltip" => assert!(context.activate_overlay(host, tooltip).unwrap()),
+            "context_menu" => assert!(context.activate_overlay(host, menu).unwrap()),
+            "modal" => assert!(context.activate_overlay(host, dialog).unwrap()),
+            "popup" => assert!(context.toggle_popover(popover).unwrap()),
+            _ => unreachable!(),
+        }
+        let activate_elapsed = started.elapsed();
+        let work = context.take_system_work();
+        drain_text(
+            &mut context,
+            document,
+            &work,
+            LayoutViewport::new(640.0, 480.0),
+        );
+        if iteration >= WORKLOAD_WARMUP {
+            activates.push(activate_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
+        }
+        match kind {
+            "popup" => assert!(context.toggle_popover(popover).unwrap()),
+            _ => {
+                let _ = context.dismiss_overlay(host).unwrap();
+            }
+        }
+        let _ = context.take_system_work();
+    }
+    CatalogWorkloadCase {
+        id: "overlay",
+        kind: "Overlay",
+        status: "ok",
+        skip_reason: None,
+        scripts: None,
+        panes: None,
+        overlay_kinds: Some(OVERLAY_KINDS.to_vec()),
+        document_chars: None,
+        visible_lines: None,
+        live_ui_entities: Some(context.world().document_order(document).len()),
+        ime_script_count: None,
+        overlay_kind_count: Some(OVERLAY_KINDS.len()),
+        preedit_ms: None,
+        commit_ms: None,
+        resize_ms: None,
+        activate_ms: Some(summarize(&activates)),
+        local_edit_ms: None,
+        work: last_work,
+    }
+}
+
+fn editor_document(chars: usize) -> String {
+    let mut text = String::with_capacity(chars);
+    let mut row = 0usize;
+    while text.len() < chars {
+        text.push_str(&format!("row {row:04} local edit line\n"));
+        row += 1;
+    }
+    text.truncate(chars);
+    text
+}
+
+fn bench_text_editor() -> CatalogWorkloadCase {
+    let document = DocumentId::new(13).unwrap();
+    let mut context = AppContext::new();
+    let value = editor_document(TEXT_EDITOR_CHARS);
+    assert_eq!(value.len(), TEXT_EDITOR_CHARS);
+    let area = context
+        .create_component(
+            document,
+            TextArea::new(value).height(TEXT_EDITOR_VISIBLE_LINES as f32 * TEXT_EDITOR_LINE_PX),
+        )
+        .unwrap();
+    assert!(context.focus_node(document, area.stable_id()).unwrap());
+    let work = context.take_system_work();
+    drain_text(
+        &mut context,
+        document,
+        &work,
+        LayoutViewport::new(
+            800.0,
+            TEXT_EDITOR_VISIBLE_LINES as f32 * TEXT_EDITOR_LINE_PX,
+        ),
+    );
+    let mut edits = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
+    for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
+        let patch = if iteration.is_multiple_of(2) {
+            "x"
+        } else {
+            "y"
+        };
+        let started = Instant::now();
+        assert!(context.replace_text_area_selection(area, patch).unwrap());
+        let edit_elapsed = started.elapsed();
+        let work = context.take_system_work();
+        drain_text(
+            &mut context,
+            document,
+            &work,
+            LayoutViewport::new(
+                800.0,
+                TEXT_EDITOR_VISIBLE_LINES as f32 * TEXT_EDITOR_LINE_PX,
+            ),
+        );
+        if iteration >= WORKLOAD_WARMUP {
+            edits.push(edit_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
+        }
+    }
+    CatalogWorkloadCase {
+        id: "text-editor",
+        kind: "TextEditor",
+        status: "ok",
+        skip_reason: None,
+        scripts: None,
+        panes: None,
+        overlay_kinds: None,
+        document_chars: Some(TEXT_EDITOR_CHARS),
+        visible_lines: Some(TEXT_EDITOR_VISIBLE_LINES),
+        live_ui_entities: Some(1),
+        ime_script_count: None,
+        overlay_kind_count: None,
+        preedit_ms: None,
+        commit_ms: None,
+        resize_ms: None,
+        activate_ms: None,
+        local_edit_ms: Some(summarize(&edits)),
+        work: last_work,
     }
 }

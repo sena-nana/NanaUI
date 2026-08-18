@@ -412,9 +412,9 @@ impl UiScene {
         let children = self
             .nodes
             .get(&id)
-            .map(|node| node.children.clone())
-            .unwrap_or_default();
-        for child in children {
+            .map(|node| Arc::clone(&node.children))
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+        for child in children.iter().copied() {
             self.visit_order(child, visited, order);
         }
     }
@@ -3580,12 +3580,16 @@ mod tests {
         StableNodeId::new(value).unwrap()
     }
 
+    fn style_mut(node: &mut ExtractedNode) -> &mut ComputedStyle {
+        Arc::make_mut(&mut node.style)
+    }
+
     fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         ExtractedNode {
             id: id(value),
-            kind: NodeKind::Element { tag: "div".into() },
+            kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: parent.map(id),
-            children: children.iter().copied().map(id).collect(),
+            children: Arc::new(children.iter().copied().map(id).collect()),
             layout: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -3594,7 +3598,7 @@ mod tests {
             },
             scroll_offset: nana_ui_runtime::ScrollOffset::default(),
             source_style: NodeStyle::default(),
-            style: ComputedStyle::default(),
+            style: Arc::new(ComputedStyle::default()),
             text: None,
             text_metrics: None,
             z_index: 0,
@@ -4067,7 +4071,7 @@ mod tests {
             text_vertical_alignment: TextVerticalAlignment::Center,
             ..Default::default()
         };
-        text.style.line_height = Some(LineHeightSpec::Absolute(18.0));
+        style_mut(&mut text).line_height = Some(LineHeightSpec::Absolute(18.0));
 
         let mut scene = UiScene::new();
         scene.apply_delta([text], []);
@@ -5023,13 +5027,13 @@ mod tests {
             value: "Notifications".into(),
         });
         checkbox.standard_visual = Some(StandardVisual::Checkbox { checked: true });
-        checkbox.style.background = Some([0.2, 0.5, 0.9, 1.0]);
-        checkbox.style.border_color = Some([0.1, 0.2, 0.3, 1.0]);
+        style_mut(&mut checkbox).background = Some([0.2, 0.5, 0.9, 1.0]);
+        style_mut(&mut checkbox).border_color = Some([0.1, 0.2, 0.3, 1.0]);
 
         let mut slider = node(2, None, &[]);
         slider.standard_visual = Some(StandardVisual::Slider { ratio: 0.25 });
-        slider.style.background = Some([0.2, 0.5, 0.9, 1.0]);
-        slider.style.border_color = Some([0.4, 0.4, 0.4, 1.0]);
+        style_mut(&mut slider).background = Some([0.2, 0.5, 0.9, 1.0]);
+        style_mut(&mut slider).border_color = Some([0.4, 0.4, 0.4, 1.0]);
 
         let mut scene = UiScene::new();
         scene.apply_delta([checkbox, slider], []);
@@ -5079,9 +5083,9 @@ mod tests {
             size: 16.0,
             tooltip: None,
         });
-        icon.style.background = Some([0.2, 0.3, 0.4, 1.0]);
-        icon.style.border_color = Some([0.4, 0.5, 0.6, 1.0]);
-        icon.style.color = Some([0.9, 0.9, 0.9, 1.0]);
+        style_mut(&mut icon).background = Some([0.2, 0.3, 0.4, 1.0]);
+        style_mut(&mut icon).border_color = Some([0.4, 0.5, 0.6, 1.0]);
+        style_mut(&mut icon).color = Some([0.9, 0.9, 0.9, 1.0]);
         icon.standard_visual_foreground = Some([0.1, 0.6, 0.9, 1.0]);
 
         let mut switch = node(2, None, &[]);
@@ -5189,8 +5193,8 @@ mod tests {
         });
         range.layout.width = 240.0;
         range.layout.height = 40.0;
-        range.style.background = Some([0.2, 0.5, 0.9, 1.0]);
-        range.style.border_color = Some([0.4, 0.4, 0.4, 1.0]);
+        style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
+        style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
 
         let mut card = node(4, None, &[]);
         card.standard_visual = Some(StandardVisual::Card {
@@ -5199,8 +5203,8 @@ mod tests {
             loading: true,
             loading_phase: 0.5,
         });
-        card.style.background = Some([0.12, 0.12, 0.12, 1.0]);
-        card.style.border_color = Some([0.3, 0.3, 0.3, 1.0]);
+        style_mut(&mut card).background = Some([0.12, 0.12, 0.12, 1.0]);
+        style_mut(&mut card).border_color = Some([0.3, 0.3, 0.3, 1.0]);
         card.component_geometry = Some(ComponentGeometry::Card {
             title: Some(ComponentTextRegion {
                 bounds: LayoutBox {
@@ -5252,7 +5256,7 @@ mod tests {
             }),
             trailing: None,
         });
-        list_item.style.background = Some([0.15, 0.15, 0.15, 1.0]);
+        style_mut(&mut list_item).background = Some([0.15, 0.15, 0.15, 1.0]);
 
         let mut scene = UiScene::new();
         scene.apply_delta([icon, switch, range, card, list_item], []);
@@ -5735,7 +5739,7 @@ mod tests {
 
     fn text_node(id: u64, parent: u64, value: &str) -> ExtractedNode {
         let mut child = node(id, Some(parent), &[]);
-        child.kind = NodeKind::Text;
+        child.kind = Arc::new(NodeKind::Text);
         child.text = Some(TextContent {
             value: value.into(),
         });
@@ -5745,9 +5749,9 @@ mod tests {
     #[test]
     fn host_and_child_text_extract_one_visible_text_primitive() {
         let mut button = node(1, None, &[2]);
-        button.kind = NodeKind::Element {
+        button.kind = Arc::new(NodeKind::Element {
             tag: "button".into(),
-        };
+        });
         button.text = Some(TextContent {
             value: "Open".into(),
         });
@@ -5784,7 +5788,7 @@ mod tests {
         assert_eq!(visible_text_count(&scene, &[id(1), id(2)]), 1);
 
         let mut heading = node(3, None, &[4]);
-        heading.kind = NodeKind::Element { tag: "h1".into() };
+        heading.kind = Arc::new(NodeKind::Element { tag: "h1".into() });
         heading.text = Some(TextContent {
             value: "Title".into(),
         });

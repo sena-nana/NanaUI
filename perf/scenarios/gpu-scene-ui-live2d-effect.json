@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-ui-live2d-effect",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiLive2dEffect"
+  },
+  "record": [
+    "gpu_upload",
+    "draw_batch_count"
+  ],
+  "invariants": [],
+  "notes": "Required by #8 §3.8. Effects split on the same RenderPlan is not implemented. Runner must stay unsupported (exit 2)."
+}

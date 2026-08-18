@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nana_ui_runtime::{
-    AnimationId, AnimationSpec, DocumentId, Easing, InteractionStyle, MutationQueue, NodeKind,
-    NodeStyle, SemanticPaint, StableNodeId, SystemWork, UiWorld, WorkCounters,
+    AccessibilityRole, AccessibilityState, AnimationId, AnimationSpec, DocumentId, Easing,
+    InteractionStyle, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, SystemWork,
+    TextContent, UiWorld, WorkCounters,
 };
 use serde::Serialize;
 
@@ -14,6 +16,10 @@ const SCALE_10K_WARMUP: usize = 5;
 const SCALE_10K_ITERATIONS: usize = 20;
 const CONSTRUCTION_WARMUP: usize = 2;
 const CONSTRUCTION_ITERATIONS: usize = 8;
+const CATALOG_ANIMATION_WARMUP: usize = 10;
+const CATALOG_ANIMATION_ITERATIONS: usize = 40;
+const CATALOG_ANIMATION_SCHEDULED: usize = 64;
+const CATALOG_ANIMATION_ACTIVE: usize = 1;
 
 #[derive(Serialize)]
 struct Report {
@@ -25,6 +31,8 @@ struct Report {
     warmup_iterations: usize,
     iterations: usize,
     cases: Vec<Case>,
+    /// Dedicated Issue #8 `animation` drain. Not the 5k tree incidental sample.
+    catalog_animation: CatalogAnimationCase,
 }
 
 #[derive(Serialize)]
@@ -70,10 +78,29 @@ struct Case {
     local_paint_work: Option<WorkSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pointer_hover_work: Option<WorkSnapshot>,
+    /// Single-node mutation drains at 5k (Issue #8 §3.2 remaining kinds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    single_node_mutations: Option<BTreeMap<&'static str, MutationDrain>>,
+}
+
+/// Catalog `animation` { active: 1, scheduled_idle: true } on its own UiWorld.
+#[derive(Serialize)]
+struct CatalogAnimationCase {
+    id: &'static str,
+    kind: &'static str,
+    status: &'static str,
+    active: usize,
+    scheduled_idle: bool,
+    scheduled_animations: usize,
+    due_animation_samples: usize,
+    idle_animation_deadline_ms: Distribution,
+    scheduled_animation_deadline_ms: Distribution,
+    sparse_animation_sample_ms: Distribution,
 }
 
 /// Algorithm counts from [`SystemWork::counters`] / [`UiWorld::last_work_counters`].
-/// GPU upload bytes are omitted: this binary does not observe renderer uploads.
+/// GPU upload / draw-batch bytes stay omitted: this binary does not observe
+/// renderer uploads. `allocations` are CPU hot-path observations, not malloc.
 #[derive(Serialize, Clone, Copy)]
 struct WorkSnapshot {
     entities_total: usize,
@@ -84,12 +111,34 @@ struct WorkSnapshot {
     text_shaped: usize,
     layout_nodes: usize,
     hit_test_candidates: usize,
+    input_targets: usize,
     accessibility_nodes_updated: usize,
+    render_nodes_changed: usize,
     render_nodes_extracted: usize,
     extracted_text_spans: usize,
+    allocations: usize,
+    allocated_bytes: usize,
+    text_shaped_runs: usize,
+    text_layout_cache_hits: usize,
+    text_layout_cache_misses: usize,
+    text_wrap_layouts: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glyph_cache_hits: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glyph_cache_misses: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_eviction: Option<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
+struct MutationDrain {
+    commit_ms: Distribution,
+    schedule_ms: Distribution,
+    systems_ms: Distribution,
+    work: WorkSnapshot,
+}
+
+#[derive(Serialize, Clone, Copy)]
 struct Distribution {
     p50: f64,
     p95: f64,
@@ -130,6 +179,7 @@ fn main() {
         warmup_iterations: SMALL_WARMUP,
         iterations: SMALL_ITERATIONS,
         cases,
+        catalog_animation: bench_catalog_animation(document),
     };
     write_report(&report);
 }
@@ -153,6 +203,10 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
     let mut last_initial_work = None;
     let mut last_paint_work = None;
     let mut last_hover_work = None;
+    let mut mutation_commits: BTreeMap<&'static str, Vec<Duration>> = BTreeMap::new();
+    let mut mutation_schedules: BTreeMap<&'static str, Vec<Duration>> = BTreeMap::new();
+    let mut mutation_systems: BTreeMap<&'static str, Vec<Duration>> = BTreeMap::new();
+    let mut last_mutations: BTreeMap<&'static str, WorkSnapshot> = BTreeMap::new();
     let mut steady_world = UiWorld::new();
     steady_world
         .commit(tree_mutations(nodes, document))
@@ -276,6 +330,8 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         assert_eq!(hover_work.style, hover_work.render_extraction);
         let hover_snapshot = work_snapshot(&hover_work, &steady_world);
         steady_world.resolve_styles(&hover_work.style).unwrap();
+        let mutation_drains = (nodes == 5_000)
+            .then(|| measure_single_node_mutations(&mut steady_world, document, nodes, iteration));
         if iteration >= warmup {
             enqueue.push(enqueue_elapsed);
             initial_commit.push(initial_commit_elapsed);
@@ -296,7 +352,33 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
             last_paint_work = Some(paint_snapshot);
             last_hover_work = Some(hover_snapshot);
         }
+        if let Some(drains) = mutation_drains
+            && iteration >= warmup
+        {
+            for (kind, drain) in drains {
+                mutation_commits.entry(kind).or_default().push(drain.0);
+                mutation_schedules.entry(kind).or_default().push(drain.1);
+                mutation_systems.entry(kind).or_default().push(drain.2);
+                last_mutations.insert(kind, drain.3);
+            }
+        }
     }
+    let single_node_mutations = (nodes == 5_000).then(|| {
+        last_mutations
+            .into_iter()
+            .map(|(kind, work)| {
+                (
+                    kind,
+                    MutationDrain {
+                        commit_ms: summarize(&mutation_commits[&kind]),
+                        schedule_ms: summarize(&mutation_schedules[&kind]),
+                        systems_ms: summarize(&mutation_systems[&kind]),
+                        work,
+                    },
+                )
+            })
+            .collect()
+    });
     Case {
         nodes,
         kind: "full",
@@ -324,6 +406,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         initial_work: last_initial_work,
         local_paint_work: last_paint_work,
         pointer_hover_work: last_hover_work,
+        single_node_mutations,
     }
 }
 
@@ -438,7 +521,109 @@ fn bench_construction(
         initial_work: last_initial_work,
         local_paint_work: last_paint_work,
         pointer_hover_work: last_hover_work,
+        single_node_mutations: None,
     }
+}
+
+fn measure_single_node_mutations(
+    world: &mut UiWorld,
+    document: DocumentId,
+    nodes: usize,
+    iteration: usize,
+) -> Vec<(&'static str, (Duration, Duration, Duration, WorkSnapshot))> {
+    let text_target = node((nodes / 2).max(2));
+    let layout_target = node((nodes / 2 + 1).max(3));
+    let visibility_target = node((nodes / 2 + 2).max(4));
+    let transform_target = node((nodes / 2 + 3).max(5));
+    let a11y_target = node((nodes / 2 + 4).max(6));
+    let even = iteration.is_multiple_of(2);
+    let mut drains = Vec::new();
+    let mut text = MutationQueue::new();
+    text.set_text(
+        text_target,
+        TextContent {
+            value: if even { "nana" } else { "ui!!" }.into(),
+        },
+    );
+    drains.push(("Text", drain_mutation(world, document, text)));
+
+    let mut layout = MutationQueue::new();
+    layout.set_style(
+        layout_target,
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                width: Some(nana_ui_core::LengthSpec::Px(if even {
+                    120.0
+                } else {
+                    140.0
+                })),
+                ..Default::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    drains.push(("LayoutStyle", drain_mutation(world, document, layout)));
+
+    let mut visibility = MutationQueue::new();
+    visibility.set_style(
+        visibility_target,
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                hidden: even,
+                ..Default::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    drains.push(("Visibility", drain_mutation(world, document, visibility)));
+
+    let mut transform = MutationQueue::new();
+    transform.set_style(
+        transform_target,
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform: Some(nana_ui_core::PaintTransform {
+                    e: if even { 4.0 } else { 8.0 },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    drains.push(("Transform", drain_mutation(world, document, transform)));
+
+    let mut accessibility = MutationQueue::new();
+    accessibility.set_accessibility(
+        a11y_target,
+        AccessibilityState {
+            role: AccessibilityRole::Generic,
+            label: Some(Arc::from(if even { "alpha" } else { "beta" })),
+            ..AccessibilityState::default()
+        },
+    );
+    drains.push((
+        "Accessibility",
+        drain_mutation(world, document, accessibility),
+    ));
+    drains
+}
+
+fn drain_mutation(
+    world: &mut UiWorld,
+    document: DocumentId,
+    queue: MutationQueue,
+) -> (Duration, Duration, Duration, WorkSnapshot) {
+    let started = Instant::now();
+    world.commit(queue).unwrap();
+    let commit = started.elapsed();
+    let started = Instant::now();
+    let work = world.take_system_work();
+    let schedule = started.elapsed();
+    let started = Instant::now();
+    run_systems(world, document, &work);
+    let systems = started.elapsed();
+    (commit, schedule, systems, work_snapshot(&work, world))
 }
 
 fn interactive_style(background: Option<[f32; 4]>) -> NodeStyle {
@@ -469,10 +654,93 @@ impl From<WorkCounters> for WorkSnapshot {
             text_shaped: counters.text_shaped,
             layout_nodes: counters.layout_nodes,
             hit_test_candidates: counters.hit_test_candidates,
+            input_targets: counters.input_targets,
             accessibility_nodes_updated: counters.accessibility_nodes_updated,
+            render_nodes_changed: counters.render_nodes_changed,
             render_nodes_extracted: counters.render_nodes_extracted,
             extracted_text_spans: counters.extracted_text_spans,
+            allocations: counters.allocations,
+            allocated_bytes: counters.allocated_bytes,
+            text_shaped_runs: counters.text_shaped_runs,
+            text_layout_cache_hits: counters.text_layout_cache_hits,
+            text_layout_cache_misses: counters.text_layout_cache_misses,
+            text_wrap_layouts: counters.text_wrap_layouts,
+            glyph_cache_hits: counters.glyph_cache_hits,
+            glyph_cache_misses: counters.glyph_cache_misses,
+            cache_eviction: counters.cache_eviction,
         }
+    }
+}
+
+/// Isolated catalog `animation` drain. Does not share the 5k full-case world.
+fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
+    let mut idle_deadline = Vec::with_capacity(CATALOG_ANIMATION_ITERATIONS);
+    let mut scheduled_deadline = Vec::with_capacity(CATALOG_ANIMATION_ITERATIONS);
+    let mut sparse_sample = Vec::with_capacity(CATALOG_ANIMATION_ITERATIONS);
+    for iteration in 0..(CATALOG_ANIMATION_WARMUP + CATALOG_ANIMATION_ITERATIONS) {
+        let mut world = UiWorld::new();
+        world
+            .commit(tree_mutations(CATALOG_ANIMATION_SCHEDULED, document))
+            .unwrap();
+        let _ = world.take_system_work();
+
+        let started = Instant::now();
+        let deadline = world.next_animation_deadline();
+        let idle_elapsed = started.elapsed();
+        assert_eq!(deadline, None);
+
+        let mut animations = MutationQueue::new();
+        for index in 1..=CATALOG_ANIMATION_SCHEDULED {
+            let due = index == CATALOG_ANIMATION_ACTIVE;
+            animations.start_animation(AnimationSpec {
+                id: AnimationId::new(index as u64).unwrap(),
+                target: node(index),
+                start: if due {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(60)
+                },
+                duration: if due {
+                    Duration::from_millis(1)
+                } else {
+                    Duration::from_secs(1)
+                },
+                frame_interval: Duration::from_millis(16),
+                easing: Easing::Linear,
+            });
+        }
+        world.commit(animations).unwrap();
+
+        let started = Instant::now();
+        let deadline = world.next_animation_deadline();
+        let scheduled_elapsed = started.elapsed();
+        assert_eq!(deadline, Some(Duration::ZERO));
+
+        let started = Instant::now();
+        let frame = world.advance_animations(Duration::from_millis(1));
+        let sample_elapsed = started.elapsed();
+        assert_eq!(frame.samples.len(), CATALOG_ANIMATION_ACTIVE);
+        assert_eq!(frame.samples[0].target, node(CATALOG_ANIMATION_ACTIVE));
+        assert!(frame.samples[0].finished);
+        assert_eq!(frame.next_deadline, Some(Duration::from_secs(60)));
+
+        if iteration >= CATALOG_ANIMATION_WARMUP {
+            idle_deadline.push(idle_elapsed);
+            scheduled_deadline.push(scheduled_elapsed);
+            sparse_sample.push(sample_elapsed);
+        }
+    }
+    CatalogAnimationCase {
+        id: "animation",
+        kind: "Animation",
+        status: "ok",
+        active: CATALOG_ANIMATION_ACTIVE,
+        scheduled_idle: true,
+        scheduled_animations: CATALOG_ANIMATION_SCHEDULED,
+        due_animation_samples: CATALOG_ANIMATION_ACTIVE,
+        idle_animation_deadline_ms: summarize(&idle_deadline),
+        scheduled_animation_deadline_ms: summarize(&scheduled_deadline),
+        sparse_animation_sample_ms: summarize(&sparse_sample),
     }
 }
 
@@ -486,6 +754,15 @@ fn work_snapshot(work: &SystemWork, world: &UiWorld) -> WorkSnapshot {
             from_work.render_nodes_extracted
         },
         extracted_text_spans: last.extracted_text_spans,
+        allocations: last.allocations,
+        allocated_bytes: last.allocated_bytes,
+        text_shaped_runs: last.text_shaped_runs,
+        text_layout_cache_hits: last.text_layout_cache_hits,
+        text_layout_cache_misses: last.text_layout_cache_misses,
+        text_wrap_layouts: last.text_wrap_layouts,
+        glyph_cache_hits: last.glyph_cache_hits,
+        glyph_cache_misses: last.glyph_cache_misses,
+        cache_eviction: last.cache_eviction,
         ..from_work
     }
 }

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "animation",
+  "kind": "Animation",
+  "params": {
+    "active": 1,
+    "scheduled_idle": true
+  },
+  "record": [
+    "idle_deadline",
+    "sparse_sample",
+    "scheduled_animations",
+    "due_animation_samples",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "idle_scheduled_animations_sparse_sample",
+      "path": "work_counters.due_animation_samples",
+      "op": "eq",
+      "value": 1,
+      "status": "required",
+      "note": "Issue #8 §3 / §4: idle scheduled animations must not scan every entity. Mapped onto nana-runtime-benchmark catalog_animation due_animation_samples with active=1. Missing field stays not-evaluable. The 5k-tree incidental sparse sample is not this Scenario."
+    }
+  ],
+  "notes": "Dedicated nana-runtime-benchmark catalog_animation on an isolated UiWorld: active=1 due sample plus idle-scheduled animations. Measures idle next_animation_deadline, scheduled deadline, and advance_animations sparse sample. Does not reuse the 5k-tree full-case incidental animation fields."
+}

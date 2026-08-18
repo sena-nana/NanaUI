@@ -151,7 +151,7 @@ fn build_nodes(nodes: usize) -> Vec<ExtractedNode> {
     let children = (2..=nodes as u64 + 1).map(id).collect::<Vec<_>>();
     let mut root = leaf(1, 0.0);
     root.source_style = NodeStyle::default();
-    root.children = children;
+    root.children = Arc::new(children);
     let mut extracted = Vec::with_capacity(nodes + 1);
     extracted.push(root);
     for value in 2..=nodes as u64 + 1 {
@@ -165,9 +165,9 @@ fn build_nodes(nodes: usize) -> Vec<ExtractedNode> {
 fn leaf(value: u64, shade: f32) -> ExtractedNode {
     ExtractedNode {
         id: id(value),
-        kind: NodeKind::Element { tag: "div".into() },
+        kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: None,
-        children: Vec::new(),
+        children: Arc::new(Vec::new()),
         layout: LayoutBox {
             x: 0.0,
             y: value as f32 * 2.0,
@@ -182,7 +182,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
             }),
             ..NodeStyle::default()
         },
-        style: ComputedStyle::default(),
+        style: Arc::new(ComputedStyle::default()),
         text: None,
         text_metrics: None,
         z_index: 0,

@@ -211,12 +211,17 @@ impl TextPipeline {
         pass: &mut wgpu::RenderPass<'_>,
         prepared: &PreparedText,
         scissor: PhysicalRect,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let Some(renderer) = self.renderers.get(prepared.index) else {
             return;
         };
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         let _ = renderer.render(&self.atlas, &self.viewport, pass);
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 }
 

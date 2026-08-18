@@ -456,6 +456,7 @@ impl GpuTexturePrimitive {
         queue: &wgpu::Queue,
         bounds: LogicalRect,
         scale_factor: f32,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let texture = self.layer.texture.snapshot();
         let key = TextureKey::new(self.presentation, texture.id);
@@ -479,11 +480,13 @@ impl GpuTexturePrimitive {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            queue.write_buffer(
-                &layer_uniform,
-                0,
-                bytemuck::bytes_of(&make_layer_uniform(&self.layer, bounds)),
-            );
+            let layer_uniform_value = make_layer_uniform(&self.layer, bounds);
+            let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
+            queue.write_buffer(&layer_uniform, 0, uniform_bytes);
+            if let Some(work) = gpu_work {
+                work.record_upload(uniform_bytes.len());
+                work.record_realloc();
+            }
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nana-ui host texture bind group"),
                 layout: &pipeline.bind_group_layout,
@@ -516,11 +519,12 @@ impl GpuTexturePrimitive {
                 },
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
-            queue.write_buffer(
-                &prepared.layer_uniform,
-                0,
-                bytemuck::bytes_of(&make_layer_uniform(&self.layer, bounds)),
-            );
+            let layer_uniform_value = make_layer_uniform(&self.layer, bounds);
+            let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
+            queue.write_buffer(&prepared.layer_uniform, 0, uniform_bytes);
+            if let Some(work) = gpu_work {
+                work.record_upload(uniform_bytes.len());
+            }
             prepared.slot = slot;
             prepared.viewport = viewport_rect;
             prepared.clip = clip;
@@ -534,6 +538,7 @@ impl GpuTexturePrimitive {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         clip_bounds: PhysicalRect,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let key = TextureKey::new(self.presentation, self.layer.texture.id());
         let Some(texture) = pipeline.textures.get(&key) else {
@@ -568,6 +573,11 @@ impl GpuTexturePrimitive {
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_bind_group(0, &texture.bind_group, &[]);
         render_pass.draw(0..3, 0..1);
+        drop(render_pass);
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 }
 
