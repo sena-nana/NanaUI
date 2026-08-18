@@ -338,6 +338,12 @@ impl UiWorld {
         self.entities.contains_key(&id)
     }
 
+    pub(crate) fn mark_layout(&mut self, id: StableNodeId) {
+        if self.entities.contains_key(&id) {
+            let _ = self.mark(id, crate::schedule::DirtyMask::LAYOUT);
+        }
+    }
+
     /// Whether a retained node currently participates in its document.
     pub fn is_mounted(&self, id: StableNodeId) -> bool {
         let Some(&entity) = self.entities.get(&id) else {

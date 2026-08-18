@@ -51,7 +51,7 @@ impl RuntimeLayoutEngine {
         let mut intrinsic = HashMap::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
         for root in roots {
-            let root_size = intrinsic_size(root, available, viewport, &nodes, &mut intrinsic);
+            let root_size = intrinsic_size(root, available, None, viewport, &nodes, &mut intrinsic);
             place_node(
                 root,
                 Point::ZERO,
@@ -100,6 +100,7 @@ impl Size {
 fn intrinsic_size(
     id: StableNodeId,
     available: Size,
+    parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
     nodes: &HashMap<StableNodeId, LayoutInput>,
     cache: &mut IntrinsicCache,
@@ -136,7 +137,16 @@ fn intrinsic_size(
         .collect::<Vec<_>>();
     let child_sizes = flow_children
         .iter()
-        .map(|child| intrinsic_size(*child, content_available, viewport, nodes, cache))
+        .map(|child| {
+            intrinsic_size(
+                *child,
+                content_available,
+                Some(direction),
+                viewport,
+                nodes,
+                cache,
+            )
+        })
         .collect::<Vec<_>>();
     let gap = style.main_gap_against(
         direction,
@@ -164,13 +174,14 @@ fn intrinsic_size(
         children.width.max(text.width),
         children.height.max(text.height),
     );
-    // Fixed-content `Shrink` is intentionally a single-pass contract. Percentage/Fill children
-    // and relative gap or padding resolve against the outer available size; this is not a full
-    // CSS fit-content solver.
-    let default_width = if flow_children.is_empty() || style.width == Some(LengthSpec::Shrink) {
-        content.width + chrome.width
-    } else {
+    // Auto width is max-content. Only unconstrained roots fill `available.width`.
+    let default_width = if parent_direction.is_none()
+        && style.width != Some(LengthSpec::Shrink)
+        && !flow_children.is_empty()
+    {
         available.width
+    } else {
+        content.width + chrome.width
     };
     let default_height = content.height + chrome.height;
     let mut width = resolve_axis(style.width, available.width, viewport)
@@ -286,7 +297,7 @@ fn place_node(
     );
     let mut child_sizes = flow
         .iter()
-        .map(|child| intrinsic_size(*child, content, viewport, nodes, intrinsic))
+        .map(|child| intrinsic_size(*child, content, Some(direction), viewport, nodes, intrinsic))
         .collect::<Vec<_>>();
     distribute_fill(&flow, &mut child_sizes, direction, content, gap, nodes);
     let occupied = main_occupied(&flow, &child_sizes, direction, content, gap, nodes);
@@ -354,7 +365,7 @@ fn place_node(
         } else {
             content_origin
         };
-        let child_size = intrinsic_size(child, base, viewport, nodes, intrinsic);
+        let child_size = intrinsic_size(child, base, None, viewport, nodes, intrinsic);
         let left = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_left, base.width);
         let right = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_right, base.width);
         let top = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_top, base.height);
@@ -432,9 +443,16 @@ fn place_modal_children(
                     .body
                     .filter(|id| nodes.contains_key(id))
                     .map_or(0.0, |id| {
-                        intrinsic_size(id, body_available, viewport, nodes, intrinsic)
-                            .height
-                            .min(body_available.height)
+                        intrinsic_size(
+                            id,
+                            body_available,
+                            Some(FlexDirection::Column),
+                            viewport,
+                            nodes,
+                            intrinsic,
+                        )
+                        .height
+                        .min(body_available.height)
                     });
             crate::overlay_surfaces::modal_surface_bounds(
                 root,
@@ -500,6 +518,7 @@ fn place_modal_children(
         let measured = intrinsic_size(
             id,
             Size::new(body.width, crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
+            Some(FlexDirection::Row),
             viewport,
             nodes,
             intrinsic,
@@ -725,7 +744,7 @@ fn finite_extent(value: f32) -> f32 {
 mod tests {
     use std::sync::Arc;
 
-    use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec};
+    use nana_ui_core::{FlexDirection, JustifySpec, LayoutStyle, LengthSpec};
 
     use crate::{
         ComputedStyle, MutationQueue, NodeKind, NodeStyle, TextContent, TextMetrics, TextShaper,
@@ -867,6 +886,130 @@ mod tests {
         assert_eq!(layouts[&id(2)].width, 50.0);
         assert_eq!(layouts[&id(3)].x, 70.0);
         assert_eq!(layouts[&id(3)].width, 230.0);
+    }
+
+    #[test]
+    fn row_space_between_auto_children_keep_the_trailing_control_inside() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        for value in 2..=5 {
+            queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+        }
+        queue.create(id(6), document, NodeKind::Text);
+        queue.insert(id(1), id(2), None);
+        queue.insert(id(2), id(3), None);
+        queue.insert(id(2), id(5), None);
+        queue.insert(id(3), id(4), None);
+        queue.insert(id(4), id(6), None);
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    direction: Some(FlexDirection::Column),
+                    padding: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    direction: Some(FlexDirection::Row),
+                    justify_content: JustifySpec::SpaceBetween,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(4),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    height: Some(LengthSpec::Px(16.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(5),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    padding_left: Some(LengthSpec::Px(8.0)),
+                    padding_right: Some(LengthSpec::Px(8.0)),
+                    min_height: Some(LengthSpec::Px(32.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text(
+            id(6),
+            TextContent {
+                value: "Title".into(),
+            },
+        );
+        queue.set_text(
+            id(5),
+            TextContent {
+                value: "Open".into(),
+            },
+        );
+        world.commit(queue).unwrap();
+        struct FixedShaper;
+        impl TextShaper for FixedShaper {
+            fn shape(
+                &mut self,
+                id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: crate::TextShapeConstraints,
+            ) -> TextMetrics {
+                if id.get() == 6 {
+                    TextMetrics {
+                        width: 180.0,
+                        height: 16.0,
+                    }
+                } else {
+                    TextMetrics {
+                        width: 74.0,
+                        height: 16.0,
+                    }
+                }
+            }
+        }
+        world.shape_text(&[id(6), id(5)], &mut FixedShaper).unwrap();
+
+        let viewport = LayoutViewport::new(400.0, 200.0);
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, viewport)
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let trailing = layouts[&id(5)];
+        assert!(
+            trailing.width > 0.0 && trailing.height > 0.0,
+            "trailing control must be hittable, got {trailing:?}"
+        );
+        assert!(
+            trailing.x >= 0.0 && trailing.x + trailing.width <= viewport.width + 0.5,
+            "space-between must not push the trailing control outside the viewport, got {trailing:?} viewport={}",
+            viewport.width
+        );
+        assert!(
+            layouts[&id(3)].width < layouts[&id(2)].width,
+            "auto-width row cluster must shrink instead of eating the header"
+        );
+        assert!(
+            layouts[&id(4)].width < layouts[&id(2)].width,
+            "nested auto-width heading must not fill the header, got {:?}",
+            layouts[&id(4)]
+        );
     }
 
     #[test]

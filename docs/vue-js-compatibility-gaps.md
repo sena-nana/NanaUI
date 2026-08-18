@@ -365,6 +365,12 @@ JSON 数组。
 拖动、绘图、缩放、游戏操作和复杂控件交互不需要绕过 Vue 事件系统调用产品专用
 Rust 接口。
 
+**当前证据（点击焦点）**
+
+macOS 真窗口 `vue-hosted-acceptance --input-probe`：指针按下能把焦点从 Score
+按钮移到 TextInput（AX `focusedUIElement` 为 `AXTextField`）。行为测试
+`pointer_down_moves_focus_to_the_hit_text_input`。Windows/Linux 未跑。
+
 ### NUI-IME-01：桌面输入法
 
 **实施前状态**

@@ -1136,9 +1136,10 @@ impl VueHost {
     pub fn resolve_layout(&mut self) {
         let painted = self.layout_boxes.snapshot();
         if painted.is_empty() {
+            // Empty paint cache: keep Runtime boxes; CSS auto-height 0 must not overwrite them.
             let mut bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
-            bridge.resolve_document_layout(&mut doc);
+            bridge.resolve_missing_document_layout(&mut doc);
             return;
         }
         let mut bridge = self.bridge.lock().expect("vue bridge");
