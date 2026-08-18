@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "hover",
+  "kind": "Hover",
+  "params": {
+    "nodes": 10000,
+    "pointer_moves": "continuous",
+    "size_change": false
+  },
+  "record": [
+    "input",
+    "style",
+    "layout",
+    "hit_test",
+    "render_extraction",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "hover_without_size_change",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #8 §3.3 / §12.1 requires layout_nodes == 0. Evaluate when the runner JSON includes work_counters.layout_nodes; a missing or null field stays not-evaluable and must never be treated as 0."
+    }
+  ]
+}

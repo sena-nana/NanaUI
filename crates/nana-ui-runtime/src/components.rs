@@ -827,6 +827,31 @@ pub trait TextShaper {
     }
 }
 
+/// Finite-metrics shaper used by hosts that do not inject a glyph backend.
+/// Layout-stop still sees wrap height against the last content box.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MeasureTextShaper;
+
+impl TextShaper for MeasureTextShaper {
+    fn shape(
+        &mut self,
+        _id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> TextMetrics {
+        let em = style.font_size.max(1.0);
+        let intrinsic = text.value.chars().count() as f32 * em;
+        let width = constraints.max_width.unwrap_or(intrinsic).min(intrinsic);
+        let height = if constraints.wrap && width + f32::EPSILON < intrinsic {
+            em * (intrinsic / width.max(em)).ceil()
+        } else {
+            em
+        };
+        TextMetrics { width, height }
+    }
+}
+
 fn explicit_lines(value: &str) -> Vec<(usize, usize, usize)> {
     use unicode_segmentation::UnicodeSegmentation;
 

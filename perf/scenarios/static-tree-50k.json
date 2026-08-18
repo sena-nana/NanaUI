@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "static-tree-50k",
+  "kind": "StaticTree",
+  "params": {
+    "nodes": 50000
+  },
+  "record": [
+    "construction",
+    "reconciliation",
+    "style",
+    "text_shaping",
+    "layout",
+    "render_extraction",
+    "render_encode",
+    "memory",
+    "allocations"
+  ],
+  "notes": "Current nana-runtime-benchmark maps this as kind=construction only (enqueue/commit/paint/hover), not a full systems pass."
+}

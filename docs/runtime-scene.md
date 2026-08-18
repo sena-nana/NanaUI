@@ -50,7 +50,8 @@ scope/event flags 等 compatibility metadata；`MessageBridge` 的 hierarchy 在
 
 Runtime 以 dirty component 产生确定性的 `SystemWork`，区分 style、text shaping、
 layout、input/hit-test、focus/IME、accessibility、render extraction 和 render
-removal。静止 world 返回空 work，不运行无关 system，也不要求持续 redraw。canonical
+removal。静止 world 返回空 work，不运行无关 system，也不要求持续 redraw。同场景
+Performance Contract、runner 与门禁见 [`performance-contract.md`](performance-contract.md)。canonical
 `RuntimeDocument::flush` 在一次 frame transaction 内调用 host text shaper，并由
 backend-neutral `RuntimeLayoutEngine` 根据 viewport、style 与 shaping metrics 写回 layout；
 应用不手写控件坐标。低层 `flush_with` 只保留给需要替换系统执行器的 backend。

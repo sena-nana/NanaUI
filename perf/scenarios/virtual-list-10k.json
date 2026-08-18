@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "virtual-list-10k",
+  "kind": "VirtualList",
+  "params": {
+    "items": 10000,
+    "visible": 40,
+    "overscan": 8,
+    "text_len": 32,
+    "item_extent_px": 20
+  },
+  "record": [
+    "scroll_cpu",
+    "p99_frame",
+    "allocations",
+    "live_entity_count",
+    "text_shape_count",
+    "gpu_upload",
+    "draw_batch_count"
+  ],
+  "invariants": [
+    {
+      "name": "virtual_list_live_entities_bounded",
+      "note": "live_ui_entities <= visible + overscan + bounded cache. Creating one retained entity per logical row is forbidden."
+    }
+  ]
+}

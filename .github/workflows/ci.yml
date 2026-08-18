@@ -58,3 +58,27 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked
       - name: Enforce NanaUI and Gallery Clippy
         run: cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
+
+  runtime-work-invariants:
+    # Issue #8 PR gate: algorithmic work-counter / virtualization invariants.
+    # These tests also run in the default `cargo test --workspace` job above.
+    # This named job is the explicit contract so PR CI is not a 5% timing gate.
+    # 100k/1M virtual materialize timing stays in runtime-performance.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Work-counter and virtualization invariants
+        run: |
+          # libtest is substring match; `|` is not a regex and `--exact` needs
+          # the module-prefixed name. Unique function names are the filter.
+          for name in \
+            dirty_work_is_incremental_and_static_world_stays_idle \
+            paint_only_style_change_does_not_schedule_subtree_layout \
+            pointer_hover_and_press_are_runtime_owned_and_targeted \
+            virtual_list_materializes_only_visible_items_and_reuses_overlap \
+            virtual_table_materializes_a_bounded_grid_and_reuses_both_axes
+          do
+            cargo test -p nana-ui-runtime --lib --locked "$name"
+          done
+          python3 scripts/validate-runtime-performance.py --self-test

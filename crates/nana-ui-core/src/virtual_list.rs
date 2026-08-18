@@ -142,16 +142,30 @@ impl VirtualListLayout {
 
     pub fn set_item_extents(&mut self, item_extents: impl IntoIterator<Item = f32>) {
         self.item_extents = item_extents.into_iter().map(sanitize_extent).collect();
-        self.fenwick.clear();
-        self.fenwick.resize(self.item_extents.len() + 1, 0.0);
-        for (index, extent) in self.item_extents.iter().copied().enumerate() {
-            let tree_index = index + 1;
-            self.fenwick[tree_index] += extent;
-            let parent = tree_index + low_bit(tree_index);
-            if parent < self.fenwick.len() {
-                self.fenwick[parent] += self.fenwick[tree_index];
-            }
+        self.rebuild_fenwick();
+    }
+
+    /// Insert measured rows at `at` without requiring callers to rebuild the
+    /// rest of the data set. Used when a disclosure tree expands.
+    pub fn insert_items(&mut self, at: usize, extents: impl IntoIterator<Item = f32>) {
+        let at = at.min(self.len());
+        let inserted = extents.into_iter().map(sanitize_extent).collect::<Vec<_>>();
+        if inserted.is_empty() {
+            return;
         }
+        self.item_extents.splice(at..at, inserted);
+        self.rebuild_fenwick();
+    }
+
+    /// Remove a contiguous measured range. Used when a disclosure tree collapses.
+    pub fn remove_items(&mut self, range: Range<usize>) {
+        let start = range.start.min(self.len());
+        let end = range.end.max(start).min(self.len());
+        if start == end {
+            return;
+        }
+        self.item_extents.drain(start..end);
+        self.rebuild_fenwick();
     }
 
     /// Update one measured row without rebuilding all following prefix sums.
@@ -191,6 +205,23 @@ impl VirtualListLayout {
         self.prefix_extent(end) - self.prefix_extent(start)
     }
 
+    /// Geometric upper bound on a uniform-row window, including two-sided
+    /// overscan and one partial item on each edge. Independent of `self.len()`,
+    /// so a cap cannot be the tautology `range.len()`.
+    pub fn uniform_window_item_cap(
+        viewport_extent: f32,
+        overscan_extent: f32,
+        item_extent: f32,
+    ) -> usize {
+        let item_extent = sanitize_extent(item_extent);
+        if item_extent == 0.0 {
+            return 0;
+        }
+        ((sanitize_extent(viewport_extent) + 2.0 * sanitize_extent(overscan_extent)) / item_extent)
+            .ceil() as usize
+            + 2
+    }
+
     pub fn window(
         &self,
         scroll_offset: f32,
@@ -225,6 +256,19 @@ impl VirtualListLayout {
             leading_extent,
             trailing_extent,
             total_extent,
+        }
+    }
+
+    fn rebuild_fenwick(&mut self) {
+        self.fenwick.clear();
+        self.fenwick.resize(self.item_extents.len() + 1, 0.0);
+        for (index, extent) in self.item_extents.iter().copied().enumerate() {
+            let tree_index = index + 1;
+            self.fenwick[tree_index] += extent;
+            let parent = tree_index + low_bit(tree_index);
+            if parent < self.fenwick.len() {
+                self.fenwick[parent] += self.fenwick[tree_index];
+            }
         }
     }
 
@@ -357,5 +401,30 @@ mod tests {
             Err(VirtualListMaterializationError::DuplicateKey)
         );
         assert_eq!(materializer.revision(), revision);
+    }
+
+    #[test]
+    fn insert_and_remove_items_keep_unrelated_prefix_extents() {
+        let mut layout = VirtualListLayout::new([10.0, 20.0, 30.0]);
+        layout.insert_items(1, [40.0, 50.0]);
+        assert_eq!(layout.len(), 5);
+        assert_eq!(layout.extent(0..1), 10.0);
+        assert_eq!(layout.extent(1..3), 90.0);
+        assert_eq!(layout.extent(3..5), 50.0);
+        layout.remove_items(1..3);
+        assert_eq!(layout.len(), 3);
+        assert_eq!(layout.total_extent(), 60.0);
+        assert_eq!(layout.extent(0..2), 30.0);
+    }
+
+    #[test]
+    fn uniform_window_item_cap_is_geometric_not_data_len() {
+        let cap = VirtualListLayout::uniform_window_item_cap(100.0, 20.0, 20.0);
+        assert!(cap < 10_000);
+        assert_eq!(cap, 9);
+        let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, 10_000));
+        let window = layout.window(0.0, 100.0, 20.0);
+        assert!(window.range.len() <= cap);
+        assert!(window.range.len() < layout.len());
     }
 }

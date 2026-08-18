@@ -16,6 +16,8 @@ use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(feature = "scene-view"))]
+use nana_ui_runtime::MeasureTextShaper;
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
     ActionMenu as RuntimeActionMenu, ActionMenuItem as RuntimeActionMenuItem, AppContext,
@@ -2204,6 +2206,10 @@ impl NanaTreeDocument {
                 context
                     .shape_text(&work.text, &mut nana_ui::NanaTextShaper::default())
                     .expect("Nana shaping produces finite metrics");
+                #[cfg(not(feature = "scene-view"))]
+                context
+                    .shape_text(&work.text, &mut MeasureTextShaper)
+                    .expect("measure shaping produces finite metrics");
                 deferred_layout.extend(work.layout.iter().copied());
                 Ok(())
             })

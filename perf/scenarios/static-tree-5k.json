@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "static-tree-5k",
+  "kind": "StaticTree",
+  "params": {
+    "nodes": 5000
+  },
+  "record": [
+    "construction",
+    "reconciliation",
+    "style",
+    "text_shaping",
+    "layout",
+    "render_extraction",
+    "render_encode",
+    "memory",
+    "allocations"
+  ]
+}

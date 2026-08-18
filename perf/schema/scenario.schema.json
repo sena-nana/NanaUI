@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sena-nana/NanaUI/perf/schema/scenario.schema.json",
+  "title": "NanaUI Issue #8 shared Scenario",
+  "description": "Machine-readable workload definition. Iced, GPUI, and NanaUI runners must consume the same file rather than inventing their own trees, fonts, or interaction scripts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "kind", "params"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "StaticTree",
+        "DeepTree",
+        "Mutation",
+        "Hover",
+        "VirtualList",
+        "Table",
+        "TextEditor",
+        "Ime",
+        "DockWorkspace",
+        "Overlay",
+        "Animation",
+        "GpuScene"
+      ]
+    },
+    "params": {
+      "type": "object"
+    },
+    "record": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "type": "string" },
+          "op": { "type": "string", "enum": ["eq", "lte", "gte"] },
+          "value": {},
+          "status": { "type": "string", "enum": ["required", "not-evaluable"] },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}
