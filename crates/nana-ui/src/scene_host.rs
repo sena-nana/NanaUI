@@ -215,20 +215,25 @@ fn initialize<Program: RuntimeProgram>(
     );
     let tasks = spawn_task_workers(proxy.clone());
     let geometry = window_geometry(graphics.window());
+    let mut last_theme = crate::ThemeMode::default();
+    let mut material = apply_scene_material(graphics.window().as_ref(), last_theme);
     let context = program_context(
         &proxy,
         &graphics,
         WindowId::PRIMARY,
         geometry,
         tasks.clone(),
+        material,
     );
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     let default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
         Arc::clone(graphics.resources().device()),
         Arc::clone(graphics.resources().queue()),
     ));
-    let last_theme = program.theme_mode();
-    let material = apply_scene_material(graphics.window().as_ref(), last_theme);
+    last_theme = program.theme_mode();
+    if last_theme != crate::ThemeMode::default() {
+        material = apply_scene_material(graphics.window().as_ref(), last_theme);
+    }
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         let nodes = accessibility_snapshot(&program, WindowId::PRIMARY);
@@ -299,6 +304,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             id,
             self.geometry_of(id),
             self.tasks.clone(),
+            self.material_of(id),
         )
     }
 
@@ -1296,12 +1302,14 @@ fn program_context<Message: Send + 'static>(
     id: WindowId,
     geometry: WindowGeometry,
     tasks: SyncSender<Task<Message>>,
+    material: MaterialOutcome,
 ) -> RuntimeProgramContext<Message> {
     let proxy = proxy.clone();
     RuntimeProgramContext::new(
         id,
         geometry,
         graphics.resources(),
+        material,
         Arc::new(move |message| {
             let _ = proxy.send_event(message);
         }),

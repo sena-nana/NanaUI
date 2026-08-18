@@ -175,7 +175,7 @@ pub use style::{is_non_token_css_color, map_css_color_for_tokens, parse_css_colo
 pub use tree::{
     BoxSnapshot, DocumentId, DomNodeKind, ElementNamespace, LayoutBox, LayoutBoxStore,
     NODE_HANDLE_DOCUMENT_STRIDE, NanaTreeDocument, NodeHandle, SharedRuntimeDocument,
-    get_layout_box, get_layout_box_from, shared_layout_box_store,
+    get_layout_box, get_layout_box_from,
 };
 #[cfg(feature = "hosted")]
 pub use webgpu::JsWebGpuRuntime;
@@ -1164,12 +1164,7 @@ impl VueHost {
         bridge.resolve_missing_document_layout(&mut doc);
     }
 
-    /// Historical name for [`Self::sync_scene_layout_boxes`].
-    pub fn sync_iced_layout_boxes(&mut self) {
-        self.sync_scene_layout_boxes();
-    }
-
-    /// Shared Scene layout writeback buffer (same as probes / `layoutBox`).
+    /// Per-window Scene layout writeback buffer (same as probes / `layoutBox`).
     pub fn layout_box_store(&self) -> Arc<LayoutBoxStore> {
         Arc::clone(&self.layout_boxes)
     }
@@ -3547,6 +3542,19 @@ mod tests {
 
         assert_eq!(first.layout_box_store().get(node).unwrap().x, 10.0);
         assert_eq!(second.layout_box_store().get(node).unwrap().x, 100.0);
+
+        let layout_x = |host: &VueHost| {
+            let api = host.host_api_registry();
+            match api
+                .call("layoutBox", &[HostValue::Number(node.0 as f64)])
+                .expect("layoutBox")
+            {
+                HostValue::Object(map) => map.get("x").and_then(HostValue::as_f64).unwrap(),
+                other => panic!("expected object, got {other:?}"),
+            }
+        };
+        assert_eq!(layout_x(&first), 10.0);
+        assert_eq!(layout_x(&second), 100.0);
     }
 
     #[test]

@@ -65,4 +65,4 @@ cargo run --release -p component-gallery --bin ui-snapshots \
 
 `ui-snapshots` 通过。相对 2026-08-17 18:47 的顶层 64 张 PNG，61 张字节一致；变化的 3 张是空输出目录下 runtime 像素写入 `migration-first-batch-iced-dark.png`，difference 全黑。Gallery / Scene / Workspace 产品图无回归。PNG 不在 git。
 
-`hosted-gpu-demo --measure-first-frame`（`hosted,bundled-fonts`）三次真实 Surface present：冷 699.980 ms，随后约 225 ms。同一 Device/Queue，正式路径无 `copy_texture_to_buffer`。探针 `material: solid`，非 Vibrancy。Windows/Linux 未测。
+`hosted-gpu-demo --measure-first-frame`（`hosted,bundled-fonts`）三次真实 Surface present：冷 699.980 ms，随后约 225 ms。同一 Device/Queue，正式路径无 `copy_texture_to_buffer`。探针读 host 实际 `MaterialOutcome`（macOS Scene GPU 当前为 solid，非 Vibrancy）；三次 present 不是 Vibrancy 验收。Windows/Linux 未测。
