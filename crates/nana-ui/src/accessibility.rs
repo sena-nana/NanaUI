@@ -104,11 +104,17 @@ impl AccessibilityProjector {
             .iter()
             .map(|node| node.id)
             .collect::<BTreeSet<_>>();
+        let existing = self.nodes.keys().copied().collect::<BTreeSet<_>>();
         changed.extend(
             removed
                 .iter()
                 .filter_map(|id| self.nodes.get(id).and_then(|node| node.parent)),
         );
+        changed.extend(delta.updated.iter().filter_map(|node| {
+            (!existing.contains(&node.id))
+                .then_some(node.parent)
+                .flatten()
+        }));
         for parent in changed.iter().copied().collect::<Vec<_>>() {
             if let Some(node) = self.nodes.get_mut(&parent) {
                 node.children.retain(|child| !removed.contains(child));
@@ -118,6 +124,15 @@ impl AccessibilityProjector {
             self.nodes.remove(id);
         }
         for node in delta.updated {
+            if !existing.contains(&node.id) {
+                if let Some(parent_id) = node.parent {
+                    if let Some(parent) = self.nodes.get_mut(&parent_id) {
+                        if !parent.children.contains(&node.id) {
+                            parent.children.push(node.id);
+                        }
+                    }
+                }
+            }
             self.nodes.insert(node.id, node);
         }
         self.reconcile_text_runs();
@@ -752,6 +767,28 @@ mod tests {
         });
         assert!(update.tree.is_none());
         assert_eq!(update.focus, NodeId(2));
+    }
+
+    #[test]
+    fn new_child_delta_reattaches_through_the_cached_parent() {
+        let root = node(1, None, &[2]);
+        let child = node(2, Some(1), &[]);
+        let (mut projector, _) = AccessibilityProjector::new(vec![root, child], false, 1.0);
+
+        let update = projector.apply(AccessibilityDelta {
+            generation: 2,
+            updated: vec![node(3, Some(1), &[])],
+            removed: vec![],
+        });
+
+        assert!(update.tree.is_none());
+        let (_, parent) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(1))
+            .expect("parent must ship with a newly attached child");
+        assert!(parent.children().contains(&NodeId(3)));
+        assert!(update.nodes.iter().any(|(id, _)| *id == NodeId(3)));
     }
 
     #[test]

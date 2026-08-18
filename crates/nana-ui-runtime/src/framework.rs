@@ -762,6 +762,13 @@ impl AppContext {
         self.commit_mutations(mutations)
     }
 
+    /// Re-queue LAYOUT after a host drained a frame without measuring.
+    pub fn defer_layout(&mut self, ids: &[StableNodeId]) {
+        for &id in ids {
+            self.world.mark_layout(id);
+        }
+    }
+
     /// Rebuild the compact hit index for one document after layout or input
     /// work. The retained hierarchy remains private to this context.
     pub fn rebuild_hit_test(&mut self, document: DocumentId) {

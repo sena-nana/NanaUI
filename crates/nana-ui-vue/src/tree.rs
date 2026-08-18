@@ -28,12 +28,13 @@ use nana_ui_runtime::{
     EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
     GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
     GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    HighlightRequest, HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton,
-    ImageViewer as RuntimeImageViewer, ImageViewerContent, ImeComposition, InteractionState,
-    InteractiveCard as RuntimeInteractiveCard, LabeledValue as RuntimeLabeledValue,
-    LayoutBox as RuntimeLayoutBox, LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem,
-    ListItemSlots, ModalSurface, MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeKind,
-    NodeStyle, Popover as RuntimePopover, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
+    HOST_TEXTURE_RENDERER, HighlightRequest, HostedTextarea as RuntimeHostedTextarea,
+    IconButton as RuntimeIconButton, ImageViewer as RuntimeImageViewer, ImageViewerContent,
+    ImeComposition, InteractionState, InteractiveCard as RuntimeInteractiveCard,
+    LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox,
+    LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem, ListItemSlots, ModalSurface,
+    MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
+    Popover as RuntimePopover, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
     RangeField as RuntimeRangeField, SegmentedControl as RuntimeSegmentedControl,
     SegmentedOption as RuntimeSegmentedOption, Select as RuntimeSelect,
     SelectOption as RuntimeSelectOption, SelectionChrome, SettingsCard as RuntimeSettingsCard,
@@ -1062,6 +1063,17 @@ impl NanaTreeDocument {
             if self.runtime.accessibility(id) != Some(&accessibility) {
                 mutations.set_accessibility(id, accessibility);
             }
+            if matches!(widget.kind, crate::WidgetKind::Text) {
+                let label = widget.props.display_label();
+                if !label.is_empty() && self.runtime.text(id) != Some(label) {
+                    mutations.set_text(
+                        id,
+                        TextContent {
+                            value: label.into(),
+                        },
+                    );
+                }
+            }
             if matches!(
                 widget.kind,
                 crate::WidgetKind::Input | crate::WidgetKind::Textarea
@@ -1516,6 +1528,36 @@ impl NanaTreeDocument {
         &self.gpu_slots
     }
 
+    fn sync_surface_custom_render(&mut self, el: NodeHandle) {
+        let Ok(id) = StableNodeId::try_from(el) else {
+            return;
+        };
+        if !self.runtime.contains(id) {
+            return;
+        }
+        let content = self.surface_host_texture_slot(el).map(host_texture_content);
+        if self.runtime.custom_render(id) == content.as_ref() {
+            return;
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_custom_render(id, content);
+        self.runtime
+            .commit(mutations)
+            .expect("known surface node remains valid");
+    }
+
+    fn surface_host_texture_slot(&self, el: NodeHandle) -> Option<String> {
+        if let Some(slot) = self
+            .get_attribute(el, "data-nana-gpu")
+            .filter(|slot| !slot.is_empty())
+        {
+            return Some(slot);
+        }
+        self.get_attribute(el, "data-nana-canvas")
+            .as_deref()
+            .and_then(canvas_host_texture_slot)
+    }
+
     pub fn insert(&mut self, child: NodeHandle, parent: NodeHandle, anchor: Option<NodeHandle>) {
         // Validate parent *before* detach. Remount / Teleport can still hold
         // wrapNode ids for disposed nodes; detach-then-fail left sidebars'
@@ -1540,6 +1582,9 @@ impl NanaTreeDocument {
             anchor.and_then(|anchor| StableNodeId::try_from(anchor).ok()),
         );
         let _ = self.runtime.commit(mutations);
+        if self.surface_host_texture_slot(child).is_some() {
+            self.sync_surface_custom_render(child);
+        }
     }
 
     pub fn remove(&mut self, child: NodeHandle) {
@@ -1587,20 +1632,12 @@ impl NanaTreeDocument {
             changed = attrs.get(name).is_none_or(|current| current != value);
             attrs.insert(name.to_string(), value.to_string());
         }
-        if changed && name.eq_ignore_ascii_case("data-nana-gpu") {
-            self.gpu_slots.insert(el.0, value.to_string());
-            let id = StableNodeId::try_from(el).expect("known element ID is nonzero");
-            let content = CustomRenderNode {
-                renderer: Arc::from("nana.host-texture"),
-                resource: Arc::from(value),
-                revision: 0,
-            };
-            if self.runtime.custom_render(id) != Some(&content) {
-                let mut mutations = MutationQueue::new();
-                mutations.set_custom_render(id, Some(content));
-                self.runtime
-                    .commit(mutations)
-                    .expect("known GPU slot node remains valid");
+        if changed {
+            if name.eq_ignore_ascii_case("data-nana-gpu") {
+                self.gpu_slots.insert(el.0, value.to_string());
+                self.sync_surface_custom_render(el);
+            } else if name.eq_ignore_ascii_case("data-nana-canvas") {
+                self.sync_surface_custom_render(el);
             }
         }
     }
@@ -1624,15 +1661,12 @@ impl NanaTreeDocument {
         {
             removed = attrs.remove(name).is_some();
         }
-        if removed && name.eq_ignore_ascii_case("data-nana-gpu") {
-            self.gpu_slots.remove(&el.0);
-            let id = StableNodeId::try_from(el).expect("known element ID is nonzero");
-            if self.runtime.custom_render(id).is_some() {
-                let mut mutations = MutationQueue::new();
-                mutations.set_custom_render(id, None);
-                self.runtime
-                    .commit(mutations)
-                    .expect("known GPU slot node remains valid");
+        if removed {
+            if name.eq_ignore_ascii_case("data-nana-gpu") {
+                self.gpu_slots.remove(&el.0);
+                self.sync_surface_custom_render(el);
+            } else if name.eq_ignore_ascii_case("data-nana-canvas") {
+                self.sync_surface_custom_render(el);
             }
         }
     }
@@ -2160,6 +2194,7 @@ impl NanaTreeDocument {
     }
 
     fn flush_runtime_systems(&mut self) {
+        let mut deferred_layout = Vec::new();
         let update = self
             .runtime
             .runtime_document_mut()
@@ -2169,9 +2204,11 @@ impl NanaTreeDocument {
                 context
                     .shape_text(&work.text, &mut nana_ui::NanaTextShaper::default())
                     .expect("Nana shaping produces finite metrics");
+                deferred_layout.extend(work.layout.iter().copied());
                 Ok(())
             })
             .expect("vue runtime frame");
+        self.context_mut().defer_layout(&deferred_layout);
         self.record_accessibility_delta(update.accessibility);
     }
 
@@ -2199,6 +2236,21 @@ impl NanaTreeDocument {
             self.accessibility_full_required = true;
         }
     }
+}
+
+fn host_texture_content(slot: String) -> CustomRenderNode {
+    CustomRenderNode {
+        renderer: Arc::from(HOST_TEXTURE_RENDERER),
+        resource: Arc::from(slot),
+        revision: 0,
+    }
+}
+
+fn canvas_host_texture_slot(id: &str) -> Option<String> {
+    id.parse::<u64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .map(|id| format!("canvas:{id}"))
 }
 
 fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
@@ -5559,6 +5611,112 @@ mod tests {
     }
 
     #[test]
+    fn vue_flush_keeps_layout_work_so_text_input_gets_a_hittable_box() {
+        let mut doc = NanaTreeDocument::new(400, 200, 1.0);
+        let input = doc.create_element("input");
+        doc.insert(input, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            input.0,
+            crate::WidgetKind::Input,
+            crate::WidgetProps {
+                value: "NanaUI".into(),
+                ..crate::WidgetProps::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        bridge.resolve_document_layout(&mut doc);
+
+        let measured = doc.layout_box(input).expect("Vue measure writes a box");
+        assert_eq!(
+            measured.height, 0.0,
+            "CSS auto height is 0 before Runtime layout"
+        );
+
+        let work = doc.context_mut().take_system_work();
+        assert!(
+            !work.layout.is_empty(),
+            "Vue flush must leave LAYOUT for Scene RuntimeLayoutEngine"
+        );
+
+        let document = doc.runtime_document().document();
+        doc.context_mut()
+            .layout_document(document, nana_ui_runtime::LayoutViewport::new(400.0, 200.0))
+            .unwrap();
+        let laid_out = doc.layout_box(input).expect("runtime layout box");
+        assert!(
+            laid_out.width > 0.0 && laid_out.height >= nana_ui_core::ControlSize::Medium.height(),
+            "TextInput min_height must become a hittable box, got {laid_out:?}"
+        );
+    }
+
+    fn runtime_layout(doc: &mut NanaTreeDocument, width: f32, height: f32) {
+        let document = doc.runtime_document().document();
+        doc.context_mut()
+            .layout_document(
+                document,
+                nana_ui_runtime::LayoutViewport::new(width, height),
+            )
+            .unwrap();
+    }
+
+    fn visible_text_primitive_count(doc: &NanaTreeDocument, host: NodeHandle) -> usize {
+        let mut ids = vec![host.0];
+        let mut stack = doc.children_of(host);
+        while let Some(child) = stack.pop() {
+            ids.push(child.0);
+            stack.extend(doc.children_of(child));
+        }
+        doc.scene()
+            .primitives()
+            .filter(|primitive| {
+                ids.contains(&primitive.node.get())
+                    && matches!(
+                        &primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Text { content, .. }
+                            if !content.trim().is_empty()
+                    )
+            })
+            .count()
+    }
+
+    #[test]
+    fn vue_button_and_heading_with_text_children_extract_one_visible_text_each() {
+        let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+        let heading = doc.create_element("h1");
+        let button = doc.create_element("button");
+        doc.insert(heading, doc.mount_root(), None);
+        doc.insert(button, doc.mount_root(), None);
+        doc.set_element_text(heading, "Heading");
+        doc.set_element_text(button, "Action");
+
+        let mut heading_props = crate::WidgetProps::default();
+        heading_props.element_tag = "h1".into();
+        heading_props.label = "Heading".into();
+        let mut button_props = crate::WidgetProps::default();
+        button_props.element_tag = "button".into();
+        button_props.label = "Action".into();
+
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(heading.0, crate::WidgetKind::Text, heading_props);
+        bridge.register(button.0, crate::WidgetKind::Button, button_props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        runtime_layout(&mut doc, 400.0, 240.0);
+        doc.flush_runtime_systems();
+
+        assert_eq!(
+            visible_text_primitive_count(&doc, heading),
+            1,
+            "heading host plus #text child must extract one visible text primitive"
+        );
+        assert_eq!(
+            visible_text_primitive_count(&doc, button),
+            1,
+            "button host plus #text child must extract one visible text primitive"
+        );
+    }
+
+    #[test]
     fn gpu_slot_flows_through_runtime_extraction_and_scene_graph() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let node = doc.create_element("div");
@@ -5624,6 +5782,43 @@ mod tests {
                 .primitives()
                 .all(|primitive| primitive.node.get() != node.0)
         );
+    }
+
+    #[test]
+    fn canvas_attr_projects_host_texture_custom_render() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let canvas = doc.create_element("canvas");
+        doc.insert(canvas, doc.mount_root(), None);
+        doc.set_attribute(canvas, "data-nana-canvas", "42");
+        doc.apply_layout_boxes(&[(
+            canvas,
+            LayoutBox {
+                handle: canvas,
+                x: 12.0,
+                y: 80.0,
+                width: 320.0,
+                height: 160.0,
+            },
+        )]);
+
+        let id = StableNodeId::try_from(canvas).expect("canvas id");
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("2D canvas must attach a HostTexture CustomRender");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), "canvas:42");
+
+        let primitive = doc
+            .scene()
+            .primitives()
+            .find(|primitive| primitive.node.get() == canvas.0)
+            .expect("canvas must extract a scene primitive");
+        let nana_ui_scene::ScenePrimitiveKind::Custom(custom) = &primitive.kind else {
+            panic!("canvas must compile to a custom scene primitive");
+        };
+        assert_eq!(custom.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(custom.resource.as_ref(), "canvas:42");
     }
 
     #[test]

@@ -419,6 +419,17 @@ impl UiScene {
         }
     }
 
+    fn parent_already_paints_text(&self, node: &ExtractedNode) -> bool {
+        let Some(parent) = node.parent.and_then(|id| self.nodes.get(&id)) else {
+            return false;
+        };
+        component_geometry_owns_text(parent.component_geometry.as_ref())
+            || parent
+                .text
+                .as_ref()
+                .is_some_and(|text| !text.value.is_empty())
+    }
+
     fn sort_primitives(&mut self) {
         self.ordered.clear();
         for primitive in self.primitives.values() {
@@ -614,42 +625,13 @@ impl UiScene {
                     kind: ScenePrimitiveKind::Custom(custom),
                 });
             }
-            let component_owns_text = matches!(
-                node.component_geometry,
-                Some(
-                    ComponentGeometry::Button { .. }
-                        | ComponentGeometry::TextInput { .. }
-                        | ComponentGeometry::Switch { .. }
-                        | ComponentGeometry::Range { .. }
-                        | ComponentGeometry::Card { .. }
-                        | ComponentGeometry::StatusBadge { .. }
-                        | ComponentGeometry::ValidationMessage { .. }
-                        | ComponentGeometry::EmptyState { .. }
-                        | ComponentGeometry::LabeledValue { .. }
-                        | ComponentGeometry::SelectionOption { .. }
-                        | ComponentGeometry::ModalFrame { .. }
-                        | ComponentGeometry::Progress { .. }
-                        | ComponentGeometry::FormField { .. }
-                        | ComponentGeometry::Select { .. }
-                        | ComponentGeometry::ActionMenuItem { .. }
-                        | ComponentGeometry::MenuSurface { .. }
-                        | ComponentGeometry::TreeView { .. }
-                        | ComponentGeometry::CommandPalette { .. }
-                        | ComponentGeometry::CalendarHeatmap { .. }
-                        | ComponentGeometry::ReorderList { .. }
-                        | ComponentGeometry::NativeMarkdown { .. }
-                        | ComponentGeometry::SelectableRichText { .. }
-                        | ComponentGeometry::GraphCanvas { .. }
-                        | ComponentGeometry::ImageViewer { .. }
-                        | ComponentGeometry::KeyCaptureLayer { .. }
-                        | ComponentGeometry::KeymapLayer { .. }
-                )
-            );
-            if let Some(text) = node
-                .text
-                .as_ref()
-                .filter(|text| !text.value.is_empty() && !component_owns_text)
-            {
+            let component_owns_text =
+                component_geometry_owns_text(node.component_geometry.as_ref());
+            if let Some(text) = node.text.as_ref().filter(|text| {
+                !text.value.is_empty()
+                    && !component_owns_text
+                    && !self.parent_already_paints_text(&node)
+            }) {
                 let padding = style.resolved_padding_against(Some(bounds.width));
                 let border = style.resolved_border_width();
                 let leading_visual = match node.standard_visual {
@@ -3337,6 +3319,40 @@ fn paint_select_handle(
     }
 }
 
+fn component_geometry_owns_text(geometry: Option<&ComponentGeometry>) -> bool {
+    matches!(
+        geometry,
+        Some(
+            ComponentGeometry::Button { .. }
+                | ComponentGeometry::TextInput { .. }
+                | ComponentGeometry::Switch { .. }
+                | ComponentGeometry::Range { .. }
+                | ComponentGeometry::Card { .. }
+                | ComponentGeometry::StatusBadge { .. }
+                | ComponentGeometry::ValidationMessage { .. }
+                | ComponentGeometry::EmptyState { .. }
+                | ComponentGeometry::LabeledValue { .. }
+                | ComponentGeometry::SelectionOption { .. }
+                | ComponentGeometry::ModalFrame { .. }
+                | ComponentGeometry::Progress { .. }
+                | ComponentGeometry::FormField { .. }
+                | ComponentGeometry::Select { .. }
+                | ComponentGeometry::ActionMenuItem { .. }
+                | ComponentGeometry::MenuSurface { .. }
+                | ComponentGeometry::TreeView { .. }
+                | ComponentGeometry::CommandPalette { .. }
+                | ComponentGeometry::CalendarHeatmap { .. }
+                | ComponentGeometry::ReorderList { .. }
+                | ComponentGeometry::NativeMarkdown { .. }
+                | ComponentGeometry::SelectableRichText { .. }
+                | ComponentGeometry::GraphCanvas { .. }
+                | ComponentGeometry::ImageViewer { .. }
+                | ComponentGeometry::KeyCaptureLayer { .. }
+                | ComponentGeometry::KeymapLayer { .. }
+        )
+    )
+}
+
 fn component_text_primitive(
     id: StableNodeId,
     slot: u8,
@@ -5702,5 +5718,77 @@ mod tests {
             text_primitives, 1,
             "markdown must not double-paint generic text"
         );
+    }
+
+    fn visible_text_count(scene: &UiScene, nodes: &[StableNodeId]) -> usize {
+        scene
+            .primitives()
+            .filter(|primitive| {
+                nodes.contains(&primitive.node)
+                    && matches!(
+                        &primitive.kind,
+                        ScenePrimitiveKind::Text { content, .. } if !content.trim().is_empty()
+                    )
+            })
+            .count()
+    }
+
+    fn text_node(id: u64, parent: u64, value: &str) -> ExtractedNode {
+        let mut child = node(id, Some(parent), &[]);
+        child.kind = NodeKind::Text;
+        child.text = Some(TextContent {
+            value: value.into(),
+        });
+        child
+    }
+
+    #[test]
+    fn host_and_child_text_extract_one_visible_text_primitive() {
+        let mut button = node(1, None, &[2]);
+        button.kind = NodeKind::Element {
+            tag: "button".into(),
+        };
+        button.text = Some(TextContent {
+            value: "Open".into(),
+        });
+        let label = ComponentTextRegion {
+            bounds: LayoutBox {
+                x: 8.0,
+                y: 8.0,
+                width: 48.0,
+                height: 20.0,
+            },
+            content: Arc::from("Open"),
+            color: Some([0.1, 0.1, 0.1, 1.0]),
+            font_size: 13.0,
+            font_weight: Some(500),
+        };
+        button.standard_visual = Some(StandardVisual::Button {
+            label: Arc::from("Open"),
+            kind: nana_ui_core::ButtonKind::Ghost,
+            size: nana_ui_core::ControlSize::Medium,
+            loading: false,
+            loading_phase: 0.0,
+            invalid: false,
+        });
+        button.component_geometry = Some(ComponentGeometry::Button {
+            label,
+            spinner: None,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([button, text_node(2, 1, "Open")], []);
+        assert_eq!(visible_text_count(&scene, &[id(1), id(2)]), 1);
+
+        let mut heading = node(3, None, &[4]);
+        heading.kind = NodeKind::Element { tag: "h1".into() };
+        heading.text = Some(TextContent {
+            value: "Title".into(),
+        });
+        scene.apply_delta([heading, text_node(4, 3, "Title")], []);
+        assert_eq!(visible_text_count(&scene, &[id(3), id(4)]), 1);
     }
 }

@@ -417,6 +417,108 @@ mod tests {
     }
 
     #[test]
+    fn hosted_acceptance_canvas_draws_and_webgpu_stays_below_header() {
+        const VIEW_W: f32 = 1120.0;
+        const VIEW_H: f32 = 760.0;
+        let mut runtime = build_runtime(gpu(), false, false, false, 1120, 760, 1.0).unwrap();
+        for _ in 0..24 {
+            runtime.pump().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let host = runtime.vue().host(VueWindowId::PRIMARY).unwrap();
+        let snapshot = host.lock().unwrap().semantic_snapshot();
+        let canvases: Vec<_> = snapshot
+            .widgets
+            .iter()
+            .filter(|widget| widget.props.element_tag.eq_ignore_ascii_case("canvas"))
+            .collect();
+        assert_eq!(canvases.len(), 2);
+        assert!(canvases.iter().any(|widget| {
+            widget
+                .props
+                .attrs
+                .get("data-nana-canvas")
+                .is_some_and(|id| !id.is_empty())
+        }));
+        let gpu_canvas = canvases
+            .iter()
+            .find(|widget| {
+                widget
+                    .props
+                    .attrs
+                    .get("data-nana-gpu")
+                    .is_some_and(|slot| slot.starts_with("webgpu-canvas:"))
+            })
+            .expect("WebGPU canvas");
+        let header = snapshot
+            .widgets
+            .iter()
+            .find(|widget| widget.props.element_tag.eq_ignore_ascii_case("header"))
+            .expect("page header");
+        let gpu_title = snapshot
+            .widgets
+            .iter()
+            .find(|widget| {
+                widget.parent == gpu_canvas.parent
+                    && widget.props.element_tag.eq_ignore_ascii_case("h2")
+            })
+            .expect("WebGPU card title");
+
+        let document = host.lock().unwrap().document();
+        let mut document = document.lock().unwrap();
+        document
+            .runtime_document_mut()
+            .flush(
+                nana_ui_runtime::LayoutViewport::new(VIEW_W, VIEW_H),
+                &mut nana_ui::NanaTextShaper::default(),
+            )
+            .expect("acceptance document must flush");
+
+        assert!(document.scene().primitives().any(|primitive| {
+            matches!(
+                &primitive.kind,
+                nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                    if custom.renderer.as_ref() == "nana.host-texture"
+                        && custom.resource.as_ref().starts_with("canvas:")
+            )
+        }));
+
+        let gpu_box = document
+            .layout_box(nana_ui_vue::NodeHandle(gpu_canvas.id))
+            .expect("WebGPU canvas box");
+        let header_box = document
+            .layout_box(nana_ui_vue::NodeHandle(header.id))
+            .expect("header box");
+        let title_box = document
+            .layout_box(nana_ui_vue::NodeHandle(gpu_title.id))
+            .expect("WebGPU title box");
+        assert!(gpu_box.height >= 159.5, "got {gpu_box:?}");
+        assert!(
+            gpu_box.y + 0.5 >= title_box.y + title_box.height
+                && gpu_box.y + 0.5 >= header_box.y + header_box.height,
+            "WebGPU slot must sit below header and card title, gpu={gpu_box:?} title={title_box:?} header={header_box:?}"
+        );
+        let gpu_primitive = document
+            .scene()
+            .primitives()
+            .find(|primitive| {
+                primitive.node.get() == gpu_canvas.id
+                    && matches!(
+                        &primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                            if custom.renderer.as_ref() == "nana.host-texture"
+                    )
+            })
+            .expect("WebGPU HostTexture primitive");
+        assert!(
+            gpu_primitive.bounds.y + 0.5 >= title_box.y + title_box.height
+                && gpu_primitive.bounds.y + 0.5 >= header_box.y + header_box.height,
+            "extracted WebGPU primitive must not cover headers, bounds={:?} title={title_box:?} header={header_box:?}",
+            gpu_primitive.bounds
+        );
+    }
+
+    #[test]
     fn real_vue_sfc_mounts_an_auxiliary_window_after_native_ready() {
         let mut application_api = HostApiRegistry::new();
         application_api.register("acceptanceMode", |_| Ok(HostValue::String("pure".into())));

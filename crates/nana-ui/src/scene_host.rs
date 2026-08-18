@@ -1396,6 +1396,12 @@ fn next_accessibility_update(
             nodes: snapshot(),
         });
     }
+    if flush.is_some() && program.is_some() {
+        return Some(AccessibilityUpdate::Full {
+            generation: world_generation,
+            nodes: snapshot(),
+        });
+    }
     if let Some(update) = flush.or(program) {
         let queued = match &update {
             AccessibilityUpdate::Full { generation, .. } => *generation,
@@ -2009,6 +2015,32 @@ mod tests {
             panic!("DPI change must reproject the current world");
         };
         assert_eq!(generation, Some(1));
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn flush_and_program_deltas_reproject_the_world_instead_of_dropping_one() {
+        let flush = AccessibilityUpdate::Delta(AccessibilityDelta {
+            generation: 3,
+            updated: Vec::new(),
+            removed: Vec::new(),
+        });
+        let program = AccessibilityUpdate::Delta(AccessibilityDelta {
+            generation: 2,
+            updated: Vec::new(),
+            removed: Vec::new(),
+        });
+        let Some(AccessibilityUpdate::Full { generation, .. }) = next_accessibility_update(
+            Some(flush),
+            Some(program),
+            false,
+            Some(1),
+            Some(3),
+            Vec::new,
+        ) else {
+            panic!("two accessibility sources must not drop hierarchy for layout");
+        };
+        assert_eq!(generation, Some(3));
     }
 
     #[cfg(not(target_os = "android"))]

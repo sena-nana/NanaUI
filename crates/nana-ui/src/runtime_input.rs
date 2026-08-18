@@ -4,7 +4,8 @@ use nana_ui_core::TableNavigation;
 use nana_ui_platform::{ImeEvent, InputDisposition, InputEvent, PointerPhase};
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameworkError, GraphCanvasAdjustment, GraphPointerButton,
-    GraphScrollDelta, RangeAdjustment, RovingFocusIntent, ScrollOffset, XYPadAdjustment,
+    GraphScrollDelta, RangeAdjustment, RovingFocusIntent, ScrollOffset, StableNodeId,
+    XYPadAdjustment,
 };
 use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
 use std::time::Duration;
@@ -189,7 +190,9 @@ impl RuntimeInputAdapter {
                             .filter(|id| context.is_dock_item_source(*id))
                             .or_else(|| context.dock_tab_strip_near(document, *x, *y));
                         if let Some(target) = dock_handle.or(split_handle).or(target) {
-                            context.focus_node(document, target)?;
+                            if let Some(focus) = nearest_focusable(context, target) {
+                                context.focus_node(document, focus)?;
+                            }
                             if context.is_graph_canvas(target) {
                                 context.begin_graph_canvas_pointer(
                                     document,
@@ -594,6 +597,19 @@ impl RuntimeInputAdapter {
     }
 }
 
+fn nearest_focusable(context: &AppContext, mut target: StableNodeId) -> Option<StableNodeId> {
+    loop {
+        if context
+            .world()
+            .interaction(target)
+            .is_some_and(|interaction| interaction.focusable)
+        {
+            return Some(target);
+        }
+        target = context.world().node(target).and_then(|node| node.parent)?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,6 +737,54 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(button.stable_id()), Some("Running"));
+    }
+
+    #[test]
+    fn pointer_down_moves_focus_to_the_hit_text_input() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(document, Button::new("Other"))
+            .unwrap();
+        let input = context
+            .create_component(document, TextInput::new("NanaUI"))
+            .unwrap();
+        assert!(context.focus_node(document, button.stable_id()).unwrap());
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            button.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 32.0,
+            },
+        );
+        layout.write_layout(
+            input.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 40.0,
+                width: 160.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 24.0, 52.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().focused(document), Some(input.stable_id()));
     }
 
     #[test]
