@@ -185,7 +185,12 @@ surface/AccessKit 并发送 `WindowEvent::Closed`。Runtime 先消费 IME，再�
 
 - `runtime-host-fixture`：主窗 `AXList`「Editor」→ `AXTextField`「Name」（初值 `NanaUI`，`Focused=1`）+ tool 窗 `Notes`；`AXPress`「Float preview」后第三扇 `Preview` 同时在。VoiceOver 未稳定读焦点，**不记 VO 通过**。未做拼音 IME。
 - `vue-hosted-acceptance --input-probe`：`focusedUIElement` 为 `AXTextField`。本机将进程置前台后拼音 `nihao`+空格一次提交「你好」；预编辑时进程自有 layer-20 候选条（397×28，贴输入框），提交后消失，AXValue 与 `Hello, …` 同步为 `NanaUI你好`。
-- 同机点击焦点：`--input-probe` 只在挂载时 `focus()`。修后 TextField 盒 65×32；HID 点 Score 再点输入框后 `focusedUIElement` 回到 `AXTextField`/`NanaUI`。VoiceOver 语音未稳定自动化，**不记 VO 通过**。Windows/Linux 未跑。
+- 同机点击焦点：`--input-probe` 只在挂载时 `focus()`。修后 TextField 盒 65×32；HID 点 Score 再点输入框后 `focusedUIElement` 回到 `AXTextField`/`NanaUI`。Windows/Linux 未跑。
+
+2026-08-18 本机 macOS VoiceOver 真窗口（TCC trusted；Windows/Linux 未跑）：
+
+- `vue-hosted-acceptance --input-probe` pid 55161。真 VO（VoiceOverStarter → `scrod` + 旁白字幕窗）。AppleScript last phrase 为 -1728，证据用 Control-Option-F4 读焦点、Control-Option-Shift-C 拷贝上一短语。
+- 读到 `NanaUI text field 有键盘焦点 …`。点 Score 后 VO-F4 读 `Score 95 button, 组`；Control-Option-Space 激活后 AX 标题 Score 95 → 97。未测 Open dialog。验收后已关旁白。未改产品代码。
 
 当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime/UiScene；`nana-ui-vue` 的
 `scene-view` / `hosted` feature 接入同一 Scene host，而不是 `iced::Element` 树。
