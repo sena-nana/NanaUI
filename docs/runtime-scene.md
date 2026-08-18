@@ -181,6 +181,11 @@ surface/AccessKit 并发送 `WindowEvent::Closed`。Runtime 先消费 IME，再�
   `Button`，角色投影仍是 AccessKit `TextInput`/`Button`。
 - Windows/Linux 实机未跑，不记为通过。
 
+2026-08-18 本机 macOS 真窗口（TCC trusted；Windows/Linux 未跑）：
+
+- `runtime-host-fixture`：主窗 `AXList`「Editor」→ `AXTextField`「Name」（初值 `NanaUI`，`Focused=1`）+ tool 窗 `Notes`；`AXPress`「Float preview」后第三扇 `Preview` 同时在。VoiceOver 未稳定读焦点，**不记 VO 通过**。未做拼音 IME。
+- `vue-hosted-acceptance --input-probe`：`focusedUIElement` 为 `AXTextField`（value=`NanaUI`）。Scene host 先 `dispatch_ime` 再 `emit_native_ime_from_runtime`；无 typed view 的 `<input>` 一次写入 Runtime。未能保持 key window，**不记真拼音候选窗通过**。
+
 当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime/UiScene；`nana-ui-vue` 的
 `scene-view` / `hosted` feature 接入同一 Scene host，而不是 `iced::Element` 树。
 公开 Cargo feature `iced-view` 只是 `scene-view` 的兼容别名。

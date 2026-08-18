@@ -197,6 +197,13 @@ impl RuntimeProgram for AcceptanceProgram {
         self.inner.prepare_window_frame(id, context);
     }
 
+    fn take_accessibility_update(
+        &mut self,
+        id: WindowId,
+    ) -> Option<nana_ui_runtime::AccessibilityUpdate> {
+        self.inner.take_accessibility_update(id)
+    }
+
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
         self.inner.rebuild_gpu(context);
     }

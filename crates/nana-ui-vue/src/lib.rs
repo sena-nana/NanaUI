@@ -339,8 +339,8 @@ pub struct VueHost {
     event_window_id: Option<u64>,
     input: Arc<Mutex<input::InputState>>,
     file_drag_target: Option<NodeHandle>,
-    /// Last IME field and preedit. Runtime removes [`nana_ui_runtime::ImeComposition`]
-    /// when focus leaves, so leftover `ImeEvent::Disabled` still knows the original.
+    /// Last IME field and leftover preedit for JS `compositionend` after Runtime
+    /// has already dropped [`nana_ui_runtime::ImeComposition`].
     ime_target: Option<NodeHandle>,
     ime_preedit: String,
     /// Last focus/hover emitted to JS. Scene-host input updates Runtime first;
@@ -1311,15 +1311,6 @@ impl VueHost {
         if event == WindowLifecycleEvent::Blur {
             if let Some(target) = self.file_drag_target.take() {
                 self.fire_dom_event(engine, target, "dragleave", file_drag_detail(&[], None))?;
-            }
-            let focused = {
-                let mut document = self.document.lock().expect("vue doc");
-                let focused = document.focused();
-                document.clear_focus();
-                focused
-            };
-            if let Some(focused) = focused {
-                self.fire_dom_event(engine, focused, "blur", BTreeMap::new())?;
             }
             self.input.lock().expect("input state").clear();
             {
@@ -3093,6 +3084,32 @@ mod tests {
         (first, second)
     }
 
+    fn install_focused_native_input(
+        host: &mut VueHost,
+        value: &str,
+    ) -> (NodeHandle, nana_ui_runtime::DocumentId) {
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(host);
+        host.bridge().lock().expect("bridge").register(
+            input.0,
+            WidgetKind::Input,
+            WidgetProps {
+                value: value.into(),
+                ..WidgetProps::default()
+            },
+        );
+        let document_id = {
+            let snapshot = host.bridge().lock().expect("bridge").snapshot();
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.sync_semantic_styles(&snapshot);
+            doc.set_attribute(input, "value", value);
+            doc.set_focus(input);
+            doc.runtime_document().document()
+        };
+        (input, document_id)
+    }
+
     fn install_textarea_node(host: &mut VueHost, value: &str) -> NodeHandle {
         let document = host.document();
         let mut doc = document.lock().expect("document");
@@ -3934,6 +3951,174 @@ mod tests {
             events.iter().filter(|(_, name, _)| name == "input").count(),
             1,
             "native IME commit must not double-insert"
+        );
+    }
+
+    #[test]
+    fn scene_host_ime_path_commits_once_into_runtime_then_emits_js() {
+        let mut host = VueHost::new();
+        let (input, document_id) = install_focused_native_input(&mut host, "Nana");
+        let mut engine = RecordingEngine::default();
+
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            assert!(
+                doc.context_mut()
+                    .set_ime_preedit(document_id, "世".into(), Some((0, "世".len())))
+                    .expect("runtime preedit")
+            );
+        }
+        host.emit_native_ime_from_runtime(
+            &mut engine,
+            &ImeEvent::Preedit {
+                text: "世".into(),
+                selection: Some((0, "世".len())),
+            },
+        )
+        .expect("emit preedit");
+        {
+            let document = host.document();
+            let document = document.lock().expect("document");
+            assert_eq!(
+                document.ime_composition(input).map(|ime| ime.text),
+                Some("世".into())
+            );
+            assert_eq!(
+                document.text_input_state(input).map(|state| state.value),
+                Some("Nana".into()),
+                "emit must not write a second preedit buffer"
+            );
+        }
+
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            assert!(
+                doc.context_mut()
+                    .commit_ime(document_id, "世界")
+                    .expect("runtime commit")
+            );
+        }
+        host.emit_native_ime_from_runtime(&mut engine, &ImeEvent::Commit("世界".into()))
+            .expect("emit commit");
+
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert!(document.ime_composition(input).is_none());
+        let state = document
+            .text_input_state(input)
+            .expect("runtime committed once");
+        assert_eq!(state.value, "Nana世界");
+        assert_eq!(
+            document.get_attribute(input, "value").as_deref(),
+            Some("Nana世界")
+        );
+        let field = document
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.id.get() == input.0)
+            .expect("committed value stays on the AccessKit TextInput");
+        assert_eq!(field.value.as_deref(), Some("Nana世界"));
+        drop(document);
+
+        let events = fired_events(&engine);
+        assert_eq!(
+            events
+                .iter()
+                .map(|(_, name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "compositionstart",
+                "compositionupdate",
+                "compositionend",
+                "beforeinput",
+                "input"
+            ]
+        );
+        assert_eq!(
+            events.iter().filter(|(_, name, _)| name == "input").count(),
+            1,
+            "scene-host IME must not double-insert on emit"
+        );
+    }
+
+    #[test]
+    fn scene_host_ime_disabled_commits_leftover_once() {
+        let mut host = VueHost::new();
+        let (input, document_id) = install_focused_native_input(&mut host, "Nana");
+        let mut engine = RecordingEngine::default();
+
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            assert!(
+                doc.context_mut()
+                    .set_ime_preedit(document_id, "世".into(), Some((0, "世".len())))
+                    .expect("runtime preedit")
+            );
+        }
+        host.emit_native_ime_from_runtime(
+            &mut engine,
+            &ImeEvent::Preedit {
+                text: "世".into(),
+                selection: Some((0, "世".len())),
+            },
+        )
+        .expect("emit preedit");
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            let leftover = doc.ime_composition(input).expect("preedit").text.clone();
+            assert!(
+                doc.context_mut()
+                    .commit_ime(document_id, &leftover)
+                    .expect("runtime leftover commit")
+            );
+        }
+        host.emit_native_ime_from_runtime(&mut engine, &ImeEvent::Disabled)
+            .expect("emit disabled");
+
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert!(document.ime_composition(input).is_none());
+        assert_eq!(
+            document
+                .text_input_state(input)
+                .expect("leftover committed once")
+                .value,
+            "Nana世"
+        );
+        drop(document);
+        assert_eq!(
+            fired_events(&engine)
+                .iter()
+                .filter(|(_, name, _)| name == "input")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn window_blur_keeps_runtime_text_field_focus() {
+        let mut host = VueHost::new();
+        let (input, _) = install_focused_native_input(&mut host, "NanaUI");
+        let mut engine = RecordingEngine::default();
+        host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+            .expect("window blur");
+        let document = host.document();
+        let doc = document.lock().expect("document");
+        assert_eq!(doc.focused(), Some(input));
+        let field = doc
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.id.get() == input.0)
+            .expect("TextField remains in the tree");
+        assert!(field.focused);
+        assert!(
+            !fired_events(&engine)
+                .iter()
+                .any(|(_, name, _)| name == "blur")
         );
     }
 

@@ -12,7 +12,9 @@ use std::time::Instant;
 use nana_ui_platform::{
     InputEvent, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
 };
-use nana_ui_runtime::{AccessibilityActionRequest, AnimationFrame, FrameworkError, Task};
+use nana_ui_runtime::{
+    AccessibilityActionRequest, AccessibilityUpdate, AnimationFrame, FrameworkError, Task,
+};
 use nana_ui_scene::RuntimeDocument;
 
 use crate::{
@@ -286,6 +288,13 @@ pub trait RuntimeProgram: Sized + 'static {
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         Ok(RuntimeProgramUpdate::default())
+    }
+
+    /// Drain accessibility work already applied to the retained world.
+    /// Used when `RuntimeDocument::flush` is empty because a consumer flushed
+    /// systems earlier in the same frame.
+    fn take_accessibility_update(&mut self, _id: WindowId) -> Option<AccessibilityUpdate> {
+        None
     }
 
     fn accessibility_action(
