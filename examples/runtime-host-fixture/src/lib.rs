@@ -15,7 +15,9 @@ use nana_ui::{
     RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode,
     dock_workspace_window_id, run_runtime, runtime_dock_window_update,
 };
-use nana_ui_platform::{WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings};
+use nana_ui_platform::{
+    ImeEvent, WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings,
+};
 
 const TOOL: WindowId = WindowId(100);
 const PREVIEW_SLOT: &str = "preview";
@@ -144,8 +146,35 @@ impl Fixture {
                 window_commands: vec![WindowCommand::Close(id)],
                 exit: false,
             }),
+            WindowEvent::Ime { id, event } => self.apply_ime(id, event),
             _ => Ok(RuntimeProgramUpdate::default()),
         }
+    }
+
+    fn apply_ime(
+        &mut self,
+        id: WindowId,
+        event: ImeEvent,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let ime_changed = self
+            .documents
+            .get_mut(&id)
+            .map(|document| {
+                let document_id = document.document();
+                RuntimeInputAdapter::default()
+                    .dispatch_ime(document.context_mut(), document_id, &event)
+                    .map(|disposition| {
+                        disposition.prevent_default && !matches!(event, ImeEvent::Enabled)
+                    })
+            })
+            .transpose()?
+            .unwrap_or(false);
+        let pending = self.drain_pending()?;
+        Ok(if ime_changed {
+            merge_update(RuntimeProgramUpdate::redraw(id), pending)
+        } else {
+            pending
+        })
     }
 
     fn on_accessibility_action(
@@ -370,6 +399,10 @@ impl RuntimeProgram for Fixture {
         event: WindowEvent,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        // Scene host already applied IME; re-dispatch would commit twice.
+        if matches!(event, WindowEvent::Ime { .. }) {
+            return RuntimeProgramUpdate::default();
+        }
         self.on_window_event(event)
             .unwrap_or_else(|error| panic!("fixture window event failed: {error}"))
     }
@@ -478,6 +511,7 @@ mod tests {
     use nana_ui::NanaTextShaper;
     use nana_ui::runtime::{
         AccessibilityAction, AccessibilityActionRequest, AccessibilityRole, LayoutViewport,
+        TextSelection,
     };
 
     fn flush(document: &mut RuntimeDocument) {
@@ -628,5 +662,81 @@ mod tests {
             WindowCommand::Open { id, settings }
                 if *id == TOOL && settings.role == WindowRole::Tool
         )));
+    }
+
+    fn name_state(fixture: &Fixture) -> (String, TextSelection) {
+        fixture
+            .documents
+            .get(&WindowId::PRIMARY)
+            .expect("primary")
+            .context()
+            .read(fixture.name, |input| {
+                (input.state.value.clone(), input.state.selection)
+            })
+            .expect("read name")
+    }
+
+    #[test]
+    fn ime_preedit_and_commit_update_focused_text_input() {
+        let mut fixture = Fixture::mount().expect("mount");
+        let name = fixture.name.stable_id();
+        let document = fixture.documents.get(&WindowId::PRIMARY).expect("primary");
+        assert_eq!(
+            document.context().world().focused(document.document()),
+            Some(name)
+        );
+        let (committed, selection) = name_state(&fixture);
+        let preedit = "你";
+        let commit = "你好";
+
+        let preedited = fixture
+            .on_window_event(WindowEvent::Ime {
+                id: WindowId::PRIMARY,
+                event: ImeEvent::Preedit {
+                    text: preedit.into(),
+                    selection: Some((0, preedit.len())),
+                },
+            })
+            .expect("preedit");
+        assert_eq!(preedited.redraw, RuntimeRedraw::Window(WindowId::PRIMARY));
+
+        let (value, sel) = name_state(&fixture);
+        assert_eq!(value, committed);
+        assert_eq!(sel, selection);
+        let composition = fixture
+            .documents
+            .get(&WindowId::PRIMARY)
+            .expect("primary")
+            .context()
+            .world()
+            .ime(name)
+            .expect("preedit composition");
+        assert_eq!(composition.text, preedit);
+        assert_eq!(composition.selection, Some((0, preedit.len())));
+
+        let committed_update = fixture
+            .on_window_event(WindowEvent::Ime {
+                id: WindowId::PRIMARY,
+                event: ImeEvent::Commit(commit.into()),
+            })
+            .expect("commit");
+        assert_eq!(
+            committed_update.redraw,
+            RuntimeRedraw::Window(WindowId::PRIMARY)
+        );
+
+        let (value, sel) = name_state(&fixture);
+        assert_eq!(value, format!("{committed}{commit}"));
+        assert_eq!(sel, TextSelection::caret(value.len()));
+        assert_eq!(
+            fixture
+                .documents
+                .get(&WindowId::PRIMARY)
+                .expect("primary")
+                .context()
+                .world()
+                .ime(name),
+            None
+        );
     }
 }

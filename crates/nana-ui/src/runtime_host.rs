@@ -15,7 +15,9 @@ use nana_ui_platform::{
 use nana_ui_runtime::{AccessibilityActionRequest, AnimationFrame, FrameworkError, Task};
 use nana_ui_scene::RuntimeDocument;
 
-use crate::{HostTextureRegistry, HostedGpuResources, SceneGpuRendererRegistry, ThemeMode};
+use crate::{
+    HostTextureRegistry, HostedGpuResources, MaterialOutcome, SceneGpuRendererRegistry, ThemeMode,
+};
 
 pub use nana_ui_platform::WindowSettings as RuntimeWindowSettings;
 
@@ -52,6 +54,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     window_id: WindowId,
     geometry: WindowGeometry,
     gpu: HostedGpuResources,
+    material: MaterialOutcome,
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
 }
@@ -61,6 +64,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         window_id: WindowId,
         geometry: WindowGeometry,
         gpu: HostedGpuResources,
+        material: MaterialOutcome,
         dispatch: Arc<dyn Fn(Message) + Send + Sync>,
         tasks: SyncSender<Task<Message>>,
     ) -> Self {
@@ -68,6 +72,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             window_id,
             geometry,
             gpu,
+            material,
             dispatch,
             tasks,
         }
@@ -83,6 +88,10 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     pub fn gpu(&self) -> &HostedGpuResources {
         &self.gpu
+    }
+
+    pub const fn material(&self) -> MaterialOutcome {
+        self.material
     }
 
     pub fn dispatch(&self, message: Message) {

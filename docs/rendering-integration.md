@@ -64,7 +64,10 @@ host-owned encoder，成功后立即由同一 Queue 在 UI sample 前提交并�
 
 当前已经覆盖复用现有 RenderPass 的简单内容路径、用同一 CommandEncoder 创建独立 Pass 的组合路径、宿主创建 `winit::Window`/`Surface`/`Device`/`Queue` 后注入 Scene painter、宿主纹理直显，以及真实 `live2d-wgpu` 到 HostTexture 的共享上下文合成。Live2D 尚未迁移为 direct Scene pass；HostTexture 证据不能替代该迁移或具体产品模型验收。
 
-`hosted-gpu-demo` 通过 `nana-window` 接入 macOS Vibrancy 和 Windows Mica/Acrylic，并在无原生能力时切换为不透明主题背景；平台矩阵与限制见 `window-materials.md`。`transparent-window` 使用 Scene host 的透明窗口路径，不作为原生材质验收证据。
+`hosted-gpu-demo` 通过 `apply_hosted_system_material` 接入窗口材质：macOS Scene GPU
+路径在窗口于 WGPU layer 之后另有 content view 之前固定实色回退；Windows 仍尝试
+Mica/Acrylic，无原生能力时用不透明主题背景。平台矩阵与限制见 `window-materials.md`。
+`transparent-window` 使用 Scene host 的透明窗口路径，不作为原生材质验收证据。
 
 Hosted runtime 与窗口示例共享 `AppTitleBar`、`WindowChromeState` 和
 `WindowChromeAction`。Runtime 拥有 Winit Window，并直接执行拖拽、最小化和

@@ -14,7 +14,7 @@
 
 use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
@@ -133,10 +133,11 @@ pub struct LayoutBox {
     pub height: f32,
 }
 
-/// Shared Scene → host layout writeback buffer.
+/// Per-window Scene → host layout writeback buffer.
 ///
-/// Cleared at the start of each semantic `view` build; refilled when Scene paints
-/// each probed widget. `layoutBox` / [`get_layout_box`] read this first so menu
+/// Owned by [`crate::VueHost`] and injected into that window's host ops. Cleared
+/// at the start of each semantic `view` build; refilled when Scene paints each
+/// probed widget. `layoutBox` / [`get_layout_box_from`] read this first so menu
 /// and popover anchors track real paint geometry (including scroll/chrome offsets
 /// that Style-Model measure does not see).
 #[derive(Debug, Default)]
@@ -332,15 +333,6 @@ fn transform_layout_box(source: LayoutBox, [a, b, c, d, e, f]: [f32; 6]) -> Layo
     }
 }
 
-/// Legacy store for standalone semantic-view helpers.
-///
-/// `VueHost` owns an isolated store and passes it to its probes and host ops;
-/// hosted/multi-window code must not use this process-wide fallback.
-pub fn shared_layout_box_store() -> Arc<LayoutBoxStore> {
-    static STORE: OnceLock<Arc<LayoutBoxStore>> = OnceLock::new();
-    Arc::clone(STORE.get_or_init(|| Arc::new(LayoutBoxStore::new())))
-}
-
 /// Prefer `store` writeback, else the document's pre-paint measure cache.
 pub fn get_layout_box_from(
     store: &LayoutBoxStore,
@@ -350,9 +342,11 @@ pub fn get_layout_box_from(
     store.get(handle).or_else(|| doc.layout_box(handle))
 }
 
-/// Prefer Scene writeback, else the document's pre-paint measure cache.
+/// Document layout cache (pre-paint measure or last [`NanaTreeDocument::apply_layout_boxes`]).
+///
+/// Live Scene writeback is on the per-window [`LayoutBoxStore`]; use [`get_layout_box_from`].
 pub fn get_layout_box(doc: &NanaTreeDocument, handle: NodeHandle) -> Option<LayoutBox> {
-    get_layout_box_from(&shared_layout_box_store(), doc, handle)
+    doc.layout_box(handle)
 }
 
 /// Compact dump used by headless probes.

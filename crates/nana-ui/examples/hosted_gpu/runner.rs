@@ -13,7 +13,6 @@ use nana_ui::{
     RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
-use nana_window::MaterialOutcome;
 
 use crate::panel::{DemoPanel, Message};
 use crate::performance::StartupProbe;
@@ -296,12 +295,9 @@ impl RuntimeProgram for DemoProgram {
     fn window_frame_presented(
         &mut self,
         _id: WindowId,
-        _context: &RuntimeProgramContext<Self::Message>,
+        context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        if self
-            .startup
-            .record_first_frame(MaterialOutcome::chosen_solid().effect)
-        {
+        if self.startup.record_first_frame(context.material()) {
             RuntimeProgramUpdate::exit()
         } else {
             RuntimeProgramUpdate::default()

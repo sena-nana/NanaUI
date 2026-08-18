@@ -17,11 +17,8 @@ use crate::scroll::{
     ScrollIntoViewOptions, ScrollOffset, scroll_into_view, set_scroll_offset,
     shared_scroll_offset_store,
 };
-#[cfg(test)]
-use crate::tree::get_layout_box;
 use crate::tree::{
     ElementNamespace, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from,
-    shared_layout_box_store,
 };
 
 /// Shared handles used by DOM + semantic bridge host ops.
@@ -41,7 +38,10 @@ pub fn register_dom_host_ops(api: &mut HostApiRegistry, doc: Arc<Mutex<NanaTreeD
     register_dom_host_ops_with_bridge(api, doc, bridge, shared_web_api_state());
 }
 
-/// Registers host ops with an explicit shared [`MessageBridge`] (preferred for VueHost).
+/// Registers host ops with an explicit [`MessageBridge`].
+///
+/// Allocates an isolated [`LayoutBoxStore`]. Product windows inject the
+/// per-window store through [`crate::VueHost`].
 pub fn register_dom_host_ops_with_bridge(
     api: &mut HostApiRegistry,
     doc: Arc<Mutex<NanaTreeDocument>>,
@@ -53,7 +53,7 @@ pub fn register_dom_host_ops_with_bridge(
         doc,
         bridge,
         web_api,
-        shared_layout_box_store(),
+        Arc::new(LayoutBoxStore::new()),
     );
 }
 
@@ -76,6 +76,7 @@ pub(crate) fn register_dom_host_ops_with_bridge_and_layout(
 }
 
 #[cfg(feature = "scene-view")]
+/// Registers host ops with a native-component registry.
 pub fn register_dom_host_ops_with_components(
     api: &mut HostApiRegistry,
     doc: Arc<Mutex<NanaTreeDocument>>,
@@ -89,7 +90,7 @@ pub fn register_dom_host_ops_with_components(
         bridge,
         web_api,
         components,
-        shared_layout_box_store(),
+        Arc::new(LayoutBoxStore::new()),
     );
 }
 
@@ -1915,16 +1916,17 @@ mod tests {
         use nana_ui_core::{LengthSpec, OverflowSpec};
 
         shared_scroll_offset_store().clear();
-        shared_layout_box_store().begin_frame();
 
         let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 600, 1.0)));
         let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let store = Arc::new(LayoutBoxStore::new());
         let mut api = HostApiRegistry::new();
-        register_dom_host_ops_with_bridge(
+        register_dom_host_ops_with_bridge_and_layout(
             &mut api,
             Arc::clone(&doc),
             Arc::clone(&bridge),
             shared_web_api_state(),
+            Arc::clone(&store),
         );
 
         let body = {
@@ -1979,7 +1981,6 @@ mod tests {
             }
         }
 
-        let store = shared_layout_box_store();
         store.record(NodeHandle(scroller as u64), 0.0, 0.0, 300.0, 200.0);
         store.record(NodeHandle(target as u64), 0.0, 480.0, 300.0, 40.0);
         {
@@ -2008,8 +2009,8 @@ mod tests {
         };
         assert_eq!(scrolled.len(), 1);
 
-        let box_ =
-            get_layout_box(&doc.lock().unwrap(), NodeHandle(target as u64)).expect("target box");
+        let box_ = get_layout_box_from(&store, &doc.lock().unwrap(), NodeHandle(target as u64))
+            .expect("target box");
         assert!(
             (box_.y - 0.0).abs() < 1.0,
             "target should be at scrollport top after scrollIntoView, got y={}",
@@ -2027,9 +2028,7 @@ mod tests {
             .unwrap_or(0.0);
         assert!((top - 480.0).abs() < 1.0, "scrollTop={top}");
 
-        // Avoid leaking process-wide store state into other tests.
         shared_scroll_offset_store().clear();
-        shared_layout_box_store().begin_frame();
     }
 
     #[test]
