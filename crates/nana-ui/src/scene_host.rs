@@ -119,6 +119,7 @@ struct SceneReady<Program: RuntimeProgram> {
     next_gpu_retry: Option<Instant>,
     render_suspended: bool,
     last_theme: crate::ThemeMode,
+    ime_requests: HashMap<WindowId, TextInputRequest>,
 }
 
 impl<Program: RuntimeProgram> SceneRunner<Program> {
@@ -269,6 +270,7 @@ fn initialize<Program: RuntimeProgram>(
         next_gpu_retry: None,
         render_suspended: false,
         last_theme,
+        ime_requests: HashMap::new(),
     };
     let update = ready.program.window_event(
         WindowEvent::Ready {
@@ -835,6 +837,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 parent.focus_window();
             }
             self.window_ids.remove(&host.surface.window().id());
+            self.ime_requests.remove(&id);
             drop(host);
             let update = self
                 .program
@@ -1014,25 +1017,19 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .unwrap_or(1.0)
     }
 
-    fn apply_ime_request(&self, id: WindowId) {
-        let Some(window) = self.window(id) else {
-            return;
-        };
-        if !window.has_focus() {
-            apply_text_input_request(
-                window.as_ref(),
-                Some(TextInputRequest {
-                    enabled: false,
-                    cursor_area: None,
-                    purpose: TextInputPurpose::Normal,
-                }),
-            );
+    fn apply_ime_request(&mut self, id: WindowId) {
+        let request = resolved_scene_ime_request(self.program.document(id));
+        if self.ime_requests.get(&id) == Some(&request) {
             return;
         }
-        apply_text_input_request(
-            window.as_ref(),
-            self.program.document(id).map(runtime_text_input_request),
-        );
+        let Some(window) = self.window(id).cloned() else {
+            return;
+        };
+        // Follow the focused editable field, not NSWindow key status.
+        // Gating on has_focus() disables IME while the SCIM candidate panel is
+        // key, and also races automation that activates then types immediately.
+        apply_text_input_request(window.as_ref(), request);
+        self.ime_requests.insert(id, request);
     }
 
     fn normalized_input(&mut self, id: WindowId, event: &WinitWindowEvent) -> Option<InputEvent> {
@@ -1457,10 +1454,19 @@ fn scene_clear_color(theme: crate::ThemeMode, material: MaterialOutcome) -> [f32
     [color.r, color.g, color.b, alpha]
 }
 
-fn apply_text_input_request(window: &winit::window::Window, request: Option<TextInputRequest>) {
-    let Some(request) = request else {
-        return;
-    };
+fn resolved_scene_ime_request(
+    document: Option<&nana_ui_scene::RuntimeDocument>,
+) -> TextInputRequest {
+    document
+        .map(runtime_text_input_request)
+        .unwrap_or(TextInputRequest {
+            enabled: false,
+            cursor_area: None,
+            purpose: TextInputPurpose::Normal,
+        })
+}
+
+fn apply_text_input_request(window: &winit::window::Window, request: TextInputRequest) {
     window.set_ime_allowed(request.enabled);
     if !request.enabled {
         return;
@@ -1928,13 +1934,14 @@ mod tests {
     use super::{
         InputTracker, RoutedWindowCommand, mouse_button_code, mouse_button_mask,
         platform_ime_event, platform_input_key, platform_input_modifiers, platform_window_event,
-        route_window_command, scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, window_level, windows_to_redraw,
+        resolved_scene_ime_request, route_window_command, scene_runtime_input_update,
+        scene_window_attributes, screen_position, should_deliver_program_ime, window_level,
+        windows_to_redraw,
     };
     use crate::{RuntimeProgramUpdate, RuntimeRedraw};
     use nana_ui_platform::{
-        ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, WindowCommand,
-        WindowEvent, WindowGeometry, WindowId, WindowSettings,
+        ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
+        WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate};
@@ -2312,6 +2319,31 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn scene_ime_follows_focused_text_input_without_window_key_status() {
+        let disabled = resolved_scene_ime_request(None);
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.purpose, TextInputPurpose::Normal);
+
+        let document_id = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let mut document = nana_ui_scene::RuntimeDocument::new(document_id);
+        let input = document
+            .context_mut()
+            .create_component(document_id, nana_ui_runtime::TextInput::new("NanaUI"))
+            .unwrap();
+        assert!(!resolved_scene_ime_request(Some(&document)).enabled);
+
+        assert!(
+            document
+                .context_mut()
+                .focus_node(document_id, input.stable_id())
+                .unwrap()
+        );
+        let enabled = resolved_scene_ime_request(Some(&document));
+        assert!(enabled.enabled);
+        assert_eq!(enabled.purpose, TextInputPurpose::Normal);
     }
 
     #[test]
