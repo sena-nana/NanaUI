@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "issue": 8,
+  "harness_ids": [
+    "static-tree-100",
+    "static-tree-1k",
+    "static-tree-5k",
+    "static-tree-10k",
+    "static-tree-50k",
+    "mutation-paint-only",
+    "hover",
+    "virtual-list-10k",
+    "virtual-list-100k"
+  ],
+  "required_by_issue_not_in_harness": [
+    {
+      "id": "mutation-text",
+      "kind": "Mutation",
+      "params": { "tree_nodes": 5000, "kind": "Text" },
+      "note": "Required by #8 §3.2."
+    },
+    {
+      "id": "mutation-layout-style",
+      "kind": "Mutation",
+      "params": { "tree_nodes": 5000, "kind": "LayoutStyle" },
+      "note": "Required by #8 §3.2."
+    },
+    {
+      "id": "mutation-visibility",
+      "kind": "Mutation",
+      "params": { "tree_nodes": 5000, "kind": "Visibility" },
+      "note": "Required by #8 §3.2."
+    },
+    {
+      "id": "mutation-transform",
+      "kind": "Mutation",
+      "params": { "tree_nodes": 5000, "kind": "Transform" },
+      "note": "Required by #8 §3.2."
+    },
+    {
+      "id": "mutation-a11y",
+      "kind": "Mutation",
+      "params": { "tree_nodes": 5000, "kind": "Accessibility" },
+      "note": "Required by #8 §3.2."
+    },
+    {
+      "id": "virtual-list-1m",
+      "kind": "VirtualList",
+      "params": {
+        "items": 1000000,
+        "visible": 40,
+        "overscan": 8,
+        "text_len": 32,
+        "item_extent_px": 20
+      },
+      "note": "Required by #8 §3.4. One retained entity per logical row is forbidden."
+    },
+    {
+      "id": "text-table",
+      "kind": "Table",
+      "params": {
+        "rows": 10000,
+        "columns": 100,
+        "visible_rows": 40,
+        "visible_columns": 16,
+        "overscan_rows": 8,
+        "overscan_columns": 2,
+        "short_cell_len": 8,
+        "wrapped_cells": 4,
+        "wrapped_cell_len": 256
+      },
+      "note": "Required by #8 §3.5. Must record TextLayoutCache/GlyphCache hit/miss and shaping calls/frame."
+    },
+    {
+      "id": "text-editor",
+      "kind": "TextEditor",
+      "params": {
+        "document_chars": 100000,
+        "visible_lines": 40
+      },
+      "note": "Required by #8 §3.6."
+    },
+    {
+      "id": "ime",
+      "kind": "Ime",
+      "params": {
+        "scripts": ["latin", "zh", "ja", "ko"],
+        "include_preedit": true,
+        "include_candidate_commit": true
+      },
+      "note": "Required by #8 §3.6. Correctness and performance must be measured together."
+    },
+    {
+      "id": "dock-workspace",
+      "kind": "DockWorkspace",
+      "params": {
+        "panes": 8,
+        "include_splitter_resize": true
+      },
+      "note": "Required by #8 §3.7."
+    },
+    {
+      "id": "overlay",
+      "kind": "Overlay",
+      "params": {
+        "kinds": ["tooltip", "context_menu", "modal", "popup"]
+      },
+      "note": "Required by #8 §3.7."
+    },
+    {
+      "id": "animation",
+      "kind": "Animation",
+      "params": {
+        "active": 1,
+        "scheduled_idle": true
+      },
+      "note": "Required by #8 §3 / §4. Idle scheduled animations must not scan every entity."
+    },
+    {
+      "id": "gpu-scene-ui",
+      "kind": "GpuScene",
+      "params": { "composition": "UiOnly" },
+      "note": "Required by #8 §3.8. UI frame cadence must be separable from Live2D."
+    },
+    {
+      "id": "gpu-scene-ui-live2d",
+      "kind": "GpuScene",
+      "params": { "composition": "UiLive2d" },
+      "note": "Required by #8 §3.8."
+    },
+    {
+      "id": "gpu-scene-ui-live2d-effect",
+      "kind": "GpuScene",
+      "params": { "composition": "UiLive2dEffect" },
+      "note": "Required by #8 §3.8. Required by #8 / not implemented as a shared Scenario runner."
+    }
+  ]
+}

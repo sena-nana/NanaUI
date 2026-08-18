@@ -20,7 +20,7 @@ use crate::{
     ExtractedTextSpan, HighlightRequest, ImeComposition, InteractionState, LayoutBox, LayoutInput,
     MountState, MutationQueue, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
     ScrollOffset, StandardVisual, TextContent, TextInputPresentation, TextInputState, TextMetrics,
-    TextPresentation, TextPresenter, TextShaper, UiMutation,
+    TextPresentation, TextPresenter, TextShaper, UiMutation, WorkCounters,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -295,6 +295,20 @@ pub struct UiWorld {
     style_model: StyleModelRef,
     generation: u64,
     presenters: HashMap<String, Box<dyn TextPresenter>>,
+    spawned_since_drain: usize,
+    despawned_since_drain: usize,
+    last_counters: WorkCounters,
+    frame_counters: WorkCounters,
+    frame_extracted_nodes: usize,
+    frame_extracted_spans: usize,
+    accumulating_frame: bool,
+    /// Live Confirm modal frames. Extract, a11y, and hit-test skip ancestor
+    /// confirm walks when this is zero.
+    confirm_modals: usize,
+    /// Live EmptyState + ModalFrame visuals that clip descendants.
+    clip_visuals: usize,
+    /// Nodes with an authored `z-index`. Stacking walks skip when this is zero.
+    z_index_nodes: usize,
 }
 
 impl Default for UiWorld {
@@ -323,6 +337,16 @@ impl UiWorld {
             style_model: StyleModelRef::default(),
             generation: 0,
             presenters: HashMap::new(),
+            spawned_since_drain: 0,
+            despawned_since_drain: 0,
+            last_counters: WorkCounters::default(),
+            frame_counters: WorkCounters::default(),
+            frame_extracted_nodes: 0,
+            frame_extracted_spans: 0,
+            accumulating_frame: false,
+            confirm_modals: 0,
+            clip_visuals: 0,
+            z_index_nodes: 0,
         }
     }
 
@@ -367,6 +391,41 @@ impl UiWorld {
         self.generation
     }
 
+    /// Algorithm-level counters from the last non-empty drain, or the current
+    /// frame accumulator while a product flush is running. An idle
+    /// [`Self::take_system_work`] does not replace this snapshot.
+    pub fn last_work_counters(&self) -> WorkCounters {
+        self.last_counters
+    }
+
+    /// Start a multi-pass frame accumulator. Idle drains still leave the
+    /// previous snapshot in place until a non-empty pass runs.
+    pub fn begin_frame_counters(&mut self) {
+        self.frame_counters = WorkCounters::default();
+        self.frame_extracted_nodes = 0;
+        self.frame_extracted_spans = 0;
+        self.accumulating_frame = true;
+    }
+
+    pub fn end_frame_counters(&mut self) {
+        self.accumulating_frame = false;
+    }
+
+    /// Record extract output onto the last drained work counters. Draw batches
+    /// and GPU upload bytes are omitted; extraction does not measure them.
+    pub fn record_extract(&mut self, extracted: &[ExtractedNode]) {
+        let spans = extracted.iter().map(|node| node.text_spans.len()).sum();
+        if self.accumulating_frame {
+            self.frame_extracted_nodes = self.frame_extracted_nodes.saturating_add(extracted.len());
+            self.frame_extracted_spans = self.frame_extracted_spans.saturating_add(spans);
+            self.last_counters.render_nodes_extracted = self.frame_extracted_nodes;
+            self.last_counters.extracted_text_spans = self.frame_extracted_spans;
+        } else {
+            self.last_counters.render_nodes_extracted = extracted.len();
+            self.last_counters.extracted_text_spans = spans;
+        }
+    }
+
     pub fn theme_mode(&self) -> ThemeMode {
         self.style_model.theme_mode
     }
@@ -380,10 +439,10 @@ impl UiWorld {
             return None;
         }
         let mut bubble = Vec::new();
-        let mut current = self.node(target)?.parent;
+        let mut current = self.parent_id(target);
         while let Some(id) = current {
             bubble.push(id);
-            current = self.node(id)?.parent;
+            current = self.parent_id(id);
         }
         let mut capture = bubble.clone();
         capture.reverse();
@@ -562,6 +621,12 @@ impl UiWorld {
             accessibility_removals: std::mem::take(&mut self.pending_accessibility_removals),
             render_extraction: Vec::new(),
             render_removals: std::mem::take(&mut self.pending_render_removals),
+            entities_total: self.entities.len(),
+            entities_changed: 0,
+            entities_spawned: std::mem::take(&mut self.spawned_since_drain),
+            entities_despawned: std::mem::take(&mut self.despawned_since_drain),
+            render_nodes_extracted: 0,
+            extracted_text_spans: 0,
         };
         work.render_removals.sort_unstable();
         work.accessibility_removals.sort_unstable();
@@ -587,7 +652,26 @@ impl UiWorld {
             } else {
                 bits & !DirtyMask::TEXT
             };
+            if bits != 0 {
+                work.entities_changed += 1;
+            }
             push_work(&mut work, id, bits);
+        }
+        work.render_nodes_extracted = work.render_extraction.len();
+        if !work.is_empty() {
+            let mut counters = work.counters();
+            // Extract fields are filled by [`Self::record_extract`] on the
+            // product path, not by the planned render list.
+            counters.render_nodes_extracted = 0;
+            counters.extracted_text_spans = 0;
+            if self.accumulating_frame {
+                self.frame_counters.accumulate(counters);
+                self.last_counters = self.frame_counters;
+                self.last_counters.render_nodes_extracted = self.frame_extracted_nodes;
+                self.last_counters.extracted_text_spans = self.frame_extracted_spans;
+            } else {
+                self.last_counters = counters;
+            }
         }
         work
     }
@@ -623,6 +707,12 @@ impl UiWorld {
         self.pending_render_removals.extend(work.render_removals);
         self.pending_render_removals.sort_unstable();
         self.pending_render_removals.dedup();
+        self.spawned_since_drain = self
+            .spawned_since_drain
+            .saturating_add(work.entities_spawned);
+        self.despawned_since_drain = self
+            .despawned_since_drain
+            .saturating_add(work.entities_despawned);
     }
 
     pub fn node(&self, id: StableNodeId) -> Option<NodeSnapshot> {
@@ -707,7 +797,7 @@ impl UiWorld {
             {
                 return false;
             }
-            let parent = self.node(candidate).and_then(|node| node.parent);
+            let parent = self.parent_id(candidate);
             if let Some(parent) = parent {
                 if self
                     .overlay_host(parent)
@@ -973,36 +1063,24 @@ impl UiWorld {
                 }
                 modal_shaped.push((id, intrinsic));
             }
-            let metrics = shaper.shape(
-                id,
-                &text,
-                &style,
-                crate::TextShapeConstraints {
-                    shaping: self.text_shaping(id),
-                    ..crate::TextShapeConstraints::default()
-                },
-            );
+            let constraints = self.text_shape_constraints(id);
+            let metrics = shaper.shape(id, &text, &style, constraints);
             validate_text_metrics(id, metrics)?;
             let presentation = presentation.map(|source| {
-                shape_text_input_presentation(
-                    id,
-                    source,
-                    &style,
-                    crate::TextShapeConstraints {
-                        shaping: self.text_shaping(id),
-                        ..crate::TextShapeConstraints::default()
-                    },
-                    shaper,
-                )
+                shape_text_input_presentation(id, source, &style, constraints, shaper)
             });
             shaped.push((id, metrics, presentation));
         }
         for (id, metrics, presentation) in shaped {
+            let previous = *self.component::<TextMetrics>(id);
             *self.component_mut::<TextMetrics>(id) = metrics;
             if let Some(presentation) = presentation {
                 self.world
                     .entity_mut(self.entities[&id])
                     .insert(presentation);
+            }
+            if text_intrinsic_changed(previous, metrics) {
+                self.propagate_layout_from_node(id);
             }
         }
         for (id, presentation) in empty_shaped {
@@ -1092,52 +1170,7 @@ impl UiWorld {
             if text.value.is_empty() || !computed.visible {
                 continue;
             }
-            let source = self.component::<NodeStyle>(id);
-            let layout = *self.component::<LayoutBox>(id);
-            let padding = source.layout.resolved_padding_against(Some(layout.width));
-            let border = source.layout.resolved_border_width();
-            let leading_visual = match self.world.get::<StandardVisual>(self.entities[&id]) {
-                Some(StandardVisual::Checkbox { .. }) => 24.0,
-                Some(StandardVisual::Switch { .. }) => 38.0,
-                _ => 0.0,
-            };
-            let text_input_multiline = presentation.as_ref().is_some_and(|source| source.multiline);
-            let is_text_input = presentation.is_some();
-            let constraints = crate::TextShapeConstraints {
-                max_width: if is_text_input && !text_input_multiline {
-                    None
-                } else {
-                    Some(
-                        (layout.width
-                            - padding.left
-                            - padding.right
-                            - border * 2.0
-                            - leading_visual)
-                            .max(0.0),
-                    )
-                },
-                // Auto-height text must be allowed to grow after wrapping. Feeding the
-                // provisional intrinsic height back as a hard bound would make the first
-                // one-line measurement self-fulfilling. Only authored definite heights
-                // constrain the text backend; max-height is enforced by layout itself.
-                max_height: (!is_text_input
-                    && (source
-                        .layout
-                        .height
-                        .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
-                        || source
-                            .layout
-                            .max_height
-                            .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)))
-                .then(|| (layout.height - padding.top - padding.bottom - border * 2.0).max(0.0)),
-                wrap: if is_text_input {
-                    text_input_multiline && !source.layout.white_space_nowrap
-                } else {
-                    !source.layout.white_space_nowrap
-                },
-                ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
-                shaping: self.text_shaping(id),
-            };
+            let constraints = self.text_shape_constraints(id);
             let metrics = shaper.shape(id, &text, computed, constraints);
             validate_text_metrics(id, metrics)?;
             let presentation = presentation.map(|source| {
@@ -1252,6 +1285,60 @@ impl UiWorld {
         }
     }
 
+    /// Shape against the last published content box when it exists so wrap
+    /// height can stop or propagate LAYOUT. Unmeasured nodes stay unconstrained.
+    fn text_shape_constraints(&self, id: StableNodeId) -> crate::TextShapeConstraints {
+        let source = self.component::<NodeStyle>(id);
+        let layout = *self.component::<LayoutBox>(id);
+        let presentation = self.text_input_presentation_source(id);
+        let text_input_multiline = presentation.as_ref().is_some_and(|source| source.multiline);
+        let is_text_input = presentation.is_some();
+        let wrap = if is_text_input {
+            text_input_multiline && !source.layout.white_space_nowrap
+        } else {
+            !source.layout.white_space_nowrap
+        };
+        let measured = layout.width > 0.0 || layout.height > 0.0;
+        if !measured {
+            return crate::TextShapeConstraints {
+                wrap,
+                ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
+                shaping: self.text_shaping(id),
+                ..crate::TextShapeConstraints::default()
+            };
+        }
+        let padding = source.layout.resolved_padding_against(Some(layout.width));
+        let border = source.layout.resolved_border_width();
+        let leading_visual = match self.world.get::<StandardVisual>(self.entities[&id]) {
+            Some(StandardVisual::Checkbox { .. }) => 24.0,
+            Some(StandardVisual::Switch { .. }) => 38.0,
+            _ => 0.0,
+        };
+        crate::TextShapeConstraints {
+            max_width: if is_text_input && !text_input_multiline {
+                None
+            } else {
+                Some(
+                    (layout.width - padding.left - padding.right - border * 2.0 - leading_visual)
+                        .max(0.0),
+                )
+            },
+            max_height: (!is_text_input
+                && (source
+                    .layout
+                    .height
+                    .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+                    || source
+                        .layout
+                        .max_height
+                        .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)))
+            .then(|| (layout.height - padding.top - padding.bottom - border * 2.0).max(0.0)),
+            wrap,
+            ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
+            shaping: self.text_shaping(id),
+        }
+    }
+
     pub fn layout_inputs(&self, ids: &[StableNodeId]) -> Result<Vec<LayoutInput>, UiWorldError> {
         ids.iter()
             .copied()
@@ -1333,26 +1420,28 @@ impl UiWorld {
             if node_style.clips_overflow() {
                 child_clips.push((layout, transform));
             }
-            if matches!(
-                self.world.get::<StandardVisual>(self.entities[&id]),
-                Some(StandardVisual::EmptyState { .. })
-            ) {
-                child_clips.push((layout, transform));
-            }
-            if let Some(crate::ComponentGeometry::ModalFrame { surface, .. }) =
-                self.component_geometry(id)
-            {
-                child_clips.push((surface, transform));
-            }
-            if let Some(parent) = self.node(id).and_then(|node| node.parent)
-                && let Some(StandardVisual::ModalFrame { slots, .. }) =
-                    self.world.get::<StandardVisual>(self.entities[&parent])
-                && slots.body == Some(id)
-                && let Some(crate::ComponentGeometry::ModalFrame { body, .. }) =
-                    self.component_geometry(parent)
-            {
-                child_clips.push((body, parent_transform));
-                own_clips.push((body, parent_transform));
+            if self.clip_visuals != 0 {
+                if matches!(
+                    self.world.get::<StandardVisual>(self.entities[&id]),
+                    Some(StandardVisual::EmptyState { .. })
+                ) {
+                    child_clips.push((layout, transform));
+                }
+                if let Some(crate::ComponentGeometry::ModalFrame { surface, .. }) =
+                    self.component_geometry(id)
+                {
+                    child_clips.push((surface, transform));
+                }
+                if let Some(parent) = self.parent_id(id)
+                    && let Some(StandardVisual::ModalFrame { slots, .. }) =
+                        self.world.get::<StandardVisual>(self.entities[&parent])
+                    && slots.body == Some(id)
+                    && let Some(crate::ComponentGeometry::ModalFrame { body, .. }) =
+                        self.component_geometry(parent)
+                {
+                    child_clips.push((body, parent_transform));
+                    own_clips.push((body, parent_transform));
+                }
             }
             let scroll = *self.component::<ScrollOffset>(id);
             let child_transform =
@@ -1549,6 +1638,7 @@ impl UiWorld {
                     .id();
                 self.entities.insert(*id, entity);
                 self.dirty_entities.insert(*id);
+                self.spawned_since_drain += 1;
                 report.created += 1;
             }
             UiMutation::Insert {
@@ -1714,10 +1804,12 @@ impl UiWorld {
                         self.animation_deadlines.remove(&(deadline, animation_id));
                     }
                     self.clear_overlay_references(id);
+                    self.forget_visual_presence(entity);
                     let _ = self.world.despawn(entity);
                     self.retired.insert(id);
                     self.pending_render_removals.push(id);
                     self.pending_accessibility_removals.push(id);
+                    self.despawned_since_drain += 1;
                     report.despawned += 1;
                 }
             }
@@ -1735,6 +1827,10 @@ impl UiWorld {
                 let transform_changed = previous.layout.transform != style.layout.transform
                     || previous.layout.unsupported_transform != style.layout.unsupported_transform;
                 let stacking_changed = previous.layout.z_index != style.layout.z_index;
+                self.note_z_index_presence(
+                    previous.layout.z_index.is_some(),
+                    style.layout.z_index.is_some(),
+                );
                 let layout_changed =
                     layout_semantics_changed(previous.layout.as_ref(), style.layout.as_ref());
                 *self.component_mut::<NodeStyle>(*id) = style.clone();
@@ -1798,14 +1894,8 @@ impl UiWorld {
                 *self.component_mut::<TextContent>(*id) = text.clone();
                 self.mark(
                     *id,
-                    DirtyMask::TEXT
-                        | DirtyMask::LAYOUT
-                        | DirtyMask::RENDER
-                        | DirtyMask::ACCESSIBILITY,
+                    DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
-                if let Some(parent) = self.node(*id).and_then(|node| node.parent) {
-                    self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
-                }
             }
             UiMutation::WriteLayout { id, layout } => {
                 *self.component_mut::<LayoutBox>(*id) = *layout;
@@ -1860,37 +1950,45 @@ impl UiWorld {
             }
             UiMutation::SetStandardVisual { id, visual } => {
                 let entity = self.entities[id];
-                let text_input_presentation_changed =
-                    matches!(
-                        self.world.get::<StandardVisual>(entity),
-                        Some(StandardVisual::TextInput { .. })
-                    ) || matches!(visual, Some(StandardVisual::TextInput { .. }));
-                let empty_state_presentation_changed =
-                    matches!(
-                        self.world.get::<StandardVisual>(entity),
-                        Some(StandardVisual::EmptyState { .. })
-                    ) || matches!(visual, Some(StandardVisual::EmptyState { .. }));
-                let modal_presentation_changed =
-                    matches!(
-                        self.world.get::<StandardVisual>(entity),
-                        Some(StandardVisual::ModalFrame { .. })
-                    ) || matches!(visual, Some(StandardVisual::ModalFrame { .. }));
-                let modal_state_changed = match (self.world.get::<StandardVisual>(entity), visual) {
+                let (
+                    text_input_presentation_changed,
+                    empty_state_presentation_changed,
+                    modal_presentation_changed,
+                    modal_state_changed,
+                    previous_confirm,
+                    previous_clip,
+                ) = {
+                    let previous_visual = self.world.get::<StandardVisual>(entity);
                     (
-                        Some(StandardVisual::ModalFrame {
-                            busy: old_busy,
-                            danger: old_danger,
-                            ..
-                        }),
-                        Some(StandardVisual::ModalFrame { busy, danger, .. }),
-                    ) => old_busy != busy || old_danger != danger,
-                    _ => false,
+                        matches!(previous_visual, Some(StandardVisual::TextInput { .. }))
+                            || matches!(visual, Some(StandardVisual::TextInput { .. })),
+                        matches!(previous_visual, Some(StandardVisual::EmptyState { .. }))
+                            || matches!(visual, Some(StandardVisual::EmptyState { .. })),
+                        matches!(previous_visual, Some(StandardVisual::ModalFrame { .. }))
+                            || matches!(visual, Some(StandardVisual::ModalFrame { .. })),
+                        match (previous_visual, visual) {
+                            (
+                                Some(StandardVisual::ModalFrame {
+                                    busy: old_busy,
+                                    danger: old_danger,
+                                    ..
+                                }),
+                                Some(StandardVisual::ModalFrame { busy, danger, .. }),
+                            ) => old_busy != busy || old_danger != danger,
+                            _ => false,
+                        },
+                        is_confirm_modal(previous_visual),
+                        is_clip_visual(previous_visual),
+                    )
                 };
+                let next_confirm = is_confirm_modal(visual.as_ref());
+                let next_clip = is_clip_visual(visual.as_ref());
                 if let Some(visual) = visual {
                     self.world.entity_mut(entity).insert(visual.clone());
                 } else {
                     self.world.entity_mut(entity).remove::<StandardVisual>();
                 }
+                self.note_presence_counts(previous_confirm, next_confirm, previous_clip, next_clip);
                 if !matches!(visual, Some(StandardVisual::TextInput { .. })) {
                     self.world
                         .entity_mut(entity)
@@ -2110,7 +2208,6 @@ impl UiWorld {
                 self.mark(
                     *id,
                     DirtyMask::TEXT
-                        | DirtyMask::LAYOUT
                         | DirtyMask::FOCUS_IME
                         | DirtyMask::RENDER
                         | DirtyMask::ACCESSIBILITY,
@@ -2137,7 +2234,6 @@ impl UiWorld {
                 self.mark(
                     *id,
                     DirtyMask::TEXT
-                        | DirtyMask::LAYOUT
                         | DirtyMask::FOCUS_IME
                         | DirtyMask::RENDER
                         | DirtyMask::ACCESSIBILITY,
@@ -2191,6 +2287,37 @@ impl UiWorld {
         self.world
             .get::<T>(self.entities[&id])
             .expect("entity must have runtime component")
+    }
+
+    fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<Hierarchy>(entity)?.parent
+    }
+
+    fn note_z_index_presence(&mut self, was_present: bool, now_present: bool) {
+        bump_presence(&mut self.z_index_nodes, was_present, now_present);
+    }
+
+    fn note_presence_counts(
+        &mut self,
+        was_confirm: bool,
+        now_confirm: bool,
+        was_clip: bool,
+        now_clip: bool,
+    ) {
+        bump_presence(&mut self.confirm_modals, was_confirm, now_confirm);
+        bump_presence(&mut self.clip_visuals, was_clip, now_clip);
+    }
+
+    fn forget_visual_presence(&mut self, entity: Entity) {
+        let was_confirm = is_confirm_modal(self.world.get::<StandardVisual>(entity));
+        let was_clip = is_clip_visual(self.world.get::<StandardVisual>(entity));
+        let had_z_index = self
+            .world
+            .get::<NodeStyle>(entity)
+            .is_some_and(|style| style.layout.z_index.is_some());
+        self.note_presence_counts(was_confirm, false, was_clip, false);
+        self.note_z_index_presence(had_z_index, false);
     }
 
     fn extract_node(&self, id: StableNodeId) -> Option<ExtractedNode> {
@@ -2321,6 +2448,9 @@ impl UiWorld {
     }
 
     fn stacking_z_index(&self, id: StableNodeId) -> i32 {
+        if self.z_index_nodes == 0 {
+            return 0;
+        }
         let mut current = Some(id);
         while let Some(id) = current {
             if let Some(z_index) = self
@@ -3678,6 +3808,9 @@ impl UiWorld {
 
     fn visible_accessibility_bounds(&self, id: StableNodeId) -> Option<LayoutBox> {
         let mut bounds = *self.world.get::<LayoutBox>(*self.entities.get(&id)?)?;
+        if self.clip_visuals == 0 {
+            return Some(bounds);
+        }
         let mut parent = self
             .world
             .get::<Hierarchy>(*self.entities.get(&id)?)?
@@ -3723,13 +3856,16 @@ impl UiWorld {
             if candidate == ancestor {
                 return true;
             }
-            current = self.node(candidate).and_then(|node| node.parent);
+            current = self.parent_id(candidate);
         }
         false
     }
 
     fn confirm_action_effect(&self, id: StableNodeId) -> Option<(bool, bool, bool)> {
-        let mut current = self.node(id).and_then(|node| node.parent);
+        if self.confirm_modals == 0 {
+            return None;
+        }
+        let mut current = self.parent_id(id);
         while let Some(ancestor) = current {
             let entity = *self.entities.get(&ancestor)?;
             if let Some(StandardVisual::ModalFrame {
@@ -3752,7 +3888,7 @@ impl UiWorld {
                     return Some((*busy, *danger, action == slots.actions.last().copied()));
                 }
             }
-            current = self.node(ancestor).and_then(|node| node.parent);
+            current = self.parent_id(ancestor);
         }
         None
     }
@@ -3882,7 +4018,7 @@ impl UiWorld {
             if !visited.insert(id) {
                 return false;
             }
-            let Some(parent) = self.node(id).and_then(|node| node.parent) else {
+            let Some(parent) = self.parent_id(id) else {
                 return false;
             };
             id = parent;
@@ -4151,9 +4287,48 @@ impl UiWorld {
             }
         }
     }
+
+    fn propagate_layout_from_node(&mut self, id: StableNodeId) {
+        self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+        if let Some(parent) = self.parent_id(id) {
+            self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
+        }
+    }
 }
 
 const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+fn bump_presence(count: &mut usize, was_present: bool, now_present: bool) {
+    if was_present == now_present {
+        return;
+    }
+    if now_present {
+        *count = count.saturating_add(1);
+    } else {
+        *count = count.saturating_sub(1);
+    }
+}
+
+fn is_confirm_modal(visual: Option<&StandardVisual>) -> bool {
+    matches!(
+        visual,
+        Some(StandardVisual::ModalFrame {
+            kind: crate::ModalSurfaceKind::Confirm(_),
+            ..
+        })
+    )
+}
+
+fn is_clip_visual(visual: Option<&StandardVisual>) -> bool {
+    matches!(
+        visual,
+        Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
+    )
+}
+
+fn text_intrinsic_changed(previous: TextMetrics, next: TextMetrics) -> bool {
+    previous.width != next.width || previous.height != next.height
+}
 
 fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox> {
     let x = left.x.max(right.x);
@@ -7366,6 +7541,274 @@ mod tests {
     }
 
     #[test]
+    fn text_change_with_unchanged_intrinsic_does_not_propagate_layout() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        queue.create(node(3), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.set_text(
+            node(3),
+            TextContent {
+                value: "abc".into(),
+            },
+        );
+        world.commit(queue).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        drain_scheduled_text(&mut world, &mut shaper);
+
+        let mut same_size = MutationQueue::new();
+        same_size.set_text(
+            node(3),
+            TextContent {
+                value: "xyz".into(),
+            },
+        );
+        world.commit(same_size).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.text, vec![node(3)]);
+        assert_eq!(work.render_extraction, vec![node(3)]);
+        assert!(work.layout.is_empty());
+        world.resolve_styles(&work.style).unwrap();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let after_shape = world.take_system_work();
+        assert!(after_shape.layout.is_empty());
+        assert!(!after_shape.text.contains(&node(1)));
+        assert!(!after_shape.layout.contains(&node(1)));
+        assert!(!after_shape.layout.contains(&node(2)));
+    }
+
+    #[test]
+    fn text_change_that_changes_intrinsic_propagates_layout() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        queue.create(node(3), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.set_text(
+            node(3),
+            TextContent {
+                value: "abc".into(),
+            },
+        );
+        world.commit(queue).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        drain_scheduled_text(&mut world, &mut shaper);
+
+        let mut longer = MutationQueue::new();
+        longer.set_text(
+            node(3),
+            TextContent {
+                value: "abcdef".into(),
+            },
+        );
+        world.commit(longer).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.text, vec![node(3)]);
+        assert!(work.layout.is_empty());
+        world.resolve_styles(&work.style).unwrap();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let after_shape = world.take_system_work();
+        assert_eq!(after_shape.layout, vec![node(1), node(2), node(3)]);
+    }
+
+    #[test]
+    fn wrapping_text_same_unconstrained_width_propagates_layout_when_wrap_height_changes() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        queue.create(node(3), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.set_style(
+            node(3),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    font_size: Some(10.0),
+                    width: Some(LengthSpec::Px(40.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text(
+            node(3),
+            TextContent {
+                value: "aaaaaaaa".into(),
+            },
+        );
+        world.commit(queue).unwrap();
+        let mut shaper = WordWrapShaper;
+        drain_scheduled_text(&mut world, &mut shaper);
+        let mut place = MutationQueue::new();
+        place.write_layout(
+            node(3),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 10.0,
+            },
+        );
+        world.commit(place).unwrap();
+        world.take_system_work();
+        world.shape_text(&[node(3)], &mut shaper).unwrap();
+        world.take_system_work();
+
+        let mut wrapped = MutationQueue::new();
+        wrapped.set_text(
+            node(3),
+            TextContent {
+                value: "aa aa aa".into(),
+            },
+        );
+        world.commit(wrapped).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.text, vec![node(3)]);
+        assert!(work.layout.is_empty());
+        world.resolve_styles(&work.style).unwrap();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let after_shape = world.take_system_work();
+        assert!(after_shape.layout.contains(&node(1)));
+        assert!(after_shape.layout.contains(&node(2)));
+        assert!(after_shape.layout.contains(&node(3)));
+    }
+
+    #[test]
+    fn work_counters_are_queryable_after_drain_and_extract() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=3 {
+            queue.create(node(id), document(1), NodeKind::Text);
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        world.commit(queue).unwrap();
+
+        let mut work = world.take_system_work();
+        let counters = work.counters();
+        assert_eq!(counters.entities_total, 3);
+        assert_eq!(counters.entities_spawned, 3);
+        assert_eq!(counters.entities_despawned, 0);
+        assert_eq!(counters.entities_changed, 3);
+        assert_eq!(counters.style_processed, 3);
+        assert_eq!(counters.layout_nodes, 3);
+        assert_eq!(counters.render_nodes_extracted, 3);
+        assert_eq!(world.last_work_counters().entities_changed, 3);
+        assert_eq!(world.last_work_counters().render_nodes_extracted, 0);
+
+        world.resolve_styles(&work.style).unwrap();
+        let extracted = world.extract_nodes(&work.render_extraction);
+        work.record_extract(&extracted);
+        world.record_extract(&extracted);
+        assert_eq!(work.counters().render_nodes_extracted, extracted.len());
+        assert_eq!(
+            world.last_work_counters().render_nodes_extracted,
+            extracted.len()
+        );
+
+        let idle = world.take_system_work();
+        assert!(idle.is_empty());
+        assert_eq!(idle.counters().entities_spawned, 0);
+        assert_eq!(idle.counters().entities_changed, 0);
+        assert_eq!(world.last_work_counters().entities_changed, 3);
+        assert_eq!(
+            world.last_work_counters().render_nodes_extracted,
+            extracted.len()
+        );
+    }
+
+    #[test]
+    fn frame_profiler_times_separable_runtime_stages() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Text);
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+
+        let mut profiler = crate::FrameProfiler::new();
+        profiler.mark_runtime_unsupported();
+        profiler.time(crate::FrameStage::Style, || {
+            world.resolve_styles(&work.style).unwrap();
+        });
+        profiler.time(crate::FrameStage::TextShape, || {
+            world
+                .shape_text(&work.text, &mut FunctionalShaper::default())
+                .unwrap();
+        });
+        if work.layout.is_empty() {
+            profiler.skip(crate::FrameStage::Layout);
+        } else {
+            profiler.time(crate::FrameStage::Layout, || {
+                world.layout_inputs(&work.layout).unwrap();
+            });
+        }
+        profiler.time(crate::FrameStage::Extract, || {
+            let extracted = world.extract_nodes(&work.render_extraction);
+            world.record_extract(&extracted);
+        });
+
+        let profile = profiler.finish();
+        assert_eq!(
+            profile.stage(crate::FrameStage::Style).unwrap().status,
+            crate::StageStatus::Ran
+        );
+        assert_eq!(
+            profile.stage(crate::FrameStage::TextShape).unwrap().status,
+            crate::StageStatus::Ran
+        );
+        assert_eq!(
+            profile.stage(crate::FrameStage::Layout).unwrap().status,
+            crate::StageStatus::Ran
+        );
+        assert_eq!(
+            profile.stage(crate::FrameStage::GpuUpload).unwrap().status,
+            crate::StageStatus::Unsupported
+        );
+        assert_eq!(
+            profile.stage(crate::FrameStage::Batch).unwrap().status,
+            crate::StageStatus::Unsupported
+        );
+    }
+
+    fn drain_scheduled_text(world: &mut UiWorld, shaper: &mut impl TextShaper) {
+        for _ in 0..8 {
+            let work = world.take_system_work();
+            if work.is_empty() {
+                return;
+            }
+            world.resolve_styles(&work.style).unwrap();
+            if !work.text.is_empty() {
+                world.shape_text(&work.text, shaper).unwrap();
+            }
+        }
+        panic!("scheduled text work did not settle");
+    }
+
+    #[test]
     fn hit_test_respects_cumulative_transform_and_ancestor_clip() {
         let mut world = UiWorld::new();
         let mut queue = MutationQueue::new();
@@ -7495,6 +7938,45 @@ mod tests {
             TextMetrics {
                 width: text.value.chars().count() as f32 * style.font_size,
                 height: style.font_size,
+            }
+        }
+    }
+
+    struct WordWrapShaper;
+
+    impl TextShaper for WordWrapShaper {
+        fn shape(
+            &mut self,
+            _id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+            constraints: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            let em = style.font_size.max(1.0);
+            let intrinsic = text.value.chars().count() as f32 * em;
+            let Some(max_width) = constraints.max_width.filter(|_| constraints.wrap) else {
+                return TextMetrics {
+                    width: intrinsic,
+                    height: em,
+                };
+            };
+            let mut lines = 1_u32;
+            let mut line = 0.0;
+            for word in text.value.split_whitespace() {
+                let word_width = word.chars().count() as f32 * em;
+                if line > 0.0 && line + em + word_width > max_width {
+                    lines += 1;
+                    line = word_width;
+                } else {
+                    if line > 0.0 {
+                        line += em;
+                    }
+                    line += word_width;
+                }
+            }
+            TextMetrics {
+                width: intrinsic.min(max_width),
+                height: em * lines as f32,
             }
         }
     }
@@ -7964,6 +8446,8 @@ mod tests {
         assert_eq!(world.pointer_hover(document(1), 7), Some(node(2)));
         let work = world.take_system_work();
         assert_eq!(work.style, vec![node(2)]);
+        assert!(work.layout.is_empty());
+        assert!(work.input_hit_test.is_empty());
         world.resolve_styles(&work.style).unwrap();
         assert_eq!(
             world.extract_nodes(&[node(2)])[0].style.background,

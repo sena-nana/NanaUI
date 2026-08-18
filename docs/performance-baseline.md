@@ -1,5 +1,9 @@
 # NanaUI 性能基线
 
+本文是 **遗留 Iced Gallery / `ui-benchmark` 历史基线**。当时的测量数字全部保留，供对照，不是 Issue #8 的现行合同。
+
+现行 Performance Contract、共享 Scenario、Nana/Iced/GPUI runner 与相对门禁（尚未可执行）见 [`performance-contract.md`](performance-contract.md)。Gallery 列表仍是全量 layout，不能当作 virtualization 证据。Native RHI 同 RenderPlan A/B 由 [#7 Gate B](issue-7-phase-7.md) 判定 **NO-GO**，不是 #8 的静默 blocker。
+
 ## 2026-07-29 macOS 初始基线
 
 测量环境：

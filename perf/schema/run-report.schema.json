@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sena-nana/NanaUI/perf/schema/run-report.schema.json",
+  "title": "NanaUI Issue #8 runner report envelope",
+  "type": "object",
+  "required": ["schema_version", "runner", "status", "scenario_id"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "runner": { "enum": ["nana", "iced", "gpui"] },
+    "status": { "enum": ["ok", "unsupported", "error"] },
+    "scenario_id": { "type": "string" },
+    "unsupported_reason": { "type": "string" },
+    "error": { "type": "string" },
+    "equivalence": {
+      "enum": ["same-scenario", "closest-legacy-reference", "unsupported"]
+    },
+    "timing_gate_enforceable": { "type": "boolean" },
+    "relative_gate_enforceable": { "type": "boolean" },
+    "scenario": { "type": "object" },
+    "command": { "type": "array", "items": { "type": "string" } },
+    "source_binary": { "type": "string" },
+    "source_report": { "type": "string" },
+    "mapping_notes": { "type": "array", "items": { "type": "string" } },
+    "machine": { "type": "object" },
+    "metrics": { "type": "object" },
+    "work_counters": { "type": "object" },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "type": "string" },
+          "op": { "type": "string" },
+          "value": {},
+          "measured": {},
+          "status": {
+            "type": "string",
+            "enum": ["ok", "failed", "not-evaluable", "unsupported"]
+          },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "plug_in": { "type": "string" }
+  }
+}

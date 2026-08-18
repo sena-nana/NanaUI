@@ -54,6 +54,9 @@ struct Distribution {
     p50: Sample,
     p95: Sample,
     p99: Sample,
+    max: Sample,
+    frame_budget_ms: f64,
+    frame_budget_misses: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -813,6 +816,27 @@ fn distribution(samples: &[Sample]) -> Distribution {
         p50: percentile(samples, 0.50),
         p95: percentile(samples, 0.95),
         p99: percentile(samples, 0.99),
+        max: max_sample(samples),
+        frame_budget_ms: 16.67,
+        frame_budget_misses: samples
+            .iter()
+            .filter(|sample| sample.total_ms > 16.67)
+            .count(),
+    }
+}
+
+fn max_sample(samples: &[Sample]) -> Sample {
+    let select = |field: fn(&Sample) -> f64| {
+        samples
+            .iter()
+            .map(field)
+            .max_by(f64::total_cmp)
+            .unwrap_or(0.0)
+    };
+    Sample {
+        cpu_ms: select(|sample| sample.cpu_ms),
+        submit_to_complete_ms: select(|sample| sample.submit_to_complete_ms),
+        total_ms: select(|sample| sample.total_ms),
     }
 }
 

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use nana_ui_runtime::{
-    AccessibilityDelta, AppContext, DocumentId, FrameworkError, LayoutViewport, SystemWork,
-    TextShaper,
+    AccessibilityDelta, AppContext, DocumentId, FrameStage, FrameworkError, LayoutViewport,
+    SystemWork, TextShaper,
 };
 
 use crate::{SceneDelta, UiScene};
@@ -114,6 +114,7 @@ impl RuntimeDocument {
         let mut consumed = Vec::new();
         let mut scene_batches = Vec::new();
 
+        self.context.begin_frame_profile();
         loop {
             let work = self.context.take_system_work();
             if work.is_empty() {
@@ -122,6 +123,7 @@ impl RuntimeDocument {
             if passes == MAX_FRAME_PASSES {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
+                self.context.finish_frame_profile();
                 return Err(FrameworkError::FrameDidNotSettle);
             }
             passes += 1;
@@ -129,18 +131,23 @@ impl RuntimeDocument {
             if let Err(error) = self.context.resolve_styles(&work.style) {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
+                self.context.finish_frame_profile();
                 return Err(error);
             }
             if let Err(error) = run_text_and_layout(&mut self.context, &work) {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
+                self.context.finish_frame_profile();
                 return Err(error);
             }
             if !work.input_hit_test.is_empty() || !work.layout.is_empty() {
                 self.context.rebuild_hit_test(self.document);
             }
 
+            let started = std::time::Instant::now();
             let accessibility = self.context.world().project_accessibility_delta(&work);
+            self.context
+                .time_stage_duration(FrameStage::Accessibility, started.elapsed());
             for removed in accessibility.removed {
                 accessibility_updated.remove(&removed);
                 accessibility_removed.insert(removed);
@@ -149,12 +156,15 @@ impl RuntimeDocument {
                 accessibility_removed.remove(&node.id);
                 accessibility_updated.insert(node.id, node);
             }
-            scene_batches.push((
-                self.context.world().extract_nodes(&work.render_extraction),
-                work.render_removals.clone(),
-            ));
+            let started = std::time::Instant::now();
+            let extracted = self.context.world().extract_nodes(&work.render_extraction);
+            self.context.record_extract(&extracted);
+            self.context
+                .time_stage_duration(FrameStage::Extract, started.elapsed());
+            scene_batches.push((extracted, work.render_removals.clone()));
             consumed.push(work);
         }
+        self.context.finish_frame_profile();
 
         for (extracted, removals) in scene_batches {
             let scene = Arc::make_mut(&mut self.scene).apply_delta(extracted, removals);
@@ -242,6 +252,39 @@ mod tests {
         assert!(layout.width > 0.0);
         assert_eq!(layout.height, 32.0);
         let generation = first.generation;
+        let first_counters = runtime.context().last_work_counters();
+        assert!(first_counters.entities_total >= 1);
+        assert!(first_counters.entities_changed > 0);
+        assert!(first_counters.render_nodes_extracted > 0);
+        let first_profile = runtime.context().last_frame_profile().clone();
+        assert_eq!(
+            first_profile
+                .stage(nana_ui_runtime::FrameStage::Style)
+                .unwrap()
+                .status,
+            nana_ui_runtime::StageStatus::Ran
+        );
+        assert_eq!(
+            first_profile
+                .stage(nana_ui_runtime::FrameStage::TextShape)
+                .unwrap()
+                .status,
+            nana_ui_runtime::StageStatus::Ran
+        );
+        assert_eq!(
+            first_profile
+                .stage(nana_ui_runtime::FrameStage::Extract)
+                .unwrap()
+                .status,
+            nana_ui_runtime::StageStatus::Ran
+        );
+        assert_eq!(
+            first_profile
+                .stage(nana_ui_runtime::FrameStage::GpuUpload)
+                .unwrap()
+                .status,
+            nana_ui_runtime::StageStatus::Unsupported
+        );
 
         let idle = runtime
             .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
@@ -249,6 +292,17 @@ mod tests {
         assert!(idle.is_idle());
         assert_eq!(idle.generation, generation);
         assert_eq!(idle.scene.updated_nodes, 0);
+        assert_eq!(runtime.context().last_work_counters(), first_counters);
+        assert_eq!(runtime.context().last_frame_profile(), &first_profile);
+        assert_eq!(
+            runtime
+                .context()
+                .last_frame_profile()
+                .stage(nana_ui_runtime::FrameStage::GpuUpload)
+                .unwrap()
+                .status,
+            nana_ui_runtime::StageStatus::Unsupported
+        );
     }
 
     #[test]

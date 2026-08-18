@@ -1,6 +1,7 @@
 use bevy_ecs::component::Component;
+use nana_ui_core::WorkCounters;
 
-use crate::StableNodeId;
+use crate::{ExtractedNode, StableNodeId};
 
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub(crate) struct DirtyMask(u8);
@@ -11,6 +12,8 @@ impl DirtyMask {
     pub(crate) const LAYOUT: u8 = 1 << 2;
     pub(crate) const INPUT: u8 = 1 << 3;
     pub(crate) const FOCUS_IME: u8 = 1 << 4;
+    /// Render extraction and paint. PAINT is not an independent bit; paint-only
+    /// mutations (hover, color, opacity) set RENDER without LAYOUT.
     pub(crate) const RENDER: u8 = 1 << 5;
     pub(crate) const ACCESSIBILITY: u8 = 1 << 6;
     pub(crate) const ALL: u8 = Self::STYLE
@@ -37,6 +40,9 @@ impl DirtyMask {
 }
 
 /// Deterministic per-system work produced from entity dirty components.
+///
+/// PAINT is folded into `RENDER`. Mapping onto Issue #8 dirty bits lives on
+/// [`nana_ui_core::WorkCounters`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemWork {
     pub generation: u64,
@@ -49,6 +55,19 @@ pub struct SystemWork {
     pub accessibility_removals: Vec<StableNodeId>,
     pub render_extraction: Vec<StableNodeId>,
     pub render_removals: Vec<StableNodeId>,
+    /// Live retained entity count at drain time.
+    pub entities_total: usize,
+    /// Mounted entities that contributed dirty bits this drain.
+    pub entities_changed: usize,
+    /// Entities created since the previous drain.
+    pub entities_spawned: usize,
+    /// Entities despawned since the previous drain.
+    pub entities_despawned: usize,
+    /// Nodes named for render extraction. Overwritten by
+    /// [`Self::record_extract`] with the number actually produced.
+    pub render_nodes_extracted: usize,
+    /// Theme-resolved text spans after [`Self::record_extract`]. Zero until then.
+    pub extracted_text_spans: usize,
 }
 
 impl SystemWork {
@@ -62,6 +81,30 @@ impl SystemWork {
             && self.accessibility_removals.is_empty()
             && self.render_extraction.is_empty()
             && self.render_removals.is_empty()
+    }
+
+    /// Algorithm-level snapshot for Performance Contract assertions.
+    pub fn counters(&self) -> WorkCounters {
+        WorkCounters {
+            entities_total: self.entities_total,
+            entities_changed: self.entities_changed,
+            entities_spawned: self.entities_spawned,
+            entities_despawned: self.entities_despawned,
+            style_processed: self.style.len(),
+            text_shaped: self.text.len(),
+            layout_nodes: self.layout.len(),
+            hit_test_candidates: self.input_hit_test.len(),
+            accessibility_nodes_updated: self.accessibility.len(),
+            render_nodes_extracted: self.render_nodes_extracted,
+            extracted_text_spans: self.extracted_text_spans,
+        }
+    }
+
+    /// Record extract output. Draw batches and GPU upload bytes are not
+    /// available from node extraction and are not fabricated here.
+    pub fn record_extract(&mut self, extracted: &[ExtractedNode]) {
+        self.render_nodes_extracted = extracted.len();
+        self.extracted_text_spans = extracted.iter().map(|node| node.text_spans.len()).sum();
     }
 }
 

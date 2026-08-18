@@ -6,14 +6,14 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_core::Stream;
 use nana_ui_core::{
     ActionId, ActionPickerNavigation, CommandPaletteEvent, ContextPredicate, KeyContext,
     LengthSpec, ThemeMode, TooltipConfig, TooltipPlacement, VirtualListLayout,
     VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
-    VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow,
+    VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout,
 };
 
 #[cfg(test)]
@@ -21,17 +21,17 @@ use crate::Dialog;
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
-    DocumentId, Dropdown, EmptyState, FormField, IconButton, LabeledValue, List, ListItem,
-    ListItemSlots, MenuItem, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind,
-    OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
-    ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
-    ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, Slider,
-    SliderChanged, StableNodeId, StandardVisual, Switch, Tab, TabList, TabSelected, Table,
-    TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter,
-    TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, XYPad, XYPadDragState,
-    XYPadEvent,
+    DocumentId, Dropdown, EmptyState, FormField, FrameProfile, FrameProfiler, FrameStage,
+    IconButton, LabeledValue, List, ListItem, ListItemSlots, MenuItem, ModalSlots, ModalSurface,
+    MountState, MutationQueue, NodeKind, OverlayChanged, OverlayHost, Popover, PopoverClosed,
+    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeField,
+    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView,
+    SearchDropdown, SearchDropdownEvent, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
+    SidebarSection, Slider, SliderChanged, StableNodeId, StandardVisual, Switch, Tab, TabList,
+    TabSelected, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
+    TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld,
+    UiWorldError, XYPad, XYPadDragState, XYPadEvent,
 };
 
 mod overlay;
@@ -505,6 +505,9 @@ pub struct AppContext {
     extensions: HashSet<String>,
     component_lifecycle: ComponentLifecycle,
     next_id: u64,
+    frame_profiler: FrameProfiler,
+    last_profile: FrameProfile,
+    profiling: bool,
 }
 
 /// Application-owned mapping between visible data keys and retained component
@@ -554,6 +557,35 @@ where
 
     pub fn cell_entity(&self, row: &R, column: &C) -> Option<Entity<TableCell>> {
         self.cells.get(&(row.clone(), column.clone())).copied()
+    }
+}
+
+/// Application-owned mapping between visible flattened tree keys and retained
+/// row entities. Collapsed descendants are not kept in the Runtime tree.
+#[derive(Debug)]
+pub struct VirtualTreeItems<K, C: ComponentView> {
+    items: VirtualListItems<K, C>,
+}
+
+impl<K, C: ComponentView> Default for VirtualTreeItems<K, C> {
+    fn default() -> Self {
+        Self {
+            items: VirtualListItems::default(),
+        }
+    }
+}
+
+impl<K, C> VirtualTreeItems<K, C>
+where
+    K: Clone + Eq + Hash,
+    C: ComponentView,
+{
+    pub fn mounted_keys(&self) -> &[K] {
+        self.items.mounted_keys()
+    }
+
+    pub fn entity(&self, key: &K) -> Option<Entity<C>> {
+        self.items.entity(key)
     }
 }
 
@@ -607,6 +639,9 @@ impl AppContext {
             extensions: HashSet::new(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
+            frame_profiler: FrameProfiler::new(),
+            last_profile: FrameProfile::default(),
+            profiling: false,
         };
         #[cfg(feature = "syntax-highlighting")]
         {
@@ -702,6 +737,56 @@ impl AppContext {
         self.world.take_system_work()
     }
 
+    /// Algorithm-level counters from the last drained system batch.
+    pub fn last_work_counters(&self) -> crate::WorkCounters {
+        self.world.last_work_counters()
+    }
+
+    /// Record extract output onto the last drained work counters.
+    pub fn record_extract(&mut self, extracted: &[crate::ExtractedNode]) {
+        self.world.record_extract(extracted);
+    }
+
+    /// Open a product-frame profiler and work-counter accumulator.
+    pub fn begin_frame_profile(&mut self) {
+        self.frame_profiler = FrameProfiler::new();
+        self.frame_profiler.mark_runtime_unsupported();
+        self.profiling = true;
+        self.world.begin_frame_counters();
+    }
+
+    pub fn finish_frame_profile(&mut self) {
+        self.world.end_frame_counters();
+        self.profiling = false;
+        let profile = std::mem::replace(&mut self.frame_profiler, FrameProfiler::new()).finish();
+        // Match last_work_counters: an idle flush (no stage ran) must not wipe
+        // the last non-empty product profile.
+        if profile.any_stage_ran() {
+            self.last_profile = profile;
+        }
+    }
+
+    pub fn last_frame_profile(&self) -> &FrameProfile {
+        &self.last_profile
+    }
+
+    fn stage_clock(&self) -> Option<Instant> {
+        self.profiling.then(Instant::now)
+    }
+
+    fn record_stage(&mut self, stage: FrameStage, started: Option<Instant>) {
+        if let Some(started) = started {
+            self.frame_profiler.record(stage, started.elapsed());
+        }
+    }
+
+    /// Record a stage duration while a product frame is open.
+    pub fn time_stage_duration(&mut self, stage: FrameStage, duration: Duration) {
+        if self.profiling {
+            self.frame_profiler.record(stage, duration);
+        }
+    }
+
     /// Return a drained system batch to the scheduler after a canonical frame
     /// fails. Frame drivers should restore every consumed batch before retry.
     pub fn restore_system_work(&mut self, work: crate::SystemWork) {
@@ -710,7 +795,10 @@ impl AppContext {
 
     /// Resolve inherited style for the supplied dirty nodes.
     pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), FrameworkError> {
-        self.world.resolve_styles(ids).map_err(FrameworkError::from)
+        let started = self.stage_clock();
+        let result = self.world.resolve_styles(ids).map_err(FrameworkError::from);
+        self.record_stage(FrameStage::Style, started);
+        result
     }
 
     /// Derive registered text presentations for scheduled nodes.
@@ -726,9 +814,13 @@ impl AppContext {
         ids: &[StableNodeId],
         shaper: &mut impl crate::TextShaper,
     ) -> Result<(), FrameworkError> {
-        self.world
+        let started = self.stage_clock();
+        let result = self
+            .world
             .shape_text(ids, shaper)
-            .map_err(FrameworkError::from)
+            .map_err(FrameworkError::from);
+        self.record_stage(FrameStage::TextShape, started);
+        result
     }
 
     pub fn shape_text_for_layout(
@@ -736,9 +828,13 @@ impl AppContext {
         document: DocumentId,
         shaper: &mut impl crate::TextShaper,
     ) -> Result<bool, FrameworkError> {
-        self.world
+        let started = self.stage_clock();
+        let result = self
+            .world
             .shape_text_for_layout(document, shaper)
-            .map_err(FrameworkError::from)
+            .map_err(FrameworkError::from);
+        self.record_stage(FrameStage::TextShape, started);
+        result
     }
 
     /// Compute and atomically publish canonical Runtime layout for one window.
@@ -747,19 +843,24 @@ impl AppContext {
         document: DocumentId,
         viewport: crate::LayoutViewport,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        let started = self.stage_clock();
         self.component_lifecycle
             .viewports
             .insert(document, viewport);
-        self.position_open_tooltips(document)?;
-        let layouts =
-            crate::RuntimeLayoutEngine.layout_document(&self.world, document, viewport)?;
-        let mut mutations = MutationQueue::new();
-        for (id, layout) in layouts {
-            if self.world.layout_box(id) != Some(layout) {
-                mutations.write_layout(id, layout);
+        let result = (|| {
+            self.position_open_tooltips(document)?;
+            let layouts =
+                crate::RuntimeLayoutEngine.layout_document(&self.world, document, viewport)?;
+            let mut mutations = MutationQueue::new();
+            for (id, layout) in layouts {
+                if self.world.layout_box(id) != Some(layout) {
+                    mutations.write_layout(id, layout);
+                }
             }
-        }
-        self.commit_mutations(mutations)
+            self.commit_mutations(mutations)
+        })();
+        self.record_stage(FrameStage::Layout, started);
+        result
     }
 
     /// Re-queue LAYOUT after a host drained a frame without measuring.
@@ -772,7 +873,9 @@ impl AppContext {
     /// Rebuild the compact hit index for one document after layout or input
     /// work. The retained hierarchy remains private to this context.
     pub fn rebuild_hit_test(&mut self, document: DocumentId) {
+        let started = self.stage_clock();
         self.world.rebuild_hit_test(document);
+        self.record_stage(FrameStage::HitTest, started);
     }
 
     pub fn next_animation_deadline(&self) -> Option<Duration> {
@@ -1439,6 +1542,37 @@ impl AppContext {
             .commit(plan)
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
         Ok(window)
+    }
+
+    /// Reconcile a virtual Tree to one visible keyed window of flattened
+    /// expanded rows. Creation, removal, and final child order share one
+    /// Runtime commit; collapsed descendants are never spawned.
+    #[allow(clippy::too_many_arguments)]
+    pub fn materialize_virtual_tree<K, C>(
+        &mut self,
+        tree: Entity<List>,
+        items: &mut VirtualTreeItems<K, C>,
+        layout: &VirtualTreeLayout,
+        scroll_offset: f32,
+        viewport_extent: f32,
+        overscan_extent: f32,
+        key_at: impl FnMut(usize) -> K,
+        build: impl FnMut(usize, &K) -> C,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.materialize_virtual_list(
+            tree,
+            &mut items.items,
+            layout.row_layout(),
+            scroll_offset,
+            viewport_extent,
+            overscan_extent,
+            key_at,
+            build,
+        )
     }
 
     /// Dispatch a semantic activation through the component's closure-event
@@ -8616,6 +8750,193 @@ mod tests {
         assert_eq!(
             context.world().node(moved.stable_id()).unwrap().parent,
             Some(other_table.stable_id())
+        );
+    }
+
+    #[test]
+    fn virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_expand() {
+        const ROW: f32 = 20.0;
+        const VIEWPORT: f32 = 100.0;
+        const OVERSCAN: f32 = 20.0;
+        let cap = VirtualListLayout::uniform_window_item_cap(VIEWPORT, OVERSCAN, ROW);
+        assert!(cap < 10_000);
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let tree = context.create_component(document, List::new()).unwrap();
+        let mut keys = (0..10_000).collect::<Vec<_>>();
+        let mut layout = VirtualTreeLayout::uniform(ROW, std::iter::repeat_n(0, keys.len()));
+        let mut items = VirtualTreeItems::<usize, Text>::default();
+
+        let first = context
+            .materialize_virtual_tree(
+                tree,
+                &mut items,
+                &layout,
+                0.0,
+                VIEWPORT,
+                OVERSCAN,
+                |index| keys[index],
+                |index, _| Text::new(format!("row {index}")),
+            )
+            .unwrap();
+        assert!(first.range.len() <= cap);
+        assert_eq!(
+            context
+                .world()
+                .node(tree.stable_id())
+                .unwrap()
+                .children
+                .len(),
+            first.range.len()
+        );
+        let overlap_key = keys[first.range.end - 1];
+        let overlap_entity = items.entity(&overlap_key).unwrap();
+        let removed_key = keys[first.range.start];
+        let removed_entity = items.entity(&removed_key).unwrap();
+
+        let next = context
+            .materialize_virtual_tree(
+                tree,
+                &mut items,
+                &layout,
+                80.0,
+                VIEWPORT,
+                OVERSCAN,
+                |index| keys[index],
+                |index, _| Text::new(format!("row {index}")),
+            )
+            .unwrap();
+        assert!(next.range.len() <= cap);
+        assert!(items.mounted_keys().contains(&overlap_key));
+        assert_eq!(items.entity(&overlap_key), Some(overlap_entity));
+        assert!(!context.world().contains(removed_entity.stable_id()));
+        assert_eq!(
+            items.mounted_keys(),
+            next.range
+                .clone()
+                .map(|index| keys[index])
+                .collect::<Vec<_>>()
+        );
+
+        let parent = keys.iter().position(|key| *key == overlap_key).unwrap();
+        let child_keys = [1_000_000usize, 1_000_001];
+        assert!(layout.expand(
+            parent,
+            child_keys.map(|_| nana_ui_core::VirtualTreeRow {
+                extent: ROW,
+                descendant_count: 0,
+            })
+        ));
+        keys.splice(parent + 1..parent + 1, child_keys);
+        let expanded = context
+            .materialize_virtual_tree(
+                tree,
+                &mut items,
+                &layout,
+                80.0,
+                VIEWPORT,
+                OVERSCAN,
+                |index| keys[index],
+                |index, _| Text::new(format!("row {index}")),
+            )
+            .unwrap();
+        assert!(expanded.range.len() <= cap);
+        assert_eq!(items.entity(&overlap_key), Some(overlap_entity));
+        assert!(
+            context
+                .world()
+                .node(tree.stable_id())
+                .unwrap()
+                .children
+                .len()
+                <= cap
+        );
+        assert!(items.entity(&child_keys[0]).is_some());
+        let generation = context.world().generation();
+        context
+            .materialize_virtual_tree(
+                tree,
+                &mut items,
+                &layout,
+                80.0,
+                VIEWPORT,
+                OVERSCAN,
+                |index| keys[index],
+                |index, _| Text::new(format!("row {index}")),
+            )
+            .unwrap();
+        assert_eq!(context.world().generation(), generation);
+    }
+
+    #[test]
+    fn virtual_tree_expand_keeps_live_children_below_geometric_cap() {
+        const ROW: f32 = 20.0;
+        const VIEWPORT: f32 = 100.0;
+        const OVERSCAN: f32 = 20.0;
+        const DESCENDANTS: usize = 10_000;
+        let cap = VirtualListLayout::uniform_window_item_cap(VIEWPORT, OVERSCAN, ROW);
+        assert!(cap < DESCENDANTS);
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let tree = context.create_component(document, List::new()).unwrap();
+        let mut keys = vec![0usize, 1, 2];
+        let mut layout = VirtualTreeLayout::uniform(ROW, [0, 0, 0]);
+        let mut items = VirtualTreeItems::<usize, Text>::default();
+
+        context
+            .materialize_virtual_tree(
+                tree,
+                &mut items,
+                &layout,
+                0.0,
+                VIEWPORT,
+                OVERSCAN,
+                |index| keys[index],
+                |index, _| Text::new(format!("row {index}")),
+            )
+            .unwrap();
+
+        let child_keys = (1_000_000..1_000_000 + DESCENDANTS).collect::<Vec<_>>();
+        assert!(layout.expand(
+            0,
+            child_keys.iter().map(|_| nana_ui_core::VirtualTreeRow {
+                extent: ROW,
+                descendant_count: 0,
+            })
+        ));
+        keys.splice(1..1, child_keys);
+        let descendant_count = layout
+            .descendant_count(0)
+            .expect("expanded parent keeps a descendant count");
+        assert_eq!(descendant_count, DESCENDANTS);
+
+        context
+            .materialize_virtual_tree(
+                tree,
+                &mut items,
+                &layout,
+                0.0,
+                VIEWPORT,
+                OVERSCAN,
+                |index| keys[index],
+                |index, _| Text::new(format!("row {index}")),
+            )
+            .unwrap();
+        let live = context
+            .world()
+            .node(tree.stable_id())
+            .unwrap()
+            .children
+            .len();
+        assert!(
+            live <= cap,
+            "live List children {live} exceed geometric cap {cap}"
+        );
+        assert!(
+            live < descendant_count,
+            "live List children {live} mounted every expanded descendant ({descendant_count})"
         );
     }
 }

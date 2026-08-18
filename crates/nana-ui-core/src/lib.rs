@@ -28,6 +28,8 @@ pub mod theme;
 pub mod tree;
 pub mod virtual_list;
 pub mod virtual_table;
+pub mod virtual_tree;
+pub mod work;
 pub mod workspace_model;
 
 pub use action::{
@@ -89,6 +91,8 @@ pub use virtual_table::{
     TableColumn, TableCursor, TableNavigation, VirtualTableLayout, VirtualTableMaterialization,
     VirtualTableMaterializer, VirtualTableWindow,
 };
+pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
+pub use work::{FrameStage, WorkCounters};
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
 };

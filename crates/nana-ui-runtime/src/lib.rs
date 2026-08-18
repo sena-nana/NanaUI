@@ -27,6 +27,7 @@ mod pane;
 mod placeholders;
 mod popover;
 mod presentation;
+mod profiler;
 mod qr_code;
 mod query;
 mod reorder_list;
@@ -62,8 +63,8 @@ pub use components::{
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode,
     EventRoute, ExtractedNode, ExtractedTextSpan, ImeComposition, InteractionState,
-    InteractionStyle, LayoutBox, LayoutInput, MenuSurfaceKind, ModalLayoutInput, MountState,
-    NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
+    InteractionStyle, LayoutBox, LayoutInput, MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput,
+    MountState, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
     SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
     TextContent, TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics,
     TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment,
@@ -82,7 +83,7 @@ pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, Entity, ExtensionRegistrar, FrameworkError, OverlayKey,
     OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription, Task,
-    UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
+    UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
@@ -110,18 +111,19 @@ pub use menus::{
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
-    ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, GRAPH_EDGE_HIT_TOLERANCE,
-    GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId, GraphEdge, GraphEdgeId,
-    GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId, GraphPoint, GraphPort,
-    GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection, GraphSize, GraphTarget,
-    GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport, JustifySpec, KeyContext,
-    LayoutStyle, LengthSpec, PopoverAlignment, PopoverPlacement, PositionSpec, SemanticColorRole,
-    StatusTone, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator,
-    TabStripPaint, TableCursor, TableNavigation, ThemeMode, TreeNavigation, TreeNode,
-    TreeViewEvent, ValidationIntent, VirtualListLayout, VirtualListMaterialization,
-    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
-    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
-    port_tangent, tree_navigation_event,
+    ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, FrameStage,
+    GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId,
+    GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
+    GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
+    GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
+    JustifySpec, KeyContext, LayoutStyle, LengthSpec, PopoverAlignment, PopoverPlacement,
+    PositionSpec, SemanticColorRole, StatusTone, TabDragGroup, TabDragLease, TabDragRect,
+    TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor, TableNavigation, ThemeMode,
+    TreeNavigation, TreeNode, TreeViewEvent, ValidationIntent, VirtualListLayout,
+    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
+    VirtualListMount, VirtualListWindow, VirtualTableLayout, VirtualTableMaterialization,
+    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
+    VirtualTreeWindow, WorkCounters, port_tangent, tree_navigation_event,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
@@ -135,6 +137,7 @@ pub use presentation::{
 };
 #[cfg(feature = "syntax-highlighting")]
 pub use presentation::{HighlightPresentation, SyntectHighlighter};
+pub use profiler::{FrameProfile, FrameProfiler, StageStatus, StageTiming};
 pub use qr_code::{QrCode, QrCodeError};
 pub use reorder_list::{
     ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,

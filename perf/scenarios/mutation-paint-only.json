@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "mutation-paint-only",
+  "kind": "Mutation",
+  "params": {
+    "tree_nodes": 5000,
+    "kind": "PaintOnly"
+  },
+  "record": [
+    "style",
+    "layout",
+    "render_extraction",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "paint_only_does_not_layout_full_tree",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #8 §3.2 / §12.1 requires layout_nodes == 0. Evaluate when the runner JSON includes work_counters.layout_nodes; a missing or null field stays not-evaluable and must never be treated as 0."
+    }
+  ]
+}
