@@ -46,7 +46,7 @@ pub(crate) fn gated_runtime_window_update(
 }
 
 /// Host services that are safe to retain or invoke from application code.
-/// Native window and Iced identities intentionally do not cross this boundary.
+/// Native window identities intentionally do not cross this boundary.
 #[derive(Clone)]
 pub struct RuntimeProgramContext<Message: Send + 'static> {
     window_id: WindowId,
@@ -208,8 +208,8 @@ pub trait RuntimeProgram: Sized + 'static {
     }
 
     /// External texture producers encoded by the host before UiScene samples
-    /// their resources. The queue submission remains ordered ahead of Iced's
-    /// presentation submission. The host submits the same Device/Queue pair.
+    /// their resources. The queue submission remains ordered ahead of Scene
+    /// presentation. The host submits the same Device/Queue pair.
     fn scene_resource_producers(
         &self,
         _id: WindowId,

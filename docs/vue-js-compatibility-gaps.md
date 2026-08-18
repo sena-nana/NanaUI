@@ -8,7 +8,7 @@
 | 能力 | 状态 | 已落地边界 |
 |---|---|---|
 | `NUI-ARCH-01` | 已关闭 | `VueHostedRuntime` 只持有一个 JS engine，并让全部窗口共享业务 JS、localStorage、Canvas、WebGPU 与 HostTexture。发布程序在应用构建中选择 `V8Engine`；框架保留泛型 engine 仅作为测试注入点，不会产生第二个发布运行时。 |
-| `NUI-NATIVE-COMPONENT-01` | 已关闭 | 注册、结构化 props、事件、slot、命令、稳定节点状态和卸载协议已接通；渲染错误会可靠重试并进入 Vue 本地 `error` 与全局 `Nana.components.onError`。真实 Vue SFC 验收已覆盖 props、事件、slot、命令、状态保持、卸载与重挂载，Windows 窗口已验证 Vue/Iced 混合显示。 |
+| `NUI-NATIVE-COMPONENT-01` | 已关闭 | 注册、结构化 props、事件、slot、命令、稳定节点状态和卸载协议已接通；渲染错误会可靠重试并进入 Vue 本地 `error` 与全局 `Nana.components.onError`。真实 Vue SFC 验收已覆盖 props、事件、slot、命令、状态保持、卸载与重挂载，Windows 窗口已验证 Vue/Runtime 混合显示。 |
 | `NUI-GPU-01` | 已关闭 | `<nana-gpu>` 已绑定真实 `HostTexture`，复用宿主 Device/Queue，支持 generation、版本重绘、圆角/布局裁剪、父级透明度、仿射变换和输入命中。 |
 | `NUI-CANVAS-01` | 已关闭（明确子集） | Canvas2D 使用稳定 WGPU texture，并按实际脏矩形上传；变换后的填充脏区已正确换算，复杂描边保守上传整面。未承诺的完整浏览器 Canvas2D 不计为缺口。 |
 | `NUI-WEBGPU-01` | 已关闭（明确子集） | `navigator.gpu` 复用宿主 WGPU；承诺的 buffer/texture/binding/shader/render/compute/queue/canvas 子集已接通，设备恢复会使旧 generation 失效。正常提交由稳定事件循环 deadline 非阻塞推进；未承诺的 feature、format、descriptor 和异步 API 明确抛出 `NotSupportedError`，不伪造成功。 |
@@ -16,16 +16,16 @@
 | `NUI-RESOURCE-01` | 已关闭 | Vue `<img src>` 支持异步加载/解码、换源取消、load/error、PNG/JPEG/GIF/WebP 与 SVG；资源节点遵守 CSS 尺寸并只应用一次父级透明度。Vue 子树卸载释放自有 Image/Canvas；Blob URL 以引用计数持有资源且每次创建返回独立 URL。V8 HostResource 对象带 guaranteed weak finalizer，同时保留 `close()`/`Nana.resources.release()` 确定释放。 |
 | `NUI-INPUT-01` | 代码完成/待硬件 | 混合树优先分发、`preventDefault`、局部/屏幕坐标、多键 mouse buttons、pointer capture、enter/leave、touch cancel 已接通；Windows `WM_POINTER` 已提供 pen、pressure、tangentialPressure、tilt、twist、主指针和可靠 cancel，并作为标准 JS PointerEvent 顶层字段暴露。外部文件拖放按最终命中节点产生 `dragenter`/`dragover`/`dragleave`/`drop`，同一次系统多选拖放在事件批次结束时聚合为一个 FileList-like `dataTransfer`。验收小游戏已直接使用 pointer capture 和笔字段驱动状态，仍需真实笔设备验收。 |
 | `NUI-IME-01` | 代码完成/待实机 | winit 桌面 IME 启停、候选区域、preedit/commit、多窗口焦点路由和去重已接通；中文候选框仍需 Windows 实机验收。 |
-| `NUI-WINDOW-01` | 代码完成/待透明验收 | `Nana.windows` 可创建窗口并控制 bounds、DPI、全屏、最小/最大化、置顶；晚创建窗口继承同一 WebGPU/Canvas GPU runtime、应用样式表和 Host API，关闭时释放窗口级状态。真实 Windows 双窗口已验证 Vue 内容、Canvas、WebGPU 和 Iced 同时显示；Windows 原生 owner/disable 路径已验证模态期间父窗口禁用且关闭后恢复。验收窗口跨三个真实显示器移动时，HWND DPI 从 96 切换为 120，800×560 逻辑窗口相应变为 1000×700 物理像素。仍待透明窗口 Alpha 验收。 |
-| `NUI-COMPOSE-01` | 代码完成/待透明验收 | 普通控件、Canvas、WebGPU、HostTexture 与原生组件进入同一 Iced/WGPU 顺序、裁剪和命中树；完整常用 2D 仿射变换同步作用于绘制、overlay、命中、局部坐标及 Iced Operation/AccessKit 几何，父级 opacity（含 overlay）由复用离屏纹理整体合成。Windows 窗口已验证 Vue/Iced/Canvas/WebGPU 交错显示，像素测试已覆盖旋转和重叠透明度；仅剩桌面透明窗口 Alpha 的实际合成证据。 |
+| `NUI-WINDOW-01` | 代码完成/待透明验收 | `Nana.windows` 可创建窗口并控制 bounds、DPI、全屏、最小/最大化、置顶；晚创建窗口继承同一 WebGPU/Canvas GPU runtime、应用样式表和 Host API，关闭时释放窗口级状态。真实 Windows 双窗口已验证 Vue 内容、Canvas、WebGPU 和 Runtime 控件同时显示；Windows 原生 owner/disable 路径已验证模态期间父窗口禁用且关闭后恢复。验收窗口跨三个真实显示器移动时，HWND DPI 从 96 切换为 120，800×560 逻辑窗口相应变为 1000×700 物理像素。仍待透明窗口 Alpha 验收。 |
+| `NUI-COMPOSE-01` | 代码完成/待透明验收 | 普通控件、Canvas、WebGPU、HostTexture 与原生组件进入同一 Scene/WGPU 顺序、裁剪和命中树；完整常用 2D 仿射变换同步作用于绘制、overlay、命中、局部坐标及 Scene Operation/AccessKit 几何，父级 opacity（含 overlay）由复用离屏纹理整体合成。Windows 窗口已验证 Vue/Runtime/Canvas/WebGPU 交错显示，像素测试已覆盖旋转和重叠透明度；仅剩桌面透明窗口 Alpha 的实际合成证据。 |
 | `NUI-DIAG-01` | 已关闭 | V8 Inspector/CDP、异常/Promise rejection/Vue handler、隐私化 Host trace、资源/窗口/帧/Device Lost 诊断。详见 `vue-js-diagnostics.md`。 |
 
 ### 仍需关闭的 NanaUI 缺口
 
 1. **P0：目标硬件上的 Windows 发布验收。** `vue-hosted-acceptance` 已同时提供纯 Vue+JS
-   模式和注册 Iced 组件模式，覆盖完整窗口、弹层、输入、图片、Canvas 动画、WebGPU、Vue
+   模式和注册原生组件模式，覆盖完整窗口、弹层、输入、图片、Canvas 动画、WebGPU、Vue
    slot 与辅助 Vue 窗口。当前 Windows 实机已验证双窗口实际绘制、单 V8 辅助 document 挂载、
-   Canvas rAF、WebGPU completion、SVG `<img>` 的正确尺寸绘制、Iced 混合显示，以及模态窗口
+   Canvas rAF、WebGPU completion、SVG `<img>` 的正确尺寸绘制、Runtime 混合显示，以及模态窗口
    对父窗口的原生禁用/恢复，以及三个显示器间 96→120 DPI 切换；仍缺中文 IME 候选框交互、
    真实笔输入和透明窗口 Alpha 的人工验收证据。
 
@@ -66,7 +66,7 @@ cargo run -p vue-hosted-acceptance --locked -- --alpha-probe
 
 `--input-probe` 仅让真实 Vue 输入框在挂载后获得焦点，不注入、伪造或代替 IME 事件；
 验收者需要实际选择中文输入法，确认预编辑、候选框位置和最终文本。`--hybrid --windows`
-启动注册 Iced 组件与透明模态辅助窗口，用于检查 Vue/Iced 交错合成和桌面 Alpha；
+启动注册原生组件与透明模态辅助窗口，用于检查 Vue/Runtime 交错合成和桌面 Alpha；
 `--alpha-probe` 则以透明主窗口启动，并在标准错误输出中报告 WGPU 从当前原生 surface
 能力选中的真实 alpha mode。该输出能验证 NanaUI 透明渲染链，但不替代桌面合成器的视觉验收。
 当前 Windows/WGPU 实际运行输出为 `PreMultiplied`，证明发布路径没有退化为
@@ -79,7 +79,7 @@ NanaUI Vue+JS 兼容层的目标不是复刻浏览器，而是提供可承载完
 
 - 使用单个 V8 isolate/context 执行业务 JS、Vue UI 和小游戏逻辑。
 - 只使用 Vue+JS 与 NanaUI 内置接口即可编写完整产品界面、弹窗、窗口内容和小游戏。
-- Rust 可控制 UI 或提供高性能 Iced 组件；供 Vue 使用时必须注册为稳定 Vue 组件或 JS 接口。
+- Rust 可控制 UI 或提供高性能 Runtime 组件；供 Vue 使用时必须注册为稳定 Vue 组件或 JS 接口。
 - 不依赖 Electron、Chromium 或 WebView。
 - 允许 Vue UI 与 WGPU、Live2D、视频等原生内容混合显示。
 - 原生能力必须在 JS+Vue 层暴露为稳定、通用的兼容接口。
@@ -87,7 +87,7 @@ NanaUI Vue+JS 兼容层的目标不是复刻浏览器，而是提供可承载完
 - 不实现 WebGL；3D 内容使用基于现有 wgpu 的 WebGPU 风格 JS API。
 
 该目标适用于 `nana-ui-vue`、`nanavue-runtime`、`nana-ui-web-api` 等兼容层 crate，
-不改变 `nana-ui` 核心作为通用 Iced/WGPU 组件和绘制基础的职责。
+不改变 `nana-ui` 核心作为通用 Runtime/UiScene 组件和绘制基础的职责。
 
 ## 2. 缺口判定边界
 
@@ -105,7 +105,7 @@ NanaUI Vue+JS 兼容层的目标不是复刻浏览器，而是提供可承载完
 NanaUI 当前已经具备：
 
 - 基于 rusty_v8 的 JS 执行环境。
-- Vue custom renderer 与 NanaUI/Iced 组件树。
+- Vue custom renderer 与 NanaUI Runtime/UiScene 组件树。
 - 基础布局、样式和控件能力。
 - 基础窗口管理能力。
 - WGPU Device/Queue 和 Surface 的宿主管理。
@@ -136,14 +136,14 @@ NanaUI 当前已经具备：
 可以只通过 Vue 代码创建完整窗口、页面、弹窗和混合 GPU 内容，不需要新增产品专用
 Rust 组件。
 
-### NUI-NATIVE-COMPONENT-01：Rust/Iced 组件的 Vue 扩展协议
+### NUI-NATIVE-COMPONENT-01：Rust/Runtime 组件的 Vue 扩展协议
 
 **已实现能力**
 
 - `NativeComponentRegistry` 在应用启动时注册描述符与工厂，不扩展固定 `WidgetKind`。
 - 名称规范化为 `nana-{name}`；重复注册、未知组件、非法 props 均返回结构化错误。
 - props 以 `HostValue` 增量传递；组件声明事件和命令白名单。
-- Vue 默认 slot 子树先构建为 Iced `Element`，再交给原生组件组合。
+- Vue 默认 slot 子树先进入 Runtime/UiScene，再交给原生组件组合。
 - 原生事件通过 `BridgeEvent::Native` 进入 Vue 标准 `@event` 分发。
 - `Nana.components.call(element, command, args)` 返回 Promise；未知命令拒绝。
 - 组件和 Vue 节点共用父级约束、裁剪、透明度、变换、层级、焦点与命中树，不创建悬浮窗口。

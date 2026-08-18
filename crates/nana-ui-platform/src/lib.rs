@@ -37,18 +37,18 @@ pub struct PlatformCapabilities {
     pub vulkan_surface: bool,
     /// Rust-owned JS engine (QuickJS/V8) — never System WebView.
     pub rust_js_engine: bool,
-    /// Nana Iced `DesktopShell` paint wired on this target.
-    pub iced_shell: bool,
-    /// Pre-Iced shell chrome band plan (title / regions) available.
+    /// Nana `DesktopShell` paint wired on this target.
+    pub desktop_shell: bool,
+    /// Shell chrome band plan (title / regions) available.
     pub shell_chrome_bands: bool,
-    /// Pre-Iced solid-color scissor fill for chrome bands.
+    /// Solid-color scissor fill for chrome bands.
     pub shell_chrome_fill: bool,
-    /// Primary-region Iced control-slot geometry reserved (not full DesktopShell).
-    pub iced_control_slot: bool,
-    /// Iced Nana controls (Icon + Text + Input + Switch + Button) can paint into the Primary slot.
-    pub iced_control_widget: bool,
+    /// Primary-region control-slot geometry reserved (not full DesktopShell).
+    pub control_slot: bool,
+    /// Runtime controls (Text + Input + Switch + Button) can paint into the slot.
+    pub control_widget: bool,
     /// NativeActivity (or host) pointer events route into the slot control.
-    pub iced_control_input: bool,
+    pub control_input: bool,
 }
 
 #[cfg(feature = "experimental-android")]
@@ -56,7 +56,7 @@ impl PlatformCapabilities {
     /// Android ARM64 MVP: Surface + Rust JS engine + slot controls/input.
     ///
     /// `ime` stays false on NativeActivity (no InputConnection); KeyEvent text
-    /// is a separate path under `iced_control_input`, not a soft-IME claim.
+    /// is a separate path under `control_input`, not a soft-IME claim.
     /// `clipboard` stays false until a real Android clipboard backend exists.
     pub const fn android_mvp() -> Self {
         Self {
@@ -64,12 +64,12 @@ impl PlatformCapabilities {
             clipboard: false,
             vulkan_surface: true,
             rust_js_engine: true,
-            iced_shell: false,
+            desktop_shell: false,
             shell_chrome_bands: true,
             shell_chrome_fill: true,
-            iced_control_slot: true,
-            iced_control_widget: true,
-            iced_control_input: true,
+            control_slot: true,
+            control_widget: true,
+            control_input: true,
         }
     }
 }

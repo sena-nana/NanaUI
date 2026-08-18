@@ -1,23 +1,23 @@
-//! Experimental, frozen Android ARM64 host — not a current NanaUI product target.
+//! Experimental Android ARM64 host — not a current NanaUI product target.
 //!
 //! NativeActivity + `ANativeWindow` Surface + QuickJS (wgpu 30 / Vulkan). Desktop
 //! builds expose [`smoke_engine_only`] for host-side compile/smoke without NDK UI.
-//! Resume only after desktop Runtime/Vue stabilize. Do not migrate this crate to Runtime.
+//! The control slot is NanaUI Runtime + UiScene + `SceneWgpuPainter`.
 
 #![cfg_attr(target_os = "android", allow(clippy::unnecessary_wraps))]
 
 mod chrome_fill;
+mod control_slot;
 mod engine;
 #[cfg(target_os = "android")]
 mod gpu;
-mod iced_control;
-mod iced_slot;
-mod iced_slot_input;
-#[cfg(target_os = "android")]
-mod iced_slot_paint;
 #[cfg(target_os = "android")]
 mod runtime;
 mod shell;
+mod slot_input;
+#[cfg(target_os = "android")]
+mod slot_paint;
+mod slot_runtime;
 
 pub use chrome_fill::{band_draw_list, clamp_scissor};
 

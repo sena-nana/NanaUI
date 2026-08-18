@@ -1,16 +1,16 @@
 //! Host-owned wgpu Surface on top of `ANativeWindow` (Vulkan).
 //!
 //! Includes a minimal solid-color fill pipeline for shell chrome bands
-//! (scissor + fullscreen triangle). Not Nana Iced DesktopShell.
+//! (scissor + fullscreen triangle). Not Nana DesktopShell.
 
 use std::sync::Arc;
 
 use android_activity::AndroidApp;
 use raw_window_handle::{DisplayHandle, HasWindowHandle};
 use wgpu::{
-    Adapter, BindGroup, BindGroupLayout, Buffer, BufferUsages, ColorTargetState,
-    CompositeAlphaMode, CurrentSurfaceTexture, Device, FragmentState, Instance, MultisampleState,
-    PipelineLayout, PresentMode, PrimitiveState, Queue, RenderPipeline, ShaderModule, Surface,
+    BindGroup, BindGroupLayout, Buffer, BufferUsages, ColorTargetState, CompositeAlphaMode,
+    CurrentSurfaceTexture, Device, FragmentState, Instance, MultisampleState, PipelineLayout,
+    PresentMode, PrimitiveState, Queue, RenderPipeline, ShaderModule, Surface,
     SurfaceConfiguration, SurfaceTargetUnsafe, TextureFormat, TextureUsages, VertexState,
 };
 
@@ -48,7 +48,6 @@ pub struct GpuSurface {
     pub queue: Arc<Queue>,
     pub config: SurfaceConfiguration,
     pub format: TextureFormat,
-    pub adapter: Adapter,
     _instance: Instance,
     fill: SolidFillPipeline,
 }
@@ -249,7 +248,6 @@ impl GpuSurface {
             queue: Arc::new(queue),
             config,
             format,
-            adapter,
             _instance: instance,
             fill,
         })
@@ -266,41 +264,13 @@ impl GpuSurface {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Clear the swapchain to a solid color (fallback / heartbeat).
-    #[allow(dead_code)] // retained for heartbeat / fallback callers
-    pub fn present_clear(&self, color: wgpu::Color) -> Result<(), String> {
-        self.present_chrome_bands(&[ShellChromeBand {
-            rect: nana_ui_core::PhysicalRect {
-                x: 0,
-                y: 0,
-                width: self.config.width,
-                height: self.config.height,
-            },
-            color: [color.r, color.g, color.b, color.a],
-        }])
-    }
-
-    /// Paint shell chrome bands with scissor + solid-color fill (pre-Iced).
-    #[allow(dead_code)] // thin wrapper over `present_chrome_bands_with_overlay`
-    pub fn present_chrome_bands(&self, bands: &[ShellChromeBand]) -> Result<(), String> {
-        self.present_chrome_bands_with_overlay(bands, |_view| Ok(()))
-    }
-
-    /// Chrome fill, then an optional overlay (e.g. one Iced Button) before present.
+    /// Chrome fill, then the NanaUI Scene slot, in one encoder submit.
     pub fn present_chrome_bands_with_overlay(
         &self,
         bands: &[ShellChromeBand],
-        mut overlay: impl FnMut(&wgpu::TextureView) -> Result<(), String>,
+        mut overlay: impl FnMut(&wgpu::TextureView, &mut wgpu::CommandEncoder) -> Result<(), String>,
     ) -> Result<(), String> {
         let draws = band_draw_list(bands, self.config.width, self.config.height);
-        if draws.is_empty() {
-            return self.present_clear_raw(wgpu::Color {
-                r: 0.10,
-                g: 0.12,
-                b: 0.16,
-                a: 1.0,
-            });
-        }
 
         let frame = match self.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -322,81 +292,22 @@ impl GpuSurface {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("nana-android chrome fill"),
+                label: Some("nana-android chrome+slot"),
             });
 
-        // One pass per band so uniform color writes land before each draw.
-        for (i, &(x, y, w, h, color)) in draws.iter().enumerate() {
-            self.fill.write_color(&self.queue, color);
-            let load = if i == 0 {
-                wgpu::LoadOp::Clear(wgpu::Color {
-                    r: 0.08,
-                    g: 0.09,
-                    b: 0.11,
-                    a: 1.0,
-                })
-            } else {
-                wgpu::LoadOp::Load
-            };
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("nana-android chrome band"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&self.fill.pipeline);
-                pass.set_bind_group(0, &self.fill.bind_group, &[]);
-                pass.set_scissor_rect(x, y, w, h);
-                pass.draw(0..3, 0..1);
-            }
-        }
-
-        self.queue.submit(Some(encoder.finish()));
-        overlay(&view)?;
-        self.queue.present(frame);
-        Ok(())
-    }
-
-    fn present_clear_raw(&self, color: wgpu::Color) -> Result<(), String> {
-        let frame = match self.surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => {
-                frame
-            }
-            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return Ok(()),
-            CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
-                return Err("surface outdated (reconfigured)".into());
-            }
-            CurrentSurfaceTexture::Lost => return Err("surface lost".into()),
-            CurrentSurfaceTexture::Validation => return Err("surface validation".into()),
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("nana-android clear"),
-            });
-        {
+        if draws.is_empty() {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-android clear pass"),
+                label: Some("nana-android chrome clear"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(color),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.10,
+                            g: 0.12,
+                            b: 0.16,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -406,7 +317,46 @@ impl GpuSurface {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+        } else {
+            // One pass per band so uniform color writes land before each draw.
+            for (i, &(x, y, w, h, color)) in draws.iter().enumerate() {
+                self.fill.write_color(&self.queue, color);
+                let load = if i == 0 {
+                    wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.08,
+                        g: 0.09,
+                        b: 0.11,
+                        a: 1.0,
+                    })
+                } else {
+                    wgpu::LoadOp::Load
+                };
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("nana-android chrome band"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_pipeline(&self.fill.pipeline);
+                    pass.set_bind_group(0, &self.fill.bind_group, &[]);
+                    pass.set_scissor_rect(x, y, w, h);
+                    pass.draw(0..3, 0..1);
+                }
+            }
         }
+
+        overlay(&view, &mut encoder)?;
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
         Ok(())

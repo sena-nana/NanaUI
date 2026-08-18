@@ -1,4 +1,4 @@
-//! Android activity loop: window lifecycle → wgpu Surface → QuickJS shell stub.
+//! Android activity loop: window lifecycle → wgpu Surface → QuickJS + NanaUI slot.
 
 use std::time::{Duration, Instant};
 
@@ -9,15 +9,15 @@ use nana_ui_vue::VueHost;
 
 use crate::engine::smoke_engine_only;
 use crate::gpu::GpuSurface;
-use crate::iced_slot_input::{
+use crate::shell::{AndroidShellStub, scale_factor_from_density_dpi};
+use crate::slot_input::{
     SlotKeyMods, SlotTouchKind, android_keycode_is_modifier, logical_key_from_android_keycode,
 };
-use crate::iced_slot_paint::IcedSlotPainter;
-use crate::shell::{AndroidShellStub, scale_factor_from_density_dpi};
+use crate::slot_paint::SlotPainter;
 
 struct HostState {
     gpu: Option<GpuSurface>,
-    iced_slot: Option<IcedSlotPainter>,
+    slot: Option<SlotPainter>,
     vue: Option<VueHost>,
     shell: AndroidShellStub,
     engine_booted: bool,
@@ -29,7 +29,7 @@ impl HostState {
     fn new() -> Self {
         Self {
             gpu: None,
-            iced_slot: None,
+            slot: None,
             vue: None,
             shell: AndroidShellStub::new(),
             engine_booted: false,
@@ -78,7 +78,7 @@ impl HostState {
             gpu.resize(w, h);
         }
         self.shell.resize(w, h, scale);
-        if let Some(painter) = self.iced_slot.as_mut() {
+        if let Some(painter) = self.slot.as_mut() {
             painter.resize((w, h), scale);
         }
     }
@@ -94,22 +94,18 @@ impl HostState {
         }
 
         let gpu = GpuSurface::new(app, w, h)?;
-        self.iced_slot = Some(IcedSlotPainter::new(
-            &gpu.adapter,
+        self.slot = Some(SlotPainter::new(
             &gpu.device,
             &gpu.queue,
             gpu.format,
             (gpu.config.width, gpu.config.height),
             scale,
-        ));
+        )?);
         self.gpu = Some(gpu);
         self.shell.resize(w, h, scale);
         self.phase = SurfacePhase::Ready;
         self.ensure_engine();
-        log::info!(
-            "nana-android-host: iced slot strip ready (Text+Input+Switch+Button, not DesktopShell) iced_shell={} scale={scale}",
-            AndroidShellStub::iced_shell_available()
-        );
+        log::info!("nana-android-host: NanaUI slot ready scale={scale}");
         self.paint_frame()?;
         Ok(())
     }
@@ -126,7 +122,7 @@ impl HostState {
     }
 
     fn on_window_destroyed(&mut self) {
-        self.iced_slot = None;
+        self.slot = None;
         self.gpu = None;
         self.phase = SurfacePhase::Destroyed;
         log::info!("nana-android-host: surface destroyed");
@@ -134,14 +130,14 @@ impl HostState {
 
     fn paint_frame(&mut self) -> Result<(), String> {
         let scale = self.shell.scale_factor();
-        let (fw, fh, format) = {
+        let (fw, fh) = {
             let Some(gpu) = self.gpu.as_ref() else {
                 return Ok(());
             };
-            (gpu.config.width, gpu.config.height, gpu.format)
+            (gpu.config.width, gpu.config.height)
         };
         self.shell.resize(fw, fh, scale);
-        if let Some(painter) = self.iced_slot.as_mut() {
+        if let Some(painter) = self.slot.as_mut() {
             painter.resize((fw, fh), scale);
         }
 
@@ -151,27 +147,19 @@ impl HostState {
             vue.resolve_layout();
         }
 
-        // Chrome scissor fill, then one Iced Button in the Primary control-slot
-        // region (bottom-aligned). Not DesktopShell.
         let bands = self.shell.chrome_present_bands();
-        log::trace!(
-            "nana-android-host: chrome+iced bands={} iced_shell={} iced_slot_widget={}",
-            bands.len(),
-            AndroidShellStub::iced_shell_available(),
-            AndroidShellStub::iced_control_widget_available()
-        );
         let HostState {
             gpu,
-            iced_slot,
+            slot,
             last_paint,
             ..
         } = self;
         let Some(gpu) = gpu.as_ref() else {
             return Ok(());
         };
-        gpu.present_chrome_bands_with_overlay(&bands, |view| {
-            if let Some(painter) = iced_slot.as_mut() {
-                painter.paint_slot_button(view, format);
+        gpu.present_chrome_bands_with_overlay(&bands, |view, encoder| {
+            if let Some(painter) = slot.as_mut() {
+                painter.paint_slot(encoder, view);
             }
             Ok(())
         })?;
@@ -193,19 +181,20 @@ impl HostState {
             MotionAction::Cancel => SlotTouchKind::Cancel,
             _ => return false,
         };
-        let slot = self.shell.iced_control_slot().map(|b| b.rect);
-        let Some(painter) = self.iced_slot.as_mut() else {
+        let slot = self.shell.control_slot().map(|b| b.rect);
+        let Some(painter) = self.slot.as_mut() else {
             return false;
         };
         // Only slot-local (or captured drag) samples are Handled; outside → VueHost.
         painter.push_touch(slot, kind, physical_x, physical_y, pointer_id)
     }
 
-    /// NativeActivity KeyEvent → iced keyboard (US-QWERTY subset + editing keys).
+    /// NativeActivity KeyEvent → Runtime keyboard (US-QWERTY subset + editing keys).
     ///
-    /// System keys (Back, …) stay `Unhandled`. NativeActivity has no InputConnection.
-    /// Keys are Handled only while the iced slot holds keyboard focus (last Down
-    /// was inside the slot); otherwise they remain available to VueHost.
+    /// System keys (Back, …) stay `Unhandled`. NativeActivity has no InputConnection;
+    /// this is not an IME implementation. Keys are Handled only while the slot holds
+    /// keyboard focus (last Down was inside the slot); otherwise they remain
+    /// available to VueHost.
     fn handle_key(
         &mut self,
         action: KeyAction,
@@ -233,7 +222,7 @@ impl HostState {
         if logical.is_none() && !is_mod {
             return false;
         }
-        let Some(painter) = self.iced_slot.as_mut() else {
+        let Some(painter) = self.slot.as_mut() else {
             return false;
         };
         let repeat = down && repeat_count > 0;

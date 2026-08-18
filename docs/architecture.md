@@ -25,8 +25,8 @@ Vue/JS L1/L2 → Runtime/UiScene → RuntimeProgram → run_runtime → SceneWgp
 V8 isolate/context，而非把 Vue 限定为状态与命令桥。
 L1 不引入真实 WebView、Blitz DOM/CSS 或第二套 wgpu。可选 `browser`
 feature 仅承载应用明确请求的外部网页内容，不参与 NanaUI 组件、布局或
-业务状态渲染。仓内 `engine/iced` 仍是兼容绘制资产；Android 上的 Iced slot
-是实验路径，不是桌面产品编程模型。
+业务状态渲染。仓内 `engine/iced` 仍是兼容绘制资产，不是 `nana-*` 编译依赖。
+Android 实验宿主走 Runtime / UiScene / `SceneWgpuPainter`，不是产品路径。
 
 **三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
 
@@ -242,9 +242,9 @@ Region 折叠目标会立即写入 `WorkspaceLayout`，保证序列化与设置�
 ## WGPU 边界
 
 桌面产品绘制由 `SceneWgpuPainter` 把 `UiScene` 画进宿主 Surface。仓内
-`engine/iced`（Iced `0.15.0-dev`）仍是兼容绘制资产与 Android 实验槽，不是
-NanaUI 的长期 public contract 或桌面应用编程模型；来源、同步规则、依赖清单与
-退出指标见 [`iced-engine.md`](iced-engine.md)。WGPU 主版本为 `30.0.0`。
+`engine/iced`（Iced `0.15.0-dev`）仍是排除的兼容绘制资产，不是 `nana-*`
+编译依赖，也不是长期 public contract 或桌面应用编程模型；来源、同步规则、
+依赖清单与退出指标见 [`iced-engine.md`](iced-engine.md)。WGPU 主版本为 `30.0.0`。
 `GpuView` 是 Scene 图内的 custom renderer；`RenderSlot` 负责逻辑/物理像素换算
 与裁剪。绘制路径切换本身不等于 GPU、快照或跨平台已验收。
 

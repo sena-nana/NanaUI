@@ -10,7 +10,7 @@ there is no second hand-maintained list of qualified components.
 
 | State | Meaning |
 | --- | --- |
-| `Compatibility` | The Iced compatibility implementation remains the complete supported path. |
+| `Compatibility` | Runtime promotion is incomplete; this entry is not a product-default path. |
 | `RuntimeCandidate` | A Runtime implementation exists, but behavior, strict layout, visual review, platform, or consumer evidence is incomplete. |
 | `RuntimeQualified` | Runtime passed the component's functional, layout, reviewed visual, accessibility, performance, and affected-consumer gates and may become the default path. |
 
@@ -138,7 +138,7 @@ Vue Scene paints Textarea, Select, Dropdown, SearchDropdown, Toast, Tooltip, Act
 ActionMenuItem, XYPad, QrCode, Dialog (including children), ConfirmDialog, Drawer, Popover,
 Tabs, SegmentedControl, FormField, InteractiveCard, EmptyState, LabeledValue, and
 ContextMenu — including searchable menus (≥6 options or `search` class) — through
-`IcedSceneView` subtrees. Runtime ContextMenu owns the search field on the same retained
+`SceneWgpuPainter` subtrees. Runtime ContextMenu owns the search field on the same retained
 `TextInputState` as its query filter. Runtime `QrCode::encode` builds the scanner-safe matrix from a Vue string payload;
 empty or unencodable payloads still project a LabeledValue placeholder.
 

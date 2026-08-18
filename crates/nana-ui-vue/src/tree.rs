@@ -119,10 +119,10 @@ pub enum DomNodeKind {
     Other,
 }
 
-/// Layout box in logical CSS px (viewport / iced absolute coordinates).
+/// Layout box in logical CSS px (viewport / Scene absolute coordinates).
 ///
 /// Sources, in preference order for JS `getBoundingClientRect` / `layoutBox`:
-/// 1. iced paint writeback ([`LayoutBoxStore`])
+/// 1. Scene paint writeback ([`LayoutBoxStore`])
 /// 2. Style-Model [`crate::measure_layout`] applied via [`NanaTreeDocument::apply_layout_boxes`]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutBox {
@@ -133,9 +133,9 @@ pub struct LayoutBox {
     pub height: f32,
 }
 
-/// Shared iced → host layout writeback buffer.
+/// Shared Scene → host layout writeback buffer.
 ///
-/// Cleared at the start of each semantic `view` build; refilled when iced draws
+/// Cleared at the start of each semantic `view` build; refilled when Scene paints
 /// each probed widget. `layoutBox` / [`get_layout_box`] read this first so menu
 /// and popover anchors track real paint geometry (including scroll/chrome offsets
 /// that Style-Model measure does not see).
@@ -150,7 +150,7 @@ impl LayoutBoxStore {
         Self::default()
     }
 
-    /// Drop prior-frame entries before rebuilding the iced element tree.
+    /// Drop prior-frame entries before rebuilding the Scene view.
     pub fn begin_frame(&self) {
         if let Ok(mut guard) = self.boxes.lock() {
             guard.clear();
@@ -350,7 +350,7 @@ pub fn get_layout_box_from(
     store.get(handle).or_else(|| doc.layout_box(handle))
 }
 
-/// Prefer iced writeback, else the document's pre-paint measure cache.
+/// Prefer Scene writeback, else the document's pre-paint measure cache.
 pub fn get_layout_box(doc: &NanaTreeDocument, handle: NodeHandle) -> Option<LayoutBox> {
     get_layout_box_from(&shared_layout_box_store(), doc, handle)
 }
@@ -1837,9 +1837,9 @@ impl NanaTreeDocument {
         })
     }
 
-    /// Replace layout cache with measured / iced-written boxes.
+    /// Replace layout cache with measured / Scene-written boxes.
     ///
-    /// Prefer calling this with [`LayoutBoxStore::snapshot`] after iced draws;
+    /// Prefer calling this with [`LayoutBoxStore::snapshot`] after Scene paints;
     /// Style-Model `measure_layout` is the headless / pre-paint fallback.
     ///
     /// Always keeps html/body covering the viewport so hit-tests still have a
@@ -8149,7 +8149,7 @@ mod tests {
     }
 
     #[test]
-    fn get_layout_box_prefers_iced_store_over_document() {
+    fn get_layout_box_prefers_paint_store_over_document() {
         let mut doc = NanaTreeDocument::new(400, 300, 1.0);
         let child = doc.create_element("div");
         doc.insert(child, doc.mount_root(), None);
@@ -8164,13 +8164,13 @@ mod tests {
             },
         )]);
         let store = LayoutBoxStore::new();
-        // iced chrome (e.g. scrollable padding) shifts the painted box.
+        // Scene chrome (e.g. scrollport padding) shifts the painted box.
         store.record(child, 16.0, 16.0, 80.0, 24.0);
-        let box_ = get_layout_box_from(&store, &doc, child).expect("iced box");
+        let box_ = get_layout_box_from(&store, &doc, child).expect("paint box");
         assert_eq!(
             (box_.x, box_.y, box_.width, box_.height),
             (16.0, 16.0, 80.0, 24.0),
-            "menu anchors must follow iced paint, not pre-paint measure"
+            "menu anchors must follow Scene paint, not pre-paint measure"
         );
         store.begin_frame();
         let fallback = get_layout_box_from(&store, &doc, child).expect("doc fallback");

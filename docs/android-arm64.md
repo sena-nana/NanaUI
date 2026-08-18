@@ -1,9 +1,10 @@
 # Android ARM64：无 WebView 的 Vue/QuickJS 宿主
 
-Android 仍是实验路径，不是 NanaUI 当前产品目标。该槽继续使用 Rust-owned
-QuickJS、Nana Style Model 与 Iced/WGPU 实验 slot，不创建系统 WebView，也不把
-桌面 `run_runtime` / `SceneWgpuPainter` 产品环搬到 Android。V8 不是 Android
-必需依赖；平台 MVP 以 QuickJS 交叉编译为门禁。
+Android 仍是实验路径，不是 NanaUI 当前产品目标。该槽使用 Rust-owned
+QuickJS、Nana Style Model，以及与桌面同类的 Runtime / UiScene /
+`SceneWgpuPainter` 实验绘制（Activity 仍拥有窗口与 WGPU，不调用 winit
+`run_runtime`）。不创建系统 WebView。V8 不是 Android 必需依赖；平台 MVP 以
+QuickJS 交叉编译为门禁。这不是完整 Android 产品，也不承诺 IME / AX / CJK。
 
 ## 边界
 
@@ -12,7 +13,8 @@ QuickJS、Nana Style Model 与 Iced/WGPU 实验 slot，不创建系统 WebView�
 - `nana-ui-platform` 的 Fetch 类型在 Android 可编译，真实网络仍必须由应用创建
   `NativeFetchHost` 并显式授权 origin；
 - 默认 `FetchPolicy` 为空白名单，不授权任何网络 origin；
-- Android clipboard/IME 尚无真实后端时必须继续报告 unsupported；
+- Android clipboard/IME/AX 尚无真实后端时必须继续报告 unsupported；
+  NativeActivity KeyEvent 可进入 Runtime 文本，这不是软键盘 IME；
 - 不引入 WebView、Tauri mobile 插件或第二套 GPU 上下文。
 
 `ureq 3.x` 使用 rustls，不依赖桌面 WebView。阻塞 HTTP 始终在线程池执行，Promise

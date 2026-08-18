@@ -219,7 +219,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         api.register("createText", move |args| {
             let text = arg_str(args, 0).unwrap_or_default();
             // Skip pure whitespace text nodes — they flatten onto body and
-            // pollute the iced column without contributing labels.
+            // pollute the Scene column without contributing labels.
             if text.trim().is_empty() {
                 let mut guard = lock_doc(&host.document)?;
                 let handle = guard.create_comment("ws");
@@ -760,7 +760,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         api.register("layoutBox", move |args| {
             let el = arg_handle(args, 0)?;
             let guard = lock_doc(&host.document)?;
-            // Prefer iced paint writeback so getBoundingClientRect matches drawing.
+            // Prefer Scene paint writeback so getBoundingClientRect matches drawing.
             Ok(match get_layout_box_from(&host.layout_boxes, &guard, el) {
                 Some(b) => HostValue::Object(
                     [

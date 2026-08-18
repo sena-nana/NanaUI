@@ -1,28 +1,28 @@
 //! [`LayoutStyle`] → 可序列化布局盒（测试 / 诊断 / **预绘制回退**，非 CSS 引擎）。
 //!
-//! ## SoT（与 iced 对照）
+//! ## SoT（与 Scene 对照）
 //!
 //! | 数据 | 权威 | 本模块 |
 //! |------|------|--------|
-//! | 产品几何盒 | iced `LayoutProbe` → [`crate::LayoutBoxStore`] | 否 |
+//! | 产品几何盒 | Scene paint → [`crate::LayoutBoxStore`] | 否 |
 //! | 预绘制 / css-parity | **本模块** [`measure_layout`] | 是 |
 //! | hit-test 预绘制盒 | **本模块** [`measure_layout`] | 是 |
 //!
-//! `layoutBox` / `getBoundingClientRect` **优先**读 iced 盒；本模块供
+//! `layoutBox` / `getBoundingClientRect` **优先**读 Scene 盒；本模块供
 //! `VueHost::resolve_layout` 在尚未 paint 时填充文档缓存，并与 css-parity 对齐。
 //! `RuntimeLayoutEngine` 不写 Vue 混合树。
 //!
 //! 盒边 / content-box / inset / gap 解析消费 `nana-ui-core::box_layout`
 //!（[`LayoutStyle::resolve_content_box`]、[`LayoutStyle::resolve_inset`]、
 //! `resolved_*_against`）。新的共享几何算法优先下沉 core，而不是在此与
-//! `iced_app` 各写一份。
+//! Scene host 各写一份。
 //!
-//! 语义对齐 iced `row`/`column` + `LayoutStyle` 子集：gap、padding、**margin**、
+//! 语义对齐 Scene `row`/`column` + `LayoutStyle` 子集：gap、padding、**margin**、
 //! 定宽高、`max-width`/`max-height`、`%`（相对父 content box）、
 //! `flex-grow` 主轴 Fill（[`LayoutStyle::child_main_length`]）、
 //! `align-items`、`justify-content`（含 [`JustifySpec::SpaceBetween`]）、
 //! `flex-wrap`（Row 折行 / Column 折列；[`FlexWrap::WrapReverse`]）、
-//! `grid-template-columns` / `grid-template-rows` 轻量轨（Px / fr / minmax，与 iced 一致）、
+//! `grid-template-columns` / `grid-template-rows` 轻量轨（Px / fr / minmax，与 Scene 一致）、
 //! `calc(P% ± Npx)` 宽度/高度、`position: relative` + inset、
 //! `position: absolute` 最小子集（脱流 + 相对 nearest positioned padding box）、
 //! `position: fixed` 视口子集（脱流 + 相对当前 viewport）。

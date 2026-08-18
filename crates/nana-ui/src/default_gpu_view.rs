@@ -21,8 +21,8 @@ use crate::scene_gpu::{
 ///
 /// The hosted runtime installs this when a program leaves scene GPU renderers
 /// unset and host Device/Queue handles are available. It always opens a
-/// dedicated pass on [`SceneGpuRenderContext::encoder`]; Inline reuse of an
-/// existing Iced pass is not available on [`SceneGpuRenderer`]. Palette comes
+/// dedicated pass on [`SceneGpuRenderContext::encoder`]; inline reuse of an
+/// existing Scene pass is not available on [`SceneGpuRenderer`]. Palette comes
 /// from the constructor because [`nana_ui_runtime::CustomRenderNode`] does not
 /// encode [`GpuViewPalette`].
 pub struct DefaultGpuViewRenderer {

@@ -5,22 +5,24 @@ layout, accessibility, platform, widget, and WGPU behavior while NanaUI evolves
 its own runtime, scene, platform, and rendering contracts. It is not NanaUI's
 public API or its long-term application programming model.
 
-The dependency direction is intentionally one-way:
+The dependency direction is intentionally one-way, and the compile edge is
+now closed for `nana-*`:
 
 ```text
-nana-* crates -> compatibility adapters -> engine/iced
+engine/iced  (excluded compatibility asset; not a nana-* compile dep)
 ```
 
 Code under `engine/iced` must not depend on NanaUI crates, components, Vue
 semantics, Live2D concepts, or application behavior. `scripts/check-engine-boundary.py`
 enforces this manifest boundary in CI.
 
-The reverse dependency is also constrained. Among `nana-*` packages, only the
-experimental Android host (`nana-android-host`) may have a non-dev Iced
-dependency. `nana-ui` and `nana-ui-vue` must not. Backend-neutral contracts live
-in `nana-ui-core`, `nana-ui-platform`, `nana-window`, and the JS/Web API crates.
-CI enforces this allowlist with the same boundary check; adding another adapter
-must be an explicit architecture decision, not an incidental dependency.
+The reverse dependency is also constrained. No `nana-*` package may have a
+non-dev Iced dependency, including the experimental Android host
+(`nana-android-host`). `nana-ui` and `nana-ui-vue` must not. Backend-neutral
+contracts live in `nana-ui-core`, `nana-ui-platform`, `nana-window`, and the
+JS/Web API crates. CI enforces this with the same boundary check; adding an
+Iced adapter must be an explicit architecture decision, not an incidental
+dependency.
 
 ## Imported lineage
 
@@ -82,11 +84,12 @@ Desktop product UI no longer programs against Iced widgets. `nana-ui` and
 adapter (`iced-view` is the historical alias); it does not build an `iced::Element`
 tree.
 
-The in-tree engine remains as a vendored compatibility asset and for the
-experimental Android Iced slot (`nana-android-host`), which is not a product
-path. Gallery snapshots and benchmarks paint `UiScene` through
-`SceneWgpuPainter` with workspace wgpu/pollster; they do not take Iced widget
-dependencies.
+The in-tree engine remains as an excluded compatibility asset. It is not a
+`nana-*` compile dependency. The experimental Android host
+(`nana-android-host`) paints a NanaUI Runtime / UiScene slot through
+`SceneWgpuPainter` and is not a product path. Gallery snapshots and benchmarks
+paint `UiScene` through `SceneWgpuPainter` with workspace wgpu/pollster; they
+do not take Iced widget dependencies.
 
 These are migration facts, not stable public contracts. New Nana-native APIs
 must not expose Iced types. Gallery windowed UI and hosted GPU demos paint
