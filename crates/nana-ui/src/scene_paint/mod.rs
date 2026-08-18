@@ -13,9 +13,12 @@ mod text;
 mod validate;
 
 use std::sync::Arc;
+use std::time::Instant;
 
+use nana_ui_core::GpuWorkObservation;
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
 
+use crate::gpu_work::{GpuStageTimings, GpuWorkSink};
 use crate::scene_gpu::{
     SceneGpuNode, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
     SceneGpuRendererRegistry,
@@ -34,6 +37,7 @@ use mesh::{MeshPipeline, MeshRange};
 use quad::QuadPipeline;
 use text::{PreparedText, TextPipeline};
 
+#[derive(Clone, Copy)]
 pub struct ScenePaintViewport {
     /// Scene dest rect size in logical pixels.
     pub logical_size: [f32; 2],
@@ -57,6 +61,8 @@ pub struct SceneWgpuPainter {
     text: TextPipeline,
     host_textures: HostTexturePipeline,
     dest: Option<DestTarget>,
+    last_gpu_work: Option<GpuWorkObservation>,
+    last_gpu_timings: Option<GpuStageTimings>,
 }
 
 enum DrawCommand {
@@ -92,11 +98,32 @@ impl SceneWgpuPainter {
             text: TextPipeline::new(device, queue, format),
             host_textures: HostTexturePipeline::new(device, queue, format),
             dest: None,
+            last_gpu_work: None,
+            last_gpu_timings: None,
         }
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
+    }
+
+    /// GPU counters from the last `paint` that encoded a real command buffer.
+    /// `None` if this painter has not encoded, or the last `paint` was skipped.
+    pub fn last_gpu_work(&self) -> Option<GpuWorkObservation> {
+        self.last_gpu_work
+    }
+
+    /// Batch / upload / encode timings from the last encoded `paint`. Submit is
+    /// filled only after the host calls [`Self::record_submit`].
+    pub fn last_gpu_timings(&self) -> Option<GpuStageTimings> {
+        self.last_gpu_timings
+    }
+
+    /// Record host `queue.submit` duration for the last encoded frame.
+    pub fn record_submit(&mut self, duration: std::time::Duration) {
+        if let Some(timings) = &mut self.last_gpu_timings {
+            timings.submit = timings.submit.saturating_add(duration);
+        }
     }
 
     pub fn paint(
@@ -110,6 +137,8 @@ impl SceneWgpuPainter {
     ) -> Result<(), ScenePaintError> {
         let operations = validate_scene(scene, host_textures, gpu_renderers)?;
         if viewport.physical_size[0] == 0 || viewport.physical_size[1] == 0 {
+            self.last_gpu_work = None;
+            self.last_gpu_timings = None;
             return Ok(());
         }
 
@@ -128,7 +157,9 @@ impl SceneWgpuPainter {
         ];
         let origin = paint_origin([0.0, 0.0], viewport.scene_origin);
         let viewport_clip = LogicalRect::viewport([0.0, 0.0], viewport.logical_size);
+        let gpu_work = GpuWorkSink::new();
 
+        let batch_started = Instant::now();
         self.quads.begin_frame();
         self.meshes.begin_frame();
         self.text.begin_frame(&self.queue, dest_physical);
@@ -290,6 +321,7 @@ impl SceneWgpuPainter {
                             primitive.opacity,
                             dest_physical,
                             scale,
+                            Some(&gpu_work),
                         )));
                     } else {
                         let renderer = gpu_renderers
@@ -308,6 +340,7 @@ impl SceneWgpuPainter {
                                 target_format: self.format,
                                 bounds: bounds.to_core(),
                                 scale_factor: scale,
+                                gpu_work: Some(&gpu_work),
                             },
                         );
                         commands.push(DrawCommand::Custom {
@@ -320,12 +353,26 @@ impl SceneWgpuPainter {
                 }
             }
         }
+        let batch = batch_started.elapsed();
 
-        self.quads
-            .upload(&self.device, &self.queue, dest_physical, scale);
-        self.meshes
-            .upload(&self.device, &self.queue, dest_physical, scale);
+        let upload_started = Instant::now();
+        self.quads.upload(
+            &self.device,
+            &self.queue,
+            dest_physical,
+            scale,
+            Some(&gpu_work),
+        );
+        self.meshes.upload(
+            &self.device,
+            &self.queue,
+            dest_physical,
+            scale,
+            Some(&gpu_work),
+        );
+        let gpu_upload = upload_started.elapsed();
 
+        let encode_started = Instant::now();
         DestTarget::ensure(
             &mut self.dest,
             &self.device,
@@ -345,10 +392,12 @@ impl SceneWgpuPainter {
             for command in &commands {
                 match command {
                     DrawCommand::Quads { range, scissor } => {
-                        self.quads.draw(&mut pass, range.clone(), *scissor);
+                        self.quads
+                            .draw(&mut pass, range.clone(), *scissor, Some(&gpu_work));
                     }
                     DrawCommand::Mesh { range, scissor } => {
-                        self.meshes.draw(&mut pass, range, *scissor);
+                        self.meshes
+                            .draw(&mut pass, range, *scissor, Some(&gpu_work));
                     }
                     DrawCommand::Text { .. }
                     | DrawCommand::HostTexture(_)
@@ -360,7 +409,8 @@ impl SceneWgpuPainter {
             let mut pass = begin_pass(encoder, dest.color_view(), wgpu::LoadOp::Load);
             for command in &commands {
                 if let DrawCommand::Text { prepared, scissor } = command {
-                    self.text.draw(&mut pass, prepared, *scissor);
+                    self.text
+                        .draw(&mut pass, prepared, *scissor, Some(&gpu_work));
                 }
             }
         }
@@ -369,7 +419,8 @@ impl SceneWgpuPainter {
             for command in &commands {
                 match command {
                     DrawCommand::HostTexture(prepared) => {
-                        self.host_textures.render(prepared, encoder, dest_view);
+                        self.host_textures
+                            .render(prepared, encoder, dest_view, Some(&gpu_work));
                     }
                     DrawCommand::Custom {
                         node,
@@ -386,6 +437,7 @@ impl SceneWgpuPainter {
                                 target: dest_view,
                                 bounds: *bounds,
                                 clip: *clip,
+                                gpu_work: Some(&gpu_work),
                             },
                         );
                     }
@@ -400,8 +452,17 @@ impl SceneWgpuPainter {
             blit_origin[1],
             viewport.physical_size,
             viewport.clear.then_some(clear),
+            Some(&gpu_work),
         );
+        let encode = encode_started.elapsed();
         self.host_textures.trim();
+        self.last_gpu_work = Some(gpu_work.snapshot());
+        self.last_gpu_timings = Some(GpuStageTimings {
+            batch,
+            gpu_upload,
+            encode,
+            submit: std::time::Duration::ZERO,
+        });
         Ok(())
     }
 }
@@ -502,5 +563,179 @@ mod tests {
             validate_scene(&scene, Some(&HostTextureRegistry::new()), None),
             Err(ScenePaintError::MissingCustomResource(_))
         ));
+    }
+
+    #[test]
+    fn paint_records_gpu_work_only_after_encode_and_submit() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        assert!(painter.last_gpu_work().is_none());
+
+        let skipped = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [0, 0],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let target = test_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui gpu work skip"),
+        });
+        painter
+            .paint(&UiScene::new(), &mut encoder, &target, skipped, None, None)
+            .unwrap();
+        assert!(painter.last_gpu_work().is_none());
+        assert!(painter.last_gpu_timings().is_none());
+
+        let (scene, registry) = hosted_preview_scene(&device);
+        let viewport = ScenePaintViewport {
+            logical_size: [128.0, 96.0],
+            physical_size: [128, 96],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.1, 0.1, 0.1, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui gpu work encode"),
+        });
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let observed = painter
+            .last_gpu_work()
+            .expect("encoded frame records GPU work");
+        assert!(
+            observed.gpu_upload_bytes > 0,
+            "host texture / quad write_buffer must be counted"
+        );
+        assert!(observed.draw_calls > 0);
+        assert!(observed.draw_batches > 0);
+        let timings = painter
+            .last_gpu_timings()
+            .expect("encoded frame times GPU stages");
+        assert!(timings.submit.is_zero());
+        let submit_started = std::time::Instant::now();
+        queue.submit([encoder.finish()]);
+        painter.record_submit(submit_started.elapsed());
+        let submitted = painter.last_gpu_timings().unwrap();
+        assert!(
+            !submitted.encode.is_zero()
+                || !submitted.gpu_upload.is_zero()
+                || !submitted.batch.is_zero()
+        );
+        assert_eq!(
+            painter.last_gpu_work().unwrap().gpu_upload_bytes,
+            observed.gpu_upload_bytes
+        );
+    }
+
+    fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(document, RuntimeButton::new("刷新预览"))
+            .unwrap();
+        let preview = context
+            .create_component(document, nana_ui_runtime::GpuTextureView::new("preview"))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            button.stable_id(),
+            LayoutBox {
+                x: 8.0,
+                y: 8.0,
+                width: 112.0,
+                height: 28.0,
+            },
+        );
+        layout.write_layout(
+            preview.stable_id(),
+            LayoutBox {
+                x: 8.0,
+                y: 40.0,
+                width: 112.0,
+                height: 48.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            context.world().extract_nodes(&work.render_extraction),
+            work.render_removals,
+        );
+        let texture = crate::HostTexture::from_wgpu(
+            1,
+            1,
+            test_target(device, wgpu::TextureFormat::Rgba8Unorm, 64, 48),
+        );
+        let registry = HostTextureRegistry::new();
+        registry.register(
+            "preview",
+            texture,
+            64,
+            48,
+            crate::HostTextureAlphaMode::Premultiplied,
+        );
+        (scene, registry)
+    }
+
+    fn test_target(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> wgpu::TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("nana-ui scene gpu work target"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    fn test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
+            &instance, None,
+        ))
+        .expect("scene GPU work test requires a WGPU adapter");
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("nana-ui scene GPU work test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        }))
+        .expect("scene GPU work test requires a WGPU device")
     }
 }

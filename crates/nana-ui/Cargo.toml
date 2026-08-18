@@ -132,3 +132,8 @@ required-features = ["hosted", "bundled-fonts"]
 name = "window-chrome-multi-window"
 required-features = ["hosted", "bundled-fonts"]
 
+[[bin]]
+name = "nana-gpu-scene-benchmark"
+path = "src/bin/nana-gpu-scene-benchmark.rs"
+required-features = ["gpu"]
+

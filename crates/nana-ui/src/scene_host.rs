@@ -621,7 +621,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .unwrap_or_else(|error| {
                 panic!("RuntimeProgram produced an unpaintable UiScene: {error}")
             });
+        let submit_started = std::time::Instant::now();
         self.graphics.resources().queue().submit([encoder.finish()]);
+        self.painter_mut(format)
+            .record_submit(submit_started.elapsed());
         self.graphics.present(frame);
         self.apply_ime_request(id);
         let update = self

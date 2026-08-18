@@ -76,6 +76,9 @@ jobs:
             dirty_work_is_incremental_and_static_world_stays_idle \
             paint_only_style_change_does_not_schedule_subtree_layout \
             pointer_hover_and_press_are_runtime_owned_and_targeted \
+            parking_or_removing_the_last_presence_node_returns_the_skip_path \
+            transform_and_a11y_mutations_do_not_schedule_layout \
+            work_counters_are_queryable_after_drain_and_extract \
             virtual_list_materializes_only_visible_items_and_reuses_overlap \
             virtual_table_materializes_a_bounded_grid_and_reuses_both_axes
           do

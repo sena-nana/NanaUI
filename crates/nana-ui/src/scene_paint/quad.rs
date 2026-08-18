@@ -203,13 +203,18 @@ impl QuadPipeline {
         queue: &wgpu::Queue,
         physical_size: [u32; 2],
         scale_factor: f32,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let uniforms = Uniforms {
             transform: orthographic(physical_size[0], physical_size[1]),
             scale: scale_factor,
             _padding: [0.0; 3],
         };
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        let uniform_bytes = bytemuck::bytes_of(&uniforms);
+        queue.write_buffer(&self.uniforms, 0, uniform_bytes);
+        if let Some(work) = gpu_work {
+            work.record_upload(uniform_bytes.len());
+        }
         if self.pending.is_empty() {
             return;
         }
@@ -221,8 +226,16 @@ impl QuadPipeline {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            if let Some(work) = gpu_work {
+                work.record_realloc();
+            }
         }
-        queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&self.pending));
+        let instance_bytes = bytemuck::cast_slice(&self.pending);
+        queue.write_buffer(&self.instances, 0, instance_bytes);
+        if let Some(work) = gpu_work {
+            work.record_upload(instance_bytes.len());
+            work.record_batch_rebuild();
+        }
     }
 
     pub(super) fn draw(
@@ -230,6 +243,7 @@ impl QuadPipeline {
         pass: &mut wgpu::RenderPass<'_>,
         range: std::ops::Range<u32>,
         scissor: PhysicalRect,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         if range.start >= range.end {
             return;
@@ -239,5 +253,9 @@ impl QuadPipeline {
         pass.set_vertex_buffer(0, self.instances.slice(..));
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw(0..6, range);
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 }

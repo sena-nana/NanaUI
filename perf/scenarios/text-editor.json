@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "text-editor",
+  "kind": "TextEditor",
+  "params": {
+    "document_chars": 100000,
+    "visible_lines": 40
+  },
+  "record": [
+    "local_edit",
+    "text_shaped",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "text_editor_local_edit_shapes_bounded_nodes",
+      "path": "work_counters.text_shaped",
+      "op": "lte",
+      "value": 1,
+      "status": "required",
+      "note": "Issue #8 §3.6 large-document local edit must not reshape the whole buffer as N entities. Evaluate when catalog_workloads text-editor exports WorkCounters.text_shaped."
+    }
+  ],
+  "notes": "Mapped onto a retained TextArea holding document_chars UTF-8 with a 40-line viewport height in an isolated AppContext. Measures caret-local replace_text_area_selection. Does not reshape the 100k document as N entities, and does not measure IME-inside-editor or multi-caret."
+}

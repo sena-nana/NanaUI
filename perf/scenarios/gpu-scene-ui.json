@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-ui",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [800, 480],
+    "host_texture": {
+      "slot": "content",
+      "width": 640,
+      "height": 360
+    },
+    "ui_nodes": ["list", "text", "gpu-texture-view", "button"]
+  },
+  "record": [
+    "gpu_upload",
+    "draw_batch_count",
+    "encode",
+    "submit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "gpu_upload_bytes_observed_on_encode",
+      "path": "work_counters.gpu_upload_bytes",
+      "op": "gte",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #8 §5 / §3.8. Count only after a host encodes/submits. Missing stays not-evaluable and must never be treated as 0."
+    },
+    {
+      "name": "draw_calls_observed_on_encode",
+      "path": "work_counters.draw_calls",
+      "op": "gte",
+      "value": 1,
+      "status": "required",
+      "note": "A painted UI+HostTexture frame must issue at least one real draw. Missing stays not-evaluable."
+    }
+  ],
+  "notes": "Catalog GpuScene UiOnly: runners must load this JSON and materialize viewport + host_texture + ui_nodes (UI chrome around a GPU content slot). nana-gpu-scene-benchmark reads --scenario; it must not invent a private hosted-gpu-demo tree. Encode/submit timings come from FrameProfiler on that host path. No CPU readback. Missing adapter is unsupported (exit 2)."
+}

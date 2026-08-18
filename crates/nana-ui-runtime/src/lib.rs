@@ -41,6 +41,7 @@ mod shell;
 mod sidebar;
 mod split_pane;
 mod tabs;
+mod text_layout_cache;
 mod toast;
 mod tree_view;
 mod view_components;
@@ -112,18 +113,19 @@ pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
     ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, FrameStage,
-    GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId,
-    GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
-    GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
-    GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
-    JustifySpec, KeyContext, LayoutStyle, LengthSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, SemanticColorRole, StatusTone, TabDragGroup, TabDragLease, TabDragRect,
-    TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor, TableNavigation, ThemeMode,
-    TreeNavigation, TreeNode, TreeViewEvent, ValidationIntent, VirtualListLayout,
-    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
-    VirtualListMount, VirtualListWindow, VirtualTableLayout, VirtualTableMaterialization,
-    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
-    VirtualTreeWindow, WorkCounters, port_tangent, tree_navigation_event,
+    GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS,
+    GpuWorkObservation, GraphCanvasId, GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel,
+    GraphModelError, GraphNode, GraphNodeId, GraphPoint, GraphPort, GraphPortId, GraphPortKind,
+    GraphPortSide, GraphRect, GraphSelection, GraphSize, GraphTarget, GraphTargetDescriptor,
+    GraphTargetId, GraphTargetKind, GraphViewport, JustifySpec, KeyContext, LayoutStyle,
+    LengthSpec, PopoverAlignment, PopoverPlacement, PositionSpec, SemanticColorRole, StatusTone,
+    TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
+    TableCursor, TableNavigation, ThemeMode, TreeNavigation, TreeNode, TreeViewEvent,
+    ValidationIntent, VirtualListLayout, VirtualListMaterialization,
+    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+    VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, WorkCounters, port_tangent,
+    tree_navigation_event,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,

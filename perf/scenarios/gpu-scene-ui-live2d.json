@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-ui-live2d",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiLive2d"
+  },
+  "record": [
+    "gpu_upload",
+    "draw_batch_count"
+  ],
+  "invariants": [],
+  "notes": "Required by #8 §3.8. Live2D is not a Scene pass yet. HostTexture evidence is not this composition. Runner must stay unsupported (exit 2) and must not invent upload/batch zeros."
+}

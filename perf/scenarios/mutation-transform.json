@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "mutation-transform",
+  "kind": "Mutation",
+  "params": {
+    "tree_nodes": 5000,
+    "kind": "Transform"
+  },
+  "record": [
+    "layout",
+    "hit_test",
+    "render_extraction",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "transform_does_not_layout_full_tree",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #8 §3.2 paint-only transform must not schedule layout. Evaluate when work_counters.layout_nodes is present."
+    }
+  ]
+}

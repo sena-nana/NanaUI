@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "mutation-layout-style",
+  "kind": "Mutation",
+  "params": {
+    "tree_nodes": 5000,
+    "kind": "LayoutStyle"
+  },
+  "record": [
+    "style",
+    "layout",
+    "render_extraction",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "layout_style_does_not_extract_full_tree",
+      "path": "work_counters.render_nodes_changed",
+      "op": "lte",
+      "value": 64,
+      "status": "required",
+      "note": "Issue #8 §3.2 requires dirty layout-style propagation, not a full 5k extract. Evaluate when work_counters.render_nodes_changed is present."
+    }
+  ]
+}

@@ -63,11 +63,34 @@ pub struct SystemWork {
     pub entities_spawned: usize,
     /// Entities despawned since the previous drain.
     pub entities_despawned: usize,
+    /// Unique live pointer hover, press, capture, and focus nodes.
+    pub input_targets: usize,
+    /// Nodes whose render extraction was invalidated this drain. Not overwritten
+    /// by [`Self::record_extract`].
+    pub render_nodes_changed: usize,
     /// Nodes named for render extraction. Overwritten by
     /// [`Self::record_extract`] with the number actually produced.
     pub render_nodes_extracted: usize,
     /// Theme-resolved text spans after [`Self::record_extract`]. Zero until then.
     pub extracted_text_spans: usize,
+    /// Observed CPU hot-path heap events while draining dirty lists.
+    pub allocations: usize,
+    /// Payload bytes of those drain-list events.
+    pub allocated_bytes: usize,
+    /// `TextShaper::shape` invocations. Zero until Runtime records shaping.
+    pub text_shaped_runs: usize,
+    /// `TextLayoutCache` lookup hits. Zero until shaping records the cache.
+    pub text_layout_cache_hits: usize,
+    /// `TextLayoutCache` inserts after a miss. Zero until shaping.
+    pub text_layout_cache_misses: usize,
+    /// Shape calls that requested wrapping. Zero until shaping.
+    pub text_wrap_layouts: usize,
+    /// Always `None`: Runtime has no `GlyphCache`.
+    pub glyph_cache_hits: Option<usize>,
+    /// Always `None`: Runtime has no `GlyphCache`.
+    pub glyph_cache_misses: Option<usize>,
+    /// `TextLayoutCache` evictions. `None` until a shaping pass consults it.
+    pub cache_eviction: Option<usize>,
 }
 
 impl SystemWork {
@@ -94,9 +117,25 @@ impl SystemWork {
             text_shaped: self.text.len(),
             layout_nodes: self.layout.len(),
             hit_test_candidates: self.input_hit_test.len(),
+            input_targets: self.input_targets,
             accessibility_nodes_updated: self.accessibility.len(),
+            render_nodes_changed: self.render_nodes_changed,
             render_nodes_extracted: self.render_nodes_extracted,
             extracted_text_spans: self.extracted_text_spans,
+            allocations: self.allocations,
+            allocated_bytes: self.allocated_bytes,
+            text_shaped_runs: self.text_shaped_runs,
+            text_layout_cache_hits: self.text_layout_cache_hits,
+            text_layout_cache_misses: self.text_layout_cache_misses,
+            text_wrap_layouts: self.text_wrap_layouts,
+            glyph_cache_hits: self.glyph_cache_hits,
+            glyph_cache_misses: self.glyph_cache_misses,
+            cache_eviction: self.cache_eviction,
+            batch_rebuilds: None,
+            draw_batches: None,
+            draw_calls: None,
+            gpu_upload_bytes: None,
+            gpu_buffer_reallocations: None,
         }
     }
 
@@ -105,6 +144,33 @@ impl SystemWork {
     pub fn record_extract(&mut self, extracted: &[ExtractedNode]) {
         self.render_nodes_extracted = extracted.len();
         self.extracted_text_spans = extracted.iter().map(|node| node.text_spans.len()).sum();
+    }
+
+    /// Record observed drain/layout/shape heap events. Does not invent GPU bytes.
+    pub fn record_hot_path_allocation(&mut self, count: usize, bytes: usize) {
+        if count == 0 && bytes == 0 {
+            return;
+        }
+        self.allocations = self.allocations.saturating_add(count);
+        self.allocated_bytes = self.allocated_bytes.saturating_add(bytes);
+    }
+
+    /// Record shaping-path stats after the host `TextShaper` ran.
+    pub fn record_text_shape(
+        &mut self,
+        shaped_runs: usize,
+        cache_hits: usize,
+        cache_misses: usize,
+        wrap_layouts: usize,
+    ) {
+        self.text_shaped_runs = self.text_shaped_runs.saturating_add(shaped_runs);
+        self.text_layout_cache_hits = self.text_layout_cache_hits.saturating_add(cache_hits);
+        self.text_layout_cache_misses = self.text_layout_cache_misses.saturating_add(cache_misses);
+        self.text_wrap_layouts = self.text_wrap_layouts.saturating_add(wrap_layouts);
+    }
+
+    pub fn record_cache_eviction(&mut self, evictions: usize) {
+        self.cache_eviction = Some(self.cache_eviction.unwrap_or(0).saturating_add(evictions));
     }
 }
 

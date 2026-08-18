@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "ime",
+  "kind": "Ime",
+  "params": {
+    "scripts": ["latin", "zh", "ja", "ko"],
+    "include_preedit": true,
+    "include_candidate_commit": true
+  },
+  "record": [
+    "preedit",
+    "candidate_commit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "ime_scripts_cover_catalog",
+      "path": "work_counters.ime_script_count",
+      "op": "eq",
+      "value": 4,
+      "status": "required",
+      "note": "Issue #8 §3.6 requires latin/zh/ja/ko together with preedit and commit. Evaluate when nana-framework-benchmark catalog_workloads ime row exports ime_script_count."
+    }
+  ],
+  "notes": "Mapped onto AppContext set_ime_preedit / commit_ime on a focused TextInput in an isolated AppContext. Measures Runtime preedit + commit_ime only. Does not measure the OS IME candidate window, composition UI, or host IME popup. commit_ime is the Runtime candidate-commit path. Correctness asserts preedit then committed text per script."
+}

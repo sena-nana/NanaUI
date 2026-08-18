@@ -174,6 +174,7 @@ impl DestTarget {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn blit(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -182,6 +183,7 @@ impl DestTarget {
         dest_y: f32,
         window: [u32; 2],
         clear_window: Option<wgpu::Color>,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("nana-ui.scene.dest.blit"),
@@ -217,5 +219,10 @@ impl DestTarget {
         pass.set_pipeline(&self.blit_pipeline);
         pass.set_bind_group(0, &self.blit_bind_group, &[]);
         pass.draw(0..3, 0..1);
+        drop(pass);
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 }

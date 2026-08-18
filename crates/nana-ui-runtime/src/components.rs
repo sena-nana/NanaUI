@@ -1251,13 +1251,16 @@ pub struct CustomRenderNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedNode {
     pub id: StableNodeId,
-    pub kind: NodeKind,
+    /// Shared with `UiWorld` so idle extract is an Arc bump, not a `NodeKind` clone.
+    pub kind: Arc<NodeKind>,
     pub parent: Option<StableNodeId>,
-    pub children: Vec<StableNodeId>,
+    /// Shared with retained hierarchy. Idle extract does not clone the child list.
+    pub children: Arc<Vec<StableNodeId>>,
     pub layout: LayoutBox,
     pub scroll_offset: ScrollOffset,
     pub source_style: NodeStyle,
-    pub style: ComputedStyle,
+    /// Shared with `UiWorld` resolved style. Copy-on-write when a dirty node mutates.
+    pub style: Arc<ComputedStyle>,
     pub text: Option<TextContent>,
     pub text_metrics: Option<TextMetrics>,
     pub z_index: i32,

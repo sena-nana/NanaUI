@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "text-table",
+  "kind": "Table",
+  "params": {
+    "rows": 10000,
+    "columns": 100,
+    "visible_rows": 40,
+    "visible_columns": 16,
+    "overscan_rows": 8,
+    "overscan_columns": 2,
+    "short_cell_len": 8,
+    "wrapped_cells": 4,
+    "wrapped_cell_len": 256
+  },
+  "record": [
+    "scroll_cpu",
+    "live_ui_entities",
+    "text_shaped",
+    "text_layout_cache",
+    "glyph_cache",
+    "wrapped_line_layout",
+    "cache_eviction",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "text_table_live_entities_bounded",
+      "path": "work_counters.live_ui_entities",
+      "op": "lte",
+      "value": 1260,
+      "status": "required",
+      "note": "Issue #8 §3.4/§3.5 forbids one retained entity per logical cell. Bound is the existing nana-framework-benchmark geometric window (viewport+overscan), not rows×columns. Missing live_ui_entities stays not-evaluable."
+    }
+  ],
+  "notes": "Mapped onto nana-framework-benchmark virtual_scales kind=table 10k×100. Most cells are short_cell_len=8; each 40-row band keeps wrapped_cells=4 long wrapping cells (wrapped_cell_len=256) that are shaped against the 80px column box. Exports text_shaped, text_shaped_runs, text_layout_cache_hits/misses, text_wrap_layouts, and cache_eviction from WorkCounters. glyph_cache_* stay omitted."
+}

@@ -35,6 +35,7 @@ impl HostTexturePipeline {
         opacity: f32,
         _physical_size: [u32; 2],
         scale_factor: f32,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> PreparedHostTexture {
         let primitive = GpuTexturePrimitive::from_scene(
             node,
@@ -47,6 +48,7 @@ impl HostTexturePipeline {
             queue,
             crate::geometry::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
             scale_factor,
+            gpu_work,
         );
         PreparedHostTexture { primitive, clip }
     }
@@ -56,10 +58,11 @@ impl HostTexturePipeline {
         prepared: &PreparedHostTexture,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         prepared
             .primitive
-            .render(&self.pipeline, encoder, target, prepared.clip);
+            .render(&self.pipeline, encoder, target, prepared.clip, gpu_work);
     }
 
     pub(super) fn trim(&mut self) {

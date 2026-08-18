@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "overlay",
+  "kind": "Overlay",
+  "params": {
+    "kinds": ["tooltip", "context_menu", "modal", "popup"]
+  },
+  "record": [
+    "activate",
+    "dismiss",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "overlay_kinds_cover_catalog",
+      "path": "work_counters.overlay_kind_count",
+      "op": "eq",
+      "value": 4,
+      "status": "required",
+      "note": "Issue #8 §3.7 requires tooltip, context_menu, modal, and popup. Evaluate when catalog_workloads overlay exports overlay_kind_count."
+    }
+  ],
+  "notes": "Mapped onto OverlayHost activate_overlay/dismiss_overlay for Tooltip, Menu (context_menu), Dialog (modal), and AppContext toggle_popover for popup in an isolated AppContext. Measures activate/dismiss only. Does not measure popup pointer-follow reposition, stacking vs host chrome, or OS-owned menus."
+}

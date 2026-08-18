@@ -21,6 +21,8 @@ pub mod geometry;
 pub mod gpu_texture;
 #[cfg(feature = "gpu")]
 pub mod gpu_view;
+#[cfg(feature = "gpu")]
+mod gpu_work;
 #[cfg(feature = "graph-canvas")]
 pub mod graph;
 #[cfg(feature = "hosted")]
@@ -137,6 +139,8 @@ pub use gpu_texture::{
 };
 #[cfg(feature = "gpu")]
 pub use gpu_view::RenderSlot;
+#[cfg(feature = "gpu")]
+pub use gpu_work::{GpuStageTimings, GpuWorkSink};
 #[cfg(feature = "graph-canvas")]
 pub use graph::{
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId,
@@ -156,6 +160,8 @@ pub use layout::{
 };
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use nana_text::NanaTextShaper;
+#[cfg(feature = "gpu")]
+pub use nana_ui_core::GpuWorkObservation;
 pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};
 pub use nana_ui_core::{
     ExpansionState, SplitPaneModel, SplitPaneMutation, WORKSPACE_REGION_TRANSITION_DURATION,

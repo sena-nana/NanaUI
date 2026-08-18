@@ -1,0 +1,37 @@
+{
+  "virtual_table_10k_x_100_materialize_ms": {
+    "p50": 0.8,
+    "p95": 0.9,
+    "p99": 1.0
+  },
+  "virtual_scales": [
+    {
+      "kind": "table",
+      "logical_rows": 10000,
+      "logical_columns": 100,
+      "status": "ok",
+      "visible_rows": 40,
+      "overscan_rows": 10,
+      "cache_rows": 0,
+      "live_ui_entities": 50,
+      "live_ui_entities_bound": 1260,
+      "materialize_ms": {
+        "p50": 0.8,
+        "p95": 0.9,
+        "p99": 1.0
+      },
+      "work": {
+        "text_shaped": 12,
+        "extracted_text_spans": 12,
+        "entities_total": 50,
+        "entities_changed": 12,
+        "layout_nodes": 12,
+        "text_wrap_layouts": 4,
+        "text_shaped_runs": 8,
+        "text_layout_cache_hits": 3,
+        "text_layout_cache_misses": 5,
+        "cache_eviction": 0
+      }
+    }
+  ]
+}

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use nana_ui_runtime::CustomRenderNode;
 use nana_ui_scene::{PrimitiveId, ScenePrimitiveKind, UiScene};
 
+use crate::gpu_work::GpuWorkSink;
 use crate::{LogicalRect, PhysicalRect};
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub struct SceneGpuPrepareContext<'a> {
     pub target_format: wgpu::TextureFormat,
     pub bounds: LogicalRect,
     pub scale_factor: f32,
+    pub gpu_work: Option<&'a GpuWorkSink>,
 }
 
 pub struct SceneGpuRenderContext<'a> {
@@ -29,6 +31,7 @@ pub struct SceneGpuRenderContext<'a> {
     pub target: &'a wgpu::TextureView,
     pub bounds: PhysicalRect,
     pub clip: PhysicalRect,
+    pub gpu_work: Option<&'a GpuWorkSink>,
 }
 
 /// Advanced WGPU compatibility extension for direct Scene graph passes.
