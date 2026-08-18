@@ -1,11 +1,12 @@
 //! Frozen Android **Nana shell** stub — workspace geometry + chrome band plan.
 //!
-//! NanaUI owns shell layout and optional generic Iced controls. Vue apps keep CSS, custom
-//! components, and renderer freedom via [`nana_ui_vue::VueHost`] — this stub does not restrict
-//! Vue widget types. Desktop [`nana_ui::DesktopShell`] composes the same regions with Iced;
-//! this stub keeps [`WorkspaceLayout`] / [`WorkspaceGeometry`] from `nana-ui-core` so Primary
-//! viewport sizing matches desktop. Hosts can present [`ShellChromeBand`] fills via scissor
-//! + solid-color pipeline (title / resources / primary).
+//! NanaUI owns shell layout and an experimental Runtime control slot. Vue apps keep CSS,
+//! custom components, and renderer freedom via [`nana_ui_vue::VueHost`] — this stub does
+//! not restrict Vue widget types. Desktop [`nana_ui::DesktopShell`] composes the same
+//! regions; this stub keeps [`WorkspaceLayout`] / [`WorkspaceGeometry`] from
+//! `nana-ui-core` so Primary viewport sizing matches desktop. Hosts can present
+//! [`ShellChromeBand`] fills via scissor + solid-color pipeline (title / resources /
+//! primary).
 
 use nana_ui_core::{PhysicalRect, RegionId, TITLE_BAR_HEIGHT, WorkspaceGeometry, WorkspaceLayout};
 
@@ -36,14 +37,14 @@ pub fn scale_factor_from_density_dpi(density_dpi: Option<u32>) -> f32 {
     }
 }
 
-/// One shell chrome band for host wgpu scissor clears (pre-Iced paint).
+/// One shell chrome band for host wgpu scissor clears (pre-Scene paint).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShellChromeBand {
     pub rect: PhysicalRect,
     pub color: [f64; 4],
 }
 
-/// Non-Iced shell placeholder aligned with the DesktopShell workspace contract.
+/// Workspace geometry stub aligned with the DesktopShell region contract.
 #[derive(Debug, Clone)]
 pub struct AndroidShellStub {
     layout: WorkspaceLayout,
@@ -109,8 +110,8 @@ impl AndroidShellStub {
         TITLE_BAR_HEIGHT
     }
 
-    /// Whether Nana Iced [`DesktopShell`] rendering is wired on this target.
-    pub const fn iced_shell_available() -> bool {
+    /// Whether Nana [`nana_ui::DesktopShell`] rendering is wired on this target.
+    pub const fn desktop_shell_available() -> bool {
         false
     }
 
@@ -119,23 +120,23 @@ impl AndroidShellStub {
         true
     }
 
-    /// Whether host solid-color scissor fill pipeline is wired (not Iced).
+    /// Whether host solid-color scissor fill pipeline is wired.
     pub const fn shell_chrome_fill_available() -> bool {
         true
     }
 
-    /// Whether Nana Iced controls can paint into the Primary slot
-    /// (Icon + Text + Input + Switch + Button via `iced_wgpu`) — still not full DesktopShell.
-    pub const fn iced_control_widget_available() -> bool {
+    /// Whether Nana Runtime controls can paint into the slot
+    /// (Text + Input + Switch + Button via UiScene) — still not full DesktopShell.
+    pub const fn control_widget_available() -> bool {
         true
     }
 
-    /// Whether NativeActivity pointer events route into the slot Button.
-    pub const fn iced_control_input_available() -> bool {
+    /// Whether NativeActivity pointer events route into the slot controls.
+    pub const fn control_input_available() -> bool {
         true
     }
 
-    /// Physical chrome bands for pre-Iced Surface present (title bar, Resources, Primary).
+    /// Physical chrome bands for pre-Scene Surface present (title bar, Resources, Primary).
     pub fn chrome_bands(&self) -> Vec<ShellChromeBand> {
         let (fw, fh) = self.geometry.physical_size;
         let scale = self.scale_factor.max(0.25);
@@ -187,8 +188,8 @@ impl AndroidShellStub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::iced_slot::{ICED_CONTROL_SLOT_INSET, iced_control_slot_paint_bounds};
-    use crate::iced_slot_input::pointer_in_slot;
+    use crate::control_slot::{CONTROL_SLOT_INSET, control_slot_paint_bounds};
+    use crate::slot_input::pointer_in_slot;
 
     #[test]
     fn default_layout_has_primary_region() {
@@ -225,7 +226,7 @@ mod tests {
         let (w, h) = shell.primary_physical_size();
         assert!(w > 0);
         assert!(h > 0);
-        assert!(!AndroidShellStub::iced_shell_available());
+        assert!(!AndroidShellStub::desktop_shell_available());
         assert!(AndroidShellStub::shell_chrome_bands_available());
     }
 
@@ -254,10 +255,10 @@ mod tests {
                 "dpi={dpi}: logical width must be physical/scale"
             );
 
-            let slot = shell.iced_control_slot().expect("slot").rect;
-            let paint = iced_control_slot_paint_bounds(window, scale).expect("paint");
+            let slot = shell.control_slot().expect("slot").rect;
+            let paint = control_slot_paint_bounds(window, scale).expect("paint");
             assert_eq!(slot, paint);
-            let inset = (ICED_CONTROL_SLOT_INSET * scale).round() as u32;
+            let inset = (CONTROL_SLOT_INSET * scale).round() as u32;
             assert_eq!(slot.x, inset);
             assert_eq!(slot.y + slot.height + inset, window.1);
 

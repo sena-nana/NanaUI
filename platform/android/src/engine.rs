@@ -89,10 +89,10 @@ mod tests {
         assert!(report.create_element > 0);
         assert!(report.capabilities.vulkan_surface);
         assert!(report.capabilities.shell_chrome_fill);
-        assert!(report.capabilities.iced_control_slot);
-        assert!(report.capabilities.iced_control_widget);
-        assert!(report.capabilities.iced_control_input);
-        assert!(!report.capabilities.iced_shell);
+        assert!(report.capabilities.control_slot);
+        assert!(report.capabilities.control_widget);
+        assert!(report.capabilities.control_input);
+        assert!(!report.capabilities.desktop_shell);
         assert!(!report.capabilities.ime);
         assert!(!report.capabilities.clipboard);
     }

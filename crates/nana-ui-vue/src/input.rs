@@ -10,7 +10,7 @@ pub struct HostedInputResult {
     pub targeted: bool,
     pub default_prevented: bool,
     /// Vue already performed the semantic action (for example `Press`).
-    /// Hosts should skip the duplicate Iced path when this is set.
+    /// Hosts should skip a duplicate Scene-host path when this is set.
     pub consumed: bool,
 }
 

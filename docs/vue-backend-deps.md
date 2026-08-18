@@ -33,7 +33,7 @@ Constraints:
 - `nana-ui-vue` must not depend on concrete QuickJS/V8 types
 - App chooses exactly one JS engine (QuickJS XOR V8)
 - Windowed UI is Runtime/UiScene, painted by `SceneWgpuPainter` via `run_runtime`
-- `nana-ui` / `nana-ui-vue` do not depend on Iced; Iced remains the vendored engine and Android experimental slot
+- `nana-ui` / `nana-ui-vue` do not depend on Iced; `engine/iced` remains an excluded compatibility asset
 - WebView is not the product UI path
 - Paint / chrome use **host-injected** Device/Queue only — no second `request_device`
 

@@ -1199,7 +1199,7 @@ impl fmt::Debug for HostApiRegistry {
 /// Unified JS engine contract used by `nana-ui-vue`.
 ///
 /// Paint and retained UI stay in Runtime/UiScene; this trait is JS execution only.
-/// Iced is the current compatibility view, not part of this interface.
+/// The Scene host is not part of this interface.
 pub trait JsEngine {
     /// Evaluate / load a runtime artifact (UTF-8 JS source).
     fn initialize(&mut self, artifact: RuntimeArtifact) -> Result<(), JsEngineError>;

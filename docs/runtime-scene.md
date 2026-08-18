@@ -35,8 +35,8 @@ style/theme、text、committed text-input selection、text metrics、未滚动 l
 Span 颜色是 `SemanticColorRole`，抽取时按当前 theme 解析。可选
 `syntax-highlighting` feature 提供名为 `"highlight"` 的 syntect presenter
 （`HighlightPresentation` / `TextArea::highlight`）。未知语言或未注册 presenter
-时 Scene 退回单色文本。Iced compatibility 用 paragraph spans 绘制；word wrap 由
-Iced paragraph 处理，不在 Scene 为每个 span 另占 primitive slot。
+时 Scene 退回单色文本。`SceneWgpuPainter` 用 paragraph spans 绘制；word wrap 由
+文本 shaping 处理，不在 Scene 为每个 span 另占 primitive slot。
 
 所有结构或 component 变更先进入 frame-local `MutationQueue`，整批验证成功后一次
 commit。失败批次不发布局部 hierarchy/component 结果；despawn 后 ID 永久 tombstone，
@@ -62,7 +62,7 @@ Accessibility 增量事务包含同 generation 的 updated nodes 与 stable-ID r
 删除同时更新存活父节点的 children，平台 adapter 不维护另一棵权威语义树。
 Desktop hosted window 在首次 show 前创建 AccessKit adapter，并在应用处理前转发每个
 window event。平台投影缓存仅用于生成增量 update；它不接受业务 mutation。默认程序不声明
-动作，只有显式启用的 `HostedProgram::accessibility_action` 才能暴露已接通的操作；Vue 当前
+动作，只有显式启用的 `RuntimeProgram::accessibility_action` 才能暴露已接通的操作；Vue 当前
 把 enabled Focus/Click 按 stable ID 送回 retained focus 与既有 Bridge/DOM 事件链。
 
 局部 mutation 只传播到语义受影响的 node/subtree/ancestor；传播遇到已有相同 dirty
@@ -70,7 +70,7 @@ window event。平台投影缓存仅用于生成增量 update；它不接受业�
 deadline；Runtime 不创建计时线程。due sample 本身不伪造 render dirty，consumer 仅对
 实际属性结果提交 mutation。动画、实时 GPU 内容和普通 UI wakeup 是独立 cadence，实时
 source 不得强制整个 Runtime 全量更新。
-Iced hosted compatibility 通过 `RuntimeAnimationClock` 将 duration epoch 映射为
+Scene host 通过 `RuntimeAnimationClock` 将 duration epoch 映射为
 `Instant`；adapter 不创建 timer，也不替应用决定 sample 是否需要 redraw。
 应用级 sampled state、外部 runtime pump 与 retry backoff 使用
 `RuntimeProgram::next_wakeup/wake`；host 将该 deadline 与所有 document animation deadline
@@ -79,23 +79,23 @@ Iced hosted compatibility 通过 `RuntimeAnimationClock` 将 duration epoch 映�
 Workspace 的持久布局、viewport/scale、resize drag 与 collapse transition 由
 `nana-ui-core::WorkspaceModel` 单独持有，并只接受显式 `Duration` 时间。静态 geometry
 直接借用布局；只有 active transition 才构造瞬时 extent snapshot。`WorkspaceController`
-保留 Iced event/frame subscription 和 view conversion 作为 compatibility adapter，稳定状态与
+保留 Scene host 的 event/frame 与 view conversion，稳定状态与
 mutation API 是 backend-neutral `WorkspaceModel` / `WorkspaceMutation`，不得再在 adapter 中保存
 第二份 workspace 状态或动画。
 
 Sidebar disclosure 使用 backend-neutral `ExpansionState`，以显式 `Duration` 连续采样和反向；
-Iced section state 只换算 host clock 并决定是否订阅 frame。SplitPane 的持久约束、size、focus、
+section state 只换算 host clock 并决定是否订阅 frame。SplitPane 的持久约束、size、focus、
 hover 与 absolute-delta resize 则统一由 `SplitPaneModel` / `SplitPaneMutation` 持有；现有
-`SplitPaneController` 只负责把 Iced point/key event 转成该 mutation。
+`SplitPaneController` 只负责把 host point/key event 转成该 mutation。
 Dock insertion dwell 也使用 controller-owned monotonic `Duration` epoch；pending target 不保存
-Iced `Instant`，frame subscription 发出明确的 `AdvanceDragDwell`，不能再借 hover 消息伪装
+host `Instant`，frame subscription 发出明确的 `AdvanceDragDwell`，不能再借 hover 消息伪装
 时间推进。`DockUpdate.changed` 只表示需持久化的 `DockLayout` 变化；dwell/focus/preview 与
 measured surface geometry 是瞬时状态，由产生该 mutation 的 input/frame host 请求重绘，不能
 借 `changed` 触发配置写入。
 Dock 的稳定状态入口是 `DockMutation` + `LogicalPoint` 与 `update_mutation[_at]`；active
 drag/resize 内部也只保存 logical point、scalar delta 和 `Duration`。旧 `DockAction` 的
-Iced `Point`、widget/subscription/view 仅是 compatibility adapter。三套 Workspace/Split/Dock
-曾共用但现已无消费者的 Iced `ResizeDrag` 已删除，避免保留第二条 resize 规则。
+host `Point`、widget/subscription/view 仅是 compatibility adapter。三套 Workspace/Split/Dock
+曾共用但现已无消费者的 `ResizeDrag` 已删除，避免保留第二条 resize 规则。
 `DockController::surface_layout` 是 retained consumer 的确定性几何出口：同一份
 `DockLayout` 产生 active item content bounds、tab group 与带 stable path 的 splitter hit
 bounds，并区分主窗口 28px dock chrome 与 floating window 36px native title bar。Runtime
@@ -109,7 +109,7 @@ update 汇集为一个 mutation commit。`Task`/`Subscription` 只包装标准 F
 executor、waker 和取消生命周期由 host adapter 拥有。
 
 Pointer/wheel/keyboard 的稳定事件、modifier、pointer phase/type 与 disposition 位于
-`nana-ui-platform`；winit/Iced 只负责 adapter conversion。平台输入不得通过 renderer
+`nana-ui-platform`；winit 只负责 adapter conversion。平台输入不得通过 renderer
 类型进入 Runtime 或 Vue semantic event path。`nana-ui::RuntimeInputAdapter` 将稳定 wheel
 delta 路由到命中层级最近且仍可滚动的 ScrollView，并从当前 focus 派生 Table navigation；
 只有实际状态变化才返回 `prevent_default`，调用方据此决定是否继续交给 compatibility backend。
@@ -143,13 +143,13 @@ cache，并表达 Quad、Text、Custom、content bounds/text placement、affine 
 z-index 和 document order。普通局部更新不重建 hierarchy order 或无关 primitive；
 hierarchy 改变时才重算 document order。
 
-Vue compatibility 的 `ScrollOffsetStore` 只排队 Iced command，不保存状态；程序化滚动和 Iced `on_scroll` feedback 都提交 Runtime offset/metrics。每个 VueHost 独立拥有 `LayoutBoxStore`，它只保存该窗口 JS 查询所需的 paint-phase geometry，不得跨窗口共享或把滚动后的坐标写回 Runtime layout。
+Vue compatibility 的 `ScrollOffsetStore` 只排队 Scene-host scroll command，不保存状态；程序化滚动和 viewport `on_scroll` feedback 都提交 Runtime offset/metrics。每个 VueHost 独立拥有 `LayoutBoxStore`，它只保存该窗口 JS 查询所需的 paint-phase geometry，不得跨窗口共享或把滚动后的坐标写回 Runtime layout。
 
 `StandardVisual` 将 checkbox/switch/slider 的 indicator、track、fill、thumb 作为有限 backend-neutral render content；它与标签文本分别解析前景，不由 backend 识别 tag。`CustomRenderNode` 只有 renderer/resource/revision opaque key，不携带 backend object。
 `RenderGraph` 将 external resource preparation、连续标准 primitive 与 custom node 编译为
 独立 pass，显式注册 target/resource access，并通过 hazard dependency 保留生产、采样与 Scene
-顺序。同一 resource 在一帧出现冲突 renderer/revision 时整图拒绝编译。Iced compatibility
-executor 将 Draw 映射为标准 painter；`SceneGpuRenderer` 的 InvokeCustom 直接取得同一
+顺序。同一 resource 在一帧出现冲突 renderer/revision 时整图拒绝编译。Scene host
+将 Draw 映射为 `SceneWgpuPainter`；`SceneGpuRenderer` 的 InvokeCustom 直接取得同一
 Device/Queue、当前 CommandEncoder 与 target，能够在图内编码 custom pass。
 `SceneResourceProducer` 则执行 `PrepareExternal`；每个 preparation pass 使用独立 host-owned
 encoder，成功后立即由同一 Queue 有序提交，因此后续 producer 失败不会让先前 producer
@@ -182,8 +182,8 @@ surface/AccessKit 并发送 `WindowEvent::Closed`。Runtime 先消费 IME，再�
 - Windows/Linux 实机未跑，不记为通过。
 
 当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime/UiScene；`nana-ui-vue` 的
-`scene-view` / `hosted` feature 接入同一 Scene host（`iced-view` 为历史别名），
-而不是 `iced::Element` 树。
+`scene-view` / `hosted` feature 接入同一 Scene host，而不是 `iced::Element` 树。
+公开 Cargo feature `iced-view` 只是 `scene-view` 的兼容别名。
 Android 不属于 NanaUI 当前产品范围；未来移动端必须由 Android 原生组件拥有平台
 生命周期、IME、accessibility 与原生控件，NanaUI 仅作为嵌入渲染内容参与混合合成，
 不直接调用 Android API。无法忠实表达的 affine/text/custom primitive 显式失败。

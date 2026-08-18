@@ -2,9 +2,10 @@
 """Enforce the NanaUI <-> in-tree Iced engine boundary.
 
 engine/iced must not depend on Nana packages or paths outside itself. Workspace
-iced / iced-wgpu / iced-winit must resolve to engine/iced. Product nana-* crates
-must not take a non-dev Iced dependency; only the experimental Android host
-remains on that allowlist. Non-nana example/tool crates are not gated here.
+iced / iced-wgpu / iced-winit, if present, must resolve to engine/iced. Product
+nana-* crates must not take a non-dev Iced dependency. engine/iced remains an
+excluded compatibility asset and is not a nana-* compile dependency.
+Non-nana example/tool crates are not gated here.
 """
 
 from __future__ import annotations
@@ -18,10 +19,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = (ROOT / "engine" / "iced").resolve()
 ICED_PACKAGES = {"iced", "iced-wgpu", "iced-winit"}
-# nana-ui / nana-ui-vue are product crates and must not depend on Iced.
-ICED_ALLOWED_NANA_PACKAGES = {
-    "nana-android-host",
-}
+# No nana-* crate may take a non-dev Iced dependency.
+ICED_ALLOWED_NANA_PACKAGES: set[str] = set()
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
 GPU_BACKEND_PACKAGES = {
     "ash",
@@ -123,7 +122,7 @@ def main() -> int:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    allowed = ", ".join(sorted(ICED_ALLOWED_NANA_PACKAGES))
+    allowed = ", ".join(sorted(ICED_ALLOWED_NANA_PACKAGES)) or "(none)"
     neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
     print(
         f"Iced engine boundary: OK (nana-* iced allowlist: {allowed}; "

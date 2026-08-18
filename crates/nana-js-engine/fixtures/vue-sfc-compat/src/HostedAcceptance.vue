@@ -89,7 +89,7 @@ async function drawGpu() {
     pass.end();
     device.queue.submit([encoder.finish()]);
     await device.queue.onSubmittedWorkDone();
-    status.value = props.hybrid ? "Vue + Canvas + WebGPU + Iced" : "Vue + Canvas + WebGPU";
+    status.value = props.hybrid ? "Vue + Canvas + WebGPU + NanaUI" : "Vue + Canvas + WebGPU";
   } catch (error) {
     status.value = error instanceof Error ? error.message : "WebGPU error";
   }
@@ -205,7 +205,7 @@ onBeforeUnmount(() => {
       </article>
 
       <article v-if="hybrid" class="acceptance-card">
-        <h2>Registered Iced component</h2>
+        <h2>Registered native component</h2>
         <nana-acceptance-probe
           v-if="nativeVisible"
           ref="nativeProbe"

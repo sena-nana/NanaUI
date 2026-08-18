@@ -1,9 +1,9 @@
-# NanaUI Android ARM64 host (experimental, frozen)
+# NanaUI Android ARM64 host (experimental)
 
-This crate is an **experimental, frozen** NativeActivity host. **Android is not a
-current NanaUI product target.** Resume only after desktop Runtime/Vue stabilize.
-Do not migrate this host to Runtime, and do not treat Iced slot paint as a
-shipping feature.
+This crate is an **experimental** NativeActivity host. **Android is not a
+current NanaUI product target.** The control slot is a basic NanaUI Runtime /
+UiScene path painted by `SceneWgpuPainter`. It is not DesktopShell, not a
+shipping feature, and does not claim complete IME / accessibility / CJK.
 
 Rust owns QuickJS + Vue custom renderer (`VueHost`) + wgpu Vulkan Surface +
 `AndroidShellStub` (Nana shell geometry). There is no System WebView.
@@ -13,9 +13,10 @@ Rust owns QuickJS + Vue custom renderer (`VueHost`) + wgpu Vulkan Surface +
 | Path | Role |
 |------|------|
 | `src/lib.rs` | `android_main` entry (`cdylib`) |
-| `src/shell.rs` | `AndroidShellStub` — `WorkspaceLayout` / `WorkspaceGeometry` (DesktopShell contract) |
-| `src/runtime.rs` | NativeActivity lifecycle + shell viewport + clear heartbeat |
+| `src/shell.rs` | `AndroidShellStub` — `WorkspaceLayout` / `WorkspaceGeometry` |
+| `src/runtime.rs` | NativeActivity lifecycle + shell viewport + Scene present |
 | `src/gpu.rs` | Host-owned wgpu 30 Surface (Vulkan) |
+| `src/slot_runtime.rs` | RuntimeDocument + pointer/key into Runtime |
 | `src/engine.rs` | QuickJS + VueHost smoke boot |
 | `app/` | Optional Gradle wrapper notes (load `libnana_android_host.so`) |
 
@@ -42,9 +43,8 @@ cargo test -p nana-android-host --lib --locked
 
 - `engine-quickjs` (default) — historical Android host engine; do not enable V8 here.
 - **`AndroidShellStub`** sizes Primary viewport from the same `nana-ui-core` geometry as desktop
-  `DesktopShell`. `VueHost` resolves layout in that viewport. Frame presentation is wgpu clear
-  plus a frozen Iced control-slot strip; this is not DesktopShell and is not a shipping paint
-  path.
+  `DesktopShell`. `VueHost` resolves layout in that viewport. Frame presentation is wgpu chrome
+  fill plus a NanaUI Runtime control-slot strip; this is not DesktopShell.
 
 ## Packaging
 
@@ -62,29 +62,26 @@ repo’s root `Cargo.toml` (multiline inline tables). Use the script above inste
 Metadata under `[package.metadata.android]` remains for documentation / future tools.
 Requires SDK `build-tools` (e.g. `build-tools;34.0.0`).
 
-## Iced control slot (frozen host test)
+## NanaUI control slot (experimental host test)
 
-- Geometry: `iced_control_slot` / `chrome_present_bands`
-- Widget strip: raw Iced `button` / `text` / `toggler` plus Nana `Icon` identity.
-  This host does not use `nana_ui::compatibility` adapters.
-  `iced_shell_available()` stays `false`.
-- Pointer: NativeActivity `MotionEvent` → iced update; Button / Switch / Input
-  messages update `press_count` / `switch_on` / `input_value`.
-- Keyboard: NativeActivity `KeyEvent` → iced text (US-QWERTY subset + Backspace /
-  arrows). NativeActivity has no InputConnection (`text_input_*` NOP).
-- Cross-compile: workspace patches `vendor/arboard` + `vendor/iced_winit` (see root `Cargo.toml`).
+- Geometry: `control_slot` / `chrome_present_bands`
+- Widget strip: Nana Runtime `Button` / `Text` / `TextInput` / `Switch`.
+  `desktop_shell_available()` stays `false`.
+- Pointer: NativeActivity `MotionEvent` → `RuntimeInputAdapter`.
+- Keyboard: NativeActivity `KeyEvent` → Runtime text (US-QWERTY subset + Backspace /
+  arrows). NativeActivity has no InputConnection; IME / AX are no-op.
+- Cross-compile: workspace still patches `vendor/arboard` for `nana-ui-platform`
+  clipboard on Android (not an Iced dependency).
 
 ## Device / KeyEvent notes
 
-| Prerequisite | Status (2026-08-10) |
-|--------------|---------------------|
-| NDK + `.so` + debug APK script | OK — APK buildable |
-| Android Emulator AVD | OK — `nana_api34_arm64` (`system-images;android-34;google_apis;arm64-v8a`) |
-| `adb install` + launch | OK on emulator (`-gpu host`) |
-| KeyEvent → iced Input | OK — logcat `iced slot Input len=… in_slot=true` |
+| Prerequisite | Status |
+|--------------|--------|
+| NDK + `.so` + debug APK script | Buildable (cross-check, not device acceptance) |
 | Soft IME (`ime=true`) | NativeActivity has no InputConnection |
+| Accessibility | No-op on this host |
 
-Reproduce (emulator):
+Reproduce (emulator; not claimed as current acceptance):
 
 ```bash
 source scripts/android-env.sh
@@ -95,7 +92,6 @@ adb install -r target-android/apk/nana-android-host-debug.apk
 adb shell am start -n app.nanaui.host/android.app.NativeActivity
 adb logcat -s nana-android-host
 # tap slot Input, then: adb shell input keyevent KEYCODE_H …
-# expect: iced slot Input len=
 ```
 
 Headless `-gpu swiftshader_indirect` boots but hit a goldfish Vulkan hang on this host — use `-gpu host` for wgpu evidence. Details: `docs/android-arm64.md`.

@@ -26,18 +26,6 @@ exclude = ["engine/iced"]
 resolver = "2"
 
 [workspace.dependencies]
-iced = {
-    path = "engine/iced",
-    default-features = false,
-    features = ["wgpu", "canvas", "image", "svg", "advanced", "smol", "thread-pool", "x11", "wayland"],
-}
-iced_wgpu = {
-    path = "engine/iced/wgpu",
-    features = ["svg-text"],
-}
-iced_winit = {
-    path = "engine/iced/winit",
-}
 nana-ui-core = { path = "crates/nana-ui-core" }
 nana-ui-runtime = { path = "crates/nana-ui-runtime" }
 nana-ui-scene = { path = "crates/nana-ui-scene" }
@@ -71,8 +59,9 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 fontdue = "0.9"
 unicode-segmentation = "1.13.0"
 
-# iced_winit → arboard has no Android backend; vendor adds a stub platform so
-# `nana-ui` can cross-compile to aarch64-linux-android. Desktop backends unchanged.
+# nana-ui-platform clipboard uses arboard; vendor adds an Android stub so
+# aarch64-linux-android still links. Desktop backends unchanged.
+# Hosted desktop still pins the iced-rs winit fork (not an Android Iced dep).
 [patch.crates-io]
 arboard = { path = "vendor/arboard" }
 winit = { git = "https://github.com/iced-rs/winit.git", rev = "05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed" }

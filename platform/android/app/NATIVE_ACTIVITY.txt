@@ -13,8 +13,7 @@
 #   ./scripts/package-android-host-apk.sh
 #   → target-android/apk/nana-android-host-debug.apk
 #
-# KeyEvent typing evidence (2026-08-10): emulator AVD nana_api34_arm64 +
-# adb install + keyevent → logcat `iced slot Input len=`.
+# KeyEvent typing is a host-side Runtime path, not IME.
 # NativeActivity has no InputConnection. See docs/android-arm64.md.
 
 minSdk=24

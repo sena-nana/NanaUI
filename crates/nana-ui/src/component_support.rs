@@ -26,12 +26,12 @@ impl fmt::Display for ComponentId {
     }
 }
 
-/// Evidence state for replacing a component's Iced compatibility path.
+/// Evidence state for promoting a component onto the Runtime / UiScene default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum ComponentMigrationState {
-    /// The compatibility implementation remains the complete supported path.
+    /// Runtime promotion is incomplete; this entry is not a product-default path.
     Compatibility,
     /// A Runtime implementation exists, but has not passed every promotion gate.
     RuntimeCandidate,

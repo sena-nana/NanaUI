@@ -61,8 +61,7 @@
 //! See [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
 //!
 //! Unique retained authority is UiWorld/UiScene. Feature `scene-view` enables the
-//! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves
-//! (`iced-view` is the historical alias).
+//! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves.
 //! WebView is not the product UI path.
 //!
 //! Applications choose one JS engine:
@@ -1135,8 +1134,8 @@ impl VueHost {
     }
 
     pub fn resolve_layout(&mut self) {
-        let iced = self.layout_boxes.snapshot();
-        if iced.is_empty() {
+        let painted = self.layout_boxes.snapshot();
+        if painted.is_empty() {
             let mut bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
             bridge.resolve_document_layout(&mut doc);
@@ -1144,28 +1143,33 @@ impl VueHost {
         }
         let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
-        doc.apply_layout_boxes(&iced);
+        doc.apply_layout_boxes(&painted);
         reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
         bridge.resolve_missing_document_layout(&mut doc);
     }
 
-    /// Copy iced paint boxes into the document cache (call after a frame draws).
+    /// Copy Scene paint boxes into the document cache (call after a frame draws).
     ///
     /// `layoutBox` / `getBoundingClientRect` already prefer the live store; this
     /// keeps hit-tests and `snapshot_boxes` aligned with paint.
-    pub fn sync_iced_layout_boxes(&mut self) {
-        let iced = self.layout_boxes.snapshot();
-        if iced.is_empty() {
+    pub fn sync_scene_layout_boxes(&mut self) {
+        let painted = self.layout_boxes.snapshot();
+        if painted.is_empty() {
             return;
         }
         let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut doc = self.document.lock().expect("vue doc");
-        doc.apply_layout_boxes(&iced);
+        doc.apply_layout_boxes(&painted);
         reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
         bridge.resolve_missing_document_layout(&mut doc);
     }
 
-    /// Shared iced layout writeback buffer (same as probes / `layoutBox`).
+    /// Historical name for [`Self::sync_scene_layout_boxes`].
+    pub fn sync_iced_layout_boxes(&mut self) {
+        self.sync_scene_layout_boxes();
+    }
+
+    /// Shared Scene layout writeback buffer (same as probes / `layoutBox`).
     pub fn layout_box_store(&self) -> Arc<LayoutBoxStore> {
         Arc::clone(&self.layout_boxes)
     }
@@ -3090,7 +3094,7 @@ mod tests {
         store.begin_frame();
         store.record(first, 0.0, 0.0, 80.0, 40.0);
         store.record(second, 100.0, 0.0, 80.0, 40.0);
-        host.sync_iced_layout_boxes();
+        host.sync_scene_layout_boxes();
         (first, second)
     }
 
@@ -3108,7 +3112,7 @@ mod tests {
         let store = host.layout_box_store();
         store.begin_frame();
         store.record(area, 0.0, 0.0, 160.0, 80.0);
-        host.sync_iced_layout_boxes();
+        host.sync_scene_layout_boxes();
         area
     }
 
@@ -3447,7 +3451,7 @@ mod tests {
             crate::scroll::shared_scroll_offset_store()
                 .take_pending()
                 .is_empty(),
-            "sidebar body must not depend on iced pending scroll tasks"
+            "sidebar body must not depend on pending scroll tasks"
         );
     }
 
@@ -3475,7 +3479,7 @@ mod tests {
     }
 
     #[test]
-    fn iced_scroll_event_updates_runtime_without_firing_vue_event() {
+    fn scene_scroll_event_updates_runtime_without_firing_vue_event() {
         let mut host = VueHost::new();
         host.fire_event = Some(JsFunctionId(1));
         let document = host.document();

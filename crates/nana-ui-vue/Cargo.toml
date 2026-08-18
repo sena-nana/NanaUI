@@ -21,7 +21,8 @@ scene-view = [
     "nana-ui/syntax-highlighting",
     "nana-ui-runtime/syntax-highlighting",
 ]
-# Historical name for `scene-view`.
+# Compatibility alias of `scene-view`. Not a first-class feature; keep for
+# existing `--features iced-view` consumers. Prefer `scene-view`.
 iced-view = ["scene-view"]
 # Direct adapter into nana-ui's Scene-hosted runtime.
 hosted = ["scene-view", "nana-ui/hosted", "dep:wgpu"]

@@ -4,11 +4,11 @@
 //! 1. Walk ancestors via the document tree.
 //! 2. Treat nodes with `overflow(-x|-y): auto|scroll` as scroll containers
 //!    ([`LayoutStyle::scrolls_y`] / overflow-x).
-//! 3. Use iced/measure [`LayoutBox`] geometry to compute the delta that brings
+//! 3. Use Scene/measure [`LayoutBox`] geometry to compute the delta that brings
 //!    the target into the ancestor scrollport (`block` / `inline` align).
 //! 4. Commit offsets to `UiWorld`, translate only compatibility layout-probe
 //!    boxes so `getBoundingClientRect` / `layoutBox` match the scrolled frame,
-//!    and enqueue iced `scrollable` ops for hosts that drain
+//!    and enqueue pending scroll ops for hosts that drain
 //!    [`drain_pending_scroll_tasks`].
 
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,7 +32,7 @@ pub struct ScrollOffsetStore {
     pending: Mutex<Vec<PendingScroll>>,
 }
 
-/// One iced `scrollable` scroll-to request.
+/// One Scene-host scroll-to request.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PendingScroll {
     pub widget_id: WidgetId,
@@ -60,7 +60,7 @@ impl ScrollOffsetStore {
         }
     }
 
-    /// Take pending iced scroll ops (for demo / VueHost Task drain).
+    /// Take pending Scene-host scroll ops (for demo / VueHost Task drain).
     pub fn take_pending(&self) -> Vec<PendingScroll> {
         self.pending
             .lock()
@@ -69,13 +69,13 @@ impl ScrollOffsetStore {
     }
 }
 
-/// Shared compatibility command queue used by hosted Iced scrollable IDs.
+/// Shared compatibility command queue used by hosted Scene scroll container IDs.
 pub fn shared_scroll_offset_store() -> Arc<ScrollOffsetStore> {
     static STORE: OnceLock<Arc<ScrollOffsetStore>> = OnceLock::new();
     Arc::clone(STORE.get_or_init(|| Arc::new(ScrollOffsetStore::new())))
 }
 
-/// iced widget id string for a scroll container node.
+/// Scene-host id string for a scroll container node.
 pub fn scrollable_widget_id(widget_id: WidgetId) -> String {
     format!("nana-scroll-{widget_id}")
 }
@@ -178,7 +178,7 @@ pub(crate) fn wheel_scroll_delta(input: &WheelInput) -> ScrollOffset {
 
 /// Apply a hosted wheel to the nearest projected Runtime `ScrollView`.
 ///
-/// Does not enqueue iced `scrollable` Tasks; Runtime `scroll_offset` is
+/// Does not enqueue pending scroll Tasks; Runtime `scroll_offset` is
 /// authoritative for the sidebar body.
 pub(crate) fn apply_runtime_wheel(
     doc: &mut NanaTreeDocument,
@@ -331,7 +331,7 @@ fn translate_descendants(
 /// Re-apply Runtime-owned scroll offsets onto diagnostic layout boxes after
 /// Scene paint writeback.
 ///
-/// The Scene host does not drain Iced `scrollable` Tasks; this restores
+/// The Scene host does not drain a second scroll-task queue; this restores
 /// JS-visible geometry without rewriting Runtime layout.
 pub fn reapply_scroll_translations(
     doc: &mut NanaTreeDocument,
@@ -374,7 +374,7 @@ pub fn set_scroll_offset(
     next
 }
 
-/// Accept an offset reported by the live iced viewport.
+/// Accept an offset reported by the live Scene viewport.
 ///
 /// Unlike [`set_scroll_offset`], this must not enqueue a scroll command back to
 /// the widget. Compatibility boxes move only by the observed delta because
@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_wheel_scrolls_sidebar_body_without_iced_pending() {
+    fn runtime_wheel_scrolls_sidebar_body_without_pending_scroll() {
         let mut doc = NanaTreeDocument::new(400, 400, 1.0);
         let frame = doc.create_element("nana-sidebar-frame");
         let top = doc.create_element("nana-column");

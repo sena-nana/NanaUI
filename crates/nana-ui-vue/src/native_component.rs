@@ -1,4 +1,4 @@
-//! Extensible Rust/Iced components mounted as ordinary `nana-*` Vue nodes.
+//! Extensible native Runtime components mounted as ordinary `nana-*` Vue nodes.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};

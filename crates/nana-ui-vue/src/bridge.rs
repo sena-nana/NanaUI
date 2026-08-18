@@ -1,4 +1,4 @@
-//! nanavue → NanaUI (Iced) semantic message bridge.
+//! nanavue → NanaUI (Runtime / UiScene) semantic message bridge.
 //!
 //! ## L2 边界
 //! - 本模块是语义森林载体：`WidgetKind` / `WidgetProps` / `SemanticSnapshot`。
@@ -334,7 +334,7 @@ pub struct SelectOptionProp {
 /// Props mirrored from Vue Nana* wrappers and HTML downlevel attributes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WidgetProps {
-    /// Registered Rust/Iced component name without the `nana-` prefix.
+    /// Registered native Runtime component name without the `nana-` prefix.
     /// Built-in widgets leave this empty and continue through [`WidgetKind`].
     pub native_component: Option<String>,
     /// Lossless Vue props for registered native components. Layout/class/event
@@ -1116,7 +1116,7 @@ impl WidgetProps {
     }
 }
 
-/// User / host action crossing the Vue ↔ Iced boundary.
+/// User / host action crossing the Vue ↔ Runtime boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeEvent {
     Press {
@@ -1148,7 +1148,7 @@ pub enum BridgeEvent {
         offset: nana_ui_runtime::ScrollOffset,
         metrics: nana_ui_runtime::ScrollMetrics,
     },
-    /// Event emitted by a Rust/Iced component registered into the Vue tree.
+    /// Event emitted by a native Runtime component registered into the Vue tree.
     Native {
         id: WidgetId,
         name: String,
@@ -1222,7 +1222,7 @@ fn is_framework_native_prop(key: &str) -> bool {
         || key.starts_with("on")
 }
 
-/// Flat snapshot for Iced `view` (pre-order under each root).
+/// Flat snapshot for Scene host view (pre-order under each root).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticSnapshot {
     pub revision: u64,
@@ -1838,7 +1838,7 @@ pub struct SemanticWidget {
     pub parent: Option<WidgetId>,
 }
 
-/// Owns the semantic widget forest + pending Iced-bound events + theme inject state.
+/// Owns the semantic widget forest + pending Runtime-bound events + theme inject state.
 #[derive(Debug)]
 pub struct MessageBridge {
     widgets: HashMap<WidgetId, SemanticWidget>,
@@ -2759,7 +2759,7 @@ impl MessageBridge {
         self.bump();
     }
 
-    /// Host / iced 回写最近布局得到的包含块尺寸（供后续 `style` `%` 解析）。
+    /// Host / Scene 回写最近布局得到的包含块尺寸（供后续 `style` `%` 解析）。
     pub fn set_containing_block(&mut self, id: WidgetId, width: Option<f32>, height: Option<f32>) {
         if !self.write_containing_block(id, width, height) {
             return;
@@ -2775,7 +2775,7 @@ impl MessageBridge {
         }
     }
 
-    /// Iced / viewport 布局回写：按 Fill 父链把 viewport → root CB → 子 content box。
+    /// Scene / viewport 布局回写：按 Fill 父链把 viewport → root CB → 子 content box。
     ///
     /// 与 [`LayoutStyle::resolve_content_box`] 一致；稳定时不 bump。
     pub fn sync_layout_containing_blocks(&mut self, viewport: ParentBox) {
@@ -2809,8 +2809,8 @@ impl MessageBridge {
 
     /// Resolve the pre-paint document geometry from the canonical semantic tree.
     ///
-    /// Headless entry for first insert and for nodes Iced has not painted yet.
-    /// Painted Iced probe boxes stay authoritative for those nodes.
+    /// Headless entry for first insert and for nodes Scene has not painted yet.
+    /// Painted Scene probe boxes stay authoritative for those nodes.
     pub(crate) fn resolve_document_layout(&mut self, doc: &mut crate::tree::NanaTreeDocument) {
         let (logical_w, logical_h) = doc.logical_size();
         self.reparent_orphans();
@@ -2922,7 +2922,7 @@ impl MessageBridge {
         })
     }
 
-    /// Attach unreachable sidebar shells under a stable workspace shell so iced
+    /// Attach unreachable sidebar shells under a stable workspace shell so Scene
     /// paints them.
     ///
     /// At most **one** orphan sidebar is reparented. Remount leftovers used to pile
@@ -3005,7 +3005,7 @@ impl MessageBridge {
     ///
     /// Remount + stale wrapNode insert targets used to detach footer columns
     /// from the frame while leaving top/body intact. Heal the slot contract so
-    /// iced paints the fixed footer again.
+    /// Scene paints the fixed footer again.
     pub fn reparent_sidebar_footer_slots(&mut self) {
         if !self.scaffolded {
             return;

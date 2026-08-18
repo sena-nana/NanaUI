@@ -393,7 +393,7 @@ pub enum DockAction {
     Reset,
 }
 
-/// Backend-neutral Dock state mutation. Iced widgets adapt [`DockAction`] into this contract.
+/// Backend-neutral Dock state mutation. Host adapters convert [`DockAction`] into this contract.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DockMutation {
     ActivateTab(DockId),

@@ -11,7 +11,7 @@
 //! |------------------|------------------|------|
 //! | flex / gap / padding / 尺寸 | **Layout**（[`LayoutStyle`]） | 把盒模型塞进 ThemeTokens |
 //! | `opacity` | **Layout**（可选；供诊断投影，产品 paint 可忽略） | 在 `style` 二次扫串 |
-//! | `font-size` / `font-family` / `font-weight` / `line-height` / `letter-spacing` / `color` | **Layout**（排版子集 → iced Text） | 业务 class 特判字号 |
+//! | `font-size` / `font-family` / `font-weight` / `line-height` / `letter-spacing` / `color` | **Layout**（排版子集 → Scene 文本） | 业务 class 特判字号 |
 //! | 已知控件 class（`nana-btn--primary` 等） | **Semantics**（经 `widget_map`） | 用任意 paint CSS 当 token 工厂 |
 //! | 主题色 / 间距 / 圆角档位 | **Tokens**（`ThemeMetrics` / 语义色） | 业务 `#rrggbb` 发明正式 token |
 //!
@@ -19,14 +19,14 @@
 //! **本模块只做 CSS 子集解析**；禁止把解析器放进 `nana-ui` / `nana-ui-core`。
 //!
 //! ## 盒模型约定
-//! iced `Length` + 外包 `container.padding`（含 border chrome）默认 **border-box**。
+//! Scene 长度 + 外包 padding（含 border chrome）默认 **border-box**。
 //! `content-box`：声明宽为内容，border box = 声明 + padding + border（T-B08/T-B09）。
 //!
 //! ## 定位
 //! `position: static` 忽略 inset。`relative` / `absolute` / `fixed` inset 存为
 //! [`LengthSpec`]（px 或 `%`，measure 相对 CB 解析）。`absolute`：脱流 + nearest
-//! positioned；iced 流内跳过，产品浮层走 Nana Overlay。`fixed`：脱流 + **视口**
-//! CB，iced 根层绘制（非 Overlay 特判）。`sticky` defer。
+//! positioned；流内跳过，产品浮层走 Nana Overlay。`fixed`：脱流 + **视口**
+//! CB，根层绘制（非 Overlay 特判）。`sticky` defer。
 //!
 //! **Overlay 分工**：L2 Dialog/Popover/Drawer/ContextMenu 剥离 companion CSS 的
 //! `fixed`/`sticky`；匿名 Vue/CSS 的 `position:fixed` 走视口子集。
@@ -34,7 +34,7 @@
 //! ## margin / padding / gap
 //! 边长与 gap 存 [`LengthSpec`]（px / `%` / 轻量 calc）。margin/padding `%`
 //! （含上下边）相对包含块**宽度**；`column-gap` `%` 相对宽度、`row-gap` `%`
-//! 相对高度（缺省回退宽度）。均在 measure / iced 布局时解析；解析期无 CB
+//! 相对高度（缺省回退宽度）。均在 measure / Scene 布局时解析；解析期无 CB
 //! 时不得静默丢弃 `%`。
 //!
 //! ## 逻辑盒属性（CSS Logical Properties）
@@ -43,8 +43,8 @@
 //!（inline→left/right，block→top/bottom）。`direction:rtl` /
 //! `writing-mode` 竖排 / 双向复杂链 **defer**（勿假翻轴）。
 //!
-//! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them.
-//!（feature `scene-view`; `iced-view` is the historical alias）。
+//! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them
+//!（feature `scene-view`）。
 
 pub use nana_ui_core::box_layout::{
     AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,

@@ -1,7 +1,7 @@
-//! Pre-Iced shell chrome fill helpers (scissor clamp + band plan).
+//! Shell chrome fill helpers (scissor clamp + band plan).
 //!
 //! Host wgpu paints solid colors into [`crate::shell::ShellChromeBand`] rects.
-//! Full Nana Iced `DesktopShell` remains deferred.
+//! Full Nana `DesktopShell` remains deferred.
 
 use nana_ui_core::PhysicalRect;
 

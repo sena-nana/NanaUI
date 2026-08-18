@@ -1,17 +1,14 @@
-//! NativeActivity pointer / key → Iced control-slot (host-testable).
+//! NativeActivity pointer / key → NanaUI Runtime control-slot (host-testable).
 //!
-//! - Touch samples → iced mouse events in **logical** px.
-//! - Key samples → iced keyboard events (US-QWERTY subset + named editing keys).
-//! Hit-testing uses the same viewport-bottom rect as [`crate::iced_slot`] /
-//! `IcedSlotPainter` paint bounds.
+//! - Touch samples → platform [`InputEvent::Pointer`] in **logical** px.
+//! - Key samples → platform [`InputEvent::Keyboard`] (US-QWERTY subset + named editing keys).
+//! Hit-testing uses the same viewport-bottom rect as [`crate::control_slot`].
+//! Soft IME / AccessKit are not implemented on this host.
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
-use iced::keyboard::key::{Named, NativeCode, Physical};
-use iced::keyboard::{self, Key, Location, Modifiers};
-use iced::mouse;
-use iced::{Event, Point};
 use nana_ui_core::PhysicalRect;
+use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
 /// Touch / pointer phase from the host (Android MotionAction subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,13 +29,13 @@ pub struct SlotKeyMods {
 }
 
 impl SlotKeyMods {
-    pub fn to_iced(self) -> Modifiers {
-        let mut mods = Modifiers::empty();
-        mods.set(Modifiers::SHIFT, self.shift);
-        mods.set(Modifiers::CTRL, self.ctrl);
-        mods.set(Modifiers::ALT, self.alt);
-        mods.set(Modifiers::LOGO, self.logo);
-        mods
+    pub const fn to_input(self) -> InputModifiers {
+        InputModifiers {
+            alt: self.alt,
+            control: self.ctrl,
+            meta: self.logo,
+            shift: self.shift,
+        }
     }
 }
 
@@ -57,6 +54,30 @@ pub enum SlotLogicalKey {
     ArrowDown,
 }
 
+impl SlotLogicalKey {
+    pub fn as_input_key(self) -> String {
+        match self {
+            Self::Character(c) => c.to_string(),
+            Self::Backspace => "Backspace".into(),
+            Self::Delete => "Delete".into(),
+            Self::Enter => "Enter".into(),
+            Self::Tab => "Tab".into(),
+            Self::Escape => "Escape".into(),
+            Self::ArrowLeft => "ArrowLeft".into(),
+            Self::ArrowRight => "ArrowRight".into(),
+            Self::ArrowUp => "ArrowUp".into(),
+            Self::ArrowDown => "ArrowDown".into(),
+        }
+    }
+
+    pub fn committed_text(self) -> Option<String> {
+        match self {
+            Self::Character(c) => Some(c.to_string()),
+            _ => None,
+        }
+    }
+}
+
 /// Whether a physical sample lies inside the control-slot scissor rect.
 pub fn pointer_in_slot(slot: PhysicalRect, physical_x: f32, physical_y: f32) -> bool {
     if slot.width == 0 || slot.height == 0 {
@@ -69,7 +90,7 @@ pub fn pointer_in_slot(slot: PhysicalRect, physical_x: f32, physical_y: f32) -> 
     physical_x >= x0 && physical_x < x1 && physical_y >= y0 && physical_y < y1
 }
 
-/// Routes NativeActivity input to the iced control-slot only.
+/// Routes NativeActivity input to the NanaUI control-slot only.
 ///
 /// Pointer events outside the slot stay `Unhandled` so VueHost can receive them.
 /// Keyboard events are accepted only while the slot holds keyboard focus (last
@@ -77,7 +98,7 @@ pub fn pointer_in_slot(slot: PhysicalRect, physical_x: f32, physical_y: f32) -> 
 /// pointer gesture is captured**.
 ///
 /// While a pointer is captured, additional Down samples (second finger / outside
-/// tap) are ignored, and only that pointer id’s Move/Up/Cancel reach iced
+/// tap) are ignored, and only that pointer id’s Move/Up/Cancel reach Runtime
 /// (a secondary finger Up must not end the first press).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SlotInputGate {
@@ -88,7 +109,7 @@ pub struct SlotInputGate {
 }
 
 impl SlotInputGate {
-    /// Returns whether this sample should be queued into iced (and marked Handled).
+    /// Returns whether this sample should be delivered to Runtime (and marked Handled).
     pub fn accept_pointer(
         &mut self,
         slot: Option<PhysicalRect>,
@@ -128,101 +149,66 @@ impl SlotInputGate {
         }
     }
 
-    /// Keyboard samples reach iced only while the slot holds focus.
+    /// Keyboard samples reach Runtime only while the slot holds focus.
     pub fn accept_key(&self) -> bool {
         self.keyboard_focused
     }
 }
 
-/// Physical → logical for the iced viewport (`scale` = window scale factor).
-pub fn logical_point(physical_x: f32, physical_y: f32, scale: f32) -> Point {
+/// Physical → logical for the Runtime viewport (`scale` = window scale factor).
+pub fn logical_point(physical_x: f32, physical_y: f32, scale: f32) -> [f32; 2] {
     let scale = scale.max(0.25);
-    Point::new(physical_x / scale, physical_y / scale)
+    [physical_x / scale, physical_y / scale]
 }
 
-/// Map one touch sample to iced mouse events (cursor + optional button).
-pub fn touch_to_mouse_events(kind: SlotTouchKind, logical: Point) -> Vec<Event> {
-    match kind {
-        SlotTouchKind::Down => vec![
-            Event::Mouse(mouse::Event::CursorMoved { position: logical }),
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-        ],
-        SlotTouchKind::Move => {
-            vec![Event::Mouse(mouse::Event::CursorMoved {
-                position: logical,
-            })]
-        }
-        SlotTouchKind::Up => vec![
-            Event::Mouse(mouse::Event::CursorMoved { position: logical }),
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
-        ],
-        SlotTouchKind::Cancel => vec![
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
-            Event::Mouse(mouse::Event::CursorLeft),
-        ],
+/// Map one touch sample to a platform pointer event (logical window coords).
+pub fn touch_to_pointer_event(
+    kind: SlotTouchKind,
+    logical: [f32; 2],
+    pointer_id: i32,
+    modifiers: InputModifiers,
+) -> InputEvent {
+    let (phase, button, buttons) = match kind {
+        SlotTouchKind::Down => (PointerPhase::Down, 0, 1),
+        SlotTouchKind::Move => (PointerPhase::Move, 0, 0),
+        SlotTouchKind::Up => (PointerPhase::Up, 0, 0),
+        SlotTouchKind::Cancel => (PointerPhase::Cancel, 0, 0),
+    };
+    InputEvent::Pointer {
+        phase,
+        pointer_id: pointer_id.max(0) as u64,
+        pointer_type: PointerType::Touch,
+        x: logical[0],
+        y: logical[1],
+        screen_x: logical[0],
+        screen_y: logical[1],
+        button,
+        buttons,
+        pressure: 1.0,
+        tangential_pressure: 0.0,
+        tilt_x: 0,
+        tilt_y: 0,
+        twist: 0,
+        is_primary: true,
+        modifiers,
     }
 }
 
-/// Cursor availability after applying `kind`.
-pub fn cursor_after(kind: SlotTouchKind, logical: Point) -> mouse::Cursor {
-    match kind {
-        SlotTouchKind::Cancel => mouse::Cursor::Unavailable,
-        _ => mouse::Cursor::Available(logical),
-    }
-}
-
-/// Emit iced keyboard events for one key sample.
-///
-/// Callers should prepend [`keyboard::Event::ModifiersChanged`] when mods change.
-pub fn key_to_iced_events(
+/// Map one key sample to a platform keyboard event.
+pub fn key_to_input_event(
     down: bool,
     key: SlotLogicalKey,
-    modifiers: Modifiers,
+    modifiers: InputModifiers,
     repeat: bool,
-) -> Vec<Event> {
-    let logical = iced_logical_key(key);
-    let text = match &logical {
-        Key::Character(s) if down => Some(s.clone()),
-        _ => None,
-    };
-    let physical = Physical::Unidentified(NativeCode::Unidentified);
-    let event = if down {
-        keyboard::Event::KeyPressed {
-            key: logical.clone(),
-            modified_key: logical,
-            physical_key: physical,
-            location: Location::Standard,
-            modifiers,
-            text,
-            repeat,
-        }
-    } else {
-        keyboard::Event::KeyReleased {
-            key: logical.clone(),
-            modified_key: logical,
-            physical_key: physical,
-            location: Location::Standard,
-            modifiers,
-        }
-    };
-    vec![Event::Keyboard(event)]
-}
-
-fn iced_logical_key(key: SlotLogicalKey) -> Key {
-    match key {
-        SlotLogicalKey::Character(c) => {
-            let mut buf = [0u8; 4];
-            Key::Character(c.encode_utf8(&mut buf).into())
-        }
-        SlotLogicalKey::Backspace => Key::Named(Named::Backspace),
-        SlotLogicalKey::Delete => Key::Named(Named::Delete),
-        SlotLogicalKey::Enter => Key::Named(Named::Enter),
-        SlotLogicalKey::Tab => Key::Named(Named::Tab),
-        SlotLogicalKey::Escape => Key::Named(Named::Escape),
-        SlotLogicalKey::ArrowLeft => Key::Named(Named::ArrowLeft),
-        SlotLogicalKey::ArrowRight => Key::Named(Named::ArrowRight),
-        SlotLogicalKey::ArrowUp => Key::Named(Named::ArrowUp),
-        SlotLogicalKey::ArrowDown => Key::Named(Named::ArrowDown),
+) -> InputEvent {
+    let name = key.as_input_key();
+    InputEvent::Keyboard {
+        pressed: down,
+        text: if down { key.committed_text() } else { None },
+        code: name.clone(),
+        key: name,
+        repeat,
+        modifiers,
     }
 }
 
@@ -266,7 +252,7 @@ mod android_keycode {
     pub const CAPS_LOCK: u32 = 115;
 }
 
-/// True for pure modifier / lock keys (emit ModifiersChanged only).
+/// True for pure modifier / lock keys (modifiers only; no character).
 pub fn android_keycode_is_modifier(keycode: u32) -> bool {
     use android_keycode::*;
     matches!(
@@ -389,7 +375,6 @@ mod tests {
         assert!(gate.captured_pointer_id.is_none());
         assert!(!gate.keyboard_focused);
         assert!(!gate.accept_key());
-        // Move/Up without capture must not steal input for VueHost.
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Move, 5.0, 50.0, 0));
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Up, 5.0, 50.0, 0));
     }
@@ -403,11 +388,9 @@ mod tests {
         assert_eq!(gate.captured_pointer_id, Some(0));
         assert!(gate.keyboard_focused);
         assert!(gate.accept_key());
-        // Drag may leave the slot while still Handled.
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 0));
         assert!(gate.accept_pointer(slot, SlotTouchKind::Up, 1.0, 1.0, 0));
         assert!(gate.captured_pointer_id.is_none());
-        // Keyboard focus persists until a Down outside.
         assert!(gate.accept_key());
     }
 
@@ -430,12 +413,10 @@ mod tests {
         assert!(gate.accept_pointer(slot, SlotTouchKind::Down, 20.0, 120.0, 0));
         assert!(gate.captured_pointer_id.is_some());
         assert!(gate.keyboard_focused);
-        // Outside / second-finger Down must not clear capture or focus.
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Down, 1.0, 1.0, 1));
         assert!(gate.captured_pointer_id.is_some());
         assert_eq!(gate.captured_pointer_id, Some(0));
         assert!(gate.keyboard_focused);
-        // First finger can still complete (no stuck pressed state).
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 0));
         assert!(gate.accept_pointer(slot, SlotTouchKind::Up, 1.0, 1.0, 0));
         assert!(gate.captured_pointer_id.is_none());
@@ -448,13 +429,11 @@ mod tests {
         let slot = Some(test_slot());
         assert!(gate.accept_pointer(slot, SlotTouchKind::Down, 20.0, 120.0, 7));
         assert_eq!(gate.captured_pointer_id, Some(7));
-        // Second finger Up/Cancel must not accept (no ButtonReleased) or end capture.
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Up, 50.0, 50.0, 8));
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Cancel, 50.0, 50.0, 8));
         assert!(gate.captured_pointer_id.is_some());
         assert_eq!(gate.captured_pointer_id, Some(7));
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 8));
-        // Captured finger still owns the gesture.
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 7));
         assert!(gate.accept_pointer(slot, SlotTouchKind::Up, 1.0, 1.0, 7));
         assert!(gate.captured_pointer_id.is_none());
@@ -479,31 +458,39 @@ mod tests {
     #[test]
     fn logical_point_divides_by_scale() {
         let p = logical_point(216.0, 432.0, 2.0);
-        assert!((p.x - 108.0).abs() < 0.01);
-        assert!((p.y - 216.0).abs() < 0.01);
+        assert!((p[0] - 108.0).abs() < 0.01);
+        assert!((p[1] - 216.0).abs() < 0.01);
     }
 
     #[test]
-    fn down_emits_move_and_press() {
-        let events = touch_to_mouse_events(SlotTouchKind::Down, Point::new(1.0, 2.0));
-        assert_eq!(events.len(), 2);
-        assert!(matches!(
-            events[0],
-            Event::Mouse(mouse::Event::CursorMoved { .. })
-        ));
-        assert!(matches!(
-            events[1],
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-        ));
-    }
-
-    #[test]
-    fn up_emits_move_and_release() {
-        let events = touch_to_mouse_events(SlotTouchKind::Up, Point::new(3.0, 4.0));
-        assert!(matches!(
-            events[1],
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-        ));
+    fn down_emits_primary_pointer_down() {
+        let event = touch_to_pointer_event(
+            SlotTouchKind::Down,
+            [1.0, 2.0],
+            3,
+            InputModifiers::default(),
+        );
+        match event {
+            InputEvent::Pointer {
+                phase,
+                pointer_id,
+                pointer_type,
+                x,
+                y,
+                is_primary,
+                button,
+                ..
+            } => {
+                assert_eq!(phase, PointerPhase::Down);
+                assert_eq!(pointer_id, 3);
+                assert_eq!(pointer_type, PointerType::Touch);
+                assert!((x - 1.0).abs() < f32::EPSILON);
+                assert!((y - 2.0).abs() < f32::EPSILON);
+                assert!(is_primary);
+                assert_eq!(button, 0);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
@@ -549,21 +536,22 @@ mod tests {
 
     #[test]
     fn key_press_emits_text_for_character() {
-        let events = key_to_iced_events(
+        let event = key_to_input_event(
             true,
             SlotLogicalKey::Character('x'),
-            Modifiers::empty(),
+            InputModifiers::default(),
             false,
         );
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key: Key::Character(k),
+        match event {
+            InputEvent::Keyboard {
+                pressed,
+                key,
                 text: Some(t),
                 ..
-            }) => {
-                assert_eq!(k.as_str(), "x");
-                assert_eq!(t.as_str(), "x");
+            } => {
+                assert!(pressed);
+                assert_eq!(key, "x");
+                assert_eq!(t, "x");
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -571,29 +559,36 @@ mod tests {
 
     #[test]
     fn key_press_backspace_is_named() {
-        let events = key_to_iced_events(true, SlotLogicalKey::Backspace, Modifiers::empty(), false);
-        assert!(matches!(
-            events[0],
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key: Key::Named(Named::Backspace),
+        let event = key_to_input_event(
+            true,
+            SlotLogicalKey::Backspace,
+            InputModifiers::default(),
+            false,
+        );
+        match event {
+            InputEvent::Keyboard {
+                key,
                 text: None,
+                pressed: true,
                 ..
-            })
-        ));
+            } => assert_eq!(key, "Backspace"),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
-    fn mods_to_iced_sets_bits() {
+    fn mods_to_input_sets_bits() {
         let mods = SlotKeyMods {
             shift: true,
             ctrl: true,
             alt: false,
             logo: false,
         }
-        .to_iced();
-        assert!(mods.shift());
-        assert!(mods.control());
-        assert!(!mods.alt());
+        .to_input();
+        assert!(mods.shift);
+        assert!(mods.control);
+        assert!(!mods.alt);
+        assert!(!mods.meta);
     }
 
     #[test]
