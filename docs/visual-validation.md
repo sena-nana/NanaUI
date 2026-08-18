@@ -60,3 +60,9 @@ cargo run --release -p component-gallery --bin ui-snapshots \
 截图工具会执行 GPU→CPU 回读和 PNG 编码，只属于验收工具。正式窗口 Gallery 与
 宿主纹理直显不会复用该读取逻辑。离屏快照不能证明原生窗口材质、鼠标命中、IME、
 真实窗口 resize、不同 DPI 或 Windows/Linux 最终栅格；这些仍需在对应平台补测。
+
+## 2026-08-18（macOS / Metal）
+
+`ui-snapshots` 通过。相对 2026-08-17 18:47 的顶层 64 张 PNG，61 张字节一致；变化的 3 张是空输出目录下 runtime 像素写入 `migration-first-batch-iced-dark.png`，difference 全黑。Gallery / Scene / Workspace 产品图无回归。PNG 不在 git。
+
+`hosted-gpu-demo --measure-first-frame`（`hosted,bundled-fonts`）三次真实 Surface present：冷 699.980 ms，随后约 225 ms。同一 Device/Queue，正式路径无 `copy_texture_to_buffer`。探针 `material: solid`，非 Vibrancy。Windows/Linux 未测。

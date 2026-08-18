@@ -7,3 +7,4 @@ publish = false
 [dependencies]
 nana-ui = { workspace = true, features = ["hosted"] }
 nana-ui-platform.workspace = true
+wgpu.workspace = true
