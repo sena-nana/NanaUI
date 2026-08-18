@@ -396,10 +396,9 @@ accessibility/Runtime 语义而遗漏 retained editor caret。
 Windows/Linux CJK、多窗口焦点切换与 selection 仍需各目标平台实机验收。
 
 2026-08-18 `vue-hosted-acceptance --input-probe`：`focusedUIElement` 为
-`AXTextField`（value=`NanaUI`）。Scene host 先 `dispatch_ime` 再 emit JS；无
-typed view 的 Vue `<input>` 一次写入 Runtime。无窗口 Preedit/Commit/Disabled
-leftover 已覆盖。未能保持 key window，**未**弹出 SCIM 候选窗。上文 hosted 拼音
-记录仍独立有效。Windows/Linux CJK 仍需各目标平台实机验收。
+`AXTextField`。本机将进程置前台后拼音 `nihao`+空格一次提交「你好」；预编辑时
+进程自有 layer-20 候选条（397×28）贴输入框，提交后消失，AXValue/`Hello, …`
+同步为 `NanaUI你好`。VoiceOver 未验。Windows/Linux CJK 仍需各目标平台实机验收。
 
 ### NUI-WINDOW-01：单 V8 多窗口 Vue 根
 

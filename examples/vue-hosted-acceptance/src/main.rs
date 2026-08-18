@@ -255,7 +255,7 @@ mod tests {
     use nana_ui_vue::{VueWindowCommand, VueWindowId, WidgetKind};
 
     fn gpu() -> HostedGpuResources {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
