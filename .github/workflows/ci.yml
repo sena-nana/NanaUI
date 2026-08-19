@@ -137,4 +137,13 @@ jobs:
           python3 perf/runners/nana/run.py --scenario mutation-layout-style \
             --from-report perf/fixtures/nana-runtime-static-tree.json \
             --output target/performance/issue8/invariants/nana-mutation-layout-style.json
+          python3 perf/runners/nana/run.py --scenario mutation-visibility \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-mutation-visibility.json
+          python3 perf/runners/nana/run.py --scenario mutation-transform \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-mutation-transform.json
+          python3 perf/runners/nana/run.py --scenario mutation-a11y \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-mutation-a11y.json
           python3 perf/contract.py --evaluate-invariants target/performance/issue8/invariants

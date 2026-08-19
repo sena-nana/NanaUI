@@ -19,7 +19,15 @@
       "op": "lte",
       "value": 64,
       "status": "required",
-      "note": "Issue #8 §3.2 visibility mutation must not default to a full-tree extract. Evaluate when work_counters.render_nodes_changed is present."
+      "note": "Issue #8 §3.2 visibility mutation must not default to a full-tree extract. Nana LayoutStyle.hidden dirties the ancestor chain (live dump layout_nodes=12, render_nodes_changed=12); do not claim layout_nodes==0. Evaluate when work_counters.render_nodes_changed is present."
+    },
+    {
+      "name": "visibility_does_not_layout_full_tree",
+      "path": "work_counters.layout_nodes",
+      "op": "lte",
+      "value": 64,
+      "status": "required",
+      "note": "Visibility schedules layout along the ancestor chain, not the full 5k tree. The honest bound is layout_nodes <= 64 (live dump 12), never layout_nodes==0."
     }
   ]
 }

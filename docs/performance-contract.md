@@ -155,7 +155,7 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 
 Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree exports `frames_after_idle` (§8.1); a busy `request_redraw` probe must be non-zero before 0 is emitted. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`. Relative gates stay off until GPUI also emits same-scenario ok.
 
-`overscan_rows`: catalog Table (and list/tree) overscan is **8 rows**. Iced copies that catalog param; Nana `nana-framework-benchmark` writes `mounted − visible`. Do not equate the two fields — compare windows via `list_overscan_px` / `table_overscan_y_px`. `window_ms` is index arithmetic (Fenwick lookup may round to 0); judged work is `materialize_ms` + `live_ui_entities`, not `window_ms`.
+`overscan_rows`: catalog Table (and list/tree) overscan is **8 rows**. Iced copies that catalog param; Nana `nana-framework-benchmark` writes `mounted − visible`. Do not equate the two fields — compare windows via `list_overscan_px` / `table_overscan_y_px`. Nana extract is `same-scenario` only when the dump declares the catalog window (`list_viewport_px` / `list_overscan_px` / `list_item_extent_px`, or the table viewport/overscan/extent px fields); missing fields stay `closest-legacy-reference`. `window_ms` is index arithmetic (Fenwick lookup may round to 0); judged work is `materialize_ms` + `live_ui_entities`, not `window_ms`.
 
 GPUI: no crate, workspace member, or adapter exists. Plug-in path is
 `perf/runners/gpui/adapter.py` implementing `run_scenario(scenario, args)`.
@@ -325,7 +325,8 @@ non-zero count; otherwise runners refuse to emit 0. StaticTree 50k stays
 
 CI `--from-report` success envelopes are live dumps, not extractor-fixture
 JSON. One Nana `bench_full` dump (`perf/fixtures/nana-runtime-static-tree.json`)
-covers StaticTree 100/1k/5k/10k, Hover 10k, and Mutation PaintOnly/Text/LayoutStyle.
+covers StaticTree 100/1k/5k/10k, Hover 10k, and Mutation PaintOnly/Text/LayoutStyle
+plus Nana-only Visibility/Transform/Accessibility (`single_node_mutations` at 5k).
 Iced §8.1 requires a live `scenario-bench` dump for `static-tree-100` that
 includes `busy_probe_frames > 0` (`perf/fixtures/iced-scenario-static-tree-100.json`);
 1k/5k/10k share that same Iced idle path and do not need four huge dumps.
@@ -345,10 +346,13 @@ Those catalog assertions are evaluated from runner JSON by
 the same `evaluate_invariants` path runners already attach. A missing or null
 field stays **not-evaluable** and must never be treated as 0. Evaluated catalog
 ids are those with honest Nana/Iced `ok` envelopes and a non-empty catalog
-row: Mutation PaintOnly/Text/LayoutStyle, Hover 10k, VirtualList 10k/100k
+row: Mutation PaintOnly/Text/LayoutStyle, Nana Visibility (`render_nodes_changed`
+and `layout_nodes` ≤ 64; live dump layouts 12 — not `layout_nodes == 0`),
+Nana Transform / Accessibility (`layout_nodes == 0`), Hover 10k, VirtualList 10k/100k
 (catalog window 800/160/20), VirtualTree 10k/100k (same catalog-8 cap 58),
 `text-table` (catalog-8 cap 1334), and StaticTree 100/1k/5k/10k
-(`frames_after_idle == 0`). Dock / TextEditor / Animation / IME /
+(`frames_after_idle == 0`). Iced Visibility / Transform / Accessibility stay
+**unsupported** (exit 2). Dock / TextEditor / Animation / IME /
 Overlay / GpuScene / StaticTree 50k / GPUI / VirtualList 1M /
 VirtualTree 1M stay **skipped**, not
 invariant-ok. `runtime-work-invariants` in `.github/workflows/ci.yml` still runs

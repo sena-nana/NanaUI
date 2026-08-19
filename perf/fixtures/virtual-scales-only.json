@@ -2,17 +2,61 @@
   "virtual_scales": [
     {
       "kind": "list",
-      "logical_rows": 100000,
+      "logical_rows": 10000,
       "status": "ok",
       "visible_rows": 40,
-      "overscan_rows": 10,
+      "overscan_rows": 15,
       "cache_rows": 0,
-      "live_ui_entities": 50,
-      "live_ui_entities_bound": 50,
+      "live_ui_entities": 55,
+      "live_ui_entities_bound": 58,
+      "list_viewport_px": 800.0,
+      "list_overscan_px": 160.0,
+      "list_item_extent_px": 20.0,
+      "window_ms": {
+        "p50": 0.0,
+        "p95": 0.001,
+        "p99": 0.001,
+        "max": 0.002,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
       "materialize_ms": {
-        "p50": 0.1,
-        "p95": 0.2,
-        "p99": 0.3
+        "p50": 0.145,
+        "p95": 0.186,
+        "p99": 0.205,
+        "max": 0.292,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "kind": "list",
+      "logical_rows": 100000,
+      "status": "ok",
+      "visible_rows": 41,
+      "overscan_rows": 16,
+      "cache_rows": 0,
+      "live_ui_entities": 57,
+      "live_ui_entities_bound": 58,
+      "list_viewport_px": 800.0,
+      "list_overscan_px": 160.0,
+      "list_item_extent_px": 20.0,
+      "construction_ms": 0.337,
+      "window_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 0.047,
+        "p95": 0.055,
+        "p99": 0.064,
+        "max": 0.064,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
       }
     }
   ]
