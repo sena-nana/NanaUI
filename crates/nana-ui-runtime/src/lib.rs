@@ -15,6 +15,7 @@ mod dropdown;
 mod feedback;
 mod form_surfaces;
 mod framework;
+mod glyph_cache;
 mod gpu_slots;
 mod graph_canvas;
 mod image_viewer;
@@ -86,6 +87,7 @@ pub use framework::{
     OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription, Task,
     UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
+pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
     GpuViewPalette, RenderSlot, pack_gpu_revision, unpack_gpu_revision,

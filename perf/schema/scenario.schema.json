@@ -22,6 +22,7 @@
         "Mutation",
         "Hover",
         "VirtualList",
+        "VirtualTree",
         "Table",
         "TextEditor",
         "Ime",

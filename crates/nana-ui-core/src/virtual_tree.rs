@@ -174,6 +174,40 @@ mod tests {
     }
 
     #[test]
+    fn expanded_forest_window_at_100k_is_bounded_by_geometry() {
+        const LEN: usize = 100_000;
+        let layout = VirtualTreeLayout::uniform(
+            ROW,
+            (0..LEN).map(|index| {
+                let remaining = LEN - index;
+                if index % 3 == 0 && remaining >= 3 {
+                    2
+                } else {
+                    0
+                }
+            }),
+        );
+        assert_eq!(layout.visible_len(), LEN);
+        assert_eq!(layout.descendant_count(0), Some(2));
+        assert_eq!(layout.descendant_count(1), Some(0));
+        let cap = geometric_cap();
+        assert!(cap < LEN);
+        let window = layout.window(0.0, VIEWPORT, OVERSCAN);
+        assert!(window.range.len() <= cap);
+        assert!(window.range.len() < layout.visible_len());
+        let mut collapsed = layout;
+        assert!(collapsed.collapse(0));
+        assert_eq!(collapsed.visible_len(), LEN - 2);
+        assert_eq!(collapsed.descendant_count(0), Some(0));
+        assert!(collapsed.expand(0, [leaf(), leaf()]));
+        assert_eq!(collapsed.visible_len(), LEN);
+        assert_eq!(collapsed.descendant_count(0), Some(2));
+        let restored = collapsed.window(4_000.0, VIEWPORT, OVERSCAN);
+        assert!(restored.range.start > 0);
+        assert!(restored.range.len() <= cap);
+    }
+
+    #[test]
     fn expand_and_collapse_insert_visible_descendants_into_the_fenwick() {
         let mut layout = VirtualTreeLayout::uniform(ROW, [0, 0, 0]);
         assert_eq!(layout.visible_len(), 3);

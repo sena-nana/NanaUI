@@ -1,0 +1,132 @@
+//! Runtime-owned per-glyph metrics cache (Issue #8 §3.5 / §11.4).
+//!
+//! Lookup/insert are the only hit/miss sources for `glyph_cache_*`. This is not
+//! [`TextLayoutCache`] (whole-string layout) and not a GPU atlas. Hosts without
+//! a glyph backend must not consult this cache, so counters stay `None`.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use crate::ComputedStyle;
+
+/// Bounded FIFO cache. Eviction is real; it is not exported as `cache_eviction`
+/// (that field stays `TextLayoutCache` FIFO).
+const DEFAULT_CAP: usize = 8192;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct GlyphKey {
+    ch: char,
+    font_size_bits: u32,
+    font_weight: u16,
+    font_family: Option<Arc<str>>,
+}
+
+impl GlyphKey {
+    fn new(ch: char, style: &ComputedStyle) -> Self {
+        Self {
+            ch,
+            font_size_bits: style.font_size.to_bits(),
+            font_weight: style.font_weight.unwrap_or(0),
+            font_family: style.font_family.clone(),
+        }
+    }
+}
+
+/// Per-glyph advance cache used by production shaping (`NanaTextShaper`) and by
+/// any `TextShaper::shape_cached` backend.
+#[derive(Debug)]
+pub struct GlyphCache {
+    entries: HashMap<GlyphKey, f32>,
+    order: VecDeque<GlyphKey>,
+    cap: usize,
+    hits: usize,
+    misses: usize,
+    consulted: bool,
+}
+
+impl Default for GlyphCache {
+    fn default() -> Self {
+        Self::with_cap(DEFAULT_CAP)
+    }
+}
+
+impl GlyphCache {
+    pub fn with_cap(cap: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            cap: cap.max(1),
+            hits: 0,
+            misses: 0,
+            consulted: false,
+        }
+    }
+
+    /// Read without counting. Used to decide a single-glyph fast path.
+    pub fn peek(&self, ch: char, style: &ComputedStyle) -> Option<f32> {
+        self.entries.get(&GlyphKey::new(ch, style)).copied()
+    }
+
+    /// Record a hit when the glyph is present. A miss is recorded on [`Self::insert`].
+    pub fn lookup(&mut self, ch: char, style: &ComputedStyle) -> Option<f32> {
+        self.consulted = true;
+        let advance = self.entries.get(&GlyphKey::new(ch, style)).copied()?;
+        self.hits = self.hits.saturating_add(1);
+        Some(advance)
+    }
+
+    pub fn insert(&mut self, ch: char, style: &ComputedStyle, advance: f32) {
+        self.consulted = true;
+        self.misses = self.misses.saturating_add(1);
+        let key = GlyphKey::new(ch, style);
+        if self.entries.contains_key(&key) {
+            self.entries.insert(key, advance);
+            return;
+        }
+        while self.entries.len() >= self.cap {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, advance);
+    }
+
+    /// `None` when this shaping pass never looked up or inserted a glyph.
+    pub(crate) fn take_counters(&mut self) -> Option<(usize, usize)> {
+        if !self.consulted {
+            return None;
+        }
+        let stats = (self.hits, self.misses);
+        self.hits = 0;
+        self.misses = 0;
+        self.consulted = false;
+        Some(stats)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_insert_records_miss_then_hit() {
+        let mut cache = GlyphCache::with_cap(2);
+        let style = ComputedStyle::default();
+        assert!(cache.peek('a', &style).is_none());
+        assert!(cache.lookup('a', &style).is_none());
+        cache.insert('a', &style, 8.0);
+        assert_eq!(cache.lookup('a', &style), Some(8.0));
+        cache.insert('b', &style, 9.0);
+        cache.insert('c', &style, 10.0);
+        assert!(cache.peek('a', &style).is_none());
+        assert_eq!(cache.lookup('b', &style), Some(9.0));
+
+        let (hits, misses) = cache.take_counters().expect("cache was consulted");
+        assert_eq!(hits, 2);
+        assert_eq!(misses, 3);
+        assert!(cache.take_counters().is_none());
+    }
+}

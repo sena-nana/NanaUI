@@ -15,5 +15,6 @@
     "render_encode",
     "memory",
     "allocations"
-  ]
+  ],
+  "notes": "No §8.1 idle invariant: Nana/Iced envelopes do not export frames_after_idle (idle_schedule_ms is a timing). Judging stays skipped until that counter exists. Vacuous ok is forbidden."
 }

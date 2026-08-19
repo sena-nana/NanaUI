@@ -61,7 +61,11 @@ dirty/layout-stop behavior, also run the relevant subset:
 
 ```bash
 python3 perf/contract.py --self-test
+python3 perf/contract.py --evaluate-invariants target/performance/issue8
 python3 perf/runners/nana/run.py --print-plan --scenario static-tree-5k
+python3 perf/runners/nana/run.py --print-plan --scenario gpu-scene-ui
+python3 perf/runners/nana/run.py --scenario gpu-scene-ui-live2d   # expected exit 2
+python3 perf/runners/iced/run.py --scenario gpu-scene-ui         # expected exit 2
 python3 perf/runners/nana/run.py --scenario mutation-paint-only --output target/performance/issue8/nana-mutation-paint-only.json
 python3 perf/runners/iced/run.py --scenario static-tree-100 --from-report docs/performance/2026-08-14-issue7-phase0-iced.json
 python3 perf/runners/iced/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase0-iced.json   # expected exit 2

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "id": "virtual-list-100k",
-  "kind": "VirtualList",
+  "id": "virtual-tree-10k",
+  "kind": "VirtualTree",
   "params": {
-    "items": 100000,
+    "items": 10000,
     "visible": 40,
     "overscan": 8,
     "text_len": 32,
@@ -20,12 +20,12 @@
   ],
   "invariants": [
     {
-      "name": "virtual_list_live_entities_bounded",
+      "name": "virtual_tree_live_entities_bounded",
       "path": "work_counters.live_ui_entities",
       "op": "lte",
       "value": 58,
       "status": "required",
-      "note": "Issue #8 §3.4 forbids one retained entity per logical row. Same catalog-8 window as virtual-list-10k (800/160/20 → cap 58). Missing live_ui_entities stays not-evaluable. live_ui_entities == items is a full list, not virtualization."
+      "note": "Issue #8 §3.4 forbids one retained entity per logical disclosure row. Same catalog-8 window as virtual-list-10k (800/160/20 → cap 58). Missing live_ui_entities stays not-evaluable. live_ui_entities == items is a full tree, not virtualization."
     }
   ]
 }

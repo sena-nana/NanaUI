@@ -2,17 +2,16 @@ name: Runtime performance
 
 # Weekly/dispatch timing and scale gate for Issue #8.
 # Ordinary PR CI must not use these wall-clock thresholds. PR work-counter
-# invariants live in .github/workflows/ci.yml (runtime-work-invariants).
+# invariants live in .github/workflows/ci.yml (runtime-work-invariants): cargo
+# tests plus perf/contract.py --evaluate-invariants on runner envelopes.
 #
 # Scale split:
 # - Static 100..10k full + 50k construction-only are weekly-eligible.
-# - Virtual list/table 10k is weekly-eligible.
-# - Virtual list/table 100k is weekly/dispatch only (never PR CI).
-# - Virtual list/table 1M is NANA_PERF_SCALE=large only. The binary emits
+# - Virtual list/table/tree 10k is weekly-eligible.
+# - Virtual list/table/tree 100k is weekly/dispatch only (never PR CI).
+# - Virtual list/table/tree 1M is NANA_PERF_SCALE=large only. The binary emits
 #   status=skipped with null timings if construction exceeds 90s rather than
 #   guessing a flake-prone threshold.
-# - Virtual tree: Fenwick + AppContext::materialize_virtual_tree exist; there is
-#   no scale bench this round. The framework report documents status=skipped.
 
 on:
   workflow_dispatch:

@@ -721,6 +721,23 @@ pub trait TextShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics;
 
+    /// Shape using the Runtime-owned [`crate::GlyphCache`].
+    ///
+    /// The default ignores the cache so hosts without a glyph backend
+    /// (`MeasureTextShaper`) leave `glyph_cache_*` as `None`. Production
+    /// `NanaTextShaper` records per-glyph advances here.
+    fn shape_cached(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        glyphs: &mut crate::GlyphCache,
+    ) -> TextMetrics {
+        let _ = glyphs;
+        self.shape(id, text, style, constraints)
+    }
+
     /// Return the exact horizontal position of a UTF-8 boundary in one
     /// unwrapped line. Backends should override this with their paragraph
     /// engine; the prefix-shaped default keeps lightweight test shapers valid.
@@ -828,7 +845,8 @@ pub trait TextShaper {
 }
 
 /// Finite-metrics shaper used by hosts that do not inject a glyph backend.
-/// Layout-stop still sees wrap height against the last content box.
+/// Layout-stop still sees wrap height against the last content box. Does not
+/// consult [`crate::GlyphCache`], so `glyph_cache_*` stay `None`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MeasureTextShaper;
 

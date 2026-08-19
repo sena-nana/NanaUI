@@ -16,12 +16,15 @@
     "hover",
     "virtual-list-10k",
     "virtual-list-100k",
+    "virtual-tree-10k",
+    "virtual-tree-100k",
     "text-table",
     "animation",
     "ime",
     "dock-workspace",
     "overlay",
-    "text-editor"
+    "text-editor",
+    "gpu-scene-ui"
   ],
   "required_by_issue_not_in_harness": [
     {
@@ -37,10 +40,16 @@
       "note": "Required by #8 §3.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
     },
     {
-      "id": "gpu-scene-ui",
-      "kind": "GpuScene",
-      "params": { "composition": "UiOnly" },
-      "note": "Required by #8 §3.8. UI frame cadence must be separable from Live2D."
+      "id": "virtual-tree-1m",
+      "kind": "VirtualTree",
+      "params": {
+        "items": 1000000,
+        "visible": 40,
+        "overscan": 8,
+        "text_len": 32,
+        "item_extent_px": 20
+      },
+      "note": "Required by #8 §3.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M tree row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
     },
     {
       "id": "gpu-scene-ui-live2d",

@@ -7,22 +7,28 @@
 /// Per-frame algorithm counts. Timing stays on the Runtime profiler; these
 /// fields are the stable CI signals.
 ///
-/// Runtime dirty-bit mapping (Issue #8 §6.2). STATE / TRANSFORM / PAINT are
-/// not independent mask bits today:
+/// Runtime dirty-bit mapping (Issue #8 §6.2). PAINT stays folded into RENDER.
+/// STATE and TRANSFORM are independent Runtime mask bits:
 ///
+/// - STATE → Runtime `SystemWork::state` (hover/press/focus/`SetInteraction`).
+///   STYLE is added only when interaction paints need resolving.
 /// - STYLE → `style_processed`
 /// - TEXT → `text_shaped` (scheduled text nodes) plus `text_shaped_runs` /
 ///   `text_layout_cache_*` recorded on the shaping hot path
 /// - LAYOUT → `layout_nodes`
+/// - TRANSFORM → Runtime `SystemWork::transform` (`PaintTransform`). INPUT and
+///   RENDER are added because hit-test and extract consume the matrix; LAYOUT
+///   is not. STYLE is not set for transform-only `SetStyle`.
 /// - INPUT → `hit_test_candidates`
 /// - FOCUS_IME is tracked on Runtime `SystemWork::focus_ime`, not a dedicated
 ///   counter field
 /// - RENDER → `render_nodes_extracted` / `render_nodes_changed`. **PAINT is folded
-///   into RENDER**; paint-only mutations (hover, color) schedule RENDER without LAYOUT
+///   into RENDER**; paint-only mutations (hover color, opacity) schedule RENDER
+///   without LAYOUT
 /// - ACCESSIBILITY → `accessibility_nodes_updated`
 ///
-/// STATE (hover/press/focus) invalidates STYLE+RENDER. TRANSFORM invalidates
-/// INPUT+RENDER, and LAYOUT when it affects flow.
+/// STATE and TRANSFORM follow FOCUS_IME: they are scheduled on Runtime
+/// `SystemWork`, not dedicated `WorkCounters` fields.
 ///
 /// `input_targets` counts live pointer hover/press/capture plus focus.
 ///
@@ -31,10 +37,11 @@
 /// temps). They are not a process-wide malloc hook.
 ///
 /// `text_layout_cache_*` come from Runtime `TextLayoutCache` lookup/insert.
-/// `glyph_cache_*` are `None` (omitted / unsupported): Runtime has no
-/// `GlyphCache`. `cache_eviction` is `Some` after a shaping pass that
-/// consulted the layout cache (including 0). GPU upload / draw-batch are
-/// `None` until a renderer that actually encodes/submits records them.
+/// `glyph_cache_*` are `None` until a shaping pass consults Runtime
+/// `GlyphCache` (hosts without a glyph backend never do). `cache_eviction`
+/// is `Some` after a shaping pass that consulted the layout cache (including
+/// 0). GPU upload / draw-batch are `None` until a renderer that actually
+/// encodes/submits records them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WorkCounters {
     pub entities_total: usize,
@@ -68,13 +75,13 @@ pub struct WorkCounters {
     pub text_layout_cache_misses: usize,
     /// Shape calls that requested wrapping (`TextShapeConstraints.wrap`).
     pub text_wrap_layouts: usize,
-    /// Runtime has no glyph atlas. Always `None` — omitted, never a fake 0.
+    /// `GlyphCache::lookup` hits. `None` until a glyph backend consults the
+    /// cache this pass — omitted, never a fake 0.
     pub glyph_cache_hits: Option<usize>,
-    /// Runtime has no glyph atlas. Always `None` — omitted, never a fake 0.
+    /// `GlyphCache::insert` after a lookup miss. `None` until consulted.
     pub glyph_cache_misses: Option<usize>,
     /// `TextLayoutCache` FIFO evictions this shaping pass. `None` until the
-    /// cache is consulted. Glyph eviction stays unsupported (folded into this
-    /// `None` until a glyph backend exists).
+    /// cache is consulted. Glyph FIFO trim is not folded into this field.
     pub cache_eviction: Option<usize>,
     /// Coalesced GPU batches rebuilt this frame. `None` until a host encodes.
     pub batch_rebuilds: Option<usize>,
@@ -166,8 +173,8 @@ impl WorkCounters {
         self.text_wrap_layouts = self
             .text_wrap_layouts
             .saturating_add(other.text_wrap_layouts);
-        self.glyph_cache_hits = None;
-        self.glyph_cache_misses = None;
+        fold_optional_count(&mut self.glyph_cache_hits, other.glyph_cache_hits);
+        fold_optional_count(&mut self.glyph_cache_misses, other.glyph_cache_misses);
         fold_optional_count(&mut self.cache_eviction, other.cache_eviction);
         fold_optional_count(&mut self.batch_rebuilds, other.batch_rebuilds);
         fold_optional_count(&mut self.draw_batches, other.draw_batches);
@@ -206,6 +213,14 @@ impl WorkCounters {
     /// Record `TextLayoutCache` FIFO evictions. Does not invent glyph evictions.
     pub fn record_cache_eviction(&mut self, evictions: usize) {
         self.cache_eviction = Some(self.cache_eviction.unwrap_or(0).saturating_add(evictions));
+    }
+
+    /// Record `GlyphCache` lookup/insert from a shaping pass that consulted it.
+    /// Zeros are stored as `Some(0)` only because that pass ran, not because a
+    /// non-glyph host guessed quiet glyph work.
+    pub fn record_glyph_cache(&mut self, hits: usize, misses: usize) {
+        self.glyph_cache_hits = Some(self.glyph_cache_hits.unwrap_or(0).saturating_add(hits));
+        self.glyph_cache_misses = Some(self.glyph_cache_misses.unwrap_or(0).saturating_add(misses));
     }
 
     /// Fold GPU work observed on a real encode/submit path. Zeros are stored as
@@ -370,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_cache_fields_are_queryable_as_unsupported() {
+    fn glyph_cache_fields_stay_none_until_a_backend_records_them() {
         let counters = WorkCounters::default();
         assert!(counters.glyph_cache_hits.is_none());
         assert!(counters.glyph_cache_misses.is_none());
@@ -379,6 +394,20 @@ mod tests {
         recorded.record_cache_eviction(0);
         assert_eq!(recorded.cache_eviction, Some(0));
         assert!(recorded.glyph_cache_hits.is_none());
+        recorded.record_glyph_cache(2, 1);
+        assert_eq!(recorded.glyph_cache_hits, Some(2));
+        assert_eq!(recorded.glyph_cache_misses, Some(1));
+        recorded.record_glyph_cache(0, 3);
+        assert_eq!(recorded.glyph_cache_hits, Some(2));
+        assert_eq!(recorded.glyph_cache_misses, Some(4));
+        let mut total = recorded;
+        total.accumulate(WorkCounters {
+            glyph_cache_hits: Some(1),
+            glyph_cache_misses: Some(0),
+            ..WorkCounters::default()
+        });
+        assert_eq!(total.glyph_cache_hits, Some(3));
+        assert_eq!(total.glyph_cache_misses, Some(4));
     }
 
     #[test]
