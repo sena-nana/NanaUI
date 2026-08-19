@@ -52,7 +52,8 @@ jobs:
             static-tree-100 static-tree-1k static-tree-5k static-tree-10k \
             hover \
             mutation-paint-only mutation-text mutation-layout-style \
-            mutation-visibility mutation-transform mutation-a11y
+            mutation-visibility mutation-transform mutation-a11y \
+            animation
           do
             python3 perf/runners/nana/run.py --scenario "$scenario" \
               --from-report target/performance/runtime.json \
@@ -61,7 +62,8 @@ jobs:
           for scenario in \
             virtual-list-10k virtual-list-100k \
             virtual-tree-10k virtual-tree-100k \
-            text-table
+            text-table \
+            ime dock-workspace overlay text-editor
           do
             python3 perf/runners/nana/run.py --scenario "$scenario" \
               --from-report target/performance/framework.json \

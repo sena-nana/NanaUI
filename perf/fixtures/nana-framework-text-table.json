@@ -1,0 +1,61 @@
+{
+  "schema_version": 9,
+  "profile": "release",
+  "virtual_scales": [
+    {
+      "kind": "table",
+      "logical_rows": 10000,
+      "logical_columns": 100,
+      "status": "ok",
+      "visible_rows": 40,
+      "overscan_rows": 15,
+      "cache_rows": 0,
+      "live_ui_entities": 1100,
+      "live_ui_entities_bound": 1334,
+      "table_viewport_width_px": 1280.0,
+      "table_viewport_height_px": 800.0,
+      "table_overscan_x_px": 160.0,
+      "table_overscan_y_px": 160.0,
+      "table_column_extent_px": 80.0,
+      "table_row_extent_px": 20.0,
+      "window_ms": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.002,
+        "max": 0.035,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 5.325,
+        "p95": 6.115,
+        "p99": 7.713,
+        "max": 12.813,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "work": {
+        "entities_total": 913,
+        "entities_changed": 913,
+        "entities_spawned": 912,
+        "entities_despawned": 0,
+        "style_processed": 912,
+        "text_shaped": 864,
+        "layout_nodes": 913,
+        "hit_test_candidates": 912,
+        "input_targets": 0,
+        "accessibility_nodes_updated": 913,
+        "render_nodes_changed": 913,
+        "render_nodes_extracted": 913,
+        "extracted_text_spans": 0,
+        "text_shaped_runs": 1728,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 1728,
+        "text_wrap_layouts": 1728,
+        "glyph_cache_hits": 17775,
+        "glyph_cache_misses": 17,
+        "cache_eviction": 0
+      }
+    }
+  ]
+}

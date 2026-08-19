@@ -8240,7 +8240,7 @@ mod tests {
     }
 
     #[test]
-    fn text_layout_cache_miss_then_hit_and_glyph_cache_stays_unsupported() {
+    fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_cache() {
         let mut world = UiWorld::new();
         let mut queue = MutationQueue::new();
         queue.create(node(1), document(1), NodeKind::Text);
@@ -8257,8 +8257,8 @@ mod tests {
         assert_eq!(work.counters().glyph_cache_misses, None);
         assert_eq!(work.counters().cache_eviction, None);
 
-        // text-table / framework bench production shaper, via UiWorld::shape_text.
-        let mut shaper = MeasureTextShaper;
+        // Default TextShaper::shape_cached ignores GlyphCache.
+        let mut shaper = FunctionalShaper::default();
         world.shape_text(&work.text, &mut shaper).unwrap();
         let missed = world.last_work_counters();
         assert!(missed.text_layout_cache_misses >= 1);
@@ -8309,7 +8309,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_cache_miss_then_hit_on_glyph_backend() {
+    fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
         let mut world = UiWorld::new();
         let mut queue = MutationQueue::new();
         queue.create(node(1), document(1), NodeKind::Text);
@@ -8320,7 +8320,8 @@ mod tests {
         assert_eq!(work.counters().glyph_cache_hits, None);
         assert_eq!(work.counters().glyph_cache_misses, None);
 
-        let mut shaper = GlyphAdvanceShaper;
+        // text-table / framework bench production shaper, via UiWorld::shape_text.
+        let mut shaper = MeasureTextShaper;
         world.shape_text(&work.text, &mut shaper).unwrap();
         let missed = world.last_work_counters();
         assert_eq!(missed.glyph_cache_misses, Some(2));
@@ -8706,45 +8707,6 @@ mod tests {
                 width: text.value.chars().count() as f32 * style.font_size,
                 height: style.font_size,
             }
-        }
-    }
-
-    struct GlyphAdvanceShaper;
-
-    impl TextShaper for GlyphAdvanceShaper {
-        fn shape(
-            &mut self,
-            _id: StableNodeId,
-            text: &TextContent,
-            style: &ComputedStyle,
-            _constraints: crate::TextShapeConstraints,
-        ) -> TextMetrics {
-            let em = style.font_size.max(1.0);
-            TextMetrics {
-                width: text.value.chars().count() as f32 * em,
-                height: em,
-            }
-        }
-
-        fn shape_cached(
-            &mut self,
-            _id: StableNodeId,
-            text: &TextContent,
-            style: &ComputedStyle,
-            _constraints: crate::TextShapeConstraints,
-            glyphs: &mut crate::GlyphCache,
-        ) -> TextMetrics {
-            let em = style.font_size.max(1.0);
-            let mut width = 0.0;
-            for ch in text.value.chars() {
-                if let Some(advance) = glyphs.lookup(ch, style) {
-                    width += advance;
-                    continue;
-                }
-                glyphs.insert(ch, style, em);
-                width += em;
-            }
-            TextMetrics { width, height: em }
         }
     }
 

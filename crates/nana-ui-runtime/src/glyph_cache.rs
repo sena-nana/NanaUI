@@ -94,6 +94,15 @@ impl GlyphCache {
         self.entries.insert(key, advance);
     }
 
+    /// Lookup, inserting `advance` on a miss.
+    pub fn lookup_or_insert(&mut self, ch: char, style: &ComputedStyle, advance: f32) -> f32 {
+        if let Some(cached) = self.lookup(ch, style) {
+            return cached;
+        }
+        self.insert(ch, style, advance);
+        advance
+    }
+
     /// `None` when this shaping pass never looked up or inserted a glyph.
     pub(crate) fn take_counters(&mut self) -> Option<(usize, usize)> {
         if !self.consulted {
@@ -128,5 +137,16 @@ mod tests {
         assert_eq!(hits, 2);
         assert_eq!(misses, 3);
         assert!(cache.take_counters().is_none());
+    }
+
+    #[test]
+    fn lookup_or_insert_is_the_hit_miss_pair() {
+        let mut cache = GlyphCache::with_cap(8);
+        let style = ComputedStyle::default();
+        assert_eq!(cache.lookup_or_insert('x', &style, 7.0), 7.0);
+        assert_eq!(cache.lookup_or_insert('x', &style, 99.0), 7.0);
+        let (hits, misses) = cache.take_counters().expect("cache was consulted");
+        assert_eq!(hits, 1);
+        assert_eq!(misses, 1);
     }
 }

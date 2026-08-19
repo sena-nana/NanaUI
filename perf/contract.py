@@ -547,11 +547,10 @@ def catalog_table_live_bound(params: Mapping[str, Any]) -> int:
 
 # Catalog ids whose Nana runners already emit honest ``ok`` envelopes
 # *and* a non-empty catalog ``invariants`` row. ``--evaluate-invariants``
-# judges Nana only; Iced/GPUI envelopes stay skipped, not invariant-ok —
-# including Dock / TextEditor / Animation / IME / Overlay / GpuScene Live2D /
-# StaticTree 50k even if a report is present. Nana ``gpu-scene-ui`` is judged
-# only for Nana encode envelopes; missing GPU keys / adapter stay skipped
-# (exit 2), never vacuous 0.
+# judges Nana only; Iced/GPUI envelopes stay skipped, not invariant-ok.
+# Skip vs judged ids: docs/performance-contract.md §8.1.
+# Nana ``gpu-scene-ui`` is judged only for Nana encode envelopes;
+# missing GPU keys / adapter stay skipped (exit 2), never vacuous 0.
 # Nana Visibility / Transform / Accessibility reuse the live 5k
 # ``single_node_mutations`` dump. Iced stays unsupported (exit 2) for those
 # kinds. StaticTree 100/1k/5k/10k export ``metrics.frames_after_idle``
@@ -563,6 +562,15 @@ SECTION_8_1_STATIC_UI_IDS = frozenset(
         "static-tree-1k",
         "static-tree-5k",
         "static-tree-10k",
+    }
+)
+SECTION_8_1_CATALOG_WORKLOAD_IDS = frozenset(
+    {
+        "animation",
+        "ime",
+        "dock-workspace",
+        "overlay",
+        "text-editor",
     }
 )
 SECTION_8_1_HONEST_OK_IDS = frozenset(
@@ -580,17 +588,13 @@ SECTION_8_1_HONEST_OK_IDS = frozenset(
         "virtual-tree-100k",
         "text-table",
         "gpu-scene-ui",
+        *SECTION_8_1_CATALOG_WORKLOAD_IDS,
         *SECTION_8_1_STATIC_UI_IDS,
     }
 )
 SECTION_8_1_UNSUPPORTED_IDS = frozenset(
     {
         "static-tree-50k",
-        "animation",
-        "ime",
-        "dock-workspace",
-        "overlay",
-        "text-editor",
         "gpu-scene-ui-live2d",
         "gpu-scene-ui-live2d-effect",
         "virtual-list-1m",
@@ -1000,6 +1004,30 @@ def judge_runner_invariants(
         judged["note"] = (
             "gpu-scene-ui GPU keys missing; vacuous ok is forbidden until encode/submit "
             "observes gpu_upload_bytes and draw_calls. Do not invent 0."
+        )
+        return judged
+    if scenario_id in SECTION_8_1_CATALOG_WORKLOAD_IDS and any(
+        item.get("status") == "not-evaluable" for item in evaluated
+    ):
+        judged["decision"] = "skipped"
+        judged["note"] = (
+            f"{scenario_id} catalog counter missing; vacuous ok is forbidden until the "
+            "live dump exports the catalog invariant field"
+        )
+        return judged
+    if scenario_id == "text-table" and any(
+        item.get("status") == "not-evaluable"
+        and item.get("path")
+        in {
+            "work_counters.glyph_cache_hits",
+            "work_counters.glyph_cache_misses",
+        }
+        for item in evaluated
+    ):
+        judged["decision"] = "skipped"
+        judged["note"] = (
+            "text-table glyph_cache_hits/misses missing; vacuous ok is forbidden "
+            "until GlyphCache lookup/insert is exported. Do not invent 0."
         )
         return judged
     layout_nodes_unevaluable = any(
@@ -1859,8 +1887,8 @@ def _extract_nana_text_table(
         f"catalog wrapped_cells={params.get('wrapped_cells')} / "
         f"wrapped_cell_len={params.get('wrapped_cell_len')} cells. "
         + ", ".join(TEXT_TABLE_CACHE_GAPS)
-        + " stay omitted on MeasureTextShaper (no glyph backend); "
-        "do not invent zeros. Runtime GlyphCache is Some on NanaTextShaper.",
+        + " copy GlyphCache lookup/insert when WorkCounters has Some; "
+        "null stays omitted.",
     ]
     metrics: dict[str, Any] = {}
     work_counters: dict[str, Any] = {}
@@ -2077,7 +2105,9 @@ def _extract_nana_catalog_workload(
             raise KeyError("catalog_workloads ime missing commit_ms")
         metrics["cpu_frame_ms"] = percentile_fields(row.get("commit_ms"))
         metrics["preedit_ms"] = percentile_fields(row.get("preedit_ms"))
-        work_counters["ime_script_count"] = row.get("ime_script_count", len(scripts))
+        if "ime_script_count" not in row:
+            raise KeyError("catalog_workloads ime missing ime_script_count")
+        work_counters["ime_script_count"] = row["ime_script_count"]
         notes.append(
             "set_ime_preedit + commit_ime on a focused TextInput. "
             "Does not measure the OS IME candidate window; "
@@ -2106,7 +2136,9 @@ def _extract_nana_catalog_workload(
                 f"catalog_workloads overlay kinds={kinds} do not match catalog {expected}"
             )
         metrics["cpu_frame_ms"] = percentile_fields(row.get("activate_ms"))
-        work_counters["overlay_kind_count"] = row.get("overlay_kind_count", len(kinds))
+        if "overlay_kind_count" not in row:
+            raise KeyError("catalog_workloads overlay missing overlay_kind_count")
+        work_counters["overlay_kind_count"] = row["overlay_kind_count"]
         notes.append(
             "OverlayHost activate_overlay/dismiss_overlay for Tooltip / Menu / Dialog; "
             "toggle_popover for popup. Measures activate/dismiss only; "
@@ -3546,6 +3578,42 @@ def self_test(root: Path | None = None) -> list[str]:
         errors.append("text-table envelope must copy catalog wrapped_cell_len=256")
     if "glyph_cache_hits" in table_counters:
         errors.append("text-table envelope must omit null glyph_cache fields")
+    table_glyphs = extract_nana(
+        text_table,
+        {
+            "framework": {
+                "virtual_scales": [
+                    {
+                        "kind": "table",
+                        "logical_rows": 10000,
+                        "logical_columns": 100,
+                        "status": "ok",
+                        "visible_rows": 40,
+                        "overscan_rows": 8,
+                        "table_overscan_y_px": 160.0,
+                        "table_overscan_x_px": 160.0,
+                        "live_ui_entities": 50,
+                        "live_ui_entities_bound": 1334,
+                        "materialize_ms": {"p50": 0.8, "p95": 0.9, "p99": 1.0},
+                        "work": {
+                            "text_shaped": 12,
+                            "glyph_cache_hits": 7,
+                            "glyph_cache_misses": 4,
+                        },
+                    }
+                ]
+            }
+        },
+        source_paths={"framework": Path("synthetic-table-glyphs")},
+    )
+    glyph_counters = table_glyphs.get("work_counters") or {}
+    if glyph_counters.get("glyph_cache_hits") != 7:
+        errors.append("text-table envelope must copy real glyph_cache_hits")
+    if glyph_counters.get("glyph_cache_misses") != 4:
+        errors.append("text-table envelope must copy real glyph_cache_misses")
+    null_glyph_inv = _named_invariant(table_ok, "text_table_glyph_cache_hits_observed")
+    if null_glyph_inv is None or null_glyph_inv.get("status") != "not-evaluable":
+        errors.append("text-table glyph_cache_hits must stay not-evaluable when omitted")
     if not any(
         "wrapping" in str(note).lower() or "wrapped_cells" in str(note)
         for note in table_ok.get("mapping_notes") or []
@@ -4194,6 +4262,11 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         errors.append("static-tree-50k must not be §8.1 honest-ok")
     if "gpu-scene-ui" not in SECTION_8_1_HONEST_OK_IDS or "gpu-scene-ui" in SECTION_8_1_UNSUPPORTED_IDS:
         errors.append("gpu-scene-ui must be §8.1 honest-ok for Nana encode envelopes")
+    for scenario_id in sorted(SECTION_8_1_CATALOG_WORKLOAD_IDS):
+        if scenario_id not in SECTION_8_1_HONEST_OK_IDS:
+            errors.append(f"{scenario_id} must be §8.1 honest-ok once live dumps exist")
+        if scenario_id in SECTION_8_1_UNSUPPORTED_IDS:
+            errors.append(f"{scenario_id} must leave §8.1 unsupported once live dumps exist")
     for live2d_id in ("gpu-scene-ui-live2d", "gpu-scene-ui-live2d-effect"):
         if live2d_id in SECTION_8_1_HONEST_OK_IDS or live2d_id not in SECTION_8_1_UNSUPPORTED_IDS:
             errors.append(f"{live2d_id} must stay §8.1 skipped")
@@ -4226,8 +4299,11 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
             load_json(paint_path),
             source_path=paint_path,
         )
-        nana_table = _extract_nana_framework_fixture(
+        nana_table_missing_glyphs = _extract_nana_framework_fixture(
             root, text_table, "virtual-table-scales.json"
+        )
+        nana_table = _extract_nana_framework_fixture(
+            root, text_table, "nana-framework-text-table.json"
         )
         nana_list = _extract_nana_framework_fixture(
             root, "virtual-list-100k", "virtual-scales-only.json"
@@ -4247,6 +4323,7 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
                 "mutation-visibility",
                 "hover",
                 "mutation-paint-only",
+                "animation",
             )
         }
         nana_static = nana_live["static-tree-100"]
@@ -4255,6 +4332,17 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         nana_visibility = nana_live["mutation-visibility"]
         nana_hover = nana_live["hover"]
         nana_paint = nana_live["mutation-paint-only"]
+        nana_animation = nana_live["animation"]
+        nana_catalog_path = root / "perf" / "fixtures" / "nana-framework-catalog-workloads.json"
+        nana_catalog_live = load_json(nana_catalog_path)
+        nana_catalog = {
+            scenario_id: extract_nana(
+                load_scenario(scenario_id, root),
+                {"framework": nana_catalog_live},
+                source_paths={"framework": nana_catalog_path},
+            )
+            for scenario_id in ("ime", "dock-workspace", "overlay", "text-editor")
+        }
     except Exception as exc:  # noqa: BLE001
         errors.append(f"§8.1 envelope fixtures failed to extract: {exc}")
         return errors
@@ -4306,9 +4394,29 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     if table_fail.get("decision") != "failed":
         errors.append("table live_ui_entities=1e6 must fail §8.1")
 
+    if judge_runner_invariants(nana_table_missing_glyphs, root=root).get("decision") != "skipped":
+        errors.append(
+            "virtual-table-scales text-table without glyph_cache_* must skip, not envelope-ok"
+        )
     nana_table_judge = judge_runner_invariants(nana_table, root=root)
     if nana_table_judge.get("decision") != "ok":
-        errors.append("nana text-table fixture envelope must pass §8.1")
+        errors.append("nana text-table live table slice must pass §8.1")
+    table_hits_only = copy.deepcopy(nana_table)
+    table_hits_only["work_counters"] = {
+        **dict(table_hits_only.get("work_counters") or {}),
+        "glyph_cache_hits": 8,
+        "glyph_cache_misses": 0,
+    }
+    if judge_runner_invariants(table_hits_only, root=root).get("decision") != "failed":
+        errors.append("text-table glyph_cache misses=0 must fail §8.1")
+    table_misses_only = copy.deepcopy(nana_table)
+    table_misses_only["work_counters"] = {
+        **dict(table_misses_only.get("work_counters") or {}),
+        "glyph_cache_hits": 0,
+        "glyph_cache_misses": 8,
+    }
+    if judge_runner_invariants(table_misses_only, root=root).get("decision") != "failed":
+        errors.append("text-table glyph_cache hits=0 must fail §8.1")
     nana_list_judge = judge_runner_invariants(nana_list, root=root)
     if nana_list_judge.get("decision") != "ok":
         errors.append("nana virtual-list-100k fixture envelope must pass §8.1")
@@ -4405,7 +4513,7 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     )
     dock_judge = judge_runner_invariants(dock_ok_fake, root=root)
     if dock_judge.get("decision") != "skipped":
-        errors.append("Dock ok envelope must be skipped, not invariant-ok")
+        errors.append("Iced Dock ok envelope must be skipped, not invariant-ok")
 
     gpui_ok_fake = envelope(
         runner="gpui",
@@ -4525,6 +4633,24 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         if judge_runner_invariants(unsupported, root=root).get("decision") != "skipped":
             errors.append(f"{unsupported_id} unsupported envelope must be skipped")
 
+    if judge_runner_invariants(nana_animation, root=root).get("decision") != "ok":
+        errors.append("nana animation live dump must be judged, not skipped")
+    for scenario_id, payload in nana_catalog.items():
+        if judge_runner_invariants(payload, root=root).get("decision") != "ok":
+            errors.append(f"nana {scenario_id} live dump must be judged, not skipped")
+    missing_editor = envelope(
+        runner="nana",
+        status="ok",
+        scenario_id="text-editor",
+        scenario=load_scenario("text-editor", root),
+        equivalence="closest-legacy-reference",
+    )
+    if judge_runner_invariants(missing_editor, root=root).get("decision") != "skipped":
+        errors.append(
+            "nana text-editor ok envelope without text_shaped must stay skipped, "
+            "not vacuous invariant-ok"
+        )
+
     raw_fixture = judge_runner_invariants(load_json(virtual_path), root=root)
     if raw_fixture.get("decision") != "error":
         errors.append("raw scenario-bench fixture must not be judged as a runner envelope")
@@ -4625,6 +4751,19 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         if missing_code != EXIT_UNSUPPORTED or missing_summary.get("skipped") != 1:
             errors.append(
                 "§8.1 gpu-scene-ui without GPU keys must exit 2, not vacuous ok"
+            )
+        missing_glyph_path = tmp_path / "text-table-missing-glyphs.json"
+        dump_json(missing_glyph_path, nana_table_missing_glyphs)
+        missing_glyph_summary, missing_glyph_code = evaluate_runner_invariant_paths(
+            [missing_glyph_path], root=root
+        )
+        if (
+            missing_glyph_code != EXIT_UNSUPPORTED
+            or missing_glyph_summary.get("skipped") != 1
+            or missing_glyph_summary.get("ok") != 0
+        ):
+            errors.append(
+                "§8.1 text-table without glyph_cache_* must exit 2, not vacuous ok"
             )
         cli = subprocess.run(
             [
@@ -4806,6 +4945,55 @@ def _self_test_catalog_workloads(
         if "ime" not in key_error_reason(exc):
             errors.append(f"ime skip KeyError should name ime: {exc}")
 
+    for scenario_id, field in (
+        ("ime", "ime_script_count"),
+        ("overlay", "overlay_kind_count"),
+    ):
+        missing_payload = copy.deepcopy(fixture)
+        for row in missing_payload.get("catalog_workloads") or []:
+            if row.get("id") == scenario_id:
+                row.pop(field, None)
+        try:
+            extract_nana(
+                load_scenario(scenario_id, root),
+                {"framework": missing_payload},
+                source_paths={"framework": Path(f"synthetic-{scenario_id}-missing-{field}")},
+            )
+            errors.append(
+                f"nana {scenario_id} missing {field} must KeyError, "
+                "not invent a count from len()"
+            )
+        except KeyError as exc:
+            if field not in key_error_reason(exc):
+                errors.append(f"{scenario_id} missing-field KeyError should name {field}: {exc}")
+
+    ime_wrong = copy.deepcopy(fixture)
+    for row in ime_wrong.get("catalog_workloads") or []:
+        if row.get("id") == "ime":
+            row["ime_script_count"] = 3
+    wrong_ime = extract_nana(
+        load_scenario("ime", root),
+        {"framework": ime_wrong},
+        source_paths={"framework": Path("synthetic-ime-wrong-count")},
+    )
+    if (wrong_ime.get("work_counters") or {}).get("ime_script_count") != 3:
+        errors.append("ime envelope must copy the explicit ime_script_count=3")
+    if judge_runner_invariants(wrong_ime, root=root).get("decision") != "failed":
+        errors.append("explicit ime_script_count=3 must fail §8.1, not skip or ok")
+    overlay_wrong = copy.deepcopy(fixture)
+    for row in overlay_wrong.get("catalog_workloads") or []:
+        if row.get("id") == "overlay":
+            row["overlay_kind_count"] = 3
+    wrong_overlay = extract_nana(
+        load_scenario("overlay", root),
+        {"framework": overlay_wrong},
+        source_paths={"framework": Path("synthetic-overlay-wrong-count")},
+    )
+    if (wrong_overlay.get("work_counters") or {}).get("overlay_kind_count") != 3:
+        errors.append("overlay envelope must copy the explicit overlay_kind_count=3")
+    if judge_runner_invariants(wrong_overlay, root=root).get("decision") != "failed":
+        errors.append("explicit overlay_kind_count=3 must fail §8.1, not skip or ok")
+
     for scenario_id in wirable:
         try:
             extract_iced(
@@ -4916,6 +5104,24 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         for key in TEXT_TABLE_EXPORTED_SHAPE_KEYS:
             if key not in table_from_report:
                 errors.append(f"virtual-table-scales --from-report must contain {key}")
+        if "glyph_cache_hits" in table_from_report or "glyph_cache_misses" in table_from_report:
+            errors.append("virtual-table-scales --from-report must omit glyph_cache_*")
+
+    code, live_table_report, err = from_report(
+        nana_script,
+        "text-table",
+        root / "perf" / "fixtures" / "nana-framework-text-table.json",
+    )
+    if code != EXIT_OK or live_table_report is None:
+        errors.append(f"nana-framework-text-table --from-report exit {code}: {err}")
+    else:
+        live_table_counters = live_table_report.get("work_counters") or {}
+        if live_table_counters.get("glyph_cache_hits", 0) < 1:
+            errors.append("nana-framework-text-table --from-report must copy real glyph_cache_hits")
+        if live_table_counters.get("glyph_cache_misses", 0) < 1:
+            errors.append("nana-framework-text-table --from-report must copy real glyph_cache_misses")
+        if judge_runner_invariants(live_table_report, root=root).get("decision") != "ok":
+            errors.append("nana-framework-text-table --from-report must pass §8.1")
 
     code, ime_report, err = from_report(
         nana_script,
@@ -4928,6 +5134,53 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         errors.append(f"ime catalog-workloads --from-report status={ime_report.get('status')}")
     elif (ime_report.get("work_counters") or {}).get("ime_script_count") != 4:
         errors.append("ime catalog-workloads --from-report must copy ime_script_count=4")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        catalog_fixture = load_json(root / "perf" / "fixtures" / "catalog-workloads.json")
+        for scenario_id, field in (
+            ("ime", "ime_script_count"),
+            ("overlay", "overlay_kind_count"),
+        ):
+            missing_payload = copy.deepcopy(catalog_fixture)
+            for row in missing_payload.get("catalog_workloads") or []:
+                if row.get("id") == scenario_id:
+                    row.pop(field, None)
+            missing_path = Path(tmp) / f"{scenario_id}-missing-count.json"
+            dump_json(missing_path, missing_payload)
+            code, _, err = from_report(nana_script, scenario_id, missing_path)
+            if code != EXIT_UNSUPPORTED:
+                errors.append(
+                    f"{scenario_id} missing {field} --from-report must exit 2, got {code}: {err}"
+                )
+
+    live_catalog = root / "perf" / "fixtures" / "nana-framework-catalog-workloads.json"
+    for scenario_id, counter, value in (
+        ("ime", "ime_script_count", 4),
+        ("dock-workspace", "panes", 8),
+        ("overlay", "overlay_kind_count", 4),
+        ("text-editor", "text_shaped", 1),
+    ):
+        code, live_report, err = from_report(nana_script, scenario_id, live_catalog)
+        if code != EXIT_OK or live_report is None:
+            errors.append(f"{scenario_id} live catalog --from-report exit {code}: {err}")
+        elif live_report.get("status") != "ok":
+            errors.append(f"{scenario_id} live catalog --from-report status={live_report.get('status')}")
+        elif (live_report.get("work_counters") or {}).get(counter) != value:
+            errors.append(
+                f"{scenario_id} live catalog --from-report must copy {counter}={value}"
+            )
+
+    code, anim_report, err = from_report(
+        nana_script,
+        "animation",
+        root / "perf" / "fixtures" / "nana-runtime-static-tree.json",
+    )
+    if code != EXIT_OK or anim_report is None:
+        errors.append(f"animation live runtime --from-report exit {code}: {err}")
+    elif anim_report.get("status") != "ok":
+        errors.append(f"animation live runtime --from-report status={anim_report.get('status')}")
+    elif (anim_report.get("work_counters") or {}).get("due_animation_samples") != 1:
+        errors.append("animation live runtime --from-report must copy due_animation_samples=1")
 
     code, iced_report, err = from_report(
         iced_script,

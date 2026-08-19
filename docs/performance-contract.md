@@ -89,9 +89,9 @@ Harness files (runners consume these today):
 
 `virtual-tree-1m` is the same env-gated path for `virtual_scales` `kind=tree`. Iced/GPUI stay unsupported.
 
-`text-table` is in `harness_ids` and maps onto the Nana framework table 10k×100 scale (wrapped cells in the catalog). Glyph cache fields stay omitted.
+`text-table` is in `harness_ids` and maps onto the Nana framework table 10k×100 scale (wrapped cells in the catalog).
 
-`animation` / `ime` / `dock-workspace` / `overlay` / `text-editor` / `gpu-scene-ui` are in `harness_ids`. The first five map onto isolated Nana CPU contexts (not the shared list drain). `gpu-scene-ui` materializes UiOnly from JSON on `nana-gpu-scene-benchmark`; missing adapter is honest exit 2. Live2D compositions stay out of `harness_ids` (no encode path; do not emit 0).
+`animation` / `ime` / `dock-workspace` / `overlay` / `text-editor` / `gpu-scene-ui` are in `harness_ids`. The first five map onto isolated Nana CPU contexts (not the shared list drain) and are §8.1 gated from live dumps. `gpu-scene-ui` materializes UiOnly from JSON on `nana-gpu-scene-benchmark`; missing adapter is honest exit 2. Live2D compositions stay out of `harness_ids` (no encode path; do not emit 0).
 
 `VirtualList` parameters are the issue’s example shape:
 
@@ -129,12 +129,12 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | Hover | `nana-runtime-benchmark` `pointer_hover_*` | only when the report has `nodes == 10000`; `pointer_hover_work` WorkCounters when present | otherwise **unsupported** (exit 2). Do not substitute a smaller tree. `layout_nodes == 0` is evaluable when the field is present. Iced `scenario-bench` Hover is same-scenario at 10k; GPUI stays unsupported |
 | VirtualList 10k/100k/1M | `nana-framework-benchmark` `virtual_scales` (legacy `virtual_list_10k_*` fallback) | materialize/window; `live_ui_entities` when `virtual_scales` exists | Nana runner passes catalog window (`visible×extent` viewport, `overscan×extent` px; 10k/100k: 800 / 160 / 20). Standalone binary still defaults to 200px overscan. 1M needs `NANA_PERF_SCALE=large` or the scale row is skipped (runner exit 2). Iced materializes only that catalog window; GPUI stays unsupported |
 | VirtualTree 10k/100k/1M | `nana-framework-benchmark` `virtual_scales` `kind=tree` | Fenwick `VirtualTreeLayout` construction (expanded parent+2-leaf forest) + window + `materialize_virtual_tree`; `live_ui_entities` | Same catalog list window as VirtualList (10k/100k: 800 / 160 / 20). Standalone / weekly default stays 200px overscan. 1M needs `NANA_PERF_SCALE=large` or the scale row is skipped (runner exit 2). Empty `status=ok` without `materialize_ms` / `live_ui_entities` is forbidden. Iced/GPUI stay **unsupported** (exit 2); a VirtualList window is not a disclosure tree |
-| Table / `text-table` | `nana-framework-benchmark` `virtual_scales` `kind=table` 10k×100 | materialize/window, `live_ui_entities`, WorkCounters text shaping/cache (`text_shaped`, `text_shaped_runs`, `text_layout_cache_hits`/`misses`, `text_wrap_layouts`, `cache_eviction`); catalog `wrapped_cells` copied | `glyph_cache_*` omitted (`None`) on this binary's `MeasureTextShaper` host; Runtime `GlyphCache` is `Some` on `NanaTextShaper`. Nana runner passes the catalog table window (`visible` 16×40, `overscan` 2×8 → 1280×800 / 160×160 px at 80×20). Standalone / weekly default stays 10-row overscan (`TABLE_OVERSCAN.y=200`). A leftover 200 px report KeyErrors. Iced `scenario-bench` Table is same-scenario on that catalog window (virtualized cells only; no invented `text_shaped`). GPUI stays unsupported. 100k table is extra binary coverage, not a catalog id. 1M table needs `NANA_PERF_SCALE=large` |
+| Table / `text-table` | `nana-framework-benchmark` `virtual_scales` `kind=table` 10k×100 | materialize/window, `live_ui_entities`, WorkCounters text shaping/cache (`text_shaped`, `text_shaped_runs`, `text_layout_cache_hits`/`misses`, `text_wrap_layouts`, `cache_eviction`, `glyph_cache_hits`/`misses` from `GlyphCache` lookup/insert); catalog `wrapped_cells` copied | Nana runner passes the catalog table window (`visible` 16×40, `overscan` 2×8 → 1280×800 / 160×160 px at 80×20). Standalone / weekly default stays 10-row overscan (`TABLE_OVERSCAN.y=200`). A leftover 200 px report KeyErrors. Iced `scenario-bench` Table is same-scenario on that catalog window (virtualized cells only; no invented `text_shaped`). GPUI stays unsupported. 100k table is extra binary coverage, not a catalog id. 1M table needs `NANA_PERF_SCALE=large` |
 | Animation | `nana-runtime-benchmark` `catalog_animation` on an isolated UiWorld | idle/scheduled `next_animation_deadline` + `advance_animations` with `due_animation_samples=1` | Iced/GPUI stay **unsupported**. A tweening widget is not that scheduler work. |
 | Ime | `nana-framework-benchmark` `catalog_workloads` ime | `set_ime_preedit` / `commit_ime` on a focused TextInput for latin/zh/ja/ko | Iced/GPUI stay **unsupported**. `text_input` typing is not that dirty work. |
 | Dock | `nana-framework-benchmark` `catalog_workloads` dock-workspace | `assemble_dock` of `eight_pane_root` + `adjust_focused_dock_split`; `panes=8` | Iced stays **unsupported** (exit 2). Topology-only `pane_grid` (axis/0.50–0.55/1280×800/`panes=8`) is not Nana chrome rebuild. GPUI stays unsupported. |
 | Overlay | `nana-framework-benchmark` `catalog_workloads` overlay | OverlayHost activate/dismiss + `toggle_popover` | Iced/GPUI stay **unsupported**. Always-on tooltips are not that dirty work. |
-| TextEditor | `nana-framework-benchmark` `catalog_workloads` text-editor | one TextArea, `editor_document(100000)`, caret-local `replace_text_area_selection` then `drain_text` | Iced stays **unsupported** (exit 2). A cached view+layout+draw after an untimed edit is not that dirty work. `text_shaped` stays omitted / **not-evaluable**; do not invent zeros. GPUI stays unsupported. Must not share the list-scroll AppContext (`input_hit_test==41`) |
+| TextEditor | `nana-framework-benchmark` `catalog_workloads` text-editor | one TextArea, `editor_document(100000)`, caret-local `replace_text_area_selection` then `drain_text` | Iced stays **unsupported** (exit 2). A cached view+layout+draw after an untimed edit is not that dirty work. `text_shaped` is §8.1 gated (`<= 1`) from live `catalog_workloads`; missing stays **not-evaluable**. This is not a full-document reshape or `layout_nodes` gate. GPUI stays unsupported. Must not share the list-scroll AppContext (`input_hit_test==41`) |
 | GpuScene `gpu-scene-ui` | `nana-gpu-scene-benchmark` from `perf/scenarios/gpu-scene-ui.json` | UiOnly materialization + encode/submit WorkCounters (`gpu_upload_bytes`, draw/batch) | §8.1 honest-ok for Nana encode envelopes. Missing adapter exit 2. Live2D stays out of `harness_ids` (no encode path; do not emit 0) |
 
 Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree may export `frames_after_idle` for triangulation; a busy `request_redraw` probe must be non-zero before 0 is emitted. `--evaluate-invariants` skips Iced envelopes. Missing `work_counters.layout_nodes` on Iced Hover / PaintOnly stays **not-evaluable**, never envelope-ok. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`.
@@ -253,7 +253,7 @@ Text shaping/cache (Issue §3.5 / §11.4):
 | `text_layout_cache_misses` | `TextLayoutCache::insert` after a miss | real cache, insert |
 | `text_wrap_layouts` | shape calls with `wrap: true` | shaping path |
 | `cache_eviction` | `TextLayoutCache` FIFO evictions | `Some(n)` after a shaping pass; `None` until consulted |
-| `glyph_cache_hits` / `glyph_cache_misses` | Runtime `GlyphCache` lookup/insert | `Some` after a shaping pass that used a glyph backend (`NanaTextShaper`). `None` / omitted for `MeasureTextShaper` (no glyph backend). Never a fake 0. |
+| `glyph_cache_hits` / `glyph_cache_misses` | Runtime `GlyphCache` lookup/insert | `Some` after a shaping pass that consulted the cache (`MeasureTextShaper::shape_cached` on `text-table`, or `NanaTextShaper`). `None` / omitted when `shape_cached` is not overridden. Never a fake 0. |
 
 Still **off / unsupported** on CPU-only drains (do not invent numbers):
 
@@ -308,8 +308,15 @@ never count as a §8.1 pass.
 CI `--from-report` success envelopes are **Nana** live dumps, not
 extractor-fixture JSON and not Iced comparison jobs. One Nana `bench_full`
 dump (`perf/fixtures/nana-runtime-static-tree.json`) covers StaticTree
-100/1k/5k/10k, Hover 10k, and Mutation PaintOnly/Text/LayoutStyle plus
-Visibility/Transform/Accessibility (`single_node_mutations` at 5k).
+100/1k/5k/10k, Hover 10k, Mutation PaintOnly/Text/LayoutStyle plus
+Visibility/Transform/Accessibility (`single_node_mutations` at 5k), and
+`animation` (`catalog_animation`). IME / Dock / Overlay / TextEditor use
+the live `nana-framework-benchmark` slice
+`perf/fixtures/nana-framework-catalog-workloads.json`. Do not substitute
+`perf/fixtures/catalog-workloads.json`. `text-table` uses the live table
+slice `perf/fixtures/nana-framework-text-table.json`.
+`perf/fixtures/virtual-table-scales.json` omits `glyph_cache_*` and stays
+**not-evaluable** / skipped, never envelope-ok.
 
 ```text
 cargo run --release --locked -p nana-ui-runtime --features benchmark \
@@ -326,12 +333,17 @@ PaintOnly/Text/LayoutStyle, Visibility (`render_nodes_changed` and
 `layout_nodes` ≤ 64; live dump layouts 12 — not `layout_nodes == 0`),
 Transform / Accessibility (`layout_nodes == 0`), Hover 10k, VirtualList 10k/100k
 (catalog window 800/160/20), VirtualTree 10k/100k (same catalog-8 cap 58),
-`text-table` (catalog-8 cap 1334), StaticTree 100/1k/5k/10k
-(`frames_after_idle == 0`), and Nana `gpu-scene-ui` encode envelopes
-(`draw_calls >= 1` is the real bound; catalog also has `gpu_upload_bytes >= 0`).
-Missing GPU keys / adapter skip, never vacuous 0. Dock / TextEditor / Animation /
-IME / Overlay / GpuScene Live2D / StaticTree 50k / GPUI / VirtualList 1M /
-VirtualTree 1M stay **skipped**, not invariant-ok. `runtime-work-invariants`
+`text-table` (catalog-8 cap 1334; `glyph_cache_hits ≥ 1` and
+`glyph_cache_misses ≥ 1` from real lookup/insert; missing stays skipped),
+StaticTree 100/1k/5k/10k
+(`frames_after_idle == 0`), Animation (`due_animation_samples == 1`),
+IME (`ime_script_count == 4`), Dock (`panes == 8`), Overlay
+(`overlay_kind_count == 4`), TextEditor (`text_shaped <= 1`), and Nana
+`gpu-scene-ui` encode envelopes (`draw_calls >= 1` is the real bound;
+catalog also has `gpu_upload_bytes >= 0`). Missing GPU keys / adapter skip,
+never vacuous 0. GpuScene
+Live2D / StaticTree 50k / GPUI / VirtualList 1M / VirtualTree 1M stay
+**skipped**, not invariant-ok. `runtime-work-invariants`
 in `.github/workflows/ci.yml` still runs the named cargo tests; it also runs
 `--self-test` and `--evaluate-invariants` on Nana fixture-derived envelopes.
 That is not a live release-bench dump from every PR. Do not treat the weekly
@@ -385,8 +397,8 @@ Long-term, not currently all machine-checked:
 4. Text shaping/layout must have a stable, observable cache.
    Runtime `TextLayoutCache` lookup/insert fills `text_layout_cache_hits` /
    `misses` and `cache_eviction`. Runtime `GlyphCache` lookup/insert fills
-   `glyph_cache_*` when a glyph backend shapes; `MeasureTextShaper` leaves
-   them **`None` (omitted)**.
+   `glyph_cache_*` when `shape_cached` consults the cache (`MeasureTextShaper`,
+   `NanaTextShaper`). Hosts that skip that override leave them **`None` (omitted)**.
 
 5. Large List/Tree/Table must be virtualized.
 6. UiWorld → RenderWorld must support incremental extraction.
@@ -406,7 +418,7 @@ Status is honest; this is not a claim that every Nana gate already runs.
 | DoD | Status |
 | --- | --- |
 | Documented Performance Contract | **done** (this document; Iced/GPUI comparison demoted) |
-| Nana catalog runners + work-counter / hotspot gates | **partial** (Nana map on harness ids; Dock/TextEditor/Animation/IME/Overlay stay skipped) |
+| Nana catalog runners + work-counter / hotspot gates | **partial** (Nana map on harness ids; Animation/IME/Dock/Overlay/TextEditor §8.1 gated from live dumps) |
 | Every critical frame stage independently profiled | **partial** (`FrameProfiler` + `FrameStage`; GPU stages ran on Scene encode, unsupported on Runtime-only) |
 | Work counters can locate algorithm regressions | **partial** (`WorkCounters` includes `input_targets`, `render_nodes_changed`, CPU hot-path `allocations` / `allocated_bytes`, text shaping/cache, and GPU keys after encode; process-wide malloc stays omitted) |
 | ECS dirty/incremental automatic asserts | **partial** (unit tests + binary asserts + weekly semantic gates + `--evaluate-invariants` on honest Nana envelopes) |

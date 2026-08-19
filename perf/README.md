@@ -63,8 +63,5 @@ and re-runs the catalog §8.1 rows through the same `evaluate_invariants` engine
 It judges Nana envelopes; Iced/GPUI reports skip. Missing
 `work_counters.layout_nodes` stays not-evaluable / skip, never envelope-ok.
 Exit 0 if every honest-ok envelope passed, 1 if any invariant failed, 2 if every
-report was skipped/unsupported. Dock / TextEditor / Animation / IME / Overlay /
-GpuScene Live2D / StaticTree 50k / GPUI / VirtualTree 1M stay skipped.
-Nana `gpu-scene-ui` encode envelopes are judged.
-StaticTree 100/1k/5k/10k judge `frames_after_idle == 0` (missing stays skipped; definition in `docs/performance-contract.md` §8.1).
-VirtualTree 10k/100k Nana envelopes are judged.
+report was skipped/unsupported. Judged vs skipped Nana ids:
+[`performance-contract.md`](../docs/performance-contract.md) §8.1.
