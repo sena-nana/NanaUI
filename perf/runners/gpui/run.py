@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""GPUI runner stub (exit 2). See docs/performance-contract.md.
-
-NanaUI does not depend on GPUI. This process implements the same CLI and
-Scenario schema as the Nana and Iced runners, then exits 2 (unsupported).
-
-CI must treat exit 2 as "reference missing", not as a failed benchmark.
-Invented GPUI timings are forbidden.
-
-Optional plug-in: ``perf/runners/gpui/adapter.py`` with
-``run_scenario(scenario, args) -> dict`` that consumes the same Scenario JSON
-and returns the shared run-report envelope with ``status=ok`` only after a real
-GPUI build ran.
-"""
+"""GPUI same-scenario runner. Adapter in adapter.py; unsupported kinds exit 2."""
 
 from __future__ import annotations
 
@@ -40,6 +28,15 @@ def _load_adapter() -> Any | None:
 
 
 def plan(scenario_id: str, args: Any) -> list[str]:
+    adapter = _load_adapter()
+    if adapter is not None and hasattr(adapter, "plan_scenario"):
+        try:
+            scenario = contract.load_scenario(scenario_id, args.repo_root)
+        except FileNotFoundError:
+            return [f"# missing scenario file for {scenario_id}"]
+        planned = adapter.plan_scenario(scenario, args)
+        if isinstance(planned, list) and planned:
+            return [str(line) for line in planned]
     if ADAPTER_PATH.is_file():
         return [f"# gpui adapter present: {ADAPTER_PATH} ({scenario_id})"]
     return [

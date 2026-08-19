@@ -74,7 +74,9 @@ python3 perf/runners/nana/run.py --scenario mutation-paint-only --from-report pe
 python3 perf/runners/nana/run.py --scenario static-tree-100 --from-report perf/fixtures/nana-runtime-static-tree.json
 python3 perf/runners/iced/run.py --scenario static-tree-100 --from-report perf/fixtures/iced-scenario-static-tree-100.json
 python3 perf/runners/nana/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase3-runtime.json   # expected exit 2: phase3 has no 10k hover; current nana-runtime-benchmark bench_full includes 10k hover
-python3 perf/runners/gpui/run.py --scenario virtual-list-10k   # expected exit 2
+python3 perf/runners/gpui/run.py --print-plan --scenario static-tree-100
+python3 perf/runners/gpui/run.py --scenario virtual-list-10k   # real catalog window when adapter is present
+python3 perf/runners/gpui/run.py --scenario gpu-scene-ui       # expected exit 2
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --output target/performance/runtime.json
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --output target/performance/framework.json
 cargo run --release --locked -p nana-ui-vue --features benchmark --bin nana-vue-runtime-benchmark -- --output target/performance/vue.json
