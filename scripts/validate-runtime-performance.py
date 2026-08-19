@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 import sys
 import tempfile
 from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_PERF = _REPO_ROOT / "perf"
+if str(_PERF) not in sys.path:
+    sys.path.insert(0, str(_PERF))
+import contract as _perf_contract  # noqa: E402
 
 
 DISTRIBUTION_FIELDS = (
@@ -25,29 +30,24 @@ DISTRIBUTION_FIELDS = (
     "frame_budget_misses",
 )
 
-# Geometric live-entity cap used by nana-framework-benchmark. Independent of
-# materialized.range: two-sided overscan plus one partial item on each edge.
-# 800+2×200 / 20 → 62 list rows (~60). Table adds the column window the same way.
-LIST_VIEWPORT_PX = 800.0
-LIST_OVERSCAN_PX = 200.0
-LIST_ITEM_EXTENT_PX = 20.0
-TABLE_VIEWPORT_PX = (1_280.0, 800.0)
-TABLE_OVERSCAN_PX = (160.0, 200.0)
-TABLE_COLUMN_EXTENT_PX = 80.0
+# Catalog-8 geometric cap (same helper as perf/contract.py). Independent of
+# materialized.range. Leftover 200px overscan (list cap 62) is not this gate.
 
 
 def geometric_window_cap(viewport: float, overscan: float, item_extent: float) -> int:
-    return math.ceil((viewport + 2.0 * overscan) / item_extent) + 2
+    return _perf_contract.catalog_uniform_window_item_cap(viewport, overscan, item_extent)
 
 
 def list_live_entity_bound() -> int:
-    return geometric_window_cap(LIST_VIEWPORT_PX, LIST_OVERSCAN_PX, LIST_ITEM_EXTENT_PX)
+    return _perf_contract.catalog_virtual_list_live_bound(
+        _perf_contract.load_scenario("virtual-list-10k", _REPO_ROOT)["params"]
+    )
 
 
 def table_live_entity_bound() -> int:
-    rows = geometric_window_cap(TABLE_VIEWPORT_PX[1], TABLE_OVERSCAN_PX[1], LIST_ITEM_EXTENT_PX)
-    columns = geometric_window_cap(TABLE_VIEWPORT_PX[0], TABLE_OVERSCAN_PX[0], TABLE_COLUMN_EXTENT_PX)
-    return rows + rows * columns
+    return _perf_contract.catalog_table_live_bound(
+        _perf_contract.load_scenario("text-table", _REPO_ROOT)["params"]
+    )
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -605,6 +605,17 @@ def self_test() -> int:
         failures,
     )
 
+    require(
+        list_live_entity_bound() == 58,
+        "self-test must use catalog-8 list cap 58, not leftover 200px cap 62",
+        failures,
+    )
+    require(
+        table_live_entity_bound() == 1334,
+        "self-test must use catalog-8 table cap 1334, not leftover 200px row overscan",
+        failures,
+    )
+
     over_bound = dict(framework)
     over_bound["virtual_scales"] = [dict(scale) for scale in framework["virtual_scales"]]
     for scale in over_bound["virtual_scales"]:
@@ -615,6 +626,19 @@ def self_test() -> int:
     require(
         any("geometric bound" in failure for failure in bound_failures),
         "self-test must reject live_ui_entities above the geometric bound",
+        failures,
+    )
+
+    leftover_200 = dict(framework)
+    leftover_200["virtual_scales"] = [dict(scale) for scale in framework["virtual_scales"]]
+    for scale in leftover_200["virtual_scales"]:
+        if scale.get("kind") == "list" and int(scale.get("logical_rows", 0)) == 10_000:
+            scale["live_ui_entities_bound"] = 62
+    leftover_failures: list[str] = []
+    validate_cpu(_cpu_args(runtime, leftover_200, vue, scene), leftover_failures)
+    require(
+        any("geometric cap" in failure for failure in leftover_failures),
+        "self-test must reject leftover 200px live_ui_entities_bound=62",
         failures,
     )
 

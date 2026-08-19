@@ -107,9 +107,15 @@ jobs:
           python3 perf/runners/nana/run.py --scenario text-table \
             --from-report perf/fixtures/virtual-table-scales.json \
             --output target/performance/issue8/invariants/nana-text-table.json
+          python3 perf/runners/nana/run.py --scenario virtual-list-10k \
+            --from-report perf/fixtures/virtual-scales-only.json \
+            --output target/performance/issue8/invariants/nana-virtual-list-10k.json
           python3 perf/runners/nana/run.py --scenario virtual-list-100k \
             --from-report perf/fixtures/virtual-scales-only.json \
             --output target/performance/issue8/invariants/nana-virtual-list-100k.json
+          python3 perf/runners/nana/run.py --scenario virtual-tree-10k \
+            --from-report perf/fixtures/virtual-tree-scales.json \
+            --output target/performance/issue8/invariants/nana-virtual-tree-10k.json
           python3 perf/runners/nana/run.py --scenario virtual-tree-100k \
             --from-report perf/fixtures/virtual-tree-scales.json \
             --output target/performance/issue8/invariants/nana-virtual-tree-100k.json
@@ -146,4 +152,7 @@ jobs:
           python3 perf/runners/nana/run.py --scenario mutation-a11y \
             --from-report perf/fixtures/nana-runtime-static-tree.json \
             --output target/performance/issue8/invariants/nana-mutation-a11y.json
+          python3 perf/runners/nana/run.py --scenario gpu-scene-ui \
+            --from-report perf/fixtures/nana-gpu-scene-ui.json \
+            --output target/performance/issue8/invariants/nana-gpu-scene-ui.json
           python3 perf/contract.py --evaluate-invariants target/performance/issue8/invariants

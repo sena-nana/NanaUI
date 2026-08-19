@@ -547,8 +547,10 @@ def catalog_table_live_bound(params: Mapping[str, Any]) -> int:
 # Catalog ids whose Nana/Iced runners already emit honest ``ok`` envelopes
 # *and* a non-empty catalog ``invariants`` row. ``--evaluate-invariants``
 # judges these. Everything else is skipped, not invariant-ok — including
-# Dock / TextEditor / Animation / IME / Overlay / GpuScene / StaticTree 50k /
-# GPUI even if a report is present.
+# Dock / TextEditor / Animation / IME / Overlay / GpuScene Live2D /
+# StaticTree 50k / GPUI even if a report is present. Nana ``gpu-scene-ui``
+# is judged only for Nana encode envelopes; missing GPU keys / adapter /
+# Iced stay skipped (exit 2), never vacuous 0.
 # Nana Visibility / Transform / Accessibility reuse the live 5k
 # ``single_node_mutations`` dump. Iced stays unsupported (exit 2) for those
 # kinds. StaticTree 100/1k/5k/10k export ``metrics.frames_after_idle``
@@ -576,6 +578,7 @@ SECTION_8_1_HONEST_OK_IDS = frozenset(
         "virtual-tree-10k",
         "virtual-tree-100k",
         "text-table",
+        "gpu-scene-ui",
         *SECTION_8_1_STATIC_UI_IDS,
     }
 )
@@ -587,7 +590,6 @@ SECTION_8_1_UNSUPPORTED_IDS = frozenset(
         "dock-workspace",
         "overlay",
         "text-editor",
-        "gpu-scene-ui",
         "gpu-scene-ui-live2d",
         "gpu-scene-ui-live2d-effect",
         "virtual-list-1m",
@@ -906,6 +908,10 @@ def _skip_section_8_1(scenario_id: str, runner: str, status: str) -> str | None:
         return (
             f"{scenario_id} is not a §8.1 honest-ok catalog id; skipped, not invariant-ok"
         )
+    if scenario_id == "gpu-scene-ui" and runner != "nana":
+        return (
+            "Iced/GPUI GpuScene stay unsupported; Nana UiOnly encode is the §8.1 path"
+        )
     if status == "unsupported":
         return "envelope status=unsupported"
     return None
@@ -980,6 +986,15 @@ def judge_runner_invariants(
         judged["note"] = (
             "frames_after_idle missing; vacuous ok is forbidden until runners "
             "export the idle-frame count"
+        )
+        return judged
+    if scenario_id == "gpu-scene-ui" and any(
+        item.get("status") == "not-evaluable" for item in evaluated
+    ):
+        judged["decision"] = "skipped"
+        judged["note"] = (
+            "gpu-scene-ui GPU keys missing; vacuous ok is forbidden until encode/submit "
+            "observes gpu_upload_bytes and draw_calls. Do not invent 0."
         )
         return judged
     judged["decision"] = "ok"
@@ -3013,6 +3028,42 @@ def self_test(root: Path | None = None) -> list[str]:
     except KeyError as exc:
         if "Live2D" not in key_error_reason(exc) and "UiLive2d" not in key_error_reason(exc):
             errors.append(f"gpu-scene-ui-live2d KeyError should name Live2D: {exc}")
+    try:
+        extract_nana(
+            gpu_scene,
+            {
+                "gpu": {
+                    "status": "unsupported",
+                    "scenario_id": "gpu-scene-ui",
+                    "composition": "UiOnly",
+                    "unsupported_reason": (
+                        "No WGPU adapter for the hosted GPU scene path. "
+                        "Do not invent upload/batch zeros."
+                    ),
+                }
+            },
+            source_paths={"gpu": Path("synthetic-no-adapter")},
+        )
+        errors.append("gpu-scene-ui missing adapter must KeyError, not invent GPU keys")
+    except KeyError as exc:
+        reason = key_error_reason(exc)
+        if "adapter" not in reason.lower() and "WGPU" not in reason:
+            errors.append(f"gpu-scene-ui no-adapter KeyError should name adapter: {exc}")
+    runtime_only_path = root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
+    try:
+        extracted_runtime = extract_nana(
+            gpu_scene,
+            {"runtime": load_json(runtime_only_path)},
+            source_paths={"runtime": runtime_only_path},
+        )
+        errors.append("gpu-scene-ui from a runtime-only dump must KeyError, not invent GPU keys")
+        if extracted_runtime.get("work_counters"):
+            errors.append("gpu-scene-ui runtime-only extract must not grow GPU work_counters")
+    except KeyError as exc:
+        if "nana-gpu-scene-benchmark" not in key_error_reason(exc):
+            errors.append(
+                f"gpu-scene-ui runtime-only KeyError should name nana-gpu-scene-benchmark: {exc}"
+            )
 
     paint_failed = extract_nana(
         paint,
@@ -4107,6 +4158,11 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         errors.append("static-tree-50k must stay §8.1 skipped")
     if "static-tree-50k" in SECTION_8_1_HONEST_OK_IDS:
         errors.append("static-tree-50k must not be §8.1 honest-ok")
+    if "gpu-scene-ui" not in SECTION_8_1_HONEST_OK_IDS or "gpu-scene-ui" in SECTION_8_1_UNSUPPORTED_IDS:
+        errors.append("gpu-scene-ui must be §8.1 honest-ok for Nana encode envelopes")
+    for live2d_id in ("gpu-scene-ui-live2d", "gpu-scene-ui-live2d-effect"):
+        if live2d_id in SECTION_8_1_HONEST_OK_IDS or live2d_id not in SECTION_8_1_UNSUPPORTED_IDS:
+            errors.append(f"{live2d_id} must stay §8.1 skipped")
     for scenario_id in sorted(SECTION_8_1_HONEST_OK_IDS):
         specs = load_scenario(scenario_id, root).get("invariants") or []
         if not specs:
@@ -4316,6 +4372,85 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     if gpui_judge.get("decision") != "skipped":
         errors.append("GPUI envelope must be skipped, not invariant-ok")
 
+    gpu_scene = load_scenario("gpu-scene-ui", root)
+    gpu_live_path = root / "perf" / "fixtures" / "nana-gpu-scene-ui.json"
+    try:
+        gpu_live = extract_nana(
+            gpu_scene,
+            {"gpu": load_json(gpu_live_path)},
+            source_paths={"gpu": gpu_live_path},
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"nana gpu-scene-ui live encode fixture failed to extract: {exc}")
+        gpu_live = None
+    missing_gpu = envelope(
+        runner="nana",
+        status="ok",
+        scenario_id="gpu-scene-ui",
+        scenario=gpu_scene,
+        equivalence="same-scenario",
+    )
+    no_adapter = envelope(
+        runner="nana",
+        status="unsupported",
+        scenario_id="gpu-scene-ui",
+        scenario=gpu_scene,
+        unsupported_reason=(
+            "No WGPU adapter for the hosted GPU scene path. Do not invent upload/batch zeros."
+        ),
+    )
+    if gpu_live is not None:
+        if gpu_live.get("status") != "ok" or gpu_live.get("equivalence") != "same-scenario":
+            errors.append("nana gpu-scene-ui live encode fixture must extract same-scenario ok")
+        if gpu_live.get("relative_gate_enforceable") is not False:
+            errors.append("gpu-scene-ui must keep relative_gate_enforceable False")
+        live_counters = gpu_live.get("work_counters") or {}
+        if (live_counters.get("draw_calls") or 0) < 1:
+            errors.append("gpu-scene-ui live dump must not handwrite draw_calls; encode observed < 1")
+        if "gpu_upload_bytes" not in live_counters:
+            errors.append("gpu-scene-ui live encode fixture must copy observed gpu_upload_bytes")
+        if judge_runner_invariants(gpu_live, root=root).get("decision") != "ok":
+            errors.append("nana gpu-scene-ui live encode envelope must be judged, not skipped")
+        zero_draws = copy.deepcopy(gpu_live)
+        zero_draws["work_counters"] = {
+            **dict(live_counters),
+            "draw_calls": 0,
+            "gpu_upload_bytes": 0,
+        }
+        if judge_runner_invariants(zero_draws, root=root).get("decision") != "failed":
+            errors.append(
+                "gpu-scene-ui draw_calls=0 must fail §8.1; gpu_upload_bytes>=0 must not greenwash it"
+            )
+    if judge_runner_invariants(missing_gpu, root=root).get("decision") != "skipped":
+        errors.append(
+            "gpu-scene-ui ok envelope without GPU keys must skip, not vacuous invariant-ok"
+        )
+    if judge_runner_invariants(no_adapter, root=root).get("decision") != "skipped":
+        errors.append(
+            "gpu-scene-ui missing adapter must stay skipped/unsupported, not failed or invariant-ok"
+        )
+    iced_gpu_ok = envelope(
+        runner="iced",
+        status="ok",
+        scenario_id="gpu-scene-ui",
+        scenario=gpu_scene,
+        work_counters={"gpu_upload_bytes": 0, "draw_calls": 1},
+        equivalence="same-scenario",
+    )
+    if judge_runner_invariants(iced_gpu_ok, root=root).get("decision") != "skipped":
+        errors.append("iced gpu-scene-ui must stay skipped, not invariant-ok")
+    for live2d_id in ("gpu-scene-ui-live2d", "gpu-scene-ui-live2d-effect"):
+        fake_live2d = envelope(
+            runner="nana",
+            status="ok",
+            scenario_id=live2d_id,
+            scenario=load_scenario(live2d_id, root),
+            work_counters={"gpu_upload_bytes": 0, "draw_calls": 1},
+            equivalence="same-scenario",
+        )
+        if judge_runner_invariants(fake_live2d, root=root).get("decision") != "skipped":
+            errors.append(f"{live2d_id} fake-ok must stay skipped, not invariant-ok")
+
     fifty = envelope(
         runner="nana",
         status="unsupported",
@@ -4404,6 +4539,21 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         dir_summary, dir_code = evaluate_runner_invariant_paths([tmp_path], root=root)
         if dir_code != EXIT_ERROR or dir_summary.get("failed") != 1:
             errors.append("§8.1 directory judge must fail-closed when a file fails")
+        if gpu_live is not None:
+            gpu_env = tmp_path / "gpu-scene-ui.json"
+            dump_json(gpu_env, gpu_live)
+            gpu_summary, gpu_code = evaluate_runner_invariant_paths([gpu_env], root=root)
+            if gpu_code != EXIT_OK or gpu_summary.get("status") != "ok":
+                errors.append("§8.1 path judge must pass a live gpu-scene-ui encode envelope")
+        missing_gpu_path = tmp_path / "gpu-scene-ui-missing.json"
+        dump_json(missing_gpu_path, missing_gpu)
+        missing_summary, missing_code = evaluate_runner_invariant_paths(
+            [missing_gpu_path], root=root
+        )
+        if missing_code != EXIT_UNSUPPORTED or missing_summary.get("skipped") != 1:
+            errors.append(
+                "§8.1 gpu-scene-ui without GPU keys must exit 2, not vacuous ok"
+            )
         cli = subprocess.run(
             [
                 sys.executable,
@@ -4967,6 +5117,31 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         errors.append(
             f"nana gpu-scene-ui --print-plan must pass --scenario gpu-scene-ui.json: "
             f"{nana_gpu_plan.stdout!r}"
+        )
+
+    gpu_live_code, gpu_live_report, gpu_live_err = from_report(
+        nana_script, "gpu-scene-ui", root / "perf" / "fixtures" / "nana-gpu-scene-ui.json"
+    )
+    if gpu_live_code != EXIT_OK or gpu_live_report is None:
+        errors.append(f"nana gpu-scene-ui live encode --from-report must exit 0: {gpu_live_err}")
+    elif gpu_live_report.get("status") != "ok":
+        errors.append(
+            f"nana gpu-scene-ui live encode status={gpu_live_report.get('status')}"
+        )
+    elif gpu_live_report.get("relative_gate_enforceable") is not False:
+        errors.append("nana gpu-scene-ui --from-report must keep relative_gate_enforceable False")
+    elif (gpu_live_report.get("work_counters") or {}).get("draw_calls", 0) < 1:
+        errors.append("nana gpu-scene-ui live encode must copy draw_calls >= 1")
+
+    runtime_gpu_code, _, runtime_gpu_err = from_report(
+        nana_script,
+        "gpu-scene-ui",
+        root / "perf" / "fixtures" / "nana-runtime-static-tree.json",
+    )
+    if runtime_gpu_code != EXIT_UNSUPPORTED:
+        errors.append(
+            f"nana gpu-scene-ui from a runtime-only dump must exit 2, got {runtime_gpu_code}: "
+            f"{runtime_gpu_err}"
         )
 
     for live2d_id in ("gpu-scene-ui-live2d", "gpu-scene-ui-live2d-effect"):

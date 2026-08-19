@@ -32,8 +32,10 @@ jobs:
       - name: Run release Runtime and Scene workloads
         run: |
           mkdir -p target/performance
+          # Catalog windows via the Nana runner; standalone default is 200px overscan.
+          FRAMEWORK_WINDOW_ARGS=$(python3 perf/runners/nana/run.py --print-framework-window-args)
           cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --output target/performance/runtime.json
-          cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --output target/performance/framework.json
+          cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --output target/performance/framework.json ${FRAMEWORK_WINDOW_ARGS}
           cargo run --quiet --release --locked -p nana-ui-vue --features benchmark --bin nana-vue-runtime-benchmark -- --output target/performance/vue.json
           cargo run --quiet --release --locked -p nana-ui-scene --features benchmark --bin nana-scene-benchmark -- --output target/performance/scene.json
       - name: Enforce incremental and latency gates
@@ -43,6 +45,29 @@ jobs:
             --framework target/performance/framework.json \
             --vue target/performance/vue.json \
             --scene target/performance/scene.json
+      - name: Evaluate Issue #8 invariants on live Nana envelopes
+        run: |
+          mkdir -p target/performance/issue8/weekly
+          for scenario in \
+            static-tree-100 static-tree-1k static-tree-5k static-tree-10k \
+            hover \
+            mutation-paint-only mutation-text mutation-layout-style \
+            mutation-visibility mutation-transform mutation-a11y
+          do
+            python3 perf/runners/nana/run.py --scenario "$scenario" \
+              --from-report target/performance/runtime.json \
+              --output "target/performance/issue8/weekly/nana-${scenario}.json"
+          done
+          for scenario in \
+            virtual-list-10k virtual-list-100k \
+            virtual-tree-10k virtual-tree-100k \
+            text-table
+          do
+            python3 perf/runners/nana/run.py --scenario "$scenario" \
+              --from-report target/performance/framework.json \
+              --output "target/performance/issue8/weekly/nana-${scenario}.json"
+          done
+          python3 perf/contract.py --evaluate-invariants target/performance/issue8/weekly
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -64,6 +89,17 @@ jobs:
             --screenshot target/performance/ui-live2d.png
       - name: Enforce real GPU frame gates
         run: python3 scripts/validate-runtime-performance.py --gpu target/performance/ui-live2d.json
+      - name: Run and judge catalog GpuScene UiOnly encode
+        run: |
+          mkdir -p target/performance/issue8
+          cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- \
+            --scenario perf/scenarios/gpu-scene-ui.json \
+            --output target/performance/gpu-scene-ui.json
+          python3 perf/runners/nana/run.py --scenario gpu-scene-ui \
+            --from-report target/performance/gpu-scene-ui.json \
+            --output target/performance/issue8/nana-gpu-scene-ui.json
+          python3 perf/contract.py --evaluate-invariants \
+            target/performance/issue8/nana-gpu-scene-ui.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
