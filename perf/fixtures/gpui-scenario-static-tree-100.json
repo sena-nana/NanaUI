@@ -1,0 +1,94 @@
+{
+  "source": "gpui-scenario-bench",
+  "status": "ok",
+  "scenario_id": "static-tree-100",
+  "kind": "StaticTree",
+  "params": {
+    "nodes": 100
+  },
+  "nodes": 100,
+  "tree": {
+    "generation": "complete-binary-heap",
+    "parent_rule": "parent(i)=i//2, root=1",
+    "node_kind": "element-div",
+    "text": null,
+    "sample_parents": [
+      {
+        "index": 1,
+        "parent": null
+      },
+      {
+        "index": 2,
+        "parent": 1
+      },
+      {
+        "index": 3,
+        "parent": 1
+      },
+      {
+        "index": 50,
+        "parent": 25
+      },
+      {
+        "index": 100,
+        "parent": 50
+      }
+    ]
+  },
+  "notes": [
+    "StaticTree JSON only has params.nodes. Tree shape is the shared complete-binary-heap rule: parent(i)=i/2, root=1, element-div, no text.",
+    "Same rule as nana-runtime-benchmark::tree_mutations and engine/iced scenario-bench. A flat column of N text leaves is not this tree.",
+    "cpu_frame_ms is view construction + AnyElement::layout_as_root (Taffy) + prepaint + scene paint on gpui TestAppContext.",
+    "present_ms is omitted: TestWindow::draw is a no-op. Do not treat missing present as 0.",
+    "frames_after_idle is omitted: TestPlatform on_request_frame is a no-op, so idle redraw cannot be observed honestly.",
+    "Not a fixed benchmark machine. Weekly GHA is not this machine."
+  ],
+  "viewport": [
+    900,
+    640
+  ],
+  "scale": 1.0,
+  "backend": "gpui-test-app-context",
+  "gpu_present": false,
+  "warmup_iterations": 5,
+  "iterations": 20,
+  "adapter": {
+    "name": "gpui TestAppContext / TestWindow",
+    "crate": "gpui",
+    "version": "0.2.2",
+    "device_type": "test-platform",
+    "backend": "none"
+  },
+  "machine_identity": {
+    "fixed_benchmark_machine": false,
+    "note": "This dump is not Issue #8 §12.2 / #12 fixed-machine history. Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine."
+  },
+  "view_construction_ms": {
+    "p50": 0.064875,
+    "p95": 0.0747024,
+    "p99": 0.08284048,
+    "min": 0.057874999999999996,
+    "max": 0.084875
+  },
+  "layout_ms": {
+    "p50": 0.6817915,
+    "p95": 0.7340441,
+    "p99": 0.8100760199999999,
+    "min": 0.62225,
+    "max": 0.829084
+  },
+  "draw_ms": {
+    "p50": 0.0926665,
+    "p95": 0.1181506,
+    "p99": 0.12486292,
+    "min": 0.08825000000000001,
+    "max": 0.12654100000000001
+  },
+  "cpu_frame_ms": {
+    "p50": 0.8372085,
+    "p95": 0.9138309500000001,
+    "p99": 0.98029979,
+    "min": 0.7797080000000001,
+    "max": 0.996917
+  }
+}

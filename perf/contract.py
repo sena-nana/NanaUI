@@ -343,6 +343,14 @@ def iced_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
     return None
 
 
+def gpui_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
+    """Same skip kinds as Iced; long Nana analog essays live in the Iced reasons."""
+    reason = iced_scenario_bench_skip_reason(scenario)
+    if reason is None:
+        return None
+    return reason.replace("Iced", "GPUI").replace("iced", "GPUI")
+
+
 def catalog_virtual_list_window(params: Mapping[str, Any]) -> dict[str, Any]:
     """Catalog VirtualList window: visible/overscan are item counts."""
     visible = params["visible"]
@@ -927,7 +935,7 @@ def is_runner_envelope(payload: Mapping[str, Any] | None) -> bool:
 
 def _skip_section_8_1(scenario_id: str, runner: str, status: str) -> str | None:
     if runner == "gpui":
-        return "GPUI stub skipped; not a Nana invariant"
+        return "GPUI triangulation skipped; not a Nana invariant"
     if runner == "iced":
         return "Iced triangulation skipped; not a Nana invariant"
     if scenario_id in SECTION_8_1_UNSUPPORTED_IDS:
@@ -1343,6 +1351,32 @@ def is_iced_scenario_bench_report(report: Mapping[str, Any] | None) -> bool:
     return isinstance(report, Mapping) and report.get("source") == "iced-scenario-bench"
 
 
+def cargo_run_gpui_scenario_bench(
+    root: Path,
+    *,
+    scenario_path: Path,
+    output: Path,
+) -> list[str]:
+    """Invoke engine/gpui-scenario-bench against a shared Scenario JSON file."""
+    return [
+        "cargo",
+        "run",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        str(root / "engine" / "gpui-scenario-bench" / "Cargo.toml"),
+        "--",
+        "--scenario",
+        str(scenario_path),
+        "--output",
+        str(output),
+    ]
+
+
+def is_gpui_scenario_bench_report(report: Mapping[str, Any] | None) -> bool:
+    return isinstance(report, Mapping) and report.get("source") == "gpui-scenario-bench"
+
+
 def _real_same_scenario(report: Mapping[str, Any] | None) -> bool:
     if not isinstance(report, Mapping):
         return False
@@ -1364,7 +1398,7 @@ def relative_gate_can_enforce(
     """True only when Iced and GPUI both emitted same-scenario ok with real metrics.
 
     Observation predicate for #12. Envelope ``relative_gate_enforceable`` stays
-    False even when this returns True. A GPUI stub or Gallery
+    False even when this returns True. A missing-adapter helper or Gallery
     closest-legacy-reference must not open a 1.15× gate.
     """
     if not _real_same_scenario(iced_report) or not _real_same_scenario(gpui_report):
@@ -2477,18 +2511,43 @@ def extract_iced(
     raise KeyError(f"no Iced mapping for {scenario['id']}")
 
 
-def _extract_iced_scenario_bench(
+def extract_gpui(
     scenario: Mapping[str, Any],
     report: Mapping[str, Any],
     *,
     source_path: Path,
 ) -> dict[str, Any]:
+    if not is_gpui_scenario_bench_report(report):
+        raise KeyError(
+            f"GPUI extractor requires source=gpui-scenario-bench; got {report.get('source')!r}. "
+            "Fake GPUI numbers are forbidden."
+        )
+    return _extract_iced_scenario_bench(
+        scenario,
+        report,
+        source_path=source_path,
+        runner="gpui",
+        source_name="gpui-scenario-bench",
+        skip_reason=gpui_scenario_bench_skip_reason,
+    )
+
+
+def _extract_iced_scenario_bench(
+    scenario: Mapping[str, Any],
+    report: Mapping[str, Any],
+    *,
+    source_path: Path,
+    runner: str = "iced",
+    source_name: str = "iced-scenario-bench",
+    skip_reason: Callable[[Mapping[str, Any]], str | None] | None = None,
+) -> dict[str, Any]:
+    skip_fn = skip_reason or iced_scenario_bench_skip_reason
     if report.get("status") == "unsupported":
         raise KeyError(
             report.get("unsupported_reason")
-            or f"iced-scenario-bench unsupported for {scenario['id']}"
+            or f"{source_name} unsupported for {scenario['id']}"
         )
-    skip = iced_scenario_bench_skip_reason(scenario)
+    skip = skip_fn(scenario)
     if skip:
         raise KeyError(skip)
     kind = scenario["kind"]
@@ -2502,13 +2561,13 @@ def _extract_iced_scenario_bench(
         if reported_nodes is not None or expected_nodes is not None:
             detail = f" (report nodes={reported_nodes}, scenario nodes={expected_nodes})"
         raise KeyError(
-            f"iced-scenario-bench scenario_id={reported_id!r} does not match "
+            f"{source_name} scenario_id={reported_id!r} does not match "
             f"{scenario['id']!r}{detail}"
         )
     cpu = percentile_fields(report.get("cpu_frame_ms"))
     if cpu is None:
         raise KeyError(
-            "iced-scenario-bench ok report missing cpu_frame_ms percentiles; "
+            f"{source_name} ok report missing cpu_frame_ms percentiles; "
             "fake or empty timings are forbidden"
         )
     notes = [str(note) for note in (report.get("notes") or []) if note is not None]
@@ -2529,71 +2588,79 @@ def _extract_iced_scenario_bench(
         reported = report.get("nodes")
         if reported != nodes:
             raise KeyError(
-                f"iced-scenario-bench nodes={reported} does not match StaticTree nodes={nodes}"
+                f"{source_name} nodes={reported} does not match StaticTree nodes={nodes}"
             )
         tree = report.get("tree")
         if not is_shared_static_tree(tree if isinstance(tree, Mapping) else None, nodes):
             raise KeyError(
-                "iced-scenario-bench ok report is not the shared StaticTree heap "
+                f"{source_name} ok report is not the shared StaticTree heap "
                 "(generation=complete-binary-heap, parent(i)=i//2, element-div, no text). "
                 "A column of N text leaves is not same-scenario."
             )
         notes.append(
-            "Mapped onto engine/iced static_tree / static_tree_parent, the same "
+            f"Mapped onto {source_name} static_tree / static_tree_parent, the same "
             "complete-binary-heap rule as nana-runtime-benchmark::tree_mutations."
         )
-        metrics["frames_after_idle"] = read_frames_after_idle(
-            report, required=True, source="iced-scenario-bench StaticTree"
-        )
-        busy_probe = report.get("busy_probe_frames")
-        if isinstance(busy_probe, bool) or not isinstance(busy_probe, int) or busy_probe < 1:
-            raise KeyError(
-                "iced-scenario-bench StaticTree must export busy_probe_frames > 0 from the "
-                "live BusyPulse probe; refusing a stuffed frames_after_idle=0"
+        if runner == "iced" or "frames_after_idle" in report:
+            metrics["frames_after_idle"] = read_frames_after_idle(
+                report, required=True, source=f"{source_name} StaticTree"
             )
-        metrics["busy_probe_frames"] = busy_probe
+            busy_probe = report.get("busy_probe_frames")
+            if isinstance(busy_probe, bool) or not isinstance(busy_probe, int) or busy_probe < 1:
+                raise KeyError(
+                    f"{source_name} StaticTree must export busy_probe_frames > 0 from a live "
+                    "busy-redraw probe; refusing a stuffed frames_after_idle=0"
+                )
+            metrics["busy_probe_frames"] = busy_probe
+        else:
+            notes.append(
+                "GPUI TestPlatform on_request_frame is a no-op, so frames_after_idle is omitted "
+                "rather than stuffed as 0."
+            )
     elif kind == "Mutation":
         nodes = scenario["params"]["tree_nodes"]
         mutation_kind = scenario["params"]["kind"]
         if report.get("nodes") != nodes:
             raise KeyError(
-                f"iced-scenario-bench nodes={report.get('nodes')} does not match "
+                f"{source_name} nodes={report.get('nodes')} does not match "
                 f"Mutation tree_nodes={nodes}"
             )
         mutation = report.get("mutation") if isinstance(report.get("mutation"), Mapping) else {}
         if mutation.get("kind") != mutation_kind:
             raise KeyError(
-                f"iced-scenario-bench mutation.kind={mutation.get('kind')!r} does not match "
+                f"{source_name} mutation.kind={mutation.get('kind')!r} does not match "
                 f"{mutation_kind!r}"
             )
         if mutation.get("single_node") is not True:
-            raise KeyError("iced-scenario-bench Mutation report must set mutation.single_node=true")
+            raise KeyError(f"{source_name} Mutation report must set mutation.single_node=true")
         tree = report.get("tree")
         if not is_shared_static_tree(tree if isinstance(tree, Mapping) else None, nodes):
             raise KeyError(
-                "iced-scenario-bench Mutation tree is not the shared complete-binary-heap"
+                f"{source_name} Mutation tree is not the shared complete-binary-heap"
             )
+        engine = "Iced" if runner == "iced" else "GPUI"
         notes.append(
-            f"Mapped onto engine/iced scenario-bench Mutation {mutation_kind} at "
+            f"Mapped onto {source_name} Mutation {mutation_kind} at "
             f"tree_nodes={nodes}, same heap as Nana tree_mutations. Single-node change; "
-            "Iced has no WorkCounters.layout_nodes so paint/a11y layout invariants stay "
+            f"{engine} has no WorkCounters.layout_nodes so paint/a11y layout invariants stay "
             "not-evaluable."
         )
     elif kind == "Hover":
         nodes = scenario["params"]["nodes"]
         if report.get("nodes") != nodes:
             raise KeyError(
-                f"iced-scenario-bench nodes={report.get('nodes')} does not match Hover nodes={nodes}"
+                f"{source_name} nodes={report.get('nodes')} does not match Hover nodes={nodes}"
             )
         tree = report.get("tree")
         if not is_shared_static_tree(tree if isinstance(tree, Mapping) else None, nodes):
             raise KeyError(
-                "iced-scenario-bench Hover tree is not the shared complete-binary-heap"
+                f"{source_name} Hover tree is not the shared complete-binary-heap"
             )
+        engine = "Iced" if runner == "iced" else "GPUI"
         notes.append(
-            f"Mapped onto engine/iced scenario-bench Hover at nodes={nodes}. "
+            f"Mapped onto {source_name} Hover at nodes={nodes}. "
             "Same heap as Nana tree_mutations; last two nodes toggle hover style. "
-            "Iced has no WorkCounters.layout_nodes; hover_without_size_change stays "
+            f"{engine} has no WorkCounters.layout_nodes; hover_without_size_change stays "
             "not-evaluable."
         )
         work_counters = {"nodes": nodes}
@@ -2603,46 +2670,46 @@ def _extract_iced_scenario_bench(
         virtual = report.get("virtualization")
         if not isinstance(virtual, Mapping):
             raise KeyError(
-                "iced-scenario-bench VirtualList ok report missing virtualization block"
+                f"{source_name} VirtualList ok report missing virtualization block"
             )
         if virtual.get("logical_items") != items:
             raise KeyError(
-                f"iced-scenario-bench logical_items={virtual.get('logical_items')} "
+                f"{source_name} logical_items={virtual.get('logical_items')} "
                 f"does not match VirtualList items={items}"
             )
         live = virtual.get("live_ui_entities")
         bound = virtual.get("live_ui_entities_bound")
         if not isinstance(live, int) or live <= 0:
             raise KeyError(
-                "iced-scenario-bench VirtualList must report a positive live_ui_entities count"
+                f"{source_name} VirtualList must report a positive live_ui_entities count"
             )
         if live == items:
             raise KeyError(
-                f"iced-scenario-bench VirtualList live_ui_entities={live} equals logical "
+                f"{source_name} VirtualList live_ui_entities={live} equals logical "
                 f"items={items}; that is a full widget list, not Nana virtualization"
             )
         if isinstance(bound, int) and live > bound:
             raise KeyError(
-                f"iced-scenario-bench live_ui_entities={live} exceeds bound={bound}"
+                f"{source_name} live_ui_entities={live} exceeds bound={bound}"
             )
         window = catalog_virtual_list_window(params)
         if virtual.get("visible") != window["visible"]:
             raise KeyError(
-                f"iced-scenario-bench VirtualList visible={virtual.get('visible')} "
+                f"{source_name} VirtualList visible={virtual.get('visible')} "
                 f"does not match catalog visible={window['visible']}"
             )
         if virtual.get("overscan") != window["overscan"]:
             raise KeyError(
-                f"iced-scenario-bench VirtualList overscan={virtual.get('overscan')} "
+                f"{source_name} VirtualList overscan={virtual.get('overscan')} "
                 f"does not match catalog overscan={window['overscan']} items"
             )
         if not _same_number(virtual.get("item_extent_px"), window["item_extent_px"]):
             raise KeyError(
-                f"iced-scenario-bench VirtualList item_extent_px={virtual.get('item_extent_px')} "
+                f"{source_name} VirtualList item_extent_px={virtual.get('item_extent_px')} "
                 f"does not match catalog item_extent_px={window['item_extent_px']}"
             )
         notes.append(
-            f"Mapped onto engine/iced scenario-bench VirtualList items={items} "
+            f"Mapped onto {source_name} VirtualList items={items} "
             f"visible={window['visible']} overscan={window['overscan']} "
             f"({window['overscan_px']}px) item_extent={window['item_extent_px']} "
             f"(viewport {window['viewport_px']}px). Only the catalog window is materialized."
@@ -2664,11 +2731,11 @@ def _extract_iced_scenario_bench(
         virtual = report.get("virtualization")
         if not isinstance(virtual, Mapping):
             raise KeyError(
-                "iced-scenario-bench Table ok report missing virtualization block"
+                f"{source_name} Table ok report missing virtualization block"
             )
         if virtual.get("logical_rows") != rows or virtual.get("logical_columns") != columns:
             raise KeyError(
-                f"iced-scenario-bench Table logical={virtual.get('logical_rows')}x"
+                f"{source_name} Table logical={virtual.get('logical_rows')}x"
                 f"{virtual.get('logical_columns')} does not match catalog "
                 f"{rows}x{columns}"
             )
@@ -2676,36 +2743,36 @@ def _extract_iced_scenario_bench(
         bound = virtual.get("live_ui_entities_bound")
         if not isinstance(live, int) or live <= 0:
             raise KeyError(
-                "iced-scenario-bench Table must report a positive live_ui_entities count"
+                f"{source_name} Table must report a positive live_ui_entities count"
             )
         if live == rows * columns:
             raise KeyError(
-                f"iced-scenario-bench Table live_ui_entities={live} equals logical "
+                f"{source_name} Table live_ui_entities={live} equals logical "
                 f"cells={rows}x{columns}; that is a full table, not Nana virtualization"
             )
         if isinstance(bound, int) and live > bound:
             raise KeyError(
-                f"iced-scenario-bench Table live_ui_entities={live} exceeds bound={bound}"
+                f"{source_name} Table live_ui_entities={live} exceeds bound={bound}"
             )
         window = catalog_table_window(params)
         if virtual.get("visible_rows") != window["visible_rows"]:
             raise KeyError(
-                f"iced-scenario-bench Table visible_rows={virtual.get('visible_rows')} "
+                f"{source_name} Table visible_rows={virtual.get('visible_rows')} "
                 f"does not match catalog visible_rows={window['visible_rows']}"
             )
         if virtual.get("overscan_rows") != window["overscan_rows"]:
             raise KeyError(
-                f"iced-scenario-bench Table overscan_rows={virtual.get('overscan_rows')} "
+                f"{source_name} Table overscan_rows={virtual.get('overscan_rows')} "
                 f"does not match catalog overscan_rows={window['overscan_rows']}"
             )
         if virtual.get("visible_columns") != window["visible_columns"]:
             raise KeyError(
-                f"iced-scenario-bench Table visible_columns={virtual.get('visible_columns')} "
+                f"{source_name} Table visible_columns={virtual.get('visible_columns')} "
                 f"does not match catalog visible_columns={window['visible_columns']}"
             )
         if virtual.get("overscan_columns") != window["overscan_columns"]:
             raise KeyError(
-                f"iced-scenario-bench Table overscan_columns={virtual.get('overscan_columns')} "
+                f"{source_name} Table overscan_columns={virtual.get('overscan_columns')} "
                 f"does not match catalog overscan_columns={window['overscan_columns']}"
             )
         invented_shape = None
@@ -2713,11 +2780,11 @@ def _extract_iced_scenario_bench(
             invented_shape = report["work_counters"].get("text_shaped")
         if invented_shape is not None:
             raise KeyError(
-                "iced-scenario-bench must not invent WorkCounters.text_shaped; "
+                f"{source_name} must not invent WorkCounters.text_shaped; "
                 "leave the catalog invariant not-evaluable"
             )
         notes.append(
-            f"Mapped onto engine/iced scenario-bench Table {rows}x{columns} "
+            f"Mapped onto {source_name} Table {rows}x{columns} "
             f"visible={window['visible_rows']}x{window['visible_columns']} "
             f"overscan={window['overscan_rows']}x{window['overscan_columns']} "
             f"(viewport {window['viewport_width_px']}x{window['viewport_height_px']}px, "
@@ -2738,16 +2805,16 @@ def _extract_iced_scenario_bench(
         }
     else:
         raise KeyError(
-            f"iced-scenario-bench has no same-scenario mapping for {scenario['id']} "
+            f"{source_name} has no same-scenario mapping for {scenario['id']} "
             f"(kind={kind})"
         )
     return envelope(
-        runner="iced",
+        runner=runner,
         status="ok",
         scenario_id=scenario["id"],
         scenario=scenario,
         equivalence="same-scenario",
-        source_binary="scenario-bench",
+        source_binary=source_name,
         source_report=str(source_path),
         mapping_notes=notes,
         metrics={key: value for key, value in metrics.items() if value is not None},
@@ -3899,11 +3966,11 @@ def self_test(root: Path | None = None) -> list[str]:
 
     gpui = gpui_unsupported(virtual)
     if gpui.get("status") != "unsupported":
-        errors.append("gpui stub must return unsupported")
+        errors.append("gpui_unsupported missing-adapter helper must return unsupported")
     if gpui.get("relative_gate_enforceable") is not False:
-        errors.append("gpui stub must keep relative_gate_enforceable False")
+        errors.append("gpui_unsupported must keep relative_gate_enforceable False")
     if gpui.get("metrics"):
-        errors.append("gpui stub must not invent metrics")
+        errors.append("gpui_unsupported must not invent metrics")
 
     if static_tree_parent(1) is not None or static_tree_parent(100) != 50:
         errors.append("StaticTree heap parent rule must be parent(1)=None, parent(100)=50")
@@ -3953,20 +4020,9 @@ def self_test(root: Path | None = None) -> list[str]:
         errors.append("live iced static-tree-100 dump must have busy_probe_frames > 0")
     gpui_static = gpui_unsupported(static_tree)
     if relative_gate_can_enforce(iced_same, gpui_static):
-        errors.append("relative gates must stay off while GPUI is unsupported")
+        errors.append("relative_gate_can_enforce must stay false for the missing-adapter helper")
     if relative_gate_can_enforce(iced_same, iced_same):
         errors.append("relative_gate_can_enforce must require runner=gpui, not two iced reports")
-    synthetic_gpui_ok = {
-        "runner": "gpui",
-        "status": "ok",
-        "equivalence": "same-scenario",
-        "scenario_id": "static-tree-100",
-        "metrics": {"cpu_frame_ms": {"p50": 1.0, "p95": 1.2}},
-    }
-    if not relative_gate_can_enforce(iced_same, synthetic_gpui_ok):
-        errors.append(
-            "relative_gate_can_enforce should be true for a real Iced+GPUI same-scenario pair"
-        )
     if iced_same.get("relative_gate_enforceable") is not False:
         errors.append(
             "envelope relative_gate_enforceable must stay False"
@@ -6060,7 +6116,7 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         errors.append("iced text-table --from-report must be same-scenario ok")
 
     gpui_script = root / "perf" / "runners" / "gpui" / "run.py"
-    gpui_result = subprocess.run(
+    gpui_plan = subprocess.run(
         [
             sys.executable,
             str(gpui_script),
@@ -6068,25 +6124,88 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
             str(root),
             "--scenario",
             "static-tree-100",
+            "--print-plan",
         ],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
     )
-    if gpui_result.returncode != EXIT_UNSUPPORTED:
+    if gpui_plan.returncode != EXIT_OK or "gpui-scenario-bench" not in gpui_plan.stdout:
         errors.append(
-            f"gpui static-tree-100 must exit 2, got {gpui_result.returncode}: {gpui_result.stderr}"
+            f"gpui static-tree-100 --print-plan must name gpui-scenario-bench: "
+            f"{gpui_plan.stdout!r} {gpui_plan.stderr}"
+        )
+    gpui_skip = subprocess.run(
+        [
+            sys.executable,
+            str(gpui_script),
+            "--repo-root",
+            str(root),
+            "--scenario",
+            "gpu-scene-ui",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if gpui_skip.returncode != EXIT_UNSUPPORTED:
+        errors.append(
+            f"gpui gpu-scene-ui must exit 2, got {gpui_skip.returncode}: {gpui_skip.stderr}"
         )
     else:
         try:
-            gpui_report = json.loads(gpui_result.stdout)
-            if gpui_report.get("status") != "unsupported":
-                errors.append(f"gpui stub status={gpui_report.get('status')}")
-            if gpui_report.get("metrics"):
-                errors.append("gpui stub must not invent metrics")
+            gpui_skip_report = json.loads(gpui_skip.stdout)
+            if gpui_skip_report.get("status") != "unsupported":
+                errors.append(f"gpui gpu-scene-ui status={gpui_skip_report.get('status')}")
+            if gpui_skip_report.get("metrics"):
+                errors.append("gpui unsupported path must not invent metrics")
         except json.JSONDecodeError as exc:
-            errors.append(f"gpui stub stdout is not JSON: {exc}")
+            errors.append(f"gpui gpu-scene-ui stdout is not JSON: {exc}")
+    gpui_fixture = root / "perf" / "fixtures" / "gpui-scenario-static-tree-100.json"
+    if not gpui_fixture.is_file():
+        errors.append("gpui-scenario-static-tree-100.json live dump is missing")
+    else:
+        code, gpui_from_report, err = from_report(
+            gpui_script, "static-tree-100", gpui_fixture
+        )
+        if code != EXIT_OK or gpui_from_report is None:
+            errors.append(f"gpui static-tree-100 --from-report exit {code}: {err}")
+        elif (
+            gpui_from_report.get("status") != "ok"
+            or gpui_from_report.get("equivalence") != "same-scenario"
+        ):
+            errors.append("gpui static-tree-100 --from-report must be same-scenario ok")
+        elif gpui_from_report.get("relative_gate_enforceable") is not False:
+            errors.append("gpui same-scenario extract must keep relative_gate_enforceable False")
+        elif not isinstance(
+            (gpui_from_report.get("metrics") or {}).get("cpu_frame_ms", {}).get("p50"),
+            (int, float),
+        ):
+            errors.append("gpui same-scenario extract must copy live cpu_frame_ms.p50")
+        else:
+            gpui_raw = load_json(gpui_fixture)
+            if gpui_raw.get("adapter", {}).get("name") == "extractor-fixture":
+                errors.append("gpui static-tree-100 fixture must be a live dump, not extractor-fixture")
+            if gpui_raw.get("gpu_present") is not False:
+                errors.append("gpui live dump must declare gpu_present=false (TestWindow has no GPU present)")
+            if "frames_after_idle" in gpui_raw or (gpui_from_report.get("metrics") or {}).get(
+                "frames_after_idle"
+            ) is not None:
+                errors.append(
+                    "gpui TestPlatform cannot observe idle redraw; frames_after_idle must stay omitted"
+                )
+            iced_same = extract_iced(
+                load_scenario("static-tree-100", root),
+                load_json(root / "perf" / "fixtures" / "iced-scenario-static-tree-100.json"),
+                source_path=root / "perf" / "fixtures" / "iced-scenario-static-tree-100.json",
+            )
+            if not relative_gate_can_enforce(iced_same, gpui_from_report):
+                errors.append(
+                    "relative_gate_can_enforce should be true for live Iced+GPUI same-scenario "
+                    "static-tree-100, but envelope relative_gate_enforceable stays False"
+                )
 
     plan = subprocess.run(
         [
@@ -6111,6 +6230,7 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
 
 
 def gpui_unsupported(scenario: Mapping[str, Any]) -> dict[str, Any]:
+    """Envelope when ``perf/runners/gpui/adapter.py`` is missing. Not a live run."""
     return envelope(
         runner="gpui",
         status="unsupported",
@@ -6118,16 +6238,10 @@ def gpui_unsupported(scenario: Mapping[str, Any]) -> dict[str, Any]:
         scenario=scenario,
         equivalence="unsupported",
         unsupported_reason=(
-            "NanaUI has no GPUI crate, workspace member, or adapter. Fake GPUI numbers "
-            "are forbidden. This stub implements the CLI/schema so CI can distinguish "
-            "unsupported (exit 2) from a failed run (exit 1)."
+            "GPUI adapter missing. Fake GPUI numbers are forbidden. "
+            "CI must distinguish unsupported (exit 2) from a failed run (exit 1)."
         ),
-        plug_in=(
-            "Optional adapter: perf/runners/gpui/adapter.py implementing "
-            "run_scenario(scenario, args) that builds the same Scenario JSON and "
-            "returns this envelope with status=ok only after a real GPUI build. "
-            "Do not commit invented timings."
-        ),
+        plug_in="Implement perf/runners/gpui/adapter.py run_scenario; do not invent timings.",
     )
 
 

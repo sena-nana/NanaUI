@@ -49,8 +49,7 @@ The old P0 table versus the faster of Iced and GPUI was:
 If comparison returns, it belongs with
 [#12](https://github.com/sena-nana/NanaUI/issues/12), on a fixed machine, with
 real same-scenario metrics. Fake numbers stay forbidden.
-`relative_gate_enforceable` stays **False**. CI must not wait on a GPUI crate
-or `adapter.py`.
+`relative_gate_enforceable` stays **False**. Do not wait on GPUI in #8 CI.
 
 #8 still requires these **Nana** invariants (independent of any multiplier):
 
@@ -117,7 +116,7 @@ count, text shape count, GPU upload, draw/batch count for lists.
 | --- | --- | --- | --- |
 | Nana | `python3 perf/runners/nana/run.py --scenario <id>` | Thin map onto existing `nana-runtime-benchmark`, `nana-framework-benchmark`, `nana-scene-benchmark`, `nana-gpu-scene-benchmark` | **partial** |
 | Iced | `python3 perf/runners/iced/run.py --scenario <id>` | Optional triangulation via `engine/iced` `scenario-bench`. Visibility / Transform / Accessibility and StaticTree 50k stay **unsupported**. Gallery `ui-benchmark` `--from-report` stays a legacy wrap | **optional** |
-| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | Same CLI/schema; returns `unsupported`. No crate or `adapter.py` | **stub** |
+| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | Optional triangulation via `engine/gpui-scenario-bench`. See GPUI paragraph below. Relative gates stay off | **optional** |
 
 Exit codes: `0` ok, `1` error, `2` unsupported. CI must distinguish 2 from 1.
 
@@ -128,12 +127,12 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | StaticTree 100/1k/5k/10k | `nana-runtime-benchmark` + `nana-scene-benchmark` | enqueue, commit, initial systems (when present); `frames_after_idle` after settle; scene extraction/idle/frame-graph | memory/allocations not exported |
 | StaticTree 50k | **unsupported** (incomparable) | Nana `nana-runtime-benchmark` is `kind=construction` only (enqueue/commit/paint/hover). Iced `scenario-bench` would otherwise run a full 50k layout+draw. Neither runner emits `ok` until both sides share that work definition. |
 | PaintOnly | `nana-runtime-benchmark` `local_paint_*` at 5k | systems P50/P95/P99, `local_paint_work` WorkCounters including `layout_nodes` when present | invariant `layout_nodes == 0` is evaluable when the field is present; missing stays **not-evaluable** |
-| Text / LayoutStyle | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | 5k full case. Iced `scenario-bench` Mutation is same-scenario for these kinds only (5k heap, single node); GPUI stays unsupported |
+| Text / LayoutStyle | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | 5k full case. Iced/GPUI `scenario-bench` Mutation is same-scenario for these kinds only (5k heap, single node) |
 | Visibility / Transform / Accessibility | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | Iced stays **unsupported** (exit 2). Height-0, Shadow, or widget Id is not Nana `hidden` / `PaintTransform.e` / `set_accessibility`. |
-| Hover | `nana-runtime-benchmark` `pointer_hover_*` | only when the report has `nodes == 10000`; `pointer_hover_work` WorkCounters when present | otherwise **unsupported** (exit 2). Do not substitute a smaller tree. `layout_nodes == 0` is evaluable when the field is present. Iced `scenario-bench` Hover is same-scenario at 10k; GPUI stays unsupported |
-| VirtualList 10k/100k/1M | `nana-framework-benchmark` `virtual_scales` (legacy `virtual_list_10k_*` fallback) | materialize/window; `live_ui_entities` when `virtual_scales` exists | Nana runner passes catalog window (`visible×extent` viewport, `overscan×extent` px; 10k/100k: 800 / 160 / 20). Standalone binary still defaults to 200px overscan. 1M needs `NANA_PERF_SCALE=large` or the scale row is skipped (runner exit 2). Iced materializes only that catalog window; GPUI stays unsupported |
+| Hover | `nana-runtime-benchmark` `pointer_hover_*` | only when the report has `nodes == 10000`; `pointer_hover_work` WorkCounters when present | otherwise **unsupported** (exit 2). Do not substitute a smaller tree. `layout_nodes == 0` is evaluable when the field is present. Iced/GPUI `scenario-bench` Hover is same-scenario at 10k |
+| VirtualList 10k/100k/1M | `nana-framework-benchmark` `virtual_scales` (legacy `virtual_list_10k_*` fallback) | materialize/window; `live_ui_entities` when `virtual_scales` exists | Nana runner passes catalog window (`visible×extent` viewport, `overscan×extent` px; 10k/100k: 800 / 160 / 20). Standalone binary still defaults to 200px overscan. 1M needs `NANA_PERF_SCALE=large` or the scale row is skipped (runner exit 2). Iced/GPUI materialize only that catalog window |
 | VirtualTree 10k/100k/1M | `nana-framework-benchmark` `virtual_scales` `kind=tree` | Fenwick `VirtualTreeLayout` construction (expanded parent+2-leaf forest) + window + `materialize_virtual_tree`; `live_ui_entities` | Same catalog list window as VirtualList (10k/100k: 800 / 160 / 20). Standalone / weekly default stays 200px overscan. 1M needs `NANA_PERF_SCALE=large` or the scale row is skipped (runner exit 2). Empty `status=ok` without `materialize_ms` / `live_ui_entities` is forbidden. Iced/GPUI stay **unsupported** (exit 2); a VirtualList window is not a disclosure tree |
-| Table / `text-table` | `nana-framework-benchmark` `virtual_scales` `kind=table` 10k×100 | materialize/window, `live_ui_entities`, WorkCounters text shaping/cache (`text_shaped`, `text_shaped_runs`, `text_layout_cache_hits`/`misses`, `text_wrap_layouts`, `cache_eviction`, `glyph_cache_hits`/`misses` from the bench `MeasureTextShaper` em-width `GlyphCache`); catalog `wrapped_cells` copied | §8.1 requires `glyph_cache_hits ≥ 1` and `glyph_cache_misses ≥ 1` on that em-width cache, not the product `NanaTextShaper` hinter. wrap/eviction attendance is not this gate. Nana runner passes the catalog table window (`visible` 16×40, `overscan` 2×8 → 1280×800 / 160×160 px at 80×20). Standalone / weekly default stays 10-row overscan (`TABLE_OVERSCAN.y=200`). A leftover 200 px report KeyErrors. Iced `scenario-bench` Table is same-scenario on that catalog window (virtualized cells only; no invented `text_shaped`). GPUI stays unsupported. 100k table is extra binary coverage, not a catalog id. 1M table needs `NANA_PERF_SCALE=large` |
+| Table / `text-table` | `nana-framework-benchmark` `virtual_scales` `kind=table` 10k×100 | materialize/window, `live_ui_entities`, WorkCounters text shaping/cache (`text_shaped`, `text_shaped_runs`, `text_layout_cache_hits`/`misses`, `text_wrap_layouts`, `cache_eviction`, `glyph_cache_hits`/`misses` from the bench `MeasureTextShaper` em-width `GlyphCache`); catalog `wrapped_cells` copied | §8.1 requires `glyph_cache_hits ≥ 1` and `glyph_cache_misses ≥ 1` on that em-width cache, not the product `NanaTextShaper` hinter. wrap/eviction attendance is not this gate. Nana runner passes the catalog table window (`visible` 16×40, `overscan` 2×8 → 1280×800 / 160×160 px at 80×20). Standalone / weekly default stays 10-row overscan (`TABLE_OVERSCAN.y=200`). A leftover 200 px report KeyErrors. Iced `scenario-bench` Table is same-scenario on that catalog window (virtualized cells only; no invented `text_shaped`). GPUI same-scenario on that window. 100k table is extra binary coverage, not a catalog id. 1M table needs `NANA_PERF_SCALE=large` |
 | Animation | `nana-runtime-benchmark` `catalog_animation` on an isolated UiWorld | idle/scheduled `next_animation_deadline` + `advance_animations`; records `due_animation_samples` / `scheduled_animations` plus `work.animation_deadlines_scanned` / `work.animations_considered` from the sparse due-index advance | Hotspots `animations_considered ≤ 8` and `animation_deadlines_scanned ≤ 8` (live dump 1 of 64). Full-table 64 fails even if the other counter stays 1; modest extra due samples must not. `due==1` is attendance, not the pass. Missing field stays **not-evaluable**. Iced/GPUI stay **unsupported**. A tweening widget is not that scheduler work. |
 | Ime | `nana-framework-benchmark` `catalog_workloads` ime | `set_ime_preedit` / `commit_ime` on a focused TextInput for latin/zh/ja/ko | Hotspot `layout_nodes == 0` from the live dump. `ime_script_count==4` is attendance, not the pass. Full-tree IME layout must fail. Iced/GPUI stay **unsupported**. `text_input` typing is not that dirty work. |
 | Dock | `nana-framework-benchmark` `catalog_workloads` dock-workspace | `assemble_dock` of `eight_pane_root` + `adjust_focused_dock_split`; catalog `panes=8` | Hotspot: `layout_nodes ≤ 40` and `render_nodes_changed ≤ 40` (live dump 25 / 33 of 45). Full-tree 45 fails; one extra chrome node must not. `panes==8` is not the pass. Iced stays **unsupported** (exit 2). Topology-only `pane_grid` is not Nana chrome rebuild. GPUI stays unsupported. |
@@ -145,8 +144,14 @@ Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintO
 
 `overscan_rows`: catalog Table (and list/tree) overscan is **8 rows**. Iced copies that catalog param; Nana `nana-framework-benchmark` writes `mounted − visible`. Do not equate the two fields — compare windows via `list_overscan_px` / `table_overscan_y_px`. Nana extract is `same-scenario` only when the dump declares the catalog window (`list_viewport_px` / `list_overscan_px` / `list_item_extent_px`, or the table viewport/overscan/extent px fields); missing fields stay `closest-legacy-reference`. `window_ms` is index arithmetic (Fenwick lookup may round to 0); judged work is `materialize_ms` + `live_ui_entities`, not `window_ms`.
 
-GPUI: no crate, workspace member, or adapter exists. Fake GPUI numbers stay
-forbidden. A future `perf/runners/gpui/adapter.py` would be #12 observation only.
+GPUI: `engine/gpui-scenario-bench` (crates.io `gpui` 0.2.2 `TestAppContext`) plus
+`perf/runners/gpui/adapter.py` run the same Scenario JSON. Wired kinds match Iced
+(StaticTree 100/1k/5k/10k, Mutation PaintOnly/Text/LayoutStyle, Hover 10k,
+VirtualList catalog window, text-table catalog-8). `present_ms` and
+`frames_after_idle` are omitted (no GPU present / no idle observer); do not
+invent 0. Other kinds stay **unsupported** (exit 2). Envelope
+`relative_gate_enforceable` stays **False**. Laptop dumps and weekly GHA are not
+a named fixed machine.
 
 `--from-report` maps a JSON the binaries already wrote. `--print-plan` prints
 the cargo command without running it.

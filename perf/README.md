@@ -42,11 +42,16 @@ python3 perf/runners/iced/run.py --scenario dock-workspace --output /tmp/iced-do
 python3 perf/runners/iced/run.py --scenario text-editor --output /tmp/iced-text-editor.json           # expected exit 2
 python3 perf/runners/iced/run.py --scenario gpu-scene-ui --output /tmp/iced-gpu-scene-ui.json          # expected exit 2
 python3 perf/runners/iced/run.py --scenario static-tree-50k --output /tmp/iced-static-tree-50k.json   # expected exit 2 (incomparable)
-python3 perf/runners/gpui/run.py --scenario virtual-list-10k --output /tmp/gpui-virtual-list-10k.json  # expected exit 2
+python3 perf/runners/gpui/run.py --print-plan --scenario static-tree-100
+python3 perf/runners/gpui/run.py --scenario static-tree-100 --output /tmp/gpui-static-tree-100.json
+python3 perf/runners/gpui/run.py --scenario gpu-scene-ui --output /tmp/gpui-gpu-scene-ui.json  # expected exit 2
+python3 perf/runners/gpui/run.py --scenario static-tree-100 --from-report perf/fixtures/gpui-scenario-static-tree-100.json
 ```
 
-GPUI is a stub: it prints `status: unsupported` and exits **2**. Exit **1** is a
-real failure. Fake GPUI numbers are forbidden.
+GPUI ``engine/gpui-scenario-bench`` is a crates.io ``gpui`` 0.2.2 TestAppContext
+adapter. Wired kinds match Iced; others stay **unsupported** (exit **2**).
+``present_ms`` / ``frames_after_idle`` are omitted (not 0). Relative multipliers
+stay off. Laptop fixtures are not a named fixed-machine baseline.
 
 `--from-report` maps an already-produced `nana-*-benchmark` /
 `nana-gpu-scene-benchmark` / `scenario-bench` / Gallery `ui-benchmark` JSON

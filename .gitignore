@@ -1,5 +1,6 @@
 /target/
 /target-android/
+/engine/gpui-scenario-bench/target/
 .DS_Store
 /perf/reports/**
 !/perf/reports/.gitkeep

@@ -22,7 +22,7 @@ members = [
     "examples/native-rhi-probe",
     "examples/runtime-host-fixture",
 ]
-exclude = ["engine/iced"]
+exclude = ["engine/iced", "engine/gpui-scenario-bench"]
 resolver = "2"
 
 [workspace.dependencies]
