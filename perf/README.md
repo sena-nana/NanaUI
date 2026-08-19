@@ -60,13 +60,6 @@ copies that catalog param; Nana writes `mounted − visible`. Compare windows vi
 (Fenwick lookup may round to 0); judged work is `materialize_ms` +
 `live_ui_entities`, not `window_ms`.
 
-`--evaluate-invariants` consumes those runner envelopes (files or a directory)
-and re-runs the catalog §8.1 rows through the same `evaluate_invariants` engine.
-It judges Nana envelopes; Iced/GPUI reports skip. Missing
-`work_counters.layout_nodes` stays not-evaluable / skip, never envelope-ok.
-Exit 0 if judged Nana envelopes passed. Exit 1 if an invariant failed, or
-a gated Nana id present in the set was skipped next to other oks. A PR
-`invariants/` directory (or `--require-honest-ok`) also fails when a
-gated id is missing; weekly `weekly/` does not require macos-only
-`gpu-scene-ui`. Exit 2 if every report was skipped/unsupported. Judged vs
-skipped Nana ids: [`performance-contract.md`](../docs/performance-contract.md) §8.1.
+`--evaluate-invariants` judges Nana runner envelopes. Exit codes,
+`invariants/` completeness vs `weekly/`, and gated ids:
+[`performance-contract.md`](../docs/performance-contract.md) §8.1.

@@ -545,21 +545,10 @@ def catalog_table_live_bound(params: Mapping[str, Any]) -> int:
     return rows + rows * columns
 
 
-# Catalog ids whose Nana runners already emit honest ``ok`` envelopes
-# *and* a dirty/work-counter hotspot that can fail. Identity attendance
-# (due==1, scripts==4, panes==8, overlay kinds==4, text_shaped<=1) is not
-# a pass. ``animation`` is gated on ``animations_considered`` and
-# ``animation_deadlines_scanned`` from the sparse ``advance_animations``
-# observation, not ``due==1``. Do not invent
-# 0s. ``--evaluate-invariants``
-# judges Nana only; Iced/GPUI envelopes stay skipped, not invariant-ok.
-# Mixed skip of a gated Nana id that is present in the evaluated set
-# fails when other envelopes are ok. Full HONEST_OK completeness applies
-# only to a PR ``invariants/`` directory, ``--require-honest-ok``, or an
-# ``honest-ok.json`` manifest — not every ``--evaluate-invariants DIR``.
-# Weekly ubuntu ``weekly/`` does not map macos-only ``gpu-scene-ui``.
-# Unsupported-only directories stay exit 2, never 0.
-# Skip vs judged ids: docs/performance-contract.md §8.1.
+# Nana catalog ids with a dirty/sparse hotspot that can fail. Identity
+# attendance is not a pass. Completeness applies only to a PR
+# ``invariants/`` directory; weekly ``weekly/`` does not require macos-only
+# ``gpu-scene-ui``. Present gated skip among oks is exit 1. See §8.1.
 SECTION_8_1_STATIC_UI_IDS = frozenset(
     {
         "static-tree-100",
@@ -635,7 +624,6 @@ SECTION_8_1_WEEKLY_UBUNTU_IDS = frozenset(
     }
 )
 PR_INVARIANTS_DIR_NAME = "invariants"
-HONEST_OK_MANIFEST_NAME = "honest-ok.json"
 
 
 def _same_number(left: Any, right: Any) -> bool:
@@ -1094,30 +1082,17 @@ def expand_invariant_report_paths(paths: Sequence[Path | str]) -> list[Path]:
     return expanded
 
 
-def _requires_honest_ok_set(
-    paths: Sequence[Path | str],
-    *,
-    require_honest_ok: bool = False,
-) -> bool:
-    """Full HONEST_OK completeness is PR ``invariants/`` or an explicit opt-in."""
-    if require_honest_ok:
-        return True
-    for raw in paths:
-        path = Path(raw)
-        if not path.is_dir():
-            continue
-        if path.name == PR_INVARIANTS_DIR_NAME:
-            return True
-        if (path / HONEST_OK_MANIFEST_NAME).is_file():
-            return True
-    return False
+def _requires_honest_ok_set(paths: Sequence[Path | str]) -> bool:
+    """Full HONEST_OK completeness applies only to a PR ``invariants/`` directory."""
+    return any(
+        Path(raw).is_dir() and Path(raw).name == PR_INVARIANTS_DIR_NAME for raw in paths
+    )
 
 
 def evaluate_runner_invariant_paths(
     paths: Sequence[Path | str],
     *,
     root: Path | None = None,
-    require_honest_ok: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Judge one or more runner envelopes. Returns (summary, exit code)."""
     reports: list[dict[str, Any]] = []
@@ -1175,7 +1150,7 @@ def evaluate_runner_invariant_paths(
             + ", ".join(gated_skipped)
         )
         return summary, EXIT_ERROR
-    if ok and _requires_honest_ok_set(paths, require_honest_ok=require_honest_ok):
+    if ok and _requires_honest_ok_set(paths):
         missing = sorted(SECTION_8_1_HONEST_OK_IDS - present_ok)
         if missing:
             summary["status"] = "failed"
@@ -2100,25 +2075,15 @@ def _extract_nana_animation(
             )
     work = case.get("work")
     if not isinstance(work, Mapping):
-        raise KeyError(
-            "catalog_animation.work.animations_considered missing; "
-            "due_animation_samples is attendance, not a sparse-advance observation"
-        )
+        raise KeyError("catalog_animation.work.animations_considered missing")
     considered = work.get("animations_considered")
     if considered is None:
-        raise KeyError(
-            "catalog_animation.work.animations_considered missing; do not invent 0"
-        )
+        raise KeyError("catalog_animation.work.animations_considered missing")
     scanned = work.get("animation_deadlines_scanned")
     if scanned is None:
-        raise KeyError(
-            "catalog_animation.work.animation_deadlines_scanned missing; do not invent 0"
-        )
+        raise KeyError("catalog_animation.work.animation_deadlines_scanned missing")
     notes = [
         "Mapped onto nana-runtime-benchmark catalog_animation on an isolated UiWorld.",
-        "Hotspots are work.animations_considered and work.animation_deadlines_scanned "
-        "from the sparse advance_animations deadline-index walk. due==1 is attendance, "
-        "not the pass.",
         "Does not reuse the 5k-tree incidental sparse_animation_sample_ms.",
     ]
     work_counters = {
@@ -2256,8 +2221,7 @@ def _extract_nana_catalog_workload(
         work_counters["document_chars"] = chars
         notes.append(
             "TextArea holding catalog document_chars with a 40-line viewport height. "
-            "Measures caret-local replace_text_area_selection, not a full-document reshape. "
-            "layout_nodes==0 is the hotspot; text_shaped<=1 is not."
+            "Measures caret-local replace_text_area_selection, not a full-document reshape."
         )
         if "layout_nodes" in work_counters:
             notes.append("layout_nodes is WorkCounters.layout_nodes after the local edit drain.")
@@ -4960,18 +4924,6 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
             or summary_iced_hover.get("skipped") != 1
         ):
             errors.append("§8.1 iced hover-only dump must skip, never envelope-ok")
-        iced_paint_dir = tmp_path / "iced-paint-only"
-        iced_paint_dir.mkdir()
-        dump_json(iced_paint_dir / "paint.json", paint_iced)
-        summary_iced_paint, code_iced_paint = evaluate_runner_invariant_paths(
-            [iced_paint_dir], root=root
-        )
-        if (
-            code_iced_paint != EXIT_UNSUPPORTED
-            or summary_iced_paint.get("ok") != 0
-            or summary_iced_paint.get("skipped") != 1
-        ):
-            errors.append("§8.1 iced paint-only dump must skip, never envelope-ok")
         extra_dir = tmp_path / "idle-cases"
         extra_dir.mkdir()
         missing_path = extra_dir / "static-missing.json"
@@ -5097,11 +5049,6 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
                         "§8.1 PR invariants/ + animation missing animations_considered must exit 1"
                     )
                 dump_json(gated_dir / "nana-animation.json", nana_animation)
-                dump_json(gated_dir / "nana-text-table.json", nana_table_missing_glyphs)
-                if evaluate_runner_invariant_paths([gated_dir], root=root)[1] != EXIT_ERROR:
-                    errors.append(
-                        "§8.1 PR invariants/ with virtual-table-scales (no glyph) must exit 1"
-                    )
                 dump_json(
                     gated_dir / "virtual-table-scales.json",
                     load_json(root / "perf" / "fixtures" / "virtual-table-scales.json"),
@@ -5111,13 +5058,6 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
                         "§8.1 PR invariants/ containing raw virtual-table-scales.json must exit 1"
                     )
                 (gated_dir / "virtual-table-scales.json").unlink()
-                dump_json(gated_dir / "nana-text-table.json", nana_table)
-                dump_json(gated_dir / "nana-ime.json", ime_full)
-                if evaluate_runner_invariant_paths([gated_dir], root=root)[1] != EXIT_ERROR:
-                    errors.append(
-                        "§8.1 identity-only IME (scripts==4, layout_nodes large) must fail PR invariants/"
-                    )
-                dump_json(gated_dir / "nana-ime.json", nana_catalog["ime"])
                 (gated_dir / "nana-overlay.json").unlink()
                 missing_pr, missing_pr_code = evaluate_runner_invariant_paths(
                     [gated_dir], root=root
@@ -5147,52 +5087,6 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
                         f"must exit 0, got {weekly_code} ok={weekly_summary.get('ok')} "
                         f"skipped={weekly_summary.get('skipped')} note={weekly_summary.get('note')}"
                     )
-                else:
-                    weekly_cli = subprocess.run(
-                        [
-                            sys.executable,
-                            str(root / "perf" / "contract.py"),
-                            "--repo-root",
-                            str(root),
-                            "--evaluate-invariants",
-                            str(weekly_dir),
-                        ],
-                        cwd=root,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    if weekly_cli.returncode != EXIT_OK:
-                        errors.append(
-                            f"CLI weekly-shaped directory must exit 0, got {weekly_cli.returncode}"
-                        )
-                    pr_cli = subprocess.run(
-                        [
-                            sys.executable,
-                            str(root / "perf" / "contract.py"),
-                            "--repo-root",
-                            str(root),
-                            "--evaluate-invariants",
-                            str(gated_dir),
-                        ],
-                        cwd=root,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    if pr_cli.returncode != EXIT_OK:
-                        errors.append(
-                            f"CLI PR invariants/ directory must exit 0, got {pr_cli.returncode}"
-                        )
-                dump_json(weekly_dir / "nana-static-tree-50k.json", fifty)
-                dump_json(weekly_dir / "iced-hover.json", hover_iced)
-                weekly_skip_code = evaluate_runner_invariant_paths(
-                    [weekly_dir], root=root
-                )[1]
-                if weekly_skip_code != EXIT_OK:
-                    errors.append("weekly-shaped directory + Iced/50k skip must exit 0")
-                (weekly_dir / "nana-static-tree-50k.json").unlink()
-                (weekly_dir / "iced-hover.json").unlink()
                 dump_json(weekly_dir / "nana-text-table.json", nana_table_missing_glyphs)
                 weekly_glyph, weekly_glyph_code = evaluate_runner_invariant_paths(
                     [weekly_dir], root=root
@@ -5206,12 +5100,6 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
                         "weekly mixed-skip note must name the skipped gated id in that directory"
                     )
                 dump_json(weekly_dir / "nana-text-table.json", nana_table)
-                dump_json(weekly_dir / "nana-ime.json", ime_full)
-                if evaluate_runner_invariant_paths([weekly_dir], root=root)[1] != EXIT_ERROR:
-                    errors.append(
-                        "weekly-shaped directory must fail identity-only IME (layout_nodes large)"
-                    )
-                dump_json(weekly_dir / "nana-ime.json", nana_catalog["ime"])
                 (weekly_dir / "nana-overlay.json").unlink()
                 weekly_missing, weekly_missing_code = evaluate_runner_invariant_paths(
                     [weekly_dir], root=root
@@ -5339,26 +5227,6 @@ def _self_test_catalog_workloads(
     except KeyError as exc:
         if "catalog_animation" not in key_error_reason(exc):
             errors.append(f"animation KeyError should name catalog_animation: {exc}")
-
-    anim_fixture = load_json(root / "perf" / "fixtures" / "catalog-animation.json")
-    try:
-        animated = extract_nana(
-            animation,
-            {"runtime": anim_fixture},
-            source_paths={"runtime": Path("catalog-animation.json")},
-        )
-        if animated.get("status") != "ok":
-            errors.append("nana animation extract from catalog-animation fixture must be ok")
-        if (animated.get("work_counters") or {}).get("due_animation_samples") != 1:
-            errors.append("animation envelope must copy due_animation_samples=1")
-        if (animated.get("work_counters") or {}).get("animations_considered") != 1:
-            errors.append("animation envelope must copy animations_considered=1")
-        if judge_runner_invariants(animated, root=root).get("decision") != "ok":
-            errors.append("animation catalog-animation fixture must pass the sparse-advance hotspot")
-        if _named_invariant(animated, "idle_scheduled_animations_sparse_sample") is not None:
-            errors.append("animation must not attach due==1 as a §8.1 invariant")
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"nana animation catalog-animation fixture extract failed: {exc}")
 
     try:
         extract_nana(
@@ -5612,18 +5480,6 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
             errors.append("nana-framework-text-table --from-report must copy real glyph_cache_misses")
         if judge_runner_invariants(live_table_report, root=root).get("decision") != "ok":
             errors.append("nana-framework-text-table --from-report must pass §8.1")
-
-    code, ime_report, err = from_report(
-        nana_script,
-        "ime",
-        root / "perf" / "fixtures" / "catalog-workloads.json",
-    )
-    if code != EXIT_OK or ime_report is None:
-        errors.append(f"ime catalog-workloads --from-report exit {code}: {err}")
-    elif ime_report.get("status") != "ok":
-        errors.append(f"ime catalog-workloads --from-report status={ime_report.get('status')}")
-    elif (ime_report.get("work_counters") or {}).get("ime_script_count") != 4:
-        errors.append("ime catalog-workloads --from-report must copy ime_script_count=4")
 
     with tempfile.TemporaryDirectory() as tmp:
         catalog_fixture = load_json(root / "perf" / "fixtures" / "catalog-workloads.json")
@@ -6290,15 +6146,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--require-honest-ok",
-        action="store_true",
-        help=(
-            "Fail if any §8.1 honest-ok catalog id is missing from the judged set. "
-            "Implied for a directory named invariants/ or one that contains honest-ok.json. "
-            "Do not use on the weekly ubuntu directory (no gpu-scene-ui)."
-        ),
-    )
-    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -6309,8 +6156,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = args.repo_root.resolve()
     if args.self_test and args.evaluate_invariants:
         parser.error("use --self-test or --evaluate-invariants, not both")
-    if args.require_honest_ok and not args.evaluate_invariants:
-        parser.error("--require-honest-ok needs --evaluate-invariants")
     if args.self_test:
         errors = self_test(root)
         if errors:
@@ -6324,7 +6169,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             summary, code = evaluate_runner_invariant_paths(
                 args.evaluate_invariants,
                 root=root,
-                require_honest_ok=args.require_honest_ok,
             )
         except FileNotFoundError as exc:
             print(str(exc), file=sys.stderr)

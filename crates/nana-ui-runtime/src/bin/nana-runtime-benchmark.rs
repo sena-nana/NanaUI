@@ -106,7 +106,6 @@ struct CatalogAnimationCase {
 }
 
 /// Sparse-advance observation from [`UiWorld::advance_animations`].
-/// Not a dirty-drain guess and not `due_animation_samples` attendance.
 #[derive(Serialize, Clone, Copy)]
 struct AnimationAdvanceWork {
     animation_deadlines_scanned: usize,
