@@ -74,6 +74,7 @@ jobs:
           # the module-prefixed name. Unique function names are the filter.
           for name in \
             dirty_work_is_incremental_and_static_world_stays_idle \
+            scheduled_ui_frames_are_zero_after_static_settle_and_nonzero_when_paint_stays_dirty \
             paint_only_style_change_does_not_schedule_subtree_layout \
             pointer_hover_and_press_are_runtime_owned_and_targeted \
             parking_or_removing_the_last_presence_node_returns_the_skip_path \
@@ -100,6 +101,9 @@ jobs:
           python3 perf/runners/iced/run.py --scenario mutation-paint-only \
             --from-report perf/fixtures/iced-scenario-mutation-paint-only.json \
             --output target/performance/issue8/invariants/iced-mutation-paint-only.json
+          python3 perf/runners/iced/run.py --scenario static-tree-100 \
+            --from-report perf/fixtures/iced-scenario-static-tree-100.json \
+            --output target/performance/issue8/invariants/iced-static-tree-100.json
           python3 perf/runners/nana/run.py --scenario text-table \
             --from-report perf/fixtures/virtual-table-scales.json \
             --output target/performance/issue8/invariants/nana-text-table.json
@@ -109,4 +113,28 @@ jobs:
           python3 perf/runners/nana/run.py --scenario virtual-tree-100k \
             --from-report perf/fixtures/virtual-tree-scales.json \
             --output target/performance/issue8/invariants/nana-virtual-tree-100k.json
+          python3 perf/runners/nana/run.py --scenario static-tree-100 \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-static-tree-100.json
+          python3 perf/runners/nana/run.py --scenario static-tree-1k \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-static-tree-1k.json
+          python3 perf/runners/nana/run.py --scenario static-tree-5k \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-static-tree-5k.json
+          python3 perf/runners/nana/run.py --scenario static-tree-10k \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-static-tree-10k.json
+          python3 perf/runners/nana/run.py --scenario hover \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-hover.json
+          python3 perf/runners/nana/run.py --scenario mutation-paint-only \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-mutation-paint-only.json
+          python3 perf/runners/nana/run.py --scenario mutation-text \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-mutation-text.json
+          python3 perf/runners/nana/run.py --scenario mutation-layout-style \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-mutation-layout-style.json
           python3 perf/contract.py --evaluate-invariants target/performance/issue8/invariants

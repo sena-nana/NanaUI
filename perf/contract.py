@@ -439,12 +439,19 @@ def catalog_table_live_bound(params: Mapping[str, Any]) -> int:
 # Catalog ids whose Nana/Iced runners already emit honest ``ok`` envelopes
 # *and* a non-empty catalog ``invariants`` row. ``--evaluate-invariants``
 # judges these. Everything else is skipped, not invariant-ok — including
-# Dock / TextEditor / Animation / IME / Overlay / GpuScene / StaticTree
-# 100/1k/5k/10k/50k / GPUI even if a report is present.
-# StaticTree 100/1k/5k/10k emit comparable ok envelopes, but neither Nana nor
-# Iced exports ``frames_after_idle`` (or any idle-frame count) after settle.
-# ``idle_schedule_ms`` is a timing. Vacuous ok with an empty invariants array
-# is forbidden; keep these ids off this set until a real counter exists.
+# Dock / TextEditor / Animation / IME / Overlay / GpuScene / StaticTree 50k /
+# GPUI even if a report is present.
+# StaticTree 100/1k/5k/10k export ``metrics.frames_after_idle``
+# (docs/performance-contract.md §8.1). ``idle_schedule_ms`` is never that
+# counter. Missing the field stays skipped, not vacuous ok.
+SECTION_8_1_STATIC_UI_IDS = frozenset(
+    {
+        "static-tree-100",
+        "static-tree-1k",
+        "static-tree-5k",
+        "static-tree-10k",
+    }
+)
 SECTION_8_1_HONEST_OK_IDS = frozenset(
     {
         "mutation-paint-only",
@@ -456,14 +463,11 @@ SECTION_8_1_HONEST_OK_IDS = frozenset(
         "virtual-tree-10k",
         "virtual-tree-100k",
         "text-table",
+        *SECTION_8_1_STATIC_UI_IDS,
     }
 )
 SECTION_8_1_UNSUPPORTED_IDS = frozenset(
     {
-        "static-tree-100",
-        "static-tree-1k",
-        "static-tree-5k",
-        "static-tree-10k",
         "static-tree-50k",
         "animation",
         "ime",
@@ -676,6 +680,28 @@ def lookup_path(payload: Mapping[str, Any] | None, path: str) -> Any:
     return current
 
 
+def read_frames_after_idle(
+    payload: Mapping[str, Any] | None,
+    *,
+    required: bool,
+    source: str,
+) -> int | None:
+    """Copy a real idle-frame count. Never map idle_schedule_ms onto this field."""
+    if not isinstance(payload, Mapping) or "frames_after_idle" not in payload:
+        if required:
+            raise KeyError(
+                f"{source} must export integer frames_after_idle after settle; "
+                "idle_schedule_ms is a timing, not that counter"
+            )
+        return None
+    value = payload["frames_after_idle"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise KeyError(
+            f"{source} frames_after_idle must be a non-negative integer, not {value!r}"
+        )
+    return value
+
+
 def compare_invariant(measured: Any, op: str, expected: Any) -> bool | None:
     if op == "eq":
         return measured == expected
@@ -833,6 +859,15 @@ def judge_runner_invariants(
     if failed:
         judged["decision"] = "failed"
         judged["note"] = "work-counter invariant failed: " + ", ".join(failed)
+        return judged
+    if scenario_id in SECTION_8_1_STATIC_UI_IDS and any(
+        item.get("status") == "not-evaluable" for item in evaluated
+    ):
+        judged["decision"] = "skipped"
+        judged["note"] = (
+            "frames_after_idle missing; vacuous ok is forbidden until runners "
+            "export the idle-frame count"
+        )
         return judged
     judged["decision"] = "ok"
     return judged
@@ -1285,6 +1320,14 @@ def _extract_nana_static_tree(
         "idle_schedule_ms": percentile_fields(case.get("idle_schedule_ms")),
         "kind": kind,
     }
+    frames_after_idle = read_frames_after_idle(
+        case, required=False, source="nana-runtime-benchmark StaticTree"
+    )
+    if frames_after_idle is not None:
+        metrics["frames_after_idle"] = frames_after_idle
+        notes.append(
+            "frames_after_idle is the §8.1 idle-frame count (non-empty take_system_work drains)."
+        )
     if scene is not None:
         row = find_case_by_nodes(scene.get("rows", []), nodes)
         if row is not None:
@@ -2310,6 +2353,16 @@ def _extract_iced_scenario_bench(
             "Mapped onto engine/iced static_tree / static_tree_parent, the same "
             "complete-binary-heap rule as nana-runtime-benchmark::tree_mutations."
         )
+        metrics["frames_after_idle"] = read_frames_after_idle(
+            report, required=True, source="iced-scenario-bench StaticTree"
+        )
+        busy_probe = report.get("busy_probe_frames")
+        if isinstance(busy_probe, bool) or not isinstance(busy_probe, int) or busy_probe < 1:
+            raise KeyError(
+                "iced-scenario-bench StaticTree must export busy_probe_frames > 0 from the "
+                "live BusyPulse probe; refusing a stuffed frames_after_idle=0"
+            )
+        metrics["busy_probe_frames"] = busy_probe
     elif kind == "Mutation":
         nodes = scenario["params"]["tree_nodes"]
         mutation_kind = scenario["params"]["kind"]
@@ -2534,7 +2587,7 @@ def self_test(root: Path | None = None) -> list[str]:
 
     static_tree = load_scenario("static-tree-100", root)
     try:
-        extract_nana(
+        nana_historical = extract_nana(
             static_tree,
             {
                 "runtime": load_json(runtime_path),
@@ -2542,6 +2595,15 @@ def self_test(root: Path | None = None) -> list[str]:
             },
             source_paths={"runtime": runtime_path, "scene": scene_path},
         )
+        if "frames_after_idle" in (nana_historical.get("metrics") or {}):
+            errors.append(
+                "historical nana-runtime-benchmark JSON must not invent frames_after_idle"
+            )
+        historical_judge = judge_runner_invariants(nana_historical, root=root)
+        if historical_judge.get("decision") != "skipped":
+            errors.append(
+                "historical StaticTree without frames_after_idle must stay skipped, not vacuous ok"
+            )
     except Exception as exc:  # noqa: BLE001 — self-test must surface mapper failures
         errors.append(f"nana static-tree-100 extract failed: {exc}")
 
@@ -3370,8 +3432,24 @@ def self_test(root: Path | None = None) -> list[str]:
         errors.append("same-scenario iced extract must keep relative_gate_enforceable False")
     if iced_same.get("timing_gate_enforceable") is not False:
         errors.append("same-scenario iced extract must keep timing_gate_enforceable False")
-    if (iced_same.get("metrics") or {}).get("cpu_frame_ms", {}).get("p50") != 1.4:
-        errors.append("iced same-scenario extract must copy fixture cpu_frame_ms.p50")
+    iced_cpu = (iced_same.get("metrics") or {}).get("cpu_frame_ms") or {}
+    if not isinstance(iced_cpu.get("p50"), (int, float)):
+        errors.append("iced same-scenario extract must copy live cpu_frame_ms.p50")
+    if (iced_same.get("metrics") or {}).get("frames_after_idle") != 0:
+        errors.append("iced same-scenario extract must copy frames_after_idle=0")
+    if not isinstance((iced_same.get("metrics") or {}).get("busy_probe_frames"), int) or (
+        iced_same.get("metrics") or {}
+    ).get("busy_probe_frames", 0) < 1:
+        errors.append("iced same-scenario extract must copy live busy_probe_frames > 0")
+    iced_raw = load_json(iced_bench_path)
+    if iced_raw.get("adapter", {}).get("name") == "extractor-fixture":
+        errors.append("iced static-tree-100 fixture must be a live dump, not extractor-fixture")
+    if iced_raw.get("frames_after_idle") != 0:
+        errors.append("live iced static-tree-100 dump must have frames_after_idle=0")
+    if not isinstance(iced_raw.get("busy_probe_frames"), int) or iced_raw.get(
+        "busy_probe_frames", 0
+    ) < 1:
+        errors.append("live iced static-tree-100 dump must have busy_probe_frames > 0")
     gpui_static = gpui_unsupported(static_tree)
     if relative_gate_can_enforce(iced_same, gpui_static):
         errors.append("relative gates must stay off while GPUI is unsupported")
@@ -3640,6 +3718,34 @@ def self_test(root: Path | None = None) -> list[str]:
     except KeyError as exc:
         if "complete-binary-heap" not in key_error_reason(exc):
             errors.append(f"text-leaf KeyError should name the heap rule: {exc}")
+    heap_without_idle = {
+        "source": "iced-scenario-bench",
+        "status": "ok",
+        "scenario_id": "static-tree-100",
+        "nodes": 100,
+        "cpu_frame_ms": {"p50": 1.4, "p95": 1.7, "p99": 2.0},
+        "tree": {
+            "generation": STATIC_TREE_GENERATION,
+            "parent_rule": STATIC_TREE_PARENT_RULE,
+            "node_kind": STATIC_TREE_NODE_KIND,
+            "text": None,
+            "sample_parents": static_tree_sample_parents(100),
+        },
+    }
+    try:
+        extract_iced(static_tree, heap_without_idle, source_path=Path("heap-no-idle"))
+        errors.append("iced StaticTree without frames_after_idle must KeyError")
+    except KeyError as exc:
+        if "frames_after_idle" not in key_error_reason(exc):
+            errors.append(f"missing idle-frame KeyError should name frames_after_idle: {exc}")
+    stuffed_zero = dict(heap_without_idle)
+    stuffed_zero["frames_after_idle"] = 0
+    try:
+        extract_iced(static_tree, stuffed_zero, source_path=Path("stuffed-idle-zero"))
+        errors.append("iced StaticTree stuffed frames_after_idle=0 without busy_probe must KeyError")
+    except KeyError as exc:
+        if "busy_probe_frames" not in key_error_reason(exc):
+            errors.append(f"stuffed idle-0 KeyError should name busy_probe_frames: {exc}")
     errors.extend(_self_test_section_8_1_runner_invariants(root))
     return errors
 
@@ -3687,18 +3793,29 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         "static-tree-10k",
     )
     for scenario_id in static_tree_ids:
-        if scenario_id in SECTION_8_1_HONEST_OK_IDS:
-            errors.append(
-                f"{scenario_id} must not be §8.1 honest-ok without frames_after_idle"
-            )
-        if scenario_id not in SECTION_8_1_UNSUPPORTED_IDS:
-            errors.append(f"{scenario_id} must stay §8.1 skipped, not invariant-ok")
+        if scenario_id not in SECTION_8_1_HONEST_OK_IDS:
+            errors.append(f"{scenario_id} must be §8.1 honest-ok once frames_after_idle exists")
+        if scenario_id in SECTION_8_1_UNSUPPORTED_IDS:
+            errors.append(f"{scenario_id} must leave §8.1 unsupported once idle frames exist")
         static_scenario = load_scenario(scenario_id, root)
-        if static_scenario.get("invariants"):
-            errors.append(
-                f"{scenario_id} must not invent an idle invariant until runners "
-                "export frames_after_idle"
-            )
+        specs = static_scenario.get("invariants") or []
+        if not specs:
+            errors.append(f"{scenario_id} must declare static_ui frames_after_idle == 0")
+        else:
+            spec = specs[0]
+            if (
+                spec.get("name") != "static_ui"
+                or spec.get("path") != "metrics.frames_after_idle"
+                or spec.get("op") != "eq"
+                or spec.get("value") != 0
+            ):
+                errors.append(
+                    f"{scenario_id} idle invariant must be static_ui metrics.frames_after_idle == 0"
+                )
+    if "static-tree-50k" not in SECTION_8_1_UNSUPPORTED_IDS:
+        errors.append("static-tree-50k must stay §8.1 skipped")
+    if "static-tree-50k" in SECTION_8_1_HONEST_OK_IDS:
+        errors.append("static-tree-50k must not be §8.1 honest-ok")
     for scenario_id in sorted(SECTION_8_1_HONEST_OK_IDS):
         specs = load_scenario(scenario_id, root).get("invariants") or []
         if not specs:
@@ -3740,6 +3857,17 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
             {"framework": load_json(root / "perf" / "fixtures" / "virtual-scales-only.json")},
             source_paths={
                 "framework": root / "perf" / "fixtures" / "virtual-scales-only.json"
+            },
+        )
+        nana_static = extract_nana(
+            load_scenario("static-tree-100", root),
+            {
+                "runtime": load_json(
+                    root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
+                )
+            },
+            source_paths={
+                "runtime": root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -3786,6 +3914,11 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     nana_list_judge = judge_runner_invariants(nana_list, root=root)
     if nana_list_judge.get("decision") != "ok":
         errors.append("nana virtual-list-100k fixture envelope must pass §8.1")
+    nana_static_judge = judge_runner_invariants(nana_static, root=root)
+    if nana_static_judge.get("decision") != "ok":
+        errors.append("nana static-tree-100 fixture envelope must pass §8.1")
+    if _named_invariant_status(nana_static_judge, "static_ui") != "ok":
+        errors.append("nana StaticTree 100 must evaluate static_ui frames_after_idle==0")
 
     hover_judge = judge_runner_invariants(hover_iced, root=root)
     if hover_judge.get("decision") != "ok":
@@ -3794,16 +3927,28 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         errors.append("iced hover without layout_nodes must stay not-evaluable, not 0")
 
     static_judge = judge_runner_invariants(static_iced, root=root)
-    if static_judge.get("decision") != "skipped":
-        errors.append("StaticTree 100 ok envelope must be skipped, not vacuous invariant-ok")
+    if static_judge.get("decision") != "ok":
+        errors.append("StaticTree 100 idle envelope with frames_after_idle=0 must pass §8.1")
+    if _named_invariant_status(static_judge, "static_ui") != "ok":
+        errors.append("StaticTree 100 must evaluate static_ui frames_after_idle==0")
+    if (static_iced.get("metrics") or {}).get("frames_after_idle") != 0:
+        errors.append("iced StaticTree fixture extract must copy frames_after_idle=0")
     fake_busy = copy.deepcopy(static_iced)
     fake_busy["frames_after_idle"] = 1
     metrics = dict(fake_busy.get("metrics") or {})
     metrics["frames_after_idle"] = 1
     fake_busy["metrics"] = metrics
-    if judge_runner_invariants(fake_busy, root=root).get("decision") != "skipped":
+    busy_judge = judge_runner_invariants(fake_busy, root=root)
+    if busy_judge.get("decision") != "failed":
+        errors.append("StaticTree frames_after_idle=1 must fail §8.1 static_ui")
+    missing_idle = copy.deepcopy(static_iced)
+    missing_metrics = dict(missing_idle.get("metrics") or {})
+    missing_metrics.pop("frames_after_idle", None)
+    missing_idle["metrics"] = missing_metrics
+    missing_idle.pop("frames_after_idle", None)
+    if judge_runner_invariants(missing_idle, root=root).get("decision") != "skipped":
         errors.append(
-            "StaticTree fake frames_after_idle must stay skipped until a catalog row exists"
+            "StaticTree missing frames_after_idle must stay skipped, not vacuous ok"
         )
 
     paint_judge = judge_runner_invariants(paint_iced, root=root)
@@ -3895,12 +4040,30 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
             [static_only], root=root
         )
         if (
-            code_static != EXIT_UNSUPPORTED
-            or summary_static.get("status") != "unsupported"
-            or summary_static.get("ok") != 0
-            or summary_static.get("skipped") != 1
+            code_static != EXIT_OK
+            or summary_static.get("status") != "ok"
+            or summary_static.get("ok") != 1
+            or summary_static.get("skipped") != 0
         ):
-            errors.append("§8.1 StaticTree-only dump must skip (not vacuous ok)")
+            errors.append("§8.1 StaticTree-only dump with frames_after_idle=0 must pass")
+        extra_dir = tmp_path / "idle-cases"
+        extra_dir.mkdir()
+        missing_path = extra_dir / "static-missing.json"
+        dump_json(missing_path, missing_idle)
+        summary_missing, code_missing = evaluate_runner_invariant_paths(
+            [missing_path], root=root
+        )
+        if (
+            code_missing != EXIT_UNSUPPORTED
+            or summary_missing.get("status") != "unsupported"
+            or summary_missing.get("skipped") != 1
+        ):
+            errors.append("§8.1 StaticTree missing frames_after_idle must skip")
+        busy_path = extra_dir / "static-busy.json"
+        dump_json(busy_path, fake_busy)
+        summary_busy, code_busy = evaluate_runner_invariant_paths([busy_path], root=root)
+        if code_busy != EXIT_ERROR or summary_busy.get("status") != "failed":
+            errors.append("§8.1 StaticTree frames_after_idle=1 must fail")
         mixed, mixed_code = evaluate_runner_invariant_paths(
             [pass_path, skip_path], root=root
         )
@@ -4215,6 +4378,68 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
             errors.append("iced-scenario-bench --from-report must keep relative gates off")
         if iced_report.get("status") != "ok":
             errors.append(f"iced-scenario-bench --from-report status={iced_report.get('status')}")
+        elif (iced_report.get("metrics") or {}).get("frames_after_idle") != 0:
+            errors.append("iced static-tree-100 --from-report must copy frames_after_idle=0")
+        if not isinstance((iced_report.get("metrics") or {}).get("busy_probe_frames"), int) or (
+            iced_report.get("metrics") or {}
+        ).get("busy_probe_frames", 0) < 1:
+            errors.append("iced static-tree-100 --from-report must copy busy_probe_frames > 0")
+
+    nana_static_live = root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
+    nana_live = load_json(nana_static_live)
+    if nana_live.get("profile") != "release" or nana_live.get("storage") == "extractor-fixture":
+        errors.append("nana-runtime-static-tree.json must be a live release dump")
+    live_cases = {
+        case.get("nodes"): case
+        for case in nana_live.get("cases") or []
+        if isinstance(case, Mapping)
+    }
+    for nodes in (100, 1000, 5000, 10000):
+        case = live_cases.get(nodes)
+        if not isinstance(case, Mapping) or case.get("kind") != "full":
+            errors.append(f"live nana dump must include kind=full nodes={nodes}")
+        elif case.get("frames_after_idle") != 0:
+            errors.append(f"live nana nodes={nodes} must have frames_after_idle=0")
+    fifty_case = live_cases.get(50000)
+    if isinstance(fifty_case, Mapping) and "frames_after_idle" in fifty_case:
+        errors.append("live nana 50k construction must omit frames_after_idle")
+    hover_case = live_cases.get(10000)
+    if not isinstance(hover_case, Mapping) or "pointer_hover_transition_ms" not in hover_case:
+        errors.append("live nana dump must include 10k pointer_hover_transition_ms")
+    mut_case = live_cases.get(5000)
+    if not isinstance(mut_case, Mapping) or "local_paint_systems_ms" not in mut_case:
+        errors.append("live nana dump must include 5k local_paint_systems_ms")
+    else:
+        block = mut_case.get("single_node_mutations") or {}
+        for kind in ("Text", "LayoutStyle"):
+            if kind not in block:
+                errors.append(f"live nana dump must include 5k single_node_mutations.{kind}")
+
+    for scenario_id in (
+        "static-tree-100",
+        "static-tree-1k",
+        "static-tree-5k",
+        "static-tree-10k",
+        "hover",
+        "mutation-paint-only",
+        "mutation-text",
+        "mutation-layout-style",
+    ):
+        code, nana_static_report, err = from_report(
+            nana_script,
+            scenario_id,
+            nana_static_live,
+        )
+        if code != EXIT_OK or nana_static_report is None:
+            errors.append(f"nana {scenario_id} --from-report exit {code}: {err}")
+        elif nana_static_report.get("status") != "ok":
+            errors.append(
+                f"nana {scenario_id} --from-report status={nana_static_report.get('status')}"
+            )
+        elif scenario_id.startswith("static-tree-") and (
+            nana_static_report.get("metrics") or {}
+        ).get("frames_after_idle") != 0:
+            errors.append(f"nana {scenario_id} --from-report must copy frames_after_idle=0")
 
     hover_iced = subprocess.run(
         [

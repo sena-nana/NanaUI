@@ -69,7 +69,11 @@ python3 perf/runners/iced/run.py --scenario gpu-scene-ui         # expected exit
 python3 perf/runners/nana/run.py --scenario mutation-paint-only --output target/performance/issue8/nana-mutation-paint-only.json
 python3 perf/runners/iced/run.py --scenario static-tree-100 --from-report docs/performance/2026-08-14-issue7-phase0-iced.json
 python3 perf/runners/iced/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase0-iced.json   # expected exit 2
-python3 perf/runners/nana/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase3-runtime.json   # expected exit 2 until a 10k hover case exists
+python3 perf/runners/nana/run.py --scenario hover --from-report perf/fixtures/nana-runtime-static-tree.json
+python3 perf/runners/nana/run.py --scenario mutation-paint-only --from-report perf/fixtures/nana-runtime-static-tree.json
+python3 perf/runners/nana/run.py --scenario static-tree-100 --from-report perf/fixtures/nana-runtime-static-tree.json
+python3 perf/runners/iced/run.py --scenario static-tree-100 --from-report perf/fixtures/iced-scenario-static-tree-100.json
+python3 perf/runners/nana/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase3-runtime.json   # expected exit 2: phase3 has no 10k hover; current nana-runtime-benchmark bench_full includes 10k hover
 python3 perf/runners/gpui/run.py --scenario virtual-list-10k   # expected exit 2
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --output target/performance/runtime.json
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --output target/performance/framework.json
