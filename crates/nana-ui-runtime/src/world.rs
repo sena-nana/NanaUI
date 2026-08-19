@@ -347,6 +347,7 @@ pub struct UiWorld {
     pending_hot_allocations: Cell<usize>,
     pending_hot_allocated_bytes: Cell<usize>,
     text_layout_cache: crate::text_layout_cache::TextLayoutCache,
+    glyph_cache: crate::GlyphCache,
     /// Live Confirm modal frames. Extract, a11y, and hit-test skip ancestor
     /// confirm walks when this is zero.
     confirm_modals: usize,
@@ -398,6 +399,7 @@ impl UiWorld {
             pending_hot_allocations: Cell::new(0),
             pending_hot_allocated_bytes: Cell::new(0),
             text_layout_cache: crate::text_layout_cache::TextLayoutCache::default(),
+            glyph_cache: crate::GlyphCache::default(),
             confirm_modals: 0,
             clip_visuals: 0,
             z_index_nodes: 0,
@@ -718,8 +720,10 @@ impl UiWorld {
         let mut work = SystemWork {
             generation: self.generation,
             style: Vec::new(),
+            state: Vec::new(),
             text: Vec::new(),
             layout: Vec::new(),
+            transform: Vec::new(),
             input_hit_test: Vec::new(),
             focus_ime: Vec::new(),
             accessibility: Vec::new(),
@@ -786,8 +790,10 @@ impl UiWorld {
         };
         bump_list(dirty_len);
         bump_list(work.style.len());
+        bump_list(work.state.len());
         bump_list(work.text.len());
         bump_list(work.layout.len());
+        bump_list(work.transform.len());
         bump_list(work.input_hit_test.len());
         bump_list(work.focus_ime.len());
         bump_list(work.accessibility.len());
@@ -823,8 +829,10 @@ impl UiWorld {
     pub fn restore_system_work(&mut self, work: SystemWork) {
         for (ids, bit) in [
             (work.style, DirtyMask::STYLE),
+            (work.state, DirtyMask::STATE),
             (work.text, DirtyMask::TEXT),
             (work.layout, DirtyMask::LAYOUT),
+            (work.transform, DirtyMask::TRANSFORM),
             (work.input_hit_test, DirtyMask::INPUT),
             (work.focus_ime, DirtyMask::FOCUS_IME),
             (work.accessibility, DirtyMask::ACCESSIBILITY),
@@ -1171,9 +1179,10 @@ impl UiWorld {
     ) -> Result<(), UiWorldError> {
         self.resolve_presentations(ids)?;
         // Production adapter: every host shaper (MeasureTextShaper, NanaTextShaper,
-        // tests) is wrapped once so lookup/insert hit the same UiWorld cache.
+        // tests) is wrapped once so lookup/insert hit the same UiWorld caches.
         let mut cache = std::mem::take(&mut self.text_layout_cache);
-        let mut shaper = CountingShaper::new(shaper, &mut cache);
+        let mut glyphs = std::mem::take(&mut self.glyph_cache);
+        let mut shaper = CountingShaper::new(shaper, &mut cache, &mut glyphs);
         if !ids.is_empty() {
             self.record_hot_path_allocation(
                 1,
@@ -1191,6 +1200,7 @@ impl UiWorld {
             if !self.contains(id) {
                 drop(shaper);
                 self.text_layout_cache = cache;
+                self.glyph_cache = glyphs;
                 return Err(UiWorldError::MissingNode(id));
             }
             let presentation = self.text_input_presentation_source(id);
@@ -1255,10 +1265,15 @@ impl UiWorld {
         let wrap_layouts = shaper.wrap_layouts;
         drop(shaper);
         let (hits, misses, evictions) = cache.take_counters();
+        let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
+        self.glyph_cache = glyphs;
         self.bump_last_counters(|counters| {
             counters.record_text_shape(runs, hits, misses, wrap_layouts);
             counters.record_cache_eviction(evictions);
+            if let Some((glyph_hits, glyph_misses)) = glyph_stats {
+                counters.record_glyph_cache(glyph_hits, glyph_misses);
+            }
         });
         Ok(())
     }
@@ -1273,7 +1288,8 @@ impl UiWorld {
     ) -> Result<bool, UiWorldError> {
         // Same production adapter as [`Self::shape_text`].
         let mut cache = std::mem::take(&mut self.text_layout_cache);
-        let mut shaper = CountingShaper::new(shaper, &mut cache);
+        let mut glyphs = std::mem::take(&mut self.glyph_cache);
+        let mut shaper = CountingShaper::new(shaper, &mut cache, &mut glyphs);
         let mut shaped = Vec::new();
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
@@ -1379,10 +1395,15 @@ impl UiWorld {
         let wrap_layouts = shaper.wrap_layouts;
         drop(shaper);
         let (hits, misses, evictions) = cache.take_counters();
+        let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
+        self.glyph_cache = glyphs;
         self.bump_last_counters(|counters| {
             counters.record_text_shape(runs, hits, misses, wrap_layouts);
             counters.record_cache_eviction(evictions);
+            if let Some((glyph_hits, glyph_misses)) = glyph_stats {
+                counters.record_glyph_cache(glyph_hits, glyph_misses);
+            }
         });
         Ok(changed)
     }
@@ -1866,16 +1887,7 @@ impl UiWorld {
                         DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                     );
                 } else {
-                    self.mark_subtree(
-                        *child,
-                        DirtyMask::STYLE
-                            | DirtyMask::TEXT
-                            | DirtyMask::LAYOUT
-                            | DirtyMask::INPUT
-                            | DirtyMask::FOCUS_IME
-                            | DirtyMask::ACCESSIBILITY
-                            | DirtyMask::RENDER,
-                    );
+                    self.mark_subtree(*child, DirtyMask::ALL);
                 }
                 self.mark_ancestors(
                     *parent,
@@ -1903,16 +1915,7 @@ impl UiWorld {
                     intern_empty_children(&mut hierarchy.children);
                     drop(hierarchy);
                     self.hierarchy_mut(*id).parent = None;
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::STYLE
-                            | DirtyMask::TEXT
-                            | DirtyMask::LAYOUT
-                            | DirtyMask::INPUT
-                            | DirtyMask::FOCUS_IME
-                            | DirtyMask::ACCESSIBILITY
-                            | DirtyMask::RENDER,
-                    );
+                    self.mark_subtree(*id, DirtyMask::ALL);
                     self.mark_ancestors(
                         parent,
                         DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
@@ -2031,7 +2034,9 @@ impl UiWorld {
                 *self.component_mut::<NodeStyle>(*id) = style.clone();
                 self.sync_node_presence(*id);
 
-                self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                if !style_excluding_transform_eq(&previous, style) {
+                    self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
                 if inherited_paint_changed {
                     self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
                 }
@@ -2059,7 +2064,14 @@ impl UiWorld {
                         self.mark(parent, DirtyMask::ACCESSIBILITY);
                     }
                 }
-                if transform_changed || stacking_changed {
+                if transform_changed {
+                    // Scene extract and hit-test read `layout.transform`; LAYOUT
+                    // does not, so paint-transform is not a layout dirty.
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::TRANSFORM | DirtyMask::INPUT | DirtyMask::RENDER,
+                    );
+                } else if stacking_changed {
                     self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
                 if layout_changed {
@@ -2129,7 +2141,8 @@ impl UiWorld {
                 }
                 self.mark(
                     *id,
-                    DirtyMask::INPUT
+                    DirtyMask::STATE
+                        | DirtyMask::INPUT
                         | DirtyMask::FOCUS_IME
                         | DirtyMask::RENDER
                         | DirtyMask::ACCESSIBILITY,
@@ -2343,6 +2356,7 @@ impl UiWorld {
                 };
                 if let Some(old) = old.filter(|old| Some(*old) != *target) {
                     self.remove_ime(old);
+                    self.mark(old, DirtyMask::STATE);
                     if !self
                         .component::<NodeStyle>(old)
                         .interaction
@@ -2357,6 +2371,7 @@ impl UiWorld {
                     );
                 }
                 if let Some(target) = target {
+                    self.mark(*target, DirtyMask::STATE);
                     if !self
                         .component::<NodeStyle>(*target)
                         .interaction
@@ -4181,6 +4196,7 @@ impl UiWorld {
     }
 
     fn mark_interaction_style(&mut self, id: StableNodeId) {
+        self.mark(id, DirtyMask::STATE);
         if !self.component::<NodeStyle>(id).interaction.is_empty() {
             self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
         }
@@ -4419,7 +4435,7 @@ impl UiWorld {
             .expect("entity must have hierarchy")
     }
 
-    fn mark(&mut self, id: StableNodeId, bits: u8) -> bool {
+    fn mark(&mut self, id: StableNodeId, bits: u16) -> bool {
         let entity = self.entities[&id];
         let changed = self
             .world
@@ -4432,7 +4448,7 @@ impl UiWorld {
         changed
     }
 
-    fn mark_subtree(&mut self, root: StableNodeId, bits: u8) {
+    fn mark_subtree(&mut self, root: StableNodeId, bits: u16) {
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
             let children = self.node(id).expect("hierarchy node must exist").children;
@@ -4458,16 +4474,7 @@ impl UiWorld {
             *self.component_mut::<MountState>(*id) = state;
         }
         if state == MountState::Mounted {
-            self.mark_subtree(
-                root,
-                DirtyMask::STYLE
-                    | DirtyMask::TEXT
-                    | DirtyMask::LAYOUT
-                    | DirtyMask::INPUT
-                    | DirtyMask::FOCUS_IME
-                    | DirtyMask::ACCESSIBILITY
-                    | DirtyMask::RENDER,
-            );
+            self.mark_subtree(root, DirtyMask::ALL);
         }
     }
 
@@ -4537,7 +4544,7 @@ impl UiWorld {
         self.pending_accessibility_removals.dedup();
     }
 
-    fn mark_ancestors(&mut self, start: StableNodeId, bits: u8) {
+    fn mark_ancestors(&mut self, start: StableNodeId, bits: u16) {
         let mut current = Some(start);
         while let Some(id) = current {
             current = self
@@ -4627,15 +4634,21 @@ fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox
 struct CountingShaper<'a, S: TextShaper> {
     inner: &'a mut S,
     cache: &'a mut crate::text_layout_cache::TextLayoutCache,
+    glyphs: &'a mut crate::GlyphCache,
     runs: usize,
     wrap_layouts: usize,
 }
 
 impl<'a, S: TextShaper> CountingShaper<'a, S> {
-    fn new(inner: &'a mut S, cache: &'a mut crate::text_layout_cache::TextLayoutCache) -> Self {
+    fn new(
+        inner: &'a mut S,
+        cache: &'a mut crate::text_layout_cache::TextLayoutCache,
+        glyphs: &'a mut crate::GlyphCache,
+    ) -> Self {
         Self {
             inner,
             cache,
+            glyphs,
             runs: 0,
             wrap_layouts: 0,
         }
@@ -4658,9 +4671,22 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         if constraints.wrap {
             self.wrap_layouts = self.wrap_layouts.saturating_add(1);
         }
-        let metrics = self.inner.shape(id, text, style, constraints);
+        let metrics = self
+            .inner
+            .shape_cached(id, text, style, constraints, self.glyphs);
         self.cache.insert(key, metrics);
         metrics
+    }
+
+    fn shape_cached(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+        _glyphs: &mut crate::GlyphCache,
+    ) -> TextMetrics {
+        self.shape(id, text, style, constraints)
     }
 }
 
@@ -5178,6 +5204,29 @@ fn transformed_contains(bounds: LayoutBox, [a, b, c, d, e, f]: [f32; 6], x: f32,
     let local_x = (d * translated_x - c * translated_y) / determinant;
     let local_y = (-b * translated_x + a * translated_y) / determinant;
     bounds.contains(local_x, local_y)
+}
+
+fn style_excluding_transform_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
+    left.foreground == right.foreground
+        && left.background == right.background
+        && left.border == right.border
+        && left.interaction == right.interaction
+        && left.text_horizontal_alignment == right.text_horizontal_alignment
+        && left.text_vertical_alignment == right.text_vertical_alignment
+        && layout_excluding_transform_eq(left.layout.as_ref(), right.layout.as_ref())
+}
+
+fn layout_excluding_transform_eq(
+    left: &nana_ui_core::LayoutStyle,
+    right: &nana_ui_core::LayoutStyle,
+) -> bool {
+    let strip = |style: &nana_ui_core::LayoutStyle| {
+        let mut style = style.clone();
+        style.transform = None;
+        style.unsupported_transform = None;
+        style
+    };
+    strip(left) == strip(right)
 }
 
 fn layout_semantics_changed(
@@ -7835,6 +7884,8 @@ mod tests {
         world.commit(paint).unwrap();
         let work = world.take_system_work();
         assert_eq!(work.style, vec![node(1), node(2), node(3)]);
+        assert!(work.state.is_empty());
+        assert!(work.transform.is_empty());
         assert!(work.text.is_empty());
         assert!(work.layout.is_empty());
         assert!(work.input_hit_test.is_empty());
@@ -8205,6 +8256,44 @@ mod tests {
             .unwrap();
         let wrapped_hit = world.last_work_counters();
         assert!(wrapped_hit.text_layout_cache_hits > wrapped_hits);
+        assert_eq!(wrapped_hit.glyph_cache_hits, None);
+    }
+
+    #[test]
+    fn glyph_cache_miss_then_hit_on_glyph_backend() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Text);
+        queue.set_text(node(1), TextContent { value: "ab".into() });
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(work.counters().glyph_cache_hits, None);
+        assert_eq!(work.counters().glyph_cache_misses, None);
+
+        let mut shaper = GlyphAdvanceShaper;
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let missed = world.last_work_counters();
+        assert_eq!(missed.glyph_cache_misses, Some(2));
+        assert_eq!(missed.glyph_cache_hits, Some(0));
+        assert!(missed.text_layout_cache_misses >= 1);
+
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let layout_hit = world.last_work_counters();
+        assert!(layout_hit.text_layout_cache_hits >= 1);
+        assert_eq!(layout_hit.glyph_cache_misses, Some(2));
+        assert_eq!(layout_hit.glyph_cache_hits, Some(0));
+
+        let mut patch = MutationQueue::new();
+        patch.set_text(node(1), TextContent { value: "ba".into() });
+        world.commit(patch).unwrap();
+        let reused = world.take_system_work();
+        world.resolve_styles(&reused.style).unwrap();
+        world.shape_text(&reused.text, &mut shaper).unwrap();
+        let hit = world.last_work_counters();
+        assert_eq!(hit.glyph_cache_hits, Some(2));
+        assert_eq!(hit.glyph_cache_misses, Some(0));
+        assert!(hit.text_layout_cache_misses >= 1);
     }
 
     fn confirm_modal_visual() -> StandardVisual {
@@ -8341,10 +8430,19 @@ mod tests {
         );
         world.commit(transform).unwrap();
         let work = world.take_system_work();
+        assert!(work.style.is_empty());
+        assert!(work.state.is_empty());
         assert!(work.layout.is_empty());
+        assert_eq!(work.counters().style_processed, 0);
         assert_eq!(work.counters().layout_nodes, 0);
-        assert!(!work.input_hit_test.is_empty());
-        assert!(!work.render_extraction.is_empty());
+        assert_eq!(work.transform, vec![node(4)]);
+        assert_eq!(work.input_hit_test, vec![node(4)]);
+        assert_eq!(work.render_extraction, vec![node(4)]);
+        world.restore_system_work(work.clone());
+        let restored = world.take_system_work();
+        assert_eq!(restored.transform, work.transform);
+        assert!(restored.style.is_empty());
+        assert!(restored.layout.is_empty());
 
         let mut accessibility = MutationQueue::new();
         accessibility.set_accessibility(
@@ -8559,6 +8657,45 @@ mod tests {
                 width: text.value.chars().count() as f32 * style.font_size,
                 height: style.font_size,
             }
+        }
+    }
+
+    struct GlyphAdvanceShaper;
+
+    impl TextShaper for GlyphAdvanceShaper {
+        fn shape(
+            &mut self,
+            _id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+            _constraints: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            let em = style.font_size.max(1.0);
+            TextMetrics {
+                width: text.value.chars().count() as f32 * em,
+                height: em,
+            }
+        }
+
+        fn shape_cached(
+            &mut self,
+            _id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+            _constraints: crate::TextShapeConstraints,
+            glyphs: &mut crate::GlyphCache,
+        ) -> TextMetrics {
+            let em = style.font_size.max(1.0);
+            let mut width = 0.0;
+            for ch in text.value.chars() {
+                if let Some(advance) = glyphs.lookup(ch, style) {
+                    width += advance;
+                    continue;
+                }
+                glyphs.insert(ch, style, em);
+                width += em;
+            }
+            TextMetrics { width, height: em }
         }
     }
 
@@ -9065,8 +9202,10 @@ mod tests {
         );
         assert_eq!(world.pointer_hover(document(1), 7), Some(node(2)));
         let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2)]);
         assert_eq!(work.style, vec![node(2)]);
         assert!(work.layout.is_empty());
+        assert!(work.transform.is_empty());
         assert!(work.input_hit_test.is_empty());
         world.resolve_styles(&work.style).unwrap();
         assert_eq!(
@@ -9084,6 +9223,7 @@ mod tests {
         assert_eq!(world.press_pointer(document(1), 7, node(2)), Ok(None));
         assert_eq!(world.pointer_press(document(1), 7), Some(node(2)));
         let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2)]);
         world.resolve_styles(&work.style).unwrap();
         assert_eq!(
             world.extract_nodes(&[node(2)])[0].style.background,
@@ -9094,6 +9234,7 @@ mod tests {
             Ok(Some(node(2)))
         );
         let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2), node(3)]);
         assert_eq!(work.style, vec![node(2), node(3)]);
         assert_eq!(world.release_pointer_press(document(1), 7), Some(node(2)));
 
@@ -9111,6 +9252,75 @@ mod tests {
             world.set_pointer_hover(document(1), 7, Some(node(3))),
             Err(UiWorldError::NotPointerInteractive(node(3)))
         );
+    }
+
+    #[test]
+    fn pointer_hover_without_interaction_style_dirties_state_not_style() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), NodeKind::Element { tag: "a".into() });
+        queue.create(node(3), document(1), NodeKind::Element { tag: "b".into() });
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(1), node(3), None);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(2))),
+            Ok(None)
+        );
+        let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2)]);
+        assert!(work.style.is_empty());
+        assert!(work.layout.is_empty());
+        assert!(work.transform.is_empty());
+        assert!(work.render_extraction.is_empty());
+        assert_eq!(work.counters().style_processed, 0);
+
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(3))),
+            Ok(Some(node(2)))
+        );
+        let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2), node(3)]);
+        assert!(work.style.is_empty());
+        assert!(work.render_extraction.is_empty());
+    }
+
+    #[test]
+    fn request_focus_dirties_state_without_requiring_style() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.set_interaction(
+            node(2),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut focus = MutationQueue::new();
+        focus.request_focus(document(1), Some(node(2)));
+        world.commit(focus).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2)]);
+        assert!(work.style.is_empty());
+        assert!(work.transform.is_empty());
+        assert!(work.layout.is_empty());
+        assert_eq!(work.focus_ime, vec![node(2)]);
+        assert_eq!(work.render_extraction, vec![node(2)]);
     }
 
     #[test]

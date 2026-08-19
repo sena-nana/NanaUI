@@ -4329,6 +4329,10 @@ mod tests {
         context.assemble_dock(dock).unwrap();
         let handle = find_tag(&context, dock.stable_id(), "dock-handle")[0];
         assert!(context.focus_node(document(), handle).unwrap());
+        assert!(
+            !context.focus_node(document(), handle).unwrap(),
+            "focus_node reports whether focus changed, not whether the node is focused"
+        );
 
         assert!(context.adjust_focused_dock_split(document(), 1.0).unwrap());
         let ratio = context
@@ -4396,5 +4400,87 @@ mod tests {
                 .unwrap(),
             0.4
         );
+    }
+
+    #[test]
+    fn eight_pane_keyboard_split_resize_repeats_after_focus() {
+        let mut context = AppContext::new();
+        let mut contents = [StableNodeId::new(1).unwrap(); 8];
+        for (index, slot) in contents.iter_mut().enumerate() {
+            *slot = body(&mut context, &format!("pane {index}"));
+        }
+        fn item(index: usize, content: StableNodeId) -> DockNode {
+            DockNode::item(format!("pane-{index}"), Some(content))
+        }
+        fn split(axis: DockAxis, first: DockNode, second: DockNode) -> DockNode {
+            DockNode::split(axis, 0.5, first, second)
+        }
+        let root = split(
+            DockAxis::Horizontal,
+            split(
+                DockAxis::Vertical,
+                split(
+                    DockAxis::Horizontal,
+                    item(0, contents[0]),
+                    item(1, contents[1]),
+                ),
+                split(
+                    DockAxis::Horizontal,
+                    item(2, contents[2]),
+                    item(3, contents[3]),
+                ),
+            ),
+            split(
+                DockAxis::Vertical,
+                split(
+                    DockAxis::Horizontal,
+                    item(4, contents[4]),
+                    item(5, contents[5]),
+                ),
+                split(
+                    DockAxis::Horizontal,
+                    item(6, contents[6]),
+                    item(7, contents[7]),
+                ),
+            ),
+        );
+        let dock = context
+            .create_component(document(), Dock::new(root))
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        assert_eq!(context.read(dock, |dock| dock.flatten().len()).unwrap(), 8);
+        let _ = context.layout_document(document(), crate::LayoutViewport::new(1_280.0, 800.0));
+
+        let handle = context
+            .world()
+            .document_order(document())
+            .into_iter()
+            .find(|&id| {
+                context.is_dock_handle(id)
+                    && context
+                        .world()
+                        .interaction(id)
+                        .is_some_and(|interaction| interaction.focusable)
+            })
+            .expect("assembled dock must expose a focusable split handle");
+        assert!(context.focus_node(document(), handle).unwrap());
+        assert!(!context.focus_node(document(), handle).unwrap());
+
+        for iteration in 0usize..8 {
+            let direction = if iteration.is_multiple_of(2) {
+                1.0
+            } else {
+                -1.0
+            };
+            if context.world().focused(document()) != Some(handle) {
+                assert!(context.focus_node(document(), handle).unwrap());
+            }
+            assert!(
+                context
+                    .adjust_focused_dock_split(document(), direction)
+                    .unwrap()
+            );
+            let _ = context.layout_document(document(), crate::LayoutViewport::new(1_280.0, 800.0));
+        }
     }
 }

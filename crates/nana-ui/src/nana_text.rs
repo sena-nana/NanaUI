@@ -6,8 +6,8 @@ use cosmic_text::{
 };
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{
-    ComputedStyle, LayoutBox, StableNodeId, TextContent, TextMetrics, TextShapeConstraints,
-    TextShaper, TextShaping,
+    ComputedStyle, GlyphCache, LayoutBox, StableNodeId, TextContent, TextMetrics,
+    TextShapeConstraints, TextShaper, TextShaping,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -54,6 +54,32 @@ impl TextShaper for NanaTextShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         let buffer = self.shape_buffer(&text.value, style, constraints);
+        let (width, height, _) = measure(&buffer);
+        let tracking = style.letter_spacing * text.value.chars().count().saturating_sub(1) as f32;
+        TextMetrics {
+            width: (width + tracking).max(0.0),
+            height,
+        }
+    }
+
+    fn shape_cached(
+        &mut self,
+        _id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        glyphs: &mut GlyphCache,
+    ) -> TextMetrics {
+        if !constraints.wrap
+            && !constraints.ellipsis
+            && let Some(ch) = single_char(&text.value)
+            && let Some(advance) = glyphs.peek(ch, style)
+        {
+            let _ = glyphs.lookup(ch, style);
+            return metrics_from_advance(advance, style, text.value.chars().count());
+        }
+        let buffer = self.shape_buffer(&text.value, style, constraints);
+        record_shaped_glyphs(&buffer, style, glyphs);
         let (width, height, _) = measure(&buffer);
         let tracking = style.letter_spacing * text.value.chars().count().saturating_sub(1) as f32;
         TextMetrics {
@@ -241,6 +267,40 @@ fn font_weight(weight: Option<u16>) -> Weight {
         650..=749 => Weight::BOLD,
         750..=849 => Weight::EXTRA_BOLD,
         _ => Weight::BLACK,
+    }
+}
+
+fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(ch), None) => Some(ch),
+        _ => None,
+    }
+}
+
+fn metrics_from_advance(advance: f32, style: &ComputedStyle, char_count: usize) -> TextMetrics {
+    let tracking = style.letter_spacing * char_count.saturating_sub(1) as f32;
+    TextMetrics {
+        width: (advance + tracking).max(0.0),
+        height: resolved_line_height(style),
+    }
+}
+
+fn record_shaped_glyphs(buffer: &Buffer, style: &ComputedStyle, glyphs: &mut GlyphCache) {
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs {
+            let cluster = &run.text[glyph.start..glyph.end];
+            let mut chars = cluster.chars();
+            let Some(ch) = chars.next() else {
+                continue;
+            };
+            if chars.next().is_some() {
+                continue;
+            }
+            if glyphs.lookup(ch, style).is_none() {
+                glyphs.insert(ch, style, glyph.w);
+            }
+        }
     }
 }
 
@@ -479,5 +539,68 @@ mod tests {
             TextShapeConstraints::default(),
         );
         assert_positive_finite(unknown);
+    }
+
+    #[test]
+    fn glyph_cache_stores_advances_and_world_counts_miss_then_hit() {
+        let mut shaper = NanaTextShaper::default();
+        let mut glyphs = GlyphCache::default();
+        let style = ComputedStyle {
+            font_size: 16.0,
+            ..ComputedStyle::default()
+        };
+        let constraints = TextShapeConstraints {
+            shaping: TextShaping::Advanced,
+            ..TextShapeConstraints::default()
+        };
+        let first = shaper.shape_cached(
+            node(),
+            &TextContent { value: "ab".into() },
+            &style,
+            constraints,
+            &mut glyphs,
+        );
+        assert_positive_finite(first);
+        let advance_a = glyphs.peek('a', &style).expect("shaped 'a' must be cached");
+        let advance_b = glyphs.peek('b', &style).expect("shaped 'b' must be cached");
+        assert!(advance_a > 0.0 && advance_a.is_finite());
+        assert!(advance_b > 0.0 && advance_b.is_finite());
+
+        let reused = shaper.shape_cached(
+            node(),
+            &TextContent { value: "a".into() },
+            &style,
+            constraints,
+            &mut glyphs,
+        );
+        assert!((reused.width - advance_a).abs() < 0.01);
+        assert!(reused.height.is_finite() && reused.height > 0.0);
+
+        let mut world = nana_ui_runtime::UiWorld::new();
+        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let id = nana_ui_runtime::StableNodeId::new(1).unwrap();
+        let mut queue = nana_ui_runtime::MutationQueue::new();
+        queue.create(id, document, nana_ui_runtime::NodeKind::Text);
+        queue.set_text(id, TextContent { value: "ab".into() });
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        let mut world_shaper = NanaTextShaper::default();
+        world.shape_text(&work.text, &mut world_shaper).unwrap();
+        let missed = world.last_work_counters();
+        assert_eq!(missed.glyph_cache_misses, Some(2));
+        assert_eq!(missed.glyph_cache_hits, Some(0));
+
+        let mut patch = nana_ui_runtime::MutationQueue::new();
+        patch.set_text(id, TextContent { value: "ba".into() });
+        world.commit(patch).unwrap();
+        let reused_work = world.take_system_work();
+        world.resolve_styles(&reused_work.style).unwrap();
+        world
+            .shape_text(&reused_work.text, &mut world_shaper)
+            .unwrap();
+        let hit = world.last_work_counters();
+        assert_eq!(hit.glyph_cache_hits, Some(2));
+        assert_eq!(hit.glyph_cache_misses, Some(0));
     }
 }

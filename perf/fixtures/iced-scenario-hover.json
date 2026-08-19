@@ -1,0 +1,77 @@
+{
+  "source": "iced-scenario-bench",
+  "status": "ok",
+  "scenario_id": "hover",
+  "kind": "Hover",
+  "params": {
+    "nodes": 10000,
+    "size_change": false
+  },
+  "nodes": 10000,
+  "tree": {
+    "generation": "complete-binary-heap",
+    "parent_rule": "parent(i)=i//2, root=1",
+    "node_kind": "element-div",
+    "text": null,
+    "sample_parents": [
+      {"index": 1, "parent": null},
+      {"index": 2, "parent": 1},
+      {"index": 3, "parent": 1},
+      {"index": 50, "parent": 25},
+      {"index": 10000, "parent": 5000}
+    ]
+  },
+  "hover": {
+    "targets": [9999, 10000],
+    "size_change": false
+  },
+  "viewport": [900, 640],
+  "scale": 1.0,
+  "backend": "wgpu",
+  "antialiasing": "none",
+  "warmup_iterations": 5,
+  "iterations": 20,
+  "adapter": {
+    "name": "extractor-fixture",
+    "backend": "fixture",
+    "device_type": "fixture"
+  },
+  "view_construction_ms": {
+    "p50": 0.6,
+    "p95": 0.7,
+    "p99": 0.8,
+    "min": 0.5,
+    "max": 0.9
+  },
+  "layout_ms": {
+    "p50": 1.1,
+    "p95": 1.2,
+    "p99": 1.3,
+    "min": 1.0,
+    "max": 1.4
+  },
+  "draw_ms": {
+    "p50": 0.4,
+    "p95": 0.5,
+    "p99": 0.6,
+    "min": 0.3,
+    "max": 0.7
+  },
+  "present_ms": {
+    "p50": 1.4,
+    "p95": 1.6,
+    "p99": 1.7,
+    "min": 1.2,
+    "max": 1.8
+  },
+  "cpu_frame_ms": {
+    "p50": 2.1,
+    "p95": 2.4,
+    "p99": 2.7,
+    "min": 1.8,
+    "max": 3.0
+  },
+  "notes": [
+    "Extractor fixture for iced-scenario-bench Hover at 10k nodes. Not a timing baseline."
+  ]
+}

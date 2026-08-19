@@ -1,7 +1,7 @@
 //! Runtime-owned text layout cache (Issue #8 §3.5 / §11.4).
 //!
 //! Lookup/insert are the only hit/miss sources for `text_layout_cache_*`.
-//! This is not a glyph atlas; Runtime has no `GlyphCache`.
+//! This is not a glyph atlas; per-glyph advances live on [`crate::GlyphCache`].
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;

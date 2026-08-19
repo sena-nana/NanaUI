@@ -290,15 +290,6 @@ def validate_cpu(args: argparse.Namespace, failures: list[str]) -> None:
 
 
 def validate_virtual_scales(framework: dict[str, Any], failures: list[str]) -> None:
-    tree = framework.get("virtual_tree")
-    require(isinstance(tree, dict), "framework report must document the virtual-tree gap", failures)
-    if isinstance(tree, dict):
-        require(
-            tree.get("status") == "skipped",
-            "virtual tree has no scale bench; report it as skipped rather than a fake timing",
-            failures,
-        )
-
     scales = framework.get("virtual_scales")
     require(isinstance(scales, list) and scales, "framework report must include virtual_scales", failures)
     if not isinstance(scales, list):
@@ -314,8 +305,10 @@ def validate_virtual_scales(framework: dict[str, Any], failures: list[str]) -> N
 
     require(has_scale("list", 10_000, "ok"), "virtual_scales must include a 10k list", failures)
     require(has_scale("table", 10_000, "ok"), "virtual_scales must include a 10k table", failures)
+    require(has_scale("tree", 10_000, "ok"), "virtual_scales must include a measured 10k tree", failures)
     require(has_scale("list", 100_000, "ok"), "virtual_scales must include a measured 100k list", failures)
     require(has_scale("table", 100_000, "ok"), "virtual_scales must include a measured 100k table", failures)
+    require(has_scale("tree", 100_000, "ok"), "virtual_scales must include a measured 100k tree", failures)
     require(
         has_scale("list", 1_000_000),
         "virtual_scales must include a 1M list case (ok or skipped via NANA_PERF_SCALE=large)",
@@ -324,6 +317,11 @@ def validate_virtual_scales(framework: dict[str, Any], failures: list[str]) -> N
     require(
         has_scale("table", 1_000_000),
         "virtual_scales must include a 1M table case (ok or skipped via NANA_PERF_SCALE=large)",
+        failures,
+    )
+    require(
+        has_scale("tree", 1_000_000),
+        "virtual_scales must include a 1M tree case (ok or skipped via NANA_PERF_SCALE=large)",
         failures,
     )
 
@@ -335,12 +333,22 @@ def validate_virtual_scales(framework: dict[str, Any], failures: list[str]) -> N
             # 1M may skip on public runners or without NANA_PERF_SCALE=large.
             # Do not invent a timing threshold for a skipped case.
             continue
+        if scale.get("status") == "ok" and (
+            scale.get("materialize_ms") is None or scale.get("live_ui_entities") is None
+        ):
+            require(
+                False,
+                f"{label}: status=ok without materialize_ms/live_ui_entities; fake empty ok is forbidden",
+                failures,
+            )
+            continue
         live = scale.get("live_ui_entities")
         reported_bound = scale.get("live_ui_entities_bound")
         require(live is not None and reported_bound is not None, f"{label}: live entity counts missing", failures)
         if live is None or reported_bound is None:
             continue
-        geometric = list_bound if scale.get("kind") == "list" else table_bound
+        kind = scale.get("kind")
+        geometric = table_bound if kind == "table" else list_bound
         require(
             int(reported_bound) == geometric,
             f"{label}: live_ui_entities_bound {reported_bound} must be the geometric cap {geometric}, not materialized.range",
@@ -358,16 +366,8 @@ def validate_virtual_scales(framework: dict[str, Any], failures: list[str]) -> N
         if distribution is None:
             continue
         rows = int(scale.get("logical_rows", 0))
-        kind = scale.get("kind")
-        if kind == "list" and rows == 10_000:
-            require(
-                p95(distribution) <= 1.0,
-                f"{label}: materialize P95 exceeds 1 ms",
-                failures,
-            )
-        elif kind == "list" and rows == 100_000:
+        if kind in {"list", "tree"} and rows in {10_000, 100_000}:
             # Same 1 ms 10k list gate: virtualization must stay size-independent.
-            # Phase 4 10k list materialize p95 was 0.043 ms.
             require(
                 p95(distribution) <= 1.0,
                 f"{label}: materialize P95 exceeds 1 ms",
@@ -436,8 +436,8 @@ def _distribution(p95_ms: float = 0.01, budget_ms: float = 16.67) -> dict[str, f
 
 
 def _ok_scale(kind: str, rows: int, columns: int | None = None) -> dict[str, Any]:
-    bound = list_live_entity_bound() if kind == "list" else table_live_entity_bound()
-    live = 57 if kind == "list" else 1_140
+    bound = table_live_entity_bound() if kind == "table" else list_live_entity_bound()
+    live = 1_140 if kind == "table" else 57
     payload = {
         "kind": kind,
         "logical_rows": rows,
@@ -447,7 +447,7 @@ def _ok_scale(kind: str, rows: int, columns: int | None = None) -> dict[str, Any
         "cache_rows": 0,
         "live_ui_entities": live,
         "live_ui_entities_bound": bound,
-        "materialize_ms": _distribution(0.05 if kind == "list" else 8.0),
+        "materialize_ms": _distribution(8.0 if kind == "table" else 0.05),
     }
     if columns is not None:
         payload["logical_columns"] = columns
@@ -508,12 +508,13 @@ def _sample_reports() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], d
         "virtual_list_10k_materialize_ms": _distribution(0.05),
         "virtual_scroll_40_visible_nodes_ms": _distribution(0.01),
         "canonical_layout_5000_nodes_ms": _distribution(2.0),
-        "virtual_tree": {"status": "skipped", "reason": "no scale bench this round"},
         "virtual_scales": [
             _ok_scale("list", 10_000),
             _ok_scale("table", 10_000, 100),
+            _ok_scale("tree", 10_000),
             _ok_scale("list", 100_000),
             _ok_scale("table", 100_000, 100),
+            _ok_scale("tree", 100_000),
             {
                 "kind": "list",
                 "logical_rows": 1_000_000,
@@ -522,6 +523,12 @@ def _sample_reports() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], d
             },
             {
                 "kind": "table",
+                "logical_rows": 1_000_000,
+                "status": "skipped",
+                "skip_reason": "NANA_PERF_SCALE!=large",
+            },
+            {
+                "kind": "tree",
                 "logical_rows": 1_000_000,
                 "status": "skipped",
                 "skip_reason": "NANA_PERF_SCALE!=large",
@@ -585,12 +592,16 @@ def self_test() -> int:
     )
 
     no_tree = dict(framework)
-    no_tree.pop("virtual_tree", None)
+    no_tree["virtual_scales"] = [
+        scale
+        for scale in framework["virtual_scales"]
+        if scale.get("kind") != "tree"
+    ]
     tree_failures: list[str] = []
     validate_cpu(_cpu_args(runtime, no_tree, vue, scene), tree_failures)
     require(
-        any("virtual-tree" in failure for failure in tree_failures),
-        "self-test must reject a report that omits virtual_tree",
+        any("100k tree" in failure for failure in tree_failures),
+        "self-test must reject a report that omits the 100k tree scale",
         failures,
     )
 
@@ -604,6 +615,20 @@ def self_test() -> int:
     require(
         any("geometric bound" in failure for failure in bound_failures),
         "self-test must reject live_ui_entities above the geometric bound",
+        failures,
+    )
+
+    empty_ok = dict(framework)
+    empty_ok["virtual_scales"] = [dict(scale) for scale in framework["virtual_scales"]]
+    for scale in empty_ok["virtual_scales"]:
+        if scale.get("kind") == "tree" and int(scale.get("logical_rows", 0)) == 100_000:
+            scale["materialize_ms"] = None
+            scale["live_ui_entities"] = None
+    empty_failures: list[str] = []
+    validate_cpu(_cpu_args(runtime, empty_ok, vue, scene), empty_failures)
+    require(
+        any("fake empty ok" in failure for failure in empty_failures),
+        "self-test must reject tree status=ok without materialize_ms/live_ui_entities",
         failures,
     )
 

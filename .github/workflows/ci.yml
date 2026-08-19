@@ -61,8 +61,8 @@ jobs:
 
   runtime-work-invariants:
     # Issue #8 PR gate: algorithmic work-counter / virtualization invariants.
-    # These tests also run in the default `cargo test --workspace` job above.
-    # This named job is the explicit contract so PR CI is not a 5% timing gate.
+    # Named cargo tests plus perf/contract.py --evaluate-invariants on fixture
+    # runner envelopes. Live release benches are not required on every PR.
     # 100k/1M virtual materialize timing stays in runtime-performance.yml.
     runs-on: ubuntu-latest
     steps:
@@ -80,8 +80,33 @@ jobs:
             transform_and_a11y_mutations_do_not_schedule_layout \
             work_counters_are_queryable_after_drain_and_extract \
             virtual_list_materializes_only_visible_items_and_reuses_overlap \
-            virtual_table_materializes_a_bounded_grid_and_reuses_both_axes
+            virtual_table_materializes_a_bounded_grid_and_reuses_both_axes \
+            virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_expand
           do
             cargo test -p nana-ui-runtime --lib --locked "$name"
           done
           python3 scripts/validate-runtime-performance.py --self-test
+          python3 perf/contract.py --self-test
+          mkdir -p target/performance/issue8/invariants
+          python3 perf/runners/iced/run.py --scenario virtual-list-10k \
+            --from-report perf/fixtures/iced-scenario-virtual-list-10k.json \
+            --output target/performance/issue8/invariants/iced-virtual-list-10k.json
+          python3 perf/runners/iced/run.py --scenario text-table \
+            --from-report perf/fixtures/iced-scenario-text-table.json \
+            --output target/performance/issue8/invariants/iced-text-table.json
+          python3 perf/runners/iced/run.py --scenario hover \
+            --from-report perf/fixtures/iced-scenario-hover.json \
+            --output target/performance/issue8/invariants/iced-hover.json
+          python3 perf/runners/iced/run.py --scenario mutation-paint-only \
+            --from-report perf/fixtures/iced-scenario-mutation-paint-only.json \
+            --output target/performance/issue8/invariants/iced-mutation-paint-only.json
+          python3 perf/runners/nana/run.py --scenario text-table \
+            --from-report perf/fixtures/virtual-table-scales.json \
+            --output target/performance/issue8/invariants/nana-text-table.json
+          python3 perf/runners/nana/run.py --scenario virtual-list-100k \
+            --from-report perf/fixtures/virtual-scales-only.json \
+            --output target/performance/issue8/invariants/nana-virtual-list-100k.json
+          python3 perf/runners/nana/run.py --scenario virtual-tree-100k \
+            --from-report perf/fixtures/virtual-tree-scales.json \
+            --output target/performance/issue8/invariants/nana-virtual-tree-100k.json
+          python3 perf/contract.py --evaluate-invariants target/performance/issue8/invariants

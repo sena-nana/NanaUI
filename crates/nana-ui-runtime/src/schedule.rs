@@ -3,52 +3,69 @@ use nana_ui_core::WorkCounters;
 
 use crate::{ExtractedNode, StableNodeId};
 
+/// Per-entity invalidation mask. Widened from `u8` because Issue #8 §6.2 STATE
+/// and TRANSFORM are independent bits; packing them into the last unused `u8`
+/// lane would leave no room for TRANSFORM.
 #[derive(Component, Debug, Clone, Copy, Default)]
-pub(crate) struct DirtyMask(u8);
+pub(crate) struct DirtyMask(u16);
 
 impl DirtyMask {
-    pub(crate) const STYLE: u8 = 1 << 0;
-    pub(crate) const TEXT: u8 = 1 << 1;
-    pub(crate) const LAYOUT: u8 = 1 << 2;
-    pub(crate) const INPUT: u8 = 1 << 3;
-    pub(crate) const FOCUS_IME: u8 = 1 << 4;
+    pub(crate) const STYLE: u16 = 1 << 0;
+    pub(crate) const TEXT: u16 = 1 << 1;
+    pub(crate) const LAYOUT: u16 = 1 << 2;
+    pub(crate) const INPUT: u16 = 1 << 3;
+    pub(crate) const FOCUS_IME: u16 = 1 << 4;
     /// Render extraction and paint. PAINT is not an independent bit; paint-only
-    /// mutations (hover, color, opacity) set RENDER without LAYOUT.
-    pub(crate) const RENDER: u8 = 1 << 5;
-    pub(crate) const ACCESSIBILITY: u8 = 1 << 6;
-    pub(crate) const ALL: u8 = Self::STYLE
+    /// mutations (hover color, opacity) set RENDER without LAYOUT.
+    pub(crate) const RENDER: u16 = 1 << 5;
+    pub(crate) const ACCESSIBILITY: u16 = 1 << 6;
+    /// Hover / press / focus / interaction authority. Does not imply STYLE.
+    pub(crate) const STATE: u16 = 1 << 7;
+    /// Paint transform (and unsupported transform diagnostics). Does not imply
+    /// STYLE or LAYOUT. RENDER/INPUT are set only when extract or hit-test
+    /// consume the matrix.
+    pub(crate) const TRANSFORM: u16 = 1 << 8;
+    pub(crate) const ALL: u16 = Self::STYLE
         | Self::TEXT
         | Self::LAYOUT
         | Self::INPUT
         | Self::FOCUS_IME
         | Self::RENDER
-        | Self::ACCESSIBILITY;
+        | Self::ACCESSIBILITY
+        | Self::STATE
+        | Self::TRANSFORM;
 
     pub(crate) const fn all() -> Self {
         Self(Self::ALL)
     }
 
-    pub(crate) fn insert(&mut self, bits: u8) -> bool {
+    pub(crate) fn insert(&mut self, bits: u16) -> bool {
         let before = self.0;
         self.0 |= bits;
         self.0 != before
     }
 
-    pub(crate) fn take(&mut self) -> u8 {
+    pub(crate) fn take(&mut self) -> u16 {
         std::mem::take(&mut self.0)
     }
 }
 
 /// Deterministic per-system work produced from entity dirty components.
 ///
-/// PAINT is folded into `RENDER`. Mapping onto Issue #8 dirty bits lives on
-/// [`nana_ui_core::WorkCounters`].
+/// PAINT is folded into `RENDER`. STATE and TRANSFORM are independent lists so
+/// hover/transform invalidation is not counted as style or layout. Mapping onto
+/// Issue #8 dirty bits lives on [`nana_ui_core::WorkCounters`]; STATE/TRANSFORM
+/// follow `FOCUS_IME` and stay on this type, not WorkCounters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemWork {
     pub generation: u64,
     pub style: Vec<StableNodeId>,
+    /// Hover, press, focus, and `SetInteraction` targets. Empty style is valid.
+    pub state: Vec<StableNodeId>,
     pub text: Vec<StableNodeId>,
     pub layout: Vec<StableNodeId>,
+    /// Paint-transform targets. Empty layout is valid; extract still uses RENDER.
+    pub transform: Vec<StableNodeId>,
     pub input_hit_test: Vec<StableNodeId>,
     pub focus_ime: Vec<StableNodeId>,
     pub accessibility: Vec<StableNodeId>,
@@ -85,9 +102,9 @@ pub struct SystemWork {
     pub text_layout_cache_misses: usize,
     /// Shape calls that requested wrapping. Zero until shaping.
     pub text_wrap_layouts: usize,
-    /// Always `None`: Runtime has no `GlyphCache`.
+    /// `GlyphCache` lookup hits. `None` until a glyph backend consults it.
     pub glyph_cache_hits: Option<usize>,
-    /// Always `None`: Runtime has no `GlyphCache`.
+    /// `GlyphCache` inserts after a miss. `None` until consulted.
     pub glyph_cache_misses: Option<usize>,
     /// `TextLayoutCache` evictions. `None` until a shaping pass consults it.
     pub cache_eviction: Option<usize>,
@@ -96,8 +113,10 @@ pub struct SystemWork {
 impl SystemWork {
     pub fn is_empty(&self) -> bool {
         self.style.is_empty()
+            && self.state.is_empty()
             && self.text.is_empty()
             && self.layout.is_empty()
+            && self.transform.is_empty()
             && self.input_hit_test.is_empty()
             && self.focus_ime.is_empty()
             && self.accessibility.is_empty()
@@ -172,17 +191,28 @@ impl SystemWork {
     pub fn record_cache_eviction(&mut self, evictions: usize) {
         self.cache_eviction = Some(self.cache_eviction.unwrap_or(0).saturating_add(evictions));
     }
+
+    pub fn record_glyph_cache(&mut self, hits: usize, misses: usize) {
+        self.glyph_cache_hits = Some(self.glyph_cache_hits.unwrap_or(0).saturating_add(hits));
+        self.glyph_cache_misses = Some(self.glyph_cache_misses.unwrap_or(0).saturating_add(misses));
+    }
 }
 
-pub(crate) fn push_work(work: &mut SystemWork, id: StableNodeId, bits: u8) {
+pub(crate) fn push_work(work: &mut SystemWork, id: StableNodeId, bits: u16) {
     if bits & DirtyMask::STYLE != 0 {
         work.style.push(id);
+    }
+    if bits & DirtyMask::STATE != 0 {
+        work.state.push(id);
     }
     if bits & DirtyMask::TEXT != 0 {
         work.text.push(id);
     }
     if bits & DirtyMask::LAYOUT != 0 {
         work.layout.push(id);
+    }
+    if bits & DirtyMask::TRANSFORM != 0 {
+        work.transform.push(id);
     }
     if bits & DirtyMask::INPUT != 0 {
         work.input_hit_test.push(id);

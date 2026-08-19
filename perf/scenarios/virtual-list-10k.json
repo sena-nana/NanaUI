@@ -21,7 +21,11 @@
   "invariants": [
     {
       "name": "virtual_list_live_entities_bounded",
-      "note": "live_ui_entities <= visible + overscan + bounded cache. Creating one retained entity per logical row is forbidden."
+      "path": "work_counters.live_ui_entities",
+      "op": "lte",
+      "value": 58,
+      "status": "required",
+      "note": "Issue #8 §3.4 forbids one retained entity per logical row. Bound is the catalog-8 geometric window: uniform_window_item_cap = ceil((800 + 2×160)/20)+2 = 58 (visible + 2×overscan + 2). Missing live_ui_entities stays not-evaluable. live_ui_entities == items is a full list, not virtualization."
     }
   ]
 }

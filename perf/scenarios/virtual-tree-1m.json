@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "virtual-tree-1m",
+  "kind": "VirtualTree",
+  "params": {
+    "items": 1000000,
+    "visible": 40,
+    "overscan": 8,
+    "text_len": 32,
+    "item_extent_px": 20
+  },
+  "record": [
+    "scroll_cpu",
+    "live_ui_entities",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "virtual_tree_1m_live_entities_bounded",
+      "path": "work_counters.live_ui_entities",
+      "op": "lte",
+      "value": 64,
+      "status": "required",
+      "note": "Issue #8 §3.4 forbids one retained entity per logical disclosure row. 1M is env-gated (NANA_PERF_SCALE=large); missing or skipped reports stay not-evaluable / unsupported."
+    }
+  ]
+}

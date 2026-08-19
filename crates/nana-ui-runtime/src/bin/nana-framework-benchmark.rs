@@ -1,13 +1,16 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nana_ui_core::{LengthSpec, TableColumn, VirtualListLayout, VirtualTableLayout};
+use nana_ui_core::{
+    LengthSpec, TableColumn, VirtualListLayout, VirtualTableLayout, VirtualTreeLayout,
+    VirtualTreeRow,
+};
 use nana_ui_runtime::{
     Activate, AppContext, Button, ContextPredicate, Dialog, Dock, DockAxis, DockNode, DocumentId,
     KeyContext, LayoutViewport, List, MeasureTextShaper, Menu, NodeKind, NodeStyle, OverlayHost,
     Popover, ScrollAxes, ScrollOffset, ScrollView, StableNodeId, SystemWork, Table, TableCell,
     TableRow, Text, TextArea, TextContent, TextInput, Tooltip, VirtualListItems, VirtualTableItems,
-    WorkCounters,
+    VirtualTreeItems, WorkCounters,
 };
 use serde::Serialize;
 
@@ -34,8 +37,79 @@ const TEXT_EDITOR_LINE_PX: f32 = 20.0;
 const DOCK_PANES: usize = 8;
 const DOCK_VIEWPORT: (f32, f32) = (1_280.0, 800.0);
 const LIST_VIEWPORT: f32 = 800.0;
+/// Standalone default. Catalog VirtualList overscan is 8 items × 20px = 160px;
+/// the Nana runner passes `--list-overscan-px 160` for those ids.
 const LIST_OVERSCAN: f32 = 200.0;
 const LIST_ITEM_EXTENT: f32 = 20.0;
+
+#[derive(Clone, Copy)]
+struct ListWindow {
+    viewport: f32,
+    overscan: f32,
+    item_extent: f32,
+}
+
+impl ListWindow {
+    fn standalone() -> Self {
+        Self {
+            viewport: LIST_VIEWPORT,
+            overscan: LIST_OVERSCAN,
+            item_extent: LIST_ITEM_EXTENT,
+        }
+    }
+
+    fn live_entity_bound(self) -> usize {
+        VirtualListLayout::uniform_window_item_cap(self.viewport, self.overscan, self.item_extent)
+    }
+}
+
+struct BenchArgs {
+    output: Option<std::path::PathBuf>,
+    list: ListWindow,
+    table: TableWindow,
+}
+
+/// Standalone / weekly default. Catalog `text-table` overscan is 8 rows × 20px
+/// = 160px; the Nana runner passes `--table-overscan-y-px 160` for that id.
+#[derive(Clone, Copy)]
+struct TableWindow {
+    viewport: (f32, f32),
+    overscan: (f32, f32),
+    column_extent: f32,
+    row_extent: f32,
+}
+
+impl TableWindow {
+    fn standalone() -> Self {
+        Self {
+            viewport: TABLE_VIEWPORT,
+            overscan: TABLE_OVERSCAN,
+            column_extent: TABLE_COLUMN_EXTENT,
+            row_extent: LIST_ITEM_EXTENT,
+        }
+    }
+
+    fn column_cap(self) -> usize {
+        VirtualListLayout::uniform_window_item_cap(
+            self.viewport.0,
+            self.overscan.0,
+            self.column_extent,
+        )
+    }
+
+    fn row_cap(self) -> usize {
+        VirtualListLayout::uniform_window_item_cap(
+            self.viewport.1,
+            self.overscan.1,
+            self.row_extent,
+        )
+    }
+
+    fn live_entity_bound(self) -> usize {
+        let rows = self.row_cap();
+        rows + rows * self.column_cap()
+    }
+}
 const TABLE_VIEWPORT: (f32, f32) = (1_280.0, 800.0);
 const TABLE_OVERSCAN: (f32, f32) = (160.0, 200.0);
 const TABLE_COLUMN_EXTENT: f32 = 80.0;
@@ -47,26 +121,21 @@ const WRAPPED_CELL_LEN: usize = 256;
 const TEXT_TABLE_VISIBLE_ROWS: usize = 40;
 
 /// Independent of `materialized.range`. Two-sided overscan plus one partial
-/// item on each edge. For 800+2×200 / 20 this is 62 list rows (~60).
-fn list_live_entity_bound() -> usize {
-    VirtualListLayout::uniform_window_item_cap(LIST_VIEWPORT, LIST_OVERSCAN, LIST_ITEM_EXTENT)
+/// item on each edge. Standalone 800+2×200 / 20 is 62 list rows (~60).
+fn list_live_entity_bound(list: ListWindow) -> usize {
+    list.live_entity_bound()
 }
 
-fn table_column_cap() -> usize {
-    VirtualListLayout::uniform_window_item_cap(
-        TABLE_VIEWPORT.0,
-        TABLE_OVERSCAN.0,
-        TABLE_COLUMN_EXTENT,
-    )
+fn table_column_cap(table: TableWindow) -> usize {
+    table.column_cap()
 }
 
-fn table_row_cap() -> usize {
-    VirtualListLayout::uniform_window_item_cap(TABLE_VIEWPORT.1, TABLE_OVERSCAN.1, LIST_ITEM_EXTENT)
+fn table_row_cap(table: TableWindow) -> usize {
+    table.row_cap()
 }
 
-fn table_live_entity_bound() -> usize {
-    let rows = table_row_cap();
-    rows + rows * table_column_cap()
+fn table_live_entity_bound(table: TableWindow) -> usize {
+    table.live_entity_bound()
 }
 
 /// Four wrapping cells per contract-visible band (column 0 of the first four rows).
@@ -108,13 +177,18 @@ fn wrapped_cell_style() -> NodeStyle {
 
 /// Shape + wrap-measure + extract after table materialize so `text_shaped` /
 /// `extracted_text_spans` / `text_wrap_layouts` observe wrapping cells.
-fn measure_virtual_table_text(context: &mut AppContext, document: DocumentId, work: &SystemWork) {
+fn measure_virtual_table_text(
+    context: &mut AppContext,
+    document: DocumentId,
+    work: &SystemWork,
+    table: TableWindow,
+) {
     let mut shaper = MeasureTextShaper;
     let _ = context.resolve_styles(&work.style);
     let _ = context.shape_text(&work.text, &mut shaper);
     let _ = context.layout_document(
         document,
-        LayoutViewport::new(TABLE_VIEWPORT.0, TABLE_VIEWPORT.1),
+        LayoutViewport::new(table.viewport.0, table.viewport.1),
     );
     let _ = context.shape_text_for_layout(document, &mut shaper);
     let extracted = context.world().extract_nodes(&work.render_extraction);
@@ -122,24 +196,29 @@ fn measure_virtual_table_text(context: &mut AppContext, document: DocumentId, wo
 }
 
 /// Own AppContext so table shaping cannot dirty the shared list/scroll drain.
-fn isolated_table_text_work(logical_rows: usize, logical_columns: usize) -> ScaleWork {
+fn isolated_table_text_work(
+    logical_rows: usize,
+    logical_columns: usize,
+    table: TableWindow,
+) -> ScaleWork {
     let document = DocumentId::new(1).unwrap();
     let mut context = AppContext::new();
-    let table = context.create_component(document, Table::new()).unwrap();
+    let host = context.create_component(document, Table::new()).unwrap();
     let mut items = VirtualTableItems::<usize, usize>::default();
     let layout = VirtualTableLayout::new(
-        std::iter::repeat_n(20.0, logical_rows),
-        (0..logical_columns).map(|index| TableColumn::new(format!("column-{index}"), 80.0)),
+        std::iter::repeat_n(table.row_extent, logical_rows),
+        (0..logical_columns)
+            .map(|index| TableColumn::new(format!("column-{index}"), table.column_extent)),
     );
     let _ = context.take_system_work();
     context
         .materialize_virtual_table(
-            table,
+            host,
             &mut items,
             &layout,
             (0.0, 0.0),
-            TABLE_VIEWPORT,
-            TABLE_OVERSCAN,
+            table.viewport,
+            table.overscan,
             |index| index,
             |index| index,
             |_index, _| TableRow::new(),
@@ -147,7 +226,7 @@ fn isolated_table_text_work(logical_rows: usize, logical_columns: usize) -> Scal
         )
         .unwrap();
     let work = context.take_system_work();
-    measure_virtual_table_text(&mut context, document, &work);
+    measure_virtual_table_text(&mut context, document, &work, table);
     ScaleWork::from(context.last_work_counters())
 }
 
@@ -178,7 +257,6 @@ struct Report {
     canonical_layout_5000_nodes_ms: Distribution,
     virtual_scales: Vec<VirtualScaleCase>,
     catalog_workloads: Vec<CatalogWorkloadCase>,
-    virtual_tree: SkippedApi,
 }
 
 #[derive(Serialize)]
@@ -200,13 +278,31 @@ struct VirtualScaleCase {
     #[serde(skip_serializing_if = "Option::is_none")]
     live_ui_entities_bound: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    list_viewport_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    list_overscan_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    list_item_extent_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    table_viewport_width_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    table_viewport_height_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    table_overscan_x_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    table_overscan_y_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    table_column_extent_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    table_row_extent_px: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     construction_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     window_ms: Option<Distribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     materialize_ms: Option<Distribution>,
     /// Existing WorkCounters from the last table/list drain. Glyph cache
-    /// keys stay omitted: Runtime does not observe them.
+    /// keys stay omitted on `MeasureTextShaper` (no glyph backend).
     #[serde(skip_serializing_if = "Option::is_none")]
     work: Option<ScaleWork>,
 }
@@ -240,7 +336,7 @@ struct ScaleWork {
 }
 
 /// Issue #8 catalog workloads that reuse existing Runtime APIs (IME, dock,
-/// overlay, editor). Glyph cache keys stay omitted.
+/// overlay, editor). Glyph cache keys stay omitted on `MeasureTextShaper`.
 #[derive(Serialize)]
 struct CatalogWorkloadCase {
     id: &'static str,
@@ -306,12 +402,6 @@ impl From<WorkCounters> for ScaleWork {
 }
 
 #[derive(Serialize)]
-struct SkippedApi {
-    status: &'static str,
-    reason: &'static str,
-}
-
-#[derive(Serialize)]
 struct Distribution {
     p50: f64,
     p95: f64,
@@ -322,6 +412,9 @@ struct Distribution {
 }
 
 fn main() {
+    let args = parse_args();
+    let list = args.list;
+    let table = args.table;
     let mut context = AppContext::new();
     let entity = context
         .create_view(
@@ -394,10 +487,10 @@ fn main() {
     let mut virtual_table_resizes = Vec::with_capacity(ITERATIONS);
     let mut virtual_scroll_updates = Vec::with_capacity(ITERATIONS);
     let mut canonical_layout_updates = Vec::with_capacity(ITERATIONS);
-    let mut virtual_list = VirtualListLayout::new(std::iter::repeat_n(20.0, 10_000));
+    let mut virtual_list = VirtualListLayout::new(std::iter::repeat_n(list.item_extent, 10_000));
     let mut virtual_table = VirtualTableLayout::new(
-        std::iter::repeat_n(20.0, 10_000),
-        (0..100).map(|index| TableColumn::new(format!("column-{index}"), 80.0)),
+        std::iter::repeat_n(table.row_extent, 10_000),
+        (0..100).map(|index| TableColumn::new(format!("column-{index}"), table.column_extent)),
     );
     let layout_document = DocumentId::new(2).unwrap();
     let mut layout_context = AppContext::new();
@@ -441,7 +534,7 @@ fn main() {
         assert!(context.take_system_work().is_empty());
 
         let started = Instant::now();
-        let window = virtual_list.window((iteration * 13) as f32, LIST_VIEWPORT, LIST_OVERSCAN);
+        let window = virtual_list.window((iteration * 13) as f32, list.viewport, list.overscan);
         let virtual_list_window_elapsed = started.elapsed();
         assert!(!window.range.is_empty());
         let item = iteration % 10;
@@ -465,8 +558,8 @@ fn main() {
                 &mut materialized_items,
                 &virtual_list,
                 materialize_offset,
-                LIST_VIEWPORT,
-                LIST_OVERSCAN,
+                list.viewport,
+                list.overscan,
                 |index| index,
                 |index, _| Text::new(format!("Visible row {index}")),
             )
@@ -479,11 +572,11 @@ fn main() {
             .children
             .len();
         let visible_list = virtual_list
-            .window(materialize_offset, LIST_VIEWPORT, 0.0)
+            .window(materialize_offset, list.viewport, 0.0)
             .range
             .len();
         let overscan_list = materialized.range.len().saturating_sub(visible_list);
-        let list_bound = list_live_entity_bound();
+        let list_bound = list_live_entity_bound(list);
         assert_eq!(live_list, materialized.range.len());
         assert!(
             live_list <= list_bound,
@@ -498,8 +591,8 @@ fn main() {
         let started = Instant::now();
         let table_window = virtual_table.window(
             ((iteration * 37) as f32, (iteration * 131) as f32),
-            TABLE_VIEWPORT,
-            TABLE_OVERSCAN,
+            table.viewport,
+            table.overscan,
         );
         let virtual_table_window_elapsed = started.elapsed();
         assert!(!table_window.rows.range.is_empty());
@@ -516,8 +609,8 @@ fn main() {
                 &mut materialized_table_items,
                 &virtual_table,
                 materialize_scroll,
-                TABLE_VIEWPORT,
-                TABLE_OVERSCAN,
+                table.viewport,
+                table.overscan,
                 |index| index,
                 |index| index,
                 |_index, _| TableRow::new(),
@@ -527,7 +620,7 @@ fn main() {
         let virtual_table_materialize_elapsed = started.elapsed();
         let mounted_rows = materialized_table_window.rows.range.len();
         let mounted_columns = materialized_table_window.columns.range.len();
-        let visible_table = virtual_table.window(materialize_scroll, TABLE_VIEWPORT, (0.0, 0.0));
+        let visible_table = virtual_table.window(materialize_scroll, table.viewport, (0.0, 0.0));
         let visible_rows = visible_table.rows.range.len();
         let overscan_rows = mounted_rows.saturating_sub(visible_rows);
         let live_table = mounted_rows
@@ -548,16 +641,16 @@ fn main() {
                         .len()
                 })
                 .sum::<usize>();
-        let live_table_bound = table_live_entity_bound();
+        let live_table_bound = table_live_entity_bound(table);
         assert!(
-            mounted_rows <= table_row_cap(),
+            mounted_rows <= table_row_cap(table),
             "virtual table mounted rows {mounted_rows} exceed geometric row cap {}",
-            table_row_cap()
+            table_row_cap(table)
         );
         assert!(
-            mounted_columns <= table_column_cap(),
+            mounted_columns <= table_column_cap(table),
             "virtual table mounted columns {mounted_columns} exceed geometric column cap {}",
-            table_column_cap()
+            table_column_cap(table)
         );
         assert_eq!(
             context
@@ -666,7 +759,16 @@ fn main() {
             overscan_rows: Some(last_list_overscan),
             cache_rows: 0,
             live_ui_entities: Some(last_list_live),
-            live_ui_entities_bound: Some(list_live_entity_bound()),
+            live_ui_entities_bound: Some(list_live_entity_bound(list)),
+            list_viewport_px: Some(list.viewport),
+            list_overscan_px: Some(list.overscan),
+            list_item_extent_px: Some(list.item_extent),
+            table_viewport_width_px: None,
+            table_viewport_height_px: None,
+            table_overscan_x_px: None,
+            table_overscan_y_px: None,
+            table_column_extent_px: None,
+            table_row_extent_px: None,
             construction_ms: None,
             window_ms: Some(summarize(&virtual_list_windows)),
             materialize_ms: Some(summarize(&virtual_list_materializations)),
@@ -682,14 +784,44 @@ fn main() {
             overscan_rows: Some(last_table_overscan),
             cache_rows: 0,
             live_ui_entities: Some(last_table_live),
-            live_ui_entities_bound: Some(table_live_entity_bound()),
+            live_ui_entities_bound: Some(table_live_entity_bound(table)),
+            list_viewport_px: None,
+            list_overscan_px: None,
+            list_item_extent_px: None,
+            table_viewport_width_px: Some(table.viewport.0),
+            table_viewport_height_px: Some(table.viewport.1),
+            table_overscan_x_px: Some(table.overscan.0),
+            table_overscan_y_px: Some(table.overscan.1),
+            table_column_extent_px: Some(table.column_extent),
+            table_row_extent_px: Some(table.row_extent),
             construction_ms: None,
             window_ms: Some(summarize(&virtual_table_windows)),
             materialize_ms: Some(summarize(&virtual_table_materializations)),
-            work: Some(isolated_table_text_work(10_000, 100)),
+            work: Some(isolated_table_text_work(10_000, 100, table)),
         },
-        bench_virtual_list_scale(100_000, SCALE_100K_WARMUP, SCALE_100K_ITERATIONS, None),
-        bench_virtual_table_scale(100_000, 100, SCALE_100K_WARMUP, SCALE_100K_ITERATIONS, None),
+        bench_virtual_list_scale(
+            100_000,
+            SCALE_100K_WARMUP,
+            SCALE_100K_ITERATIONS,
+            None,
+            list,
+        ),
+        bench_virtual_table_scale(
+            100_000,
+            100,
+            SCALE_100K_WARMUP,
+            SCALE_100K_ITERATIONS,
+            None,
+            table,
+        ),
+        bench_virtual_tree_scale(10_000, SCALE_100K_WARMUP, SCALE_100K_ITERATIONS, None, list),
+        bench_virtual_tree_scale(
+            100_000,
+            SCALE_100K_WARMUP,
+            SCALE_100K_ITERATIONS,
+            None,
+            list,
+        ),
     ];
     if large_scale_enabled() {
         virtual_scales.push(bench_virtual_list_scale(
@@ -697,6 +829,7 @@ fn main() {
             SCALE_1M_WARMUP,
             SCALE_1M_ITERATIONS,
             Some(LARGE_SCALE_TIMEOUT),
+            list,
         ));
         virtual_scales.push(bench_virtual_table_scale(
             1_000_000,
@@ -704,6 +837,14 @@ fn main() {
             SCALE_1M_WARMUP,
             SCALE_1M_ITERATIONS,
             Some(LARGE_SCALE_TIMEOUT),
+            table,
+        ));
+        virtual_scales.push(bench_virtual_tree_scale(
+            1_000_000,
+            SCALE_1M_WARMUP,
+            SCALE_1M_ITERATIONS,
+            Some(LARGE_SCALE_TIMEOUT),
+            list,
         ));
     } else {
         virtual_scales.push(skipped_scale(
@@ -718,59 +859,179 @@ fn main() {
             Some(100),
             "NANA_PERF_SCALE!=large",
         ));
+        virtual_scales.push(skipped_scale(
+            "tree",
+            1_000_000,
+            None,
+            "NANA_PERF_SCALE!=large",
+        ));
     }
-    write_report(&Report {
-        schema_version: 9,
-        profile: if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
+    write_report(
+        &Report {
+            schema_version: 9,
+            profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
+            frame_budget_ms: FRAME_BUDGET_MS,
+            frame_budget_hz: 60,
+            warmup_iterations: WARMUP_ITERATIONS,
+            iterations: ITERATIONS,
+            view_event_update_ms: summarize(&updates),
+            action_dispatch_ms: summarize(&actions),
+            component_activate_ms: summarize(&component_activations),
+            component_noop_ms: summarize(&component_noops),
+            virtual_list_10k_window_ms: summarize(&virtual_list_windows),
+            virtual_list_10k_update_ms: summarize(&virtual_list_updates),
+            virtual_list_10k_materialize_ms: summarize(&virtual_list_materializations),
+            virtual_table_10k_x_100_window_ms: summarize(&virtual_table_windows),
+            virtual_table_10k_x_100_materialize_ms: summarize(&virtual_table_materializations),
+            virtual_table_column_resize_ms: summarize(&virtual_table_resizes),
+            virtual_scroll_40_visible_nodes_ms: summarize(&virtual_scroll_updates),
+            canonical_layout_5000_nodes_ms: summarize(&canonical_layout_updates),
+            virtual_scales,
+            catalog_workloads: vec![
+                // Each helper constructs AppContext::new(). Do not fold these
+                // into the shared list/table loop — table shaping on that
+                // context previously inflated scroll input_hit_test from 41 to 1164.
+                bench_ime(),
+                bench_dock_workspace(),
+                bench_overlay(),
+                bench_text_editor(),
+            ],
         },
-        frame_budget_ms: FRAME_BUDGET_MS,
-        frame_budget_hz: 60,
-        warmup_iterations: WARMUP_ITERATIONS,
-        iterations: ITERATIONS,
-        view_event_update_ms: summarize(&updates),
-        action_dispatch_ms: summarize(&actions),
-        component_activate_ms: summarize(&component_activations),
-        component_noop_ms: summarize(&component_noops),
-        virtual_list_10k_window_ms: summarize(&virtual_list_windows),
-        virtual_list_10k_update_ms: summarize(&virtual_list_updates),
-        virtual_list_10k_materialize_ms: summarize(&virtual_list_materializations),
-        virtual_table_10k_x_100_window_ms: summarize(&virtual_table_windows),
-        virtual_table_10k_x_100_materialize_ms: summarize(&virtual_table_materializations),
-        virtual_table_column_resize_ms: summarize(&virtual_table_resizes),
-        virtual_scroll_40_visible_nodes_ms: summarize(&virtual_scroll_updates),
-        canonical_layout_5000_nodes_ms: summarize(&canonical_layout_updates),
-        virtual_scales,
-        catalog_workloads: vec![
-            // Each helper constructs AppContext::new(). Do not fold these
-            // into the shared list/table loop — table shaping on that
-            // context previously inflated scroll input_hit_test from 41 to 1164.
-            bench_ime(),
-            bench_dock_workspace(),
-            bench_overlay(),
-            bench_text_editor(),
-        ],
-        virtual_tree: SkippedApi {
-            status: "skipped",
-            reason: "no scale bench this round",
-        },
-    });
+        args.output,
+    );
 }
 
-fn write_report(report: &Report) {
-    let json = serde_json::to_string_pretty(report).expect("benchmark report must serialize");
+fn parse_args() -> BenchArgs {
+    let mut output = None;
+    let mut list = ListWindow::standalone();
+    let mut table = TableWindow::standalone();
     let mut arguments = std::env::args_os().skip(1);
-    match arguments.next() {
+    while let Some(flag) = arguments.next() {
+        match flag.to_str() {
+            Some("--output") => {
+                output = Some(std::path::PathBuf::from(
+                    arguments
+                        .next()
+                        .expect("--output requires a destination path"),
+                ));
+            }
+            Some("--list-viewport-px") => {
+                list.viewport = parse_positive_f32(
+                    arguments
+                        .next()
+                        .expect("--list-viewport-px requires a value"),
+                    "--list-viewport-px",
+                );
+            }
+            Some("--list-overscan-px") => {
+                list.overscan = parse_non_negative_f32(
+                    arguments
+                        .next()
+                        .expect("--list-overscan-px requires a value"),
+                    "--list-overscan-px",
+                );
+            }
+            Some("--list-item-extent-px") => {
+                list.item_extent = parse_positive_f32(
+                    arguments
+                        .next()
+                        .expect("--list-item-extent-px requires a value"),
+                    "--list-item-extent-px",
+                );
+            }
+            Some("--table-viewport-width-px") => {
+                table.viewport.0 = parse_positive_f32(
+                    arguments
+                        .next()
+                        .expect("--table-viewport-width-px requires a value"),
+                    "--table-viewport-width-px",
+                );
+            }
+            Some("--table-viewport-height-px") => {
+                table.viewport.1 = parse_positive_f32(
+                    arguments
+                        .next()
+                        .expect("--table-viewport-height-px requires a value"),
+                    "--table-viewport-height-px",
+                );
+            }
+            Some("--table-overscan-x-px") => {
+                table.overscan.0 = parse_non_negative_f32(
+                    arguments
+                        .next()
+                        .expect("--table-overscan-x-px requires a value"),
+                    "--table-overscan-x-px",
+                );
+            }
+            Some("--table-overscan-y-px") => {
+                table.overscan.1 = parse_non_negative_f32(
+                    arguments
+                        .next()
+                        .expect("--table-overscan-y-px requires a value"),
+                    "--table-overscan-y-px",
+                );
+            }
+            Some("--table-column-extent-px") => {
+                table.column_extent = parse_positive_f32(
+                    arguments
+                        .next()
+                        .expect("--table-column-extent-px requires a value"),
+                    "--table-column-extent-px",
+                );
+            }
+            Some("--table-row-extent-px") => {
+                table.row_extent = parse_positive_f32(
+                    arguments
+                        .next()
+                        .expect("--table-row-extent-px requires a value"),
+                    "--table-row-extent-px",
+                );
+            }
+            Some(other) => panic!(
+                "unsupported argument `{other}`; expected --output, --list-viewport-px, \
+                 --list-overscan-px, --list-item-extent-px, --table-viewport-width-px, \
+                 --table-viewport-height-px, --table-overscan-x-px, --table-overscan-y-px, \
+                 --table-column-extent-px, --table-row-extent-px"
+            ),
+            None => panic!("arguments must be valid UTF-8"),
+        }
+    }
+    BenchArgs {
+        output,
+        list,
+        table,
+    }
+}
+
+fn parse_positive_f32(value: std::ffi::OsString, flag: &str) -> f32 {
+    let parsed = value
+        .to_str()
+        .expect("list window arguments must be UTF-8")
+        .parse::<f32>()
+        .unwrap_or_else(|_| panic!("{flag} must be a number"));
+    assert!(parsed > 0.0, "{flag} must be > 0");
+    parsed
+}
+
+fn parse_non_negative_f32(value: std::ffi::OsString, flag: &str) -> f32 {
+    let parsed = value
+        .to_str()
+        .expect("list window arguments must be UTF-8")
+        .parse::<f32>()
+        .unwrap_or_else(|_| panic!("{flag} must be a number"));
+    assert!(parsed >= 0.0, "{flag} must be >= 0");
+    parsed
+}
+
+fn write_report(report: &Report, output: Option<std::path::PathBuf>) {
+    let json = serde_json::to_string_pretty(report).expect("benchmark report must serialize");
+    match output {
         None => println!("{json}"),
-        Some(flag) if flag == "--output" => {
-            let path = std::path::PathBuf::from(
-                arguments
-                    .next()
-                    .expect("--output requires a destination path"),
-            );
-            assert!(arguments.next().is_none(), "unexpected benchmark arguments");
+        Some(path) => {
             if let Some(parent) = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
@@ -781,10 +1042,6 @@ fn write_report(report: &Report) {
                 .expect("benchmark destination must be writable");
             println!("{}", path.display());
         }
-        Some(argument) => panic!(
-            "unsupported argument `{}`; expected --output <path>",
-            argument.to_string_lossy()
-        ),
     }
 }
 
@@ -840,6 +1097,15 @@ fn skipped_scale(
         cache_rows: 0,
         live_ui_entities: None,
         live_ui_entities_bound: None,
+        list_viewport_px: None,
+        list_overscan_px: None,
+        list_item_extent_px: None,
+        table_viewport_width_px: None,
+        table_viewport_height_px: None,
+        table_overscan_x_px: None,
+        table_overscan_y_px: None,
+        table_column_extent_px: None,
+        table_row_extent_px: None,
         construction_ms: None,
         window_ms: None,
         materialize_ms: None,
@@ -852,9 +1118,10 @@ fn bench_virtual_list_scale(
     warmup: usize,
     iterations: usize,
     timeout: Option<Duration>,
+    list_window: ListWindow,
 ) -> VirtualScaleCase {
     let started = Instant::now();
-    let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, logical_rows));
+    let layout = VirtualListLayout::new(std::iter::repeat_n(list_window.item_extent, logical_rows));
     let construction_ms = started.elapsed().as_secs_f64() * 1_000.0;
     if timeout.is_some_and(|limit| started.elapsed() > limit) {
         return skipped_scale(
@@ -876,7 +1143,7 @@ fn bench_virtual_list_scale(
     let mut last_visible = 0;
     let mut last_overscan = 0;
     let mut last_live = 0;
-    let list_bound = list_live_entity_bound();
+    let list_bound = list_live_entity_bound(list_window);
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
             return skipped_scale(
@@ -888,7 +1155,7 @@ fn bench_virtual_list_scale(
         }
         let scroll = 120.0 + (iteration as f32 * 13.0) % 4_000.0;
         let window_started = Instant::now();
-        let window = layout.window(scroll, LIST_VIEWPORT, LIST_OVERSCAN);
+        let window = layout.window(scroll, list_window.viewport, list_window.overscan);
         let window_elapsed = window_started.elapsed();
         assert!(!window.range.is_empty());
         let materialize_started = Instant::now();
@@ -898,8 +1165,8 @@ fn bench_virtual_list_scale(
                 &mut items,
                 &layout,
                 scroll,
-                LIST_VIEWPORT,
-                LIST_OVERSCAN,
+                list_window.viewport,
+                list_window.overscan,
                 |index| index,
                 |index, _| Text::new(format!("Visible row {index}")),
             )
@@ -911,7 +1178,7 @@ fn bench_virtual_list_scale(
             .unwrap()
             .children
             .len();
-        let visible = layout.window(scroll, LIST_VIEWPORT, 0.0).range.len();
+        let visible = layout.window(scroll, list_window.viewport, 0.0).range.len();
         let overscan = materialized.range.len().saturating_sub(visible);
         assert_eq!(live, materialized.range.len());
         assert!(
@@ -938,6 +1205,15 @@ fn bench_virtual_list_scale(
         cache_rows: 0,
         live_ui_entities: Some(last_live),
         live_ui_entities_bound: Some(list_bound),
+        list_viewport_px: Some(list_window.viewport),
+        list_overscan_px: Some(list_window.overscan),
+        list_item_extent_px: Some(list_window.item_extent),
+        table_viewport_width_px: None,
+        table_viewport_height_px: None,
+        table_overscan_x_px: None,
+        table_overscan_y_px: None,
+        table_column_extent_px: None,
+        table_row_extent_px: None,
         construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
         window_ms: Some(summarize(&windows)),
         materialize_ms: Some(summarize(&materializations)),
@@ -951,11 +1227,13 @@ fn bench_virtual_table_scale(
     warmup: usize,
     iterations: usize,
     timeout: Option<Duration>,
+    table: TableWindow,
 ) -> VirtualScaleCase {
     let started = Instant::now();
     let layout = VirtualTableLayout::new(
-        std::iter::repeat_n(20.0, logical_rows),
-        (0..logical_columns).map(|index| TableColumn::new(format!("column-{index}"), 80.0)),
+        std::iter::repeat_n(table.row_extent, logical_rows),
+        (0..logical_columns)
+            .map(|index| TableColumn::new(format!("column-{index}"), table.column_extent)),
     );
     let construction_ms = started.elapsed().as_secs_f64() * 1_000.0;
     if timeout.is_some_and(|limit| started.elapsed() > limit) {
@@ -968,7 +1246,7 @@ fn bench_virtual_table_scale(
     }
     let loop_started = Instant::now();
     let mut context = AppContext::new();
-    let table = context
+    let table_host = context
         .create_component(DocumentId::new(1).unwrap(), Table::new())
         .unwrap();
     let mut items = VirtualTableItems::<usize, usize>::default();
@@ -979,7 +1257,7 @@ fn bench_virtual_table_scale(
     let mut last_overscan = 0;
     let mut last_live = 0;
     let mut last_work = None;
-    let table_bound = table_live_entity_bound();
+    let table_bound = table_live_entity_bound(table);
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
             return skipped_scale(
@@ -994,19 +1272,19 @@ fn bench_virtual_table_scale(
             120.0 + (iteration as f32 * 131.0) % 4_000.0,
         );
         let window_started = Instant::now();
-        let window = layout.window(scroll, TABLE_VIEWPORT, TABLE_OVERSCAN);
+        let window = layout.window(scroll, table.viewport, table.overscan);
         let window_elapsed = window_started.elapsed();
         assert!(!window.rows.range.is_empty());
         assert!(!window.columns.range.is_empty());
         let materialize_started = Instant::now();
         let materialized = context
             .materialize_virtual_table(
-                table,
+                table_host,
                 &mut items,
                 &layout,
                 scroll,
-                TABLE_VIEWPORT,
-                TABLE_OVERSCAN,
+                table.viewport,
+                table.overscan,
                 |index| index,
                 |index| index,
                 |_index, _| TableRow::new(),
@@ -1017,7 +1295,7 @@ fn bench_virtual_table_scale(
         let mounted_rows = materialized.rows.range.len();
         let mounted_columns = materialized.columns.range.len();
         let visible = layout
-            .window(scroll, TABLE_VIEWPORT, (0.0, 0.0))
+            .window(scroll, table.viewport, (0.0, 0.0))
             .rows
             .range
             .len();
@@ -1036,21 +1314,26 @@ fn bench_virtual_table_scale(
                 })
                 .sum::<usize>();
         assert!(
-            mounted_rows <= table_row_cap(),
+            mounted_rows <= table_row_cap(table),
             "virtual table mounted rows {mounted_rows} exceed geometric row cap {}",
-            table_row_cap()
+            table_row_cap(table)
         );
         assert!(
-            mounted_columns <= table_column_cap(),
+            mounted_columns <= table_column_cap(table),
             "virtual table mounted columns {mounted_columns} exceed geometric column cap {}",
-            table_column_cap()
+            table_column_cap(table)
         );
         assert!(
             live <= table_bound,
             "virtual table live entities {live} exceed geometric bound {table_bound}"
         );
         let table_work = context.take_system_work();
-        measure_virtual_table_text(&mut context, DocumentId::new(1).unwrap(), &table_work);
+        measure_virtual_table_text(
+            &mut context,
+            DocumentId::new(1).unwrap(),
+            &table_work,
+            table,
+        );
         if iteration >= warmup {
             windows.push(window_elapsed);
             materializations.push(materialize_elapsed);
@@ -1071,10 +1354,161 @@ fn bench_virtual_table_scale(
         cache_rows: 0,
         live_ui_entities: Some(last_live),
         live_ui_entities_bound: Some(table_bound),
+        list_viewport_px: None,
+        list_overscan_px: None,
+        list_item_extent_px: None,
+        table_viewport_width_px: Some(table.viewport.0),
+        table_viewport_height_px: Some(table.viewport.1),
+        table_overscan_x_px: Some(table.overscan.0),
+        table_overscan_y_px: Some(table.overscan.1),
+        table_column_extent_px: Some(table.column_extent),
+        table_row_extent_px: Some(table.row_extent),
         construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
         window_ms: Some(summarize(&windows)),
         materialize_ms: Some(summarize(&materializations)),
         work: last_work,
+    }
+}
+
+/// Flattened expanded forest: groups of parent + two leaf children.
+/// Remainder rows are leaves. This is a real disclosure walk, not a list of zeros.
+fn expanded_forest_descendant_count(index: usize, len: usize) -> usize {
+    let remaining = len.saturating_sub(index);
+    if index % 3 == 0 && remaining >= 3 {
+        2
+    } else {
+        0
+    }
+}
+
+fn tree_leaf(extent: f32) -> VirtualTreeRow {
+    VirtualTreeRow {
+        extent,
+        descendant_count: 0,
+    }
+}
+
+fn bench_virtual_tree_scale(
+    logical_rows: usize,
+    warmup: usize,
+    iterations: usize,
+    timeout: Option<Duration>,
+    list_window: ListWindow,
+) -> VirtualScaleCase {
+    let started = Instant::now();
+    let mut layout = VirtualTreeLayout::uniform(
+        list_window.item_extent,
+        (0..logical_rows).map(|index| expanded_forest_descendant_count(index, logical_rows)),
+    );
+    // Prove Fenwick insert/remove at this scale as part of construction, then
+    // restore the original walk so window/materialize see `logical_rows` rows.
+    if layout.descendant_count(0) == Some(2) {
+        assert!(layout.collapse(0));
+        assert!(layout.expand(
+            0,
+            [
+                tree_leaf(list_window.item_extent),
+                tree_leaf(list_window.item_extent),
+            ],
+        ));
+    }
+    let construction_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    if timeout.is_some_and(|limit| started.elapsed() > limit) {
+        return skipped_scale(
+            "tree",
+            logical_rows,
+            None,
+            "construction exceeded LARGE_SCALE_TIMEOUT",
+        );
+    }
+    let loop_started = Instant::now();
+    let mut context = AppContext::new();
+    let tree = context
+        .create_component(DocumentId::new(1).unwrap(), List::new())
+        .unwrap();
+    let mut items = VirtualTreeItems::<usize, Text>::default();
+    let _ = context.take_system_work();
+    let mut windows = Vec::with_capacity(iterations);
+    let mut materializations = Vec::with_capacity(iterations);
+    let mut last_visible = 0;
+    let mut last_overscan = 0;
+    let mut last_live = 0;
+    let tree_bound = list_live_entity_bound(list_window);
+    for iteration in 0..(warmup + iterations) {
+        if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
+            return skipped_scale(
+                "tree",
+                logical_rows,
+                None,
+                "materialize loop exceeded LARGE_SCALE_TIMEOUT",
+            );
+        }
+        let scroll = 120.0 + (iteration as f32 * 13.0) % 4_000.0;
+        let window_started = Instant::now();
+        let window = layout.window(scroll, list_window.viewport, list_window.overscan);
+        let window_elapsed = window_started.elapsed();
+        assert!(!window.range.is_empty());
+        let materialize_started = Instant::now();
+        let materialized = context
+            .materialize_virtual_tree(
+                tree,
+                &mut items,
+                &layout,
+                scroll,
+                list_window.viewport,
+                list_window.overscan,
+                |index| index,
+                |index, _| Text::new(format!("Visible tree row {index}")),
+            )
+            .unwrap();
+        let materialize_elapsed = materialize_started.elapsed();
+        let live = context
+            .world()
+            .node(tree.stable_id())
+            .unwrap()
+            .children
+            .len();
+        let visible = layout.window(scroll, list_window.viewport, 0.0).range.len();
+        let overscan = materialized.range.len().saturating_sub(visible);
+        assert_eq!(live, materialized.range.len());
+        assert!(
+            live <= tree_bound,
+            "virtual tree live entities {live} exceed geometric bound {tree_bound}"
+        );
+        assert_eq!(layout.visible_len(), logical_rows);
+        let _ = context.take_system_work();
+        if iteration >= warmup {
+            windows.push(window_elapsed);
+            materializations.push(materialize_elapsed);
+            last_visible = visible;
+            last_overscan = overscan;
+            last_live = live;
+        }
+    }
+    VirtualScaleCase {
+        kind: "tree",
+        logical_rows,
+        logical_columns: None,
+        status: "ok",
+        skip_reason: None,
+        visible_rows: Some(last_visible),
+        overscan_rows: Some(last_overscan),
+        cache_rows: 0,
+        live_ui_entities: Some(last_live),
+        live_ui_entities_bound: Some(tree_bound),
+        list_viewport_px: Some(list_window.viewport),
+        list_overscan_px: Some(list_window.overscan),
+        list_item_extent_px: Some(list_window.item_extent),
+        table_viewport_width_px: None,
+        table_viewport_height_px: None,
+        table_overscan_x_px: None,
+        table_overscan_y_px: None,
+        table_column_extent_px: None,
+        table_row_extent_px: None,
+        construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
+        window_ms: Some(summarize(&windows)),
+        materialize_ms: Some(summarize(&materializations)),
+        work: None,
     }
 }
 
@@ -1220,9 +1654,17 @@ fn bench_dock_workspace() -> CatalogWorkloadCase {
         .world()
         .document_order(document)
         .into_iter()
-        .find(|&id| context.is_dock_handle(id))
-        .expect("assembled dock must expose a split handle");
-    assert!(context.focus_node(document, handle).unwrap());
+        .find(|&id| {
+            context.is_dock_handle(id)
+                && context
+                    .world()
+                    .interaction(id)
+                    .is_some_and(|interaction| interaction.focusable)
+        })
+        .expect("assembled dock must expose a focusable split handle");
+    if context.world().focused(document) != Some(handle) {
+        assert!(context.focus_node(document, handle).unwrap());
+    }
     let _ = context.take_system_work();
     let mut resizes = Vec::with_capacity(WORKLOAD_ITERATIONS);
     let mut last_work = None;
@@ -1233,7 +1675,12 @@ fn bench_dock_workspace() -> CatalogWorkloadCase {
             -1.0
         };
         let started = Instant::now();
-        assert!(context.focus_node(document, handle).unwrap());
+        if context.world().focused(document) != Some(handle) {
+            assert!(
+                context.focus_node(document, handle).unwrap(),
+                "dock split handle must accept focus"
+            );
+        }
         assert!(
             context
                 .adjust_focused_dock_split(document, direction)

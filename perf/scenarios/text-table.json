@@ -28,10 +28,10 @@
       "name": "text_table_live_entities_bounded",
       "path": "work_counters.live_ui_entities",
       "op": "lte",
-      "value": 1260,
+      "value": 1334,
       "status": "required",
-      "note": "Issue #8 §3.4/§3.5 forbids one retained entity per logical cell. Bound is the existing nana-framework-benchmark geometric window (viewport+overscan), not rows×columns. Missing live_ui_entities stays not-evaluable."
+      "note": "Issue #8 §3.4/§3.5 forbids one retained entity per logical cell. Bound is the catalog-8 geometric window: uniform_window_item_cap = ceil((viewport + 2×overscan)/extent)+2 → 58 rows × 22 cols → live = rows + rows×cols = 1334, not rows×columns. Missing live_ui_entities stays not-evaluable."
     }
   ],
-  "notes": "Mapped onto nana-framework-benchmark virtual_scales kind=table 10k×100. Most cells are short_cell_len=8; each 40-row band keeps wrapped_cells=4 long wrapping cells (wrapped_cell_len=256) that are shaped against the 80px column box. Exports text_shaped, text_shaped_runs, text_layout_cache_hits/misses, text_wrap_layouts, and cache_eviction from WorkCounters. glyph_cache_* stay omitted."
+  "notes": "Mapped onto nana-framework-benchmark virtual_scales kind=table 10k×100. Most cells are short_cell_len=8; each 40-row band keeps wrapped_cells=4 long wrapping cells (wrapped_cell_len=256) that are shaped against the 80px column box. Exports text_shaped, text_shaped_runs, text_layout_cache_hits/misses, text_wrap_layouts, and cache_eviction from WorkCounters. glyph_cache_* stay omitted on this binary's MeasureTextShaper host; Runtime GlyphCache is Some on NanaTextShaper."
 }

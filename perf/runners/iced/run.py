@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Issue #8 / #12 Iced reference runner.
 
-StaticTree invokes ``engine/iced`` ``scenario-bench``, which reads the shared
-Scenario JSON and materializes the complete-binary-heap used by Nana
-``tree_mutations`` (parent(i)=i//2, element-div, no text). That path is
-``same-scenario`` only when the report declares that generation.
+StaticTree, Mutation (PaintOnly / Text / LayoutStyle), Hover, VirtualList,
+and Table invoke ``engine/iced`` ``scenario-bench`` against the shared Scenario JSON.
+Visibility / Transform / Accessibility stay unsupported: Iced has no
+``hidden`` / ``PaintTransform`` / ``set_accessibility`` equivalent.
+VirtualList and Table materialize only the catalog window (Nana runner now
+passes the same px windows). StaticTree 50k stays unsupported.
 
 ``--from-report`` still accepts historical Gallery ``ui-benchmark`` JSON as
-``closest-legacy-reference``. Mutation, Hover, VirtualList, and Table stay
-unsupported (exit 2) until those kinds exist on the engine/iced adapter.
+``closest-legacy-reference`` for tiny StaticTree ids. Animation, Ime, Dock,
+Overlay, TextEditor, VirtualTree, and GpuScene stay unsupported (exit 2). Topology-only
+``pane_grid`` is not Nana ``assemble_dock`` chrome. A cached Iced editor frame
+is not Nana ``replace_text_area_selection`` + ``drain_text``.
 
 Relative Iced/GPUI gates stay off: GPUI is still a stub.
 """
@@ -24,6 +28,15 @@ sys.path.insert(0, str(PERF))
 
 import contract  # noqa: E402
 
+SCENARIO_BENCH_KINDS = {"StaticTree", "Mutation", "Hover", "VirtualList", "Table"}
+
+
+def _unsupported_plan(scenario_id: str, reason: str) -> list[str]:
+    return [
+        f"# iced unsupported for {scenario_id}; exit {contract.EXIT_UNSUPPORTED}",
+        f"# {reason}",
+    ]
+
 
 def plan(scenario_id: str, args: Any) -> list[str]:
     if args.from_report:
@@ -32,11 +45,15 @@ def plan(scenario_id: str, args: Any) -> list[str]:
         scenario = contract.load_scenario(scenario_id, args.repo_root)
     except FileNotFoundError:
         return [f"# missing scenario file for {scenario_id}"]
-    if scenario["kind"] != "StaticTree":
-        return [
-            f"# iced unsupported for {scenario_id}; exit {contract.EXIT_UNSUPPORTED}",
-            "# engine/iced scenario-bench currently implements StaticTree only",
-        ]
+    reason = contract.iced_scenario_bench_skip_reason(scenario)
+    if reason:
+        return _unsupported_plan(scenario_id, reason)
+    if scenario["kind"] not in SCENARIO_BENCH_KINDS:
+        return _unsupported_plan(
+            scenario_id,
+            "engine/iced scenario-bench implements StaticTree, Mutation, Hover, "
+            "VirtualList, and Table only",
+        )
     output = args.repo_root / "target" / "performance" / "issue8" / f"iced-{scenario_id}.json"
     command = contract.cargo_run_iced_scenario_bench(
         args.repo_root,
@@ -56,38 +73,25 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
             scenario_id=scenario_id,
             unsupported_reason=f"No scenario JSON at perf/scenarios/{scenario_id}.json",
         )
-    if scenario["kind"] in {
-        "Mutation",
-        "Hover",
-        "VirtualList",
-        "Table",
-        "Animation",
-        "Ime",
-        "DockWorkspace",
-        "Overlay",
-        "TextEditor",
-        "GpuScene",
-    }:
+    skip = contract.iced_scenario_bench_skip_reason(scenario)
+    if skip:
         return contract.envelope(
             runner="iced",
             status="unsupported",
             scenario_id=scenario_id,
             scenario=scenario,
-            unsupported_reason=(
-                f"engine/iced scenario-bench currently implements StaticTree only. "
-                f"{scenario['kind']} is required by #8 / not implemented. "
-                "Gallery ui-benchmark is not a substitute. Fake Iced numbers are forbidden."
-            ),
+            unsupported_reason=skip,
         )
-    if scenario["kind"] != "StaticTree":
+    if scenario["kind"] not in SCENARIO_BENCH_KINDS:
         return contract.envelope(
             runner="iced",
             status="unsupported",
             scenario_id=scenario_id,
             scenario=scenario,
             unsupported_reason=(
-                f"engine/iced scenario-bench has no mapping for kind={scenario['kind']}. "
-                "Required by #8 / not implemented."
+                f"engine/iced scenario-bench implements StaticTree, Mutation, Hover, "
+                f"VirtualList, and Table. {scenario['kind']} is required by #8 / not implemented. "
+                "Gallery ui-benchmark is not a substitute. Fake Iced numbers are forbidden."
             ),
         )
 

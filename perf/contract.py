@@ -9,11 +9,14 @@ timing gates are not enforceable until those runners produce real numbers.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 import os
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -36,6 +39,7 @@ KIND_PARAM_KEYS: dict[str, tuple[str, ...]] = {
     "Mutation": ("tree_nodes", "kind"),
     "Hover": ("nodes",),
     "VirtualList": ("items", "visible", "overscan"),
+    "VirtualTree": ("items", "visible", "overscan"),
     "Table": ("rows", "columns"),
     "TextEditor": ("document_chars",),
     "Ime": ("scripts",),
@@ -149,6 +153,12 @@ def validate_scenario(scenario: Mapping[str, Any]) -> list[str]:
                 key == "overscan" and params.get(key) == 0
             ):
                 errors.append(f"VirtualList.{key} must be a non-negative integer")
+    if kind == "VirtualTree":
+        for key in ("items", "visible", "overscan"):
+            if not _positive_int(params.get(key)) and not (
+                key == "overscan" and params.get(key) == 0
+            ):
+                errors.append(f"VirtualTree.{key} must be a non-negative integer")
     if kind == "Table":
         for key in ("rows", "columns"):
             if not _positive_int(params.get(key)):
@@ -187,6 +197,293 @@ def static_tree_sample_parents(nodes: int) -> list[dict[str, Any]]:
         if 1 <= index <= nodes and index not in unique:
             unique.append(index)
     return [{"index": index, "parent": static_tree_parent(index)} for index in unique]
+
+
+INCOMPARABLE_STATIC_TREE_50K = 50_000
+INCOMPARABLE_STATIC_TREE_50K_REASON = (
+    "StaticTree 50k is not comparable: Nana nana-runtime-benchmark maps this id as "
+    "kind=construction (enqueue/commit/paint/hover only), not a full systems pass. "
+    "Iced scenario-bench refuses a full 50k layout+draw for the same reason. "
+    "Unsupported until both sides share the same work definition. "
+    "Do not silently compare construction-only Nana vs full Iced 50k."
+)
+REQUIRED_HOVER_NODES = 10_000
+REQUIRED_MUTATION_NODES = 5_000
+ICED_SAME_SCENARIO_MUTATION_KINDS = frozenset({"PaintOnly", "Text", "LayoutStyle"})
+ICED_UNSUPPORTED_MUTATION_KINDS = frozenset({"Visibility", "Transform", "Accessibility"})
+ICED_UNSUPPORTED_MUTATION_REASON = (
+    "Iced scenario-bench has no same-scenario Visibility, Transform, or Accessibility. "
+    "Nana measure_single_node_mutations uses LayoutStyle.hidden, PaintTransform.e "
+    "{4|8}, and set_accessibility labels alpha/beta. Height-0+clip, Shadow offset, "
+    "or widget Id is not that dirty work. Unsupported until Iced applies the same kind."
+)
+NANA_TABLE_ROW_EXTENT_PX = 20.0
+NANA_TABLE_COLUMN_EXTENT_PX = 80.0
+REQUIRED_TABLE_ROWS = 10_000
+REQUIRED_TABLE_COLUMNS = 100
+REQUIRED_TABLE_VISIBLE_ROWS = 40
+REQUIRED_TABLE_VISIBLE_COLUMNS = 16
+REQUIRED_TABLE_OVERSCAN_ROWS = 8
+REQUIRED_TABLE_OVERSCAN_COLUMNS = 2
+ICED_UNSUPPORTED_ANIMATION_REASON = (
+    "Iced has no Runtime animation scheduler. Nana catalog Animation measures "
+    "next_animation_deadline idle/scheduled plus advance_animations with "
+    "due_animation_samples=1 on an isolated UiWorld. A tweening widget is not that work."
+)
+ICED_UNSUPPORTED_IME_REASON = (
+    "Iced has no set_ime_preedit / commit_ime. Nana Ime measures those Runtime calls "
+    "on a focused TextInput for latin/zh/ja/ko. OS IME UI and text_input typing are "
+    "not that dirty work."
+)
+ICED_UNSUPPORTED_OVERLAY_REASON = (
+    "Iced has no OverlayHost activate_overlay/dismiss_overlay or toggle_popover. "
+    "Nana Overlay measures those APIs for Tooltip, Menu, Dialog, and Popover. "
+    "Always-on tooltips or centered containers are not that dirty work."
+)
+ICED_UNSUPPORTED_GPU_SCENE_REASON = (
+    "Iced has no nana-gpu-scene-benchmark UiOnly path. GpuScene / Live2D stay "
+    "unsupported; do not invent GPU upload or Live2D zeros."
+)
+
+
+def nana_gpu_scene_skip_reason(scenario: Mapping[str, Any]) -> str | None:
+    """Why Nana must not emit ok for this GpuScene, or None to run UiOnly."""
+    if scenario.get("kind") != "GpuScene":
+        return None
+    params = scenario.get("params") if isinstance(scenario.get("params"), Mapping) else {}
+    composition = params.get("composition")
+    if composition == "UiOnly":
+        return None
+    return (
+        f"GpuScene composition {composition} has no Nana encode/submit path. "
+        "Live2D is not a Scene pass; HostTexture evidence is not this composition. "
+        "Do not invent upload/batch zeros."
+    )
+ICED_UNSUPPORTED_DOCK_REASON = (
+    "Iced pane_grid topology/axis/0.50-0.55/1280x800/panes=8 is not Nana catalog Dock. "
+    "Nana adjust_focused_dock_split calls assemble_dock and rebuilds chrome "
+    "(titles/strips/handles). Chrome-less incremental splits are not that dirty work. "
+    "Unsupported until Iced resize rebuilds equivalent chrome."
+)
+ICED_UNSUPPORTED_TEXT_EDITOR_REASON = (
+    "Iced cannot observe Nana replace_text_area_selection then drain_text on a 100k "
+    "buffer. Timing only view + reused UserInterface::build + draw after an untimed "
+    "edit is a cached no-op, not that dirty work. Unsupported until the analog of "
+    "edit+drain dirties the timed frame. Do not invent WorkCounters.text_shaped."
+)
+ICED_UNSUPPORTED_VIRTUAL_TREE_REASON = (
+    "Iced scenario-bench has no VirtualTree Fenwick / disclosure-row materializer. "
+    "A VirtualList window is not an expanded-walk tree. Fake Iced numbers are forbidden."
+)
+
+
+def is_incomparable_static_tree_50k(scenario: Mapping[str, Any]) -> bool:
+    params = scenario.get("params") if isinstance(scenario.get("params"), Mapping) else {}
+    return scenario.get("kind") == "StaticTree" and params.get("nodes") == INCOMPARABLE_STATIC_TREE_50K
+
+
+def iced_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
+    """Why Iced scenario-bench must not emit ok for this scenario, or None to run."""
+    kind = scenario.get("kind")
+    params = scenario.get("params") if isinstance(scenario.get("params"), Mapping) else {}
+    if is_incomparable_static_tree_50k(scenario):
+        return INCOMPARABLE_STATIC_TREE_50K_REASON
+    if kind == "Hover" and params.get("nodes") != REQUIRED_HOVER_NODES:
+        return (
+            f"Hover must use nodes={REQUIRED_HOVER_NODES}; catalog has "
+            f"nodes={params.get('nodes')}. Refusing to substitute a smaller tree."
+        )
+    if kind == "Mutation":
+        if params.get("tree_nodes") != REQUIRED_MUTATION_NODES:
+            return (
+                f"Mutation must use tree_nodes={REQUIRED_MUTATION_NODES}; catalog has "
+                f"tree_nodes={params.get('tree_nodes')}. Refusing to substitute another tree size."
+            )
+        mutation_kind = params.get("kind")
+        if mutation_kind in ICED_UNSUPPORTED_MUTATION_KINDS:
+            return ICED_UNSUPPORTED_MUTATION_REASON
+        if mutation_kind not in ICED_SAME_SCENARIO_MUTATION_KINDS:
+            return (
+                f"Iced scenario-bench has no same-scenario Mutation.params.kind="
+                f"{mutation_kind!r}. Only PaintOnly, Text, and LayoutStyle are wired."
+            )
+    if kind == "Table":
+        if (
+            params.get("rows") != REQUIRED_TABLE_ROWS
+            or params.get("columns") != REQUIRED_TABLE_COLUMNS
+            or params.get("visible_rows") != REQUIRED_TABLE_VISIBLE_ROWS
+            or params.get("visible_columns") != REQUIRED_TABLE_VISIBLE_COLUMNS
+            or params.get("overscan_rows") != REQUIRED_TABLE_OVERSCAN_ROWS
+            or params.get("overscan_columns") != REQUIRED_TABLE_OVERSCAN_COLUMNS
+        ):
+            return (
+                "Iced Table must use the catalog text-table window "
+                f"(rows={REQUIRED_TABLE_ROWS}, columns={REQUIRED_TABLE_COLUMNS}, "
+                f"visible={REQUIRED_TABLE_VISIBLE_ROWS}x{REQUIRED_TABLE_VISIBLE_COLUMNS}, "
+                f"overscan={REQUIRED_TABLE_OVERSCAN_ROWS}x{REQUIRED_TABLE_OVERSCAN_COLUMNS}). "
+                f"catalog has rows={params.get('rows')} columns={params.get('columns')} "
+                f"visible={params.get('visible_rows')}x{params.get('visible_columns')} "
+                f"overscan={params.get('overscan_rows')}x{params.get('overscan_columns')}."
+            )
+    if kind == "Animation":
+        return ICED_UNSUPPORTED_ANIMATION_REASON
+    if kind == "Ime":
+        return ICED_UNSUPPORTED_IME_REASON
+    if kind == "Overlay":
+        return ICED_UNSUPPORTED_OVERLAY_REASON
+    if kind == "GpuScene":
+        return ICED_UNSUPPORTED_GPU_SCENE_REASON
+    if kind == "DockWorkspace":
+        return ICED_UNSUPPORTED_DOCK_REASON
+    if kind == "TextEditor":
+        return ICED_UNSUPPORTED_TEXT_EDITOR_REASON
+    if kind == "VirtualTree":
+        return ICED_UNSUPPORTED_VIRTUAL_TREE_REASON
+    return None
+
+
+def catalog_virtual_list_window(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Catalog VirtualList window: visible/overscan are item counts."""
+    visible = params["visible"]
+    overscan = params["overscan"]
+    extent = params["item_extent_px"]
+    return {
+        "visible": visible,
+        "overscan": overscan,
+        "item_extent_px": extent,
+        "viewport_px": float(visible) * float(extent),
+        "overscan_px": float(overscan) * float(extent),
+    }
+
+
+def nana_framework_list_window_args(scenario: Mapping[str, Any]) -> list[str]:
+    """Pass catalog list window into nana-framework-benchmark (px)."""
+    window = catalog_virtual_list_window(scenario["params"])
+    return [
+        "--list-viewport-px",
+        str(window["viewport_px"]),
+        "--list-overscan-px",
+        str(window["overscan_px"]),
+        "--list-item-extent-px",
+        str(window["item_extent_px"]),
+    ]
+
+
+def catalog_table_window(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Catalog Table window in px using Nana row 20 / column 80 extents."""
+    visible_rows = params["visible_rows"]
+    visible_columns = params["visible_columns"]
+    overscan_rows = params["overscan_rows"]
+    overscan_columns = params["overscan_columns"]
+    return {
+        "visible_rows": visible_rows,
+        "visible_columns": visible_columns,
+        "overscan_rows": overscan_rows,
+        "overscan_columns": overscan_columns,
+        "row_extent_px": NANA_TABLE_ROW_EXTENT_PX,
+        "column_extent_px": NANA_TABLE_COLUMN_EXTENT_PX,
+        "viewport_width_px": float(visible_columns) * NANA_TABLE_COLUMN_EXTENT_PX,
+        "viewport_height_px": float(visible_rows) * NANA_TABLE_ROW_EXTENT_PX,
+        "overscan_x_px": float(overscan_columns) * NANA_TABLE_COLUMN_EXTENT_PX,
+        "overscan_y_px": float(overscan_rows) * NANA_TABLE_ROW_EXTENT_PX,
+    }
+
+
+def nana_framework_table_window_args(scenario: Mapping[str, Any]) -> list[str]:
+    """Pass catalog table window into nana-framework-benchmark (px)."""
+    window = catalog_table_window(scenario["params"])
+    return [
+        "--table-viewport-width-px",
+        str(window["viewport_width_px"]),
+        "--table-viewport-height-px",
+        str(window["viewport_height_px"]),
+        "--table-overscan-x-px",
+        str(window["overscan_x_px"]),
+        "--table-overscan-y-px",
+        str(window["overscan_y_px"]),
+        "--table-column-extent-px",
+        str(window["column_extent_px"]),
+        "--table-row-extent-px",
+        str(window["row_extent_px"]),
+    ]
+
+
+def catalog_uniform_window_item_cap(
+    viewport_px: Any, overscan_px: Any, item_extent_px: Any
+) -> int:
+    """Same geometric cap as Nana ``VirtualListLayout::uniform_window_item_cap``."""
+    extent = float(item_extent_px)
+    if extent <= 0:
+        return 0
+    return math.ceil((float(viewport_px) + 2.0 * float(overscan_px)) / extent) + 2
+
+
+def catalog_virtual_list_live_bound(params: Mapping[str, Any]) -> int:
+    window = catalog_virtual_list_window(params)
+    return catalog_uniform_window_item_cap(
+        window["viewport_px"], window["overscan_px"], window["item_extent_px"]
+    )
+
+
+def catalog_table_live_bound(params: Mapping[str, Any]) -> int:
+    window = catalog_table_window(params)
+    rows = catalog_uniform_window_item_cap(
+        window["viewport_height_px"], window["overscan_y_px"], window["row_extent_px"]
+    )
+    columns = catalog_uniform_window_item_cap(
+        window["viewport_width_px"], window["overscan_x_px"], window["column_extent_px"]
+    )
+    return rows + rows * columns
+
+
+# Catalog ids whose Nana/Iced runners already emit honest ``ok`` envelopes
+# *and* a non-empty catalog ``invariants`` row. ``--evaluate-invariants``
+# judges these. Everything else is skipped, not invariant-ok — including
+# Dock / TextEditor / Animation / IME / Overlay / GpuScene / StaticTree
+# 100/1k/5k/10k/50k / GPUI even if a report is present.
+# StaticTree 100/1k/5k/10k emit comparable ok envelopes, but neither Nana nor
+# Iced exports ``frames_after_idle`` (or any idle-frame count) after settle.
+# ``idle_schedule_ms`` is a timing. Vacuous ok with an empty invariants array
+# is forbidden; keep these ids off this set until a real counter exists.
+SECTION_8_1_HONEST_OK_IDS = frozenset(
+    {
+        "mutation-paint-only",
+        "mutation-text",
+        "mutation-layout-style",
+        "hover",
+        "virtual-list-10k",
+        "virtual-list-100k",
+        "virtual-tree-10k",
+        "virtual-tree-100k",
+        "text-table",
+    }
+)
+SECTION_8_1_UNSUPPORTED_IDS = frozenset(
+    {
+        "static-tree-100",
+        "static-tree-1k",
+        "static-tree-5k",
+        "static-tree-10k",
+        "static-tree-50k",
+        "animation",
+        "ime",
+        "dock-workspace",
+        "overlay",
+        "text-editor",
+        "gpu-scene-ui",
+        "gpu-scene-ui-live2d",
+        "gpu-scene-ui-live2d-effect",
+        "virtual-list-1m",
+        "virtual-tree-1m",
+    }
+)
+
+
+def _same_number(left: Any, right: Any) -> bool:
+    try:
+        return float(left) == float(right)
+    except (TypeError, ValueError):
+        return False
 
 
 def is_shared_static_tree(tree: Mapping[str, Any] | None, nodes: int) -> bool:
@@ -445,6 +742,165 @@ def evaluate_invariants(
                 )
         results.append(item)
     return results
+
+
+def is_runner_envelope(payload: Mapping[str, Any] | None) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    return (
+        payload.get("schema_version") == SCHEMA_VERSION
+        and payload.get("runner") in {"nana", "iced", "gpui"}
+        and payload.get("status") in {"ok", "unsupported", "error"}
+        and isinstance(payload.get("scenario_id"), str)
+        and bool(payload.get("scenario_id"))
+    )
+
+
+def _skip_section_8_1(scenario_id: str, runner: str, status: str) -> str | None:
+    if runner == "gpui":
+        return "GPUI stays unsupported; do not treat as invariant-ok"
+    if scenario_id in SECTION_8_1_UNSUPPORTED_IDS:
+        return (
+            f"{scenario_id} is not a §8.1 honest-ok catalog id; skipped, not invariant-ok"
+        )
+    if scenario_id not in SECTION_8_1_HONEST_OK_IDS:
+        return (
+            f"{scenario_id} is not a §8.1 honest-ok catalog id; skipped, not invariant-ok"
+        )
+    if status == "unsupported":
+        return "envelope status=unsupported"
+    return None
+
+
+def judge_runner_invariants(
+    report: Mapping[str, Any],
+    *,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Judge §8.1 invariants from one runner envelope using ``evaluate_invariants``.
+
+    This is the PR/CI entry: same rule engine runners already attach, not a
+    second copy of the comparisons. Unsupported ids/runners stay skipped.
+    """
+    if not is_runner_envelope(report):
+        return {
+            "decision": "error",
+            "note": (
+                "not a runner envelope (need schema_version, runner, status, scenario_id)"
+            ),
+        }
+    scenario_id = str(report["scenario_id"])
+    runner = str(report["runner"])
+    status = str(report["status"])
+    judged: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "runner": runner,
+        "envelope_status": status,
+    }
+    if report.get("equivalence") is not None:
+        judged["equivalence"] = report.get("equivalence")
+    skip = _skip_section_8_1(scenario_id, runner, status)
+    if skip:
+        judged["decision"] = "skipped"
+        if status == "unsupported":
+            judged["note"] = report.get("unsupported_reason") or skip
+        else:
+            judged["note"] = skip
+        return judged
+    if status == "error":
+        judged["decision"] = "failed"
+        judged["note"] = report.get("error") or "envelope status=error"
+        return judged
+    try:
+        scenario = load_scenario(scenario_id, root)
+    except (FileNotFoundError, ValueError) as exc:
+        judged["decision"] = "error"
+        judged["note"] = str(exc)
+        return judged
+    evaluated = evaluate_invariants(scenario, report)
+    if not evaluated:
+        judged["decision"] = "skipped"
+        judged["note"] = (
+            "catalog has no invariants; vacuous ok is forbidden until a real row exists"
+        )
+        return judged
+    judged["invariants"] = evaluated
+    failed = [
+        str(item.get("name") or item.get("path"))
+        for item in evaluated
+        if item.get("status") == "failed"
+    ]
+    if failed:
+        judged["decision"] = "failed"
+        judged["note"] = "work-counter invariant failed: " + ", ".join(failed)
+        return judged
+    judged["decision"] = "ok"
+    return judged
+
+
+def expand_invariant_report_paths(paths: Sequence[Path | str]) -> list[Path]:
+    expanded: list[Path] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            files = sorted(path.glob("*.json"))
+            if not files:
+                raise FileNotFoundError(f"no *.json envelopes in directory {path}")
+            expanded.extend(files)
+            continue
+        expanded.append(path)
+    return expanded
+
+
+def evaluate_runner_invariant_paths(
+    paths: Sequence[Path | str],
+    *,
+    root: Path | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Judge one or more runner envelopes. Returns (summary, exit code)."""
+    reports: list[dict[str, Any]] = []
+    for path in expand_invariant_report_paths(paths):
+        try:
+            payload = load_json(path)
+        except FileNotFoundError:
+            reports.append(
+                {
+                    "source": str(path),
+                    "decision": "error",
+                    "note": f"report not found: {path}",
+                }
+            )
+            continue
+        except json.JSONDecodeError as exc:
+            reports.append(
+                {
+                    "source": str(path),
+                    "decision": "error",
+                    "note": f"invalid JSON: {exc}",
+                }
+            )
+            continue
+        judged = judge_runner_invariants(payload, root=root)
+        judged["source"] = str(path)
+        reports.append(judged)
+    failed = [item for item in reports if item.get("decision") in {"failed", "error"}]
+    ok = [item for item in reports if item.get("decision") == "ok"]
+    skipped = [item for item in reports if item.get("decision") == "skipped"]
+    summary: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "ok": len(ok),
+        "failed": len(failed),
+        "skipped": len(skipped),
+        "reports": reports,
+    }
+    if failed:
+        summary["status"] = "failed"
+        return summary, EXIT_ERROR
+    if ok:
+        summary["status"] = "ok"
+        return summary, EXIT_OK
+    summary["status"] = "unsupported"
+    return summary, EXIT_UNSUPPORTED
 
 
 def envelope(
@@ -781,6 +1237,8 @@ def extract_nana(
         return _extract_nana_hover(scenario, reports, source_paths)
     if kind == "VirtualList":
         return _extract_nana_virtual_list(scenario, reports, source_paths)
+    if kind == "VirtualTree":
+        return _extract_nana_virtual_tree(scenario, reports, source_paths)
     if kind == "Table":
         return _extract_nana_text_table(scenario, reports, source_paths)
     if kind == "Animation":
@@ -812,6 +1270,8 @@ def _extract_nana_static_tree(
         "StaticTree JSON only has params.nodes. Generation is complete-binary-heap "
         "parent(i)=i//2, NodeKind::Element div, no text (tree_mutations).",
     ]
+    if nodes == INCOMPARABLE_STATIC_TREE_50K:
+        raise KeyError(INCOMPARABLE_STATIC_TREE_50K_REASON)
     kind = case.get("kind", "full")
     if kind == "construction":
         notes.append(
@@ -1053,9 +1513,27 @@ def _extract_nana_virtual_list(
             "visible_rows": scale.get("visible_rows"),
             "overscan_rows": scale.get("overscan_rows"),
         }
-        notes.append(
-            "Existing overscan is reported in rows from the binary, not the contract overscan=8 items."
-        )
+        window = catalog_virtual_list_window(params)
+        reported_overscan_px = scale.get("list_overscan_px")
+        if reported_overscan_px is None:
+            notes.append(
+                "This report does not declare list_overscan_px. Historical standalone "
+                "nana-framework-benchmark used 200px overscan; the Nana runner now "
+                "passes the catalog window (visible items × item_extent_px, overscan "
+                f"items × item_extent_px = {window['overscan_px']}px)."
+            )
+        elif not _same_number(reported_overscan_px, window["overscan_px"]):
+            raise KeyError(
+                f"nana list_overscan_px={reported_overscan_px} does not match catalog "
+                f"overscan={window['overscan']} items ({window['overscan_px']}px). "
+                "Do not claim same-scenario while the list window differs."
+            )
+        else:
+            notes.append(
+                f"Shared catalog list window: viewport={window['viewport_px']}px, "
+                f"overscan={window['overscan']} items ({window['overscan_px']}px), "
+                f"item_extent={window['item_extent_px']}px."
+            )
     elif items == 10_000 and "virtual_list_10k_materialize_ms" in framework:
         notes.append(
             "Mapped onto legacy virtual_list_10k_* fields (no virtual_scales in this report)."
@@ -1088,6 +1566,89 @@ def _extract_nana_virtual_list(
         scenario=scenario,
         equivalence="closest-legacy-reference",
         source_binary=source_binary,
+        source_report=str(source_paths.get("framework", "")),
+        mapping_notes=notes,
+        metrics={key: value for key, value in metrics.items() if value is not None},
+        work_counters=work_counters,
+    )
+
+
+def _extract_nana_virtual_tree(
+    scenario: Mapping[str, Any],
+    reports: Mapping[str, Mapping[str, Any]],
+    source_paths: Mapping[str, Path],
+) -> dict[str, Any]:
+    params = scenario["params"]
+    framework = reports.get("framework")
+    if framework is None:
+        raise KeyError("nana-framework-benchmark report required")
+    items = params["items"]
+    scale = None
+    for row in framework.get("virtual_scales") or []:
+        if row.get("kind") == "tree" and row.get("logical_rows") == items:
+            scale = row
+            break
+    notes = [
+        f"Contract VirtualTree items={items}, visible={params.get('visible')}, overscan={params.get('overscan')}.",
+        "Mapped onto nana-framework-benchmark virtual_scales[] kind=tree "
+        "(Fenwick VirtualTreeLayout + AppContext::materialize_virtual_tree). "
+        "A VirtualList scale row is not this path.",
+    ]
+    if scale is None:
+        raise KeyError(
+            f"nana-framework-benchmark has no virtual_scales tree/{items}"
+        )
+    notes.append(
+        "Mapped onto nana-framework-benchmark virtual_scales[] "
+        f"kind=tree logical_rows={items} status={scale.get('status')}."
+    )
+    if scale.get("status") != "ok":
+        raise KeyError(
+            f"virtual_scales tree/{items} status={scale.get('status')}: {scale.get('skip_reason')}"
+        )
+    if scale.get("materialize_ms") is None or scale.get("live_ui_entities") is None:
+        raise KeyError(
+            f"virtual_scales tree/{items} status=ok without materialize_ms/live_ui_entities; "
+            "fake empty ok is forbidden"
+        )
+    metrics = {
+        "cpu_frame_ms": percentile_fields(scale.get("materialize_ms")),
+        "window_ms": percentile_fields(scale.get("window_ms")),
+    }
+    work_counters = {
+        "live_ui_entities": scale.get("live_ui_entities"),
+        "live_ui_entities_bound": scale.get("live_ui_entities_bound"),
+        "visible_rows": scale.get("visible_rows"),
+        "overscan_rows": scale.get("overscan_rows"),
+    }
+    window = catalog_virtual_list_window(params)
+    reported_overscan_px = scale.get("list_overscan_px")
+    if reported_overscan_px is None:
+        notes.append(
+            "This report does not declare list_overscan_px. Standalone "
+            "nana-framework-benchmark uses 200px overscan; the Nana runner "
+            "passes the catalog window (visible items × item_extent_px, overscan "
+            f"items × item_extent_px = {window['overscan_px']}px)."
+        )
+    elif not _same_number(reported_overscan_px, window["overscan_px"]):
+        raise KeyError(
+            f"nana tree list_overscan_px={reported_overscan_px} does not match catalog "
+            f"overscan={window['overscan']} items ({window['overscan_px']}px). "
+            "Do not claim same-scenario while the tree window differs."
+        )
+    else:
+        notes.append(
+            f"Shared catalog tree window: viewport={window['viewport_px']}px, "
+            f"overscan={window['overscan']} items ({window['overscan_px']}px), "
+            f"item_extent={window['item_extent_px']}px."
+        )
+    return envelope(
+        runner="nana",
+        status="ok",
+        scenario_id=scenario["id"],
+        scenario=scenario,
+        equivalence="closest-legacy-reference",
+        source_binary="nana-framework-benchmark",
         source_report=str(source_paths.get("framework", "")),
         mapping_notes=notes,
         metrics={key: value for key, value in metrics.items() if value is not None},
@@ -1141,7 +1702,8 @@ def _extract_nana_text_table(
         f"catalog wrapped_cells={params.get('wrapped_cells')} / "
         f"wrapped_cell_len={params.get('wrapped_cell_len')} cells. "
         + ", ".join(TEXT_TABLE_CACHE_GAPS)
-        + " stay omitted — Runtime glyph cache is None; do not invent numbers.",
+        + " stay omitted on MeasureTextShaper (no glyph backend); "
+        "do not invent zeros. Runtime GlyphCache is Some on NanaTextShaper.",
     ]
     metrics: dict[str, Any] = {}
     work_counters: dict[str, Any] = {}
@@ -1174,8 +1736,31 @@ def _extract_nana_text_table(
             notes.append(
                 "text_shaped is missing from this report. shaping calls/frame stay not-evaluable."
             )
+        window = catalog_table_window(params)
+        reported_overscan_y = scale.get("table_overscan_y_px")
+        if reported_overscan_y is None:
+            notes.append(
+                "This report does not declare table_overscan_y_px. Historical standalone "
+                "nana-framework-benchmark used 200px row overscan (10 rows); the Nana "
+                "runner now passes the catalog window "
+                f"(overscan_rows={window['overscan_rows']} × {window['row_extent_px']}px "
+                f"= {window['overscan_y_px']}px)."
+            )
+        elif not _same_number(reported_overscan_y, window["overscan_y_px"]):
+            raise KeyError(
+                f"nana table_overscan_y_px={reported_overscan_y} does not match catalog "
+                f"overscan_rows={window['overscan_rows']} ({window['overscan_y_px']}px). "
+                "Do not claim same-scenario while the table window differs."
+            )
+        else:
+            notes.append(
+                f"Shared catalog table window: viewport={window['viewport_width_px']}x"
+                f"{window['viewport_height_px']}px, overscan="
+                f"{window['overscan_columns']}x{window['overscan_rows']} items "
+                f"({window['overscan_x_px']}x{window['overscan_y_px']}px), "
+                f"extents={window['column_extent_px']}x{window['row_extent_px']}px."
+            )
         notes.append(
-            "Existing overscan is reported in rows from the binary, not contract overscan_rows=8. "
             "Most cells are short_cell_len labels; each 40-row band keeps wrapped_cells "
             "long wrapping cells (wrapped_cell_len) in column 0, shaped against the 80px column box."
         )
@@ -1475,12 +2060,9 @@ def _extract_nana_gpu_scene(
     source_paths: Mapping[str, Path],
 ) -> dict[str, Any]:
     composition = scenario["params"]["composition"]
-    if composition != "UiOnly":
-        raise KeyError(
-            f"GpuScene composition {composition} has no Nana encode/submit path. "
-            "Live2D is not a Scene pass; HostTexture evidence is not this composition. "
-            "Required by #8 / not implemented."
-        )
+    skip = nana_gpu_scene_skip_reason(scenario)
+    if skip:
+        raise KeyError(skip)
     payload = reports.get("gpu")
     if payload is None:
         raise KeyError("nana-gpu-scene-benchmark report required")
@@ -1642,8 +2224,10 @@ def extract_iced(
             },
         )
     if kind in {
+        "Mutation",
         "Hover",
         "VirtualList",
+        "VirtualTree",
         "Table",
         "Animation",
         "Ime",
@@ -1671,21 +2255,22 @@ def _extract_iced_scenario_bench(
             report.get("unsupported_reason")
             or f"iced-scenario-bench unsupported for {scenario['id']}"
         )
-    if scenario["kind"] != "StaticTree":
-        raise KeyError(
-            "iced-scenario-bench currently implements StaticTree only; "
-            f"no same-scenario mapping for {scenario['id']}"
-        )
-    nodes = scenario["params"]["nodes"]
-    reported = report.get("nodes")
-    if reported != nodes:
-        raise KeyError(
-            f"iced-scenario-bench nodes={reported} does not match StaticTree nodes={nodes}"
-        )
+    skip = iced_scenario_bench_skip_reason(scenario)
+    if skip:
+        raise KeyError(skip)
+    kind = scenario["kind"]
     reported_id = report.get("scenario_id")
     if reported_id not in (None, scenario["id"]):
+        reported_nodes = report.get("nodes")
+        expected_nodes = (scenario.get("params") or {}).get("nodes") or (
+            scenario.get("params") or {}
+        ).get("tree_nodes")
+        detail = ""
+        if reported_nodes is not None or expected_nodes is not None:
+            detail = f" (report nodes={reported_nodes}, scenario nodes={expected_nodes})"
         raise KeyError(
-            f"iced-scenario-bench scenario_id={reported_id!r} does not match {scenario['id']!r}"
+            f"iced-scenario-bench scenario_id={reported_id!r} does not match "
+            f"{scenario['id']!r}{detail}"
         )
     cpu = percentile_fields(report.get("cpu_frame_ms"))
     if cpu is None:
@@ -1693,22 +2278,227 @@ def _extract_iced_scenario_bench(
             "iced-scenario-bench ok report missing cpu_frame_ms percentiles; "
             "fake or empty timings are forbidden"
         )
-    tree = report.get("tree")
-    if not is_shared_static_tree(tree if isinstance(tree, Mapping) else None, nodes):
-        raise KeyError(
-            "iced-scenario-bench ok report is not the shared StaticTree heap "
-            "(generation=complete-binary-heap, parent(i)=i//2, element-div, no text). "
-            "A column of N text leaves is not same-scenario."
-        )
     notes = [str(note) for note in (report.get("notes") or []) if note is not None]
-    notes.append(
-        "Mapped onto engine/iced static_tree / static_tree_parent, the same "
-        "complete-binary-heap rule as nana-runtime-benchmark::tree_mutations."
-    )
     notes.append(
         "Relative Iced/GPUI gates stay off until GPUI also emits same-scenario ok "
         "with real metrics on this id."
     )
+    metrics: dict[str, Any] = {
+        "cpu_frame_ms": cpu,
+        "view_construction_ms": percentile_fields(report.get("view_construction_ms")),
+        "layout_ms": percentile_fields(report.get("layout_ms")),
+        "draw_ms": percentile_fields(report.get("draw_ms")),
+        "present_ms": percentile_fields(report.get("present_ms")),
+        "window_ms": percentile_fields(report.get("window_ms")),
+    }
+    work_counters: dict[str, Any] | None = None
+    if kind == "StaticTree":
+        nodes = scenario["params"]["nodes"]
+        reported = report.get("nodes")
+        if reported != nodes:
+            raise KeyError(
+                f"iced-scenario-bench nodes={reported} does not match StaticTree nodes={nodes}"
+            )
+        tree = report.get("tree")
+        if not is_shared_static_tree(tree if isinstance(tree, Mapping) else None, nodes):
+            raise KeyError(
+                "iced-scenario-bench ok report is not the shared StaticTree heap "
+                "(generation=complete-binary-heap, parent(i)=i//2, element-div, no text). "
+                "A column of N text leaves is not same-scenario."
+            )
+        notes.append(
+            "Mapped onto engine/iced static_tree / static_tree_parent, the same "
+            "complete-binary-heap rule as nana-runtime-benchmark::tree_mutations."
+        )
+    elif kind == "Mutation":
+        nodes = scenario["params"]["tree_nodes"]
+        mutation_kind = scenario["params"]["kind"]
+        if report.get("nodes") != nodes:
+            raise KeyError(
+                f"iced-scenario-bench nodes={report.get('nodes')} does not match "
+                f"Mutation tree_nodes={nodes}"
+            )
+        mutation = report.get("mutation") if isinstance(report.get("mutation"), Mapping) else {}
+        if mutation.get("kind") != mutation_kind:
+            raise KeyError(
+                f"iced-scenario-bench mutation.kind={mutation.get('kind')!r} does not match "
+                f"{mutation_kind!r}"
+            )
+        if mutation.get("single_node") is not True:
+            raise KeyError("iced-scenario-bench Mutation report must set mutation.single_node=true")
+        tree = report.get("tree")
+        if not is_shared_static_tree(tree if isinstance(tree, Mapping) else None, nodes):
+            raise KeyError(
+                "iced-scenario-bench Mutation tree is not the shared complete-binary-heap"
+            )
+        notes.append(
+            f"Mapped onto engine/iced scenario-bench Mutation {mutation_kind} at "
+            f"tree_nodes={nodes}, same heap as Nana tree_mutations. Single-node change; "
+            "Iced has no WorkCounters.layout_nodes so paint/a11y layout invariants stay "
+            "not-evaluable."
+        )
+    elif kind == "Hover":
+        nodes = scenario["params"]["nodes"]
+        if report.get("nodes") != nodes:
+            raise KeyError(
+                f"iced-scenario-bench nodes={report.get('nodes')} does not match Hover nodes={nodes}"
+            )
+        tree = report.get("tree")
+        if not is_shared_static_tree(tree if isinstance(tree, Mapping) else None, nodes):
+            raise KeyError(
+                "iced-scenario-bench Hover tree is not the shared complete-binary-heap"
+            )
+        notes.append(
+            f"Mapped onto engine/iced scenario-bench Hover at nodes={nodes}. "
+            "Same heap as Nana tree_mutations; last two nodes toggle hover style. "
+            "Iced has no WorkCounters.layout_nodes; hover_without_size_change stays "
+            "not-evaluable."
+        )
+        work_counters = {"nodes": nodes}
+    elif kind == "VirtualList":
+        params = scenario["params"]
+        items = params["items"]
+        virtual = report.get("virtualization")
+        if not isinstance(virtual, Mapping):
+            raise KeyError(
+                "iced-scenario-bench VirtualList ok report missing virtualization block"
+            )
+        if virtual.get("logical_items") != items:
+            raise KeyError(
+                f"iced-scenario-bench logical_items={virtual.get('logical_items')} "
+                f"does not match VirtualList items={items}"
+            )
+        live = virtual.get("live_ui_entities")
+        bound = virtual.get("live_ui_entities_bound")
+        if not isinstance(live, int) or live <= 0:
+            raise KeyError(
+                "iced-scenario-bench VirtualList must report a positive live_ui_entities count"
+            )
+        if live == items:
+            raise KeyError(
+                f"iced-scenario-bench VirtualList live_ui_entities={live} equals logical "
+                f"items={items}; that is a full widget list, not Nana virtualization"
+            )
+        if isinstance(bound, int) and live > bound:
+            raise KeyError(
+                f"iced-scenario-bench live_ui_entities={live} exceeds bound={bound}"
+            )
+        window = catalog_virtual_list_window(params)
+        if virtual.get("visible") != window["visible"]:
+            raise KeyError(
+                f"iced-scenario-bench VirtualList visible={virtual.get('visible')} "
+                f"does not match catalog visible={window['visible']}"
+            )
+        if virtual.get("overscan") != window["overscan"]:
+            raise KeyError(
+                f"iced-scenario-bench VirtualList overscan={virtual.get('overscan')} "
+                f"does not match catalog overscan={window['overscan']} items"
+            )
+        if not _same_number(virtual.get("item_extent_px"), window["item_extent_px"]):
+            raise KeyError(
+                f"iced-scenario-bench VirtualList item_extent_px={virtual.get('item_extent_px')} "
+                f"does not match catalog item_extent_px={window['item_extent_px']}"
+            )
+        notes.append(
+            f"Mapped onto engine/iced scenario-bench VirtualList items={items} "
+            f"visible={window['visible']} overscan={window['overscan']} "
+            f"({window['overscan_px']}px) item_extent={window['item_extent_px']} "
+            f"(viewport {window['viewport_px']}px). Only the catalog window is materialized."
+        )
+        notes.append(
+            "Nana runner passes the same catalog window into nana-framework-benchmark "
+            "via --list-viewport-px / --list-overscan-px / --list-item-extent-px."
+        )
+        work_counters = {
+            "live_ui_entities": live,
+            "live_ui_entities_bound": bound,
+            "visible_rows": virtual.get("visible"),
+            "overscan_rows": virtual.get("overscan"),
+        }
+    elif kind == "Table":
+        params = scenario["params"]
+        rows = params["rows"]
+        columns = params["columns"]
+        virtual = report.get("virtualization")
+        if not isinstance(virtual, Mapping):
+            raise KeyError(
+                "iced-scenario-bench Table ok report missing virtualization block"
+            )
+        if virtual.get("logical_rows") != rows or virtual.get("logical_columns") != columns:
+            raise KeyError(
+                f"iced-scenario-bench Table logical={virtual.get('logical_rows')}x"
+                f"{virtual.get('logical_columns')} does not match catalog "
+                f"{rows}x{columns}"
+            )
+        live = virtual.get("live_ui_entities")
+        bound = virtual.get("live_ui_entities_bound")
+        if not isinstance(live, int) or live <= 0:
+            raise KeyError(
+                "iced-scenario-bench Table must report a positive live_ui_entities count"
+            )
+        if live == rows * columns:
+            raise KeyError(
+                f"iced-scenario-bench Table live_ui_entities={live} equals logical "
+                f"cells={rows}x{columns}; that is a full table, not Nana virtualization"
+            )
+        if isinstance(bound, int) and live > bound:
+            raise KeyError(
+                f"iced-scenario-bench Table live_ui_entities={live} exceeds bound={bound}"
+            )
+        window = catalog_table_window(params)
+        if virtual.get("visible_rows") != window["visible_rows"]:
+            raise KeyError(
+                f"iced-scenario-bench Table visible_rows={virtual.get('visible_rows')} "
+                f"does not match catalog visible_rows={window['visible_rows']}"
+            )
+        if virtual.get("overscan_rows") != window["overscan_rows"]:
+            raise KeyError(
+                f"iced-scenario-bench Table overscan_rows={virtual.get('overscan_rows')} "
+                f"does not match catalog overscan_rows={window['overscan_rows']}"
+            )
+        if virtual.get("visible_columns") != window["visible_columns"]:
+            raise KeyError(
+                f"iced-scenario-bench Table visible_columns={virtual.get('visible_columns')} "
+                f"does not match catalog visible_columns={window['visible_columns']}"
+            )
+        if virtual.get("overscan_columns") != window["overscan_columns"]:
+            raise KeyError(
+                f"iced-scenario-bench Table overscan_columns={virtual.get('overscan_columns')} "
+                f"does not match catalog overscan_columns={window['overscan_columns']}"
+            )
+        invented_shape = None
+        if isinstance(report.get("work_counters"), Mapping):
+            invented_shape = report["work_counters"].get("text_shaped")
+        if invented_shape is not None:
+            raise KeyError(
+                "iced-scenario-bench must not invent WorkCounters.text_shaped; "
+                "leave the catalog invariant not-evaluable"
+            )
+        notes.append(
+            f"Mapped onto engine/iced scenario-bench Table {rows}x{columns} "
+            f"visible={window['visible_rows']}x{window['visible_columns']} "
+            f"overscan={window['overscan_rows']}x{window['overscan_columns']} "
+            f"(viewport {window['viewport_width_px']}x{window['viewport_height_px']}px, "
+            f"overscan {window['overscan_x_px']}x{window['overscan_y_px']}px). "
+            "Only the catalog window is materialized."
+        )
+        notes.append(
+            "Nana runner passes the same catalog window into nana-framework-benchmark "
+            "via --table-viewport-*-px / --table-overscan-*-px / --table-*-extent-px."
+        )
+        work_counters = {
+            "live_ui_entities": live,
+            "live_ui_entities_bound": bound,
+            "visible_rows": virtual.get("visible_rows"),
+            "overscan_rows": virtual.get("overscan_rows"),
+            "visible_columns": virtual.get("visible_columns"),
+            "overscan_columns": virtual.get("overscan_columns"),
+        }
+    else:
+        raise KeyError(
+            f"iced-scenario-bench has no same-scenario mapping for {scenario['id']} "
+            f"(kind={kind})"
+        )
     return envelope(
         runner="iced",
         status="ok",
@@ -1718,13 +2508,8 @@ def _extract_iced_scenario_bench(
         source_binary="scenario-bench",
         source_report=str(source_path),
         mapping_notes=notes,
-        metrics={
-            "cpu_frame_ms": cpu,
-            "view_construction_ms": percentile_fields(report.get("view_construction_ms")),
-            "layout_ms": percentile_fields(report.get("layout_ms")),
-            "draw_ms": percentile_fields(report.get("draw_ms")),
-            "present_ms": percentile_fields(report.get("present_ms")),
-        },
+        metrics={key: value for key, value in metrics.items() if value is not None},
+        work_counters=work_counters,
     )
 
 
@@ -2113,6 +2898,127 @@ def self_test(root: Path | None = None) -> list[str]:
     if (virtual_1m_ok.get("work_counters") or {}).get("live_ui_entities") != 50:
         errors.append("virtual-list-1m envelope must carry live_ui_entities")
 
+    catalog = load_catalog(root)
+    harness = set(catalog.get("harness_ids", []))
+    reserved_ids = {
+        item.get("id") for item in catalog.get("required_by_issue_not_in_harness", [])
+    }
+    for tree_id in ("virtual-tree-10k", "virtual-tree-100k"):
+        if tree_id not in harness:
+            errors.append(f"catalog must list wirable {tree_id} in harness_ids")
+        if tree_id in reserved_ids:
+            errors.append(f"catalog must not leave wirable {tree_id} in required_by_issue_not_in_harness")
+    if "virtual-tree-1m" in harness:
+        errors.append("catalog must keep virtual-tree-1m out of harness_ids")
+    if "virtual-tree-1m" not in reserved_ids:
+        errors.append("catalog must list virtual-tree-1m in required_by_issue_not_in_harness")
+
+    virtual_tree = load_scenario("virtual-tree-100k", root)
+    try:
+        extract_nana(
+            virtual_tree,
+            {
+                "framework": {
+                    "virtual_scales": [
+                        {
+                            "kind": "tree",
+                            "logical_rows": 100000,
+                            "status": "skipped",
+                            "skip_reason": "NANA_PERF_SCALE!=large",
+                        }
+                    ]
+                }
+            },
+            source_paths={"framework": Path("synthetic-tree-skipped")},
+        )
+        errors.append("nana virtual-tree-100k skipped scale must KeyError, not ok")
+    except KeyError as exc:
+        if "tree/100000" not in key_error_reason(exc):
+            errors.append(f"virtual-tree-100k skip KeyError should name the tree row: {exc}")
+
+    try:
+        extract_nana(
+            virtual_tree,
+            {
+                "framework": {
+                    "virtual_scales": [
+                        {
+                            "kind": "tree",
+                            "logical_rows": 100000,
+                            "status": "ok",
+                            "live_ui_entities": None,
+                            "materialize_ms": None,
+                        }
+                    ]
+                }
+            },
+            source_paths={"framework": Path("synthetic-tree-empty-ok")},
+        )
+        errors.append("nana virtual-tree-100k empty ok must KeyError, not ok")
+    except KeyError as exc:
+        if "fake empty ok" not in key_error_reason(exc):
+            errors.append(f"virtual-tree empty ok KeyError should name fake empty ok: {exc}")
+
+    try:
+        extract_nana(
+            virtual_tree,
+            {
+                "framework": {
+                    "virtual_scales": [
+                        {
+                            "kind": "list",
+                            "logical_rows": 100000,
+                            "status": "ok",
+                            "live_ui_entities": 50,
+                            "materialize_ms": {"p50": 0.1, "p95": 0.2, "p99": 0.3},
+                        }
+                    ]
+                }
+            },
+            source_paths={"framework": Path("synthetic-tree-as-list")},
+        )
+        errors.append("nana virtual-tree-100k must not extract a list scale row as ok")
+    except KeyError as exc:
+        if "tree/100000" not in key_error_reason(exc):
+            errors.append(f"virtual-tree list-row KeyError should name tree/100000: {exc}")
+
+    tree_ok = extract_nana(
+        virtual_tree,
+        {"framework": load_json(root / "perf" / "fixtures" / "virtual-tree-scales.json")},
+        source_paths={
+            "framework": root / "perf" / "fixtures" / "virtual-tree-scales.json"
+        },
+    )
+    if tree_ok.get("status") != "ok":
+        errors.append("nana virtual-tree-100k extract must be ok when virtual_scales tree status=ok")
+    if tree_ok.get("scenario_id") != "virtual-tree-100k":
+        errors.append("virtual-tree-100k must keep its catalog id")
+    if (tree_ok.get("work_counters") or {}).get("live_ui_entities") != 50:
+        errors.append("virtual-tree-100k envelope must carry live_ui_entities")
+
+    virtual_tree_1m = load_scenario("virtual-tree-1m", root)
+    try:
+        extract_nana(
+            virtual_tree_1m,
+            {
+                "framework": {
+                    "virtual_scales": [
+                        {
+                            "kind": "tree",
+                            "logical_rows": 1000000,
+                            "status": "skipped",
+                            "skip_reason": "NANA_PERF_SCALE!=large",
+                        }
+                    ]
+                }
+            },
+            source_paths={"framework": Path("synthetic-tree-1m-skipped")},
+        )
+        errors.append("nana virtual-tree-1m skipped scale must KeyError, not ok")
+    except KeyError as exc:
+        if "tree/1000000" not in key_error_reason(exc):
+            errors.append(f"virtual-tree-1m skip KeyError should name the 1M tree row: {exc}")
+
     text_table = load_scenario("text-table", root)
     if "text-table" not in load_catalog(root).get("harness_ids", []):
         errors.append("catalog must list wirable text-table in harness_ids")
@@ -2174,9 +3080,11 @@ def self_test(root: Path | None = None) -> list[str]:
                         "logical_columns": 100,
                         "status": "ok",
                         "visible_rows": 40,
-                        "overscan_rows": 10,
+                        "overscan_rows": 8,
+                        "table_overscan_y_px": 160.0,
+                        "table_overscan_x_px": 160.0,
                         "live_ui_entities": 50,
-                        "live_ui_entities_bound": 1260,
+                        "live_ui_entities_bound": 1334,
                         "materialize_ms": {"p50": 0.8, "p95": 0.9, "p99": 1.0},
                         "work": {
                             "text_shaped": 12,
@@ -2234,10 +3142,121 @@ def self_test(root: Path | None = None) -> list[str]:
     table_inv = _named_invariant(table_ok, "text_table_live_entities_bounded")
     if table_inv is None or table_inv.get("status") != "ok" or table_inv.get("measured") != 50:
         errors.append("text-table live_ui_entities invariant must be ok when measured")
+    leftover_ten = {
+        "framework": {
+            "virtual_scales": [
+                {
+                    "kind": "table",
+                    "logical_rows": 10000,
+                    "logical_columns": 100,
+                    "status": "ok",
+                    "visible_rows": 40,
+                    "overscan_rows": 10,
+                    "table_overscan_y_px": 200.0,
+                    "live_ui_entities": 50,
+                    "materialize_ms": {"p50": 0.8, "p95": 0.9, "p99": 1.0},
+                }
+            ]
+        }
+    }
+    try:
+        extract_nana(
+            text_table,
+            leftover_ten,
+            source_paths={"framework": Path("synthetic-table-10-row")},
+        )
+        errors.append("nana text-table with table_overscan_y_px=200 must KeyError")
+    except KeyError as exc:
+        if "overscan" not in key_error_reason(exc) and "200" not in key_error_reason(exc):
+            errors.append(f"mismatched table overscan KeyError should name overscan/200: {exc}")
+    catalog_window_ok = extract_nana(
+        text_table,
+        {
+            "framework": {
+                "virtual_scales": [
+                    {
+                        "kind": "table",
+                        "logical_rows": 10000,
+                        "logical_columns": 100,
+                        "status": "ok",
+                        "visible_rows": 40,
+                        "overscan_rows": 8,
+                        "table_overscan_y_px": 160.0,
+                        "table_overscan_x_px": 160.0,
+                        "live_ui_entities": 50,
+                        "materialize_ms": {"p50": 0.8, "p95": 0.9, "p99": 1.0},
+                        "work": {"text_shaped": 12},
+                    }
+                ]
+            }
+        },
+        source_paths={"framework": Path("synthetic-table-catalog-window")},
+    )
+    if catalog_window_ok.get("status") != "ok":
+        errors.append("nana text-table extract with catalog table_overscan_y_px=160 must be ok")
+    if not any(
+        "Shared catalog table window" in str(note)
+        for note in (catalog_window_ok.get("mapping_notes") or [])
+    ):
+        errors.append("nana catalog table window notes must mention shared catalog table window")
+    max_window_ok = extract_nana(
+        text_table,
+        {
+            "framework": {
+                "virtual_scales": [
+                    {
+                        "kind": "table",
+                        "logical_rows": 10000,
+                        "logical_columns": 100,
+                        "status": "ok",
+                        "visible_rows": 40,
+                        "overscan_rows": 8,
+                        "table_overscan_y_px": 160.0,
+                        "table_overscan_x_px": 160.0,
+                        "live_ui_entities": 1334,
+                        "live_ui_entities_bound": 1334,
+                        "materialize_ms": {"p50": 0.8, "p95": 0.9, "p99": 1.0},
+                        "work": {"text_shaped": 12},
+                    }
+                ]
+            }
+        },
+        source_paths={"framework": Path("synthetic-table-max-window")},
+    )
+    if max_window_ok.get("status") != "ok":
+        errors.append("nana text-table catalog-8 max window live=1334 must stay ok")
+    max_inv = _named_invariant(max_window_ok, "text_table_live_entities_bounded")
+    if max_inv is None or max_inv.get("status") != "ok" or max_inv.get("measured") != 1334:
+        errors.append("nana text-table invariant must accept catalog-8 cap live=1334")
+    full_grid = extract_nana(
+        text_table,
+        {
+            "framework": {
+                "virtual_scales": [
+                    {
+                        "kind": "table",
+                        "logical_rows": 10000,
+                        "logical_columns": 100,
+                        "status": "ok",
+                        "visible_rows": 40,
+                        "overscan_rows": 8,
+                        "table_overscan_y_px": 160.0,
+                        "table_overscan_x_px": 160.0,
+                        "live_ui_entities": 1_000_000,
+                        "live_ui_entities_bound": 1334,
+                        "materialize_ms": {"p50": 0.8, "p95": 0.9, "p99": 1.0},
+                    }
+                ]
+            }
+        },
+        source_paths={"framework": Path("synthetic-table-full-grid")},
+    )
+    if full_grid.get("status") != "error":
+        errors.append("nana text-table live=1000000 must be rejected as envelope error")
 
     try:
         extract_iced(text_table, load_json(iced_path), source_path=iced_path)
-        errors.append("iced text-table extract must be unsupported")
+        errors.append("iced text-table gallery extract must be unsupported")
     except KeyError:
         pass
 
@@ -2381,9 +3400,221 @@ def self_test(root: Path | None = None) -> list[str]:
             errors.append(f"mismatched StaticTree size KeyError should name nodes: {exc}")
     try:
         extract_iced(hover, load_json(iced_bench_path), source_path=iced_bench_path)
-        errors.append("iced-scenario-bench hover extract must be unsupported")
+        errors.append("iced-scenario-bench hover extract from StaticTree fixture must KeyError")
     except KeyError:
         pass
+
+    mutation = load_scenario("mutation-paint-only", root)
+    mutation_path = root / "perf" / "fixtures" / "iced-scenario-mutation-paint-only.json"
+    mutation_ok = extract_iced(mutation, load_json(mutation_path), source_path=mutation_path)
+    if mutation_ok.get("status") != "ok" or mutation_ok.get("equivalence") != "same-scenario":
+        errors.append("iced mutation-paint-only fixture extract must be same-scenario ok")
+    if (mutation_ok.get("metrics") or {}).get("cpu_frame_ms", {}).get("p50") != 1.7:
+        errors.append("iced mutation extract must copy fixture cpu_frame_ms.p50")
+    if mutation_ok.get("relative_gate_enforceable") is not False:
+        errors.append("iced mutation extract must keep relative gates off")
+
+    fake_mutation_ok = {
+        "source": "iced-scenario-bench",
+        "status": "ok",
+        "nodes": 5000,
+        "cpu_frame_ms": {"p50": 1.0, "p95": 1.2, "p99": 1.3},
+        "tree": {
+            "generation": STATIC_TREE_GENERATION,
+            "parent_rule": STATIC_TREE_PARENT_RULE,
+            "node_kind": STATIC_TREE_NODE_KIND,
+            "text": None,
+            "sample_parents": static_tree_sample_parents(5000),
+        },
+        "mutation": {"kind": "Transform", "target_index": 2503, "single_node": True},
+    }
+    for unsupported_id in (
+        "mutation-transform",
+        "mutation-visibility",
+        "mutation-a11y",
+    ):
+        unsupported_scenario = load_scenario(unsupported_id, root)
+        fake_mutation_ok["scenario_id"] = unsupported_id
+        fake_mutation_ok["mutation"] = {
+            "kind": unsupported_scenario["params"]["kind"],
+            "target_index": 2500,
+            "single_node": True,
+        }
+        try:
+            extracted = extract_iced(
+                unsupported_scenario,
+                fake_mutation_ok,
+                source_path=Path(f"fake-{unsupported_id}"),
+            )
+            if extracted.get("status") == "ok":
+                errors.append(
+                    f"iced {unsupported_id} extract must not be ok / same-scenario"
+                )
+        except KeyError as exc:
+            reason = key_error_reason(exc)
+            if unsupported_scenario["params"]["kind"] not in reason and "same-scenario" not in reason:
+                errors.append(
+                    f"iced {unsupported_id} KeyError should name the missing dirty work: {exc}"
+                )
+
+    hover_path = root / "perf" / "fixtures" / "iced-scenario-hover.json"
+    hover_iced_ok = extract_iced(hover, load_json(hover_path), source_path=hover_path)
+    if hover_iced_ok.get("status") != "ok":
+        errors.append("iced hover fixture extract must be ok at 10k, not a smaller tree")
+    if (hover_iced_ok.get("work_counters") or {}).get("nodes") != 10000:
+        errors.append("iced hover fixture extract must record work_counters.nodes=10000")
+    if hover_iced_ok.get("equivalence") != "same-scenario":
+        errors.append("iced hover fixture extract must be same-scenario")
+    if (hover_iced_ok.get("metrics") or {}).get("cpu_frame_ms", {}).get("p50") != 2.1:
+        errors.append("iced hover extract must copy fixture cpu_frame_ms.p50")
+
+    virtual_path = root / "perf" / "fixtures" / "iced-scenario-virtual-list-10k.json"
+    virtual_iced = extract_iced(virtual, load_json(virtual_path), source_path=virtual_path)
+    if virtual_iced.get("status") != "ok":
+        errors.append("iced virtual-list-10k fixture extract must be ok")
+    if (virtual_iced.get("work_counters") or {}).get("live_ui_entities") != 56:
+        errors.append("iced virtual-list extract must copy live_ui_entities=56")
+    if any(
+        "200px" in note or "may differ" in note
+        for note in (virtual_iced.get("mapping_notes") or [])
+    ):
+        errors.append("iced virtual-list same-scenario notes must not claim overscan may differ")
+    wrong_overscan = load_json(virtual_path)
+    wrong_overscan["virtualization"] = dict(wrong_overscan["virtualization"])
+    wrong_overscan["virtualization"]["overscan"] = 10
+    try:
+        extract_iced(virtual, wrong_overscan, source_path=Path("wrong-overscan"))
+        errors.append("iced VirtualList with overscan!=catalog must KeyError")
+    except KeyError as exc:
+        if "overscan" not in key_error_reason(exc):
+            errors.append(f"mismatched VirtualList overscan KeyError should name overscan: {exc}")
+    fake_full_list = load_json(virtual_path)
+    fake_full_list["virtualization"] = dict(fake_full_list["virtualization"])
+    fake_full_list["virtualization"]["live_ui_entities"] = 10000
+    try:
+        extract_iced(virtual, fake_full_list, source_path=Path("fake-full-list"))
+        errors.append("iced VirtualList with live_ui_entities==items must KeyError")
+    except KeyError as exc:
+        if "10000" not in key_error_reason(exc):
+            errors.append(f"full-list VirtualList KeyError should name 10000: {exc}")
+
+    table_iced_path = root / "perf" / "fixtures" / "iced-scenario-text-table.json"
+    table_iced_ok = extract_iced(text_table, load_json(table_iced_path), source_path=table_iced_path)
+    if table_iced_ok.get("status") != "ok" or table_iced_ok.get("equivalence") != "same-scenario":
+        errors.append("iced text-table fixture extract must be same-scenario ok")
+    if (table_iced_ok.get("work_counters") or {}).get("overscan_rows") != 8:
+        errors.append("iced text-table extract must record overscan_rows=8")
+    if (table_iced_ok.get("metrics") or {}).get("cpu_frame_ms", {}).get("p50") != 5.5:
+        errors.append("iced text-table extract must copy fixture cpu_frame_ms.p50")
+    max_iced = load_json(table_iced_path)
+    max_iced["virtualization"] = dict(max_iced["virtualization"])
+    max_iced["virtualization"]["live_ui_entities"] = 1334
+    max_iced["virtualization"]["live_ui_entities_bound"] = 1334
+    max_iced_ok = extract_iced(text_table, max_iced, source_path=Path("iced-table-max-window"))
+    if max_iced_ok.get("status") != "ok" or max_iced_ok.get("equivalence") != "same-scenario":
+        errors.append("iced text-table catalog-8 max window live=1334 must stay same-scenario ok")
+    max_iced_inv = _named_invariant(max_iced_ok, "text_table_live_entities_bounded")
+    if (
+        max_iced_inv is None
+        or max_iced_inv.get("status") != "ok"
+        or max_iced_inv.get("measured") != 1334
+    ):
+        errors.append("iced text-table invariant must accept catalog-8 cap live=1334")
+    wrong_table = load_json(table_iced_path)
+    wrong_table["virtualization"] = dict(wrong_table["virtualization"])
+    wrong_table["virtualization"]["overscan_rows"] = 10
+    try:
+        extract_iced(text_table, wrong_table, source_path=Path("fake-table-10-row"))
+        errors.append("iced Table with overscan_rows=10 must KeyError")
+    except KeyError as exc:
+        if "overscan" not in key_error_reason(exc):
+            errors.append(f"mismatched Table overscan KeyError should name overscan: {exc}")
+    full_table = load_json(table_iced_path)
+    full_table["virtualization"] = dict(full_table["virtualization"])
+    full_table["virtualization"]["live_ui_entities"] = 1_000_000
+    try:
+        extract_iced(text_table, full_table, source_path=Path("fake-full-table"))
+        errors.append("iced Table with live_ui_entities==rows×columns must KeyError")
+    except KeyError as exc:
+        if "10000" not in key_error_reason(exc) and "cells" not in key_error_reason(exc):
+            errors.append(f"full Table KeyError should name 10000/cells: {exc}")
+
+    for unsupported_id, token in (
+        ("animation", "advance_animations"),
+        ("ime", "set_ime_preedit"),
+        ("overlay", "OverlayHost"),
+        ("gpu-scene-ui", "Live2D"),
+        ("dock-workspace", "assemble_dock"),
+        ("text-editor", "drain_text"),
+    ):
+        unsupported_scenario = load_scenario(unsupported_id, root)
+        fake_ok = {
+            "source": "iced-scenario-bench",
+            "status": "ok",
+            "scenario_id": unsupported_id,
+            "cpu_frame_ms": {"p50": 1.0, "p95": 1.2, "p99": 1.3},
+        }
+        try:
+            extracted = extract_iced(
+                unsupported_scenario,
+                fake_ok,
+                source_path=Path(f"fake-{unsupported_id}"),
+            )
+            if extracted.get("status") == "ok":
+                errors.append(f"iced {unsupported_id} extract must not be ok / same-scenario")
+        except KeyError as exc:
+            reason = key_error_reason(exc)
+            if token not in reason:
+                errors.append(
+                    f"iced {unsupported_id} KeyError should name the missing work ({token}): {exc}"
+                )
+
+    try:
+        extract_iced(
+            load_scenario("static-tree-50k", root),
+            {
+                "source": "iced-scenario-bench",
+                "status": "ok",
+                "scenario_id": "static-tree-50k",
+                "nodes": 50000,
+                "cpu_frame_ms": {"p50": 1.0, "p95": 2.0, "p99": 3.0},
+                "tree": {
+                    "generation": STATIC_TREE_GENERATION,
+                    "parent_rule": STATIC_TREE_PARENT_RULE,
+                    "node_kind": STATIC_TREE_NODE_KIND,
+                    "text": None,
+                    "sample_parents": static_tree_sample_parents(50000),
+                },
+            },
+            source_path=Path("fake-50k"),
+        )
+        errors.append("iced static-tree-50k extract must be unsupported/incomparable")
+    except KeyError as exc:
+        if "50k" not in key_error_reason(exc).lower() and "50000" not in key_error_reason(exc):
+            errors.append(f"iced 50k KeyError should name incomparable 50k: {exc}")
+
+    try:
+        extract_nana(
+            load_scenario("static-tree-50k", root),
+            {
+                "runtime": {
+                    "cases": [
+                        {
+                            "nodes": 50000,
+                            "kind": "construction",
+                            "enqueue_ms": {"p50": 1.0, "p95": 2.0, "p99": 3.0},
+                            "initial_commit_ms": {"p50": 1.0, "p95": 2.0, "p99": 3.0},
+                        }
+                    ]
+                }
+            },
+            source_paths={"runtime": Path("synthetic-50k")},
+        )
+        errors.append("nana static-tree-50k construction extract must KeyError as incomparable")
+    except KeyError as exc:
+        if "50k" not in key_error_reason(exc).lower() and "construction" not in key_error_reason(exc).lower():
+            errors.append(f"nana 50k KeyError should name incomparable construction: {exc}")
+
     empty_ok = {
         "source": "iced-scenario-bench",
         "status": "ok",
@@ -2409,6 +3640,316 @@ def self_test(root: Path | None = None) -> list[str]:
     except KeyError as exc:
         if "complete-binary-heap" not in key_error_reason(exc):
             errors.append(f"text-leaf KeyError should name the heap rule: {exc}")
+    errors.extend(_self_test_section_8_1_runner_invariants(root))
+    return errors
+
+
+def _named_invariant_status(report: Mapping[str, Any], name: str) -> str | None:
+    for item in report.get("invariants") or []:
+        if item.get("name") == name:
+            return str(item.get("status"))
+    return None
+
+
+def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
+    """Prove §8.1 judging of runner envelopes (pass, fail, skip). No log-string match."""
+    errors: list[str] = []
+    virtual = load_scenario("virtual-list-10k", root)
+    text_table = load_scenario("text-table", root)
+    list_bound = catalog_virtual_list_live_bound(virtual["params"])
+    table_bound = catalog_table_live_bound(text_table["params"])
+    list_spec = (virtual.get("invariants") or [{}])[0]
+    table_spec = (text_table.get("invariants") or [{}])[0]
+    if list_spec.get("value") != list_bound:
+        errors.append(
+            f"virtual-list-10k invariant value {list_spec.get('value')} "
+            f"must be catalog cap {list_bound}"
+        )
+    hundredk = load_scenario("virtual-list-100k", root)
+    if (hundredk.get("invariants") or [{}])[0].get("value") != list_bound:
+        errors.append("virtual-list-100k must share the catalog-8 live bound")
+    tree_10k = load_scenario("virtual-tree-10k", root)
+    tree_100k = load_scenario("virtual-tree-100k", root)
+    if (tree_10k.get("invariants") or [{}])[0].get("value") != list_bound:
+        errors.append("virtual-tree-10k must share the catalog-8 live bound")
+    if (tree_100k.get("invariants") or [{}])[0].get("value") != list_bound:
+        errors.append("virtual-tree-100k must share the catalog-8 live bound")
+    if table_spec.get("value") != table_bound:
+        errors.append(
+            f"text-table invariant value {table_spec.get('value')} "
+            f"must be catalog cap {table_bound}"
+        )
+
+    static_tree_ids = (
+        "static-tree-100",
+        "static-tree-1k",
+        "static-tree-5k",
+        "static-tree-10k",
+    )
+    for scenario_id in static_tree_ids:
+        if scenario_id in SECTION_8_1_HONEST_OK_IDS:
+            errors.append(
+                f"{scenario_id} must not be §8.1 honest-ok without frames_after_idle"
+            )
+        if scenario_id not in SECTION_8_1_UNSUPPORTED_IDS:
+            errors.append(f"{scenario_id} must stay §8.1 skipped, not invariant-ok")
+        static_scenario = load_scenario(scenario_id, root)
+        if static_scenario.get("invariants"):
+            errors.append(
+                f"{scenario_id} must not invent an idle invariant until runners "
+                "export frames_after_idle"
+            )
+    for scenario_id in sorted(SECTION_8_1_HONEST_OK_IDS):
+        specs = load_scenario(scenario_id, root).get("invariants") or []
+        if not specs:
+            errors.append(
+                f"{scenario_id} is §8.1 honest-ok but has no catalog invariants; "
+                "vacuous ok is forbidden"
+            )
+
+    virtual_path = root / "perf" / "fixtures" / "iced-scenario-virtual-list-10k.json"
+    table_path = root / "perf" / "fixtures" / "iced-scenario-text-table.json"
+    hover_path = root / "perf" / "fixtures" / "iced-scenario-hover.json"
+    paint_path = root / "perf" / "fixtures" / "iced-scenario-mutation-paint-only.json"
+    static_path = root / "perf" / "fixtures" / "iced-scenario-static-tree-100.json"
+    try:
+        virtual_iced = extract_iced(virtual, load_json(virtual_path), source_path=virtual_path)
+        static_iced = extract_iced(
+            load_scenario("static-tree-100", root),
+            load_json(static_path),
+            source_path=static_path,
+        )
+        table_iced = extract_iced(text_table, load_json(table_path), source_path=table_path)
+        hover_iced = extract_iced(
+            load_scenario("hover", root), load_json(hover_path), source_path=hover_path
+        )
+        paint_iced = extract_iced(
+            load_scenario("mutation-paint-only", root),
+            load_json(paint_path),
+            source_path=paint_path,
+        )
+        nana_table = extract_nana(
+            text_table,
+            {"framework": load_json(root / "perf" / "fixtures" / "virtual-table-scales.json")},
+            source_paths={
+                "framework": root / "perf" / "fixtures" / "virtual-table-scales.json"
+            },
+        )
+        nana_list = extract_nana(
+            load_scenario("virtual-list-100k", root),
+            {"framework": load_json(root / "perf" / "fixtures" / "virtual-scales-only.json")},
+            source_paths={
+                "framework": root / "perf" / "fixtures" / "virtual-scales-only.json"
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"§8.1 envelope fixtures failed to extract: {exc}")
+        return errors
+
+    list_pass = judge_runner_invariants(virtual_iced, root=root)
+    if list_pass.get("decision") != "ok":
+        errors.append("iced VirtualList envelope with live=56 must pass §8.1")
+    if _named_invariant_status(list_pass, "virtual_list_live_entities_bounded") != "ok":
+        errors.append("iced VirtualList live=56 must evaluate the catalog live bound")
+
+    list_fail_payload = copy.deepcopy(virtual_iced)
+    items = virtual["params"]["items"]
+    counters = dict(list_fail_payload.get("work_counters") or {})
+    counters["live_ui_entities"] = items
+    list_fail_payload["work_counters"] = counters
+    list_fail = judge_runner_invariants(list_fail_payload, root=root)
+    if list_fail.get("decision") != "failed":
+        errors.append("VirtualList live_ui_entities==items must fail §8.1")
+
+    table_pass = judge_runner_invariants(table_iced, root=root)
+    if table_pass.get("decision") != "ok":
+        errors.append("iced text-table envelope must pass §8.1")
+    cap_ok_payload = copy.deepcopy(table_iced)
+    cap_ok_payload["work_counters"] = dict(cap_ok_payload.get("work_counters") or {})
+    cap_ok_payload["work_counters"]["live_ui_entities"] = table_bound
+    cap_ok = judge_runner_invariants(cap_ok_payload, root=root)
+    if cap_ok.get("decision") != "ok":
+        errors.append("table live_ui_entities at catalog-8 cap must pass §8.1")
+    if _named_invariant_status(cap_ok, "text_table_live_entities_bounded") != "ok":
+        errors.append("table live=catalog cap must measure as ok")
+
+    table_fail_payload = copy.deepcopy(table_iced)
+    table_fail_payload["work_counters"] = dict(table_fail_payload.get("work_counters") or {})
+    table_fail_payload["work_counters"]["live_ui_entities"] = 1_000_000
+    table_fail = judge_runner_invariants(table_fail_payload, root=root)
+    if table_fail.get("decision") != "failed":
+        errors.append("table live_ui_entities=1e6 must fail §8.1")
+
+    nana_table_judge = judge_runner_invariants(nana_table, root=root)
+    if nana_table_judge.get("decision") != "ok":
+        errors.append("nana text-table fixture envelope must pass §8.1")
+    nana_list_judge = judge_runner_invariants(nana_list, root=root)
+    if nana_list_judge.get("decision") != "ok":
+        errors.append("nana virtual-list-100k fixture envelope must pass §8.1")
+
+    hover_judge = judge_runner_invariants(hover_iced, root=root)
+    if hover_judge.get("decision") != "ok":
+        errors.append("iced hover ok envelope must be judged (not skipped)")
+    if _named_invariant_status(hover_judge, "hover_without_size_change") != "not-evaluable":
+        errors.append("iced hover without layout_nodes must stay not-evaluable, not 0")
+
+    static_judge = judge_runner_invariants(static_iced, root=root)
+    if static_judge.get("decision") != "skipped":
+        errors.append("StaticTree 100 ok envelope must be skipped, not vacuous invariant-ok")
+    fake_busy = copy.deepcopy(static_iced)
+    fake_busy["frames_after_idle"] = 1
+    metrics = dict(fake_busy.get("metrics") or {})
+    metrics["frames_after_idle"] = 1
+    fake_busy["metrics"] = metrics
+    if judge_runner_invariants(fake_busy, root=root).get("decision") != "skipped":
+        errors.append(
+            "StaticTree fake frames_after_idle must stay skipped until a catalog row exists"
+        )
+
+    paint_judge = judge_runner_invariants(paint_iced, root=root)
+    if paint_judge.get("decision") != "ok":
+        errors.append("iced paint-only ok envelope must be judged")
+    if (
+        _named_invariant_status(paint_judge, "paint_only_does_not_layout_full_tree")
+        != "not-evaluable"
+    ):
+        errors.append("iced paint-only without layout_nodes must stay not-evaluable")
+
+    dock_ok_fake = envelope(
+        runner="iced",
+        status="ok",
+        scenario_id="dock-workspace",
+        scenario=load_scenario("dock-workspace", root),
+        work_counters={"panes": 8},
+        equivalence="same-scenario",
+    )
+    dock_judge = judge_runner_invariants(dock_ok_fake, root=root)
+    if dock_judge.get("decision") != "skipped":
+        errors.append("Dock ok envelope must be skipped, not invariant-ok")
+
+    gpui_ok_fake = envelope(
+        runner="gpui",
+        status="ok",
+        scenario_id="virtual-list-10k",
+        scenario=virtual,
+        work_counters={"live_ui_entities": 56},
+        equivalence="same-scenario",
+    )
+    gpui_judge = judge_runner_invariants(gpui_ok_fake, root=root)
+    if gpui_judge.get("decision") != "skipped":
+        errors.append("GPUI envelope must be skipped, not invariant-ok")
+
+    fifty = envelope(
+        runner="nana",
+        status="unsupported",
+        scenario_id="static-tree-50k",
+        scenario=load_scenario("static-tree-50k", root),
+        unsupported_reason=INCOMPARABLE_STATIC_TREE_50K_REASON,
+    )
+    if judge_runner_invariants(fifty, root=root).get("decision") != "skipped":
+        errors.append("static-tree-50k must stay skipped")
+
+    for unsupported_id in (
+        "text-editor",
+        "animation",
+        "ime",
+        "overlay",
+        "dock-workspace",
+    ):
+        unsupported = envelope(
+            runner="iced",
+            status="unsupported",
+            scenario_id=unsupported_id,
+            scenario=load_scenario(unsupported_id, root),
+            unsupported_reason="unsupported fixture",
+        )
+        if judge_runner_invariants(unsupported, root=root).get("decision") != "skipped":
+            errors.append(f"{unsupported_id} unsupported envelope must be skipped")
+
+    raw_fixture = judge_runner_invariants(load_json(virtual_path), root=root)
+    if raw_fixture.get("decision") != "error":
+        errors.append("raw scenario-bench fixture must not be judged as a runner envelope")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pass_path = tmp_path / "pass.json"
+        fail_path = tmp_path / "fail.json"
+        skip_path = tmp_path / "skip.json"
+        static_dir = tmp_path / "static-only"
+        static_dir.mkdir()
+        static_only = static_dir / "static.json"
+        dump_json(pass_path, virtual_iced)
+        dump_json(fail_path, list_fail_payload)
+        dump_json(skip_path, fifty)
+        dump_json(static_only, static_iced)
+        summary_ok, code_ok = evaluate_runner_invariant_paths([pass_path], root=root)
+        if code_ok != EXIT_OK or summary_ok.get("status") != "ok":
+            errors.append("§8.1 path judge must pass a live VirtualList envelope")
+        summary_fail, code_fail = evaluate_runner_invariant_paths([fail_path], root=root)
+        if code_fail != EXIT_ERROR or summary_fail.get("status") != "failed":
+            errors.append("§8.1 path judge must fail live==items")
+        summary_skip, code_skip = evaluate_runner_invariant_paths([skip_path], root=root)
+        if code_skip != EXIT_UNSUPPORTED or summary_skip.get("status") != "unsupported":
+            errors.append("§8.1 path judge on only-skipped reports must exit 2")
+        summary_static, code_static = evaluate_runner_invariant_paths(
+            [static_only], root=root
+        )
+        if (
+            code_static != EXIT_UNSUPPORTED
+            or summary_static.get("status") != "unsupported"
+            or summary_static.get("ok") != 0
+            or summary_static.get("skipped") != 1
+        ):
+            errors.append("§8.1 StaticTree-only dump must skip (not vacuous ok)")
+        mixed, mixed_code = evaluate_runner_invariant_paths(
+            [pass_path, skip_path], root=root
+        )
+        if mixed_code != EXIT_OK or mixed.get("skipped") != 1 or mixed.get("ok") != 1:
+            errors.append("§8.1 mixed ok+skipped envelopes must exit 0")
+        dir_summary, dir_code = evaluate_runner_invariant_paths([tmp_path], root=root)
+        if dir_code != EXIT_ERROR or dir_summary.get("failed") != 1:
+            errors.append("§8.1 directory judge must fail-closed when a file fails")
+        cli = subprocess.run(
+            [
+                sys.executable,
+                str(root / "perf" / "contract.py"),
+                "--repo-root",
+                str(root),
+                "--evaluate-invariants",
+                str(pass_path),
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cli.returncode != EXIT_OK:
+            errors.append(f"--evaluate-invariants on a passing envelope must exit 0, got {cli.returncode}")
+        else:
+            try:
+                payload = json.loads(cli.stdout)
+                if payload.get("status") != "ok" or payload.get("ok") != 1:
+                    errors.append("--evaluate-invariants stdout must be a status=ok summary")
+            except json.JSONDecodeError:
+                errors.append("--evaluate-invariants stdout must be JSON")
+        fail_cli = subprocess.run(
+            [
+                sys.executable,
+                str(root / "perf" / "contract.py"),
+                "--repo-root",
+                str(root),
+                "--evaluate-invariants",
+                str(fail_path),
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fail_cli.returncode != EXIT_ERROR:
+            errors.append(
+                f"--evaluate-invariants on live==items must exit 1, got {fail_cli.returncode}"
+            )
     return errors
 
 
@@ -2420,13 +3961,20 @@ def _self_test_catalog_workloads(
 ) -> list[str]:
     errors: list[str] = []
     harness = set(load_catalog(root).get("harness_ids", []))
-    wirable = ("animation", "ime", "dock-workspace", "overlay", "text-editor")
+    wirable = ("animation", "ime", "dock-workspace", "overlay", "text-editor", "gpu-scene-ui")
     for scenario_id in wirable:
         if scenario_id not in harness:
             errors.append(f"catalog must list wirable {scenario_id} in harness_ids")
         if scenario_id in reserved:
             errors.append(
                 f"catalog must not leave wirable {scenario_id} in required_by_issue_not_in_harness"
+            )
+    for live2d_id in ("gpu-scene-ui-live2d", "gpu-scene-ui-live2d-effect"):
+        if live2d_id in harness:
+            errors.append(f"catalog must not list {live2d_id} in harness_ids")
+        if live2d_id not in reserved:
+            errors.append(
+                f"catalog must keep {live2d_id} in required_by_issue_not_in_harness"
             )
 
     animation = load_scenario("animation", root)
@@ -2598,6 +4146,18 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
     elif (report.get("work_counters") or {}).get("live_ui_entities") != 50:
         errors.append("virtual_scales-only --from-report must copy live_ui_entities=50")
 
+    code, tree_report, err = from_report(
+        nana_script,
+        "virtual-tree-100k",
+        root / "perf" / "fixtures" / "virtual-tree-scales.json",
+    )
+    if code != EXIT_OK or tree_report is None:
+        errors.append(f"virtual-tree-scales --from-report exit {code}: {err}")
+    elif tree_report.get("status") != "ok":
+        errors.append(f"virtual-tree-scales --from-report status={tree_report.get('status')}")
+    elif (tree_report.get("work_counters") or {}).get("live_ui_entities") != 50:
+        errors.append("virtual-tree-scales --from-report must copy live_ui_entities=50")
+
     code, table_report, err = from_report(
         nana_script,
         "text-table",
@@ -2664,14 +4224,381 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
             str(root),
             "--scenario",
             "hover",
+            "--print-plan",
         ],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
     )
-    if hover_iced.returncode != EXIT_UNSUPPORTED:
-        errors.append(f"iced hover must exit 2, got {hover_iced.returncode}: {hover_iced.stderr}")
+    if hover_iced.returncode != EXIT_OK or "scenario-bench" not in hover_iced.stdout:
+        errors.append(
+            f"iced hover --print-plan must name scenario-bench: {hover_iced.stdout!r} {hover_iced.stderr}"
+        )
+
+    code, hover_report, err = from_report(
+        iced_script,
+        "hover",
+        root / "perf" / "fixtures" / "iced-scenario-hover.json",
+    )
+    if code != EXIT_OK or hover_report is None:
+        errors.append(f"iced hover --from-report exit {code}: {err}")
+    elif hover_report.get("status") != "ok" or hover_report.get("equivalence") != "same-scenario":
+        errors.append("iced hover --from-report must be same-scenario ok")
+    elif (hover_report.get("metrics") or {}).get("cpu_frame_ms", {}).get("p50") != 2.1:
+        errors.append("iced hover --from-report must copy fixture cpu_frame_ms.p50")
+
+    for fake_ok_id, token in (
+        ("dock-workspace", "assemble_dock"),
+        ("text-editor", "drain_text"),
+    ):
+        fake_plan = subprocess.run(
+            [
+                sys.executable,
+                str(iced_script),
+                "--repo-root",
+                str(root),
+                "--scenario",
+                fake_ok_id,
+                "--print-plan",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fake_plan.returncode != EXIT_OK or "unsupported" not in fake_plan.stdout:
+            errors.append(
+                f"iced {fake_ok_id} --print-plan must be unsupported: "
+                f"{fake_plan.stdout!r} {fake_plan.stderr}"
+            )
+        fake_ok = {
+            "source": "iced-scenario-bench",
+            "status": "ok",
+            "scenario_id": fake_ok_id,
+            "cpu_frame_ms": {"p50": 1.0, "p95": 1.2, "p99": 1.3},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_path = Path(tmp) / f"fake-ok-{fake_ok_id}.json"
+            fake_path.write_text(json.dumps(fake_ok), encoding="utf-8")
+            code, fake_report, err = from_report(iced_script, fake_ok_id, fake_path)
+            if code != EXIT_UNSUPPORTED:
+                errors.append(
+                    f"iced {fake_ok_id} fake-ok --from-report must exit 2, got {code}: {err}"
+                )
+            elif fake_report is not None and (
+                fake_report.get("status") == "ok"
+                or fake_report.get("equivalence") == "same-scenario"
+            ):
+                errors.append(f"iced {fake_ok_id} fake-ok --from-report must not be same-scenario")
+            try:
+                extracted = extract_iced(
+                    load_scenario(fake_ok_id, root),
+                    fake_ok,
+                    source_path=fake_path,
+                )
+                if extracted.get("status") == "ok":
+                    errors.append(f"iced {fake_ok_id} fake-ok extract must KeyError")
+            except KeyError as exc:
+                if token not in key_error_reason(exc):
+                    errors.append(
+                        f"iced {fake_ok_id} fake-ok KeyError should name {token}: {exc}"
+                    )
+
+    code, fifty_report, err = from_report(
+        iced_script,
+        "static-tree-50k",
+        root / "perf" / "fixtures" / "iced-scenario-static-tree-100.json",
+    )
+    if code != EXIT_UNSUPPORTED:
+        errors.append(f"iced static-tree-50k must exit 2, got {code}: {err}")
+    elif fifty_report is None:
+        # runner prints JSON on stdout even for exit 2
+        pass
+
+    fifty_iced = subprocess.run(
+        [
+            sys.executable,
+            str(iced_script),
+            "--repo-root",
+            str(root),
+            "--scenario",
+            "static-tree-50k",
+            "--print-plan",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if fifty_iced.returncode != EXIT_OK or "unsupported" not in fifty_iced.stdout:
+        errors.append(
+            f"iced static-tree-50k --print-plan must be unsupported: {fifty_iced.stdout!r}"
+        )
+
+    nana_gpu_plan = subprocess.run(
+        [
+            sys.executable,
+            str(nana_script),
+            "--repo-root",
+            str(root),
+            "--scenario",
+            "gpu-scene-ui",
+            "--print-plan",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if nana_gpu_plan.returncode != EXIT_OK or "nana-gpu-scene-benchmark" not in nana_gpu_plan.stdout:
+        errors.append(
+            f"nana gpu-scene-ui --print-plan must name nana-gpu-scene-benchmark: "
+            f"{nana_gpu_plan.stdout!r} {nana_gpu_plan.stderr}"
+        )
+    elif "gpu-scene-ui.json" not in nana_gpu_plan.stdout:
+        errors.append(
+            f"nana gpu-scene-ui --print-plan must pass --scenario gpu-scene-ui.json: "
+            f"{nana_gpu_plan.stdout!r}"
+        )
+
+    for live2d_id in ("gpu-scene-ui-live2d", "gpu-scene-ui-live2d-effect"):
+        live2d_plan = subprocess.run(
+            [
+                sys.executable,
+                str(nana_script),
+                "--repo-root",
+                str(root),
+                "--scenario",
+                live2d_id,
+                "--print-plan",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if live2d_plan.returncode != EXIT_OK or "Live2D" not in live2d_plan.stdout:
+            errors.append(
+                f"nana {live2d_id} --print-plan must stay Live2D unsupported: "
+                f"{live2d_plan.stdout!r} {live2d_plan.stderr}"
+            )
+        live2d_run = subprocess.run(
+            [
+                sys.executable,
+                str(nana_script),
+                "--repo-root",
+                str(root),
+                "--scenario",
+                live2d_id,
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if live2d_run.returncode != EXIT_UNSUPPORTED:
+            errors.append(
+                f"nana {live2d_id} must exit 2, got {live2d_run.returncode}: "
+                f"{live2d_run.stderr}"
+            )
+        else:
+            try:
+                live2d_payload = json.loads(live2d_run.stdout)
+                if live2d_payload.get("status") != "unsupported":
+                    errors.append(
+                        f"nana {live2d_id} status={live2d_payload.get('status')}; "
+                        "do not invent a Live2D encode"
+                    )
+                if live2d_payload.get("metrics") or live2d_payload.get("work_counters"):
+                    errors.append(f"nana {live2d_id} must not invent GPU metrics or counters")
+                reason = live2d_payload.get("unsupported_reason") or ""
+                if "Live2D" not in reason:
+                    errors.append(
+                        f"nana {live2d_id} unsupported_reason should name Live2D: {reason!r}"
+                    )
+            except json.JSONDecodeError as exc:
+                errors.append(f"nana {live2d_id} stdout must be JSON: {exc}")
+
+        iced_live2d = subprocess.run(
+            [
+                sys.executable,
+                str(iced_script),
+                "--repo-root",
+                str(root),
+                "--scenario",
+                live2d_id,
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if iced_live2d.returncode != EXIT_UNSUPPORTED:
+            errors.append(
+                f"iced {live2d_id} must exit 2, got {iced_live2d.returncode}: "
+                f"{iced_live2d.stderr}"
+            )
+
+    nana_fifty = subprocess.run(
+        [
+            sys.executable,
+            str(nana_script),
+            "--repo-root",
+            str(root),
+            "--scenario",
+            "static-tree-50k",
+            "--print-plan",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if nana_fifty.returncode != EXIT_OK or "unsupported" not in nana_fifty.stdout:
+        errors.append(
+            f"nana static-tree-50k --print-plan must be unsupported: {nana_fifty.stdout!r}"
+        )
+
+    for unsupported_id in (
+        "mutation-transform",
+        "mutation-visibility",
+        "mutation-a11y",
+        "animation",
+        "ime",
+        "overlay",
+        "gpu-scene-ui",
+        "dock-workspace",
+        "text-editor",
+        "virtual-tree-100k",
+    ):
+        iced_unsupported = subprocess.run(
+            [
+                sys.executable,
+                str(iced_script),
+                "--repo-root",
+                str(root),
+                "--scenario",
+                unsupported_id,
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if iced_unsupported.returncode != EXIT_UNSUPPORTED:
+            errors.append(
+                f"iced {unsupported_id} must exit 2, got {iced_unsupported.returncode}: "
+                f"{iced_unsupported.stderr}"
+            )
+        else:
+            try:
+                payload = json.loads(iced_unsupported.stdout)
+                if payload.get("status") == "ok" or payload.get("equivalence") == "same-scenario":
+                    errors.append(f"iced {unsupported_id} must not emit same-scenario ok")
+            except json.JSONDecodeError as exc:
+                errors.append(f"iced {unsupported_id} stdout must be JSON: {exc}")
+
+    for list_id in ("virtual-list-10k", "virtual-list-100k", "virtual-tree-10k", "virtual-tree-100k"):
+        nana_list = subprocess.run(
+            [
+                sys.executable,
+                str(nana_script),
+                "--repo-root",
+                str(root),
+                "--scenario",
+                list_id,
+                "--print-plan",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if nana_list.returncode != EXIT_OK or "--list-overscan-px" not in nana_list.stdout:
+            errors.append(
+                f"nana {list_id} --print-plan must pass catalog --list-overscan-px: "
+                f"{nana_list.stdout!r}"
+            )
+        elif "160" not in nana_list.stdout:
+            errors.append(
+                f"nana {list_id} --print-plan must pass overscan 160px (8×20): "
+                f"{nana_list.stdout!r}"
+            )
+
+    nana_table = subprocess.run(
+        [
+            sys.executable,
+            str(nana_script),
+            "--repo-root",
+            str(root),
+            "--scenario",
+            "text-table",
+            "--print-plan",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if nana_table.returncode != EXIT_OK or "--table-overscan-y-px" not in nana_table.stdout:
+        errors.append(
+            f"nana text-table --print-plan must pass --table-overscan-y-px: "
+            f"{nana_table.stdout!r}"
+        )
+    elif "160" not in nana_table.stdout:
+        errors.append(
+            f"nana text-table --print-plan must pass overscan y 160px (8×20): "
+            f"{nana_table.stdout!r}"
+        )
+    if "--table-overscan-y-px" in (
+        subprocess.run(
+            [
+                sys.executable,
+                str(nana_script),
+                "--repo-root",
+                str(root),
+                "--scenario",
+                "virtual-list-10k",
+                "--print-plan",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+    ):
+        errors.append("nana virtual-list-10k --print-plan must not pass table flags")
+
+    table_iced_plan = subprocess.run(
+        [
+            sys.executable,
+            str(iced_script),
+            "--repo-root",
+            str(root),
+            "--scenario",
+            "text-table",
+            "--print-plan",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if table_iced_plan.returncode != EXIT_OK or "scenario-bench" not in table_iced_plan.stdout:
+        errors.append(
+            f"iced text-table --print-plan must name scenario-bench: "
+            f"{table_iced_plan.stdout!r} {table_iced_plan.stderr}"
+        )
+    code, table_from_report, err = from_report(
+        iced_script,
+        "text-table",
+        root / "perf" / "fixtures" / "iced-scenario-text-table.json",
+    )
+    if code != EXIT_OK or table_from_report is None:
+        errors.append(f"iced text-table --from-report exit {code}: {err}")
+    elif table_from_report.get("status") != "ok" or table_from_report.get("equivalence") != "same-scenario":
+        errors.append("iced text-table --from-report must be same-scenario ok")
 
     gpui_script = root / "perf" / "runners" / "gpui" / "run.py"
     gpui_result = subprocess.run(
@@ -2748,9 +4675,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Issue #8 scenario schema helpers")
     parser.add_argument("--check-schema", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--evaluate-invariants",
+        nargs="+",
+        metavar="REPORT",
+        default=None,
+        help=(
+            "Judge §8.1 work invariants from runner envelope JSON files or directories. "
+            "Same evaluate_invariants engine runners already attach."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write --evaluate-invariants summary JSON (default: stdout)",
+    )
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     args = parser.parse_args(argv)
     root = args.repo_root.resolve()
+    if args.self_test and args.evaluate_invariants:
+        parser.error("use --self-test or --evaluate-invariants, not both")
     if args.self_test:
         errors = self_test(root)
         if errors:
@@ -2759,6 +4704,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_ERROR
         print("perf contract self-test: OK")
         return EXIT_OK
+    if args.evaluate_invariants:
+        try:
+            summary, code = evaluate_runner_invariant_paths(
+                args.evaluate_invariants, root=root
+            )
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_ERROR
+        dump_json(args.output, summary)
+        return code
     if args.check_schema:
         errors = validate_all_scenarios(root)
         if errors:
@@ -2767,7 +4722,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_ERROR
         print("scenario schema: OK")
         return EXIT_OK
-    parser.error("provide --check-schema or --self-test")
+    parser.error("provide --check-schema, --self-test, or --evaluate-invariants")
     return EXIT_ERROR
 
 

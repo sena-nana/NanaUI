@@ -4,7 +4,7 @@
 Does not reimplement Runtime. Invokes:
 
 - nana-runtime-benchmark (StaticTree complete-binary-heap via tree_mutations, Mutation including remaining §3.2 kinds, Hover, catalog_animation)
-- nana-framework-benchmark (VirtualList, Table / text-table, Ime, DockWorkspace, Overlay, TextEditor)
+- nana-framework-benchmark (VirtualList, VirtualTree, Table / text-table, Ime, DockWorkspace, Overlay, TextEditor)
 - nana-scene-benchmark (optional StaticTree scene rows)
 - nana-gpu-scene-benchmark (gpu-scene-ui from perf/scenarios/gpu-scene-ui.json; UiOnly UI + HostTexture)
 
@@ -56,7 +56,7 @@ def _needed_bins(scenario: dict[str, Any]) -> list[dict[str, str]]:
         return [RUNTIME_BIN, SCENE_BIN]
     if kind in {"Mutation", "Hover"}:
         return [RUNTIME_BIN]
-    if kind in {"VirtualList", "Table", "Ime", "DockWorkspace", "Overlay", "TextEditor"}:
+    if kind in {"VirtualList", "Table", "Ime", "DockWorkspace", "Overlay", "TextEditor", "VirtualTree"}:
         return [FRAMEWORK_BIN]
     if kind == "Animation":
         return [RUNTIME_BIN]
@@ -72,6 +72,17 @@ def plan(scenario_id: str, args: Any) -> list[str]:
         scenario = contract.load_scenario(scenario_id, args.repo_root)
     except FileNotFoundError:
         return [f"# missing scenario file for {scenario_id}"]
+    if contract.is_incomparable_static_tree_50k(scenario):
+        return [
+            f"# nana unsupported for {scenario_id}; exit {contract.EXIT_UNSUPPORTED}",
+            f"# {contract.INCOMPARABLE_STATIC_TREE_50K_REASON}",
+        ]
+    gpu_skip = contract.nana_gpu_scene_skip_reason(scenario)
+    if gpu_skip:
+        return [
+            f"# nana unsupported for {scenario_id}; exit {contract.EXIT_UNSUPPORTED}",
+            f"# {gpu_skip}",
+        ]
     bins = _needed_bins(scenario)
     if not bins:
         return [f"# no Nana binary mapping for {scenario_id}"]
@@ -104,20 +115,25 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
             scenario_id=scenario_id,
             unsupported_reason=f"No scenario JSON at perf/scenarios/{scenario_id}.json",
         )
+    if contract.is_incomparable_static_tree_50k(scenario):
+        return contract.envelope(
+            runner="nana",
+            status="unsupported",
+            scenario_id=scenario_id,
+            scenario=scenario,
+            unsupported_reason=contract.INCOMPARABLE_STATIC_TREE_50K_REASON,
+        )
+    gpu_skip = contract.nana_gpu_scene_skip_reason(scenario)
+    if gpu_skip:
+        return contract.envelope(
+            runner="nana",
+            status="unsupported",
+            scenario_id=scenario_id,
+            scenario=scenario,
+            unsupported_reason=gpu_skip,
+        )
     needed = _needed_bins(scenario)
     if not needed:
-        if scenario["kind"] == "GpuScene":
-            return contract.envelope(
-                runner="nana",
-                status="unsupported",
-                scenario_id=scenario_id,
-                scenario=scenario,
-                unsupported_reason=(
-                    f"GpuScene composition {scenario['params'].get('composition')} has no "
-                    "Nana encode/submit path. Live2D is not a Scene pass; HostTexture "
-                    "evidence is not this composition. Do not invent upload/batch zeros."
-                ),
-            )
         return contract.envelope(
             runner="nana",
             status="unsupported",
@@ -196,6 +212,10 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
 def _extra_args(scenario: dict[str, Any], spec: dict[str, str], repo_root: Path) -> list[str] | None:
     if spec["key"] == "gpu":
         return ["--scenario", str(contract.scenario_path(scenario["id"], repo_root))]
+    if spec["key"] == "framework" and scenario.get("kind") in {"VirtualList", "VirtualTree"}:
+        return contract.nana_framework_list_window_args(scenario)
+    if spec["key"] == "framework" and scenario.get("kind") == "Table":
+        return contract.nana_framework_table_window_args(scenario)
     return None
 
 

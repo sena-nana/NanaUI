@@ -1,0 +1,90 @@
+{
+  "source": "iced-scenario-bench",
+  "status": "ok",
+  "scenario_id": "text-table",
+  "kind": "Table",
+  "params": {
+    "rows": 10000,
+    "columns": 100,
+    "visible_rows": 40,
+    "visible_columns": 16,
+    "overscan_rows": 8,
+    "overscan_columns": 2,
+    "short_cell_len": 8,
+    "wrapped_cells": 4,
+    "wrapped_cell_len": 256,
+    "row_extent_px": 20.0,
+    "column_extent_px": 80.0
+  },
+  "virtualization": {
+    "logical_rows": 10000,
+    "logical_columns": 100,
+    "visible_rows": 40,
+    "visible_columns": 16,
+    "overscan_rows": 8,
+    "overscan_columns": 2,
+    "row_extent_px": 20.0,
+    "column_extent_px": 80.0,
+    "live_ui_entities": 1176,
+    "live_ui_entities_bound": 1334,
+    "last_row_window": { "start": 6, "end": 62 },
+    "last_col_window": { "start": 1, "end": 21 }
+  },
+  "work_counters": {
+    "live_ui_entities": 1176,
+    "live_ui_entities_bound": 1334,
+    "visible_rows": 40,
+    "overscan_rows": 8,
+    "visible_columns": 16,
+    "overscan_columns": 2
+  },
+  "viewport": [1280, 800],
+  "scale": 1.0,
+  "backend": "wgpu",
+  "antialiasing": "none",
+  "warmup_iterations": 5,
+  "iterations": 20,
+  "adapter": {
+    "name": "extractor-fixture",
+    "backend": "fixture",
+    "device_type": "fixture"
+  },
+  "view_construction_ms": {
+    "p50": 1.2,
+    "p95": 1.4,
+    "p99": 1.5,
+    "min": 1.0,
+    "max": 1.6
+  },
+  "layout_ms": {
+    "p50": 2.8,
+    "p95": 3.1,
+    "p99": 3.3,
+    "min": 2.5,
+    "max": 3.5
+  },
+  "draw_ms": {
+    "p50": 1.5,
+    "p95": 1.7,
+    "p99": 1.8,
+    "min": 1.3,
+    "max": 1.9
+  },
+  "present_ms": {
+    "p50": 0.8,
+    "p95": 1.0,
+    "p99": 1.1,
+    "min": 0.6,
+    "max": 1.2
+  },
+  "cpu_frame_ms": {
+    "p50": 5.5,
+    "p95": 6.2,
+    "p99": 6.6,
+    "min": 4.8,
+    "max": 7.0
+  },
+  "notes": [
+    "Extractor fixture for iced-scenario-bench Table. Not a timing baseline."
+  ]
+}
