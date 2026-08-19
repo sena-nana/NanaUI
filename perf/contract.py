@@ -3,7 +3,8 @@
 
 Runners must load scenarios from ``perf/scenarios/*.json``. They must not invent
 a private tree size, font, DPI, or interaction script. Relative Iced/GPUI
-timing gates are not enforceable until those runners produce real numbers.
+timing gates stay off (``relative_gate_enforceable`` is False). See
+docs/performance-contract.md.
 """
 
 from __future__ import annotations
@@ -544,13 +545,13 @@ def catalog_table_live_bound(params: Mapping[str, Any]) -> int:
     return rows + rows * columns
 
 
-# Catalog ids whose Nana/Iced runners already emit honest ``ok`` envelopes
+# Catalog ids whose Nana runners already emit honest ``ok`` envelopes
 # *and* a non-empty catalog ``invariants`` row. ``--evaluate-invariants``
-# judges these. Everything else is skipped, not invariant-ok — including
-# Dock / TextEditor / Animation / IME / Overlay / GpuScene Live2D /
-# StaticTree 50k / GPUI even if a report is present. Nana ``gpu-scene-ui``
-# is judged only for Nana encode envelopes; missing GPU keys / adapter /
-# Iced stay skipped (exit 2), never vacuous 0.
+# judges Nana only; Iced/GPUI envelopes stay skipped, not invariant-ok —
+# including Dock / TextEditor / Animation / IME / Overlay / GpuScene Live2D /
+# StaticTree 50k even if a report is present. Nana ``gpu-scene-ui`` is judged
+# only for Nana encode envelopes; missing GPU keys / adapter stay skipped
+# (exit 2), never vacuous 0.
 # Nana Visibility / Transform / Accessibility reuse the live 5k
 # ``single_node_mutations`` dump. Iced stays unsupported (exit 2) for those
 # kinds. StaticTree 100/1k/5k/10k export ``metrics.frames_after_idle``
@@ -899,7 +900,9 @@ def is_runner_envelope(payload: Mapping[str, Any] | None) -> bool:
 
 def _skip_section_8_1(scenario_id: str, runner: str, status: str) -> str | None:
     if runner == "gpui":
-        return "GPUI stays unsupported; do not treat as invariant-ok"
+        return "GPUI stub skipped; not a Nana invariant"
+    if runner == "iced":
+        return "Iced triangulation skipped; not a Nana invariant"
     if scenario_id in SECTION_8_1_UNSUPPORTED_IDS:
         return (
             f"{scenario_id} is not a §8.1 honest-ok catalog id; skipped, not invariant-ok"
@@ -926,6 +929,8 @@ def judge_runner_invariants(
 
     This is the PR/CI entry: same rule engine runners already attach, not a
     second copy of the comparisons. Unsupported ids/runners stay skipped.
+    Missing ``work_counters.layout_nodes`` stays not-evaluable / skip, never
+    envelope-ok.
     """
     if not is_runner_envelope(report):
         return {
@@ -995,6 +1000,17 @@ def judge_runner_invariants(
         judged["note"] = (
             "gpu-scene-ui GPU keys missing; vacuous ok is forbidden until encode/submit "
             "observes gpu_upload_bytes and draw_calls. Do not invent 0."
+        )
+        return judged
+    layout_nodes_unevaluable = any(
+        item.get("path") == "work_counters.layout_nodes"
+        and item.get("status") == "not-evaluable"
+        for item in evaluated
+    )
+    if layout_nodes_unevaluable:
+        judged["decision"] = "skipped"
+        judged["note"] = (
+            "work_counters.layout_nodes missing; not-evaluable stays skip, never envelope-ok"
         )
         return judged
     judged["decision"] = "ok"
@@ -1089,7 +1105,7 @@ def envelope(
         "status": status,
         "scenario_id": scenario_id,
         "timing_gate_enforceable": False,
-        "relative_gate_enforceable": False,
+        "relative_gate_enforceable": False,  # stays False; #12 observation only
         "machine": machine_note(),
     }
     if scenario is not None:
@@ -1264,8 +1280,9 @@ def relative_gate_can_enforce(
 ) -> bool:
     """True only when Iced and GPUI both emitted same-scenario ok with real metrics.
 
-    Envelope ``relative_gate_enforceable`` stays False until this is True.
-    A GPUI stub or Gallery closest-legacy-reference must not open the 1.15× gate.
+    Observation predicate for #12. Envelope ``relative_gate_enforceable`` stays
+    False even when this returns True. A GPUI stub or Gallery
+    closest-legacy-reference must not open a 1.15× gate.
     """
     if not _real_same_scenario(iced_report) or not _real_same_scenario(gpui_report):
         return False
@@ -2400,8 +2417,7 @@ def _extract_iced_scenario_bench(
         )
     notes = [str(note) for note in (report.get("notes") or []) if note is not None]
     notes.append(
-        "Relative Iced/GPUI gates stay off until GPUI also emits same-scenario ok "
-        "with real metrics on this id."
+        "Relative Iced/GPUI multipliers stay off."
     )
     metrics: dict[str, Any] = {
         "cpu_frame_ms": cpu,
@@ -3752,6 +3768,10 @@ def self_test(root: Path | None = None) -> list[str]:
     gpui = gpui_unsupported(virtual)
     if gpui.get("status") != "unsupported":
         errors.append("gpui stub must return unsupported")
+    if gpui.get("relative_gate_enforceable") is not False:
+        errors.append("gpui stub must keep relative_gate_enforceable False")
+    if gpui.get("metrics"):
+        errors.append("gpui stub must not invent metrics")
 
     if static_tree_parent(1) is not None or static_tree_parent(100) != 50:
         errors.append("StaticTree heap parent rule must be parent(1)=None, parent(100)=50")
@@ -3815,6 +3835,10 @@ def self_test(root: Path | None = None) -> list[str]:
         errors.append(
             "relative_gate_can_enforce should be true for a real Iced+GPUI same-scenario pair"
         )
+    if iced_same.get("relative_gate_enforceable") is not False:
+        errors.append(
+            "envelope relative_gate_enforceable must stay False"
+        )
     try:
         extract_iced(
             load_scenario("static-tree-5k", root),
@@ -3840,6 +3864,11 @@ def self_test(root: Path | None = None) -> list[str]:
         errors.append("iced mutation extract must copy fixture cpu_frame_ms.p50")
     if mutation_ok.get("relative_gate_enforceable") is not False:
         errors.append("iced mutation extract must keep relative gates off")
+    if (mutation_ok.get("work_counters") or {}).get("layout_nodes") is not None:
+        errors.append("iced paint-only extract must omit unmeasured layout_nodes")
+    paint_extract_inv = _named_invariant(mutation_ok, "paint_only_does_not_layout_full_tree")
+    if paint_extract_inv is None or paint_extract_inv.get("status") != "not-evaluable":
+        errors.append("iced paint-only without layout_nodes must stay not-evaluable, not 0")
 
     fake_mutation_ok = {
         "source": "iced-scenario-bench",
@@ -3890,6 +3919,11 @@ def self_test(root: Path | None = None) -> list[str]:
         errors.append("iced hover fixture extract must be ok at 10k, not a smaller tree")
     if (hover_iced_ok.get("work_counters") or {}).get("nodes") != 10000:
         errors.append("iced hover fixture extract must record work_counters.nodes=10000")
+    if (hover_iced_ok.get("work_counters") or {}).get("layout_nodes") is not None:
+        errors.append("iced hover extract must omit unmeasured layout_nodes")
+    hover_extract_inv = _named_invariant(hover_iced_ok, "hover_without_size_change")
+    if hover_extract_inv is None or hover_extract_inv.get("status") != "not-evaluable":
+        errors.append("iced hover without layout_nodes must stay not-evaluable, not 0")
     if hover_iced_ok.get("equivalence") != "same-scenario":
         errors.append("iced hover fixture extract must be same-scenario")
     if (hover_iced_ok.get("metrics") or {}).get("cpu_frame_ms", {}).get("p50") != 2.1:
@@ -4211,35 +4245,52 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
                 "mutation-transform",
                 "mutation-a11y",
                 "mutation-visibility",
+                "hover",
+                "mutation-paint-only",
             )
         }
         nana_static = nana_live["static-tree-100"]
         nana_transform = nana_live["mutation-transform"]
         nana_a11y = nana_live["mutation-a11y"]
         nana_visibility = nana_live["mutation-visibility"]
+        nana_hover = nana_live["hover"]
+        nana_paint = nana_live["mutation-paint-only"]
     except Exception as exc:  # noqa: BLE001
         errors.append(f"§8.1 envelope fixtures failed to extract: {exc}")
         return errors
 
-    list_pass = judge_runner_invariants(virtual_iced, root=root)
-    if list_pass.get("decision") != "ok":
-        errors.append("iced VirtualList envelope with live=56 must pass §8.1")
-    if _named_invariant_status(list_pass, "virtual_list_live_entities_bounded") != "ok":
-        errors.append("iced VirtualList live=56 must evaluate the catalog live bound")
+    for payload, label in (
+        (virtual_iced, "iced VirtualList"),
+        (table_iced, "iced text-table"),
+        (hover_iced, "iced hover"),
+        (paint_iced, "iced paint-only"),
+        (static_iced, "iced StaticTree"),
+    ):
+        judged = judge_runner_invariants(payload, root=root)
+        if judged.get("decision") != "skipped":
+            errors.append(f"{label} envelope must be skipped, not a §8.1 pass")
 
-    list_fail_payload = copy.deepcopy(virtual_iced)
-    items = virtual["params"]["items"]
+    hover_inv = _named_invariant(hover_iced, "hover_without_size_change")
+    if hover_inv is None or hover_inv.get("status") != "not-evaluable":
+        errors.append("iced hover without layout_nodes must stay not-evaluable, not 0")
+    if (hover_iced.get("work_counters") or {}).get("layout_nodes") is not None:
+        errors.append("iced hover envelope must omit unmeasured layout_nodes")
+    paint_inv = _named_invariant(paint_iced, "paint_only_does_not_layout_full_tree")
+    if paint_inv is None or paint_inv.get("status") != "not-evaluable":
+        errors.append("iced paint-only without layout_nodes must stay not-evaluable")
+    if (paint_iced.get("work_counters") or {}).get("layout_nodes") is not None:
+        errors.append("iced paint-only envelope must omit unmeasured layout_nodes")
+
+    list_fail_payload = copy.deepcopy(nana_list)
+    hundredk_items = hundredk["params"]["items"]
     counters = dict(list_fail_payload.get("work_counters") or {})
-    counters["live_ui_entities"] = items
+    counters["live_ui_entities"] = hundredk_items
     list_fail_payload["work_counters"] = counters
     list_fail = judge_runner_invariants(list_fail_payload, root=root)
     if list_fail.get("decision") != "failed":
         errors.append("VirtualList live_ui_entities==items must fail §8.1")
 
-    table_pass = judge_runner_invariants(table_iced, root=root)
-    if table_pass.get("decision") != "ok":
-        errors.append("iced text-table envelope must pass §8.1")
-    cap_ok_payload = copy.deepcopy(table_iced)
+    cap_ok_payload = copy.deepcopy(nana_table)
     cap_ok_payload["work_counters"] = dict(cap_ok_payload.get("work_counters") or {})
     cap_ok_payload["work_counters"]["live_ui_entities"] = table_bound
     cap_ok = judge_runner_invariants(cap_ok_payload, root=root)
@@ -4248,7 +4299,7 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     if _named_invariant_status(cap_ok, "text_table_live_entities_bounded") != "ok":
         errors.append("table live=catalog cap must measure as ok")
 
-    table_fail_payload = copy.deepcopy(table_iced)
+    table_fail_payload = copy.deepcopy(nana_table)
     table_fail_payload["work_counters"] = dict(table_fail_payload.get("work_counters") or {})
     table_fail_payload["work_counters"]["live_ui_entities"] = 1_000_000
     table_fail = judge_runner_invariants(table_fail_payload, root=root)
@@ -4266,6 +4317,12 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         errors.append("nana static-tree-100 fixture envelope must pass §8.1")
     if _named_invariant_status(nana_static_judge, "static_ui") != "ok":
         errors.append("nana StaticTree 100 must evaluate static_ui frames_after_idle==0")
+    nana_hover_judge = judge_runner_invariants(nana_hover, root=root)
+    if nana_hover_judge.get("decision") != "ok":
+        errors.append("nana hover live dump must pass §8.1 when layout_nodes is measured")
+    nana_paint_judge = judge_runner_invariants(nana_paint, root=root)
+    if nana_paint_judge.get("decision") != "ok":
+        errors.append("nana paint-only live dump must pass §8.1 when layout_nodes is measured")
 
     for payload, scenario_id, rows in (
         (
@@ -4309,19 +4366,14 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         errors.append("Visibility layout_nodes=12 must fail Transform's layout_nodes==0 row")
 
     hover_judge = judge_runner_invariants(hover_iced, root=root)
-    if hover_judge.get("decision") != "ok":
-        errors.append("iced hover ok envelope must be judged (not skipped)")
-    if _named_invariant_status(hover_judge, "hover_without_size_change") != "not-evaluable":
-        errors.append("iced hover without layout_nodes must stay not-evaluable, not 0")
+    if hover_judge.get("decision") != "skipped":
+        errors.append("iced hover envelope must be skipped, never a §8.1 pass")
+    if _named_invariant(hover_iced, "hover_without_size_change") is None:
+        errors.append("iced hover extract must still attach hover_without_size_change")
 
-    static_judge = judge_runner_invariants(static_iced, root=root)
-    if static_judge.get("decision") != "ok":
-        errors.append("StaticTree 100 idle envelope with frames_after_idle=0 must pass §8.1")
-    if _named_invariant_status(static_judge, "static_ui") != "ok":
-        errors.append("StaticTree 100 must evaluate static_ui frames_after_idle==0")
     if (static_iced.get("metrics") or {}).get("frames_after_idle") != 0:
         errors.append("iced StaticTree fixture extract must copy frames_after_idle=0")
-    fake_busy = copy.deepcopy(static_iced)
+    fake_busy = copy.deepcopy(nana_static)
     fake_busy["frames_after_idle"] = 1
     metrics = dict(fake_busy.get("metrics") or {})
     metrics["frames_after_idle"] = 1
@@ -4329,7 +4381,7 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     busy_judge = judge_runner_invariants(fake_busy, root=root)
     if busy_judge.get("decision") != "failed":
         errors.append("StaticTree frames_after_idle=1 must fail §8.1 static_ui")
-    missing_idle = copy.deepcopy(static_iced)
+    missing_idle = copy.deepcopy(nana_static)
     missing_metrics = dict(missing_idle.get("metrics") or {})
     missing_metrics.pop("frames_after_idle", None)
     missing_idle["metrics"] = missing_metrics
@@ -4340,13 +4392,8 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         )
 
     paint_judge = judge_runner_invariants(paint_iced, root=root)
-    if paint_judge.get("decision") != "ok":
-        errors.append("iced paint-only ok envelope must be judged")
-    if (
-        _named_invariant_status(paint_judge, "paint_only_does_not_layout_full_tree")
-        != "not-evaluable"
-    ):
-        errors.append("iced paint-only without layout_nodes must stay not-evaluable")
+    if paint_judge.get("decision") != "skipped":
+        errors.append("iced paint-only envelope must be skipped, never a §8.1 pass")
 
     dock_ok_fake = envelope(
         runner="iced",
@@ -4490,10 +4537,10 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         static_dir = tmp_path / "static-only"
         static_dir.mkdir()
         static_only = static_dir / "static.json"
-        dump_json(pass_path, virtual_iced)
+        dump_json(pass_path, nana_list)
         dump_json(fail_path, list_fail_payload)
         dump_json(skip_path, fifty)
-        dump_json(static_only, static_iced)
+        dump_json(static_only, nana_static)
         summary_ok, code_ok = evaluate_runner_invariant_paths([pass_path], root=root)
         if code_ok != EXIT_OK or summary_ok.get("status") != "ok":
             errors.append("§8.1 path judge must pass a live VirtualList envelope")
@@ -4513,6 +4560,31 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
             or summary_static.get("skipped") != 0
         ):
             errors.append("§8.1 StaticTree-only dump with frames_after_idle=0 must pass")
+        iced_hover_dir = tmp_path / "iced-hover-only"
+        iced_hover_dir.mkdir()
+        dump_json(iced_hover_dir / "hover.json", hover_iced)
+        summary_iced_hover, code_iced_hover = evaluate_runner_invariant_paths(
+            [iced_hover_dir], root=root
+        )
+        if (
+            code_iced_hover != EXIT_UNSUPPORTED
+            or summary_iced_hover.get("status") != "unsupported"
+            or summary_iced_hover.get("ok") != 0
+            or summary_iced_hover.get("skipped") != 1
+        ):
+            errors.append("§8.1 iced hover-only dump must skip, never envelope-ok")
+        iced_paint_dir = tmp_path / "iced-paint-only"
+        iced_paint_dir.mkdir()
+        dump_json(iced_paint_dir / "paint.json", paint_iced)
+        summary_iced_paint, code_iced_paint = evaluate_runner_invariant_paths(
+            [iced_paint_dir], root=root
+        )
+        if (
+            code_iced_paint != EXIT_UNSUPPORTED
+            or summary_iced_paint.get("ok") != 0
+            or summary_iced_paint.get("skipped") != 1
+        ):
+            errors.append("§8.1 iced paint-only dump must skip, never envelope-ok")
         extra_dir = tmp_path / "idle-cases"
         extra_dir.mkdir()
         missing_path = extra_dir / "static-missing.json"
@@ -5442,12 +5514,13 @@ def gpui_unsupported(scenario: Mapping[str, Any]) -> dict[str, Any]:
         equivalence="unsupported",
         unsupported_reason=(
             "NanaUI has no GPUI crate, workspace member, or adapter. Fake GPUI numbers "
-            "are forbidden. This stub implements the Issue #8 CLI/schema so CI can "
-            "distinguish unsupported (exit 2) from a failed run (exit 1)."
+            "are forbidden. This stub implements the CLI/schema so CI can distinguish "
+            "unsupported (exit 2) from a failed run (exit 1)."
         ),
         plug_in=(
-            "Add perf/runners/gpui/adapter.py implementing run_scenario(scenario, args) "
-            "that builds the same Scenario JSON and returns this envelope with status=ok. "
+            "Optional adapter: perf/runners/gpui/adapter.py implementing "
+            "run_scenario(scenario, args) that builds the same Scenario JSON and "
+            "returns this envelope with status=ok only after a real GPUI build. "
             "Do not commit invented timings."
         ),
     )

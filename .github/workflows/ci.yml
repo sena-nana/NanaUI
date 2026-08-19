@@ -60,9 +60,9 @@ jobs:
         run: cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 
   runtime-work-invariants:
-    # Issue #8 PR gate: algorithmic work-counter / virtualization invariants.
-    # Named cargo tests plus perf/contract.py --evaluate-invariants on fixture
-    # runner envelopes. Live release benches are not required on every PR.
+    # Issue #8 PR gate: Nana work-counter / virtualization invariants.
+    # Named cargo tests plus perf/contract.py --evaluate-invariants on Nana
+    # fixture envelopes. Live release benches are not required on every PR.
     # 100k/1M virtual materialize timing stays in runtime-performance.yml.
     runs-on: ubuntu-latest
     steps:
@@ -89,21 +89,6 @@ jobs:
           python3 scripts/validate-runtime-performance.py --self-test
           python3 perf/contract.py --self-test
           mkdir -p target/performance/issue8/invariants
-          python3 perf/runners/iced/run.py --scenario virtual-list-10k \
-            --from-report perf/fixtures/iced-scenario-virtual-list-10k.json \
-            --output target/performance/issue8/invariants/iced-virtual-list-10k.json
-          python3 perf/runners/iced/run.py --scenario text-table \
-            --from-report perf/fixtures/iced-scenario-text-table.json \
-            --output target/performance/issue8/invariants/iced-text-table.json
-          python3 perf/runners/iced/run.py --scenario hover \
-            --from-report perf/fixtures/iced-scenario-hover.json \
-            --output target/performance/issue8/invariants/iced-hover.json
-          python3 perf/runners/iced/run.py --scenario mutation-paint-only \
-            --from-report perf/fixtures/iced-scenario-mutation-paint-only.json \
-            --output target/performance/issue8/invariants/iced-mutation-paint-only.json
-          python3 perf/runners/iced/run.py --scenario static-tree-100 \
-            --from-report perf/fixtures/iced-scenario-static-tree-100.json \
-            --output target/performance/issue8/invariants/iced-static-tree-100.json
           python3 perf/runners/nana/run.py --scenario text-table \
             --from-report perf/fixtures/virtual-table-scales.json \
             --output target/performance/issue8/invariants/nana-text-table.json

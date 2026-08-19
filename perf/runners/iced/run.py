@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue #8 / #12 Iced reference runner.
+"""Optional Iced triangulation runner. See docs/performance-contract.md.
 
 StaticTree, Mutation (PaintOnly / Text / LayoutStyle), Hover, VirtualList,
 and Table invoke ``engine/iced`` ``scenario-bench`` against the shared Scenario JSON.
@@ -14,7 +14,8 @@ Overlay, TextEditor, VirtualTree, and GpuScene stay unsupported (exit 2). Topolo
 ``pane_grid`` is not Nana ``assemble_dock`` chrome. A cached Iced editor frame
 is not Nana ``replace_text_area_selection`` + ``drain_text``.
 
-Relative Iced/GPUI gates stay off: GPUI is still a stub.
+``--evaluate-invariants`` skips Iced envelopes. Relative Iced/GPUI multipliers
+stay off.
 """
 
 from __future__ import annotations

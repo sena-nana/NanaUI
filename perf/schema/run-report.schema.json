@@ -15,7 +15,10 @@
       "enum": ["same-scenario", "closest-legacy-reference", "unsupported"]
     },
     "timing_gate_enforceable": { "type": "boolean" },
-    "relative_gate_enforceable": { "type": "boolean" },
+    "relative_gate_enforceable": {
+      "type": "boolean",
+      "description": "Must stay false. See docs/performance-contract.md."
+    },
     "scenario": { "type": "object" },
     "command": { "type": "array", "items": { "type": "string" } },
     "source_binary": { "type": "string" },

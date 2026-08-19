@@ -1,9 +1,9 @@
 name: Runtime performance
 
-# Weekly/dispatch timing and scale gate for Issue #8.
+# Weekly/dispatch timing and scale gate for Issue #8 (Nana-owned).
 # Ordinary PR CI must not use these wall-clock thresholds. PR work-counter
 # invariants live in .github/workflows/ci.yml (runtime-work-invariants): cargo
-# tests plus perf/contract.py --evaluate-invariants on runner envelopes.
+# tests plus perf/contract.py --evaluate-invariants on Nana runner envelopes.
 #
 # Scale split:
 # - Static 100..10k full + 50k construction-only are weekly-eligible.
