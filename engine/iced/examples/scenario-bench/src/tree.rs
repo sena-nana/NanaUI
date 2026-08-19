@@ -4,8 +4,14 @@
 //! decorate a single known node; they do not change topology.
 
 use iced::widget::{column, container, mouse_area, row, space, text};
-use iced::{Background, Color, Element, Length, Theme};
+use iced::{Background, Color, Element, Event, Length, Rectangle, Size, Theme};
 use iced_wgpu::Renderer;
+use iced_winit::core::Shell;
+use iced_winit::core::layout;
+use iced_winit::core::mouse;
+use iced_winit::core::renderer;
+use iced_winit::core::widget::{self, Widget};
+use iced_winit::core::window;
 
 use std::ops::Range;
 
@@ -334,5 +340,64 @@ fn item_label(index: usize, text_len: usize) -> String {
         base.chars().take(text_len).collect()
     } else {
         format!("{base}{}", "x".repeat(text_len - base.len()))
+    }
+}
+
+/// Widget that requests another UI frame on every `RedrawRequested`.
+/// Used to prove `frames_after_idle` is not hardcoded to 0.
+pub struct BusyPulse;
+
+pub fn busy_pulse<'a>() -> BenchElement<'a> {
+    BusyPulse.into()
+}
+
+impl<Message> Widget<Message, Theme, Renderer> for BusyPulse {
+    fn size(&self) -> Size<Length> {
+        Size {
+            width: Length::Fixed(1.0),
+            height: Length::Fixed(1.0),
+        }
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut widget::Tree,
+        _renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::atomic(limits, Length::Fixed(1.0), Length::Fixed(1.0))
+    }
+
+    fn update(
+        &mut self,
+        _tree: &mut widget::Tree,
+        event: &Event,
+        _layout: layout::Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) {
+        if let Event::Window(window::Event::RedrawRequested(_)) = event {
+            shell.request_redraw();
+        }
+    }
+
+    fn draw(
+        &self,
+        _tree: &widget::Tree,
+        _renderer: &mut Renderer,
+        _theme: &Theme,
+        _style: &renderer::Style,
+        _layout: layout::Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+    ) {
+    }
+}
+
+impl<'a, Message> From<BusyPulse> for Element<'a, Message, Theme, Renderer> {
+    fn from(pulse: BusyPulse) -> Self {
+        Element::new(pulse)
     }
 }

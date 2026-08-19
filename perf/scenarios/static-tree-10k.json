@@ -16,5 +16,15 @@
     "memory",
     "allocations"
   ],
-  "notes": "No §8.1 idle invariant: Nana/Iced envelopes do not export frames_after_idle (idle_schedule_ms is a timing). Judging stays skipped until that counter exists. Vacuous ok is forbidden."
+  "invariants": [
+    {
+      "name": "static_ui",
+      "path": "metrics.frames_after_idle",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "See docs/performance-contract.md §8.1 for the frames_after_idle definition. Missing stays not-evaluable, never 0."
+    }
+  ],
+  "notes": "§8.1 static_ui judged when frames_after_idle is present. static-tree-50k stays unsupported."
 }

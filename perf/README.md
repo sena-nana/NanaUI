@@ -62,6 +62,6 @@ copies that catalog param; Nana writes `mounted − visible`. Compare windows vi
 and re-runs the catalog §8.1 rows through the same `evaluate_invariants` engine.
 Exit 0 if every honest-ok envelope passed, 1 if any invariant failed, 2 if every
 report was skipped/unsupported. Dock / TextEditor / Animation / IME / Overlay /
-GpuScene / StaticTree 100/1k/5k/10k/50k / GPUI / VirtualTree 1M stay skipped
-(StaticTree idle/`frames_after_idle` is not in runner JSON). VirtualTree 10k/100k
-Nana envelopes are judged (Iced VirtualTree stays unsupported).
+GpuScene / StaticTree 50k / GPUI / VirtualTree 1M stay skipped.
+StaticTree 100/1k/5k/10k judge `frames_after_idle == 0` (missing stays skipped; definition in `docs/performance-contract.md` §8.1).
+VirtualTree 10k/100k Nana envelopes are judged (Iced VirtualTree stays unsupported).

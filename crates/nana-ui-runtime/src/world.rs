@@ -823,6 +823,20 @@ impl UiWorld {
         work
     }
 
+    /// Count UI frames this world would emit over `ticks` host attempts with no
+    /// external vsync. A frame is a non-empty dirty drain ([`Self::take_system_work`]).
+    /// Empty drains do not count. Elapsed time and `idle_schedule_ms` are not frames.
+    pub fn scheduled_ui_frames(&mut self, ticks: usize) -> usize {
+        let mut frames = 0;
+        for _ in 0..ticks {
+            if self.take_system_work().is_empty() {
+                continue;
+            }
+            frames += 1;
+        }
+        frames
+    }
+
     /// Restore drained work after a frame-system failure. Derived writes are
     /// idempotent, so retrying the complete transaction is safer than losing
     /// accessibility or render invalidations from an earlier pass.
@@ -7826,6 +7840,41 @@ mod tests {
         assert_eq!(work.layout, vec![node(1), node(2), node(3), node(4)]);
         assert_eq!(work.render_extraction, work.layout);
         assert!(world.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn scheduled_ui_frames_are_zero_after_static_settle_and_nonzero_when_paint_stays_dirty() {
+        const TICKS: usize = 8;
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=4 {
+            queue.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+            if id > 1 {
+                queue.insert(node(id / 2), node(id), None);
+            }
+        }
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+        assert_eq!(world.scheduled_ui_frames(TICKS), 0);
+
+        let mut paint = MutationQueue::new();
+        paint.set_style(
+            node(4),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    background: Some([0.2, 0.4, 0.8, 1.0]),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(paint).unwrap();
+        assert_ne!(world.scheduled_ui_frames(TICKS), 0);
+        assert_eq!(world.scheduled_ui_frames(TICKS), 0);
     }
 
     #[test]

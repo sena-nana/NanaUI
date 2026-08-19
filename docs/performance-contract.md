@@ -137,7 +137,7 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 
 | Scenario | Binary | Extracted fields | Gaps |
 | --- | --- | --- | --- |
-| StaticTree 100/1k/5k/10k | `nana-runtime-benchmark` + `nana-scene-benchmark` | enqueue, commit, initial systems (when present); scene extraction/idle/frame-graph | memory/allocations not exported |
+| StaticTree 100/1k/5k/10k | `nana-runtime-benchmark` + `nana-scene-benchmark` | enqueue, commit, initial systems (when present); `frames_after_idle` after settle; scene extraction/idle/frame-graph | memory/allocations not exported |
 | StaticTree 50k | **unsupported** (incomparable) | Nana `nana-runtime-benchmark` is `kind=construction` only (enqueue/commit/paint/hover). Iced `scenario-bench` would otherwise run a full 50k layout+draw. Neither runner emits `ok` until both sides share that work definition. |
 | PaintOnly | `nana-runtime-benchmark` `local_paint_*` at 5k | systems P50/P95/P99, `local_paint_work` WorkCounters including `layout_nodes` when present | invariant `layout_nodes == 0` is evaluable when the field is present; missing stays **not-evaluable** |
 | Text / LayoutStyle | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | 5k full case. Iced `scenario-bench` Mutation is same-scenario for these kinds only (5k heap, single node); GPUI stays unsupported |
@@ -153,7 +153,7 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | TextEditor | `nana-framework-benchmark` `catalog_workloads` text-editor | one TextArea, `editor_document(100000)`, caret-local `replace_text_area_selection` then `drain_text` | Iced stays **unsupported** (exit 2). A cached view+layout+draw after an untimed edit is not that dirty work. `text_shaped` stays omitted / **not-evaluable**; do not invent zeros. GPUI stays unsupported. Must not share the list-scroll AppContext (`input_hit_test==41`) |
 | GpuScene `gpu-scene-ui` | `nana-gpu-scene-benchmark` from `perf/scenarios/gpu-scene-ui.json` | UiOnly materialization + encode/submit WorkCounters (`gpu_upload_bytes`, draw/batch) | In `harness_ids`. Missing adapter exit 2. Live2D compositions stay out of `harness_ids` (no encode path; do not emit 0) |
 
-Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`. Relative gates stay off until GPUI also emits same-scenario ok.
+Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree exports `frames_after_idle` (§8.1); a busy `request_redraw` probe must be non-zero before 0 is emitted. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`. Relative gates stay off until GPUI also emits same-scenario ok.
 
 `overscan_rows`: catalog Table (and list/tree) overscan is **8 rows**. Iced copies that catalog param; Nana `nana-framework-benchmark` writes `mounted − visible`. Do not equate the two fields — compare windows via `list_overscan_px` / `table_overscan_y_px`. `window_ms` is index arithmetic (Fenwick lookup may round to 0); judged work is `materialize_ms` + `live_ui_entities`, not `window_ms`.
 
@@ -311,12 +311,34 @@ single_text_patch:         text_shaped <= bounded_expected_count
 virtual_list_100k:         live_ui_entities <= bounded_visible_cache
 ```
 
-`static_ui: frames_after_idle == 0` remains a contract goal (static UI must
-not keep producing frames). Nana/Iced runner JSON does **not** export
-`frames_after_idle` or any idle-frame count after StaticTree settle;
-`idle_schedule_ms` is a timing, not that counter. Do not invent zeros. Until
-a real catalog row exists, StaticTree 100/1k/5k/10k stay **skipped**, not
-invariant-ok. An empty `invariants` array must never count as a §8.1 pass.
+`static_ui: frames_after_idle == 0` is judged for StaticTree 100/1k/5k/10k.
+`frames_after_idle` is the count of UI frames scheduled after the tree has
+settled (Nana: non-empty `take_system_work` drains; Iced: `UserInterface`
+`redraw_request` of `NextFrame` / `At`). The settle frame itself is not
+counted. `idle_schedule_ms` is a timing and must never be mapped to this
+field. Missing or null stays **not-evaluable** / skipped, never treated as 0.
+A busy tree (pending paint dirty, or an Iced widget that calls
+`shell.request_redraw` on `RedrawRequested`) must be able to produce a
+non-zero count; otherwise runners refuse to emit 0. StaticTree 50k stays
+**unsupported** on both sides (Nana is construction-only). An empty
+`invariants` array must never count as a §8.1 pass.
+
+CI `--from-report` success envelopes are live dumps, not extractor-fixture
+JSON. One Nana `bench_full` dump (`perf/fixtures/nana-runtime-static-tree.json`)
+covers StaticTree 100/1k/5k/10k, Hover 10k, and Mutation PaintOnly/Text/LayoutStyle.
+Iced §8.1 requires a live `scenario-bench` dump for `static-tree-100` that
+includes `busy_probe_frames > 0` (`perf/fixtures/iced-scenario-static-tree-100.json`);
+1k/5k/10k share that same Iced idle path and do not need four huge dumps.
+
+```text
+cargo run --release --locked -p nana-ui-runtime --features benchmark \
+  --bin nana-runtime-benchmark -- \
+  --output perf/fixtures/nana-runtime-static-tree.json
+cargo run --release --locked --manifest-path engine/iced/Cargo.toml \
+  -p scenario-bench -- \
+  --scenario perf/scenarios/static-tree-100.json \
+  --output perf/fixtures/iced-scenario-static-tree-100.json
+```
 
 Those catalog assertions are evaluated from runner JSON by
 `python3 perf/contract.py --evaluate-invariants <envelope.json>…`, which calls
@@ -324,9 +346,10 @@ the same `evaluate_invariants` path runners already attach. A missing or null
 field stays **not-evaluable** and must never be treated as 0. Evaluated catalog
 ids are those with honest Nana/Iced `ok` envelopes and a non-empty catalog
 row: Mutation PaintOnly/Text/LayoutStyle, Hover 10k, VirtualList 10k/100k
-(catalog window 800/160/20), VirtualTree 10k/100k (same catalog-8 cap 58), and
-`text-table` (catalog-8 cap 1334). Dock / TextEditor / Animation / IME /
-Overlay / GpuScene / StaticTree 100/1k/5k/10k/50k / GPUI / VirtualList 1M /
+(catalog window 800/160/20), VirtualTree 10k/100k (same catalog-8 cap 58),
+`text-table` (catalog-8 cap 1334), and StaticTree 100/1k/5k/10k
+(`frames_after_idle == 0`). Dock / TextEditor / Animation / IME /
+Overlay / GpuScene / StaticTree 50k / GPUI / VirtualList 1M /
 VirtualTree 1M stay **skipped**, not
 invariant-ok. `runtime-work-invariants` in `.github/workflows/ci.yml` still runs
 the named cargo tests; it also runs `--self-test` and `--evaluate-invariants` on
@@ -401,7 +424,7 @@ Copied from issue §16 so the contract does not drop DoD. Status is honest.
 | Iced / GPUI / NanaUI reference runners on shared workload | **partial** (Nana map + Iced scenario-bench StaticTree/Mutation/Hover/VirtualList/Table + Gallery wrap + GPUI stub; StaticTree 50k unsupported/incomparable) |
 | Every critical frame stage independently profiled | **partial** (`FrameProfiler` + `FrameStage`; GPU stages ran on Scene encode, unsupported on Runtime-only) |
 | Work counters can locate algorithm regressions | **partial** (`WorkCounters` includes `input_targets`, `render_nodes_changed`, CPU hot-path `allocations` / `allocated_bytes`, text shaping/cache, and GPU keys after encode; process-wide malloc stays omitted) |
-| ECS dirty/incremental automatic asserts | **partial** (unit tests + binary asserts + weekly semantic gates + `--evaluate-invariants` on honest-ok runner envelopes; Dock/TextEditor/Animation/IME/Overlay/StaticTree 100–10k idle/`frames_after_idle`/50k/GPUI stay skipped) |
+| ECS dirty/incremental automatic asserts | **partial** (unit tests + binary asserts + weekly semantic gates + `--evaluate-invariants` on honest-ok runner envelopes; Dock/TextEditor/Animation/IME/Overlay/StaticTree 50k/GPUI stay skipped) |
 | Virtualized list/tree/table scale gates | **partial** (10k/100k list/table/tree `virtual_scales`; 1M list/table/tree harness ids env-gated; Iced/GPUI tree stay unsupported) |
 | Allocation, memory, GPU upload, draw/batch recorded | **partial** (CPU hot-path `allocations` / `allocated_bytes`, text shaping/cache, and GPU encode observations; process-wide malloc and peak temp bytes stay **unsupported**) |
 | Fixed benchmark machine with history | **missing**; weekly `ubuntu-latest`/`macos-latest` is not it |
