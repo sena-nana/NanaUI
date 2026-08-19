@@ -15,8 +15,8 @@ description: Select and report functional validation for NanaUI changes. Use whe
 - **Window:** Check the outcome contract and affected targets; require real platform evidence for
   native effects.
 - **Performance:** Use the Issue #8 [`performance-contract.md`](../../../docs/performance-contract.md)
-  for shared Scenario names, relative gates, work-counter invariants, and runner
-  exit codes. Runtime/Scene benches and
+  for shared Scenario names, Nana work-counter / catalog / hotspot gates, and
+  runner exit codes. Runtime/Scene benches and
   [`validate-runtime-performance.py`](../../../scripts/validate-runtime-performance.py)
   are the current semantic gates. Weekly
   `.github/workflows/runtime-performance.yml` (`ubuntu-latest` / `macos-latest`
@@ -86,9 +86,9 @@ python3 scripts/validate-runtime-performance.py \
   --scene target/performance/scene.json
 ```
 
-Relative P50 1.15× / P95 1.20× / P99 1.25× / memory 1.20× vs Iced/GPUI is
-**not yet enforceable**. GPUI is an unsupported stub. Do not invent reference
-timings. Native RHI same-RenderPlan A/B is **NO-GO** (#7 Gate B).
+Relative Iced/GPUI multipliers are not #8 acceptance; see
+[`performance-contract.md`](../../../docs/performance-contract.md). Do not invent
+reference timings. Native RHI same-RenderPlan A/B is **NO-GO** (#7 Gate B).
 
 Report exact commands and results, separating regressions from environment or untested-platform
 limits. Performance regressions that trip an in-force gate need a recorded

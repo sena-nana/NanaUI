@@ -4,72 +4,56 @@ This is the Issue [#8](https://github.com/sena-nana/NanaUI/issues/8) contract th
 CI, benches, and runners must cite. It is not a claim that every gate already
 runs. Status below matches this workspace on 2026-08-19.
 
+**#8 acceptance is Nana-owned.** Work-counter / catalog / hotspot gates, plus
+CI that fails on an abnormal Nana regression. Iced or GPUI same-batch numbers
+are an optional observation, not a completion condition. Relative multipliers
+(P50 1.15× / P95 1.20× / P99 1.25× / memory 1.20×) are **not** #8 DoD.
+
 Historical Gallery numbers stay in [`performance-baseline.md`](performance-baseline.md).
-Do not use those numbers to assert that Runtime already meets the relative
-Iced/GPUI gates in §2.
+Do not use those numbers to claim a Nana gate passed.
 
 Shared Scenario files and runners: [`perf/README.md`](../perf/README.md).
 
-## 1. Same scenario, not a lone absolute frame time
+## 1. Same Nana scenario, not a lone absolute frame time
 
-Every major comparison must hold all of the following constant:
+Nana gates must hold the catalog workload constant:
 
 ```text
-same device
-same OS / power mode
-same window size
-same DPI
-same font and font size
+same Scenario id and params
 same node data
 same interaction script
 same Release/LTO configuration
 same sampling window
 ```
 
-and must implement:
+Workload parameters live in `perf/scenarios/*.json`. Runners must not invent
+their own tree size. Timing CI also needs a fixed device / OS / window / DPI
+(see §8.2). Iced and GPUI runners may emit the same Scenario envelope for
+triangulation.
 
-```text
-Scenario
-├── NanaUI runner
-├── Iced runner
-└── GPUI runner
-```
+## 2. Relative Iced/GPUI multipliers — not #8 acceptance
 
-Demos that differ in application, data structure, or interaction script are not
-a comparison. Workload parameters live in `perf/scenarios/*.json`. Runners must
-not invent their own tree size.
+The old P0 table versus the faster of Iced and GPUI was:
 
-## 2. Relative gates — not yet enforceable
-
-P0 uses a relative reference, not an absolute leadership claim. Versus the
-**faster of Iced and GPUI** on the same Scenario:
-
-| Metric | Gate |
+| Metric | Historical multiplier |
 | --- | --- |
 | P50 CPU frame cost | ≤ 1.15× |
 | P95 | ≤ 1.20× |
 | P99 | ≤ 1.25× |
 | steady-state memory | ≤ 1.20× |
 
-Also required by #8, independent of the multipliers:
+If comparison returns, it belongs with
+[#12](https://github.com/sena-nana/NanaUI/issues/12), on a fixed machine, with
+real same-scenario metrics. Fake numbers stay forbidden.
+`relative_gate_enforceable` stays **False**. CI must not wait on a GPUI crate
+or `adapter.py`.
+
+#8 still requires these **Nana** invariants (independent of any multiplier):
 
 - static UI with no mutation / animation / external frame must not keep producing UI frames;
 - a single-node paint or hover mutation must not default to full-tree layout;
 - large lists must be virtualized;
 - idle must not scan/execute every ECS system.
-
-These multipliers are an engineering starting line, not an industry standard.
-They should tighten once both reference runners exist and a fixed machine is
-recording history.
-
-**Not yet enforceable.** GPUI is a stub (exit 2). Iced StaticTree / Mutation
-(PaintOnly, Text, LayoutStyle) / Hover / VirtualList use `engine/iced`
-`scenario-bench` on the shared catalog work (`same-scenario` when the report
-declares that generation). Visibility / Transform / Accessibility stay
-unsupported on Iced. StaticTree 50k stays unsupported on both runners (Nana is
-construction-only). Gallery `ui-benchmark` `--from-report` stays
-`closest-legacy-reference`. Relative gates stay off until GPUI also emits real
-same-scenario numbers. Fake GPUI or Iced numbers are forbidden.
 
 ## 3. Shared Scenario catalog
 
@@ -128,8 +112,8 @@ count, text shape count, GPU upload, draw/batch count for lists.
 | Runner | Command | What it actually does | Status |
 | --- | --- | --- | --- |
 | Nana | `python3 perf/runners/nana/run.py --scenario <id>` | Thin map onto existing `nana-runtime-benchmark`, `nana-framework-benchmark`, `nana-scene-benchmark`, `nana-gpu-scene-benchmark` | **partial** |
-| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | StaticTree / Mutation (PaintOnly, Text, LayoutStyle) / Hover / VirtualList / Table → `engine/iced` `scenario-bench` (same complete-binary-heap as Nana for tree kinds; VirtualList and Table use the catalog window). Visibility / Transform / Accessibility and StaticTree 50k are **unsupported**. Gallery `ui-benchmark` `--from-report` stays a legacy wrap | **partial** (StaticTree 100/1k/5k/10k, PaintOnly/Text/LayoutStyle, Hover 10k, VirtualList / Table same-scenario; Visibility/Transform/A11y / IME / dock / overlay / animation / editor / GPU scene / VirtualTree / 50k exit 2) |
-| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | Same CLI/schema; returns `unsupported` | **stub** |
+| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | Optional triangulation via `engine/iced` `scenario-bench`. Visibility / Transform / Accessibility and StaticTree 50k stay **unsupported**. Gallery `ui-benchmark` `--from-report` stays a legacy wrap | **optional** |
+| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | Same CLI/schema; returns `unsupported`. No crate or `adapter.py` | **stub** |
 
 Exit codes: `0` ok, `1` error, `2` unsupported. CI must distinguish 2 from 1.
 
@@ -153,12 +137,12 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | TextEditor | `nana-framework-benchmark` `catalog_workloads` text-editor | one TextArea, `editor_document(100000)`, caret-local `replace_text_area_selection` then `drain_text` | Iced stays **unsupported** (exit 2). A cached view+layout+draw after an untimed edit is not that dirty work. `text_shaped` stays omitted / **not-evaluable**; do not invent zeros. GPUI stays unsupported. Must not share the list-scroll AppContext (`input_hit_test==41`) |
 | GpuScene `gpu-scene-ui` | `nana-gpu-scene-benchmark` from `perf/scenarios/gpu-scene-ui.json` | UiOnly materialization + encode/submit WorkCounters (`gpu_upload_bytes`, draw/batch) | §8.1 honest-ok for Nana encode envelopes. Missing adapter exit 2. Live2D stays out of `harness_ids` (no encode path; do not emit 0) |
 
-Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree exports `frames_after_idle` (§8.1); a busy `request_redraw` probe must be non-zero before 0 is emitted. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`. Relative gates stay off until GPUI also emits same-scenario ok.
+Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree may export `frames_after_idle` for triangulation; a busy `request_redraw` probe must be non-zero before 0 is emitted. `--evaluate-invariants` skips Iced envelopes. Missing `work_counters.layout_nodes` on Iced Hover / PaintOnly stays **not-evaluable**, never envelope-ok. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`.
 
 `overscan_rows`: catalog Table (and list/tree) overscan is **8 rows**. Iced copies that catalog param; Nana `nana-framework-benchmark` writes `mounted − visible`. Do not equate the two fields — compare windows via `list_overscan_px` / `table_overscan_y_px`. Nana extract is `same-scenario` only when the dump declares the catalog window (`list_viewport_px` / `list_overscan_px` / `list_item_extent_px`, or the table viewport/overscan/extent px fields); missing fields stay `closest-legacy-reference`. `window_ms` is index arithmetic (Fenwick lookup may round to 0); judged work is `materialize_ms` + `live_ui_entities`, not `window_ms`.
 
-GPUI: no crate, workspace member, or adapter exists. Plug-in path is
-`perf/runners/gpui/adapter.py` implementing `run_scenario(scenario, args)`.
+GPUI: no crate, workspace member, or adapter exists. Fake GPUI numbers stay
+forbidden. A future `perf/runners/gpui/adapter.py` would be #12 observation only.
 
 `--from-report` maps a JSON the binaries already wrote. `--print-plan` prints
 the cargo command without running it.
@@ -293,9 +277,9 @@ Runner stand-ins, not a substitute for PR invariants:
 
 There is no perf history database. PR `runtime-work-invariants` still runs the
 named cargo tests. §8.1 runner-JSON judging is
-`python3 perf/contract.py --evaluate-invariants <envelope.json>…` (fixture
-envelopes in that job today; live Nana/Iced benches are not required on every
-PR). Do not treat the weekly timing workflow as that gate.
+`python3 perf/contract.py --evaluate-invariants <envelope.json>…` on Nana
+fixture envelopes (live release benches are not required on every PR). Do not
+treat the weekly timing workflow as a fixed machine.
 
 ## 8. CI layering
 
@@ -311,57 +295,47 @@ single_text_patch:         text_shaped <= bounded_expected_count
 virtual_list_100k:         live_ui_entities <= bounded_visible_cache
 ```
 
-`static_ui: frames_after_idle == 0` is judged for StaticTree 100/1k/5k/10k.
+`static_ui: frames_after_idle == 0` is judged for Nana StaticTree 100/1k/5k/10k.
 `frames_after_idle` is the count of UI frames scheduled after the tree has
-settled (Nana: non-empty `take_system_work` drains; Iced: `UserInterface`
-`redraw_request` of `NextFrame` / `At`). The settle frame itself is not
-counted. `idle_schedule_ms` is a timing and must never be mapped to this
-field. Missing or null stays **not-evaluable** / skipped, never treated as 0.
-A busy tree (pending paint dirty, or an Iced widget that calls
-`shell.request_redraw` on `RedrawRequested`) must be able to produce a
-non-zero count; otherwise runners refuse to emit 0. StaticTree 50k stays
-**unsupported** on both sides (Nana is construction-only). An empty
-`invariants` array must never count as a §8.1 pass.
+settled (Nana: non-empty `take_system_work` drains). The settle frame itself
+is not counted. `idle_schedule_ms` is a timing and must never be mapped to
+this field. Missing or null stays **not-evaluable** / skipped, never treated
+as 0. A busy tree (pending paint dirty) must be able to produce a non-zero
+count; otherwise runners refuse to emit 0. StaticTree 50k stays
+**unsupported** (Nana is construction-only). An empty `invariants` array must
+never count as a §8.1 pass.
 
-CI `--from-report` success envelopes are live dumps, not extractor-fixture
-JSON. One Nana `bench_full` dump (`perf/fixtures/nana-runtime-static-tree.json`)
-covers StaticTree 100/1k/5k/10k, Hover 10k, and Mutation PaintOnly/Text/LayoutStyle
-plus Nana-only Visibility/Transform/Accessibility (`single_node_mutations` at 5k).
-Iced §8.1 requires a live `scenario-bench` dump for `static-tree-100` that
-includes `busy_probe_frames > 0` (`perf/fixtures/iced-scenario-static-tree-100.json`);
-1k/5k/10k share that same Iced idle path and do not need four huge dumps.
+CI `--from-report` success envelopes are **Nana** live dumps, not
+extractor-fixture JSON and not Iced comparison jobs. One Nana `bench_full`
+dump (`perf/fixtures/nana-runtime-static-tree.json`) covers StaticTree
+100/1k/5k/10k, Hover 10k, and Mutation PaintOnly/Text/LayoutStyle plus
+Visibility/Transform/Accessibility (`single_node_mutations` at 5k).
 
 ```text
 cargo run --release --locked -p nana-ui-runtime --features benchmark \
   --bin nana-runtime-benchmark -- \
   --output perf/fixtures/nana-runtime-static-tree.json
-cargo run --release --locked --manifest-path engine/iced/Cargo.toml \
-  -p scenario-bench -- \
-  --scenario perf/scenarios/static-tree-100.json \
-  --output perf/fixtures/iced-scenario-static-tree-100.json
 ```
 
 Those catalog assertions are evaluated from runner JSON by
 `python3 perf/contract.py --evaluate-invariants <envelope.json>…`, which calls
 the same `evaluate_invariants` path runners already attach. A missing or null
 field stays **not-evaluable** and must never be treated as 0. Evaluated catalog
-ids are those with honest Nana/Iced `ok` envelopes and a non-empty catalog
-row: Mutation PaintOnly/Text/LayoutStyle, Nana Visibility (`render_nodes_changed`
-and `layout_nodes` ≤ 64; live dump layouts 12 — not `layout_nodes == 0`),
-Nana Transform / Accessibility (`layout_nodes == 0`), Hover 10k, VirtualList 10k/100k
+ids are honest Nana `ok` envelopes with a non-empty catalog row: Mutation
+PaintOnly/Text/LayoutStyle, Visibility (`render_nodes_changed` and
+`layout_nodes` ≤ 64; live dump layouts 12 — not `layout_nodes == 0`),
+Transform / Accessibility (`layout_nodes == 0`), Hover 10k, VirtualList 10k/100k
 (catalog window 800/160/20), VirtualTree 10k/100k (same catalog-8 cap 58),
 `text-table` (catalog-8 cap 1334), StaticTree 100/1k/5k/10k
 (`frames_after_idle == 0`), and Nana `gpu-scene-ui` encode envelopes
 (`draw_calls >= 1` is the real bound; catalog also has `gpu_upload_bytes >= 0`).
-Missing GPU keys / adapter skip, never vacuous 0. Iced Visibility / Transform /
-Accessibility stay
-**unsupported** (exit 2). Dock / TextEditor / Animation / IME /
-Overlay / GpuScene Live2D / Iced GpuScene / StaticTree 50k / GPUI / VirtualList 1M /
-VirtualTree 1M stay **skipped**, not
-invariant-ok. `runtime-work-invariants` in `.github/workflows/ci.yml` still runs
-the named cargo tests; it also runs `--self-test` and `--evaluate-invariants` on
-fixture-derived envelopes. That is not a live release-bench dump from every PR.
-Do not treat the weekly timing workflow as that gate.
+Missing GPU keys / adapter skip, never vacuous 0. Dock / TextEditor / Animation /
+IME / Overlay / GpuScene Live2D / StaticTree 50k / GPUI / VirtualList 1M /
+VirtualTree 1M stay **skipped**, not invariant-ok. `runtime-work-invariants`
+in `.github/workflows/ci.yml` still runs the named cargo tests; it also runs
+`--self-test` and `--evaluate-invariants` on Nana fixture-derived envelopes.
+That is not a live release-bench dump from every PR. Do not treat the weekly
+timing workflow as that gate.
 
 ### 8.2 Timing CI / fixed machine
 
@@ -386,9 +360,9 @@ Any change that exceeds a threshold that *is* in force must:
 4. **Not silent-merge.**
 
 This is process text. There is no GitHub required status named
-“performance-waiver” in this change. Until relative gates are enforceable,
-a waiver still applies to any existing `validate-runtime-performance.py`
-failure: explain it in the PR; do not merge a red gate quietly.
+“performance-waiver” in this change. A waiver still applies to any existing
+Nana `validate-runtime-performance.py` or §8.1 failure: explain it in the PR;
+do not merge a red Nana gate quietly.
 
 ## 10. Native RHI same-RenderPlan A/B — NO-GO
 
@@ -421,25 +395,28 @@ Long-term, not currently all machine-checked:
    and draw/batch are measurable on Scene encode/submit (`GpuWorkObservation`).
    Runtime-only drains omit GPU keys.
 
-8. Critical workloads must keep being compared to Iced/GPUI on the same machine.
+8. Critical Nana workloads must keep being measured on the catalog ids.
 
 ## 12. Definition of done vs this workspace
 
-Copied from issue §16 so the contract does not drop DoD. Status is honest.
+#8 DoD is Nana-owned gates + hotspot screening + no abnormal Nana regression.
+Iced/GPUI runners and relative multipliers are **not** completion conditions.
+Status is honest; this is not a claim that every Nana gate already runs.
 
 | DoD | Status |
 | --- | --- |
-| Documented Performance Contract | **done** (this document) |
-| Iced / GPUI / NanaUI reference runners on shared workload | **partial** (Nana map + Iced scenario-bench StaticTree/Mutation/Hover/VirtualList/Table + Gallery wrap + GPUI stub; StaticTree 50k unsupported/incomparable) |
+| Documented Performance Contract | **done** (this document; Iced/GPUI comparison demoted) |
+| Nana catalog runners + work-counter / hotspot gates | **partial** (Nana map on harness ids; Dock/TextEditor/Animation/IME/Overlay stay skipped) |
 | Every critical frame stage independently profiled | **partial** (`FrameProfiler` + `FrameStage`; GPU stages ran on Scene encode, unsupported on Runtime-only) |
 | Work counters can locate algorithm regressions | **partial** (`WorkCounters` includes `input_targets`, `render_nodes_changed`, CPU hot-path `allocations` / `allocated_bytes`, text shaping/cache, and GPU keys after encode; process-wide malloc stays omitted) |
-| ECS dirty/incremental automatic asserts | **partial** (unit tests + binary asserts + weekly semantic gates + `--evaluate-invariants` on honest-ok runner envelopes; Dock/TextEditor/Animation/IME/Overlay/StaticTree 50k/GPUI stay skipped) |
-| Virtualized list/tree/table scale gates | **partial** (10k/100k list/table/tree `virtual_scales`; 1M list/table/tree harness ids env-gated; Iced/GPUI tree stay unsupported) |
+| ECS dirty/incremental automatic asserts | **partial** (unit tests + binary asserts + weekly semantic gates + `--evaluate-invariants` on honest Nana envelopes) |
+| Virtualized list/tree/table scale gates | **partial** (10k/100k list/table/tree `virtual_scales`; 1M env-gated) |
 | Allocation, memory, GPU upload, draw/batch recorded | **partial** (CPU hot-path `allocations` / `allocated_bytes`, text shaping/cache, and GPU encode observations; process-wide malloc and peak temp bytes stay **unsupported**) |
-| Fixed benchmark machine with history | **missing**; weekly `ubuntu-latest`/`macos-latest` is not it |
-| P50/P95/P99/max and frame-budget misses comparable | **partial** on existing binaries (`frame_budget_misses` on new reports); not same-Scenario vs Iced/GPUI |
+| CI fails on abnormal Nana regression | **partial** (PR work-counter job + weekly semantic/timing stand-in; weekly GHA is not a fixed machine) |
+| Iced / GPUI same-scenario triangle | **not #8 DoD** (optional observation; cleanup tracked separately; GPUI stub) |
+| Relative P50/P95/P99/memory multipliers | **not #8 DoD** (`relative_gate_enforceable` stays False) |
 | Native RHI vs WGPU same RenderPlan | **NO-GO / deferred by #7 Gate B** |
-| #7 large architecture stages must pass this gate | process; not a substitute for the gaps above |
+| #7 large architecture stages must pass this gate | process; Nana gates only |
 
 Issue §15 phases 0–4 remain open except the contract/schema/runner scaffolding
 in this tree and whatever sibling agents land. Microbench (§10), macro/E2E
@@ -448,10 +425,10 @@ app benches (§13) are **required by #8 / not implemented**.
 
 ## 13. Non-goals
 
-Unchanged from the issue: NanaUI need not beat Iced/GPUI on every workload;
-do not sacrifice IME, accessibility, correctness, or API maintenance for a
-score; do not block PRs on tiny public-runner timing noise; do not assume
-Native RHI is faster than WGPU; do not treat an ECS/GPUI-like API as proof.
+NanaUI need not beat Iced/GPUI on any workload to close #8. Do not sacrifice
+IME, accessibility, correctness, or API maintenance for a score; do not block
+PRs on tiny public-runner timing noise; do not assume Native RHI is faster than
+WGPU; do not treat an ECS/GPUI-like API as proof.
 
 ## 14. Schema rules other workstreams must follow
 
@@ -464,10 +441,9 @@ Native RHI is faster than WGPU; do not treat an ECS/GPUI-like API as proof.
    `work_counters`).
 4. `equivalence` is `same-scenario` only when the runner built that JSON.
    Mapping an existing binary is `closest-legacy-reference`.
-5. Relative gates stay off until Iced and GPUI both emit `status: ok` with
-   real metrics on the same id.
-6. Do not add a GPUI git submodule or invented timings to “complete” the
-   triangle.
+5. Relative Iced/GPUI multipliers stay off. `relative_gate_enforceable` stays
+   False. Comparison, if any, is #12 observation.
+6. Do not add a GPUI git submodule or invented timings.
 7. Native RHI A/B is out of scope for #8 while Gate B is NO-GO.
 8. Layout-stop / counter / scale benches should keep the work-counter names
    in §7 (`layout_nodes`, `live_ui_entities`, `text_shaped`, …) so PR

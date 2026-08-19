@@ -21,7 +21,7 @@ From the repository root:
 ```bash
 python3 perf/contract.py --check-schema
 python3 perf/contract.py --self-test
-python3 perf/contract.py --evaluate-invariants path/to/nana-text-table.json path/to/iced-virtual-list-10k.json
+python3 perf/contract.py --evaluate-invariants path/to/nana-text-table.json path/to/nana-virtual-list-10k.json
 python3 perf/contract.py --evaluate-invariants target/performance/issue8
 
 python3 perf/runners/nana/run.py --list
@@ -40,7 +40,7 @@ python3 perf/runners/iced/run.py --scenario dock-workspace --output /tmp/iced-do
 python3 perf/runners/iced/run.py --scenario text-editor --output /tmp/iced-text-editor.json           # expected exit 2
 python3 perf/runners/iced/run.py --scenario gpu-scene-ui --output /tmp/iced-gpu-scene-ui.json          # expected exit 2
 python3 perf/runners/iced/run.py --scenario static-tree-50k --output /tmp/iced-static-tree-50k.json   # expected exit 2 (incomparable)
-python3 perf/runners/gpui/run.py --scenario virtual-list-10k --output /tmp/gpui-virtual-list-10k.json
+python3 perf/runners/gpui/run.py --scenario virtual-list-10k --output /tmp/gpui-virtual-list-10k.json  # expected exit 2
 ```
 
 GPUI is a stub: it prints `status: unsupported` and exits **2**. Exit **1** is a
@@ -60,9 +60,11 @@ copies that catalog param; Nana writes `mounted − visible`. Compare windows vi
 
 `--evaluate-invariants` consumes those runner envelopes (files or a directory)
 and re-runs the catalog §8.1 rows through the same `evaluate_invariants` engine.
+It judges Nana envelopes; Iced/GPUI reports skip. Missing
+`work_counters.layout_nodes` stays not-evaluable / skip, never envelope-ok.
 Exit 0 if every honest-ok envelope passed, 1 if any invariant failed, 2 if every
 report was skipped/unsupported. Dock / TextEditor / Animation / IME / Overlay /
-GpuScene Live2D / Iced GpuScene / StaticTree 50k / GPUI / VirtualTree 1M stay skipped.
+GpuScene Live2D / StaticTree 50k / GPUI / VirtualTree 1M stay skipped.
 Nana `gpu-scene-ui` encode envelopes are judged.
 StaticTree 100/1k/5k/10k judge `frames_after_idle == 0` (missing stays skipped; definition in `docs/performance-contract.md` §8.1).
-VirtualTree 10k/100k Nana envelopes are judged (Iced VirtualTree stays unsupported).
+VirtualTree 10k/100k Nana envelopes are judged.
