@@ -90,7 +90,7 @@ jobs:
           python3 perf/contract.py --self-test
           mkdir -p target/performance/issue8/invariants
           python3 perf/runners/nana/run.py --scenario text-table \
-            --from-report perf/fixtures/virtual-table-scales.json \
+            --from-report perf/fixtures/nana-framework-text-table.json \
             --output target/performance/issue8/invariants/nana-text-table.json
           python3 perf/runners/nana/run.py --scenario virtual-list-10k \
             --from-report perf/fixtures/virtual-scales-only.json \
@@ -137,6 +137,21 @@ jobs:
           python3 perf/runners/nana/run.py --scenario mutation-a11y \
             --from-report perf/fixtures/nana-runtime-static-tree.json \
             --output target/performance/issue8/invariants/nana-mutation-a11y.json
+          python3 perf/runners/nana/run.py --scenario animation \
+            --from-report perf/fixtures/nana-runtime-static-tree.json \
+            --output target/performance/issue8/invariants/nana-animation.json
+          python3 perf/runners/nana/run.py --scenario ime \
+            --from-report perf/fixtures/nana-framework-catalog-workloads.json \
+            --output target/performance/issue8/invariants/nana-ime.json
+          python3 perf/runners/nana/run.py --scenario dock-workspace \
+            --from-report perf/fixtures/nana-framework-catalog-workloads.json \
+            --output target/performance/issue8/invariants/nana-dock-workspace.json
+          python3 perf/runners/nana/run.py --scenario overlay \
+            --from-report perf/fixtures/nana-framework-catalog-workloads.json \
+            --output target/performance/issue8/invariants/nana-overlay.json
+          python3 perf/runners/nana/run.py --scenario text-editor \
+            --from-report perf/fixtures/nana-framework-catalog-workloads.json \
+            --output target/performance/issue8/invariants/nana-text-editor.json
           python3 perf/runners/nana/run.py --scenario gpu-scene-ui \
             --from-report perf/fixtures/nana-gpu-scene-ui.json \
             --output target/performance/issue8/invariants/nana-gpu-scene-ui.json

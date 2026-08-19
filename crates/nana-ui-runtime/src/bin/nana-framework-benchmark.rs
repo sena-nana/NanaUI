@@ -301,8 +301,7 @@ struct VirtualScaleCase {
     window_ms: Option<Distribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     materialize_ms: Option<Distribution>,
-    /// Existing WorkCounters from the last table/list drain. Glyph cache
-    /// keys stay omitted on `MeasureTextShaper` (no glyph backend).
+    /// Existing WorkCounters from the last table/list drain.
     #[serde(skip_serializing_if = "Option::is_none")]
     work: Option<ScaleWork>,
 }
@@ -336,7 +335,7 @@ struct ScaleWork {
 }
 
 /// Issue #8 catalog workloads that reuse existing Runtime APIs (IME, dock,
-/// overlay, editor). Glyph cache keys stay omitted on `MeasureTextShaper`.
+/// overlay, editor).
 #[derive(Serialize)]
 struct CatalogWorkloadCase {
     id: &'static str,

@@ -723,9 +723,9 @@ pub trait TextShaper {
 
     /// Shape using the Runtime-owned [`crate::GlyphCache`].
     ///
-    /// The default ignores the cache so hosts without a glyph backend
-    /// (`MeasureTextShaper`) leave `glyph_cache_*` as `None`. Production
-    /// `NanaTextShaper` records per-glyph advances here.
+    /// The default ignores the cache so hosts without a glyph backend leave
+    /// `glyph_cache_*` as `None`. [`MeasureTextShaper`] and `NanaTextShaper`
+    /// record per-glyph advances here.
     fn shape_cached(
         &mut self,
         id: StableNodeId,
@@ -844,9 +844,9 @@ pub trait TextShaper {
     }
 }
 
-/// Finite-metrics shaper used by hosts that do not inject a glyph backend.
-/// Layout-stop still sees wrap height against the last content box. Does not
-/// consult [`crate::GlyphCache`], so `glyph_cache_*` stay `None`.
+/// Finite-metrics shaper for CPU hosts (framework `text-table`, layout-stop).
+/// Wrap height stays against the last content box. Per-character advances go
+/// through Runtime [`crate::GlyphCache`] lookup/insert.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MeasureTextShaper;
 
@@ -858,16 +858,43 @@ impl TextShaper for MeasureTextShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
-        let em = style.font_size.max(1.0);
-        let intrinsic = text.value.chars().count() as f32 * em;
-        let width = constraints.max_width.unwrap_or(intrinsic).min(intrinsic);
-        let height = if constraints.wrap && width + f32::EPSILON < intrinsic {
-            em * (intrinsic / width.max(em)).ceil()
-        } else {
-            em
-        };
-        TextMetrics { width, height }
+        measure_em_text(text, style, constraints)
     }
+
+    fn shape_cached(
+        &mut self,
+        _id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        glyphs: &mut crate::GlyphCache,
+    ) -> TextMetrics {
+        let em = style.font_size.max(1.0);
+        let mut intrinsic = 0.0;
+        for ch in text.value.chars() {
+            intrinsic += glyphs.lookup_or_insert(ch, style, em);
+        }
+        em_metrics(intrinsic, em, constraints)
+    }
+}
+
+fn measure_em_text(
+    text: &TextContent,
+    style: &ComputedStyle,
+    constraints: TextShapeConstraints,
+) -> TextMetrics {
+    let em = style.font_size.max(1.0);
+    em_metrics(text.value.chars().count() as f32 * em, em, constraints)
+}
+
+fn em_metrics(intrinsic: f32, em: f32, constraints: TextShapeConstraints) -> TextMetrics {
+    let width = constraints.max_width.unwrap_or(intrinsic).min(intrinsic);
+    let height = if constraints.wrap && width + f32::EPSILON < intrinsic {
+        em * (intrinsic / width.max(em)).ceil()
+    } else {
+        em
+    };
+    TextMetrics { width, height }
 }
 
 fn explicit_lines(value: &str) -> Vec<(usize, usize, usize)> {
