@@ -12,12 +12,20 @@
   ],
   "invariants": [
     {
-      "name": "overlay_kinds_cover_catalog",
-      "path": "work_counters.overlay_kind_count",
-      "op": "eq",
+      "name": "overlay_does_not_layout_full_tree",
+      "path": "work_counters.layout_nodes",
+      "op": "lte",
       "value": 4,
       "status": "required",
-      "note": "Issue #8 §3.7 requires tooltip, context_menu, modal, and popup. Evaluate when catalog_workloads overlay exports overlay_kind_count."
+      "note": "Overlay activate/dismiss must not layout the whole overlay host. Live dump layouts 1 of 5 entities; cap 4 so modest chrome growth passes and a full 5-entity layout fails. Do not pin ==1. overlay_kind_count is attendance, not this hotspot."
+    },
+    {
+      "name": "overlay_does_not_dirty_full_tree",
+      "path": "work_counters.entities_changed",
+      "op": "lte",
+      "value": 4,
+      "status": "required",
+      "note": "Live dump dirty-changes 2 of 5; cap 4 so modest chrome growth passes and a full overlay-tree dirty fails. Do not pin ==2."
     }
   ],
   "notes": "Mapped onto OverlayHost activate_overlay/dismiss_overlay for Tooltip, Menu (context_menu), Dialog (modal), and AppContext toggle_popover for popup in an isolated AppContext. Measures activate/dismiss only. Does not measure popup pointer-follow reposition, stacking vs host chrome, or OS-owned menus."

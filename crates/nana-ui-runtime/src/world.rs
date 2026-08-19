@@ -676,14 +676,20 @@ impl UiWorld {
     /// not mark render state dirty: consumers apply sampled values through the
     /// normal atomic mutation boundary.
     pub fn advance_animations(&mut self, now: Duration) -> AnimationFrame {
+        let mut animation_deadlines_scanned = 0usize;
         let due = self
             .animation_deadlines
             .range(..=(now, AnimationId::new(u64::MAX).expect("max ID is nonzero")))
+            .inspect(|_| {
+                animation_deadlines_scanned = animation_deadlines_scanned.saturating_add(1)
+            })
             .copied()
             .collect::<Vec<_>>();
         let mut samples = Vec::with_capacity(due.len());
+        let mut animations_considered = 0usize;
         for (deadline, id) in due {
             self.animation_deadlines.remove(&(deadline, id));
+            animations_considered = animations_considered.saturating_add(1);
             let (sample, next_deadline) = {
                 let animation = self
                     .animations
@@ -706,6 +712,8 @@ impl UiWorld {
             samples,
             component_updates: Vec::new(),
             next_deadline: self.next_animation_deadline(),
+            animation_deadlines_scanned,
+            animations_considered,
         }
     }
 
@@ -7746,6 +7754,53 @@ mod tests {
         world.commit(remove).unwrap();
         assert_eq!(world.next_animation_deadline(), None);
         assert!(world.advance_animations(Duration::MAX).samples.is_empty());
+    }
+
+    #[test]
+    fn advance_animations_counts_due_scheduler_lookups_not_the_idle_set() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for index in 1..=64 {
+            queue.create(node(index), document(1), NodeKind::Text);
+        }
+        for index in 1..=64 {
+            let due = index == 1;
+            queue.start_animation(AnimationSpec {
+                id: AnimationId::new(index as u64).unwrap(),
+                target: node(index),
+                start: if due {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(60)
+                },
+                duration: Duration::from_millis(1),
+                frame_interval: Duration::from_millis(16),
+                easing: Easing::Linear,
+            });
+        }
+        world.commit(queue).unwrap();
+
+        let sparse = world.advance_animations(Duration::from_millis(1));
+        assert_eq!(sparse.samples.len(), 1);
+        assert_eq!(sparse.animation_deadlines_scanned, 1);
+        assert_eq!(sparse.animations_considered, 1);
+
+        let mut all_due = MutationQueue::new();
+        for index in 2..=64 {
+            all_due.start_animation(AnimationSpec {
+                id: AnimationId::new(index as u64).unwrap(),
+                target: node(index),
+                start: Duration::ZERO,
+                duration: Duration::from_millis(1),
+                frame_interval: Duration::from_millis(16),
+                easing: Easing::Linear,
+            });
+        }
+        world.commit(all_due).unwrap();
+        let full = world.advance_animations(Duration::from_millis(1));
+        assert_eq!(full.samples.len(), 63);
+        assert_eq!(full.animation_deadlines_scanned, 63);
+        assert_eq!(full.animations_considered, 63);
     }
 
     #[test]

@@ -99,9 +99,18 @@ struct CatalogAnimationCase {
     scheduled_idle: bool,
     scheduled_animations: usize,
     due_animation_samples: usize,
+    work: AnimationAdvanceWork,
     idle_animation_deadline_ms: Distribution,
     scheduled_animation_deadline_ms: Distribution,
     sparse_animation_sample_ms: Distribution,
+}
+
+/// Sparse-advance observation from [`UiWorld::advance_animations`].
+/// Not a dirty-drain guess and not `due_animation_samples` attendance.
+#[derive(Serialize, Clone, Copy)]
+struct AnimationAdvanceWork {
+    animation_deadlines_scanned: usize,
+    animations_considered: usize,
 }
 
 /// Algorithm counts from [`SystemWork::counters`] / [`UiWorld::last_work_counters`].
@@ -690,6 +699,7 @@ fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
     let mut idle_deadline = Vec::with_capacity(CATALOG_ANIMATION_ITERATIONS);
     let mut scheduled_deadline = Vec::with_capacity(CATALOG_ANIMATION_ITERATIONS);
     let mut sparse_sample = Vec::with_capacity(CATALOG_ANIMATION_ITERATIONS);
+    let mut last_advance = None;
     for iteration in 0..(CATALOG_ANIMATION_WARMUP + CATALOG_ANIMATION_ITERATIONS) {
         let mut world = UiWorld::new();
         world
@@ -736,6 +746,12 @@ fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
         assert_eq!(frame.samples[0].target, node(CATALOG_ANIMATION_ACTIVE));
         assert!(frame.samples[0].finished);
         assert_eq!(frame.next_deadline, Some(Duration::from_secs(60)));
+        assert_eq!(frame.animation_deadlines_scanned, CATALOG_ANIMATION_ACTIVE);
+        assert_eq!(frame.animations_considered, CATALOG_ANIMATION_ACTIVE);
+        last_advance = Some(AnimationAdvanceWork {
+            animation_deadlines_scanned: frame.animation_deadlines_scanned,
+            animations_considered: frame.animations_considered,
+        });
 
         if iteration >= CATALOG_ANIMATION_WARMUP {
             idle_deadline.push(idle_elapsed);
@@ -751,6 +767,7 @@ fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
         scheduled_idle: true,
         scheduled_animations: CATALOG_ANIMATION_SCHEDULED,
         due_animation_samples: CATALOG_ANIMATION_ACTIVE,
+        work: last_advance.expect("catalog animation must observe a sparse advance"),
         idle_animation_deadline_ms: summarize(&idle_deadline),
         scheduled_animation_deadline_ms: summarize(&scheduled_deadline),
         sparse_animation_sample_ms: summarize(&sparse_sample),

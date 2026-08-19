@@ -1,7 +1,9 @@
 # Issue #8 performance harness
 
 Shared Scenario schema and thin runners. The contract they must satisfy is
-[`docs/performance-contract.md`](../docs/performance-contract.md).
+[`docs/performance-contract.md`](../docs/performance-contract.md)
+(living #8 DoD: Nana work-counter / catalog / hotspot + CI fail-closed;
+micro / E2E / Gallery stress are out of #8).
 
 ```text
 perf/
@@ -9,7 +11,7 @@ perf/
 ├── schema/                  # JSON Schema for Scenario and run reports
 ├── scenarios/               # shared workload definitions
 ├── runners/{nana,iced,gpui}/
-├── micro/                   # reserved; no Issue #8 micro suite yet
+├── micro/                   # reserved; not #8 DoD (no micro suite)
 ├── baselines/               # reserved; do not invent a history database
 └── reports/                 # generated runner output (gitignored)
 ```
@@ -62,6 +64,9 @@ copies that catalog param; Nana writes `mounted − visible`. Compare windows vi
 and re-runs the catalog §8.1 rows through the same `evaluate_invariants` engine.
 It judges Nana envelopes; Iced/GPUI reports skip. Missing
 `work_counters.layout_nodes` stays not-evaluable / skip, never envelope-ok.
-Exit 0 if every honest-ok envelope passed, 1 if any invariant failed, 2 if every
-report was skipped/unsupported. Judged vs skipped Nana ids:
-[`performance-contract.md`](../docs/performance-contract.md) §8.1.
+Exit 0 if judged Nana envelopes passed. Exit 1 if an invariant failed, or
+a gated Nana id present in the set was skipped next to other oks. A PR
+`invariants/` directory (or `--require-honest-ok`) also fails when a
+gated id is missing; weekly `weekly/` does not require macos-only
+`gpu-scene-ui`. Exit 2 if every report was skipped/unsupported. Judged vs
+skipped Nana ids: [`performance-contract.md`](../docs/performance-contract.md) §8.1.

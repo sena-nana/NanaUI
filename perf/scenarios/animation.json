@@ -15,13 +15,21 @@
   ],
   "invariants": [
     {
-      "name": "idle_scheduled_animations_sparse_sample",
-      "path": "work_counters.due_animation_samples",
-      "op": "eq",
-      "value": 1,
+      "name": "animation_advance_does_not_scan_scheduled_world",
+      "path": "work_counters.animations_considered",
+      "op": "lte",
+      "value": 8,
       "status": "required",
-      "note": "Issue #8 §3 / §4: idle scheduled animations must not scan every entity. Mapped onto nana-runtime-benchmark catalog_animation due_animation_samples with active=1. Missing field stays not-evaluable. The 5k-tree incidental sparse sample is not this Scenario."
+      "note": "advance_animations must look up only the due set. Live dump considers 1 of 64 scheduled; cap 8 so modest extra due samples pass and a full-world 64 scan fails. due_animation_samples==1 is attendance, not this hotspot. Missing stays not-evaluable."
+    },
+    {
+      "name": "animation_advance_does_not_walk_full_deadline_index",
+      "path": "work_counters.animation_deadlines_scanned",
+      "op": "lte",
+      "value": 8,
+      "status": "required",
+      "note": "Deadline-index walk must stay on the due range. Live dump scans 1 of 64; cap 8 so modest extra due entries pass and a full-table 64 scan fails even if animations_considered stays 1. Do not pin ==1. Missing stays not-evaluable."
     }
   ],
-  "notes": "Dedicated nana-runtime-benchmark catalog_animation on an isolated UiWorld: active=1 due sample plus idle-scheduled animations. Measures idle next_animation_deadline, scheduled deadline, and advance_animations sparse sample. Does not reuse the 5k-tree full-case incidental animation fields."
+  "notes": "Dedicated nana-runtime-benchmark catalog_animation on an isolated UiWorld: active=1 due sample plus idle-scheduled animations. Hotspots are AnimationFrame.animations_considered and animation_deadlines_scanned from the sparse deadline-index advance, not due==1. Does not reuse the 5k-tree incidental sparse sample."
 }
