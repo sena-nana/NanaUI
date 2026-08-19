@@ -1,5 +1,6 @@
 //! Headless GPUI runner for NanaUI Issue #12 shared Scenario JSON.
 //!
+//! Excluded from the Nana workspace; not a product renderer and not an #8 gate.
 //! Uses crates.io `gpui` 0.2.2 `TestAppContext` (real GPUI element tree, Taffy
 //! layout, and scene paint). `TestWindow::draw` does not GPU-present, so this
 //! binary omits `present_ms` rather than emitting 0. TestPlatform also does not

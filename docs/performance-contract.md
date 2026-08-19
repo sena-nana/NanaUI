@@ -6,8 +6,9 @@ runs. Status below matches this workspace on 2026-08-19.
 
 **#8 acceptance is Nana-owned.** Work-counter / catalog / hotspot gates, plus
 CI that fails on an abnormal Nana regression. Living close is §12; leftovers
-are §15 / §16. Iced or GPUI same-batch numbers are an optional observation,
-not a completion condition. Relative multipliers (P50 1.15× / P95 1.20× /
+are §15 / §16. Iced or GPUI same-batch numbers are Issue
+[#12](https://github.com/sena-nana/NanaUI/issues/12) observation, not a
+completion condition. Relative multipliers (P50 1.15× / P95 1.20× /
 P99 1.25× / memory 1.20×) are **not** #8 DoD. Animation is **in-force**
 on `animations_considered ≤ 8` and `animation_deadlines_scanned ≤ 8`
 (live dump 1/64; self-test `considered=1` / `scanned=64` failed).
@@ -33,7 +34,7 @@ same sampling window
 Workload parameters live in `perf/scenarios/*.json`. Runners must not invent
 their own tree size. Timing CI also needs a fixed device / OS / window / DPI
 (see §8.2). Iced and GPUI runners may emit the same Scenario envelope for
-triangulation.
+Issue #12 observation.
 
 ## 2. Relative Iced/GPUI multipliers — not #8 acceptance
 
@@ -115,8 +116,8 @@ count, text shape count, GPU upload, draw/batch count for lists.
 | Runner | Command | What it actually does | Status |
 | --- | --- | --- | --- |
 | Nana | `python3 perf/runners/nana/run.py --scenario <id>` | Thin map onto existing `nana-runtime-benchmark`, `nana-framework-benchmark`, `nana-scene-benchmark`, `nana-gpu-scene-benchmark` | **partial** |
-| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | Optional triangulation via `engine/iced` `scenario-bench`. Visibility / Transform / Accessibility and StaticTree 50k stay **unsupported**. Gallery `ui-benchmark` `--from-report` stays a legacy wrap | **optional** |
-| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | Optional triangulation via `engine/gpui-scenario-bench`. See GPUI paragraph below. Relative gates stay off | **optional** |
+| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | #12 observation via `engine/iced` `scenario-bench`. Not a Nana #8 gate. Visibility / Transform / Accessibility and StaticTree 50k stay **unsupported**. Gallery `--from-report` stays a legacy wrap | **#12 observation** |
+| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | #12 observation via excluded `engine/gpui-scenario-bench`. Not a product renderer and not a #8 gate | **#12 observation** |
 
 Exit codes: `0` ok, `1` error, `2` unsupported. CI must distinguish 2 from 1.
 
@@ -144,14 +145,13 @@ Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintO
 
 `overscan_rows`: catalog Table (and list/tree) overscan is **8 rows**. Iced copies that catalog param; Nana `nana-framework-benchmark` writes `mounted − visible`. Do not equate the two fields — compare windows via `list_overscan_px` / `table_overscan_y_px`. Nana extract is `same-scenario` only when the dump declares the catalog window (`list_viewport_px` / `list_overscan_px` / `list_item_extent_px`, or the table viewport/overscan/extent px fields); missing fields stay `closest-legacy-reference`. `window_ms` is index arithmetic (Fenwick lookup may round to 0); judged work is `materialize_ms` + `live_ui_entities`, not `window_ms`.
 
-GPUI: `engine/gpui-scenario-bench` (crates.io `gpui` 0.2.2 `TestAppContext`) plus
-`perf/runners/gpui/adapter.py` run the same Scenario JSON. Wired kinds match Iced
-(StaticTree 100/1k/5k/10k, Mutation PaintOnly/Text/LayoutStyle, Hover 10k,
-VirtualList catalog window, text-table catalog-8). `present_ms` and
-`frames_after_idle` are omitted (no GPU present / no idle observer); do not
-invent 0. Other kinds stay **unsupported** (exit 2). Envelope
-`relative_gate_enforceable` stays **False**. Laptop dumps and weekly GHA are not
-a named fixed machine.
+GPUI is #12 observation (excluded `engine/gpui-scenario-bench`; not a product
+renderer; not #8 DoD). Iced and GPUI live dumps go under
+`target/performance/issue12/`, not Nana `issue8/` gates. Unwired kinds and a
+missing adapter stay exit 2 with no metrics (`present_ms` /
+`frames_after_idle` omitted, not 0). `--evaluate-invariants` skips them.
+`relative_gate_enforceable` stays **False**; `relative_gate_can_enforce` being
+true does not enable multiplier CI. Weekly GHA is not a named fixed machine.
 
 `--from-report` maps a JSON the binaries already wrote. `--print-plan` prints
 the cargo command without running it.

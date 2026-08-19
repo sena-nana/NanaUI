@@ -55,7 +55,7 @@ def plan(scenario_id: str, args: Any) -> list[str]:
             "engine/iced scenario-bench implements StaticTree, Mutation, Hover, "
             "VirtualList, and Table only",
         )
-    output = args.repo_root / "target" / "performance" / "issue8" / f"iced-{scenario_id}.json"
+    output = args.repo_root / "target" / "performance" / "issue12" / f"iced-{scenario_id}.json"
     command = contract.cargo_run_iced_scenario_bench(
         args.repo_root,
         scenario_path=contract.scenario_path(scenario_id, args.repo_root),
@@ -102,7 +102,7 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
         command: list[str] = []
     else:
         source = (
-            args.repo_root / "target" / "performance" / "issue8" / f"iced-{scenario_id}.json"
+            args.repo_root / "target" / "performance" / "issue12" / f"iced-{scenario_id}.json"
         )
         command = contract.cargo_run_iced_scenario_bench(
             args.repo_root,

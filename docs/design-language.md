@@ -2,7 +2,7 @@
 
 视觉状态可通过 `ui-snapshots` 在离屏 WGPU renderer 中复测，当前覆盖工作区和组件画廊的 dark/light、Surface、Context Menu 与 Dialog；验收范围和限制见 `visual-validation.md`。
 
-NanaUI 采用与 LiliaUI 相同的视觉层级：深色/浅色主题、`background → surface → active` 的表面阶梯、弱分隔线、蓝色主操作色和紧凑的工程工具排版。
+NanaUI 采用与 LiliaUI 相同的视觉层级：深色/浅色主题、`background → surface → active` 的表面阶梯、弱分隔线、蓝色主操作色和紧凑的工程工具排版。令牌与状态以 LiliaUI 为准。产品控件是 Runtime / UiScene 组件，不是 Iced widget。
 
 第一阶段的语义令牌位于 `crates/nana-ui/src/theme.rs`：面板使用 `surface`，输入/非激活项使用 `subtle`，hover/pressed/selected 使用 `hover`/`active`，文本按 `text`/`muted`/`faint` 分级；`UI_METRICS` 是所有组件共用的 `ThemeMetrics`，统一定义组件高度、面板内距、radius 和 motion。运行时 `ThemeTokens` 可组合当前颜色与宿主提供的 metrics；外观设置用 `AppearanceSettings` 只暴露标准圆角，内部以 4px 级差派生微型、控件、卡片和页面圆角。默认标准值 10px 对应 2/6/10/14px，修改后立即作用于公共控件。所有可见按钮都连接到状态模型的真实消息，不放置路线图式入口。
 
@@ -20,12 +20,11 @@ NanaUI 采用与 LiliaUI 相同的视觉层级：深色/浅色主题、`backgrou
 Region 等内容或结构尺寸不套用单行档位，但其中的单行操作仍遵循三档合同。
 
 字体使用与 LiliaUI `fonts.css` 同源的 Noto Sans SC 400/500/600/700。资源转换为
-Iced 可读取的 TTF 后由 `ui_font_sources()` 统一注册；标题使用 0.2px 字距，
+TTF 后由 `ui_font_sources()` 统一注册；标题使用 0.2px 字距，
 分区标题与 Card 标题使用 0.5px 字距。平台字体仅作为未注册资源时的降级路径，
 不作为验收基线。
 
-`UI_BASE_TEXT_SIZE` 将标准正文与中号控件统一为 13px；NanaUI 应用在启动时调用
-`ui_font_defaults()`，手动构造的 Renderer 同样使用该常量。统一排版合同不等于
+`UI_BASE_TEXT_SIZE` 将标准正文与中号控件统一为 13px。统一排版合同不等于
 所有文本使用同一字号：小号控件、辅助文本、标题和展示文字继续保留各自的语义
 层级。
 
@@ -41,7 +40,7 @@ hover 与 pressed 分别切换到 `selected-hover` 和 `selected-pressed`。蓝�
 `accent` 不作为选中卡片或输入类组件的 focused / opened 描边，只保留给主操作、
 开关与滑杆等明确值状态和语义强调。
 
-按钮内容由 Iced `Button` 的布局阶段统一执行水平、垂直居中，而不是依靠字体
+按钮内容由 Runtime `Button` 统一水平、垂直居中，而不是依靠字体
 baseline 或各页面的偶然 padding。菜单、列表和侧栏等需要左对齐的复合按钮会
 显式声明左对齐；图标按钮、文本操作和“图标 + 文本”操作共享居中合同。
 由按钮触发的操作菜单默认将菜单起始边与按钮起始边对齐；靠近视口边缘时由组件
@@ -55,9 +54,8 @@ Markdown 表格保持紧凑工程数据表外观：表头使用 `subtle` 与 Sem
 `surface`，单元格以 `border-soft` 分隔；左/中/右对齐直接来自 GFM 列合同。列宽
 不足时在表格内部横向滚动，不挤压外层 Workspace，也不把表格退化为带竖线的文本。
 
-分段控件的 1px 边框不参与 Iced 布局，因此组件以“1px 边框 + 2px 内容内距”
-得到 3px 有效内缩；外层严格使用所选 `ControlSize`，内部选项高度由外层减去
-上下内缩得到。内层圆角同步使用“外层圆角 − 3px”，使两层圆弧保持同心。普通
+分段控件以“1px 边框 + 2px 内容内距”得到 3px 有效内缩；外层严格使用所选
+`ControlSize`，内部选项高度由外层减去上下内缩得到。内层圆角同步使用“外层圆角 − 3px”，使两层圆弧保持同心。普通
 Tab、列表项和其他选中按钮仍使用各自的控件圆角。
 
 可重排 Tab 保持静态外观不变。按下后移动达到 4px 才进入拖拽，指针使用

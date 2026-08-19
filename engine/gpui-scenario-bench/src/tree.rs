@@ -1,4 +1,5 @@
-//! Shared complete-binary-heap tree used by Nana `tree_mutations` and Iced scenario-bench.
+//! Shared complete-binary-heap tree used by Nana `tree_mutations` and Iced/GPUI
+//! Issue #12 observation benches.
 //!
 //! `parent(i)=i/2`, root `1`, element-div. StaticTree has no text. Mutation/Hover
 //! decorate a single known node; they do not change topology.

@@ -301,7 +301,6 @@ impl WindowLifecycleEvent {
     }
 }
 
-/// Vue host shell: owns the tree document, message bridge, web-api state, and renderer host ops.
 #[derive(Clone, Default)]
 struct DiagnosticBindings {
     sink: Option<JsDiagnosticSink>,
@@ -317,6 +316,9 @@ impl std::fmt::Debug for DiagnosticBindings {
     }
 }
 
+/// Vue L1/L2 host: facade document, semantic props, paint-box projection, web-api.
+///
+/// Retained authority is the inner `UiWorld` / `UiScene`, not these adapters.
 #[derive(Debug)]
 pub struct VueHost {
     pub theme: ThemeMode,
@@ -844,7 +846,7 @@ impl VueHost {
     ///
     /// Also mirrors raw source onto the document for diagnostics
     /// (`stylesheet_count` host op). Cascade / `LayoutStyle` rebuild happens
-    /// only in the bridge — never treat `NanaTreeDocument` as a second parser.
+    /// only in [`MessageBridge`] — never treat `NanaTreeDocument` as a second parser.
     pub fn inject_stylesheet(&self, css: &str) {
         self.document
             .lock()

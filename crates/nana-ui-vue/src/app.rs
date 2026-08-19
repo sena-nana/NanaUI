@@ -9,7 +9,7 @@ use crate::bridge::SemanticSnapshot;
 
 /// 系统化 Vue→Nana 宿主（稳定公开名）。
 ///
-/// 当前实现即 [`VueHost`]：拥有树文档、MessageBridge 与 web-api 状态。
+/// 当前实现即 [`VueHost`]：拥有 Vue facade、语义投影与 web-api 状态。
 pub type NanaVueApp = VueHost;
 
 /// [`mount_vue_as_nana`] 视口选项。

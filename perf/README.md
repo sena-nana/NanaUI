@@ -1,9 +1,9 @@
-# Issue #8 performance harness
+# Performance harness
 
-Shared Scenario schema and thin runners. The contract they must satisfy is
-[`docs/performance-contract.md`](../docs/performance-contract.md)
-(living #8 DoD: Nana work-counter / catalog / hotspot + CI fail-closed;
-micro / E2E / Gallery stress are out of #8).
+Shared Scenario schema and thin runners. See
+[`docs/performance-contract.md`](../docs/performance-contract.md): #8 DoD is Nana
+work-counter / catalog / hotspot + CI fail-closed. Iced/GPUI are
+[#12](https://github.com/sena-nana/NanaUI/issues/12) observation, not #8 pass/fail.
 
 ```text
 perf/
@@ -43,15 +43,13 @@ python3 perf/runners/iced/run.py --scenario text-editor --output /tmp/iced-text-
 python3 perf/runners/iced/run.py --scenario gpu-scene-ui --output /tmp/iced-gpu-scene-ui.json          # expected exit 2
 python3 perf/runners/iced/run.py --scenario static-tree-50k --output /tmp/iced-static-tree-50k.json   # expected exit 2 (incomparable)
 python3 perf/runners/gpui/run.py --print-plan --scenario static-tree-100
-python3 perf/runners/gpui/run.py --scenario static-tree-100 --output /tmp/gpui-static-tree-100.json
 python3 perf/runners/gpui/run.py --scenario gpu-scene-ui --output /tmp/gpui-gpu-scene-ui.json  # expected exit 2
 python3 perf/runners/gpui/run.py --scenario static-tree-100 --from-report perf/fixtures/gpui-scenario-static-tree-100.json
 ```
 
-GPUI ``engine/gpui-scenario-bench`` is a crates.io ``gpui`` 0.2.2 TestAppContext
-adapter. Wired kinds match Iced; others stay **unsupported** (exit **2**).
-``present_ms`` / ``frames_after_idle`` are omitted (not 0). Relative multipliers
-stay off. Laptop fixtures are not a named fixed-machine baseline.
+Iced/GPUI live dumps: ``target/performance/issue12/``. Unwired kinds / missing
+adapter: exit **2**, no metrics. Relative multipliers stay off. Weekly GHA is
+not a named fixed machine.
 
 `--from-report` maps an already-produced `nana-*-benchmark` /
 `nana-gpu-scene-benchmark` / `scenario-bench` / Gallery `ui-benchmark` JSON

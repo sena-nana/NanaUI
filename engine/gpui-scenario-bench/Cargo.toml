@@ -3,7 +3,7 @@ name = "gpui-scenario-bench"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Issue #12 same-Scenario GPUI adapter. Reads perf/scenarios JSON; does not depend on nana-* crates."
+description = "Issue #12 GPUI observation. Not a Nana product renderer or #8 gate."
 
 [dependencies]
 gpui = { version = "0.2.2", features = ["test-support", "runtime_shaders"] }

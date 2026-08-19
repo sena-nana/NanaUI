@@ -31,12 +31,11 @@ writes `iced.png`, `runtime.png`, `side-by-side.png`, `difference.png`, and `evi
 Iced widgets as the left/oracle column. These images are diagnostic evidence, not a
 pixel-similarity gate, and the runner never promotes a catalog entry automatically.
 
-Iced widget adapters (`nana_ui::compatibility`) were removed after leaf
-qualification. Public types route through Runtime / UiScene. Historical batch
-notes below may still mention those adapters as migration-era references; the
-modules no longer exist.
+There is no `nana_ui::compatibility` module. Public types are Runtime.
+Vue hosted apps use `VueRuntimeProgram` / `run_runtime`. Archived `iced.png`
+frames are migration-era references, not a live adapter.
 
-Iced preserves migration-era product behavior and design intent, but it is not an absolute visual
+Archived Iced frames preserve migration-era product behavior and design intent, but they are not an absolute visual
 truth. Review differences against shared theme semantics, font metrics, component state contracts,
 accessibility, hit testing and GPU composition. Runtime must retain its more accurate geometry and
 must not copy an Iced defect, tune a fixture, blur output or change colors merely to reduce a pixel
@@ -51,8 +50,7 @@ the existing idle-redraw contract.
 ## Current first batch
 
 `Text`, `Button`, `TextInput`, and `Checkbox` are `RuntimeQualified`; their root, `components`
-aggregate, and Vue hosted default routes use Runtime. Iced widget adapters were removed after
-leaf qualification. A hosted Runtime Scene never silently rebuilds a qualified component
+aggregate, and Vue hosted default routes use Runtime. A hosted Runtime Scene never silently rebuilds a qualified component
 through a second retained tree when state is missing. Button passed
 all semantic kinds, sizes, loading, activation, focus and accessibility review. TextInput passed
 placeholder, shaped selection/caret, secure, invalid, read-only/loading, keyboard, IME preedit and
@@ -65,8 +63,7 @@ Sidebar, Overlay, and the remaining catalog leaves are covered in later sections
 ## Current second batch
 
 `IconButton`, `Switch`, `Card`, `ListItem`, and `RangeField` are `RuntimeQualified`; their root and
-aggregate public exports route to Runtime, while their Iced adapters live under
-`nana_ui::compatibility`. IconButton keeps hover, pressed, external focus and persistent selected
+aggregate public exports route to Runtime. IconButton keeps hover, pressed, external focus and persistent selected
 feedback visually distinct. Switch separates its complete-row hover/pressed state layer from the
 track and focus ring, rather than flattening all three into one track paint. Iced output remains a
 reference rather than an oracle: an `evidence.txt` entry records the expected design result, each
@@ -76,8 +73,7 @@ fallback or parallel tree is introduced.
 ## Current third batch
 
 `StatusBadge`, `ValidationMessage`, `EmptyState`, `LabeledValue`, and `SegmentedControl` are
-`RuntimeQualified`; their root and aggregate public exports route to Runtime, while their Iced
-adapters live under `nana_ui::compatibility`. Iced is a migration-era reference, not a visual
+`RuntimeQualified`; their root and aggregate public exports route to Runtime. Iced is a migration-era reference, not a visual
 oracle. Qualification is design-correctness of behavior, layout, rendering semantics, and
 human-reviewed visuals; SSIM or pixel equality with Iced is not required.
 
@@ -98,7 +94,7 @@ reorder, drag, close, and cross-surface behavior stay outside this batch.
 `Textarea`, `Tooltip`, `Dialog`, `ConfirmDialog`, `Drawer`, `Toast`, `XYPad`, `QrCode`,
 `Select`, `Popover`, `ActionMenu`, `ActionMenuItem`, `AnchoredActionMenu`, `ContextMenu`,
 and `OverlayHost` are `RuntimeQualified`. Their root and aggregate public exports route to
-Runtime, while their Iced adapters live under `nana_ui::compatibility`.
+Runtime.
 
 Textarea keeps one retained editing authority for multiline selection, caret, IME preedit,
 Unicode grapheme deletion, soft wrapping, clipping and caret-driven scrolling. Field states
@@ -109,9 +105,7 @@ Vue `beforeinput`/`input`; a focused Runtime editor advertises one hosted `text_
 so winit IME is not also fed to an Iced editor. `commit_text` refuses disabled and read-only
 fields. Leftover native preedit on IME Disabled commits into the original field even if focus
 moved. `HostedTextarea` is `RuntimeQualified`. Public `nana_ui::HostedTextarea`
-is a Runtime `TextArea` that always carries a `"highlight"` request. Iced
-`HostedTextarea` / `HostedSyntaxHighlighting` stay under
-`nana_ui::compatibility`. Official syntax color is the registered
+is a Runtime `TextArea` that always carries a `"highlight"` request. Official syntax color is the registered
 `TextPresenter` (`"highlight"`) on committed text. Enabling
 `nana-ui/syntax-highlighting` (or `nana-ui-runtime/syntax-highlighting`)
 installs `HighlightPresentation` on every `AppContext::new`. Call
@@ -121,8 +115,7 @@ to request spans. IME preedit stays solid. Vue `nana-textarea` with
 
 Tooltip is a compact label-only hover card. Hover delay, open/close, cursor tracking and
 exclusive active/focus stay on the existing IconButton-hosted overlay lifecycle. Public
-`nana_ui::Tooltip` is the Runtime overlay; Iced wrap-content tooltips stay under
-`nana_ui::compatibility`. Vue `nana-tooltip` projects the Runtime label overlay.
+`nana_ui::Tooltip` is the Runtime overlay. Vue `nana-tooltip` projects the Runtime label overlay.
 
 Dialog, ConfirmDialog and Drawer use the shared `ModalFrame` scrim/surface/body, exclusive
 overlay lifecycle, close policy and typed slots. Toast is an outlined tone card without a
@@ -132,7 +125,7 @@ visible in the opened menu. Popover and ActionMenu keep an in-flow trigger. Acti
 the shared menu row. AnchoredActionMenu and ContextMenu pin that surface to a logical point and
 hug their items. Runtime ContextMenu owns nested `parent/child` levels (`active_path`,
 `back`, leaf `Select`) and optional query filter. OverlayHost is the exclusive overlay
-lifecycle on Runtime; Iced stacking stays under `nana_ui::compatibility`.
+lifecycle on Runtime.
 
 Vue Scene paints Textarea, Select, Dropdown, SearchDropdown, Toast, Tooltip, ActionMenu,
 ActionMenuItem, XYPad, QrCode, Dialog (including children), ConfirmDialog, Drawer, Popover,
@@ -148,15 +141,13 @@ L2 wrappers exist for `NanaToast`, `NanaTooltip`, `NanaActionMenu`, `NanaXyPad`,
 ## Current fourth batch
 
 `Progress`, `Spinner`, `FormField`, `InteractiveCard`, `Skeleton`, and `LevelMeter` are
-`RuntimeQualified`; their root and aggregate public exports route to Runtime, while their Iced
-adapters live under `nana_ui::compatibility`. `Tabs` is `RuntimeQualified` for selection,
+`RuntimeQualified`; their root and aggregate public exports route to Runtime. `Tabs` is `RuntimeQualified` for selection,
 before-value reorder, close request, and the generation-lease drag contract. Runtime paints
 each option with the same `SegmentedOption` / `SelectionChrome::Tabs` chrome as
 `SegmentedControl::tabs()`. Public `nana_ui::Tabs` is the Runtime strip (`Arc<str>`
 identities). Vue `WidgetKind::Tabs` stays on the selection-strip path
 (`SegmentedControl::tabs()`). Close remains an application request: Iced `Tabs` does not
-paint a close control. Generic Iced `Tabs<T, Message>` and `DraggableTabStrip` remain
-under `nana_ui::compatibility` for generic `T` paint and Iced-hosted leases. Overlay is
+paint a close control. Overlay is
 not claimed.
 
 Visual review accepted the Runtime frame. Iced differences are not defects: Tabs keep selected
@@ -184,7 +175,7 @@ candidate cutover above. Searchable ContextMenu keeps the filter field on Runtim
 
 `Dropdown` and `TreeView` are `RuntimeQualified`. Public `nana_ui::Dropdown` is the
 Runtime field (single or multiple `Arc<str>` values, hints, disabled options stay
-visible). Iced generic `Dropdown<T>` stays under `nana_ui::compatibility`. Vue
+visible). Vue
 `nana-dropdown` projects Runtime `Dropdown`.
 
 `SearchDropdown` and `CommandPalette` are `RuntimeQualified`. Search uses committed
@@ -193,13 +184,11 @@ an Iced `combo_box`. The opened SearchDropdown field shows the query, IME preedi
 stays on that same state, and filtered options reuse the Select menu surface.
 CommandPalette is one `StandardVisual::CommandPalette` (scrim, surface, search
 field, windowed rows). Public `nana_ui::SearchDropdown` / `nana_ui::CommandPalette`
-are the Runtime types. Iced generic `SearchDropdown<T>` and the Iced palette widget
-stay under `nana_ui::compatibility`. Vue `nana-search` projects Runtime
+are the Runtime types. Vue `nana-search` projects Runtime
 `SearchDropdown`.
 
 Runtime `TreeView` flattens visible disclosure rows onto one retained surface with
-pointer, keyboard and accessibility. The Iced SidebarRow adapter stays under
-`nana_ui::compatibility`. Navigation (`TreeNode`, `TreeViewEvent`, `tree_navigation_event`)
+pointer, keyboard and accessibility. Navigation (`TreeNode`, `TreeViewEvent`, `tree_navigation_event`)
 lives in `nana-ui-core`. Palette items and navigation
 (`CommandPaletteItem`, `CommandPaletteEvent`, `ActionPickerNavigation`) live in
 `nana-ui-core`.
@@ -212,26 +201,21 @@ remain on their catalog state; none of the remaining leaves stay
 
 `sidebar-row` and `settings` (SettingsRow / SettingsCard leaf chrome) are
 `RuntimeQualified`. Root `nana_ui::SidebarRow`, `nana_ui::SettingsRow`, and
-`nana_ui::SettingsCard` route to Runtime. Iced adapters stay under
-`nana_ui::compatibility` and the original `nana_ui::sidebar` /
-`nana_ui::settings` modules.
+`nana_ui::SettingsCard` route to Runtime.
 
 Vue `nana-sidebar-row`, `nana-settings-row`, and `nana-settings-card` project
 through Runtime. Scene paint reuses ListItem / Card / child Switch geometry;
 SettingsRow hosts an application-owned control child the same way FormField
 does. Vue Scene assigns `label_slot` / `hint_slot` / `copy_slot` from
 `nana-settings-row__label` / `__hint`. `settings_page` / `settings_sidebar`
-remain Iced compatibility composers.
+assemble through Runtime `AppContext`.
 
 `sidebar-frame`, `sidebar-section`, `sidebar-footer`, `appearance-section`,
 `about-section`, and `settings-collapsible-card` are `RuntimeQualified`.
 Root `nana_ui::SidebarFrame`, `SidebarSection`, `SidebarFooter`,
 `SidebarFooterButton`, `SidebarSectionState`, `AppearanceSection`,
 `AboutSection`, `AboutMetadata`, and `SettingsCollapsibleCard` are Runtime
-(also via the `components` aggregate). Iced Element composers live under
-`nana_ui::compatibility` (and `nana_ui::sidebar` /
-`nana_ui::components::settings_sections`). DesktopShell and gallery Iced
-trees keep using those Iced adapters.
+(also via the `components` aggregate).
 
 Runtime types exist (`nana_ui::runtime::*`) with expand/collapse, press, and
 `AppearanceEvent` forwarding. Runtime `SidebarFrame` treats `body` as a vertical

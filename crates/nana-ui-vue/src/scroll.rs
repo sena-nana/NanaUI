@@ -6,7 +6,7 @@
 //!    ([`LayoutStyle::scrolls_y`] / overflow-x).
 //! 3. Use Scene/measure [`LayoutBox`] geometry to compute the delta that brings
 //!    the target into the ancestor scrollport (`block` / `inline` align).
-//! 4. Commit offsets to `UiWorld`, translate only compatibility layout-probe
+//! 4. Commit offsets to `UiWorld`, translate only [`LayoutBoxStore`]
 //!    boxes so `getBoundingClientRect` / `layoutBox` match the scrolled frame,
 //!    and enqueue pending scroll ops for hosts that drain
 //!    [`drain_pending_scroll_tasks`].
@@ -25,8 +25,8 @@ const LINE_SCROLL_EXTENT: f32 = 60.0;
 /// Absolute scroll offset for one scroll container (CSS px).
 pub use nana_ui_runtime::ScrollOffset;
 
-/// Compatibility command queue. Despite the historical name, authoritative
-/// offsets live in `NanaTreeDocument`'s `UiWorld`; this stores no UI state.
+/// Scene-host scroll command queue. Authoritative offsets live in `UiWorld`;
+/// this stores no UI state.
 #[derive(Debug, Default)]
 pub struct ScrollOffsetStore {
     pending: Mutex<Vec<PendingScroll>>,

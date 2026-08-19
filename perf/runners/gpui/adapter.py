@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GPUI same-scenario adapter: cargo-run engine/gpui-scenario-bench, extract envelope."""
+"""Issue #12 GPUI adapter. Dumps under target/performance/issue12/; not a #8 gate."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def run_scenario(scenario: dict[str, Any], args: Any) -> dict[str, Any]:
             scenario=scenario,
             unsupported_reason=(
                 "engine/gpui-scenario-bench implements StaticTree, Mutation, Hover, "
-                f"VirtualList, and Table. {scenario['kind']} is required by #12 / not implemented. "
+                f"VirtualList, and Table. {scenario['kind']} is #12 / not implemented. "
                 "Fake GPUI numbers are forbidden."
             ),
         )

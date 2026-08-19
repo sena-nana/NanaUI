@@ -1,10 +1,4 @@
-This directory is reserved for future same-Scenario runner outputs collected on a
-**named fixed** benchmark machine. See [`docs/performance-contract.md`](../../docs/performance-contract.md)
-(#12 for cross-engine comparison).
+Reserved for named-fixed-machine same-Scenario outputs ([#12](https://github.com/sena-nana/NanaUI/issues/12)), not #8 gates.
+Weekly GHA is not that machine. Laptop `perf/fixtures/` dumps are not history here.
 
-Weekly GitHub `ubuntu-latest` / `macos-latest` is not that machine. A laptop
-`perf/fixtures/` live dump is extractor evidence, not history here.
-
-Do not invent a performance history database or check in guessed Iced/GPUI
-numbers. Historical Gallery / Iced measurements already live in
-`docs/performance-baseline.md` and `docs/performance/*.json`.
+Do not invent Iced/GPUI numbers. Historical Gallery measurements: `docs/performance-baseline.md`.
