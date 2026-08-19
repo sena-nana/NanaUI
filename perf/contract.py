@@ -408,6 +408,114 @@ def nana_framework_table_window_args(scenario: Mapping[str, Any]) -> list[str]:
     ]
 
 
+# Nana extract is same-scenario only when the dump declares the full catalog
+# window; leftover 200px overscan KeyErrors. Missing fields stay closest-legacy.
+NANA_LIST_CATALOG_WINDOW_FIELDS: tuple[tuple[str, str], ...] = (
+    ("list_viewport_px", "viewport_px"),
+    ("list_overscan_px", "overscan_px"),
+    ("list_item_extent_px", "item_extent_px"),
+)
+NANA_TABLE_CATALOG_WINDOW_FIELDS: tuple[tuple[str, str], ...] = (
+    ("table_viewport_width_px", "viewport_width_px"),
+    ("table_viewport_height_px", "viewport_height_px"),
+    ("table_overscan_x_px", "overscan_x_px"),
+    ("table_overscan_y_px", "overscan_y_px"),
+    ("table_column_extent_px", "column_extent_px"),
+    ("table_row_extent_px", "row_extent_px"),
+)
+
+
+def nana_catalog_window_equivalence(
+    scale: Mapping[str, Any],
+    window: Mapping[str, Any],
+    fields: Sequence[tuple[str, str]],
+    *,
+    mismatch_context: str,
+    missing_note: str,
+    shared_note: str,
+) -> tuple[str, list[str]]:
+    missing: list[str] = []
+    for reported_key, window_key in fields:
+        reported = scale.get(reported_key)
+        if reported is None:
+            missing.append(reported_key)
+            continue
+        if not _same_number(reported, window[window_key]):
+            raise KeyError(
+                f"nana {reported_key}={reported} does not match catalog "
+                f"{mismatch_context} ({window[window_key]}). "
+                "Do not claim same-scenario while the window differs."
+            )
+    if missing:
+        return "closest-legacy-reference", [
+            f"This report does not declare {', '.join(missing)}. {missing_note}"
+        ]
+    return "same-scenario", [shared_note]
+
+
+def nana_list_catalog_window_equivalence(
+    scale: Mapping[str, Any], window: Mapping[str, Any], *, kind: str
+) -> tuple[str, list[str]]:
+    mismatch = (
+        f"{kind} window viewport={window['viewport_px']}px "
+        f"overscan={window['overscan']} items ({window['overscan_px']}px) "
+        f"item_extent={window['item_extent_px']}px"
+    )
+    missing = (
+        "Standalone nana-framework-benchmark used 200px overscan; the Nana runner "
+        "now passes the catalog window (visible items × item_extent_px, overscan "
+        f"items × item_extent_px = {window['overscan_px']}px). Extract cannot "
+        "label same-scenario without the dump declaring that catalog window."
+    )
+    shared = (
+        f"Shared catalog {kind} window: viewport={window['viewport_px']}px, "
+        f"overscan={window['overscan']} items ({window['overscan_px']}px), "
+        f"item_extent={window['item_extent_px']}px."
+    )
+    return nana_catalog_window_equivalence(
+        scale,
+        window,
+        NANA_LIST_CATALOG_WINDOW_FIELDS,
+        mismatch_context=mismatch,
+        missing_note=missing,
+        shared_note=shared,
+    )
+
+
+def nana_table_catalog_window_equivalence(
+    scale: Mapping[str, Any], window: Mapping[str, Any]
+) -> tuple[str, list[str]]:
+    mismatch = (
+        f"table window viewport={window['viewport_width_px']}x"
+        f"{window['viewport_height_px']}px overscan="
+        f"{window['overscan_columns']}x{window['overscan_rows']} items "
+        f"({window['overscan_x_px']}x{window['overscan_y_px']}px) "
+        f"extents={window['column_extent_px']}x{window['row_extent_px']}px"
+    )
+    missing = (
+        "Standalone nana-framework-benchmark used 200px row overscan (10 rows); "
+        "the Nana runner now passes the catalog window "
+        f"(overscan_rows={window['overscan_rows']} × {window['row_extent_px']}px "
+        f"= {window['overscan_y_px']}px). Extract cannot label same-scenario "
+        "without the dump declaring that catalog window."
+    )
+    shared = (
+        f"Shared catalog table window: viewport={window['viewport_width_px']}x"
+        f"{window['viewport_height_px']}px, overscan="
+        f"{window['overscan_columns']}x{window['overscan_rows']} items "
+        f"({window['overscan_x_px']}x{window['overscan_y_px']}px), "
+        f"extents={window['column_extent_px']}x{window['row_extent_px']}px."
+    )
+    return nana_catalog_window_equivalence(
+        scale,
+        window,
+        NANA_TABLE_CATALOG_WINDOW_FIELDS,
+        mismatch_context=mismatch,
+        missing_note=missing,
+        shared_note=shared,
+    )
+
+
 def catalog_uniform_window_item_cap(
     viewport_px: Any, overscan_px: Any, item_extent_px: Any
 ) -> int:
@@ -441,7 +549,9 @@ def catalog_table_live_bound(params: Mapping[str, Any]) -> int:
 # judges these. Everything else is skipped, not invariant-ok — including
 # Dock / TextEditor / Animation / IME / Overlay / GpuScene / StaticTree 50k /
 # GPUI even if a report is present.
-# StaticTree 100/1k/5k/10k export ``metrics.frames_after_idle``
+# Nana Visibility / Transform / Accessibility reuse the live 5k
+# ``single_node_mutations`` dump. Iced stays unsupported (exit 2) for those
+# kinds. StaticTree 100/1k/5k/10k export ``metrics.frames_after_idle``
 # (docs/performance-contract.md §8.1). ``idle_schedule_ms`` is never that
 # counter. Missing the field stays skipped, not vacuous ok.
 SECTION_8_1_STATIC_UI_IDS = frozenset(
@@ -457,6 +567,9 @@ SECTION_8_1_HONEST_OK_IDS = frozenset(
         "mutation-paint-only",
         "mutation-text",
         "mutation-layout-style",
+        "mutation-visibility",
+        "mutation-transform",
+        "mutation-a11y",
         "hover",
         "virtual-list-10k",
         "virtual-list-100k",
@@ -1539,6 +1652,7 @@ def _extract_nana_virtual_list(
     metrics: dict[str, Any] = {}
     work_counters: dict[str, Any] = {}
     source_binary = "nana-framework-benchmark"
+    equivalence = "closest-legacy-reference"
     if scale is not None:
         notes.append(
             "Mapped onto nana-framework-benchmark virtual_scales[] "
@@ -1557,26 +1671,10 @@ def _extract_nana_virtual_list(
             "overscan_rows": scale.get("overscan_rows"),
         }
         window = catalog_virtual_list_window(params)
-        reported_overscan_px = scale.get("list_overscan_px")
-        if reported_overscan_px is None:
-            notes.append(
-                "This report does not declare list_overscan_px. Historical standalone "
-                "nana-framework-benchmark used 200px overscan; the Nana runner now "
-                "passes the catalog window (visible items × item_extent_px, overscan "
-                f"items × item_extent_px = {window['overscan_px']}px)."
-            )
-        elif not _same_number(reported_overscan_px, window["overscan_px"]):
-            raise KeyError(
-                f"nana list_overscan_px={reported_overscan_px} does not match catalog "
-                f"overscan={window['overscan']} items ({window['overscan_px']}px). "
-                "Do not claim same-scenario while the list window differs."
-            )
-        else:
-            notes.append(
-                f"Shared catalog list window: viewport={window['viewport_px']}px, "
-                f"overscan={window['overscan']} items ({window['overscan_px']}px), "
-                f"item_extent={window['item_extent_px']}px."
-            )
+        equivalence, window_notes = nana_list_catalog_window_equivalence(
+            scale, window, kind="list"
+        )
+        notes.extend(window_notes)
     elif items == 10_000 and "virtual_list_10k_materialize_ms" in framework:
         notes.append(
             "Mapped onto legacy virtual_list_10k_* fields (no virtual_scales in this report)."
@@ -1607,7 +1705,7 @@ def _extract_nana_virtual_list(
         status="ok",
         scenario_id=scenario_id,
         scenario=scenario,
-        equivalence="closest-legacy-reference",
+        equivalence=equivalence,
         source_binary=source_binary,
         source_report=str(source_paths.get("framework", "")),
         mapping_notes=notes,
@@ -1665,32 +1763,16 @@ def _extract_nana_virtual_tree(
         "overscan_rows": scale.get("overscan_rows"),
     }
     window = catalog_virtual_list_window(params)
-    reported_overscan_px = scale.get("list_overscan_px")
-    if reported_overscan_px is None:
-        notes.append(
-            "This report does not declare list_overscan_px. Standalone "
-            "nana-framework-benchmark uses 200px overscan; the Nana runner "
-            "passes the catalog window (visible items × item_extent_px, overscan "
-            f"items × item_extent_px = {window['overscan_px']}px)."
-        )
-    elif not _same_number(reported_overscan_px, window["overscan_px"]):
-        raise KeyError(
-            f"nana tree list_overscan_px={reported_overscan_px} does not match catalog "
-            f"overscan={window['overscan']} items ({window['overscan_px']}px). "
-            "Do not claim same-scenario while the tree window differs."
-        )
-    else:
-        notes.append(
-            f"Shared catalog tree window: viewport={window['viewport_px']}px, "
-            f"overscan={window['overscan']} items ({window['overscan_px']}px), "
-            f"item_extent={window['item_extent_px']}px."
-        )
+    equivalence, window_notes = nana_list_catalog_window_equivalence(
+        scale, window, kind="tree"
+    )
+    notes.extend(window_notes)
     return envelope(
         runner="nana",
         status="ok",
         scenario_id=scenario["id"],
         scenario=scenario,
-        equivalence="closest-legacy-reference",
+        equivalence=equivalence,
         source_binary="nana-framework-benchmark",
         source_report=str(source_paths.get("framework", "")),
         mapping_notes=notes,
@@ -1750,6 +1832,7 @@ def _extract_nana_text_table(
     ]
     metrics: dict[str, Any] = {}
     work_counters: dict[str, Any] = {}
+    equivalence = "closest-legacy-reference"
     if scale is not None:
         notes.append(
             "Mapped onto nana-framework-benchmark virtual_scales[] "
@@ -1780,29 +1863,8 @@ def _extract_nana_text_table(
                 "text_shaped is missing from this report. shaping calls/frame stay not-evaluable."
             )
         window = catalog_table_window(params)
-        reported_overscan_y = scale.get("table_overscan_y_px")
-        if reported_overscan_y is None:
-            notes.append(
-                "This report does not declare table_overscan_y_px. Historical standalone "
-                "nana-framework-benchmark used 200px row overscan (10 rows); the Nana "
-                "runner now passes the catalog window "
-                f"(overscan_rows={window['overscan_rows']} × {window['row_extent_px']}px "
-                f"= {window['overscan_y_px']}px)."
-            )
-        elif not _same_number(reported_overscan_y, window["overscan_y_px"]):
-            raise KeyError(
-                f"nana table_overscan_y_px={reported_overscan_y} does not match catalog "
-                f"overscan_rows={window['overscan_rows']} ({window['overscan_y_px']}px). "
-                "Do not claim same-scenario while the table window differs."
-            )
-        else:
-            notes.append(
-                f"Shared catalog table window: viewport={window['viewport_width_px']}x"
-                f"{window['viewport_height_px']}px, overscan="
-                f"{window['overscan_columns']}x{window['overscan_rows']} items "
-                f"({window['overscan_x_px']}x{window['overscan_y_px']}px), "
-                f"extents={window['column_extent_px']}x{window['row_extent_px']}px."
-            )
+        equivalence, window_notes = nana_table_catalog_window_equivalence(scale, window)
+        notes.extend(window_notes)
         notes.append(
             "Most cells are short_cell_len labels; each 40-row band keeps wrapped_cells "
             "long wrapping cells (wrapped_cell_len) in column 0, shaped against the 80px column box."
@@ -1850,7 +1912,7 @@ def _extract_nana_text_table(
         status="ok",
         scenario_id=scenario["id"],
         scenario=scenario,
-        equivalence="closest-legacy-reference",
+        equivalence=equivalence,
         source_binary="nana-framework-benchmark",
         source_report=str(source_paths.get("framework", "")),
         mapping_notes=notes,
@@ -2572,6 +2634,63 @@ def _scale_token(nodes: int) -> str:
     return str(nodes)
 
 
+def _extract_nana_framework_fixture(
+    root: Path, scenario: Mapping[str, Any] | str, fixture_name: str
+) -> dict[str, Any]:
+    path = root / "perf" / "fixtures" / fixture_name
+    loaded = load_scenario(scenario, root) if isinstance(scenario, str) else scenario
+    return extract_nana(
+        loaded,
+        {"framework": load_json(path)},
+        source_paths={"framework": path},
+    )
+
+
+def _require_same_scenario(
+    errors: list[str],
+    report: Mapping[str, Any],
+    label: str,
+    *,
+    live_ui_entities: int | None = None,
+    shared_note: str | None = None,
+) -> None:
+    if report.get("status") != "ok" or report.get("equivalence") != "same-scenario":
+        errors.append(f"{label} live dump with catalog window must be same-scenario")
+    if report.get("relative_gate_enforceable") is not False:
+        errors.append(f"{label} same-scenario must keep relative_gate_enforceable False")
+    if live_ui_entities is not None and (report.get("work_counters") or {}).get(
+        "live_ui_entities"
+    ) != live_ui_entities:
+        errors.append(f"{label} must copy live_ui_entities={live_ui_entities}")
+    if shared_note is not None and not any(
+        shared_note in str(note) for note in (report.get("mapping_notes") or [])
+    ):
+        errors.append(f"{label} notes must mention {shared_note}")
+
+
+def _named_invariant(report: Mapping[str, Any], name: str) -> dict[str, Any] | None:
+    for item in report.get("invariants") or []:
+        if item.get("name") == name and isinstance(item, dict):
+            return item
+    return None
+
+
+def _named_invariant_status(report: Mapping[str, Any], name: str) -> str | None:
+    item = _named_invariant(report, name)
+    if item is None or item.get("status") is None:
+        return None
+    return str(item.get("status"))
+
+
+def _named_invariant_ok_measured(report: Mapping[str, Any], name: str, measured: Any) -> bool:
+    item = _named_invariant(report, name)
+    return (
+        item is not None
+        and item.get("status") == "ok"
+        and item.get("measured") == measured
+    )
+
+
 def self_test(root: Path | None = None) -> list[str]:
     """Validate schema and extractors against checked-in historical reports."""
     root = root or REPO_ROOT
@@ -2624,6 +2743,11 @@ def self_test(root: Path | None = None) -> list[str]:
         )
         if nana_virtual.get("status") != "ok":
             errors.append("nana virtual-list-10k extract did not return ok")
+        if nana_virtual.get("equivalence") != "closest-legacy-reference":
+            errors.append(
+                "historical nana virtual-list-10k without list_overscan_px must stay "
+                "closest-legacy-reference"
+            )
     except Exception as exc:  # noqa: BLE001
         errors.append(f"nana virtual-list-10k extract failed: {exc}")
 
@@ -2650,15 +2774,59 @@ def self_test(root: Path | None = None) -> list[str]:
     )
     if scaled.get("status") != "ok" or scaled.get("work_counters", {}).get("live_ui_entities") != 50:
         errors.append("nana virtual-list-100k virtual_scales extract failed")
+    if scaled.get("equivalence") != "closest-legacy-reference":
+        errors.append(
+            "nana virtual-list-100k without list_overscan_px must stay closest-legacy-reference"
+        )
+    if not any(
+        "list_overscan_px" in str(note) for note in (scaled.get("mapping_notes") or [])
+    ):
+        errors.append("nana virtual-list-100k missing-window notes must name list_overscan_px")
+    try:
+        extract_nana(
+            virtual_100k,
+            {
+                "framework": {
+                    "virtual_scales": [
+                        {
+                            "kind": "list",
+                            "logical_rows": 100000,
+                            "status": "ok",
+                            "visible_rows": 40,
+                            "overscan_rows": 10,
+                            "live_ui_entities": 50,
+                            "list_viewport_px": 800.0,
+                            "list_overscan_px": 200.0,
+                            "list_item_extent_px": 20.0,
+                            "materialize_ms": {"p50": 0.1, "p95": 0.2, "p99": 0.3},
+                        }
+                    ]
+                }
+            },
+            source_paths={"framework": Path("synthetic-list-200px")},
+        )
+        errors.append("nana virtual-list-100k with list_overscan_px=200 must KeyError")
+    except KeyError as exc:
+        reason = key_error_reason(exc)
+        if "200" not in reason and "overscan" not in reason:
+            errors.append(f"mismatched list overscan KeyError should name overscan/200: {exc}")
+    list_same = _extract_nana_framework_fixture(
+        root, virtual_100k, "virtual-scales-only.json"
+    )
+    _require_same_scenario(
+        errors,
+        list_same,
+        "nana virtual-list-100k",
+        live_ui_entities=57,
+        shared_note="Shared catalog list window",
+    )
+    list_10k_live = _extract_nana_framework_fixture(
+        root, virtual, "virtual-scales-only.json"
+    )
+    _require_same_scenario(errors, list_10k_live, "nana virtual-list-10k")
 
     paint = load_scenario("mutation-paint-only", root)
     hover = load_scenario("hover", root)
-
-    def _named_invariant(report: Mapping[str, Any], name: str) -> dict[str, Any] | None:
-        for item in report.get("invariants") or []:
-            if item.get("name") == name:
-                return item
-        return None
 
     try:
         painted = extract_nana(
@@ -2910,6 +3078,122 @@ def self_test(root: Path | None = None) -> list[str]:
         if "single_node_mutations.Text" not in key_error_reason(exc):
             errors.append(f"mutation-text KeyError should name the drain: {exc}")
 
+    def _single_node_runtime(mutation_kind: str, work: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "runtime": {
+                "cases": [
+                    {
+                        "nodes": 5000,
+                        "single_node_mutations": {
+                            mutation_kind: {
+                                "systems_ms": {"p50": 0.01, "p95": 0.02, "p99": 0.03},
+                                "commit_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0},
+                                "schedule_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0},
+                                "work": dict(work),
+                            }
+                        },
+                    }
+                ]
+            }
+        }
+
+    for scenario_id, kind, invariant_name, ok_work, fail_work in (
+        (
+            "mutation-transform",
+            "Transform",
+            "transform_does_not_layout_full_tree",
+            {"layout_nodes": 0, "render_nodes_changed": 1},
+            {"layout_nodes": 1, "render_nodes_changed": 1},
+        ),
+        (
+            "mutation-a11y",
+            "Accessibility",
+            "a11y_does_not_layout",
+            {
+                "layout_nodes": 0,
+                "accessibility_nodes_updated": 1,
+                "render_nodes_changed": 0,
+            },
+            {"layout_nodes": 3},
+        ),
+    ):
+        scenario = load_scenario(scenario_id, root)
+        ok_report = extract_nana(
+            scenario,
+            _single_node_runtime(kind, ok_work),
+            source_paths={"runtime": Path(f"synthetic-{scenario_id}")},
+        )
+        if ok_report.get("status") != "ok":
+            errors.append(f"nana {scenario_id} extract with layout_nodes=0 must be ok")
+        if not _named_invariant_ok_measured(ok_report, invariant_name, 0):
+            errors.append(f"{scenario_id} invariant must be ok when layout_nodes=0")
+        failed = extract_nana(
+            scenario,
+            _single_node_runtime(kind, fail_work),
+            source_paths={"runtime": Path(f"synthetic-{scenario_id}-layout")},
+        )
+        if failed.get("status") != "error":
+            errors.append(
+                f"{kind.lower()} extract must fail-closed when layout_nodes != 0"
+            )
+
+    visibility_mutation = load_scenario("mutation-visibility", root)
+    for spec in visibility_mutation.get("invariants") or []:
+        if (
+            spec.get("path") == "work_counters.layout_nodes"
+            and spec.get("op") == "eq"
+            and spec.get("value") == 0
+        ):
+            errors.append(
+                "mutation-visibility must not claim layout_nodes==0; the live dump layouts"
+            )
+    visibility_ok = extract_nana(
+        visibility_mutation,
+        _single_node_runtime(
+            "Visibility",
+            {"layout_nodes": 12, "render_nodes_changed": 12, "style_processed": 1},
+        ),
+        source_paths={"runtime": Path("synthetic-visibility-mutation")},
+    )
+    if visibility_ok.get("status") != "ok":
+        errors.append("nana mutation-visibility extract with ancestor-chain work must be ok")
+    if not _named_invariant_ok_measured(
+        visibility_ok, "visibility_does_not_extract_full_tree", 12
+    ):
+        errors.append("mutation-visibility extract invariant must measure render_nodes_changed=12")
+    if not _named_invariant_ok_measured(
+        visibility_ok, "visibility_does_not_layout_full_tree", 12
+    ):
+        errors.append("mutation-visibility layout invariant must measure layout_nodes=12, not 0")
+    visibility_failed = extract_nana(
+        visibility_mutation,
+        _single_node_runtime(
+            "Visibility",
+            {"layout_nodes": 5000, "render_nodes_changed": 5000},
+        ),
+        source_paths={"runtime": Path("synthetic-visibility-full-tree")},
+    )
+    if visibility_failed.get("status") != "error":
+        errors.append("visibility extract must fail-closed on a full-tree dirty set")
+
+    for missing_id, missing_kind in (
+        ("mutation-transform", "Transform"),
+        ("mutation-visibility", "Visibility"),
+        ("mutation-a11y", "Accessibility"),
+    ):
+        try:
+            extract_nana(
+                load_scenario(missing_id, root),
+                {"runtime": {"cases": [{"nodes": 5000}]}},
+                source_paths={"runtime": Path(f"synthetic-{missing_id}-missing")},
+            )
+            errors.append(
+                f"nana {missing_id} without single_node_mutations.{missing_kind} must KeyError"
+            )
+        except KeyError as exc:
+            if f"single_node_mutations.{missing_kind}" not in key_error_reason(exc):
+                errors.append(f"{missing_id} KeyError should name the drain: {exc}")
+
     virtual_1m = load_scenario("virtual-list-1m", root)
     try:
         extract_nana(
@@ -3044,19 +3328,18 @@ def self_test(root: Path | None = None) -> list[str]:
         if "tree/100000" not in key_error_reason(exc):
             errors.append(f"virtual-tree list-row KeyError should name tree/100000: {exc}")
 
-    tree_ok = extract_nana(
-        virtual_tree,
-        {"framework": load_json(root / "perf" / "fixtures" / "virtual-tree-scales.json")},
-        source_paths={
-            "framework": root / "perf" / "fixtures" / "virtual-tree-scales.json"
-        },
+    tree_ok = _extract_nana_framework_fixture(
+        root, virtual_tree, "virtual-tree-scales.json"
     )
-    if tree_ok.get("status") != "ok":
-        errors.append("nana virtual-tree-100k extract must be ok when virtual_scales tree status=ok")
     if tree_ok.get("scenario_id") != "virtual-tree-100k":
         errors.append("virtual-tree-100k must keep its catalog id")
-    if (tree_ok.get("work_counters") or {}).get("live_ui_entities") != 50:
-        errors.append("virtual-tree-100k envelope must carry live_ui_entities")
+    _require_same_scenario(
+        errors, tree_ok, "nana virtual-tree-100k", live_ui_entities=57
+    )
+    tree_10k = _extract_nana_framework_fixture(
+        root, "virtual-tree-10k", "virtual-tree-scales.json"
+    )
+    _require_same_scenario(errors, tree_10k, "nana virtual-tree-10k")
 
     virtual_tree_1m = load_scenario("virtual-tree-1m", root)
     try:
@@ -3256,11 +3539,26 @@ def self_test(root: Path | None = None) -> list[str]:
     )
     if catalog_window_ok.get("status") != "ok":
         errors.append("nana text-table extract with catalog table_overscan_y_px=160 must be ok")
+    if catalog_window_ok.get("equivalence") != "closest-legacy-reference":
+        errors.append(
+            "nana text-table with only table_overscan_*_px must stay closest-legacy-reference"
+        )
     if not any(
-        "Shared catalog table window" in str(note)
+        "table_viewport_width_px" in str(note) or "table_row_extent_px" in str(note)
         for note in (catalog_window_ok.get("mapping_notes") or [])
     ):
-        errors.append("nana catalog table window notes must mention shared catalog table window")
+        errors.append(
+            "nana text-table missing viewport/extent notes must name the undeclared fields"
+        )
+    table_same = _extract_nana_framework_fixture(
+        root, text_table, "virtual-table-scales.json"
+    )
+    _require_same_scenario(
+        errors,
+        table_same,
+        "nana text-table",
+        shared_note="Shared catalog table window",
+    )
     max_window_ok = extract_nana(
         text_table,
         {
@@ -3750,13 +4048,6 @@ def self_test(root: Path | None = None) -> list[str]:
     return errors
 
 
-def _named_invariant_status(report: Mapping[str, Any], name: str) -> str | None:
-    for item in report.get("invariants") or []:
-        if item.get("name") == name:
-            return str(item.get("status"))
-    return None
-
-
 def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     """Prove §8.1 judging of runner envelopes (pass, fail, skip). No log-string match."""
     errors: list[str] = []
@@ -3845,31 +4136,31 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
             load_json(paint_path),
             source_path=paint_path,
         )
-        nana_table = extract_nana(
-            text_table,
-            {"framework": load_json(root / "perf" / "fixtures" / "virtual-table-scales.json")},
-            source_paths={
-                "framework": root / "perf" / "fixtures" / "virtual-table-scales.json"
-            },
+        nana_table = _extract_nana_framework_fixture(
+            root, text_table, "virtual-table-scales.json"
         )
-        nana_list = extract_nana(
-            load_scenario("virtual-list-100k", root),
-            {"framework": load_json(root / "perf" / "fixtures" / "virtual-scales-only.json")},
-            source_paths={
-                "framework": root / "perf" / "fixtures" / "virtual-scales-only.json"
-            },
+        nana_list = _extract_nana_framework_fixture(
+            root, "virtual-list-100k", "virtual-scales-only.json"
         )
-        nana_static = extract_nana(
-            load_scenario("static-tree-100", root),
-            {
-                "runtime": load_json(
-                    root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
-                )
-            },
-            source_paths={
-                "runtime": root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
-            },
-        )
+        nana_runtime_live_path = root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
+        nana_runtime_live = load_json(nana_runtime_live_path)
+        nana_live = {
+            scenario_id: extract_nana(
+                load_scenario(scenario_id, root),
+                {"runtime": nana_runtime_live},
+                source_paths={"runtime": nana_runtime_live_path},
+            )
+            for scenario_id in (
+                "static-tree-100",
+                "mutation-transform",
+                "mutation-a11y",
+                "mutation-visibility",
+            )
+        }
+        nana_static = nana_live["static-tree-100"]
+        nana_transform = nana_live["mutation-transform"]
+        nana_a11y = nana_live["mutation-a11y"]
+        nana_visibility = nana_live["mutation-visibility"]
     except Exception as exc:  # noqa: BLE001
         errors.append(f"§8.1 envelope fixtures failed to extract: {exc}")
         return errors
@@ -3919,6 +4210,47 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         errors.append("nana static-tree-100 fixture envelope must pass §8.1")
     if _named_invariant_status(nana_static_judge, "static_ui") != "ok":
         errors.append("nana StaticTree 100 must evaluate static_ui frames_after_idle==0")
+
+    for payload, scenario_id, rows in (
+        (
+            nana_transform,
+            "mutation-transform",
+            [("transform_does_not_layout_full_tree", 0,
+              "nana Transform live dump must measure layout_nodes=0")],
+        ),
+        (
+            nana_a11y,
+            "mutation-a11y",
+            [("a11y_does_not_layout", 0,
+              "nana Accessibility live dump must measure layout_nodes=0")],
+        ),
+        (
+            nana_visibility,
+            "mutation-visibility",
+            [
+                ("visibility_does_not_extract_full_tree", 12,
+                 "nana Visibility live dump must measure render_nodes_changed=12"),
+                ("visibility_does_not_layout_full_tree", 12,
+                 "nana Visibility live dump must measure layout_nodes=12 as lte 64, not eq 0"),
+            ],
+        ),
+    ):
+        judged = judge_runner_invariants(payload, root=root)
+        if judged.get("decision") != "ok":
+            errors.append(f"nana {scenario_id} live dump must pass §8.1")
+        for name, measured, message in rows:
+            if not _named_invariant_ok_measured(judged, name, measured):
+                errors.append(message)
+    if (nana_visibility.get("work_counters") or {}).get("layout_nodes") != 12:
+        errors.append(
+            "nana Visibility live dump must keep measured layout_nodes=12; "
+            "do not claim or stuff layout_nodes==0"
+        )
+    vis_eq_zero = copy.deepcopy(nana_visibility)
+    vis_eq_zero["scenario_id"] = "mutation-transform"
+    vis_as_transform = judge_runner_invariants(vis_eq_zero, root=root)
+    if vis_as_transform.get("decision") != "failed":
+        errors.append("Visibility layout_nodes=12 must fail Transform's layout_nodes==0 row")
 
     hover_judge = judge_runner_invariants(hover_iced, root=root)
     if hover_judge.get("decision") != "ok":
@@ -4297,29 +4629,35 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         except json.JSONDecodeError as exc:
             return result.returncode, None, str(exc)
 
+    def _from_report_same_scenario(code, report, err, label, live_ui_entities):
+        if code != EXIT_OK or report is None:
+            errors.append(f"{label} --from-report exit {code}: {err}")
+        elif report.get("status") != "ok":
+            errors.append(f"{label} --from-report status={report.get('status')}")
+        elif report.get("equivalence") != "same-scenario":
+            errors.append(f"{label} --from-report must be same-scenario")
+        elif report.get("relative_gate_enforceable") is not False:
+            errors.append(
+                f"{label} --from-report must keep relative_gate_enforceable False"
+            )
+        elif (report.get("work_counters") or {}).get("live_ui_entities") != live_ui_entities:
+            errors.append(
+                f"{label} --from-report must copy live_ui_entities={live_ui_entities}"
+            )
+
     code, report, err = from_report(
         nana_script,
         "virtual-list-100k",
         root / "perf" / "fixtures" / "virtual-scales-only.json",
     )
-    if code != EXIT_OK or report is None:
-        errors.append(f"virtual_scales-only --from-report exit {code}: {err}")
-    elif report.get("status") != "ok":
-        errors.append(f"virtual_scales-only --from-report status={report.get('status')}")
-    elif (report.get("work_counters") or {}).get("live_ui_entities") != 50:
-        errors.append("virtual_scales-only --from-report must copy live_ui_entities=50")
+    _from_report_same_scenario(code, report, err, "virtual_scales-only", 57)
 
     code, tree_report, err = from_report(
         nana_script,
         "virtual-tree-100k",
         root / "perf" / "fixtures" / "virtual-tree-scales.json",
     )
-    if code != EXIT_OK or tree_report is None:
-        errors.append(f"virtual-tree-scales --from-report exit {code}: {err}")
-    elif tree_report.get("status") != "ok":
-        errors.append(f"virtual-tree-scales --from-report status={tree_report.get('status')}")
-    elif (tree_report.get("work_counters") or {}).get("live_ui_entities") != 50:
-        errors.append("virtual-tree-scales --from-report must copy live_ui_entities=50")
+    _from_report_same_scenario(code, tree_report, err, "virtual-tree-scales", 57)
 
     code, table_report, err = from_report(
         nana_script,
@@ -4329,28 +4667,33 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
     if code != EXIT_OK or table_report is None:
         errors.append(f"virtual-table-scales --from-report exit {code}: {err}")
     else:
-        table_from_report = table_report.get("work_counters") or {}
         if table_report.get("status") != "ok":
             errors.append(f"virtual-table-scales --from-report status={table_report.get('status')}")
-        if table_from_report.get("live_ui_entities") != 50:
-            errors.append("virtual-table-scales --from-report must copy live_ui_entities=50")
-        if table_from_report.get("text_shaped") != 12:
-            errors.append("virtual-table-scales --from-report must copy text_shaped=12")
-        if table_from_report.get("text_wrap_layouts") != 4:
-            errors.append("virtual-table-scales --from-report must copy text_wrap_layouts=4")
-        if table_from_report.get("text_shaped_runs") != 8:
-            errors.append("virtual-table-scales --from-report must copy text_shaped_runs=8")
-        if table_from_report.get("text_layout_cache_hits") != 3:
-            errors.append("virtual-table-scales --from-report must copy text_layout_cache_hits=3")
-        if table_from_report.get("text_layout_cache_misses") != 5:
-            errors.append("virtual-table-scales --from-report must copy text_layout_cache_misses=5")
-        if table_from_report.get("cache_eviction") != 0:
-            errors.append("virtual-table-scales --from-report must copy cache_eviction=0")
+        if table_report.get("equivalence") != "same-scenario":
+            errors.append("virtual-table-scales --from-report must be same-scenario")
+        if table_report.get("relative_gate_enforceable") is not False:
+            errors.append(
+                "virtual-table-scales --from-report must keep relative_gate_enforceable False"
+            )
+        table_from_report = table_report.get("work_counters") or {}
+        expected_table = {
+            "live_ui_entities": 1100,
+            "text_shaped": 864,
+            "text_wrap_layouts": 1728,
+            "text_shaped_runs": 1728,
+            "text_layout_cache_hits": 0,
+            "text_layout_cache_misses": 1728,
+            "cache_eviction": 0,
+            "wrapped_cells": 4,
+        }
+        for key, value in expected_table.items():
+            if table_from_report.get(key) != value:
+                errors.append(
+                    f"virtual-table-scales --from-report must copy {key}={value}"
+                )
         for key in TEXT_TABLE_EXPORTED_SHAPE_KEYS:
             if key not in table_from_report:
                 errors.append(f"virtual-table-scales --from-report must contain {key}")
-        if table_from_report.get("wrapped_cells") != 4:
-            errors.append("virtual-table-scales --from-report must copy catalog wrapped_cells=4")
 
     code, ime_report, err = from_report(
         nana_script,
@@ -4411,10 +4754,39 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         errors.append("live nana dump must include 5k local_paint_systems_ms")
     else:
         block = mut_case.get("single_node_mutations") or {}
-        for kind in ("Text", "LayoutStyle"):
-            if kind not in block:
-                errors.append(f"live nana dump must include 5k single_node_mutations.{kind}")
+        layout_honesty = {
+            "Visibility": (
+                lambda n: n != 0,
+                "live nana Visibility must not report layout_nodes=0; last dump layouts 12",
+            ),
+            "Transform": (lambda n: n == 0, "live nana Transform must measure layout_nodes=0"),
+            "Accessibility": (
+                lambda n: n == 0,
+                "live nana Accessibility must measure layout_nodes=0",
+            ),
+        }
+        for kind in ("Text", "LayoutStyle", "Visibility", "Transform", "Accessibility"):
+            drain = block.get(kind)
+            work = drain.get("work") if isinstance(drain, Mapping) else None
+            if not isinstance(drain, Mapping) or not isinstance(work, Mapping):
+                errors.append(
+                    f"live nana dump must include 5k single_node_mutations.{kind} WorkCounters"
+                )
+                continue
+            if "layout_nodes" not in work:
+                errors.append(
+                    f"live nana dump single_node_mutations.{kind} must measure layout_nodes"
+                )
+                continue
+            check = layout_honesty.get(kind)
+            if check is not None and not check[0](work.get("layout_nodes")):
+                errors.append(check[1])
 
+    expected_mutation_layout = {
+        "mutation-visibility": 12,
+        "mutation-transform": 0,
+        "mutation-a11y": 0,
+    }
     for scenario_id in (
         "static-tree-100",
         "static-tree-1k",
@@ -4424,6 +4796,9 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         "mutation-paint-only",
         "mutation-text",
         "mutation-layout-style",
+        "mutation-visibility",
+        "mutation-transform",
+        "mutation-a11y",
     ):
         code, nana_static_report, err = from_report(
             nana_script,
@@ -4440,6 +4815,13 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
             nana_static_report.get("metrics") or {}
         ).get("frames_after_idle") != 0:
             errors.append(f"nana {scenario_id} --from-report must copy frames_after_idle=0")
+        elif scenario_id in expected_mutation_layout and (
+            nana_static_report.get("work_counters") or {}
+        ).get("layout_nodes") != expected_mutation_layout[scenario_id]:
+            errors.append(
+                f"nana {scenario_id} --from-report must copy layout_nodes="
+                f"{expected_mutation_layout[scenario_id]}"
+            )
 
     hover_iced = subprocess.run(
         [
