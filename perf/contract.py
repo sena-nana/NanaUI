@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Shared Issue #8 Scenario schema helpers and runner report envelope.
+"""Shared Scenario schema helpers and runner report envelope.
 
-Runners must load scenarios from ``perf/scenarios/*.json``. They must not invent
-a private tree size, font, DPI, or interaction script. Relative Iced/GPUI
-timing gates stay off (``relative_gate_enforceable`` is False). See
-docs/performance-contract.md.
+#8: Nana work-counter / catalog / hotspot + CI fail-closed.
+#12: Iced/GPUI observation (not product renderers, not #8 pass/fail).
+``relative_gate_enforceable`` stays False. See docs/performance-contract.md.
 """
 
 from __future__ import annotations
@@ -344,7 +343,7 @@ def iced_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
 
 
 def gpui_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
-    """Same skip kinds as Iced; long Nana analog essays live in the Iced reasons."""
+    """Issue #12 skip kinds match Iced; Nana analog essays live in the Iced reasons."""
     reason = iced_scenario_bench_skip_reason(scenario)
     if reason is None:
         return None
@@ -742,8 +741,8 @@ def machine_note() -> dict[str, Any]:
         "hostname": platform.node(),
         "note": (
             "This is the host that invoked the runner. GitHub "
-            "`ubuntu-latest` / `macos-latest` weekly cron is not a fixed "
-            "benchmark machine (Issue #8 §12.2)."
+            "`ubuntu-latest` / `macos-latest` weekly cron is not a named "
+            "fixed benchmark machine (Issue #8 §8.2 / #12)."
         ),
     }
 
@@ -935,9 +934,9 @@ def is_runner_envelope(payload: Mapping[str, Any] | None) -> bool:
 
 def _skip_section_8_1(scenario_id: str, runner: str, status: str) -> str | None:
     if runner == "gpui":
-        return "GPUI triangulation skipped; not a Nana invariant"
+        return "GPUI is #12 observation; skipped, not a Nana §8.1 gate"
     if runner == "iced":
-        return "Iced triangulation skipped; not a Nana invariant"
+        return "Iced is #12 observation; skipped, not a Nana §8.1 gate"
     if scenario_id in SECTION_8_1_UNSUPPORTED_IDS:
         return (
             f"{scenario_id} is not a §8.1 honest-ok catalog id; skipped, not invariant-ok"
@@ -1357,7 +1356,7 @@ def cargo_run_gpui_scenario_bench(
     scenario_path: Path,
     output: Path,
 ) -> list[str]:
-    """Invoke engine/gpui-scenario-bench against a shared Scenario JSON file."""
+    """Issue #12 observation: invoke excluded engine/gpui-scenario-bench."""
     return [
         "cargo",
         "run",
@@ -1395,11 +1394,10 @@ def relative_gate_can_enforce(
     iced_report: Mapping[str, Any] | None,
     gpui_report: Mapping[str, Any] | None,
 ) -> bool:
-    """True only when Iced and GPUI both emitted same-scenario ok with real metrics.
+    """True when both Iced and GPUI have real same-scenario metrics.
 
-    Observation predicate for #12. Envelope ``relative_gate_enforceable`` stays
-    False even when this returns True. A missing-adapter helper or Gallery
-    closest-legacy-reference must not open a 1.15× gate.
+    Does not enable multiplier CI. Envelope ``relative_gate_enforceable`` stays
+    False even when this returns True.
     """
     if not _real_same_scenario(iced_report) or not _real_same_scenario(gpui_report):
         return False
@@ -1447,7 +1445,15 @@ def run_cli(
     plan: Callable[[str, argparse.Namespace], list[str]],
     execute: Callable[[str, argparse.Namespace], dict[str, Any]],
 ) -> int:
-    parser = argparse.ArgumentParser(description=f"Issue #8 {runner} scenario runner")
+    if runner == "nana":
+        description = "Issue #8 Nana scenario runner"
+    elif runner in {"iced", "gpui"}:
+        description = (
+            f"Issue #12 {runner} observation runner (not a Nana #8 gate)"
+        )
+    else:
+        description = f"{runner} scenario runner"
+    parser = argparse.ArgumentParser(description=description)
     add_common_args(parser)
     args = parser.parse_args(argv)
     args.repo_root = args.repo_root.resolve()
@@ -2505,7 +2511,7 @@ def extract_iced(
     }:
         raise KeyError(
             f"ui-benchmark / engine/iced scenario-bench has no same-Scenario {kind} adapter. "
-            "Gallery lists are not a substitute. Required by #8 / not implemented. "
+            "Gallery lists are not a substitute. Issue #12 observation / not implemented. "
             "Fake Iced numbers are forbidden."
         )
     raise KeyError(f"no Iced mapping for {scenario['id']}")
@@ -2517,6 +2523,7 @@ def extract_gpui(
     *,
     source_path: Path,
 ) -> dict[str, Any]:
+    """Map a gpui-scenario-bench dump. Observation only; not a Nana #8 gate."""
     if not is_gpui_scenario_bench_report(report):
         raise KeyError(
             f"GPUI extractor requires source=gpui-scenario-bench; got {report.get('source')!r}. "
@@ -6136,6 +6143,13 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
             f"gpui static-tree-100 --print-plan must name gpui-scenario-bench: "
             f"{gpui_plan.stdout!r} {gpui_plan.stderr}"
         )
+    elif "issue12" not in gpui_plan.stdout:
+        errors.append(
+            "gpui static-tree-100 --print-plan must write under "
+            "target/performance/issue12, not the Nana issue8 invariant directory"
+        )
+    elif "issue8" in gpui_plan.stdout:
+        errors.append("gpui print-plan must not target target/performance/issue8")
     gpui_skip = subprocess.run(
         [
             sys.executable,
@@ -6230,7 +6244,7 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
 
 
 def gpui_unsupported(scenario: Mapping[str, Any]) -> dict[str, Any]:
-    """Envelope when ``perf/runners/gpui/adapter.py`` is missing. Not a live run."""
+    """Envelope when ``adapter.py`` is missing. Exit 2; not a Nana #8 gate."""
     return envelope(
         runner="gpui",
         status="unsupported",
@@ -6238,15 +6252,16 @@ def gpui_unsupported(scenario: Mapping[str, Any]) -> dict[str, Any]:
         scenario=scenario,
         equivalence="unsupported",
         unsupported_reason=(
-            "GPUI adapter missing. Fake GPUI numbers are forbidden. "
-            "CI must distinguish unsupported (exit 2) from a failed run (exit 1)."
+            "GPUI adapter missing. Exit 2; fake numbers forbidden. Not a Nana #8 gate."
         ),
-        plug_in="Implement perf/runners/gpui/adapter.py run_scenario; do not invent timings.",
+        plug_in="Issue #12: restore adapter.py; do not invent timings.",
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Issue #8 scenario schema helpers")
+    parser = argparse.ArgumentParser(
+        description="Issue #8 Nana gates plus Issue #12 observation helpers"
+    )
     parser.add_argument("--check-schema", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(

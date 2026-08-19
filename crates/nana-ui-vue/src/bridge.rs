@@ -1,14 +1,18 @@
-//! nanavue → NanaUI (Runtime / UiScene) semantic message bridge.
+//! nanavue → NanaUI L1/L2 semantic projection (not a retained world).
 //!
 //! ## L2 边界
-//! - 本模块是语义森林载体：`WidgetKind` / `WidgetProps` / `SemanticSnapshot`。
+//! - 本模块保存 compatibility semantic props：`WidgetKind` / `WidgetProps` /
+//!   [`SemanticSnapshot`]。
 //! - **kind 解析**集中在 [`crate::widget_map::resolve_kind_from_hints`]（本文件
-//!   `pub use` 转发）；勿在 bridge 内再维护第二份 class/role 表。
+//!   `pub use` 转发）；勿在本模块再维护第二份 class/role 表。
 //! - Layout 声明解析属 L1（`css_map` / cascade）；本模块只存储与触发 rebuild。
+//! - Hierarchy on [`SemanticWidget`] is a cascade/projection index. Observable
+//!   parent/children/roots are overwritten from `UiWorld` by
+//!   [`crate::NanaTreeDocument::apply_runtime_hierarchy`] before Scene paint.
 //!
-//! Vue Custom Renderer hostOps maintain a semantic widget tree. **Every visible
-//! node** is meant to downlevel onto Nana layout primitives + base controls
-//! (variants / composition), then draw as real `nana_ui` widgets.
+//! Vue Custom Renderer hostOps project every visible node onto Nana layout
+//! primitives + base controls, then draw through Runtime / UiScene. This is not
+//! an Iced `Element` conversion and not a second ECS tree.
 //!
 //! Vue "custom components" are combinations and variants of those foundations —
 //! not a separate CPU paint channel. CustomContent has been removed.
@@ -1828,7 +1832,11 @@ fn widget_is_inspector_region(widget: &SemanticWidget) -> bool {
         .any(|c| matches!(c.to_ascii_lowercase().as_str(), "nana-inspector"))
 }
 
-/// One semantic widget node.
+/// One L1/L2 semantic projection node. Not a Runtime entity.
+///
+/// `parent` / `children` are a CSS-cascade working index. Before Scene paint,
+/// [`crate::NanaTreeDocument::apply_runtime_hierarchy`] overwrites them from
+/// `UiWorld`, which is the only hierarchy authority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticWidget {
     pub id: WidgetId,
@@ -1838,7 +1846,10 @@ pub struct SemanticWidget {
     pub parent: Option<WidgetId>,
 }
 
-/// Owns the semantic widget forest + pending Runtime-bound events + theme inject state.
+/// L1/L2 semantic props + stylesheet cascade working set.
+///
+/// Not the product retained world: identity and hierarchy live in `UiWorld`.
+/// Pending [`BridgeEvent`]s are Runtime-bound input, not a second event tree.
 #[derive(Debug)]
 pub struct MessageBridge {
     widgets: HashMap<WidgetId, SemanticWidget>,

@@ -1,9 +1,9 @@
 # vue-counter / vue-todo
 
-Vue Custom Renderer → Rust `NanaTreeDocument` / `MessageBridge` → **NanaUI (Iced)**。
+Vue Custom Renderer → Rust `NanaTreeDocument` / `MessageBridge` → Runtime / UiScene → `SceneWgpuPainter`。
 Blitz / paint-stub / paint-vello / CustomContent 已移除。
 
-可见 UI 经 `createWidget` / 语义降维 → `MessageBridge` → Iced 控件。
+可见 UI 经 `createWidget` / 语义降维 → `MessageBridge` → `UiWorld`。
 
 ## Commands
 
@@ -11,7 +11,7 @@ Blitz / paint-stub / paint-vello / CustomContent 已移除。
 # Headless Counter (QuickJS, legacy DOM probe tree)
 cargo run -p vue-counter -- counter
 
-# Semantic message bridge (createWidget → BridgeEvent → Iced props)
+# Semantic message bridge (createWidget → BridgeEvent → Runtime props)
 cargo run -p vue-counter -- counter --semantic --clicks=2
 
 # Headless Todo

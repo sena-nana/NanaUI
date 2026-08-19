@@ -1,8 +1,10 @@
-//! Vue Custom Renderer host ops → Rust tree (`NanaTreeDocument`) + message bridge.
+//! Vue Custom Renderer host ops → [`NanaTreeDocument`] + [`MessageBridge`].
 //!
 //! ## L2 边界
-//! - hostOps 写入树文档 + [`MessageBridge`]；Semantics 解析委托
+//! - hostOps 写入 Vue facade metadata + semantic props；Semantics 解析委托
 //!   [`crate::widget_map::resolve_kind_from_hints`]。
+//! - Identity/hierarchy go to `UiWorld`. This module does not build an Iced
+//!   `Element` tree.
 //! - 不在此实现 CSS parse / paint；绘制经 Runtime / UiScene → `nana_ui` Scene host。
 
 use std::sync::{Arc, Mutex};
@@ -901,9 +903,9 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut guard = lock_doc(&host.document)?;
             guard.set_gpu_slot(el, &slot);
             drop(guard);
-            // The Scene host paints MessageBridge snapshots, not the raw
-            // document side table. Mirror the slot into semantic props so the
-            // real HostTexture can be resolved during composition.
+            // Scene paint reads Runtime/UiScene. Mirror the slot into semantic
+            // props so composition can resolve the HostTexture from the same
+            // snapshot that `apply_runtime_hierarchy` then binds to UiWorld.
             lock_bridge(&host.bridge)?.patch_prop(el.0, "data-nana-gpu", &HostValue::String(slot));
             Ok(HostValue::Null)
         });

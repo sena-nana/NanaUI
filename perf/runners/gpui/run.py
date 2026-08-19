@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GPUI same-scenario runner. Adapter in adapter.py; unsupported kinds exit 2."""
+"""Issue #12 GPUI observation runner. Not a Nana product renderer or #8 gate."""
 
 from __future__ import annotations
 

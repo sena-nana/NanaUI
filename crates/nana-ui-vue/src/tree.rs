@@ -136,13 +136,14 @@ pub struct LayoutBox {
     pub height: f32,
 }
 
-/// Per-window Scene → host layout writeback buffer.
+/// Per-window JS paint-phase geometry buffer. Not layout authority.
 ///
 /// Owned by [`crate::VueHost`] and injected into that window's host ops. Cleared
-/// at the start of each semantic `view` build; refilled when Scene paints each
-/// probed widget. `layoutBox` / [`get_layout_box_from`] read this first so menu
+/// at the start of each Scene frame; refilled when `SceneWgpuPainter` writes
+/// painted boxes. `layoutBox` / [`get_layout_box_from`] read this first so menu
 /// and popover anchors track real paint geometry (including scroll/chrome offsets
-/// that Style-Model measure does not see).
+/// that Style-Model measure does not see). Product geometry lives in
+/// `UiWorld` / `UiScene`.
 #[derive(Debug, Default)]
 pub struct LayoutBoxStore {
     boxes: Mutex<HashMap<u64, LayoutBox>>,
@@ -536,7 +537,12 @@ impl PendingAssembly {
     }
 }
 
-/// In-memory DOM-ish tree for Vue host ops (no CSS engine).
+/// Vue custom-renderer facade. Not the product retained world.
+///
+/// Identity, hierarchy, kind, text, focus, style, interaction, and layout live
+/// in `nana_ui_runtime::UiWorld`. `nodes` keeps only Vue DOM metadata
+/// (namespace, attributes, scope id) needed by host ops. Do not treat this type
+/// as a second ECS/DOM tree or as an Iced `Element` host.
 pub struct NanaTreeDocument {
     id: DocumentId,
     runtime: VueRuntime,
@@ -1119,6 +1125,10 @@ impl NanaTreeDocument {
         }
     }
 
+    /// Overwrite snapshot parent/children/roots from `UiWorld`.
+    ///
+    /// [`MessageBridge`] may keep a cascade working index; this method is
+    /// what makes Runtime hierarchy the observable tree before Scene paint.
     pub(crate) fn apply_runtime_hierarchy(&self, snapshot: &mut crate::SemanticSnapshot) {
         snapshot.widgets.retain(|widget| {
             StableNodeId::new(widget.id).is_some_and(|id| self.runtime.contains(id))
