@@ -209,6 +209,18 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
     return report
 
 
+def catalog_framework_window_args(repo_root: Path) -> list[str]:
+    """List+table catalog flags for one nana-framework-benchmark invocation."""
+    return (
+        contract.nana_framework_list_window_args(
+            contract.load_scenario("virtual-list-10k", repo_root)
+        )
+        + contract.nana_framework_table_window_args(
+            contract.load_scenario("text-table", repo_root)
+        )
+    )
+
+
 def _extra_args(scenario: dict[str, Any], spec: dict[str, str], repo_root: Path) -> list[str] | None:
     if spec["key"] == "gpu":
         return ["--scenario", str(contract.scenario_path(scenario["id"], repo_root))]
@@ -238,6 +250,14 @@ def _guess_report_key(payload: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--print-framework-window-args" in argv:
+        repo_root = contract.REPO_ROOT
+        if "--repo-root" in argv:
+            idx = argv.index("--repo-root")
+            repo_root = Path(argv[idx + 1]).resolve()
+        print(" ".join(catalog_framework_window_args(repo_root)))
+        return 0
     return contract.run_cli(runner="nana", argv=argv, plan=plan, execute=execute)
 
 

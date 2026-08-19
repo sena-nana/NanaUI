@@ -151,7 +151,7 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | Dock | `nana-framework-benchmark` `catalog_workloads` dock-workspace | `assemble_dock` of `eight_pane_root` + `adjust_focused_dock_split`; `panes=8` | Iced stays **unsupported** (exit 2). Topology-only `pane_grid` (axis/0.50–0.55/1280×800/`panes=8`) is not Nana chrome rebuild. GPUI stays unsupported. |
 | Overlay | `nana-framework-benchmark` `catalog_workloads` overlay | OverlayHost activate/dismiss + `toggle_popover` | Iced/GPUI stay **unsupported**. Always-on tooltips are not that dirty work. |
 | TextEditor | `nana-framework-benchmark` `catalog_workloads` text-editor | one TextArea, `editor_document(100000)`, caret-local `replace_text_area_selection` then `drain_text` | Iced stays **unsupported** (exit 2). A cached view+layout+draw after an untimed edit is not that dirty work. `text_shaped` stays omitted / **not-evaluable**; do not invent zeros. GPUI stays unsupported. Must not share the list-scroll AppContext (`input_hit_test==41`) |
-| GpuScene `gpu-scene-ui` | `nana-gpu-scene-benchmark` from `perf/scenarios/gpu-scene-ui.json` | UiOnly materialization + encode/submit WorkCounters (`gpu_upload_bytes`, draw/batch) | In `harness_ids`. Missing adapter exit 2. Live2D compositions stay out of `harness_ids` (no encode path; do not emit 0) |
+| GpuScene `gpu-scene-ui` | `nana-gpu-scene-benchmark` from `perf/scenarios/gpu-scene-ui.json` | UiOnly materialization + encode/submit WorkCounters (`gpu_upload_bytes`, draw/batch) | §8.1 honest-ok for Nana encode envelopes. Missing adapter exit 2. Live2D stays out of `harness_ids` (no encode path; do not emit 0) |
 
 Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree exports `frames_after_idle` (§8.1); a busy `request_redraw` probe must be non-zero before 0 is emitted. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`. Relative gates stay off until GPUI also emits same-scenario ok.
 
@@ -350,10 +350,13 @@ row: Mutation PaintOnly/Text/LayoutStyle, Nana Visibility (`render_nodes_changed
 and `layout_nodes` ≤ 64; live dump layouts 12 — not `layout_nodes == 0`),
 Nana Transform / Accessibility (`layout_nodes == 0`), Hover 10k, VirtualList 10k/100k
 (catalog window 800/160/20), VirtualTree 10k/100k (same catalog-8 cap 58),
-`text-table` (catalog-8 cap 1334), and StaticTree 100/1k/5k/10k
-(`frames_after_idle == 0`). Iced Visibility / Transform / Accessibility stay
+`text-table` (catalog-8 cap 1334), StaticTree 100/1k/5k/10k
+(`frames_after_idle == 0`), and Nana `gpu-scene-ui` encode envelopes
+(`draw_calls >= 1` is the real bound; catalog also has `gpu_upload_bytes >= 0`).
+Missing GPU keys / adapter skip, never vacuous 0. Iced Visibility / Transform /
+Accessibility stay
 **unsupported** (exit 2). Dock / TextEditor / Animation / IME /
-Overlay / GpuScene / StaticTree 50k / GPUI / VirtualList 1M /
+Overlay / GpuScene Live2D / Iced GpuScene / StaticTree 50k / GPUI / VirtualList 1M /
 VirtualTree 1M stay **skipped**, not
 invariant-ok. `runtime-work-invariants` in `.github/workflows/ci.yml` still runs
 the named cargo tests; it also runs `--self-test` and `--evaluate-invariants` on
@@ -369,7 +372,9 @@ baseline storage.
 **Current stand-in (not a fixed machine):**
 `.github/workflows/runtime-performance.yml` is a weekly cron
 (`23 3 * * 1`) on `ubuntu-latest` and `macos-latest`. Shared GitHub-hosted
-images move underfoot; this cron is **not** Issue §12.2.
+images move underfoot; this cron is **not** Issue §12.2. Weekly ubuntu
+passes catalog windows via `--print-framework-window-args` and maps live
+dumps through `--from-report` into `--evaluate-invariants`.
 
 ## 9. Exemption process
 

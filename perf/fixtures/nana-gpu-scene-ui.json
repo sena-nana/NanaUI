@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "scenario_id": "gpu-scene-ui",
+  "composition": "UiOnly",
+  "materialization": {
+    "viewport": [
+      800,
+      480
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 640,
+      "height": 360
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view",
+      "button"
+    ],
+    "ui_entity_count": 4,
+    "scene_primitive_kinds": [
+      "host-texture",
+      "quad",
+      "text"
+    ]
+  },
+  "adapter": "Apple M4 (Metal)",
+  "frames": 20,
+  "gpu_work": {
+    "batch_rebuilds": 0,
+    "draw_batches": 4,
+    "draw_calls": 4,
+    "gpu_upload_bytes": 176,
+    "gpu_buffer_reallocations": 0
+  },
+  "frame_stages": {
+    "Accessibility": {
+      "status": "ran"
+    },
+    "Animation": {
+      "status": "skipped"
+    },
+    "Batch": {
+      "status": "ran"
+    },
+    "Encode": {
+      "status": "ran"
+    },
+    "Extract": {
+      "status": "ran"
+    },
+    "GpuUpload": {
+      "status": "ran"
+    },
+    "HitTest": {
+      "status": "ran"
+    },
+    "Input": {
+      "status": "skipped"
+    },
+    "Layout": {
+      "status": "ran"
+    },
+    "Reconcile": {
+      "status": "skipped"
+    },
+    "Style": {
+      "status": "ran"
+    },
+    "Submit": {
+      "status": "ran"
+    },
+    "TextShape": {
+      "status": "ran"
+    }
+  },
+  "stages": {
+    "batch_ms": {
+      "p50": 0.033167,
+      "p95": 0.107166,
+      "p99": 0.123667,
+      "max": 0.123667
+    },
+    "gpu_upload_ms": {
+      "p50": 0.005,
+      "p95": 0.007333,
+      "p99": 0.020625,
+      "max": 0.020625
+    },
+    "encode_ms": {
+      "p50": 0.001833,
+      "p95": 0.0035,
+      "p99": 0.003958,
+      "max": 0.003958
+    },
+    "submit_ms": {
+      "p50": 0.176542,
+      "p95": 0.5047079999999999,
+      "p99": 0.5119589999999999,
+      "max": 0.5119589999999999
+    }
+  }
+}
