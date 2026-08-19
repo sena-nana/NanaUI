@@ -60,10 +60,8 @@ jobs:
         run: cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 
   runtime-work-invariants:
-    # Issue #8 PR gate: Nana work-counter / virtualization invariants.
-    # Named cargo tests plus perf/contract.py --evaluate-invariants on Nana
-    # fixture envelopes. Live release benches are not required on every PR.
-    # 100k/1M virtual materialize timing stays in runtime-performance.yml.
+    # Issue #8 PR gate: named cargo tests plus --evaluate-invariants on Nana
+    # fixture envelopes. Live release benches stay in runtime-performance.yml.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

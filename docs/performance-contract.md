@@ -356,11 +356,11 @@ sparse due-index advance; `due==1` is not the pass), and Nana
 catalog also has `gpu_upload_bytes >= 0`). Missing GPU keys / adapter skip,
 never vacuous 0. GpuScene
 Live2D / StaticTree 50k / GPUI / VirtualList 1M / VirtualTree 1M stay
-**skipped**, not invariant-ok. A PR `invariants/` directory (or
-`--require-honest-ok` / `honest-ok.json`) that skips or omits a gated
-Nana id while other envelopes are ok is a failed job (exit 1). Weekly
-ubuntu `weekly/` judges only the envelopes it mapped — it does not
-include macos-only `gpu-scene-ui`, and must not fail for that omission.
+**skipped**, not invariant-ok. A PR `invariants/` directory that skips or
+omits a gated Nana id while other envelopes are ok is a failed job
+(exit 1). Weekly ubuntu `weekly/` judges only the envelopes it mapped —
+it does not include macos-only `gpu-scene-ui`, and must not fail for that
+omission.
 A gated id that is present but skipped in that weekly set still
 fail-closes. Unsupported-only directories stay exit 2. `runtime-work-invariants`
 in `.github/workflows/ci.yml` still runs the named cargo tests; it also runs
