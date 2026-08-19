@@ -1334,6 +1334,10 @@
     "scheduled_idle": true,
     "scheduled_animations": 64,
     "due_animation_samples": 1,
+    "work": {
+      "animation_deadlines_scanned": 1,
+      "animations_considered": 1
+    },
     "idle_animation_deadline_ms": {
       "p50": 0.0,
       "p95": 0.0,
@@ -1352,9 +1356,9 @@
     },
     "sparse_animation_sample_ms": {
       "p50": 0.0,
-      "p95": 0.0,
-      "p99": 0.0,
-      "max": 0.0,
+      "p95": 0.001,
+      "p99": 0.002,
+      "max": 0.002,
       "frame_budget_ms": 16.67,
       "frame_budget_misses": 0
     }

@@ -14,12 +14,20 @@
   ],
   "invariants": [
     {
-      "name": "dock_workspace_eight_panes",
-      "path": "work_counters.panes",
-      "op": "eq",
-      "value": 8,
+      "name": "dock_does_not_layout_full_tree",
+      "path": "work_counters.layout_nodes",
+      "op": "lte",
+      "value": 40,
       "status": "required",
-      "note": "Issue #8 §3.7 catalog panes=8. Evaluate when catalog_workloads dock-workspace exports panes."
+      "note": "Dock splitter resize must not layout the whole 45-entity chrome. Live dump layouts 25; cap 40 so one extra chrome node does not false-fail and a full-tree 45 fails. Do not use <=25 or panes==8 as the pass."
+    },
+    {
+      "name": "dock_does_not_extract_full_tree",
+      "path": "work_counters.render_nodes_changed",
+      "op": "lte",
+      "value": 40,
+      "status": "required",
+      "note": "Live dump extract-changes 33 of 45; cap 40 so modest chrome growth passes and a full-tree 45 fails. Do not pin ==33."
     }
   ],
   "notes": "Mapped onto AppContext assemble_dock of an 8-leaf DockNode split tree plus adjust_focused_dock_split in an isolated AppContext. Measures keyboard/API splitter resize that rebuilds chrome. Does not measure pointer-drag splitter, dock tear-off, or a host pointer-pump loop."

@@ -38,7 +38,7 @@
       "op": "gte",
       "value": 1,
       "status": "required",
-      "note": "Real GlyphCache lookup hit. Fake 0 / all-miss fails. Missing stays not-evaluable."
+      "note": "MeasureTextShaper em-width GlyphCache lookup hit on the table bench, not the product NanaTextShaper hinter. Fake 0 / all-miss fails. Missing stays not-evaluable."
     },
     {
       "name": "text_table_glyph_cache_misses_observed",
@@ -46,8 +46,8 @@
       "op": "gte",
       "value": 1,
       "status": "required",
-      "note": "Real GlyphCache insert miss. Fake 0 / all-hit fails. Missing stays not-evaluable."
+      "note": "MeasureTextShaper em-width GlyphCache insert miss on the table bench, not the product NanaTextShaper hinter. Fake 0 / all-hit fails. Missing stays not-evaluable."
     }
   ],
-  "notes": "Mapped onto nana-framework-benchmark virtual_scales kind=table 10k×100. Most cells are short_cell_len=8; each 40-row band keeps wrapped_cells=4 long wrapping cells (wrapped_cell_len=256) that are shaped against the 80px column box. Exports shaping/cache WorkCounters including glyph_cache_* after GlyphCache lookup/insert (omitted when null)."
+  "notes": "Mapped onto nana-framework-benchmark virtual_scales kind=table 10k×100. Most cells are short_cell_len=8; each 40-row band keeps wrapped_cells=4 long wrapping cells (wrapped_cell_len=256) that are shaped against the 80px column box. glyph_cache_* is the bench MeasureTextShaper em-width GlyphCache lookup/insert, not product NanaTextShaper hintering. Omitted when null. wrap/eviction attendance is not this gate."
 }

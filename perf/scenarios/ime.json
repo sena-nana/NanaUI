@@ -14,12 +14,12 @@
   ],
   "invariants": [
     {
-      "name": "ime_scripts_cover_catalog",
-      "path": "work_counters.ime_script_count",
+      "name": "ime_does_not_layout_full_tree",
+      "path": "work_counters.layout_nodes",
       "op": "eq",
-      "value": 4,
+      "value": 0,
       "status": "required",
-      "note": "Issue #8 §3.6 requires latin/zh/ja/ko together with preedit and commit. Evaluate when nana-framework-benchmark catalog_workloads ime row exports ime_script_count."
+      "note": "IME preedit/commit must not default to a full-tree layout. Live dump layouts 0 on a focused TextInput. ime_script_count is attendance, not this hotspot. Missing layout_nodes stays not-evaluable."
     }
   ],
   "notes": "Mapped onto AppContext set_ime_preedit / commit_ime on a focused TextInput in an isolated AppContext. Measures Runtime preedit + commit_ime only. Does not measure the OS IME candidate window, composition UI, or host IME popup. commit_ime is the Runtime candidate-commit path. Correctness asserts preedit then committed text per script."

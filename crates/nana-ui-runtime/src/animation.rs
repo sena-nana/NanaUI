@@ -69,6 +69,12 @@ pub struct AnimationSample {
 
 /// Samples due at the supplied timestamp and the next time the host should
 /// wake the UI runtime. An empty static UI has no deadline.
+///
+/// `animation_deadlines_scanned` / `animations_considered` are the sparse
+/// advance observation: how many deadline-index entries this call examined
+/// and how many active animation records it looked up. They are filled
+/// whenever [`crate::UiWorld::advance_animations`] runs, including 0 when
+/// nothing was due. They are not a dirty-drain `WorkCounters` guess.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimationFrame {
     pub samples: Vec<AnimationSample>,
@@ -77,6 +83,8 @@ pub struct AnimationFrame {
     /// re-apply them.
     pub component_updates: Vec<StableNodeId>,
     pub next_deadline: Option<Duration>,
+    pub animation_deadlines_scanned: usize,
+    pub animations_considered: usize,
 }
 
 impl AnimationFrame {
