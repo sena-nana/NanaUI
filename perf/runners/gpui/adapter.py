@@ -29,8 +29,7 @@ def plan_scenario(scenario: dict[str, Any], args: Any) -> list[str]:
     if scenario["kind"] not in SCENARIO_BENCH_KINDS:
         return [
             f"# gpui unsupported for {scenario['id']}; exit {contract.EXIT_UNSUPPORTED}",
-            "# engine/gpui-scenario-bench implements StaticTree, Mutation, Hover, "
-            "VirtualList, and Table only",
+            "# gpui-scenario-bench implements StaticTree, Mutation, Hover, VirtualList, Table",
         ]
     output = (
         args.repo_root / "target" / "performance" / "issue12" / f"gpui-{scenario['id']}.json"
@@ -61,9 +60,7 @@ def run_scenario(scenario: dict[str, Any], args: Any) -> dict[str, Any]:
             scenario_id=scenario_id,
             scenario=scenario,
             unsupported_reason=(
-                "engine/gpui-scenario-bench implements StaticTree, Mutation, Hover, "
-                f"VirtualList, and Table. {scenario['kind']} is #12 / not implemented. "
-                "Fake GPUI numbers are forbidden."
+                f"gpui-scenario-bench has no {scenario['kind']} adapter; fake numbers are forbidden"
             ),
         )
 

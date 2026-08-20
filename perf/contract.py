@@ -3,8 +3,7 @@
 
 #8: Nana work-counter / catalog / hotspot + CI fail-closed.
 #12: Iced/GPUI observation (not product renderers, not #8 pass/fail).
-``relative_gate_enforceable`` stays False. ``--evaluate-relative`` is honesty
-fail-closed observation, not multiplier CI. See docs/performance-contract.md.
+``relative_gate_enforceable`` stays False. See docs/performance-contract.md.
 """
 
 from __future__ import annotations
@@ -120,18 +119,6 @@ def load_scenario(scenario_id: str, root: Path | None = None) -> dict[str, Any]:
 def list_harness_ids(root: Path | None = None) -> list[str]:
     catalog = load_catalog(root)
     return list(catalog["harness_ids"])
-
-
-def list_issue12_same_scenario_ids(root: Path | None = None) -> list[str]:
-    catalog = load_catalog(root)
-    issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
-    return list(issue12.get("same_scenario_ids") or [])
-
-
-def list_issue12_unsupported_ids(root: Path | None = None) -> list[str]:
-    catalog = load_catalog(root)
-    issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
-    return list(issue12.get("unsupported_ids") or [])
 
 
 def validate_scenario(scenario: Mapping[str, Any]) -> list[str]:
@@ -356,7 +343,7 @@ def iced_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
 
 
 def gpui_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
-    """Issue #12 skip kinds match Iced; Nana analog essays live in the Iced reasons."""
+    """Same skip kinds as Iced; wording swapped to GPUI."""
     reason = iced_scenario_bench_skip_reason(scenario)
     if reason is None:
         return None
@@ -1394,7 +1381,7 @@ def cargo_run_gpui_scenario_bench(
     scenario_path: Path,
     output: Path,
 ) -> list[str]:
-    """Issue #12 observation: invoke excluded engine/gpui-scenario-bench."""
+    """Invoke excluded engine/gpui-scenario-bench (#12 observation)."""
     return [
         "cargo",
         "run",
@@ -1432,11 +1419,7 @@ def relative_gate_can_enforce(
     iced_report: Mapping[str, Any] | None,
     gpui_report: Mapping[str, Any] | None,
 ) -> bool:
-    """True when both Iced and GPUI have real same-scenario metrics.
-
-    Does not enable multiplier CI. Envelope ``relative_gate_enforceable`` stays
-    False even when this returns True.
-    """
+    """True when both sides have real same-scenario metrics. Not multiplier CI."""
     if not _real_same_scenario(iced_report) or not _real_same_scenario(gpui_report):
         return False
     if iced_report.get("runner") != "iced" or gpui_report.get("runner") != "gpui":
@@ -1458,15 +1441,11 @@ ISSUE12_FIXTURE_IDS = (
 def named_fixed_machine(report: Mapping[str, Any] | None) -> bool:
     if not isinstance(report, Mapping):
         return False
-    machine = report.get("machine") if isinstance(report.get("machine"), Mapping) else {}
-    if machine.get("fixed_benchmark_machine") is True:
-        return True
-    identity = (
-        report.get("machine_identity")
-        if isinstance(report.get("machine_identity"), Mapping)
-        else {}
-    )
-    return identity.get("fixed_benchmark_machine") is True
+    for key in ("machine", "machine_identity"):
+        block = report.get(key)
+        if isinstance(block, Mapping) and block.get("fixed_benchmark_machine") is True:
+            return True
+    return False
 
 
 def _positive_metric(value: Any) -> float | None:
@@ -1519,7 +1498,7 @@ def _honesty_error(report: Mapping[str, Any], label: str) -> str | None:
     if report.get("runner") == "gpui":
         metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
         if "present_ms" in metrics:
-            return f"{label} GPUI must omit present_ms (TestWindow does not GPU-present)"
+            return f"{label} GPUI must omit present_ms"
         if "frames_after_idle" in metrics:
             return f"{label} GPUI must omit frames_after_idle"
     return None
@@ -1568,7 +1547,7 @@ def compare_issue12_pair(
     gpui_report: Mapping[str, Any],
     nana_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Honesty fail-closed. Historical multipliers need Nana + a named fixed machine."""
+    """Honesty fail-closed. Multipliers need Nana on a named fixed machine."""
     result: dict[str, Any] = {
         "scenario_id": iced_report.get("scenario_id") or gpui_report.get("scenario_id"),
         "relative_gate_enforceable": False,
@@ -1587,9 +1566,7 @@ def compare_issue12_pair(
     ):
         result["status"] = "unsupported"
         result["can_enforce"] = False
-        result["note"] = (
-            "missing same-scenario Iced+GPUI pair; not a vacuous pass and not multiplier CI"
-        )
+        result["note"] = "missing same-scenario Iced+GPUI pair"
         return result
     if not relative_gate_can_enforce(iced_report, gpui_report):
         result["status"] = "error"
@@ -1651,32 +1628,17 @@ def compare_issue12_pair(
                     failed = True
             else:
                 row["status"] = "observation"
-                row["note"] = (
-                    "historical Nana vs faster(Iced,GPUI) threshold is not CI "
-                    "without a named fixed machine"
-                )
         else:
             row["status"] = "observation"
-            row["note"] = (
-                "historical multiplier table is Nana vs faster(Iced,GPUI), not Iced vs GPUI; "
-                "Nana envelope absent"
-            )
         result["metrics"][f"cpu_frame_ms.{key}"] = row
 
-    gpui_metrics = (
-        gpui_report.get("metrics") if isinstance(gpui_report.get("metrics"), Mapping) else {}
-    )
-    if "present_ms" in gpui_metrics:
-        result["status"] = "error"
-        result["note"] = "GPUI present_ms must stay omitted"
-        return result
     iced_metrics = (
         iced_report.get("metrics") if isinstance(iced_report.get("metrics"), Mapping) else {}
     )
     iced_present = iced_metrics.get("present_ms")
     present_row: dict[str, Any] = {
         "status": "not-evaluable",
-        "note": "GPUI TestWindow::draw does not GPU-present; present_ms omitted, not 0",
+        "note": "GPUI TestWindow does not GPU-present; present_ms omitted, not 0",
     }
     if isinstance(iced_present, Mapping) and iced_present.get("p50") is not None:
         present_row["iced"] = iced_present.get("p50")
@@ -1708,16 +1670,12 @@ def compare_issue12_pair(
             memory_row["status"] = "observation"
     else:
         memory_row["status"] = "not-evaluable"
-        memory_row["note"] = (
-            "process memory is not exported on Iced/GPUI scenario-bench; do not invent 0"
-        )
+        memory_row["note"] = "Iced/GPUI scenario-bench does not export process memory"
     result["metrics"]["memory"] = memory_row
 
     if failed:
         result["status"] = "failed"
-        result["note"] = (
-            "named-fixed-machine Nana vs faster(Iced,GPUI) exceeded historical multipliers"
-        )
+        result["note"] = "named-fixed-machine Nana vs faster(Iced,GPUI) exceeded historical multipliers"
         return result
     if named and nana_cpu is not None:
         result["status"] = "ok"
@@ -1725,8 +1683,8 @@ def compare_issue12_pair(
         return result
     result["status"] = "observation"
     result["note"] = (
-        "real same-scenario Iced+GPUI pair; historical multipliers stay observation "
-        "without Nana on a named fixed machine. relative_gate_can_enforce is not CI."
+        "same-scenario Iced+GPUI pair; multipliers stay observation without Nana "
+        "on a named fixed machine"
     )
     return result
 
@@ -1736,7 +1694,7 @@ def evaluate_relative_paths(
     *,
     root: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Compare Iced/GPUI (+ optional Nana) envelopes. Not a Nana #8 gate."""
+    """Compare Iced/GPUI (+ optional Nana) envelopes. Not a #8 gate."""
     base = root or REPO_ROOT
     grouped: dict[str, dict[str, dict[str, Any]]] = {}
     load_errors: list[dict[str, Any]] = []
@@ -1788,10 +1746,7 @@ def evaluate_relative_paths(
     summary: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "relative_gate_enforceable": False,
-        "note": (
-            "Issue #12 observation. relative_gate_can_enforce is not multiplier CI. "
-            "Weekly GHA is not a named fixed machine."
-        ),
+        "note": "Issue #12 observation, not multiplier CI",
         "pairs": pairs,
         "errors": load_errors,
     }
@@ -1805,7 +1760,7 @@ def evaluate_relative_paths(
     if not comparable:
         summary["status"] = "unsupported"
         summary["note"] = (
-            "no real same-scenario Iced+GPUI pair; exit 2, not a vacuous pass"
+            "no real same-scenario Iced+GPUI pair"
         )
         return summary, EXIT_UNSUPPORTED
     summary["status"] = "observation"
@@ -2933,7 +2888,7 @@ def extract_gpui(
     *,
     source_path: Path,
 ) -> dict[str, Any]:
-    """Map a gpui-scenario-bench dump. Observation only; not a Nana #8 gate."""
+    """Map a gpui-scenario-bench dump. Observation only."""
     if not is_gpui_scenario_bench_report(report):
         raise KeyError(
             f"GPUI extractor requires source=gpui-scenario-bench; got {report.get('source')!r}. "
@@ -2969,17 +2924,11 @@ def _extract_iced_scenario_bench(
         raise KeyError(skip)
     if runner == "gpui":
         if report.get("present_ms") is not None:
-            raise KeyError(
-                "GPUI TestWindow::draw does not GPU-present; omit present_ms rather than emit 0"
-            )
+            raise KeyError("GPUI must omit present_ms rather than emit 0")
         if report.get("frames_after_idle") is not None:
-            raise KeyError(
-                "GPUI TestPlatform on_request_frame is a no-op; omit frames_after_idle rather than emit 0"
-            )
+            raise KeyError("GPUI must omit frames_after_idle rather than emit 0")
         if report.get("gpu_present") is not False:
-            raise KeyError(
-                "GPUI ok dump must declare gpu_present=false; TestWindow has no GPU present"
-            )
+            raise KeyError("GPUI ok dump must declare gpu_present=false")
     kind = scenario["kind"]
     reported_id = report.get("scenario_id")
     if reported_id not in (None, scenario["id"]):
@@ -3001,9 +2950,6 @@ def _extract_iced_scenario_bench(
             "fake or empty timings are forbidden"
         )
     notes = [str(note) for note in (report.get("notes") or []) if note is not None]
-    notes.append(
-        "Relative Iced/GPUI multipliers stay off."
-    )
     metrics: dict[str, Any] = {
         "cpu_frame_ms": cpu,
         "view_construction_ms": percentile_fields(report.get("view_construction_ms")),
@@ -3043,10 +2989,7 @@ def _extract_iced_scenario_bench(
                 )
             metrics["busy_probe_frames"] = busy_probe
         else:
-            notes.append(
-                "GPUI TestPlatform on_request_frame is a no-op, so frames_after_idle is omitted "
-                "rather than stuffed as 0."
-            )
+            notes.append("GPUI cannot observe idle redraw; frames_after_idle omitted, not 0.")
     elif kind == "Mutation":
         nodes = scenario["params"]["tree_nodes"]
         mutation_kind = scenario["params"]["kind"]
@@ -3144,10 +3087,6 @@ def _extract_iced_scenario_bench(
             f"({window['overscan_px']}px) item_extent={window['item_extent_px']} "
             f"(viewport {window['viewport_px']}px). Only the catalog window is materialized."
         )
-        notes.append(
-            "Nana runner passes the same catalog window into nana-framework-benchmark "
-            "via --list-viewport-px / --list-overscan-px / --list-item-extent-px."
-        )
         work_counters = {
             "live_ui_entities": live,
             "live_ui_entities_bound": bound,
@@ -3220,10 +3159,6 @@ def _extract_iced_scenario_bench(
             f"(viewport {window['viewport_width_px']}x{window['viewport_height_px']}px, "
             f"overscan {window['overscan_x_px']}x{window['overscan_y_px']}px). "
             "Only the catalog window is materialized."
-        )
-        notes.append(
-            "Nana runner passes the same catalog window into nana-framework-benchmark "
-            "via --table-viewport-*-px / --table-overscan-*-px / --table-*-extent-px."
         )
         work_counters = {
             "live_ui_entities": live,
@@ -6835,10 +6770,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nargs="+",
         metavar="REPORT",
         default=None,
-        help=(
-            "Issue #12: compare Iced/GPUI (optional Nana) envelopes or scenario-bench dumps. "
-            "Honesty fail-closed. Historical multipliers are not CI without a named fixed machine."
-        ),
+        help="Issue #12: compare Iced/GPUI (optional Nana) dumps; honesty fail-closed observation",
     )
     parser.add_argument(
         "--output",

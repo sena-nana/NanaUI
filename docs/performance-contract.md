@@ -48,11 +48,10 @@ The old P0 table versus the faster of Iced and GPUI was:
 | steady-state memory | ≤ 1.20× |
 
 If comparison returns, it belongs with
-[#12](https://github.com/sena-nana/NanaUI/issues/12). Fake numbers stay forbidden.
-`relative_gate_enforceable` stays **False**. `relative_gate_can_enforce` is not
-multiplier CI. `--evaluate-relative` judges real Iced+GPUI pairs; historical
-1.15 / 1.20 / 1.25 / 1.20× stay observation unless a named fixed machine is
-declared. Weekly GHA is not that machine. Do not wait on GPUI in #8 CI.
+[#12](https://github.com/sena-nana/NanaUI/issues/12). `--evaluate-relative` is
+honesty fail-closed observation, not multiplier CI.
+`relative_gate_enforceable` stays **False**. Weekly GHA is not a named fixed
+machine. Fake numbers stay forbidden. Do not wait on GPUI in #8 CI.
 
 #8 still requires these **Nana** invariants (independent of any multiplier):
 
@@ -149,11 +148,8 @@ Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintO
 
 GPUI is #12 observation (excluded `engine/gpui-scenario-bench`; not a product
 renderer; not #8 DoD). Iced and GPUI live dumps go under
-`target/performance/issue12/`, not Nana `issue8/` gates. Unwired kinds and a
-missing adapter stay exit 2 with no metrics (`present_ms` /
-`frames_after_idle` omitted, not 0). `--evaluate-invariants` skips them.
-`relative_gate_enforceable` stays **False**; `relative_gate_can_enforce` being
-true does not enable multiplier CI. Weekly GHA is not a named fixed machine.
+`target/performance/issue12/`. Unwired kinds stay exit 2 with no metrics
+(`present_ms` / `frames_after_idle` omitted, not 0).
 
 `--from-report` maps a JSON the binaries already wrote. `--print-plan` prints
 the cargo command without running it.

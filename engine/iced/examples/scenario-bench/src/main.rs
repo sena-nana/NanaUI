@@ -414,11 +414,7 @@ fn merge_meta(payload: &mut Value, warmup: usize, iterations: usize, host: &Host
         map.insert("gpu_present".into(), json!(true));
         map.insert(
             "machine_identity".into(),
-            json!({
-                "fixed_benchmark_machine": false,
-                "note": "This dump is not Issue #8 §8.2 / #12 fixed-machine history. \
-            Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine.",
-            }),
+            json!({ "fixed_benchmark_machine": false }),
         );
     }
 }
