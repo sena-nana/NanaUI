@@ -162,7 +162,8 @@ impl GpuView {
 /// valid if the host registers that key. `generation` changes only when the
 /// sampled view is replaced. `version` changes for every content invalidation.
 /// Presentation fields stay on this view so CustomRenderNode can keep a
-/// backend-neutral id/revision contract.
+/// backend-neutral id/revision contract. Pointer events default to off;
+/// [`Self::with_pointer_events`] opts a specific instance into hit-testing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuTextureView {
     pub resource: Arc<str>,
@@ -171,6 +172,7 @@ pub struct GpuTextureView {
     pub opacity: f32,
     pub corner_radius: f32,
     pub style: NodeStyle,
+    pub pointer_events: bool,
 }
 
 impl GpuTextureView {
@@ -182,6 +184,7 @@ impl GpuTextureView {
             opacity: 1.0,
             corner_radius: 0.0,
             style: NodeStyle::default(),
+            pointer_events: false,
         }
     }
 
@@ -197,6 +200,12 @@ impl GpuTextureView {
 
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Opts this instance into hit-testing without changing the product default.
+    pub const fn with_pointer_events(mut self, pointer_events: bool) -> Self {
+        self.pointer_events = pointer_events;
         self
     }
 
@@ -358,7 +367,7 @@ impl ComponentView for GpuTextureView {
             mutations,
             &self.effective_style(),
             InteractionState {
-                pointer_events: false,
+                pointer_events: self.pointer_events,
                 focusable: false,
             },
             AccessibilityState {
@@ -692,5 +701,75 @@ mod tests {
         let mut idle = MutationQueue::new();
         view.project(id, &world, &mut idle);
         assert!(idle.is_empty());
+    }
+
+    #[test]
+    fn overlay_button_hits_above_hittable_host_texture_not_because_gpu_ignores_pointers() {
+        let mut world = UiWorld::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = StableNodeId::new(1).unwrap();
+        let passthrough = StableNodeId::new(2).unwrap();
+        let gpu = StableNodeId::new(3).unwrap();
+        let button = StableNodeId::new(4).unwrap();
+
+        let pass_view = GpuTextureView::new("live2d.bg");
+        let gpu_view = GpuTextureView::new("live2d.model").with_pointer_events(true);
+        let chrome = crate::Button::new("Start");
+        assert!(
+            !pass_view.pointer_events,
+            "GpuTextureView stays pointer-transparent by default"
+        );
+        assert!(gpu_view.pointer_events);
+
+        let mut queue = MutationQueue::new();
+        queue.create(root, document, NodeKind::Element { tag: "root".into() });
+        queue.create(passthrough, document, pass_view.node_kind());
+        queue.create(gpu, document, gpu_view.node_kind());
+        queue.create(button, document, chrome.node_kind());
+        pass_view.project(passthrough, &world, &mut queue);
+        gpu_view.project(gpu, &world, &mut queue);
+        chrome.project(button, &world, &mut queue);
+        queue.set_interaction(
+            root,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+        );
+        queue.insert(root, passthrough, None);
+        queue.insert(root, gpu, None);
+        queue.insert(root, button, None);
+        queue.write_layout(root, layout(0.0, 0.0, 200.0, 100.0));
+        queue.write_layout(passthrough, layout(0.0, 0.0, 100.0, 100.0));
+        queue.write_layout(gpu, layout(100.0, 0.0, 100.0, 100.0));
+        queue.write_layout(button, layout(60.0, 40.0, 80.0, 32.0));
+        world.commit(queue).unwrap();
+        world.rebuild_hit_test(document);
+
+        assert_eq!(
+            world.interaction(passthrough),
+            Some(InteractionState {
+                pointer_events: false,
+                focusable: false,
+            })
+        );
+        assert_eq!(
+            world.interaction(gpu),
+            Some(InteractionState {
+                pointer_events: true,
+                focusable: false,
+            })
+        );
+
+        assert_eq!(world.hit_test(document, 120.0, 50.0), Some(button));
+        assert_eq!(world.hit_test(document, 150.0, 10.0), Some(gpu));
+        assert_eq!(world.hit_test(document, 80.0, 50.0), Some(button));
+        assert_eq!(world.hit_test(document, 20.0, 10.0), None);
+        let overlap_candidates = world.hit_test_candidates(document, 120.0, 50.0);
+        assert_eq!(overlap_candidates.first().copied(), Some(button));
+        assert!(
+            overlap_candidates.contains(&gpu),
+            "hittable GPU slot remains under the overlay: {overlap_candidates:?}"
+        );
     }
 }

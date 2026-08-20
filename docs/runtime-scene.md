@@ -156,15 +156,15 @@ hierarchy 改变时才重算 document order。
 
 Vue compatibility 的 `ScrollOffsetStore` 只排队 Scene-host scroll command，不保存状态；程序化滚动和 viewport `on_scroll` feedback 都提交 Runtime offset/metrics。每个 VueHost 独立拥有 `LayoutBoxStore`，它只保存该窗口 JS 查询所需的 paint-phase geometry，不得跨窗口共享。`begin_frame` 不清 boxes/transforms；滚动只进 `views` overlay，不 `record()` 滚动几何、不写回 Runtime `LayoutBox`。Vue host op 进入 `PendingHostOps`，`flush_host_frame` 才 commit。`gpu_slots` 权威是 Runtime `CustomRenderNode`；`event_flags` 权威是 `UiWorld` `EventListeners`；`attrs` 仍是 DOM/CSS facade，不复制树拓扑。`NanaTreeDocument` / `MessageBridge` / `LayoutBoxStore` 三个 facade 仍在。
 
-`StandardVisual` 将 checkbox/switch/slider 的 indicator、track、fill、thumb 作为有限 backend-neutral render content；它与标签文本分别解析前景，不由 backend 识别 tag。`CustomRenderNode` 只有 renderer/resource/revision opaque key，不携带 backend object。
+`StandardVisual` 将 checkbox/switch/slider 的 indicator、track、fill、thumb 作为有限 backend-neutral render content；它与标签文本分别解析前景，不由 backend 识别 tag。`CustomRenderNode` 是一等布局/Scene 公民：只有 renderer/resource/revision opaque key，不携带 backend object，与 Quad/Text 一样参与 clip、z-index 和 document order。
 `RenderGraph` 将 external resource preparation、连续标准 primitive 与 custom node 编译为
 独立 pass，显式注册 target/resource access，并通过 hazard dependency 保留生产、采样与 Scene
 顺序。同一 resource 在一帧出现冲突 renderer/revision 时整图拒绝编译。Scene host
-将 Draw 映射为 `SceneWgpuPainter`；`SceneGpuRenderer` 的 InvokeCustom 直接取得同一
-Device/Queue、当前 CommandEncoder 与 target，能够在图内编码 custom pass。
+将 Draw 与 `nana.host-texture` 的 InvokeCustom 映射为同一 dest pass 内按序切换 pipeline；
+无法加入该 pass 的 `SceneGpuRenderer` 才结束主 pass 再 `render()`。
 `SceneResourceProducer` 则执行 `PrepareExternal`；每个 preparation pass 使用独立 host-owned
 encoder，成功后立即由同一 Queue 有序提交，因此后续 producer 失败不会让先前 producer
-滞留在未提交状态；`nana.host-texture` 使用这条图管理兼容路径。业务 GPU 内容不得 CPU
+滞留在未提交状态。业务 GPU 内容不得 CPU
 readback、Base64/图片编码或额外子窗口后伪装成共享合成。
 
 ## Scene host

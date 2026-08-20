@@ -32,6 +32,7 @@ struct Uniforms {
 
 pub(super) struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
+    pipeline_msaa: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     instances: wgpu::Buffer,
@@ -85,54 +86,8 @@ impl QuadPipeline {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.quad.solid.pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("solid_vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SolidInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array!(
-                        0 => Float32x4,
-                        1 => Float32x2,
-                        2 => Float32x2,
-                        3 => Float32x4,
-                        4 => Float32x4,
-                        5 => Float32,
-                        6 => Float32x4,
-                        7 => Float32x2,
-                        8 => Float32,
-                        9 => Uint32,
-                    ),
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("solid_fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Cw,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 4,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = solid_pipeline(device, &shader, &layout, format, 1);
+        let pipeline_msaa = solid_pipeline(device, &shader, &layout, format, 4);
         let instance_capacity = INITIAL_INSTANCES;
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.instances"),
@@ -142,6 +97,7 @@ impl QuadPipeline {
         });
         Self {
             pipeline,
+            pipeline_msaa,
             bind_group,
             uniforms,
             instances,
@@ -243,12 +199,17 @@ impl QuadPipeline {
         pass: &mut wgpu::RenderPass<'_>,
         range: std::ops::Range<u32>,
         scissor: PhysicalRect,
+        sample_count: u32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         if range.start >= range.end {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(if sample_count > 1 {
+            &self.pipeline_msaa
+        } else {
+            &self.pipeline
+        });
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.instances.slice(..));
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
@@ -258,4 +219,61 @@ impl QuadPipeline {
             work.record_draw_call();
         }
     }
+}
+
+fn solid_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nana-ui.scene.quad.solid.pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("solid_vs_main"),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<SolidInstance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array!(
+                    0 => Float32x4,
+                    1 => Float32x2,
+                    2 => Float32x2,
+                    3 => Float32x4,
+                    4 => Float32x4,
+                    5 => Float32,
+                    6 => Float32x4,
+                    7 => Float32x2,
+                    8 => Float32,
+                    9 => Uint32,
+                ),
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("solid_fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Cw,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
 }

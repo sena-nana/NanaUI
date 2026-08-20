@@ -1,4 +1,11 @@
-//! Dest-local MSAA target so graph strokes and UI quads resolve before blit.
+//! Dest-local color target; MSAA is only for frames without GPU nodes.
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct DestPassCounts {
+    pub color: u32,
+    pub msaa: u32,
+    pub blit: u32,
+}
 
 pub(super) struct DestTarget {
     pub width: u32,
@@ -151,11 +158,38 @@ impl DestTarget {
         &self.color_view
     }
 
+    pub(super) fn begin_color_pass<'a>(
+        &'a self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        load: wgpu::LoadOp<wgpu::Color>,
+        counts: &mut DestPassCounts,
+    ) -> wgpu::RenderPass<'a> {
+        counts.color = counts.color.saturating_add(1);
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("nana-ui.scene.dest.color"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+    }
+
     pub(super) fn begin_msaa_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
         clear: wgpu::Color,
+        counts: &mut DestPassCounts,
     ) -> wgpu::RenderPass<'a> {
+        counts.msaa = counts.msaa.saturating_add(1);
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("nana-ui.scene.dest.msaa"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -184,7 +218,9 @@ impl DestTarget {
         window: [u32; 2],
         clear_window: Option<wgpu::Color>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+        counts: &mut DestPassCounts,
     ) {
+        counts.blit = counts.blit.saturating_add(1);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("nana-ui.scene.dest.blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

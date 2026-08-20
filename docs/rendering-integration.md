@@ -33,7 +33,7 @@ NanaUI hosted runtime 负责主窗口与工具窗口的生命周期、各自 Sur
 稳定 ID 与逻辑/物理几何；`RuntimeRedraw` 允许业务只重绘主窗口、指定工具窗口或
 全部窗口。
 
-`hosted-gpu-demo` 只调用一次 `Adapter::request_device`。直接 WGPU 场景使用宿主持有的 Device/Queue 创建管线、更新 uniform，并渲染到同时具有 `RENDER_ATTACHMENT` 与 `TEXTURE_BINDING` 用途的纹理；`GpuTextureView` 直接采样宿主 `TextureView`，`SceneWgpuPainter` 接收同一 Device/Queue 并合成到相同 Surface。Hosted UI 的 Scene dest 使用 MSAA x4 中间纹理并解析到宿主的单采样目标，不改变 Surface 或 GPU 所有权。场景刷新由 NanaUI 按钮消息驱动，事件循环使用 `ControlFlow::Wait`，没有第二套 Device、CPU 回读、图片编码或持续帧订阅。
+`hosted-gpu-demo` 只调用一次 `Adapter::request_device`。直接 WGPU 场景使用宿主持有的 Device/Queue 创建管线、更新 uniform，并渲染到同时具有 `RENDER_ATTACHMENT` 与 `TEXTURE_BINDING` 用途的纹理；`GpuTextureView` 直接采样宿主 `TextureView`，`SceneWgpuPainter` 接收同一 Device/Queue 并合成到相同 Surface。Hosted UI 的 Scene dest 在无 GPU 节点的帧使用 MSAA x4 并 resolve 到单采样 color，Text 在 resolve 之后用 Load 绘制；含 HostTexture/Custom 的 GPU 交错帧整帧 `sample_count = 1`，在同一 pass 里按 document order 切换 pipeline，不为每个 HostTexture 另开 pass，也不在 custom 两侧反复 resolve。场景刷新由 NanaUI 按钮消息驱动，事件循环使用 `ControlFlow::Wait`，没有第二套 Device、CPU 回读、图片编码或持续帧订阅。
 
 交互式宿主在 `RedrawRequested` 内 flush Runtime、绘制当前窗口的 `UiScene`，消费 pending input 与 redraw
 event；若产生业务消息，同帧先更新业务状态并重新 flush，直到消息与
@@ -49,20 +49,18 @@ HostTexture registry；被替换的 lease 必须保留到同一窗口 Surface �
 再由 `window_frame_presented` 释放。两处 hook 都由 host 带稳定 WindowId 调用，应用不得在
 普通 UI update 或 redraw cadence 中提前归还 GPU 资源。
 
-需要直接参与 Scene 图的高级内容注册 `SceneGpuRenderer`。RenderGraph 为 custom resource
-建立显式 prepare/sample pass 与 hazard；direct renderer 在 Scene 当前 frame 中取得同一
-Device/Queue、CommandEncoder 和 target，不得自行 submit 或创建第二套 GPU context。
+需要直接参与 Scene 图、且无法预渲染成纹理的内容注册 `SceneGpuRenderer`。能加入当前 dest pass 的实现走 `draw_in_pass`（`GpuView` Inline）；否则 painter 结束主 pass 再调用 `render()`。不得自行 submit 或创建第二套 GPU context。
 需要 Texture 本体作为 render target 的 Live2D 等内容注册 `SceneResourceProducer`：executor
 按编译图的 `PrepareExternal` operation 调用 producer；每个 preparation pass 使用独立
 host-owned encoder，成功后立即由同一 Queue 在 UI sample 前提交并完成 submission 通知，
 从而隔离不同 producer 的失败。相同 resource 的冲突 revision 会
-拒绝整帧，不能静默选择其中一个。该路径不进行 CPU readback，也不虚称为 direct Surface pass。
+拒绝整帧，不能静默选择其中一个。生产只准备资源；合成顺序由 document order 决定。`nana.host-texture` 在主 pass 里按节点位置采样，不在帧尾另开 pass，也不虚称为 Cubism 直写 Surface。
 
-`GpuView` 的 `prepare` 直接取得当前 `Device`、`Queue` 与 viewport；每个实例按稳定 ID 缓存 uniform buffer/bind group。`Inline` 模式复用当前 RenderPass，`Standalone` 模式使用同一帧的 CommandEncoder 与目标纹理创建独立 Pass，两者共享 RenderPipeline，但不会共享实例数据。它不创建中间纹理、不进行 CPU 回读或图片编码。未出现在下一帧的实例会从 pipeline cache 移除。
+`GpuView` 的 `prepare` 直接取得当前 `Device`、`Queue` 与 viewport；每个实例按稳定 ID 缓存 uniform buffer/bind group。默认 painter 通过 `draw_in_pass` 加入当前 Scene dest pass。它不创建中间纹理、不进行 CPU 回读或图片编码。未出现在下一帧的实例会从 pipeline cache 移除。
 
 `RenderSlot` 是单个内容插槽的公共几何合同：逻辑边界按 scale factor 取 floor/ceil，确保物理 viewport/scissor 覆盖完整边缘，并可裁剪到目标纹理。`WorkspaceGeometry` 则为所有稳定 Region 输出布局快照。独立 Demo crate 的 `GalleryState::subscription` 只在 loading 或布局动画实际运行时创建定时订阅；`gpu-view-demo` 只在窗口、输入或状态变化时触发重绘。
 
-当前已经覆盖复用现有 RenderPass 的简单内容路径、用同一 CommandEncoder 创建独立 Pass 的组合路径、宿主创建 `winit::Window`/`Surface`/`Device`/`Queue` 后注入 Scene painter、宿主纹理直显，以及真实 `live2d-wgpu` 到 HostTexture 的共享上下文合成。Live2D 尚未迁移为 direct Scene pass；HostTexture 证据不能替代该迁移或具体产品模型验收。
+当前已经覆盖复用现有 RenderPass 的 HostTexture 采样、`GpuView` 加入当前 dest pass、宿主创建 `winit::Window`/`Surface`/`Device`/`Queue` 后注入 Scene painter，以及真实 `live2d-wgpu` 到 HostTexture 的共享上下文合成。Live2D 产品路径是树上 1..N 个普通 HostTexture 节点（后景/角色/前景由应用 native 组件映射），不是 NanaUI 内的 Cubism 类型，也不是直写 Surface 的 SceneGpuRenderer。`ui-live2d-acceptance` 在同一 Device/Queue 上合成后景 HostTexture、中间 Selected Button chrome 与前景 Live2D HostTexture 带。HostTexture 合成证据不能替代具体产品模型验收。
 
 `hosted-gpu-demo` 通过 `apply_hosted_system_material` 接入窗口材质：macOS Scene GPU
 路径在窗口于 WGPU layer 之后另有 content view 之前固定实色回退；Windows 仍尝试

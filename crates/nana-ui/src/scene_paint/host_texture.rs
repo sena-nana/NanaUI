@@ -53,16 +53,16 @@ impl HostTexturePipeline {
         PreparedHostTexture { primitive, clip }
     }
 
-    pub(super) fn render(
+    pub(super) fn draw(
         &self,
         prepared: &PreparedHostTexture,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
+        pass: &mut wgpu::RenderPass<'_>,
+        dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         prepared
             .primitive
-            .render(&self.pipeline, encoder, target, prepared.clip, gpu_work);
+            .draw_in_pass(&self.pipeline, pass, prepared.clip, dest_size, gpu_work);
     }
 
     pub(super) fn trim(&mut self) {

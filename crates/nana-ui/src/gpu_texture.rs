@@ -532,12 +532,12 @@ impl GpuTexturePrimitive {
         }
     }
 
-    pub(crate) fn render(
+    pub(crate) fn draw_in_pass(
         &self,
         pipeline: &GpuTexturePipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
+        pass: &mut wgpu::RenderPass<'_>,
         clip_bounds: PhysicalRect,
+        dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let key = TextureKey::new(self.presentation, self.layer.texture.id());
@@ -551,33 +551,35 @@ impl GpuTexturePrimitive {
         if bounds.width == 0 || bounds.height == 0 {
             return;
         }
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("nana-ui host texture render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        let viewport = texture.viewport;
-        render_pass.set_viewport(viewport[0], viewport[1], viewport[2], viewport[3], 0.0, 1.0);
-        render_pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
-        render_pass.set_pipeline(&pipeline.pipeline);
-        render_pass.set_bind_group(0, &texture.bind_group, &[]);
-        render_pass.draw(0..3, 0..1);
-        drop(render_pass);
-        if let Some(work) = gpu_work {
-            work.record_draw_batch();
-            work.record_draw_call();
-        }
+        encode_host_texture(pipeline, texture, pass, bounds, dest_size, gpu_work);
+    }
+}
+
+fn encode_host_texture(
+    pipeline: &GpuTexturePipeline,
+    texture: &PreparedTexture,
+    pass: &mut wgpu::RenderPass<'_>,
+    bounds: PhysicalRect,
+    dest_size: [u32; 2],
+    gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+) {
+    let viewport = texture.viewport;
+    pass.set_viewport(viewport[0], viewport[1], viewport[2], viewport[3], 0.0, 1.0);
+    pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
+    pass.set_pipeline(&pipeline.pipeline);
+    pass.set_bind_group(0, &texture.bind_group, &[]);
+    pass.draw(0..3, 0..1);
+    pass.set_viewport(
+        0.0,
+        0.0,
+        dest_size[0].max(1) as f32,
+        dest_size[1].max(1) as f32,
+        0.0,
+        1.0,
+    );
+    if let Some(work) = gpu_work {
+        work.record_draw_batch();
+        work.record_draw_call();
     }
 }
 
