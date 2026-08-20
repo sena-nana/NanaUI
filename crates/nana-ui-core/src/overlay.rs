@@ -3,7 +3,7 @@
 /// Dialogs, menus and popovers are mutually exclusive in the application shell:
 /// opening a new surface replaces the previous one, while dismiss always returns
 /// the overlay that was active. The controller deliberately contains no renderer
-/// state so it can be shared by Iced widgets and future host integrations.
+/// state so it can be shared across hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExclusiveOverlay<T> {
     active: Option<T>,

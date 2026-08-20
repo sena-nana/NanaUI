@@ -230,7 +230,7 @@ struct Fixture {
     component: Component,
     state: &'static str,
     expected: &'static str,
-    iced_contract: &'static str,
+    reference_contract: &'static str,
     runtime_contract: &'static str,
     divergence: &'static str,
 }
@@ -1358,7 +1358,7 @@ const fn f(component: Component, state: &'static str, expected: &'static str) ->
         component,
         state,
         expected,
-        iced_contract: "reference rendered; interaction semantics may be incomplete",
+        reference_contract: "reference rendered; interaction semantics may be incomplete",
         runtime_contract: "canonical frame must settle with layout, hit-test, accessibility and scene",
         divergence: "none unless recorded by the observed verdict",
     }
@@ -1483,30 +1483,30 @@ fn render_fixture(
     let runtime_path = directory.join("runtime.png");
     write::png(&runtime_path, size, &runtime_pixels)?;
 
-    let iced_path = directory.join("iced.png");
-    let iced_pixels = if let Some((png_size, pixels)) = write::read_png(&iced_path) {
+    let reference_path = directory.join("reference.png");
+    let reference_pixels = if let Some((png_size, pixels)) = write::read_png(&reference_path) {
         if png_size == size && pixels.len() == runtime_pixels.len() {
             pixels
         } else {
             runtime_pixels.clone()
         }
     } else {
-        write::png(&iced_path, size, &runtime_pixels)?;
+        write::png(&reference_path, size, &runtime_pixels)?;
         runtime_pixels.clone()
     };
 
     let side_size = Size::new(size.width * 2 + GAP, size.height);
-    let side = side_by_side(&iced_pixels, &runtime_pixels, size, GAP);
+    let side = side_by_side(&reference_pixels, &runtime_pixels, size, GAP);
     let side_path = directory.join("side-by-side.png");
     write::png(&side_path, side_size, &side)?;
-    let difference = pixel_difference(&iced_pixels, &runtime_pixels);
+    let difference = pixel_difference(&reference_pixels, &runtime_pixels);
     let difference_path = directory.join("difference.png");
     write::png(&difference_path, size, &difference)?;
 
     let evidence_path = directory.join("evidence.txt");
     write_evidence(&evidence_path, fixture, &runtime)?;
     Ok(vec![
-        iced_path,
+        reference_path,
         runtime_path,
         side_path,
         difference_path,
@@ -4654,13 +4654,13 @@ fn write_evidence(
             }
             _ => true,
         };
-    let iced_verdict =
+    let reference_verdict =
         if fixture.component == Component::Textarea && textarea_is_focused(fixture.state) {
             "deterministic compatibility content and focus state rendered for manual review"
         } else if matches!(fixture.state, "control-start" | "disabled" | "invalid")
             && fixture.component == Component::RangeField
         {
-            "compatibility defect: Iced adapter does not expose this product contract"
+            "compatibility defect: archived reference does not expose this product contract"
         } else if matches!(
             fixture.state,
             "pressed"
@@ -4671,7 +4671,7 @@ fn write_evidence(
                 | "accessibility-toggle"
                 | "pointer-activation"
         ) {
-            "reference only: headless fixture does not claim Iced retained interaction evidence"
+            "reference only: headless fixture does not claim retained interaction evidence"
         } else {
             "rendered reference; visual judgment remains manual"
         };
@@ -4679,10 +4679,10 @@ fn write_evidence(
     let (review_verdict, review_observed) = review_result(fixture);
     let divergence = intentional_divergence(fixture);
     let report = format!(
-        "expected: {}\niced_observed: {}\niced_verdict: {}\nruntime_expected: {}\nruntime_observed: bounds={bounds:?}; layout_ok={layout_ok}; text_scene_ok={text_scene_ok}; textarea_geometry_ok={textarea_geometry_ok}; segmented_geometry_ok={segmented_geometry_ok}; segmented_accessibility_ok={segmented_accessibility_ok}; segmented_contract_ok={}; segmented_options={:?}; segmented_requests={}; feedback_parent_inert={feedback_parent_inert}; feedback_accessibility_ok={feedback_accessibility_ok}; feedback_geometry_ok={feedback_geometry_ok}; feedback_contract_ok={}; text_input={text_input:?}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
+        "expected: {}\nreference_observed: {}\nreference_verdict: {}\nruntime_expected: {}\nruntime_observed: bounds={bounds:?}; layout_ok={layout_ok}; text_scene_ok={text_scene_ok}; textarea_geometry_ok={textarea_geometry_ok}; segmented_geometry_ok={segmented_geometry_ok}; segmented_accessibility_ok={segmented_accessibility_ok}; segmented_contract_ok={}; segmented_options={:?}; segmented_requests={}; feedback_parent_inert={feedback_parent_inert}; feedback_accessibility_ok={feedback_accessibility_ok}; feedback_geometry_ok={feedback_geometry_ok}; feedback_contract_ok={}; text_input={text_input:?}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
         fixture.expected,
-        fixture.iced_contract,
-        iced_verdict,
+        fixture.reference_contract,
+        reference_verdict,
         fixture.runtime_contract,
         runtime.segmented_contract_ok,
         runtime.segmented_options,

@@ -1,9 +1,8 @@
-//! NanaUI Android clipboard stub for iced_winit.
+//! NanaUI Android clipboard stub.
 //!
-//! Upstream `arboard` has no Android backend; iced still links it on native
-//! targets. This stub compiles and reports `ClipboardNotSupported` so NanaUI /
-//! Iced can cross-compile to `aarch64-linux-android`. Real IME/clipboard will
-//! go through `nana-ui-platform` later.
+//! Upstream `arboard` has no Android backend. This stub compiles and reports
+//! `ClipboardNotSupported` so NanaUI can cross-compile to
+//! `aarch64-linux-android`. Real IME/clipboard goes through `nana-ui-platform`.
 
 use std::{
 	borrow::Cow,

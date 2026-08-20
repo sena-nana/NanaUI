@@ -2,7 +2,7 @@
   "id": "T-S02",
   "title": "height:100% 定高链",
   "status": "pass",
-  "gap_note": "中间层 % 高度链未在 iced 路径稳定传递；易中间塌缩",
+  "gap_note": "中间层 % 高度链由 Runtime measure 传递",
   "viewport": [
     300,
     600

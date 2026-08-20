@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn module_geometry_matches_iced_quiet_zone_math() {
+    fn module_geometry_matches_quiet_zone_math() {
         let bounds = LayoutBox {
             x: 10.0,
             y: 20.0,

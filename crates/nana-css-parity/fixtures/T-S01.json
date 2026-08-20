@@ -2,7 +2,7 @@
   "id": "T-S01",
   "title": "width:50% 相对父盒",
   "status": "pass",
-  "gap_note": "measure 传入父 content box；MessageBridge→iced 路径仍见 P0-3",
+  "gap_note": "measure 传入父 content box",
   "viewport": [400, 120],
   "tolerance_px": 2,
   "tree": {

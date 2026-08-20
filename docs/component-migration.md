@@ -24,21 +24,20 @@ qualified or compatibility implementation while another component advances.
 Each component promotion uses one backend-neutral fixture state. The compatibility and Runtime
 paths are independently checked against the component's design contract, including component/text
 bounds, padding, baseline, wrapping, clipping and hit area. For each state the snapshot runner
-writes `iced.png`, `runtime.png`, `side-by-side.png`, `difference.png`, and `evidence.txt` under
+writes `reference.png`, `runtime.png`, `side-by-side.png`, `difference.png`, and `evidence.txt` under
 `target/ui-snapshots/component-migration/<component>/<theme>/<state>/` (or the corresponding
 `NANA_UI_SNAPSHOT_OUTPUT` root). `runtime.png` is the current Runtime frame painted by
-`SceneWgpuPainter`. `iced.png` is an archived baseline when present; the runner does not host
-Iced widgets as the left/oracle column. These images are diagnostic evidence, not a
-pixel-similarity gate, and the runner never promotes a catalog entry automatically.
+`SceneWgpuPainter`. `reference.png` is an archived baseline when present. These images are
+diagnostic evidence, not a pixel-similarity gate, and the runner never promotes a catalog entry
+automatically.
 
 There is no `nana_ui::compatibility` module. Public types are Runtime.
-Vue hosted apps use `VueRuntimeProgram` / `run_runtime`. Archived `iced.png`
-frames are migration-era references, not a live adapter.
+Vue hosted apps use `VueRuntimeProgram` / `run_runtime`.
 
-Archived Iced frames preserve migration-era product behavior and design intent, but they are not an absolute visual
+Archived reference frames preserve migration-era product behavior and design intent, but they are not an absolute visual
 truth. Review differences against shared theme semantics, font metrics, component state contracts,
 accessibility, hit testing and GPU composition. Runtime must retain its more accurate geometry and
-must not copy an Iced defect, tune a fixture, blur output or change colors merely to reduce a pixel
+must not copy a historical defect, tune a fixture, blur output or change colors merely to reduce a pixel
 difference. A component qualifies when its behavior, layout contract, rendering semantics and
 human-reviewed visual result are correct; SSIM or exact pixel equality is not required.
 
@@ -255,8 +254,8 @@ add that inset.
 `CalendarHeatmap`, `TimeSeriesChart`, `ReorderList`, `NativeMarkdown`,
 `SelectableRichText`, `ImageViewer`, `KeyCaptureLayer`, and `KeymapLayer` are
 `RuntimeQualified`. Root and `components` exports route to Runtime. Scene
-paints these through Quad/Text geometry. Archived Iced output is a reference,
-not a pixel oracle.
+paints these through Quad/Text geometry. Archived `reference.png` output is a
+baseline, not a pixel oracle.
 
 `GraphCanvas`, `GpuView`, and `GpuTextureView` are `RuntimeQualified`. The
 graph model lives once in `nana-ui-core`. Root `nana_ui::GraphCanvas`,

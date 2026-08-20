@@ -40,9 +40,9 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-F20", true, None), // align-self 覆盖 align-items
         ("T-F21", true, None), // flex-direction:row-reverse
         ("T-S01", true, None),
-        ("T-S02", true, None), // measure Fill 链；iced 路径仍建议回归
+        ("T-S02", true, None), // measure Fill 链
         ("T-S03", true, None),
-        ("T-S04", true, None), // 几何：flex:1 + 固定 action；ellipsis 见 iced/css_map 单测
+        ("T-S04", true, None), // 几何：flex:1 + 固定 action；ellipsis 见 css_map 单测
         ("T-S05", true, None),
         ("T-S06", true, None), // max-width clamp
         ("T-S07", true, None), // max-height clamp
@@ -72,16 +72,16 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-B12", true, None), // logical margin-* → LTR physical
         ("T-V01", true, None),
         ("T-V02", true, None), // visibility:hidden → Nana 跳过（非 CSS 占位）
-        ("T-W01", true, None), // flex-wrap measure；iced Wrap 多行拆分
-        ("T-W02", true, None), // wrap-reverse 行序；iced borrowed+owned 路径
+        ("T-W01", true, None), // flex-wrap measure；Wrap 多行拆分
+        ("T-W02", true, None), // wrap-reverse 行序；borrowed+owned 路径
         ("T-W03", true, None), // wrap 双值 gap：行内 column-gap / 行间 row-gap
         ("T-W04", true, None), // wrap 折行计入水平 margin
         ("T-W05", true, None), // wrap 行间 gap%（auto 高→回退宽）
         ("T-W06", true, None), // wrap-reverse + 行间 gap%
-        ("T-W07", true, None), // column + flex-wrap 折列（measure + iced）
+        ("T-W07", true, None), // column + flex-wrap 折列（measure）
         ("T-W08", true, None), // column + wrap-reverse 列序；cd@x0 / ab@x88
         ("T-W09", true, None), // column-wrap + 垂直 margin 触发折列
-        ("T-G01", true, None), // grid-template-columns 220px 1fr → measure/iced
+        ("T-G01", true, None), // grid-template-columns 220px 1fr → measure
         ("T-G02", true, None), // var(...) + minmax(0,1fr) 轻量轨
         ("T-G03", true, None), // 80px 1fr 1fr 等分剩余
         ("T-G04", true, None), // 100px 1fr 2fr 权重分轨

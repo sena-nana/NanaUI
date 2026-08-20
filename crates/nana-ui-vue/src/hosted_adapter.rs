@@ -539,7 +539,6 @@ fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPos
 /// Vue application as a [`RuntimeProgram`].
 ///
 /// Owns one [`VueHostedRuntime`] and enters `run_runtime` / `SceneWgpuPainter`.
-/// This does not build an Iced widget tree.
 pub struct VueRuntimeProgram<E: JsEngine> {
     runtime: VueHostedRuntime<E>,
     documents: HashMap<WindowId, Arc<SharedRuntimeDocument>>,

@@ -16,7 +16,7 @@ mod osx;
 #[cfg(target_os = "macos")]
 pub use osx::*;
 
-/// NanaUI: stub backend so iced_winit can link on Android (no OS clipboard yet).
+/// NanaUI: Android clipboard stub (no OS clipboard yet).
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(target_os = "android")]

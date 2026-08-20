@@ -1,6 +1,6 @@
 //! Nana-owned WGPU painter for [`UiScene`].
 //!
-//! This is the product Scene backend. It does not implement `iced::Widget`.
+//! This is the product Scene backend. It paints [`UiScene`] through the host GPU.
 //! The host owns Device/Queue/encoder. HostTexture is sampled in document order
 //! inside one dest pass.
 

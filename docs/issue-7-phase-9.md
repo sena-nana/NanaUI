@@ -1,6 +1,6 @@
 # Issue #7 Phase 9：macOS milestone acceptance
 
-本阶段在 `2026-08-14` 对 Phase 0–8 的实现和证据做 milestone 审计。结论是：**当前 macOS 范围的 Nana-owned Runtime / UiScene、组件、IME、accessibility 与 Live2D composition 已建立并验收；桌面产品绘制现为 `SceneWgpuPainter`，仓内 `engine/iced` 只作为兼容资产保留，不是产品编程模型。** Issue 原始 DoD 继续保持 OPEN；Windows/Linux 验收暂缓，Android 产品范围排除。当前结果只表示 macOS 阶段可用，不等于 Epic 完成，也不把暂缓平台标记为通过。
+本阶段在 `2026-08-14` 对 Phase 0–8 的实现和证据做 milestone 审计。结论是：**当前 macOS 范围的 Nana-owned Runtime / UiScene、组件、IME、accessibility 与 Live2D composition 已建立并验收；桌面产品绘制现为 `SceneWgpuPainter`，仓内 `engine/iced` 已从仓库移除，不是产品编程模型。** Issue 原始 DoD 继续保持 OPEN；Windows/Linux 验收暂缓，Android 产品范围排除。当前结果只表示 macOS 阶段可用，不等于 Epic 完成，也不把暂缓平台标记为通过。
 
 ## 退出门禁
 
@@ -131,4 +131,4 @@ SetTextSelection 实机复核又暴露了 adapter 边界的第二处双权威：
 
 当前 macOS 产品范围内，macOS IME/VoiceOver、Nana-owned Runtime/UiScene、canonical `nana_ui::runtime` component API、基础 Quad/Text painter、desktop adapter 接线，以及真实 Live2D WGPU renderer 的共享纹理合成均已不再是缺口。Windows/Linux 真实 IME/辅助技术按用户要求暂缓，不计入当前 macOS 门禁，也不被误报为已通过；Android 明确排除。授权产品模型不是 framework owner 的内置资产，后续如有具体产品性能门禁，应以外部输入复跑当前 harness。
 
-因此本阶段结论为 **macOS milestone accepted / Epic OPEN / Native RHI NO-GO**：桌面产品绘制是 `RuntimeProgram + RuntimeDocument + UiScene` + `SceneWgpuPainter`；仓内 `engine/iced` 仍是兼容资产，不是应用主合同。Issue 只有在外部消费应用完成 Dock、HostTexture、输入、多窗口与 Accessibility 的纯 Runtime gate，并补足原始平台验收后才可重新判断关闭；不得把本 milestone 当作 Epic complete。
+因此本阶段结论为 **macOS milestone accepted / Epic OPEN / Native RHI NO-GO**：桌面产品绘制是 `RuntimeProgram + RuntimeDocument + UiScene` + `SceneWgpuPainter`；仓内 `engine/iced` 已从仓库移除，不是应用主合同。Issue 只有在外部消费应用完成 Dock、HostTexture、输入、多窗口与 Accessibility 的纯 Runtime gate，并补足原始平台验收后才可重新判断关闭；不得把本 milestone 当作 Epic complete。
