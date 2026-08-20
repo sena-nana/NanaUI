@@ -1,0 +1,100 @@
+{
+  "source": "gpui-scenario-bench",
+  "status": "ok",
+  "scenario_id": "hover",
+  "kind": "Hover",
+  "params": {
+    "nodes": 10000,
+    "size_change": false
+  },
+  "nodes": 10000,
+  "tree": {
+    "generation": "complete-binary-heap",
+    "parent_rule": "parent(i)=i//2, root=1",
+    "node_kind": "element-div",
+    "text": null,
+    "sample_parents": [
+      {
+        "index": 1,
+        "parent": null
+      },
+      {
+        "index": 2,
+        "parent": 1
+      },
+      {
+        "index": 3,
+        "parent": 1
+      },
+      {
+        "index": 50,
+        "parent": 25
+      },
+      {
+        "index": 10000,
+        "parent": 5000
+      }
+    ]
+  },
+  "hover": {
+    "targets": [
+      9999,
+      10000
+    ],
+    "size_change": false
+  },
+  "notes": [
+    "10k complete-binary-heap, same topology as Nana tree_mutations. Hover toggles style on the last two nodes, matching Nana set_pointer_hover between node(n) and node(n-1).",
+    "This is a targeted hover-state change, not a 10k hit-test walk and not a smaller tree.",
+    "GPUI has no WorkCounters.layout_nodes; hover_without_size_change stays not-evaluable. Do not invent layout_nodes=0.",
+    "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint on a reused TestAppContext window."
+  ],
+  "viewport": [
+    900,
+    640
+  ],
+  "scale": 1.0,
+  "backend": "gpui-test-app-context",
+  "gpu_present": false,
+  "warmup_iterations": 5,
+  "iterations": 20,
+  "adapter": {
+    "name": "gpui TestAppContext / TestWindow",
+    "crate": "gpui",
+    "version": "0.2.2",
+    "device_type": "test-platform",
+    "backend": "none"
+  },
+  "machine_identity": {
+    "fixed_benchmark_machine": false,
+    "note": "This dump is not Issue #8 §12.2 / #12 fixed-machine history. Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine."
+  },
+  "view_construction_ms": {
+    "p50": 6.692645499999999,
+    "p95": 12.102801450000001,
+    "p99": 12.67866029,
+    "min": 5.483292,
+    "max": 12.822625
+  },
+  "layout_ms": {
+    "p50": 1343.8624165,
+    "p95": 1393.89152465,
+    "p99": 1572.4678377299997,
+    "min": 1329.3515419999999,
+    "max": 1617.111916
+  },
+  "draw_ms": {
+    "p50": 12.296063,
+    "p95": 17.731481600000006,
+    "p99": 23.73836351999999,
+    "min": 11.782375,
+    "max": 25.240084
+  },
+  "cpu_frame_ms": {
+    "p50": 1363.3709995,
+    "p95": 1413.48782405,
+    "p99": 1595.0947648099996,
+    "min": 1347.2063759999999,
+    "max": 1640.4965
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "source": "gpui-scenario-bench",
+  "status": "ok",
+  "scenario_id": "text-table",
+  "kind": "Table",
+  "params": {
+    "rows": 10000,
+    "columns": 100,
+    "visible_rows": 40,
+    "visible_columns": 16,
+    "overscan_rows": 8,
+    "overscan_columns": 2,
+    "short_cell_len": 8,
+    "wrapped_cells": 4,
+    "wrapped_cell_len": 256,
+    "row_extent_px": 20.0,
+    "column_extent_px": 80.0
+  },
+  "virtualization": {
+    "logical_rows": 10000,
+    "logical_columns": 100,
+    "visible_rows": 40,
+    "visible_columns": 16,
+    "overscan_rows": 8,
+    "overscan_columns": 2,
+    "row_extent_px": 20.0,
+    "column_extent_px": 80.0,
+    "live_ui_entities": 1026,
+    "live_ui_entities_bound": 1334,
+    "last_row_window": {
+      "start": 0,
+      "end": 54
+    },
+    "last_col_window": {
+      "start": 0,
+      "end": 18
+    }
+  },
+  "work_counters": {
+    "live_ui_entities": 1026,
+    "live_ui_entities_bound": 1334,
+    "visible_rows": 40,
+    "overscan_rows": 8,
+    "visible_columns": 16,
+    "overscan_columns": 2,
+    "wrapped_cells": 4,
+    "wrapped_cell_len": 256,
+    "short_cell_len": 8
+  },
+  "window_ms": {
+    "p50": 0.000041,
+    "p95": 0.00012710000000000003,
+    "p99": 0.00015901999999999995,
+    "min": 0.0,
+    "max": 0.000167
+  },
+  "notes": [
+    "GPUI materializes only the catalog table window (visible+overscan rows and columns), not rows×columns widgets.",
+    "Cell generator matches Nana text_table_cell: short_cell_len labels; column 0 of the first wrapped_cells rows in each 40-row band is wrapped_cell_len.",
+    "live_ui_entities is mounted_rows + mounted_rows×mounted_columns, matching Nana virtual table children.",
+    "GPUI has no WorkCounters.text_shaped / glyph_cache_*; those stay omitted / not-evaluable.",
+    "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint of the live window only."
+  ],
+  "viewport": [
+    1280,
+    800
+  ],
+  "scale": 1.0,
+  "backend": "gpui-test-app-context",
+  "gpu_present": false,
+  "warmup_iterations": 5,
+  "iterations": 20,
+  "adapter": {
+    "name": "gpui TestAppContext / TestWindow",
+    "crate": "gpui",
+    "version": "0.2.2",
+    "device_type": "test-platform",
+    "backend": "none"
+  },
+  "machine_identity": {
+    "fixed_benchmark_machine": false,
+    "note": "This dump is not Issue #8 §12.2 / #12 fixed-machine history. Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine."
+  },
+  "view_construction_ms": {
+    "p50": 0.4090205,
+    "p95": 0.43300275000000005,
+    "p99": 0.43366775,
+    "min": 0.316166,
+    "max": 0.433834
+  },
+  "layout_ms": {
+    "p50": 2.2404165000000003,
+    "p95": 2.3943455,
+    "p99": 2.6016354999999995,
+    "min": 2.057291,
+    "max": 2.653458
+  },
+  "draw_ms": {
+    "p50": 3.5526665,
+    "p95": 4.2834601,
+    "p99": 4.46209202,
+    "min": 2.239417,
+    "max": 4.50675
+  },
+  "cpu_frame_ms": {
+    "p50": 6.1502490000000005,
+    "p95": 6.9330621500000005,
+    "p99": 6.94794523,
+    "min": 5.037418000000001,
+    "max": 6.951666
+  }
+}

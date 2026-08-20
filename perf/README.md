@@ -25,6 +25,9 @@ python3 perf/contract.py --check-schema
 python3 perf/contract.py --self-test
 python3 perf/contract.py --evaluate-invariants path/to/nana-text-table.json path/to/nana-virtual-list-10k.json
 python3 perf/contract.py --evaluate-invariants target/performance/issue8
+python3 perf/contract.py --evaluate-relative \
+  perf/fixtures/iced-scenario-static-tree-100.json \
+  perf/fixtures/gpui-scenario-static-tree-100.json
 
 python3 perf/runners/nana/run.py --list
 python3 perf/runners/nana/run.py --print-plan --scenario static-tree-100
@@ -43,13 +46,14 @@ python3 perf/runners/iced/run.py --scenario text-editor --output /tmp/iced-text-
 python3 perf/runners/iced/run.py --scenario gpu-scene-ui --output /tmp/iced-gpu-scene-ui.json          # expected exit 2
 python3 perf/runners/iced/run.py --scenario static-tree-50k --output /tmp/iced-static-tree-50k.json   # expected exit 2 (incomparable)
 python3 perf/runners/gpui/run.py --print-plan --scenario static-tree-100
+python3 perf/runners/iced/run.py --print-plan --scenario static-tree-100
 python3 perf/runners/gpui/run.py --scenario gpu-scene-ui --output /tmp/gpui-gpu-scene-ui.json  # expected exit 2
 python3 perf/runners/gpui/run.py --scenario static-tree-100 --from-report perf/fixtures/gpui-scenario-static-tree-100.json
 ```
 
-Iced/GPUI live dumps: ``target/performance/issue12/``. Unwired kinds / missing
-adapter: exit **2**, no metrics. Relative multipliers stay off. Weekly GHA is
-not a named fixed machine.
+Iced/GPUI live dumps: ``target/performance/issue12/``. Unwired kinds: exit **2**,
+no metrics. ``--evaluate-relative`` is #12 observation, not multiplier CI.
+Weekly GHA is not a named fixed machine.
 
 `--from-report` maps an already-produced `nana-*-benchmark` /
 `nana-gpu-scene-benchmark` / `scenario-bench` / Gallery `ui-benchmark` JSON

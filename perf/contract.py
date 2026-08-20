@@ -3,7 +3,8 @@
 
 #8: Nana work-counter / catalog / hotspot + CI fail-closed.
 #12: Iced/GPUI observation (not product renderers, not #8 pass/fail).
-``relative_gate_enforceable`` stays False. See docs/performance-contract.md.
+``relative_gate_enforceable`` stays False. ``--evaluate-relative`` is honesty
+fail-closed observation, not multiplier CI. See docs/performance-contract.md.
 """
 
 from __future__ import annotations
@@ -119,6 +120,18 @@ def load_scenario(scenario_id: str, root: Path | None = None) -> dict[str, Any]:
 def list_harness_ids(root: Path | None = None) -> list[str]:
     catalog = load_catalog(root)
     return list(catalog["harness_ids"])
+
+
+def list_issue12_same_scenario_ids(root: Path | None = None) -> list[str]:
+    catalog = load_catalog(root)
+    issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
+    return list(issue12.get("same_scenario_ids") or [])
+
+
+def list_issue12_unsupported_ids(root: Path | None = None) -> list[str]:
+    catalog = load_catalog(root)
+    issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
+    return list(issue12.get("unsupported_ids") or [])
 
 
 def validate_scenario(scenario: Mapping[str, Any]) -> list[str]:
@@ -729,6 +742,30 @@ def validate_all_scenarios(root: Path | None = None) -> list[str]:
             errors.append(f"{path.name}: {message}")
         if payload.get("id") != path.stem:
             errors.append(f"{path.name}: id must equal file stem")
+    issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
+    same = list(issue12.get("same_scenario_ids") or [])
+    unsupported = list(issue12.get("unsupported_ids") or [])
+    harness = set(catalog["harness_ids"])
+    if not same or not unsupported:
+        errors.append("catalog issue12 must list same_scenario_ids and unsupported_ids")
+    overlap = set(same) & set(unsupported)
+    if overlap:
+        errors.append(
+            "catalog issue12 same_scenario_ids and unsupported_ids overlap: "
+            + ", ".join(sorted(overlap))
+        )
+    listed = set(same) | set(unsupported)
+    if listed != harness:
+        missing = sorted(harness - listed)
+        extra = sorted(listed - harness)
+        if missing:
+            errors.append(
+                "catalog issue12 ids missing harness entries: " + ", ".join(missing)
+            )
+        if extra:
+            errors.append(
+                "catalog issue12 ids not in harness_ids: " + ", ".join(extra)
+            )
     return errors
 
 
@@ -739,6 +776,7 @@ def machine_note() -> dict[str, Any]:
         "machine": platform.machine(),
         "python": platform.python_version(),
         "hostname": platform.node(),
+        "fixed_benchmark_machine": False,
         "note": (
             "This is the host that invoked the runner. GitHub "
             "`ubuntu-latest` / `macos-latest` weekly cron is not a named "
@@ -1404,6 +1442,378 @@ def relative_gate_can_enforce(
     if iced_report.get("runner") != "iced" or gpui_report.get("runner") != "gpui":
         return False
     return iced_report.get("scenario_id") == gpui_report.get("scenario_id")
+
+
+RELATIVE_CPU_LIMITS = {"p50": 1.15, "p95": 1.20, "p99": 1.25}
+RELATIVE_MEMORY_LIMIT = 1.20
+ISSUE12_FIXTURE_IDS = (
+    "static-tree-100",
+    "mutation-paint-only",
+    "hover",
+    "virtual-list-10k",
+    "text-table",
+)
+
+
+def named_fixed_machine(report: Mapping[str, Any] | None) -> bool:
+    if not isinstance(report, Mapping):
+        return False
+    machine = report.get("machine") if isinstance(report.get("machine"), Mapping) else {}
+    if machine.get("fixed_benchmark_machine") is True:
+        return True
+    identity = (
+        report.get("machine_identity")
+        if isinstance(report.get("machine_identity"), Mapping)
+        else {}
+    )
+    return identity.get("fixed_benchmark_machine") is True
+
+
+def _positive_metric(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    return float(value)
+
+
+def _cpu_percentiles(report: Mapping[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(report, Mapping):
+        return None
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    cpu = metrics.get("cpu_frame_ms") if isinstance(metrics.get("cpu_frame_ms"), Mapping) else {}
+    out: dict[str, float] = {}
+    for key in ("p50", "p95", "p99"):
+        value = _positive_metric(cpu.get(key))
+        if value is None:
+            return None
+        out[key] = value
+    return out
+
+
+def _memory_bytes(report: Mapping[str, Any] | None) -> float | None:
+    if not isinstance(report, Mapping):
+        return None
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    for key in ("steady_state_memory_bytes", "memory_bytes", "rss_bytes"):
+        value = _positive_metric(metrics.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _honesty_error(report: Mapping[str, Any], label: str) -> str | None:
+    if report.get("relative_gate_enforceable") is not False:
+        return f"{label} must keep relative_gate_enforceable False"
+    if report.get("status") != "ok":
+        return None
+    if not report.get("metrics"):
+        return f"{label} ok without metrics; fake numbers are forbidden"
+    if report.get("equivalence") == "same-scenario":
+        cpu = (report.get("metrics") or {}).get("cpu_frame_ms")
+        if not isinstance(cpu, Mapping) or _positive_metric(cpu.get("p50")) is None:
+            return (
+                f"{label} same-scenario ok missing positive cpu_frame_ms.p50; "
+                "stuffed 0 is forbidden"
+            )
+    if report.get("runner") == "gpui":
+        metrics = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+        if "present_ms" in metrics:
+            return f"{label} GPUI must omit present_ms (TestWindow does not GPU-present)"
+        if "frames_after_idle" in metrics:
+            return f"{label} GPUI must omit frames_after_idle"
+    return None
+
+
+def load_issue12_report(path: Path, root: Path) -> dict[str, Any]:
+    payload = load_json(path)
+    if is_runner_envelope(payload):
+        error = _honesty_error(payload, str(path))
+        if error:
+            raise ValueError(error)
+        return payload
+    scenario_id = payload.get("scenario_id")
+    if not isinstance(scenario_id, str) or not scenario_id:
+        raise ValueError(f"{path}: missing scenario_id")
+    scenario = load_scenario(scenario_id, root)
+    extractor = None
+    runner = None
+    if is_iced_scenario_bench_report(payload):
+        extractor = extract_iced
+        runner = "iced"
+    elif is_gpui_scenario_bench_report(payload):
+        extractor = extract_gpui
+        runner = "gpui"
+    else:
+        raise ValueError(
+            f"{path}: not a runner envelope or iced/gpui scenario-bench dump"
+        )
+    try:
+        return extractor(scenario, payload, source_path=path)
+    except KeyError as exc:
+        reason = key_error_reason(exc)
+        if payload.get("status") == "unsupported":
+            return envelope(
+                runner=runner,
+                status="unsupported",
+                scenario_id=scenario_id,
+                scenario=scenario,
+                unsupported_reason=reason,
+            )
+        raise ValueError(f"{path}: {reason}") from exc
+
+
+def compare_issue12_pair(
+    iced_report: Mapping[str, Any],
+    gpui_report: Mapping[str, Any],
+    nana_report: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Honesty fail-closed. Historical multipliers need Nana + a named fixed machine."""
+    result: dict[str, Any] = {
+        "scenario_id": iced_report.get("scenario_id") or gpui_report.get("scenario_id"),
+        "relative_gate_enforceable": False,
+        "metrics": {},
+    }
+    for label, report in (("iced", iced_report), ("gpui", gpui_report)):
+        error = _honesty_error(report, label)
+        if error:
+            result["status"] = "error"
+            result["can_enforce"] = False
+            result["note"] = error
+            return result
+    if (
+        iced_report.get("status") == "unsupported"
+        or gpui_report.get("status") == "unsupported"
+    ):
+        result["status"] = "unsupported"
+        result["can_enforce"] = False
+        result["note"] = (
+            "missing same-scenario Iced+GPUI pair; not a vacuous pass and not multiplier CI"
+        )
+        return result
+    if not relative_gate_can_enforce(iced_report, gpui_report):
+        result["status"] = "error"
+        result["can_enforce"] = False
+        result["note"] = "Iced+GPUI pair is not real same-scenario cpu_frame_ms"
+        return result
+
+    iced_cpu = _cpu_percentiles(iced_report)
+    gpui_cpu = _cpu_percentiles(gpui_report)
+    if iced_cpu is None or gpui_cpu is None:
+        result["status"] = "error"
+        result["can_enforce"] = False
+        result["note"] = (
+            "same-scenario cpu_frame_ms percentiles must be positive; stuffed 0 is forbidden"
+        )
+        return result
+    result["can_enforce"] = True
+
+    nana_cpu = None
+    if nana_report is not None:
+        error = _honesty_error(nana_report, "nana")
+        if error:
+            result["status"] = "error"
+            result["note"] = error
+            return result
+        if (
+            nana_report.get("status") == "ok"
+            and nana_report.get("equivalence") == "same-scenario"
+            and nana_report.get("runner") == "nana"
+        ):
+            nana_cpu = _cpu_percentiles(nana_report)
+
+    named = named_fixed_machine(iced_report) and named_fixed_machine(gpui_report)
+    if nana_report is not None:
+        named = named and named_fixed_machine(nana_report)
+    result["named_fixed_machine"] = named
+
+    failed = False
+    for key, limit in RELATIVE_CPU_LIMITS.items():
+        iced_value = iced_cpu[key]
+        gpui_value = gpui_cpu[key]
+        faster = min(iced_value, gpui_value)
+        row: dict[str, Any] = {
+            "iced": iced_value,
+            "gpui": gpui_value,
+            "faster": faster,
+            "faster_runner": "iced" if iced_value <= gpui_value else "gpui",
+            "limit": limit,
+        }
+        if nana_cpu is not None:
+            ratio = nana_cpu[key] / faster
+            row["nana"] = nana_cpu[key]
+            row["nana_over_faster"] = ratio
+            if named:
+                if ratio <= limit:
+                    row["status"] = "ok"
+                else:
+                    row["status"] = "failed"
+                    failed = True
+            else:
+                row["status"] = "observation"
+                row["note"] = (
+                    "historical Nana vs faster(Iced,GPUI) threshold is not CI "
+                    "without a named fixed machine"
+                )
+        else:
+            row["status"] = "observation"
+            row["note"] = (
+                "historical multiplier table is Nana vs faster(Iced,GPUI), not Iced vs GPUI; "
+                "Nana envelope absent"
+            )
+        result["metrics"][f"cpu_frame_ms.{key}"] = row
+
+    gpui_metrics = (
+        gpui_report.get("metrics") if isinstance(gpui_report.get("metrics"), Mapping) else {}
+    )
+    if "present_ms" in gpui_metrics:
+        result["status"] = "error"
+        result["note"] = "GPUI present_ms must stay omitted"
+        return result
+    iced_metrics = (
+        iced_report.get("metrics") if isinstance(iced_report.get("metrics"), Mapping) else {}
+    )
+    iced_present = iced_metrics.get("present_ms")
+    present_row: dict[str, Any] = {
+        "status": "not-evaluable",
+        "note": "GPUI TestWindow::draw does not GPU-present; present_ms omitted, not 0",
+    }
+    if isinstance(iced_present, Mapping) and iced_present.get("p50") is not None:
+        present_row["iced"] = iced_present.get("p50")
+    result["metrics"]["present_ms"] = present_row
+
+    mem_iced = _memory_bytes(iced_report)
+    mem_gpui = _memory_bytes(gpui_report)
+    mem_nana = _memory_bytes(nana_report) if nana_report is not None else None
+    memory_row: dict[str, Any] = {"limit": RELATIVE_MEMORY_LIMIT}
+    if mem_nana is not None and mem_iced is not None and mem_gpui is not None:
+        faster_mem = min(mem_iced, mem_gpui)
+        ratio = mem_nana / faster_mem
+        memory_row.update(
+            {
+                "iced": mem_iced,
+                "gpui": mem_gpui,
+                "nana": mem_nana,
+                "faster": faster_mem,
+                "nana_over_faster": ratio,
+            }
+        )
+        if named:
+            if ratio <= RELATIVE_MEMORY_LIMIT:
+                memory_row["status"] = "ok"
+            else:
+                memory_row["status"] = "failed"
+                failed = True
+        else:
+            memory_row["status"] = "observation"
+    else:
+        memory_row["status"] = "not-evaluable"
+        memory_row["note"] = (
+            "process memory is not exported on Iced/GPUI scenario-bench; do not invent 0"
+        )
+    result["metrics"]["memory"] = memory_row
+
+    if failed:
+        result["status"] = "failed"
+        result["note"] = (
+            "named-fixed-machine Nana vs faster(Iced,GPUI) exceeded historical multipliers"
+        )
+        return result
+    if named and nana_cpu is not None:
+        result["status"] = "ok"
+        result["note"] = "named fixed machine; Nana vs faster(Iced,GPUI) within historical multipliers"
+        return result
+    result["status"] = "observation"
+    result["note"] = (
+        "real same-scenario Iced+GPUI pair; historical multipliers stay observation "
+        "without Nana on a named fixed machine. relative_gate_can_enforce is not CI."
+    )
+    return result
+
+
+def evaluate_relative_paths(
+    paths: Sequence[Path | str],
+    *,
+    root: Path | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Compare Iced/GPUI (+ optional Nana) envelopes. Not a Nana #8 gate."""
+    base = root or REPO_ROOT
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    load_errors: list[dict[str, Any]] = []
+    for path in expand_invariant_report_paths(paths):
+        try:
+            report = load_issue12_report(path, base)
+        except FileNotFoundError:
+            load_errors.append({"source": str(path), "status": "error", "note": f"missing {path}"})
+            continue
+        except (ValueError, json.JSONDecodeError, KeyError) as exc:
+            load_errors.append({"source": str(path), "status": "error", "note": str(exc)})
+            continue
+        scenario_id = str(report.get("scenario_id") or "")
+        runner = str(report.get("runner") or "")
+        if not scenario_id or runner not in {"iced", "gpui", "nana"}:
+            load_errors.append(
+                {
+                    "source": str(path),
+                    "status": "error",
+                    "note": f"{path} is not an iced/gpui/nana #12 comparison envelope",
+                }
+            )
+            continue
+        by_runner = grouped.setdefault(scenario_id, {})
+        if runner in by_runner:
+            load_errors.append(
+                {
+                    "source": str(path),
+                    "status": "error",
+                    "note": f"duplicate {runner} envelope for {scenario_id}",
+                }
+            )
+            continue
+        by_runner[runner] = report
+        by_runner.setdefault("_sources", {})[runner] = str(path)
+
+    pairs: list[dict[str, Any]] = []
+    for scenario_id, by_runner in grouped.items():
+        iced_report = by_runner.get("iced")
+        gpui_report = by_runner.get("gpui")
+        if iced_report is None or gpui_report is None:
+            continue
+        compared = compare_issue12_pair(
+            iced_report, gpui_report, by_runner.get("nana")
+        )
+        compared["sources"] = by_runner.get("_sources", {})
+        pairs.append(compared)
+
+    summary: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "relative_gate_enforceable": False,
+        "note": (
+            "Issue #12 observation. relative_gate_can_enforce is not multiplier CI. "
+            "Weekly GHA is not a named fixed machine."
+        ),
+        "pairs": pairs,
+        "errors": load_errors,
+    }
+    if load_errors or any(item.get("status") == "error" for item in pairs):
+        summary["status"] = "error"
+        return summary, EXIT_ERROR
+    if any(item.get("status") == "failed" for item in pairs):
+        summary["status"] = "failed"
+        return summary, EXIT_ERROR
+    comparable = [item for item in pairs if item.get("can_enforce")]
+    if not comparable:
+        summary["status"] = "unsupported"
+        summary["note"] = (
+            "no real same-scenario Iced+GPUI pair; exit 2, not a vacuous pass"
+        )
+        return summary, EXIT_UNSUPPORTED
+    summary["status"] = "observation"
+    if any(item.get("status") == "ok" for item in pairs) and all(
+        item.get("status") in {"ok", "unsupported"} for item in pairs
+    ):
+        summary["status"] = "ok"
+    return summary, EXIT_OK
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -2557,6 +2967,19 @@ def _extract_iced_scenario_bench(
     skip = skip_fn(scenario)
     if skip:
         raise KeyError(skip)
+    if runner == "gpui":
+        if report.get("present_ms") is not None:
+            raise KeyError(
+                "GPUI TestWindow::draw does not GPU-present; omit present_ms rather than emit 0"
+            )
+        if report.get("frames_after_idle") is not None:
+            raise KeyError(
+                "GPUI TestPlatform on_request_frame is a no-op; omit frames_after_idle rather than emit 0"
+            )
+        if report.get("gpu_present") is not False:
+            raise KeyError(
+                "GPUI ok dump must declare gpu_present=false; TestWindow has no GPU present"
+            )
     kind = scenario["kind"]
     reported_id = report.get("scenario_id")
     if reported_id not in (None, scenario["id"]):
@@ -2815,7 +3238,7 @@ def _extract_iced_scenario_bench(
             f"{source_name} has no same-scenario mapping for {scenario['id']} "
             f"(kind={kind})"
         )
-    return envelope(
+    payload = envelope(
         runner=runner,
         status="ok",
         scenario_id=scenario["id"],
@@ -2827,6 +3250,17 @@ def _extract_iced_scenario_bench(
         metrics={key: value for key, value in metrics.items() if value is not None},
         work_counters=work_counters,
     )
+    identity = (
+        report.get("machine_identity")
+        if isinstance(report.get("machine_identity"), Mapping)
+        else {}
+    )
+    machine = payload.get("machine")
+    if isinstance(machine, dict):
+        machine["fixed_benchmark_machine"] = (
+            identity.get("fixed_benchmark_machine") is True
+        )
+    return payload
 
 
 def _scale_token(nodes: int) -> str:
@@ -6220,6 +6654,122 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
                     "relative_gate_can_enforce should be true for live Iced+GPUI same-scenario "
                     "static-tree-100, but envelope relative_gate_enforceable stays False"
                 )
+            compared = compare_issue12_pair(iced_same, gpui_from_report)
+            if compared.get("status") != "observation" or compared.get("can_enforce") is not True:
+                errors.append(
+                    "live static-tree-100 Iced+GPUI must be observation with can_enforce, "
+                    f"got status={compared.get('status')!r} can_enforce={compared.get('can_enforce')!r}"
+                )
+            elif compared.get("named_fixed_machine") is not False:
+                errors.append("laptop fixtures must not claim a named fixed machine")
+            elif compared.get("relative_gate_enforceable") is not False:
+                errors.append("compare_issue12_pair must keep relative_gate_enforceable False")
+            elif (compared.get("metrics") or {}).get("present_ms", {}).get("status") != "not-evaluable":
+                errors.append("GPUI-omitted present_ms must stay not-evaluable, not 0")
+            elif (compared.get("metrics") or {}).get("memory", {}).get("status") != "not-evaluable":
+                errors.append("missing Iced/GPUI process memory must stay not-evaluable, not 0")
+            else:
+                stuffed = copy.deepcopy(gpui_from_report)
+                stuffed.setdefault("metrics", {})["present_ms"] = {
+                    "p50": 0,
+                    "p95": 0,
+                    "p99": 0,
+                }
+                stuffed_cmp = compare_issue12_pair(iced_same, stuffed)
+                if stuffed_cmp.get("status") != "error":
+                    errors.append("GPUI stuffed present_ms=0 must honesty-error, not compare")
+                empty_ok = envelope(
+                    runner="iced",
+                    status="ok",
+                    scenario_id="static-tree-100",
+                    equivalence="same-scenario",
+                )
+                empty_cmp = compare_issue12_pair(empty_ok, gpui_from_report)
+                if empty_cmp.get("status") != "error":
+                    errors.append("ok-without-metrics must honesty-error, not a vacuous pass")
+                iced_named = copy.deepcopy(iced_same)
+                iced_named.setdefault("machine", {})["fixed_benchmark_machine"] = True
+                gpui_named = copy.deepcopy(gpui_from_report)
+                gpui_named.setdefault("machine", {})["fixed_benchmark_machine"] = True
+                nana_named = envelope(
+                    runner="nana",
+                    status="ok",
+                    scenario_id="static-tree-100",
+                    scenario=load_scenario("static-tree-100", root),
+                    equivalence="same-scenario",
+                    metrics={
+                        "cpu_frame_ms": {"p50": 100.0, "p95": 120.0, "p99": 140.0},
+                    },
+                )
+                nana_named.setdefault("machine", {})["fixed_benchmark_machine"] = True
+                named_fail = compare_issue12_pair(iced_named, gpui_named, nana_named)
+                if named_fail.get("status") != "failed":
+                    errors.append(
+                        "named-box Nana 100ms vs live Iced/GPUI must fail historical 1.15×, "
+                        f"got {named_fail.get('status')!r}"
+                    )
+
+    for fixture_id in ISSUE12_FIXTURE_IDS:
+        iced_path = root / "perf" / "fixtures" / f"iced-scenario-{fixture_id}.json"
+        gpui_path = root / "perf" / "fixtures" / f"gpui-scenario-{fixture_id}.json"
+        if not iced_path.is_file():
+            errors.append(f"missing Iced live dump {iced_path.name}")
+            continue
+        if not gpui_path.is_file():
+            errors.append(f"missing GPUI live dump {gpui_path.name}")
+            continue
+        code, gpui_fix, err = from_report(gpui_script, fixture_id, gpui_path)
+        if code != EXIT_OK or gpui_fix is None:
+            errors.append(f"gpui {fixture_id} --from-report exit {code}: {err}")
+            continue
+        if gpui_fix.get("equivalence") != "same-scenario" or gpui_fix.get("status") != "ok":
+            errors.append(f"gpui {fixture_id} --from-report must be same-scenario ok")
+        elif (gpui_fix.get("metrics") or {}).get("present_ms") is not None:
+            errors.append(f"gpui {fixture_id} must omit present_ms")
+        elif (gpui_fix.get("machine") or {}).get("fixed_benchmark_machine") is not False:
+            errors.append(f"gpui {fixture_id} dump must not claim a named fixed machine")
+        rel_summary, rel_code = evaluate_relative_paths([iced_path, gpui_path], root=root)
+        if rel_code != EXIT_OK:
+            errors.append(
+                f"--evaluate-relative {fixture_id} expected observation exit 0, "
+                f"got {rel_code} status={rel_summary.get('status')!r}"
+            )
+        elif rel_summary.get("status") != "observation":
+            errors.append(
+                f"--evaluate-relative {fixture_id} must stay observation without a named box, "
+                f"got {rel_summary.get('status')!r}"
+            )
+        elif rel_summary.get("relative_gate_enforceable") is not False:
+            errors.append("--evaluate-relative must keep relative_gate_enforceable False")
+
+    gpu_scene = load_scenario("gpu-scene-ui", root)
+    unsupported_cmp = compare_issue12_pair(
+        envelope(
+            runner="iced",
+            status="unsupported",
+            scenario_id="gpu-scene-ui",
+            scenario=gpu_scene,
+        ),
+        envelope(
+            runner="gpui",
+            status="unsupported",
+            scenario_id="gpu-scene-ui",
+            scenario=gpu_scene,
+        ),
+    )
+    if unsupported_cmp.get("status") != "unsupported" or unsupported_cmp.get("can_enforce"):
+        errors.append("unsupported Iced+GPUI pair must stay unsupported, not a vacuous pass")
+    skip_summary, skip_code = evaluate_relative_paths(
+        [
+            root / "perf" / "fixtures" / "iced-scenario-static-tree-100.json",
+        ],
+        root=root,
+    )
+    if skip_code != EXIT_UNSUPPORTED:
+        errors.append(
+            f"--evaluate-relative with only Iced must exit 2, got {skip_code} "
+            f"status={skip_summary.get('status')!r}"
+        )
 
     plan = subprocess.run(
         [
@@ -6240,6 +6790,12 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         errors.append(
             f"iced static-tree-100 --print-plan must name scenario-bench: {plan.stdout!r} {plan.stderr}"
         )
+    elif "issue12" not in plan.stdout:
+        errors.append(
+            "iced static-tree-100 --print-plan must write under target/performance/issue12"
+        )
+    elif "issue8" in plan.stdout:
+        errors.append("iced print-plan must not target target/performance/issue8")
     return errors
 
 
@@ -6275,16 +6831,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--evaluate-relative",
+        nargs="+",
+        metavar="REPORT",
+        default=None,
+        help=(
+            "Issue #12: compare Iced/GPUI (optional Nana) envelopes or scenario-bench dumps. "
+            "Honesty fail-closed. Historical multipliers are not CI without a named fixed machine."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Write --evaluate-invariants summary JSON (default: stdout)",
+        help="Write evaluate summary JSON (default: stdout)",
     )
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     args = parser.parse_args(argv)
     root = args.repo_root.resolve()
-    if args.self_test and args.evaluate_invariants:
-        parser.error("use --self-test or --evaluate-invariants, not both")
+    if args.self_test and (args.evaluate_invariants or args.evaluate_relative):
+        parser.error("use --self-test or an evaluate flag, not both")
+    if args.evaluate_invariants and args.evaluate_relative:
+        parser.error("use --evaluate-invariants or --evaluate-relative, not both")
     if args.self_test:
         errors = self_test(root)
         if errors:
@@ -6304,6 +6872,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_ERROR
         dump_json(args.output, summary)
         return code
+    if args.evaluate_relative:
+        try:
+            summary, code = evaluate_relative_paths(
+                args.evaluate_relative,
+                root=root,
+            )
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_ERROR
+        dump_json(args.output, summary)
+        return code
     if args.check_schema:
         errors = validate_all_scenarios(root)
         if errors:
@@ -6312,7 +6891,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_ERROR
         print("scenario schema: OK")
         return EXIT_OK
-    parser.error("provide --check-schema, --self-test, or --evaluate-invariants")
+    parser.error(
+        "provide --check-schema, --self-test, --evaluate-invariants, or --evaluate-relative"
+    )
     return EXIT_ERROR
 
 

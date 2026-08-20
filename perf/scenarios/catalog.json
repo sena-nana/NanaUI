@@ -26,6 +26,36 @@
     "text-editor",
     "gpu-scene-ui"
   ],
+  "issue12": {
+    "same_scenario_ids": [
+      "static-tree-100",
+      "static-tree-1k",
+      "static-tree-5k",
+      "static-tree-10k",
+      "mutation-paint-only",
+      "mutation-text",
+      "mutation-layout-style",
+      "hover",
+      "virtual-list-10k",
+      "virtual-list-100k",
+      "text-table"
+    ],
+    "unsupported_ids": [
+      "static-tree-50k",
+      "mutation-visibility",
+      "mutation-transform",
+      "mutation-a11y",
+      "virtual-tree-10k",
+      "virtual-tree-100k",
+      "animation",
+      "ime",
+      "dock-workspace",
+      "overlay",
+      "text-editor",
+      "gpu-scene-ui"
+    ],
+    "note": "Issue #12 observation, not #8 DoD. same_scenario_ids emit real Iced+GPUI envelopes. unsupported_ids stay exit 2. relative_gate_can_enforce is not multiplier CI. Weekly GHA is not a fixed machine."
+  },
   "required_by_issue_not_in_harness": [
     {
       "id": "virtual-list-1m",

@@ -1,0 +1,93 @@
+{
+  "source": "gpui-scenario-bench",
+  "status": "ok",
+  "scenario_id": "virtual-list-10k",
+  "kind": "VirtualList",
+  "params": {
+    "items": 10000,
+    "visible": 40,
+    "overscan": 8,
+    "text_len": 32,
+    "item_extent_px": 20.0
+  },
+  "virtualization": {
+    "logical_items": 10000,
+    "visible": 40,
+    "overscan": 8,
+    "item_extent_px": 20.0,
+    "live_ui_entities": 57,
+    "live_ui_entities_bound": 58,
+    "materialized_widgets": 57,
+    "last_window": {
+      "start": 13,
+      "end": 70
+    }
+  },
+  "work_counters": {
+    "live_ui_entities": 57,
+    "live_ui_entities_bound": 58,
+    "visible_rows": 40,
+    "overscan_rows": 8
+  },
+  "window_ms": {
+    "p50": 0.0000415,
+    "p95": 0.000083,
+    "p99": 0.000083,
+    "min": 0.0,
+    "max": 0.000083
+  },
+  "notes": [
+    "GPUI materializes only visible+overscan rows from catalog params, plus leading/trailing spacers. This is not 10k real widgets.",
+    "Catalog window: visible×item_extent viewport, overscan items×item_extent. Same window as Iced scenario-bench and the Nana runner flags.",
+    "live_ui_entities is the materialized item widget count, matching Nana list children after materialize_virtual_list.",
+    "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint of the live window only."
+  ],
+  "viewport": [
+    900,
+    640
+  ],
+  "scale": 1.0,
+  "backend": "gpui-test-app-context",
+  "gpu_present": false,
+  "warmup_iterations": 5,
+  "iterations": 20,
+  "adapter": {
+    "name": "gpui TestAppContext / TestWindow",
+    "crate": "gpui",
+    "version": "0.2.2",
+    "device_type": "test-platform",
+    "backend": "none"
+  },
+  "machine_identity": {
+    "fixed_benchmark_machine": false,
+    "note": "This dump is not Issue #8 §12.2 / #12 fixed-machine history. Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine."
+  },
+  "view_construction_ms": {
+    "p50": 0.030708500000000003,
+    "p95": 0.04208575,
+    "p99": 0.04465074999999999,
+    "min": 0.021500000000000002,
+    "max": 0.045292
+  },
+  "layout_ms": {
+    "p50": 0.103104,
+    "p95": 0.12541395000000005,
+    "p99": 0.1785827899999999,
+    "min": 0.09608299999999999,
+    "max": 0.191875
+  },
+  "draw_ms": {
+    "p50": 0.2088125,
+    "p95": 0.26605655,
+    "p99": 0.27767770999999997,
+    "min": 0.181792,
+    "max": 0.28058299999999997
+  },
+  "cpu_frame_ms": {
+    "p50": 0.3395005,
+    "p95": 0.42814519999999995,
+    "p99": 0.43162903999999996,
+    "min": 0.32008400000000004,
+    "max": 0.4325
+  }
+}
