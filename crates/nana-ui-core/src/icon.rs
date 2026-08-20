@@ -1,7 +1,7 @@
 /// Compact line icons used by NanaUI navigation surfaces.
 ///
 /// This is the semantic identity only. Backend crates own glyph rendering.
-/// Vue / Lucide icons should render via iced SVG (subtree geometry), not by
+/// Vue / Lucide icons should render as SVG subtree geometry, not by
 /// stretching this enum with incorrect Lucide→glyph aliases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {

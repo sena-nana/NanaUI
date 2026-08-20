@@ -24,8 +24,7 @@ L5  Scene/Runtime adapter        LayoutStyle / Semantics → UiWorld / UiScene
 
 现状：L0 已在 core；L1–L3 在 `nana-ui-vue`（`css_map` / `css_cascade` / `measure`）；
 L4 = `shell_contract`（`css_map::LayoutStyleCss::apply_class_layout_hints` 薄委托）；
-L5 = Scene host（正式 feature 名 `scene-view`，`iced-view` 为历史别名）。历史 `iced_app` 是旧 Iced widget
-适配，不再是产品绘制环。
+L5 = Scene host（`scene-view`）。历史 `iced_app` 是旧 Iced widget 适配，不再是产品绘制环。
 
 ## 权威事实源
 
@@ -110,7 +109,7 @@ nana-layout
 nana-ui-vue
   shell_contract/  ← apply_class_layout_hints（已就位）
   bridge/          ← MatchContext 构建
-  Scene host       ← Runtime/UiScene 适配（`scene-view`；`iced-view` 为别名）
+  Scene host       ← Runtime/UiScene 适配（`scene-view`）
 ```
 
 **验收：**

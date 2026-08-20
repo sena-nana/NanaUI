@@ -4,7 +4,7 @@
 //! Uses crates.io `v8 = "150.4.0"` (rusty_v8 successor).
 //!
 //! Stops at JS execution + HostApiRegistry callbacks. Product retained/render is
-//! Runtime/UiScene; windowed apps use the `scene-view` Scene host (`iced-view` is the historical alias).
+//! Runtime/UiScene; desktop windows use `scene-view` → `SceneWgpuPainter`.
 
 use std::env;
 use std::time::{Duration, Instant};

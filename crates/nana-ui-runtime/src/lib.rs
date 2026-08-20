@@ -64,7 +64,7 @@ pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode,
-    EventRoute, ExtractedNode, ExtractedTextSpan, ImeComposition, InteractionState,
+    EventListeners, EventRoute, ExtractedNode, ExtractedTextSpan, ImeComposition, InteractionState,
     InteractionStyle, LayoutBox, LayoutInput, MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput,
     MountState, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
     SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,

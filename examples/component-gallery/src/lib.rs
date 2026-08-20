@@ -238,7 +238,7 @@ pub struct GalleryState {
     editor: String,
     primary_clicks: u32,
     window_chrome: WindowChromeState,
-    /// Latest material application outcome from the iced host path.
+    /// Latest material application outcome from the Scene host path.
     material_outcome: MaterialOutcome,
     window_size: Option<(f32, f32)>,
     settings_runtime: Option<runtime_settings::GallerySettingsRuntime>,
@@ -1462,7 +1462,7 @@ fn activate_runtime_dock_tab(node: &mut nana_ui::runtime::DockNode, id: &str) ->
 
 /// Maps Runtime floating-dock events the same way as
 /// `nana_ui::runtime_dock_window_update` (hosted). Gallery records the
-/// commands; the Iced host does not open extra daemon windows.
+/// commands; the Scene host does not open extra daemon windows.
 fn runtime_dock_window_commands(
     events: impl IntoIterator<Item = DockWorkspaceEvent>,
 ) -> Vec<WindowCommand> {

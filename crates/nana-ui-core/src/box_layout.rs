@@ -1,12 +1,12 @@
 //! Style Model **Layout** — box flex intent (not a CSSOM, not workspace regions).
 //!
-//! Pure data consumed by L3 draw (`nana-ui` / iced) and L1/L2 adapters.
+//! Pure data consumed by L3 draw (`nana-ui` Scene painter) and L1/L2 adapters.
 //! CSS declaration / class parsing stays in `nana-ui-vue::css_map` /
 //! `nana-ui-vue::shell_contract`.
 //! Workspace region layout lives in [`crate::layout`].
 //!
-//! Shared geometry helpers used by both `measure` (pre-paint / parity) and
-//! iced adapters: [`LayoutStyle::resolve_content_box`], [`LayoutStyle::resolve_inset`],
+//! Shared geometry helpers used by `measure` (pre-paint / parity) and Runtime
+//! layout: [`LayoutStyle::resolve_content_box`], [`LayoutStyle::resolve_inset`],
 //! `resolved_padding_against` / `resolved_margin_against` / gap helpers.
 //! Prefer extending these over duplicating box math in vue adapters.
 
@@ -42,7 +42,7 @@ pub enum AlignSpec {
     Stretch,
 }
 
-/// 主轴分布（justify-content）—— iced 用 Space / Fill 实现。
+/// 主轴分布（justify-content）。Runtime layout 用 Space / Fill 意图表达。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum JustifySpec {
     #[default]
@@ -132,10 +132,10 @@ pub enum GridAutoFlow {
 /// `position` — Style Model 子集。
 ///
 /// - `Static`：忽略 inset
-/// - `Relative`：`top`/`left`/`right`/`bottom` 偏移进入 measure（及 iced 近似）
+/// - `Relative`：`top`/`left`/`right`/`bottom` 偏移进入 measure
 /// - `Absolute`：measure 最小子集（脱流 + 相对 nearest positioned padding box）；
-///   iced 流内跳过；产品浮层仍走 Nana Overlay，不实现完整定位引擎
-/// - `Fixed`：视口 containing block + inset 子集（脱流；iced 根层绘制）
+///   流内跳过；产品浮层仍走 Nana Overlay，不实现完整定位引擎
+/// - `Fixed`：视口 containing block + inset 子集（脱流；根层绘制）
 /// - `Sticky`：仍 defer（缺口）
 ///
 /// **与 Nana Overlay 分工**：L2 Dialog/Popover/Drawer/ContextMenu 剥离 CSS
@@ -193,9 +193,7 @@ pub enum BoxSizing {
 
 /// flex-wrap 意图。
 ///
-/// - `measure_layout`：`Wrap` / `WrapReverse` 按主轴分行兑现（`WrapReverse` 反转行序）
-/// - iced Row：`nana-ui-vue::iced_app` 的 borrowed（`layout_row`）与 owned
-///   （`wrap_layout_owned`）路径均做多行拆分与 `WrapReverse` 行序反转
+/// `measure_layout`：`Wrap` / `WrapReverse` 按主轴分行兑现（`WrapReverse` 反转行序）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FlexWrap {
     #[default]
@@ -443,7 +441,7 @@ impl FontSizeContext {
     }
 }
 
-/// CSS `line-height` 子集：无单位倍数或绝对 px（`normal` → 不写入，用 iced 默认）。
+/// CSS `line-height` 子集：无单位倍数或绝对 px（`normal` → 不写入，用引擎默认）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LineHeightSpec {
     /// Unitless / `%` → 相对当前 `font-size` 的倍数。
@@ -464,7 +462,7 @@ impl LineHeightSpec {
 
 /// Intrinsic text line-box height when `font-size` is known.
 ///
-/// Used by iced `letter-spacing` glyph rows (which otherwise measure ~0 tall)
+/// Used by Scene/Runtime letter-spacing glyph rows (which otherwise measure ~0 tall)
 /// and by measure for typography leaves under `height:auto`.
 pub fn text_line_box_height_px(font_px: f32, line_height: Option<LineHeightSpec>) -> f32 {
     let px = font_px.max(0.0);
@@ -851,7 +849,7 @@ pub struct LayoutStyle {
     pub height: Option<LengthSpec>,
     /// `min-width`：保留 [`LengthSpec`]（px / `%` / calc / em / viewport），布局时解析。
     pub min_width: Option<LengthSpec>,
-    /// `max-width`：同上。`Fill` 表示无有限上限（iced Fill 标记）。
+    /// `max-width`：同上。`Fill` 表示无有限上限。
     pub max_width: Option<LengthSpec>,
     /// `min-height`：同上。
     pub min_height: Option<LengthSpec>,
@@ -880,7 +878,7 @@ pub struct LayoutStyle {
     pub flex_basis: Option<LengthSpec>,
     pub overflow_x: OverflowSpec,
     pub overflow_y: OverflowSpec,
-    /// `text-overflow: ellipsis`（需配合 nowrap / 定宽；iced Text 路径兑现）。
+    /// `text-overflow: ellipsis`（需配合 nowrap / 定宽；Scene text 路径兑现）。
     #[serde(default)]
     pub text_overflow_ellipsis: bool,
     /// `white-space: nowrap`。
@@ -895,7 +893,7 @@ pub struct LayoutStyle {
     /// Preferred named family from `font-family` (generics stripped). `None` = UI default.
     #[serde(default)]
     pub font_family: Option<String>,
-    /// CSS `line-height` subset. `None` = inherit / iced default.
+    /// CSS `line-height` subset. `None` = inherit / engine default.
     #[serde(default)]
     pub line_height: Option<LineHeightSpec>,
     /// CSS `letter-spacing` in px. `None` = inherit / normal (0).
@@ -932,7 +930,7 @@ pub struct LayoutStyle {
     #[serde(default)]
     pub opacity: Option<f32>,
     /// Instance surface paint from L1 style/class (not ThemeTokens).
-    /// RGBA 0..=1; applied by iced `container` style.
+    /// RGBA 0..=1; applied by Scene paint.
     #[serde(default)]
     pub background: Option<[f32; 4]>,
     #[serde(default)]

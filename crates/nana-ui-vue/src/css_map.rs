@@ -62,7 +62,7 @@ impl CssLayoutParse for AlignSpec {
     fn parse(raw: &str) -> Option<Self> {
         Some(match raw.trim().to_ascii_lowercase().as_str() {
             "flex-start" | "start" | "left" | "top" => Self::Start,
-            // baseline ≈ start in iced row/column (no true baseline alignment).
+            // baseline ≈ start (no true baseline alignment).
             "baseline" | "first baseline" | "last baseline" => Self::Start,
             "center" => Self::Center,
             "flex-end" | "end" | "right" | "bottom" => Self::End,
@@ -744,7 +744,7 @@ impl LayoutStyleCss for LayoutStyle {
                 if t.eq_ignore_ascii_case("none") {
                     self.max_width = None;
                 } else if t == "100%" {
-                    // Historical iced Fill marker (no finite clamp).
+                    // Unbounded Fill marker (no finite clamp).
                     self.max_width = Some(LengthSpec::Fill);
                 } else if let Some(spec) = parse_min_max_size(val) {
                     self.max_width = Some(spec);
@@ -1043,7 +1043,7 @@ impl LayoutStyleCss for LayoutStyle {
                     apply_grid_template_axis(self, trimmed, percent_h, false);
                 }
             }
-            // grid-auto-*: parse & store; layout (measure/iced) does **not** consume
+            // grid-auto-*: parse & store; layout (measure) does **not** consume
             // (implicit tracks / auto-placement = full 2D defer). Same track grammar
             // as template; auto-fit/fill → Unsupported flag, not silent drop.
             "grid-auto-columns" => {

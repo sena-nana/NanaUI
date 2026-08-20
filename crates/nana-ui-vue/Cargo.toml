@@ -13,17 +13,13 @@ path = "src/lib.rs"
 [features]
 default = []
 benchmark = ["dep:serde", "dep:serde_json"]
-# Scene/Runtime adapter. Uses nana-ui Runtime types; product paint goes
-# through UiScene. Does not build an iced::Element tree.
+# Scene/Runtime adapter. Product paint: UiScene → SceneWgpuPainter.
 scene-view = [
     "dep:nana-ui",
     "nana-ui/gpu",
     "nana-ui/syntax-highlighting",
     "nana-ui-runtime/syntax-highlighting",
 ]
-# Compatibility alias of `scene-view`. Not the product feature name; keep for
-# existing `--features iced-view` consumers. Prefer `scene-view`.
-iced-view = ["scene-view"]
 # Direct adapter into nana-ui's Scene-hosted runtime.
 hosted = ["scene-view", "nana-ui/hosted", "dep:wgpu"]
 

@@ -2,9 +2,10 @@
 
 NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。产品保留与渲染合同是
 Runtime（`nana-ui-runtime`）和 UiScene（`nana-ui-scene`）。桌面绘制由
-`nana-ui` 的 `SceneWgpuPainter` 完成。仓内 `engine/iced` 是兼容资产与 Android
-实验槽，不是长期应用编程模型。Vue + JS 是一等 L1/L2 消费方。不把 WebView 作为
-产品 UI 路径。宿主拥有 Window、Surface、Device 与 Queue，并保持单一 WGPU 主版本。
+`nana-ui` 的 `SceneWgpuPainter` 完成。仓内 `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是应用编程模型，也不是当前绘制后端。Android 实验宿主同样走
+Runtime / UiScene / `SceneWgpuPainter`，不是产品路径。Vue + JS 是一等 L1/L2
+消费方。不把 WebView 作为产品 UI 路径。宿主拥有 Window、Surface、Device 与
+Queue，并保持单一 WGPU 主版本。
 
 ## 工作区框架
 
@@ -114,16 +115,15 @@ Runtime/Scene 合同与退出门禁见
 
 ## 当前依赖基线
 
-- Iced：`0.15.0-dev` compatibility engine，已合入 `engine/iced`；来源与上游同步规则见
+- Iced：历史 `0.15.0-dev` 迁移快照已从仓库移除；谱系见
   [`docs/iced-engine.md`](docs/iced-engine.md)；
 - WGPU：`30.0.0`，依赖图中只有一个 WGPU 主版本；
-- Cryoglyph：随 Iced 分叉同步迁移到 WGPU 30，并固定到
+- Cryoglyph：固定到
   `sena-nana/cryoglyph` `3fe41b131eda1288d08df89ad5ba56de97713308`；
 - Rust edition：2024，最低 Rust `1.92`。
 
-Iced 源码由当前仓库直接拥有；Cryoglyph 使用完整 Git revision，`Cargo.lock` 记录
-解析后的依赖。GitHub Actions 从独立 checkout 运行 `--locked` 测试与全目标检查，不依赖相邻
-仓库。
+Cryoglyph 使用完整 Git revision，`Cargo.lock` 记录解析后的依赖。GitHub Actions
+从独立 checkout 运行 `--locked` 测试与全目标检查，不依赖相邻仓库。
 
 ## 验证
 

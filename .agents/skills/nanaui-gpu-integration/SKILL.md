@@ -1,6 +1,6 @@
 ---
 name: nanaui-gpu-integration
-description: Maintain NanaUI's host-owned WGPU integration. Iced is injected as the current compatibility renderer, not the product contract. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, Iced or WGPU dependencies, or NanaShader and Live2D integration boundaries.
+description: Maintain NanaUI's host-owned WGPU integration. Inject SceneWgpuPainter into the host GPU context; Iced is a removed historical migration snapshot, not the product renderer. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, SceneWgpuPainter, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, WGPU dependencies, or NanaShader and Live2D HostTexture-slot boundaries.
 ---
 
 # NanaUI GPU Integration
@@ -11,13 +11,16 @@ description: Maintain NanaUI's host-owned WGPU integration. Iced is injected as 
   rendering boundary.
 - Inspect manifests, lockfile, and dependency graph before dependency work; keep one WGPU major
   version across shared types.
-- Keep Window, Surface, Device, Queue, and frame scheduling host-owned. Inject Iced as the
-  current compatibility renderer into that GPU context.
+- Keep Window, Surface, Device, Queue, and frame scheduling host-owned. Inject
+  `SceneWgpuPainter` into that GPU context. `engine/iced` and
+  `engine/gpui-scenario-bench` have been removed; they are not `nana-*`
+  compile dependencies or product renderers. Do not add GPUI as a third paint path.
 - Preserve `GpuView` Inline/Standalone pass semantics and `HostTexture` identity/generation-based
   invalidation. Remove unused resources and redraw only on real state or content changes.
 - Keep CPU readback and PNG encoding inside snapshot tooling. Never use a second Device/Queue or
   copies to hide incompatible dependencies.
 - Treat GPU demos as contract evidence, not proof of real NanaShader/Live2D integration.
+  Live2D remains a HostTexture slot; do not describe it as a direct Scene pass.
 - Route system materials to `$nanaui-window-materials` and verification to
   `$nanaui-validation`.
 

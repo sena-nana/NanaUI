@@ -21,7 +21,7 @@ Custom Renderer hostOps
 L1 是 WebView Vue 源码的 Nana 兼容子集，不是 WebView，也不是 Tauri。L2
 `nanavue-components` 和 L3 Rust API 保留；L1/L2 可写入同一棵树，L3 宿主可把语义
 快照嵌入自己的 Workspace Region。桌面可见内容走同一条 Runtime/UiScene 绘制路径；
-`scene-view` 是正式 feature 名（`iced-view` 为历史别名），接入 Scene host 适配。
+`scene-view` 接入 Scene host 适配。
 
 ## 模块所有权
 

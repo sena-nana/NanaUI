@@ -65,6 +65,11 @@ pub enum UiMutation {
         id: StableNodeId,
         content: Option<CustomRenderNode>,
     },
+    SetEventListener {
+        id: StableNodeId,
+        event: String,
+        enabled: bool,
+    },
     SetStandardVisual {
         id: StableNodeId,
         visual: Option<StandardVisual>,
@@ -192,6 +197,27 @@ impl MutationQueue {
     pub fn set_custom_render(&mut self, id: StableNodeId, content: Option<CustomRenderNode>) {
         self.mutations
             .push(UiMutation::SetCustomRender { id, content });
+    }
+
+    pub fn set_event_listener(
+        &mut self,
+        id: StableNodeId,
+        event: impl Into<String>,
+        enabled: bool,
+    ) {
+        self.mutations.push(UiMutation::SetEventListener {
+            id,
+            event: event.into(),
+            enabled,
+        });
+    }
+
+    pub fn append(&mut self, mut other: Self) {
+        self.mutations.append(&mut other.mutations);
+    }
+
+    pub fn take(&mut self) -> Self {
+        std::mem::take(self)
     }
 
     pub fn set_standard_visual(&mut self, id: StableNodeId, visual: Option<StandardVisual>) {

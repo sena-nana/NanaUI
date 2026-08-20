@@ -3,7 +3,7 @@
 //! Mutually exclusive with `examples/vue-v8` — this binary never links V8.
 //!
 //! Stops at JS execution + HostApiRegistry callbacks. Product retained/render is
-//! Runtime/UiScene; windowed apps use the `scene-view` Scene host (`iced-view` is the historical alias).
+//! Runtime/UiScene; desktop windows use `scene-view` → `SceneWgpuPainter`.
 
 use std::env;
 use std::time::{Duration, Instant};

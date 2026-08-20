@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Enforce the NanaUI <-> in-tree Iced engine boundary.
+"""Forbid Iced or GPUI from re-entering Nana product crates.
 
-engine/iced must not depend on Nana packages or paths outside itself. Workspace
-iced / iced-wgpu / iced-winit, if present, must resolve to engine/iced. Product
-nana-* crates must not take a non-dev Iced dependency. engine/iced remains an
-excluded compatibility asset and is not a nana-* compile dependency.
-Non-nana example/tool crates are not gated here.
+The in-tree engine/iced and engine/gpui-scenario-bench trees were removed.
+Workspace members must not depend on iced / iced-wgpu / iced-winit / gpui.
+nana-ui-runtime and nana-ui-scene must stay backend-neutral (no Iced, WGPU,
+or native GPU implementation crates).
 """
 
 from __future__ import annotations
@@ -17,14 +16,13 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE = (ROOT / "engine" / "iced").resolve()
 ICED_PACKAGES = {"iced", "iced-wgpu", "iced-winit"}
-# No nana-* crate may take a non-dev Iced dependency.
-ICED_ALLOWED_NANA_PACKAGES: set[str] = set()
+GPUI_PACKAGES = {"gpui"}
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
 GPU_BACKEND_PACKAGES = {
     "ash",
     "d3d12",
+    "gpui",
     "iced",
     "iced-wgpu",
     "iced-winit",
@@ -57,35 +55,17 @@ def metadata(manifest: Path) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
-def is_within(path: Path, parent: Path) -> bool:
-    try:
-        path.resolve().relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
 def main() -> int:
     failures: list[str] = []
 
-    engine_metadata = metadata(ENGINE / "Cargo.toml")
-    for package in engine_metadata["packages"]:
-        for dependency in package["dependencies"]:
-            normalized_name = dependency["name"].replace("_", "-")
-            dependency_path = dependency.get("path")
-
-            if normalized_name == "nana" or normalized_name.startswith("nana-"):
-                failures.append(
-                    f'{package["name"]} depends on Nana package {dependency["name"]}'
-                )
-
-            if dependency_path and not is_within(Path(dependency_path), ENGINE):
-                failures.append(
-                    f'{package["name"]} has out-of-engine path dependency '
-                    f'{dependency["name"]}: {dependency_path}'
-                )
+    engine_dir = ROOT / "engine"
+    if engine_dir.exists():
+        failures.append(
+            "engine/ is present; Iced and GPUI observation trees were removed from the tree"
+        )
 
     root_metadata = metadata(ROOT / "Cargo.toml")
+    forbidden = ICED_PACKAGES | GPUI_PACKAGES
     for package in root_metadata["packages"]:
         for dependency in package["dependencies"]:
             normalized_name = dependency["name"].replace("_", "-")
@@ -98,36 +78,22 @@ def main() -> int:
                     f'{package["name"]} has GPU/backend dependency '
                     f'{dependency["name"]}; Runtime and Scene must stay backend-neutral'
                 )
-            if normalized_name not in ICED_PACKAGES:
+            if normalized_name not in forbidden:
                 continue
-
-            dependency_path = dependency.get("path")
-            if not dependency_path or not is_within(Path(dependency_path), ENGINE):
-                failures.append(
-                    f'{package["name"]} resolves {dependency["name"]} outside engine/iced'
-                )
-            if (
-                package["name"].startswith("nana-")
-                and package["name"] not in ICED_ALLOWED_NANA_PACKAGES
-                and dependency.get("kind") != "dev"
-            ):
-                failures.append(
-                    f'{package["name"]} has non-dev Iced dependency '
-                    f'{dependency["name"]}; product nana-* crates must not depend on Iced'
-                )
+            failures.append(
+                f'{package["name"]} depends on {dependency["name"]}; '
+                "Iced and GPUI observation trees were removed and must not re-enter "
+                "the workspace as a product path"
+            )
 
     if failures:
-        print("Iced engine dependency boundary failed:", file=sys.stderr)
+        print("Engine dependency boundary failed:", file=sys.stderr)
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    allowed = ", ".join(sorted(ICED_ALLOWED_NANA_PACKAGES)) or "(none)"
     neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
-    print(
-        f"Iced engine boundary: OK (nana-* iced allowlist: {allowed}; "
-        f"backend-neutral: {neutral})"
-    )
+    print(f"Engine boundary: OK (Iced/GPUI trees removed; backend-neutral: {neutral})")
     return 0
 
 

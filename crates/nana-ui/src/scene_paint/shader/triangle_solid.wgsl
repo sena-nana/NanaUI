@@ -1,4 +1,4 @@
-// Adapted from in-tree engine/iced (MIT).
+// Adapted from historical Iced (MIT).
 struct SolidVertexInput {
     @location(0) position: vec2<f32>,
     @location(1) color: vec4<f32>,

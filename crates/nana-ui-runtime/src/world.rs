@@ -18,11 +18,12 @@ use crate::components::{EmptyStateTextPresentation, ModalTextPresentation};
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
-    AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventRoute, ExtractedNode,
-    ExtractedTextSpan, HighlightRequest, ImeComposition, InteractionState, LayoutBox, LayoutInput,
-    MountState, MutationQueue, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
-    ScrollOffset, StandardVisual, TextContent, TextInputPresentation, TextInputState, TextMetrics,
-    TextPresentation, TextPresenter, TextShaper, UiMutation, WorkCounters,
+    AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventListeners, EventRoute,
+    ExtractedNode, ExtractedTextSpan, HighlightRequest, ImeComposition, InteractionState,
+    LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle, OverlayHostState,
+    PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual, TextContent,
+    TextInputPresentation, TextInputState, TextMetrics, TextPresentation, TextPresenter,
+    TextShaper, UiMutation, WorkCounters,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -188,6 +189,7 @@ pub enum UiWorldError {
     InvalidScrollMetrics(StableNodeId),
     InvalidIme(StableNodeId),
     InvalidCustomRender(StableNodeId),
+    InvalidEventListener(StableNodeId),
     InvalidStandardVisual(StableNodeId),
     InvalidOverlayHost(StableNodeId),
     NotFocusable(StableNodeId),
@@ -260,6 +262,13 @@ impl fmt::Display for UiWorldError {
                 write!(
                     formatter,
                     "node {} has invalid custom render content",
+                    id.get()
+                )
+            }
+            Self::InvalidEventListener(id) => {
+                write!(
+                    formatter,
+                    "node {} has an invalid event listener name",
                     id.get()
                 )
             }
@@ -1100,6 +1109,31 @@ impl UiWorld {
     pub fn custom_render(&self, id: StableNodeId) -> Option<&CustomRenderNode> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<CustomRenderNode>(entity)
+    }
+
+    pub fn has_event(&self, id: StableNodeId, event: &str) -> bool {
+        self.event_listeners(id)
+            .is_some_and(|listeners| listeners.contains(event))
+    }
+
+    pub fn event_listeners(&self, id: StableNodeId) -> Option<&EventListeners> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<EventListeners>(entity)
+    }
+
+    pub fn event_targets(&self, document: DocumentId) -> HashSet<(u64, String)> {
+        self.document_order(document)
+            .into_iter()
+            .flat_map(|id| {
+                self.event_listeners(id)
+                    .into_iter()
+                    .flat_map(move |listeners| {
+                        listeners
+                            .iter()
+                            .map(move |event| (id.get(), event.to_string()))
+                    })
+            })
+            .collect()
     }
 
     pub fn standard_visual(&self, id: StableNodeId) -> Option<StandardVisual> {
@@ -2178,6 +2212,20 @@ impl UiWorld {
                     self.world.entity_mut(entity).remove::<CustomRenderNode>();
                 }
                 self.mark(*id, DirtyMask::RENDER);
+            }
+            UiMutation::SetEventListener { id, event, enabled } => {
+                let entity = self.entities[id];
+                let mut listeners = self
+                    .world
+                    .get::<EventListeners>(entity)
+                    .cloned()
+                    .unwrap_or_default();
+                listeners.set(event.clone(), *enabled);
+                if listeners.is_empty() {
+                    self.world.entity_mut(entity).remove::<EventListeners>();
+                } else {
+                    self.world.entity_mut(entity).insert(listeners);
+                }
             }
             UiMutation::SetStandardVisual { id, visual } => {
                 let entity = self.entities[id];
@@ -5453,6 +5501,12 @@ impl<'a> ValidationPlan<'a> {
                         content.renderer.trim().is_empty() || content.resource.trim().is_empty()
                     }) {
                         return Err(UiWorldError::InvalidCustomRender(*id));
+                    }
+                }
+                UiMutation::SetEventListener { id, event, .. } => {
+                    self.node(*id)?;
+                    if event.trim().is_empty() {
+                        return Err(UiWorldError::InvalidEventListener(*id));
                     }
                 }
                 UiMutation::SetStandardVisual { id, visual } => {
@@ -9294,6 +9348,43 @@ mod tests {
             }]
         );
         assert!(world.event_route(node(3)).is_none());
+    }
+
+    #[test]
+    fn event_listeners_are_runtime_query_authority() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        queue.set_event_listener(node(1), "click", true);
+        queue.set_event_listener(node(1), "input", true);
+        world.commit(queue).unwrap();
+
+        assert!(world.has_event(node(1), "click"));
+        assert!(world.has_event(node(1), "input"));
+        assert!(!world.has_event(node(1), "keydown"));
+        assert!(
+            world
+                .event_targets(document(1))
+                .contains(&(1, "click".into()))
+        );
+
+        let mut queue = MutationQueue::new();
+        queue.set_event_listener(node(1), "click", false);
+        world.commit(queue).unwrap();
+        assert!(!world.has_event(node(1), "click"));
+        assert!(world.has_event(node(1), "input"));
+
+        let mut remove = MutationQueue::new();
+        remove.despawn_subtree(node(1));
+        world.commit(remove).unwrap();
+        assert!(!world.has_event(node(1), "input"));
+        assert!(world.event_targets(document(1)).is_empty());
     }
 
     #[test]

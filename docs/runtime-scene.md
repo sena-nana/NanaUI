@@ -1,7 +1,8 @@
 # Nana Runtime / UiScene contract
 
-本文定义 NanaUI 独立于 compatibility engine 的稳定架构合同。阶段证据见
+本文定义 NanaUI 独立于已移除 Iced 迁移快照的稳定架构合同。阶段证据见
 `issue-7-phase-2.md` 至 `issue-7-phase-9.md`；本文只记录长期不变量。
+产品路径：`UiWorld` → `ExtractedNode` → `UiScene` → `SceneWgpuPainter`。
 
 ## Dependency direction
 
@@ -15,12 +16,13 @@ Nana public/application adapters
         nana-ui-scene
               |
               v
- compatibility/native backend
+     SceneWgpuPainter（宿主 Window / Surface / Device / Queue）
 ```
 
-`nana-ui-runtime` 与 `nana-ui-scene` 不依赖 Iced、WGPU 或平台 GPU API。Iced-derived
-code 不得反向依赖 Nana packages。`scripts/check-engine-boundary.py` 持续检查这两个
-方向。
+`nana-ui-runtime` 与 `nana-ui-scene` 不依赖 Iced、WGPU 或平台 GPU API。
+`engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不得接回 `nana-*`。
+`scripts/check-engine-boundary.py` 禁止 Iced/GPUI 重新进入 workspace，并保持
+Runtime/Scene backend-neutral。
 
 ## Retained authority
 
@@ -43,8 +45,8 @@ commit。失败批次不发布局部 hierarchy/component 结果；despawn 后 ID
 禁止 ABA 复用。
 
 Vue `NodeHandle` 与 `StableNodeId` 无损映射。DOM facade 只保留 namespace、attributes、
-scope/event flags 等 compatibility metadata；`MessageBridge` 的 hierarchy 在 renderer
-消费前由 Runtime 覆盖，不能成为第二权威源。
+scope 等 compatibility metadata；`event_flags` 权威是 `UiWorld` `EventListeners`。
+`MessageBridge` 的 hierarchy 在 renderer 消费前由 Runtime 覆盖，不能成为第二权威源。
 
 ## Incremental systems and wakeup
 
@@ -95,7 +97,7 @@ measured surface geometry 是瞬时状态，由产生该 mutation 的 input/fram
 借 `changed` 触发配置写入。
 Dock 的稳定状态入口是 `DockMutation` + `LogicalPoint` 与 `update_mutation[_at]`；active
 drag/resize 内部也只保存 logical point、scalar delta 和 `Duration`。旧 `DockAction` 的
-host `Point`、widget/subscription/view 仅是 compatibility adapter。三套 Workspace/Split/Dock
+host `Point`、widget/subscription/view 曾是 Iced compatibility adapter，HEAD 不再作为产品路径。三套 Workspace/Split/Dock
 曾共用但现已无消费者的 `ResizeDrag` 已删除，避免保留第二条 resize 规则。
 `DockController::surface_layout` 是 retained consumer 的确定性几何出口：同一份
 `DockLayout` 产生 active item content bounds、tab group 与带 stable path 的 splitter hit
@@ -113,14 +115,13 @@ Pointer/wheel/keyboard 的稳定事件、modifier、pointer phase/type 与 dispo
 `nana-ui-platform`；winit 只负责 adapter conversion。平台输入不得通过 renderer
 类型进入 Runtime 或 Vue semantic event path。`nana-ui::RuntimeInputAdapter` 将稳定 wheel
 delta 路由到命中层级最近且仍可滚动的 ScrollView，并从当前 focus 派生 Table navigation；
-只有实际状态变化才返回 `prevent_default`，调用方据此决定是否继续交给 compatibility backend。
+只有实际状态变化才返回 `prevent_default`，调用方据此决定是否继续交给 Scene host。
 Platform 的 `fetch` / `clipboard` 是默认开启但可独立关闭的 capability features，基础
 window/input/IME contract 不应因 TLS 或系统 clipboard toolchain 无法跨目标编译。
 
 `ComponentView` 在 closure event 全部交付后把最终 state 增量投影到 UiWorld。内建
 `Text`、`Button`、`TextInput`/`TextArea`、`Checkbox`、`Switch`、`Slider`、`TabList`/`Tab`、`ScrollView`、`List`、`Table`/`Row`/`Cell`、`OverlayHost`、`Dialog`、`Menu`/`MenuItem`、`Tooltip`、`SearchDropdown`、`CommandPalette` 与 typed events 不暴露 Iced；TextInput/TextArea/SearchDropdown/CommandPalette 共用 committed UTF-8 selection/IME state，SearchDropdown 仅在打开时持有编辑状态，CommandPalette 始终可编辑；accessibility 显式区分 multiline；ScrollView 只拥有配置，offset 与 measured `ScrollMetrics` 只存在 Runtime；
-字段未变化时不提交 mutation。它们是后续 compatibility component migration 的稳定
-入口，不代表现有完整组件 painter 已经迁移。
+字段未变化时不提交 mutation。它们是后续 component migration 的稳定入口，不代表现有完整组件 painter 已经迁移。
 OverlayHost typed view 只拥有样式；exclusive active 与 focus restore 只存在 UiWorld。切换
 active 时非活跃直属 subtree 从 layout/input/render/accessibility 排除，modal overlay 限制
 焦点范围，旧 subtree 的 pointer capture 自动释放；非法 reparent 原子拒绝，active overlay
@@ -144,7 +145,7 @@ cache，并表达 Quad、Text、Custom、content bounds/text placement、affine 
 z-index 和 document order。普通局部更新不重建 hierarchy order 或无关 primitive；
 hierarchy 改变时才重算 document order。
 
-Vue compatibility 的 `ScrollOffsetStore` 只排队 Scene-host scroll command，不保存状态；程序化滚动和 viewport `on_scroll` feedback 都提交 Runtime offset/metrics。每个 VueHost 独立拥有 `LayoutBoxStore`，它只保存该窗口 JS 查询所需的 paint-phase geometry，不得跨窗口共享或把滚动后的坐标写回 Runtime layout。
+Vue compatibility 的 `ScrollOffsetStore` 只排队 Scene-host scroll command，不保存状态；程序化滚动和 viewport `on_scroll` feedback 都提交 Runtime offset/metrics。每个 VueHost 独立拥有 `LayoutBoxStore`，它只保存该窗口 JS 查询所需的 paint-phase geometry，不得跨窗口共享。`begin_frame` 不清 boxes/transforms；滚动只进 `views` overlay，不 `record()` 滚动几何、不写回 Runtime `LayoutBox`。Vue host op 进入 `PendingHostOps`，`flush_host_frame` 才 commit。`gpu_slots` 权威是 Runtime `CustomRenderNode`；`event_flags` 权威是 `UiWorld` `EventListeners`；`attrs` 仍是 DOM/CSS facade，不复制树拓扑。`NanaTreeDocument` / `MessageBridge` / `LayoutBoxStore` 三个 facade 仍在。
 
 `StandardVisual` 将 checkbox/switch/slider 的 indicator、track、fill、thumb 作为有限 backend-neutral render content；它与标签文本分别解析前景，不由 backend 识别 tag。`CustomRenderNode` 只有 renderer/resource/revision opaque key，不携带 backend object。
 `RenderGraph` 将 external resource preparation、连续标准 primitive 与 custom node 编译为
@@ -157,7 +158,7 @@ encoder，成功后立即由同一 Queue 有序提交，因此后续 producer �
 滞留在未提交状态；`nana.host-texture` 使用这条图管理兼容路径。业务 GPU 内容不得 CPU
 readback、Base64/图片编码或额外子窗口后伪装成共享合成。
 
-## Compatibility backend
+## Scene host
 
 `RuntimeProgram` / `run_runtime` 是 Rust 应用的 canonical host contract：应用只提供
 `RuntimeDocument`、UiScene、平台事件处理与可选 HostTexture / SceneGpu renderer registry，不返回
@@ -195,7 +196,6 @@ surface/AccessKit 并发送 `WindowEvent::Closed`。Runtime 先消费 IME，再�
 
 当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime/UiScene；`nana-ui-vue` 的
 `scene-view` / `hosted` feature 接入同一 Scene host，而不是 `iced::Element` 树。
-公开 Cargo feature `iced-view` 只是 `scene-view` 的兼容别名。
 Android 不属于 NanaUI 当前产品范围；未来移动端必须由 Android 原生组件拥有平台
 生命周期、IME、accessibility 与原生控件，NanaUI 仅作为嵌入渲染内容参与混合合成，
 不直接调用 Android API。无法忠实表达的 affine/text/custom primitive 显式失败。

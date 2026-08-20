@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
 use bevy_ecs::component::Component;
@@ -1153,6 +1154,34 @@ pub struct EventRoute {
     pub target: StableNodeId,
     /// Ancestors from the target's parent back to the document root.
     pub bubble: Vec<StableNodeId>,
+}
+
+/// Subscribed DOM/Vue event names. Capture/bubble paths stay on [`EventRoute`].
+#[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
+pub struct EventListeners {
+    events: BTreeSet<String>,
+}
+
+impl EventListeners {
+    pub fn contains(&self, event: &str) -> bool {
+        self.events.contains(event)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.events.iter().map(String::as_str)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub(crate) fn set(&mut self, event: String, enabled: bool) {
+        if enabled {
+            self.events.insert(event);
+        } else {
+            self.events.remove(&event);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

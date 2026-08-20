@@ -4,8 +4,7 @@
  * - L1: `createElement` + class/inline style → Rust `css_map` / `widget_map`
  * - L2: `createWidget` / `nana-*` semantic props → same MessageBridge (skip CSS)
  * Both share one forest; draw path is Runtime/UiScene via the Scene host
- * (`scene-view` is the official feature; `iced-view` is the historical alias;
- * no Iced widget tree, no WebView paint).
+ * (`scene-view`; no Iced widget tree, no WebView paint).
  *
  * Also enhances host nodes with Element-like stubs so @lilia/ui template refs
  * (getBoundingClientRect, style, classList, dataset, …) do not throw.
