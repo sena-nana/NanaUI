@@ -1,0 +1,98 @@
+{
+  "source": "gpui-scenario-bench",
+  "status": "ok",
+  "scenario_id": "mutation-paint-only",
+  "kind": "Mutation",
+  "params": {
+    "tree_nodes": 5000,
+    "kind": "PaintOnly"
+  },
+  "nodes": 5000,
+  "tree": {
+    "generation": "complete-binary-heap",
+    "parent_rule": "parent(i)=i//2, root=1",
+    "node_kind": "element-div",
+    "text": null,
+    "sample_parents": [
+      {
+        "index": 1,
+        "parent": null
+      },
+      {
+        "index": 2,
+        "parent": 1
+      },
+      {
+        "index": 3,
+        "parent": 1
+      },
+      {
+        "index": 50,
+        "parent": 25
+      },
+      {
+        "index": 5000,
+        "parent": 2500
+      }
+    ]
+  },
+  "mutation": {
+    "kind": "PaintOnly",
+    "target_index": 5000,
+    "single_node": true
+  },
+  "notes": [
+    "Same complete-binary-heap as Nana tree_mutations / Iced StaticTree. One node is mutated per sample; topology is unchanged.",
+    "The TestAppContext window is reused so later samples are not a cold process start.",
+    "GPUI has no WorkCounters.layout_nodes; paint-only / a11y layout invariants stay not-evaluable. Do not invent zeros.",
+    "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint. present_ms omitted."
+  ],
+  "viewport": [
+    900,
+    640
+  ],
+  "scale": 1.0,
+  "backend": "gpui-test-app-context",
+  "gpu_present": false,
+  "warmup_iterations": 5,
+  "iterations": 20,
+  "adapter": {
+    "name": "gpui TestAppContext / TestWindow",
+    "crate": "gpui",
+    "version": "0.2.2",
+    "device_type": "test-platform",
+    "backend": "none"
+  },
+  "machine_identity": {
+    "fixed_benchmark_machine": false,
+    "note": "This dump is not Issue #8 §12.2 / #12 fixed-machine history. Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine."
+  },
+  "view_construction_ms": {
+    "p50": 3.4164585,
+    "p95": 3.676912200000001,
+    "p99": 4.565416039999998,
+    "min": 2.782667,
+    "max": 4.787541999999999
+  },
+  "layout_ms": {
+    "p50": 411.6397705,
+    "p95": 418.69299375,
+    "p99": 431.09229874999994,
+    "min": 400.681167,
+    "max": 434.192125
+  },
+  "draw_ms": {
+    "p50": 6.007270500000001,
+    "p95": 7.098104500000001,
+    "p99": 7.678554499999999,
+    "min": 5.641542,
+    "max": 7.8236669999999995
+  },
+  "cpu_frame_ms": {
+    "p50": 421.28843800000004,
+    "p95": 428.11308335,
+    "p99": 441.00585027,
+    "min": 410.497833,
+    "max": 444.229042
+  }
+}

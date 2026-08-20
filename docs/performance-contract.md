@@ -48,9 +48,11 @@ The old P0 table versus the faster of Iced and GPUI was:
 | steady-state memory | ≤ 1.20× |
 
 If comparison returns, it belongs with
-[#12](https://github.com/sena-nana/NanaUI/issues/12), on a fixed machine, with
-real same-scenario metrics. Fake numbers stay forbidden.
-`relative_gate_enforceable` stays **False**. Do not wait on GPUI in #8 CI.
+[#12](https://github.com/sena-nana/NanaUI/issues/12). Fake numbers stay forbidden.
+`relative_gate_enforceable` stays **False**. `relative_gate_can_enforce` is not
+multiplier CI. `--evaluate-relative` judges real Iced+GPUI pairs; historical
+1.15 / 1.20 / 1.25 / 1.20× stay observation unless a named fixed machine is
+declared. Weekly GHA is not that machine. Do not wait on GPUI in #8 CI.
 
 #8 still requires these **Nana** invariants (independent of any multiplier):
 
