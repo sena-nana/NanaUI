@@ -98,7 +98,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_runtime_scene::<App>(
         RuntimeWindowSettings::new("NanaUI Runtime migration A/B")
             .initial_size(1280.0, 720.0)
-            .minimum_size(960.0, 560.0),
+            .minimum_size(960.0, 560.0)
+            .system_caption(true),
     )?;
     Ok(())
 }

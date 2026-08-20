@@ -230,6 +230,7 @@ pub(super) fn apply_title_bar_insets(
     leading_inset: f32,
     trailing_inset: f32,
     maximized: bool,
+    show_window_controls: bool,
 ) {
     if let Ok(Some(title_bar)) = context.read(shell, |shell| {
         shell
@@ -240,6 +241,7 @@ pub(super) fn apply_title_bar_insets(
             bar.leading_inset = leading_inset;
             bar.trailing_inset = trailing_inset;
             bar.maximized = maximized;
+            bar.show_window_controls = show_window_controls;
         });
     }
 }

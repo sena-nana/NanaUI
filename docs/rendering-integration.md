@@ -62,16 +62,16 @@ host-owned encoder，成功后立即由同一 Queue 在 UI sample 前提交并�
 
 当前已经覆盖复用现有 RenderPass 的 HostTexture 采样、`GpuView` 加入当前 dest pass、宿主创建 `winit::Window`/`Surface`/`Device`/`Queue` 后注入 Scene painter，以及真实 `live2d-wgpu` 到 HostTexture 的共享上下文合成。Live2D 产品路径是树上 1..N 个普通 HostTexture 节点（后景/角色/前景由应用 native 组件映射），不是 NanaUI 内的 Cubism 类型，也不是直写 Surface 的 SceneGpuRenderer。`ui-live2d-acceptance` 在同一 Device/Queue 上合成后景 HostTexture、中间 Selected Button chrome 与前景 Live2D HostTexture 带。HostTexture 合成证据不能替代具体产品模型验收。
 
-`hosted-gpu-demo` 通过 `apply_hosted_system_material` 接入窗口材质：macOS Scene GPU
-路径在窗口于 WGPU layer 之后另有 content view 之前固定实色回退；Windows 仍尝试
-Mica/Acrylic，无原生能力时用不透明主题背景。平台矩阵与限制见 `window-materials.md`。
+`hosted-gpu-demo` 通过 `apply_hosted_system_material` 只应用业务请求的那一种效果；
+失败为实色。平台矩阵见 `window-materials.md`。
 `transparent-window` 使用 Scene host 的透明窗口路径，不作为原生材质验收证据。
 
 Hosted runtime 与窗口示例共享 `AppTitleBar`、`WindowChromeState` 和
-`WindowChromeAction`。Runtime 拥有 Winit Window，并直接执行拖拽、最小化和
+`WindowChromeAction`。Scene host 执行 `WindowCommand::Drag` / 最小化 /
 最大化/还原；关闭请求交给 `RuntimeProgram`，业务完成保存或确认后才返回退出。
 macOS 仅在空白父区域收到按下事件时通过 `nana-window` 的
-无状态桥接启动原生拖拽，交互子控件会先消费事件。这一适配没有改变 Surface、
+无状态桥接启动原生拖拽，交互子控件会先消费事件。Windows/Linux 使用
+`Window::drag_window`。这一适配没有改变 Surface、
 Device、Queue、纹理或同帧提交路径。
 
 设备丢失后 runtime 为现有窗口重建唯一 GPU 上下文、所有 Surface 与 Scene painter，

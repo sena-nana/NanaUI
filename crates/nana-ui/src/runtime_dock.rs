@@ -60,6 +60,7 @@ fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> Windo
         role: WindowRole::Tool,
         modal: false,
         parent: None,
+        system_caption: true,
     }
 }
 

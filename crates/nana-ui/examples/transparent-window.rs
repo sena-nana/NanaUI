@@ -204,7 +204,8 @@ impl RuntimeProgram for TransparentWindow {
 fn main() -> Result<(), nana_ui::HostedRunError> {
     let mut settings = RuntimeWindowSettings::new("NanaUI Transparent Window Demo")
         .initial_size(920.0, 620.0)
-        .minimum_size(640.0, 420.0);
+        .minimum_size(640.0, 420.0)
+        .system_caption(true);
     settings.transparent = true;
     run_runtime::<TransparentWindow>(settings)
 }

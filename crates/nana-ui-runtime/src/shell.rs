@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LengthSpec, OverflowSpec,
-    PositionSpec, RegionId, SemanticColorRole, TITLE_BAR_HEIGHT, UI_METRICS, WorkspaceModel,
+    PositionSpec, RegionId, SemanticColorRole, TITLE_BAR_HEIGHT, UI_METRICS, WindowChrome,
+    WorkspaceModel,
 };
 
 use crate::view_components::project_common;
@@ -77,9 +78,9 @@ impl AppTitleBar {
             trailing: None,
             controls: None,
             center_width: DEFAULT_CENTER_WIDTH,
-            leading_inset: 0.0,
+            leading_inset: WindowChrome::platform_default().leading_inset,
             trailing_inset: 0.0,
-            show_window_controls: false,
+            show_window_controls: WindowChrome::platform_default().uses_custom_controls(),
             maximized: false,
             style: NodeStyle::default(),
         }
@@ -1350,6 +1351,10 @@ mod tests {
         let bounds = context.world().layout_box(id).unwrap();
         assert_eq!(bounds.height, TITLE_BAR_HEIGHT);
         assert_eq!(bounds.width, 800.0);
+        let chrome = WindowChrome::platform_default();
+        let bar_view = context.read(bar, |bar| bar.clone()).unwrap();
+        assert_eq!(bar_view.leading_inset, chrome.leading_inset);
+        assert_eq!(bar_view.show_window_controls, chrome.uses_custom_controls());
     }
 
     #[test]

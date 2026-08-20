@@ -236,6 +236,7 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<GpuViewDemo>(
         RuntimeWindowSettings::new("NanaUI GPU View Demo")
             .initial_size(1100.0, 720.0)
-            .minimum_size(760.0, 520.0),
+            .minimum_size(760.0, 520.0)
+            .system_caption(true),
     )
 }

@@ -340,7 +340,8 @@ mod windowed {
         VueRuntimeProgram::<CounterEngine>::run(
             RuntimeWindowSettings::new(title)
                 .initial_size(480.0, 360.0)
-                .minimum_size(360.0, 240.0),
+                .minimum_size(360.0, 240.0)
+                .system_caption(true),
             engine,
             RuntimeArtifact::from_source("semantic-counter.js", SEMANTIC_COUNTER_JS),
             HostApiRegistry::new(),

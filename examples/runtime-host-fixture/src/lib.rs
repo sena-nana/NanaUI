@@ -233,6 +233,7 @@ impl Fixture {
                     role: WindowRole::Tool,
                     modal: false,
                     parent: Some(WindowId::PRIMARY),
+                    system_caption: true,
                 },
             }],
             exit: false,
@@ -501,7 +502,8 @@ pub fn run() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<Fixture>(
         RuntimeWindowSettings::new("NanaUI fixture")
             .initial_size(720.0, 420.0)
-            .minimum_size(480.0, 280.0),
+            .minimum_size(480.0, 280.0)
+            .system_caption(true),
     )
 }
 
