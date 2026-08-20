@@ -58,11 +58,13 @@
 //!      └────────► nana-ui-web-api     ← L1 Web API 兼容（非 WebView）
 //! ```
 //!
-//! See [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
+//! See [`docs/application-api.md`](../../../docs/application-api.md) and
+//! [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
 //!
 //! Unique retained authority is UiWorld/UiScene. Feature `scene-view` enables the
 //! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves.
-//! WebView is not the product UI path.
+//! WebView is not the product UI path. Application hosts should import [`prelude`].
+//! CSS cascade / measure exports are adapter internals.
 //!
 //! Applications choose one JS engine:
 //! - `engine-quickjs` → `nana-js-quickjs`
@@ -119,17 +121,45 @@ pub use app::{
     MountOptions, NanaVueApp, mount_vue_as_nana, mount_vue_as_nana_with_engine,
     semantic_snapshot_of,
 };
+
+/// Application-facing L1/L2 host API. CSS cascade / measure stay at crate root as
+/// adapter internals; do not treat them as the product contract.
+pub mod prelude {
+    pub use crate::app::{
+        MountOptions, NanaVueApp, mount_vue_as_nana, mount_vue_as_nana_with_engine,
+        semantic_snapshot_of,
+    };
+    #[cfg(feature = "hosted")]
+    pub use crate::hosted_adapter::{VueHostedProgram, VueHostedRuntime, VueRuntimeProgram};
+    pub use crate::input::{
+        CompositionEventKind, CompositionInput, HostedInputResult, InputModifiers,
+        KeyboardEventKind, KeyboardInput, PointerEventKind, PointerInput, PointerType, WheelInput,
+    };
+    pub use crate::multi_window::{
+        VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowOptions,
+        VueWindowRole,
+    };
+    #[cfg(feature = "scene-view")]
+    pub use crate::{NanaTextureHandle, NativeComponentRegistry};
+    pub use nana_js_engine::HostApiRegistry;
+    pub use nana_ui_core::ThemeMode;
+    pub use nana_ui_web_api::{compose_runtime_artifact as compose_vue_artifact, shim_artifact};
+}
+
 pub use bridge::{
     BridgeEvent, MessageBridge, SelectOptionProp, SemanticRegionViews, SemanticSnapshot,
     SemanticWidget, WidgetId, WidgetKind, WidgetProps, parse_button_kind, parse_control_size,
     resolve_kind_from_hints, widget_id,
 };
+
+/// Adapter internals: stylesheet parse / cascade. Not the L1/L2 application prelude.
 pub use css_cascade::{
     AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,
     MatchContext, MatchNode, Selector, SimpleCompound, Specificity, StyleRule,
     apply_stylesheet_to_layout, collect_document_custom_properties_from_rules,
     matched_declaration_entries, matched_declarations, parse_stylesheet, rebuild_layout_style,
 };
+/// Adapter internals: CSS subset → LayoutStyle. Prefer [`prelude`] for hosts.
 pub use css_map::{
     AlignSpec, BoxSizing, CssLayoutParse, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext,
     GridAutoFlow, GridTrack, GridTrackListParse, GridTrackListUnsupported, JustifySpec,
@@ -149,6 +179,7 @@ pub use input::{
 pub use layout_map::{
     apply_direction_to_kind, apply_display_to_kind, default_layout_for_kind, layout_kind_from_tag,
 };
+/// Adapter internals: pre-paint / parity boxes. Product geometry is Runtime/UiScene.
 pub use measure::{
     LayoutNode, MeasuredBox, measure_grid_auto_contribution, measure_layout, node_from_css,
 };

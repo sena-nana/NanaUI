@@ -1,5 +1,7 @@
 //! L1 adapter: CSS 子集 → Nana **Style Model** 的 Layout 切片（非 CSS 引擎）。
 //!
+//! **Adapter internals.** Application hosts should use [`crate::prelude`].
+//!
 //! Inline `style` / 布局相关 prop 解析为 [`LayoutStyle`]（**中立**声明路径）。
 //! Stylesheet 规则经 [`crate::css_cascade`] 匹配后写入同一 [`LayoutStyle`]。
 //! `nana-*` / 工具 class 合同在 [`crate::shell_contract`]；本模块经

@@ -64,7 +64,7 @@ pub use calendar::{
 pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
 pub use command_palette::CommandPalette;
 pub use component_registry::{
-    ComponentBindKind, ComponentTypeId, RegisterableComponent, SemanticSpec,
+    ComponentBindKind, ComponentRegistry, ComponentTypeId, RegisterableComponent, SemanticSpec,
 };
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,

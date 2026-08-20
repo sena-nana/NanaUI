@@ -25,7 +25,8 @@ Vue 组件或稳定 JS 接口暴露，并与普通 Vue 节点处于同一布局�
 `ComponentTypeId`）；`NativeComponentRegistry` 只服务 JS host 原生组件描述符。
 Vue、业务 JS、多窗口文档及这些组件的 JS 桥共享一个 V8 isolate/context，而非
 把 Vue 限定为状态与命令桥。L1 不引入真实 WebView、Blitz DOM/CSS 或第二套
-wgpu。仓内 `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是
+wgpu。应用 API 入口见 [`application-api.md`](application-api.md)。
+仓内 `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是
 `nana-*` 编译依赖或当前绘制后端。禁止把 GPUI 接成第三条产品绘制路径。
 Android 实验宿主走 Runtime / UiScene / `SceneWgpuPainter`，不是产品路径。
 

@@ -1,5 +1,7 @@
 # Vue → NanaUI 渲染系统
 
+应用入口见 [`application-api.md`](application-api.md)。
+
 ## 合同
 
 ```text

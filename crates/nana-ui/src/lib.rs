@@ -2,9 +2,10 @@
 //!
 //! Product retained/render contracts live in `nana-ui-runtime` and `nana-ui-scene`.
 //! New L3 applications should use [`runtime`] (`AppContext`, `mount`,
-//! `ComponentView`, `register_component`). Crate-root widget re-exports are a
-//! compatibility surface, not the extension contract.
-//! L1/L2 Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
+//! `ComponentView`, `register_component`). See
+//! [`docs/application-api.md`](../../../docs/application-api.md).
+//! Crate-root widget re-exports are a compatibility surface, not the extension
+//! contract. L1/L2 Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
 //!
 //! [`WorkspaceController`] owns workspace region layout and interaction.
 
@@ -58,17 +59,7 @@ pub mod window_chrome;
 mod windows_pen;
 pub mod workspace;
 
-/// Canonical backend-neutral Nana framework API.
-///
-/// New applications should build retained state through this module: `AppContext`,
-/// `mount` / `AssemblyScope`, typed `Entity` views, and `register_component`.
-/// `RuntimeProgram::Message` is for host-level work (windows, GPU, persistence),
-/// not every control press; prefer `on` / `observe` to update view state.
-/// Qualified top-level component exports also route here.
-pub mod runtime {
-    pub use nana_ui_runtime::*;
-    pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
-}
+pub mod runtime;
 
 pub use command::{
     ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
@@ -174,7 +165,9 @@ pub use nana_ui_core::{
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::ImeEvent;
+/// Compatibility re-export of Runtime `TextArea`. Prefer [`runtime::TextArea`].
 pub use nana_ui_runtime::TextArea as Textarea;
+/// Compatibility widget surface. New applications should import from [`runtime`].
 pub use nana_ui_runtime::{
     AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppShell,
     AppTitleBar, AppTitleBarControls, AppearanceSection, Button, Card, Checkbox, CommandPalette,
