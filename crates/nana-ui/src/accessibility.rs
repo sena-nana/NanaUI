@@ -98,43 +98,57 @@ impl AccessibilityProjector {
 
     pub(crate) fn apply(&mut self, delta: AccessibilityDelta) -> TreeUpdate {
         let previous_text_runs = self.text_runs.clone();
-        let removed = delta.removed.into_iter().collect::<BTreeSet<_>>();
-        let mut changed = delta
+        let incoming = delta
             .updated
-            .iter()
-            .map(|node| node.id)
+            .into_iter()
+            .map(|node| (node.id, node))
+            .collect::<BTreeMap<_, _>>();
+        let removed = delta
+            .removed
+            .into_iter()
+            .filter(|id| !incoming.contains_key(id))
             .collect::<BTreeSet<_>>();
-        let existing = self.nodes.keys().copied().collect::<BTreeSet<_>>();
+        let mut changed = incoming.keys().copied().collect::<BTreeSet<_>>();
         changed.extend(
             removed
                 .iter()
                 .filter_map(|id| self.nodes.get(id).and_then(|node| node.parent)),
         );
-        changed.extend(delta.updated.iter().filter_map(|node| {
-            (!existing.contains(&node.id))
-                .then_some(node.parent)
-                .flatten()
-        }));
-        for parent in changed.iter().copied().collect::<Vec<_>>() {
-            if let Some(node) = self.nodes.get_mut(&parent) {
-                node.children.retain(|child| !removed.contains(child));
-            }
-        }
+
         for id in &removed {
+            if let Some(parent_id) = self.nodes.get(id).and_then(|node| node.parent) {
+                if let Some(parent) = self.nodes.get_mut(&parent_id) {
+                    parent.children.retain(|child| child != id);
+                }
+            }
             self.nodes.remove(id);
+            changed.remove(id);
         }
-        for node in delta.updated {
-            if !existing.contains(&node.id) {
-                if let Some(parent_id) = node.parent {
-                    if let Some(parent) = self.nodes.get_mut(&parent_id) {
-                        if !parent.children.contains(&node.id) {
-                            parent.children.push(node.id);
-                        }
+
+        for node in incoming.into_values() {
+            let old_parent = self.nodes.get(&node.id).and_then(|previous| {
+                (previous.parent != node.parent)
+                    .then_some(previous.parent)
+                    .flatten()
+            });
+            if let Some(old_parent) = old_parent {
+                if let Some(parent) = self.nodes.get_mut(&old_parent) {
+                    parent.children.retain(|child| *child != node.id);
+                }
+                changed.insert(old_parent);
+            }
+            if let Some(parent_id) = node.parent {
+                if let Some(parent) = self.nodes.get_mut(&parent_id) {
+                    if !parent.children.contains(&node.id) {
+                        parent.children.push(node.id);
+                        changed.insert(parent_id);
                     }
                 }
             }
             self.nodes.insert(node.id, node);
         }
+
+        self.drop_unreachable(&mut changed);
         self.reconcile_text_runs();
         let roots = runtime_roots(&self.nodes);
         if roots != self.roots {
@@ -149,10 +163,11 @@ impl AccessibilityProjector {
                     (previous_text_runs.get(id) != self.text_runs.get(id)).then_some(*id)
                 }),
         );
+        changed.retain(|id| self.nodes.contains_key(id));
 
-        // Updating a parent removes stale AccessKit subtrees. Runtime normally
-        // schedules that parent; include it defensively when a tombstone is the
-        // only changed record so the platform tree cannot retain a ghost node.
+        // Updating a parent removes stale AccessKit subtrees. Do not also ship
+        // unreachable descendants: AccessKit would keep their children with a
+        // dangling parent_and_index.
         TreeUpdate {
             nodes: changed
                 .into_iter()
@@ -162,6 +177,35 @@ impl AccessibilityProjector {
             tree: None,
             tree_id: TreeId::ROOT,
             focus: self.focused_node_id(),
+        }
+    }
+
+    fn drop_unreachable(&mut self, changed: &mut BTreeSet<StableNodeId>) {
+        let mut keep = BTreeSet::new();
+        let mut stack = runtime_roots(&self.nodes);
+        while let Some(id) = stack.pop() {
+            if !keep.insert(id) {
+                continue;
+            }
+            if let Some(node) = self.nodes.get(&id) {
+                stack.extend(
+                    node.children
+                        .iter()
+                        .copied()
+                        .filter(|child| self.nodes.contains_key(child)),
+                );
+            }
+        }
+        if keep.len() != self.nodes.len() {
+            self.nodes.retain(|id, _| keep.contains(id));
+            changed.retain(|id| keep.contains(id));
+        }
+        for node in self.nodes.values_mut() {
+            let before = node.children.len();
+            node.children.retain(|child| keep.contains(child));
+            if node.children.len() != before {
+                changed.insert(node.id);
+            }
         }
     }
 
@@ -812,6 +856,76 @@ mod tests {
             .unwrap();
         assert!(root.children().is_empty());
         assert!(update.nodes.iter().all(|(id, _)| *id != NodeId(2)));
+    }
+
+    #[test]
+    fn tombstone_parent_drops_cached_descendants_from_incremental_update() {
+        let root = node(1, None, &[2]);
+        let parent = node(2, Some(1), &[3]);
+        let grandchild = node(3, Some(2), &[]);
+        let (mut projector, _) =
+            AccessibilityProjector::new(vec![root, parent, grandchild.clone()], false, 1.0);
+
+        let update = projector.apply(AccessibilityDelta {
+            generation: 2,
+            updated: vec![grandchild],
+            removed: vec![StableNodeId::new(2).unwrap()],
+        });
+
+        assert!(update.tree.is_none());
+        assert!(update.nodes.iter().all(|(id, _)| *id != NodeId(2)));
+        assert!(update.nodes.iter().all(|(id, _)| *id != NodeId(3)));
+        let (_, root_node) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(1))
+            .unwrap();
+        assert!(root_node.children().is_empty());
+        assert!(!projector.nodes.contains_key(&StableNodeId::new(3).unwrap()));
+        assert!(
+            projector
+                .synchronize(vec![node(1, None, &[])], 1.0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tombstone_parent_can_reparent_a_child_onto_a_surviving_uncle() {
+        let root = node(1, None, &[2, 3]);
+        let parent = node(2, Some(1), &[4]);
+        let uncle = node(3, Some(1), &[]);
+        let child = node(4, Some(2), &[]);
+        let (mut projector, _) = AccessibilityProjector::new(
+            vec![root, parent, uncle.clone(), child.clone()],
+            false,
+            1.0,
+        );
+
+        let mut moved = child;
+        moved.parent = Some(StableNodeId::new(3).unwrap());
+        let mut next_uncle = uncle;
+        next_uncle.children = vec![StableNodeId::new(4).unwrap()];
+        let update = projector.apply(AccessibilityDelta {
+            generation: 2,
+            updated: vec![moved, next_uncle],
+            removed: vec![StableNodeId::new(2).unwrap()],
+        });
+
+        assert!(update.tree.is_none());
+        assert!(update.nodes.iter().any(|(id, _)| *id == NodeId(4)));
+        assert!(update.nodes.iter().all(|(id, _)| *id != NodeId(2)));
+        let (_, uncle_node) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(3))
+            .unwrap();
+        assert!(uncle_node.children().contains(&NodeId(4)));
+        let (_, root_node) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(1))
+            .unwrap();
+        assert_eq!(root_node.children(), [NodeId(3)].as_slice());
     }
 
     #[test]
