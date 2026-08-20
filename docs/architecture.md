@@ -21,6 +21,8 @@ Vue/JS L1/L2 → Runtime/UiScene → RuntimeProgram → run_runtime → SceneWgp
 `VueHostedProgram` 是 `VueRuntimeProgram` 的类型别名。Rust 可以控制语义树，
 也可以注册高性能 Runtime 组件，但所有供 Vue 使用的原生能力必须以 `nana-*`
 Vue 组件或稳定 JS 接口暴露，并与普通 Vue 节点处于同一布局、事件和合成树。
+内建与第三方控件走 Runtime `ComponentRegistry`（`register_component` /
+`ComponentTypeId`）；`NativeComponentRegistry` 只服务 JS host 原生组件描述符。
 Vue、业务 JS、多窗口文档及这些组件的 JS 桥共享一个 V8 isolate/context，而非
 把 Vue 限定为状态与命令桥。L1 不引入真实 WebView、Blitz DOM/CSS 或第二套
 wgpu。仓内 `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是

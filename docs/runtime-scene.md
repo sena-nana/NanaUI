@@ -122,6 +122,15 @@ window/input/IME contract 不应因 TLS 或系统 clipboard toolchain 无法跨�
 `ComponentView` 在 closure event 全部交付后把最终 state 增量投影到 UiWorld。内建
 `Text`、`Button`、`TextInput`/`TextArea`、`Checkbox`、`Switch`、`Slider`、`TabList`/`Tab`、`ScrollView`、`List`、`Table`/`Row`/`Cell`、`OverlayHost`、`Dialog`、`Menu`/`MenuItem`、`Tooltip`、`SearchDropdown`、`CommandPalette` 与 typed events 不暴露 Iced；TextInput/TextArea/SearchDropdown/CommandPalette 共用 committed UTF-8 selection/IME state，SearchDropdown 仅在打开时持有编辑状态，CommandPalette 始终可编辑；accessibility 显式区分 multiline；ScrollView 只拥有配置，offset 与 measured `ScrollMetrics` 只存在 Runtime；
 字段未变化时不提交 mutation。它们是后续 component migration 的稳定入口，不代表现有完整组件 painter 已经迁移。
+
+内建与插件控件共用 `AppContext` 上的 `ComponentRegistry`。`AppContext::new` 安装
+`NanaBuiltinComponents`（`nana.builtin`）；插件通过同一套
+`ExtensionRegistrar::register_component` 写入。稳定身份是 `ComponentTypeId`
+（`nana.button` / `app.bilibili-user-card`），Vue tag（含 `nana-` 前缀）与 L3
+`create_component<C>` 都解析到该表。`bind` 只把通用 UI 投影进 `UiWorld`；业务
+state 留在 `AppContext.views`。未注册自定义 tag 仍按 HTML downlevel 落到 Column。
+这与 Vue `NativeComponentRegistry`（JS host 原生组件描述符）不是同一条路径。
+动态 dylib 与公开 Bevy Entity 仍不在 ABI 内。
 OverlayHost typed view 只拥有样式；exclusive active 与 focus restore 只存在 UiWorld。切换
 active 时非活跃直属 subtree 从 layout/input/render/accessibility 排除，modal overlay 限制
 焦点范围，旧 subtree 的 pointer capture 自动释放；非法 reparent 原子拒绝，active overlay

@@ -160,6 +160,14 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let native_name = normalize_native_component(&host, &kind_raw);
             let kind = WidgetKind::parse(&kind_raw)
                 .or_else(|| native_name.as_ref().map(|_| WidgetKind::Box))
+                .or_else(|| {
+                    lock_doc(&host.document).ok().and_then(|guard| {
+                        guard
+                            .context()
+                            .resolve_component_tag(&kind_raw)
+                            .map(|_| WidgetKind::Column)
+                    })
+                })
                 .ok_or_else(|| JsException::new(format!("unknown widget kind: {kind_raw}")))?;
             let prop_map = match args.get(1) {
                 Some(HostValue::Object(map)) => Some(map),
@@ -182,7 +190,13 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 .native_component
                 .as_ref()
                 .map(|name| format!("nana-{name}"))
-                .unwrap_or_else(|| kind.element_tag().to_owned());
+                .unwrap_or_else(|| {
+                    if WidgetKind::parse(&kind_raw).is_some() {
+                        kind.element_tag().to_owned()
+                    } else {
+                        kind_raw.trim().to_ascii_lowercase()
+                    }
+                });
             props.element_tag.clone_from(&element_tag);
             let handle = guard.create_element(&element_tag);
             if !props.label.is_empty() {

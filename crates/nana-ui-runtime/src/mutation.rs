@@ -1,8 +1,8 @@
 use crate::{
-    AccessibilityState, AnimationId, AnimationSpec, CustomRenderNode, DocumentId, HighlightRequest,
-    ImeComposition, InteractionState, LayoutBox, NodeKind, NodeStyle, OverlayHostState,
-    ScrollMetrics, ScrollOffset, StableNodeId, StandardVisual, TextContent, TextInputState,
-    TextSelection,
+    AccessibilityState, AnimationId, AnimationSpec, ComponentTypeId, CustomRenderNode, DocumentId,
+    HighlightRequest, ImeComposition, InteractionState, LayoutBox, NodeKind, NodeStyle,
+    OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId, StandardVisual, TextContent,
+    TextInputState, TextSelection,
 };
 use nana_ui_core::ThemeMode;
 
@@ -69,6 +69,10 @@ pub enum UiMutation {
         id: StableNodeId,
         event: String,
         enabled: bool,
+    },
+    SetComponentType {
+        id: StableNodeId,
+        type_id: Option<ComponentTypeId>,
     },
     SetStandardVisual {
         id: StableNodeId,
@@ -210,6 +214,11 @@ impl MutationQueue {
             event: event.into(),
             enabled,
         });
+    }
+
+    pub fn set_component_type(&mut self, id: StableNodeId, type_id: Option<ComponentTypeId>) {
+        self.mutations
+            .push(UiMutation::SetComponentType { id, type_id });
     }
 
     pub fn append(&mut self, mut other: Self) {

@@ -18,6 +18,10 @@ use nana_ui_core::{
 
 #[cfg(test)]
 use crate::Dialog;
+use crate::component_registry::{
+    ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
+    RegisterableComponent, SemanticSpec, registerable_entry, tag_entry,
+};
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
@@ -292,6 +296,7 @@ struct ComponentLifecycle {
 pub struct ExtensionRegistrar {
     actions: HashMap<ActionId, RegisteredAction>,
     presenters: Vec<Box<dyn TextPresenter>>,
+    components: ComponentRegistry,
 }
 
 impl ExtensionRegistrar {
@@ -333,6 +338,20 @@ impl ExtensionRegistrar {
         self.presenters.push(presenter);
         Ok(())
     }
+
+    pub fn register_component<C: RegisterableComponent>(&mut self) -> Result<(), FrameworkError> {
+        let (entry, tags) = registerable_entry::<C>()?;
+        self.components.insert_with_tags(entry, tags)
+    }
+
+    pub fn register_tags(
+        &mut self,
+        type_id: &'static str,
+        tags: &'static [&'static str],
+    ) -> Result<(), FrameworkError> {
+        let (entry, tags) = tag_entry(type_id, tags)?;
+        self.components.insert_with_tags(entry, tags)
+    }
 }
 
 pub struct ViewContext<'a, V: View> {
@@ -367,6 +386,10 @@ pub enum FrameworkError {
     ActionUnavailable(ActionId),
     DuplicateExtension(String),
     DuplicatePresenter(String),
+    DuplicateComponentType(String),
+    DuplicateComponentTag(String),
+    MissingComponentType(String),
+    InvalidComponentType,
     InvalidExtension,
     InvalidPresenter,
     InvalidInput,
@@ -410,6 +433,18 @@ impl fmt::Display for FrameworkError {
             }
             Self::DuplicatePresenter(name) => {
                 write!(formatter, "presenter `{name}` is already registered")
+            }
+            Self::DuplicateComponentType(name) => {
+                write!(formatter, "component type `{name}` is already registered")
+            }
+            Self::DuplicateComponentTag(tag) => {
+                write!(formatter, "component tag `{tag}` is already registered")
+            }
+            Self::MissingComponentType(name) => {
+                write!(formatter, "component type `{name}` is not registered")
+            }
+            Self::InvalidComponentType => {
+                formatter.write_str("component type id must not be empty")
             }
             Self::InvalidExtension => formatter.write_str("extension name must not be empty"),
             Self::InvalidPresenter => formatter.write_str("presenter name must not be empty"),
@@ -503,6 +538,7 @@ pub struct AppContext {
     event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>>,
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
+    components: ComponentRegistry,
     component_lifecycle: ComponentLifecycle,
     next_id: u64,
     frame_profiler: FrameProfiler,
@@ -630,19 +666,22 @@ impl AppContext {
     /// skips live or retired IDs; do not treat allocated chrome IDs as host
     /// tree identities.
     pub fn from_world(world: UiWorld) -> Self {
-        #[allow(unused_mut)]
         let mut context = Self {
             world,
             views: HashMap::new(),
             event_handlers: HashMap::new(),
             actions: HashMap::new(),
             extensions: HashSet::new(),
+            components: ComponentRegistry::default(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
             frame_profiler: FrameProfiler::new(),
             last_profile: FrameProfile::default(),
             profiling: false,
         };
+        context
+            .install(&crate::builtin_components::NanaBuiltinComponents)
+            .expect("builtin component registry");
         #[cfg(feature = "syntax-highlighting")]
         {
             context
@@ -654,6 +693,27 @@ impl AppContext {
 
     pub fn world(&self) -> &UiWorld {
         &self.world
+    }
+
+    pub fn resolve_component_tag(&self, tag: &str) -> Option<&ComponentTypeId> {
+        self.components.resolve_tag(tag)
+    }
+
+    pub fn bind_semantic(
+        &self,
+        id: StableNodeId,
+        spec: &SemanticSpec<'_>,
+        mutations: &mut MutationQueue,
+    ) -> Result<ComponentBindKind, FrameworkError> {
+        let mut request = ComponentBindRequest {
+            id,
+            world: &self.world,
+            mutations,
+            spec,
+        };
+        let kind = self.components.bind(&mut request)?;
+        mutations.set_component_type(id, Some(spec.type_id.clone()));
+        Ok(kind)
     }
 
     fn view_entity<C: View>(&self, id: StableNodeId) -> Option<Entity<C>> {
@@ -1036,6 +1096,7 @@ impl AppContext {
         let mut queue = MutationQueue::new();
         queue.create(id, document, component.node_kind());
         component.project(id, &self.world, &mut queue);
+        self.stamp_component_type::<C>(id, &mut queue);
         self.world.commit(queue)?;
         self.views.insert(id, Box::new(component));
         self.sync_component_lifecycle(id)?;
@@ -1059,6 +1120,7 @@ impl AppContext {
         }
         let mut queue = MutationQueue::new();
         component.project(id, &self.world, &mut queue);
+        self.stamp_component_type::<C>(id, &mut queue);
         self.commit_mutations(queue)?;
         self.views.insert(id, Box::new(component));
         self.sync_component_lifecycle(id)?;
@@ -1076,6 +1138,7 @@ impl AppContext {
         let mut queue = MutationQueue::new();
         queue.create(id, document, component.node_kind());
         component.project(id, &self.world, &mut queue);
+        self.stamp_component_type::<C>(id, &mut queue);
         queue.park_subtree(id);
         self.world.commit(queue)?;
         self.views.insert(id, Box::new(component));
@@ -5534,6 +5597,7 @@ impl AppContext {
                 presenter.name().to_owned(),
             ));
         }
+        self.components.extend(registrar.components)?;
         self.actions.extend(registrar.actions);
         for presenter in registrar.presenters {
             self.world.register_presenter(presenter)?;
@@ -5549,6 +5613,12 @@ impl AppContext {
         self.world
             .register_presenter(presenter)
             .map_err(FrameworkError::from)
+    }
+
+    fn stamp_component_type<C: ComponentView>(&self, id: StableNodeId, queue: &mut MutationQueue) {
+        if let Some(entry) = self.components.get_by_rust(TypeId::of::<C>()) {
+            queue.set_component_type(id, Some(entry.id.clone()));
+        }
     }
 
     fn allocate_id(&mut self) -> StableNodeId {
@@ -8453,6 +8523,148 @@ mod tests {
                 .map(|presentation| presentation.spans.len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn builtin_and_plugin_components_share_one_registry() {
+        let mut context = AppContext::new();
+        assert!(context.resolve_component_tag("button").is_some());
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-button")
+                .map(ComponentTypeId::as_str),
+            Some("nana.button")
+        );
+
+        #[derive(Clone)]
+        struct ProbeCard {
+            title: String,
+        }
+        impl ComponentView for ProbeCard {
+            fn node_kind(&self) -> NodeKind {
+                NodeKind::Element {
+                    tag: "probe-card".into(),
+                }
+            }
+            fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+                if world.text(id) != Some(self.title.as_str()) {
+                    mutations.set_text(
+                        id,
+                        crate::TextContent {
+                            value: self.title.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        impl crate::RegisterableComponent for ProbeCard {
+            const TYPE_ID: &'static str = "test.probe-card";
+            const TAGS: &'static [&'static str] = &["nana-probe-card", "probe-card"];
+            fn from_semantic(spec: &crate::SemanticSpec<'_>) -> Self {
+                Self {
+                    title: spec.display_label().to_owned(),
+                }
+            }
+        }
+        struct ProbePlugin;
+        impl UiExtension for ProbePlugin {
+            fn name(&self) -> &'static str {
+                "test.probe"
+            }
+            fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
+                registrar.register_component::<ProbeCard>()
+            }
+        }
+
+        context.install(&ProbePlugin).unwrap();
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-probe-card")
+                .map(ComponentTypeId::as_str),
+            Some("test.probe-card")
+        );
+
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(document, Button::new("Save"))
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .component_type(button.stable_id())
+                .map(ComponentTypeId::as_str),
+            Some("nana.button")
+        );
+
+        let id = StableNodeId::new(42).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            id,
+            document,
+            NodeKind::Element {
+                tag: "probe-card".into(),
+            },
+        );
+        context.commit_mutations(queue).unwrap();
+        let type_id = context.resolve_component_tag("probe-card").unwrap().clone();
+        let layout = std::sync::Arc::new(nana_ui_core::LayoutStyle::default());
+        let spec = crate::SemanticSpec {
+            label: "User",
+            ..crate::SemanticSpec::from_parts(&type_id, &layout)
+        };
+        let mut mutations = MutationQueue::new();
+        assert_eq!(
+            context.bind_semantic(id, &spec, &mut mutations).unwrap(),
+            crate::ComponentBindKind::Projected
+        );
+        context.commit_mutations(mutations).unwrap();
+        assert_eq!(context.world().text(id), Some("User"));
+        assert_eq!(
+            context
+                .world()
+                .component_type(id)
+                .map(ComponentTypeId::as_str),
+            Some("test.probe-card")
+        );
+    }
+
+    #[test]
+    fn plugin_component_registration_is_atomic_on_conflict() {
+        #[derive(Clone)]
+        struct StealButton;
+        impl ComponentView for StealButton {
+            fn node_kind(&self) -> NodeKind {
+                NodeKind::Element {
+                    tag: "button".into(),
+                }
+            }
+            fn project(&self, _id: StableNodeId, _world: &UiWorld, _mutations: &mut MutationQueue) {
+            }
+        }
+        impl crate::RegisterableComponent for StealButton {
+            const TYPE_ID: &'static str = "nana.button";
+            const TAGS: &'static [&'static str] = &["stolen"];
+            fn from_semantic(_spec: &crate::SemanticSpec<'_>) -> Self {
+                Self
+            }
+        }
+        struct Conflict;
+        impl UiExtension for Conflict {
+            fn name(&self) -> &'static str {
+                "conflict.components"
+            }
+            fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
+                registrar.register_component::<StealButton>()
+            }
+        }
+
+        let mut context = AppContext::new();
+        assert_eq!(
+            context.install(&Conflict),
+            Err(FrameworkError::DuplicateComponentType("nana.button".into()))
+        );
+        assert!(context.resolve_component_tag("stolen").is_none());
+        assert!(context.resolve_component_tag("button").is_some());
     }
 
     #[cfg(feature = "syntax-highlighting")]

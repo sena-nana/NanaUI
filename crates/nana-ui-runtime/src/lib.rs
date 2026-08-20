@@ -6,9 +6,11 @@
 //! diagnostics, snapshots, or persisted data.
 
 mod animation;
+mod builtin_components;
 mod calendar;
 mod charts;
 mod command_palette;
+mod component_registry;
 mod components;
 mod dock;
 mod dropdown;
@@ -51,6 +53,7 @@ mod world;
 mod xy_pad;
 
 pub use animation::{AnimationFrame, AnimationId, AnimationSample, AnimationSpec, Easing};
+pub use builtin_components::NanaBuiltinComponents;
 pub use calendar::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
     CalendarHeatmapDatum, CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapLabelPaint,
@@ -60,6 +63,9 @@ pub use calendar::{
 };
 pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
 pub use command_palette::CommandPalette;
+pub use component_registry::{
+    ComponentBindKind, ComponentTypeId, RegisterableComponent, SemanticSpec,
+};
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,

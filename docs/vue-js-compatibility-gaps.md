@@ -140,7 +140,11 @@ Rust 组件。
 
 **已实现能力**
 
-- `NativeComponentRegistry` 在应用启动时注册描述符与工厂，不扩展固定 `WidgetKind`。
+- Runtime 可实例化权威是 `nana_ui_runtime::ComponentRegistry`：内建
+  `NanaBuiltinComponents` 与应用插件都通过 `ExtensionRegistrar::register_component`
+  注册，Vue tag / L3 `create_component` 解析同一 `ComponentTypeId`。
+- `NativeComponentRegistry` 是 JS host 原生组件描述符与工厂，不扩展固定
+  `WidgetKind`，也不是 Runtime 组件 ABI。
 - 名称规范化为 `nana-{name}`；重复注册、未知组件、非法 props 均返回结构化错误。
 - props 以 `HostValue` 增量传递；组件声明事件和命令白名单。
 - Vue 默认 slot 子树先进入 Runtime/UiScene，再交给原生组件组合。
