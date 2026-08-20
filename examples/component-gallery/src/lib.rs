@@ -790,7 +790,9 @@ impl GalleryState {
                     });
                 }
             }
-            DockAction::SurfaceGeometry { surface, bounds }
+            DockAction::SurfaceGeometry {
+                surface, bounds, ..
+            }
             | DockAction::SurfaceLayout { surface, bounds } => {
                 if let Some(id) = floating_surface_id(surface)
                     && self.dock.floating.iter().any(|item| item.id == id)

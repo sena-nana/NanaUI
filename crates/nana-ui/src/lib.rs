@@ -129,8 +129,8 @@ pub use dock::hosted_dock_update;
 pub use dock::{
     DockAction, DockAxis, DockBounds, DockChromeStyle, DockController, DockDropTarget,
     DockDropZone, DockError, DockHostEffect, DockId, DockItemLayout, DockItemSpec, DockLayout,
-    DockMutation, DockNode, DockSplitLayout, DockSurfaceId, DockSurfaceLayout, DockTabsLayout,
-    DockUpdate, FloatingDock,
+    DockLayoutPersist, DockMutation, DockNode, DockSplitLayout, DockSurfaceId, DockSurfaceLayout,
+    DockTabsLayout, DockUpdate, FloatingDock,
 };
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
