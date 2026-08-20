@@ -705,7 +705,8 @@ impl ComponentView for SettingsDisclosure {
     }
 }
 
-const DEFAULT_PLATFORM_HINT: &str = "选择窗口使用的透明材质或实色背景。";
+const DEFAULT_PLATFORM_HINT: &str =
+    "实色或窗口透明由设置选择；系统模糊（Vibrancy / Mica / Acrylic）由应用显式申请。";
 
 /// Host-owned appearance snapshot. Events stay [`AppearanceEvent`]; values stay outside NanaUI.
 #[derive(Debug, Clone, PartialEq)]
@@ -1226,10 +1227,10 @@ pub fn apply_appearance_event(
 }
 
 fn appearance_mode(appearance: &AppearanceSettings) -> (bool, bool) {
-    let solid = matches!(appearance.window_material(), WindowMaterialMode::Solid);
+    let no_system_blur = !appearance.window_material().wants_native();
     let titlebar_follow_disabled =
-        solid || !matches!(appearance.backdrop_target(), BackdropTarget::Sidebar);
-    (solid, titlebar_follow_disabled)
+        no_system_blur || !matches!(appearance.backdrop_target(), BackdropTarget::Sidebar);
+    (no_system_blur, titlebar_follow_disabled)
 }
 
 fn opacity_percent(appearance: &AppearanceSettings) -> f64 {
@@ -2665,7 +2666,20 @@ mod tests {
         context
             .update_component(section, |section, _| {
                 section.appearance = appearance;
-                section.material_status = Some(Arc::from("vibrancy"));
+                section.material_status = Some(Arc::from("transparent"));
+            })
+            .unwrap();
+        context.assemble_appearance_section(section).unwrap();
+        let translucent = assembly_of(&context, section);
+        assert!(option_disabled(&context, translucent.target_sidebar));
+        assert!(switch_disabled(&context, translucent.titlebar_switch));
+
+        let mut appearance = AppearanceSettings::default();
+        appearance.set_window_material(WindowMaterialMode::Mica);
+        context
+            .update_component(section, |section, _| {
+                section.appearance = appearance;
+                section.material_status = Some(Arc::from("mica"));
             })
             .unwrap();
         context.assemble_appearance_section(section).unwrap();

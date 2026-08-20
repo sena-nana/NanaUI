@@ -71,7 +71,8 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
             "NanaUI pure Vue acceptance"
         })
         .initial_size(1120.0, 760.0)
-        .minimum_size(760.0, 520.0),
+        .minimum_size(760.0, 520.0)
+        .system_caption(true),
     )
 }
 

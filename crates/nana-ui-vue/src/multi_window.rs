@@ -947,6 +947,7 @@ impl VueRuntime {
                         },
                         modal: options.modal,
                         parent: options.parent.map(|parent| WindowId(parent.0)),
+                        system_caption: !options.frameless,
                     },
                 },
                 VueWindowCommand::Close(id) => WindowCommand::Close(WindowId(id.0)),

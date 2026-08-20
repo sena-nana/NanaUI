@@ -2451,7 +2451,10 @@ impl MessageBridge {
         let mut next = self.appearance;
         if let Some(raw) = dataset.get("backdrop") {
             let mode = match raw.as_str() {
-                "translucent" | "system" | "mica" | "acrylic" => WindowMaterialMode::Translucent,
+                "vibrancy" => WindowMaterialMode::Vibrancy,
+                "mica" => WindowMaterialMode::Mica,
+                "acrylic" => WindowMaterialMode::Acrylic,
+                "translucent" | "transparent" | "system" => WindowMaterialMode::Translucent,
                 _ => WindowMaterialMode::Solid,
             };
             next.set_window_material(mode);
@@ -4179,6 +4182,12 @@ mod tests {
         assert!((appearance.backdrop_opacity() - 0.5).abs() < f32::EPSILON);
         let snap = bridge.snapshot();
         assert_eq!(snap.appearance.backdrop_target(), BackdropTarget::Main);
+        dataset.insert("backdrop".into(), "mica".into());
+        bridge.apply_document_appearance(&dataset, &style);
+        assert_eq!(
+            bridge.appearance().window_material(),
+            WindowMaterialMode::Mica
+        );
     }
 
     #[test]

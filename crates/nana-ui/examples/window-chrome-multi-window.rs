@@ -44,6 +44,7 @@ impl Smoke {
             },
             modal: false,
             parent: (number > 1).then_some(WindowId::PRIMARY),
+            system_caption: true,
         }
     }
 
@@ -185,6 +186,7 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<Smoke>(
         RuntimeWindowSettings::new("NanaUI Window 1")
             .initial_size(640.0, 420.0)
-            .minimum_size(480.0, 320.0),
+            .minimum_size(480.0, 320.0)
+            .system_caption(true),
     )
 }

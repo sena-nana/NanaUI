@@ -86,6 +86,13 @@ pub struct WindowSettings {
     pub role: WindowRole,
     pub modal: bool,
     pub parent: Option<WindowId>,
+    /// When true, keep the platform caption instead of NanaUI client chrome.
+    ///
+    /// Product windows leave this false: macOS overlays a transparent titlebar
+    /// and traffic lights; Windows/Linux are undecorated. Hosted examples
+    /// without a custom title bar should set this so Windows still has a close
+    /// button.
+    pub system_caption: bool,
 }
 
 impl WindowSettings {
@@ -102,7 +109,13 @@ impl WindowSettings {
             role: WindowRole::Main,
             modal: false,
             parent: None,
+            system_caption: false,
         }
+    }
+
+    pub fn system_caption(mut self, enabled: bool) -> Self {
+        self.system_caption = enabled;
+        self
     }
 
     pub fn initial_size(mut self, width: f64, height: f64) -> Self {
@@ -153,11 +166,23 @@ pub enum WindowCommand {
         always_on_top: bool,
     },
     Focus(WindowId),
+    /// Start a native window move from the current pointer gesture.
+    Drag(WindowId),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_chrome_is_the_default_window_contract() {
+        let settings = WindowSettings::new("Scene");
+        assert!(!settings.system_caption);
+        assert!(matches!(
+            WindowCommand::Drag(WindowId::PRIMARY),
+            WindowCommand::Drag(_)
+        ));
+    }
 
     #[test]
     fn window_identity_is_backend_neutral_and_stable() {

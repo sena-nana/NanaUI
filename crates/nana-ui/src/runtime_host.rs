@@ -205,6 +205,10 @@ pub trait RuntimeProgram: Sized + 'static {
 
     fn theme_mode(&self) -> ThemeMode;
 
+    fn window_material_mode(&self) -> crate::MaterialEffect {
+        crate::MaterialEffect::Solid
+    }
+
     fn host_textures(&self, _id: WindowId) -> Option<HostTextureRegistry> {
         None
     }

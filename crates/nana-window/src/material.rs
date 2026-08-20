@@ -51,6 +51,10 @@ impl MaterialEffect {
             Self::Acrylic => "Acrylic",
         }
     }
+
+    pub const fn wants_transparent_surface(self) -> bool {
+        !matches!(self, Self::Solid)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,28 +77,17 @@ impl MaterialFallback {
 pub enum PlatformMaterialSupport {
     /// macOS: Vibrancy / UnderWindowBackground.
     Vibrancy,
-    /// Windows: Mica preferred, Acrylic fallback.
+    /// Windows: Mica and Acrylic APIs exist; the caller must request one.
     MicaAcrylic,
     /// No native material API is invoked.
     None,
 }
 
 impl PlatformMaterialSupport {
-    pub const fn offers_native(self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    pub const fn preferred_effect(self) -> Option<MaterialEffect> {
-        match self {
-            Self::Vibrancy => Some(MaterialEffect::Vibrancy),
-            Self::MicaAcrylic => Some(MaterialEffect::Mica),
-            Self::None => None,
-        }
-    }
-
     pub const fn hint(self) -> &'static str {
         match self {
-            Self::Vibrancy | Self::MicaAcrylic => "支持透明窗口效果；不可用时会自动使用实色背景。",
+            Self::Vibrancy => "可申请 Vibrancy；未申请或调用失败时使用实色背景。",
+            Self::MicaAcrylic => "可申请 Mica 或 Acrylic；未申请或调用失败时使用实色背景。",
             Self::None => "当前设备使用实色窗口背景。",
         }
     }
@@ -154,6 +147,10 @@ impl MaterialOutcome {
         )
     }
 
+    pub const fn wants_transparent_surface(self) -> bool {
+        self.effect.wants_transparent_surface()
+    }
+
     pub fn status_label(self) -> String {
         match self.fallback {
             Some(reason) => format!("{}（{}）", self.effect.label(), reason.label()),
@@ -165,31 +162,40 @@ impl MaterialOutcome {
 
 pub fn apply_system_material<W: HasWindowHandle + ?Sized>(
     window: &W,
+    requested: MaterialEffect,
     appearance: Appearance,
     fallback: FallbackColor,
 ) -> MaterialOutcome {
-    platform::apply(window, appearance, fallback)
+    platform::apply(window, requested, appearance, fallback)
 }
 
-/// Applies the platform material that is safe for a host-owned GPU surface.
+/// Applies the requested effect on a host-owned GPU surface.
 ///
-/// AppKit visual-effect subviews composite above the content view's CAMetalLayer,
-/// so macOS hosted renderers must use their opaque surface fallback until the
-/// window owns a separate content view behind the WGPU layer.
+/// Scene GPU's CAMetalLayer covers AppKit visual-effect views, so a hosted macOS
+/// Vibrancy request reports [`MaterialFallback::NativeMaterialUnavailable`].
 pub fn apply_hosted_system_material<W: HasWindowHandle + ?Sized>(
     window: &W,
+    requested: MaterialEffect,
     appearance: Appearance,
     fallback: FallbackColor,
 ) -> MaterialOutcome {
     #[cfg(target_os = "macos")]
     {
-        let _ = (appearance, fallback);
-        platform::clear(window);
-        MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
+        match requested {
+            MaterialEffect::Vibrancy => {
+                platform::clear(window);
+                MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
+            }
+            MaterialEffect::Mica | MaterialEffect::Acrylic => {
+                platform::clear(window);
+                MaterialOutcome::solid(MaterialFallback::PlatformDoesNotProvideNativeMaterial)
+            }
+            _ => platform::apply(window, requested, appearance, fallback),
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        platform::apply(window, appearance, fallback)
+        platform::apply(window, requested, appearance, fallback)
     }
 }
 
@@ -214,5 +220,12 @@ mod tests {
     fn only_platform_materials_are_native() {
         assert!(!MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable).is_native());
         assert!(MaterialOutcome::native(MaterialEffect::Acrylic).is_native());
+    }
+
+    #[test]
+    fn transparent_surface_is_explicit_and_not_native_blur() {
+        assert!(MaterialOutcome::transparent().wants_transparent_surface());
+        assert!(!MaterialOutcome::transparent().is_native());
+        assert!(!MaterialOutcome::chosen_solid().wants_transparent_surface());
     }
 }

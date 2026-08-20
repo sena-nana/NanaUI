@@ -127,10 +127,13 @@ Scene host 通过 `nana-ui-platform` 剪贴板合同执行系统剪贴板读写�
 
 macOS 使用 transparent titlebar 与 full-size content view，把 36px NanaUI 标题栏
 绘制到窗口顶部，并为左侧原生交通灯保留 78px。Windows/Linux 关闭系统 decorations，
-由 `AppTitleBar` 绘制三枚窗口按钮。macOS 默认禁止系统标题区抢占鼠标事件，只有
+由 `AppTitleBar` 绘制三枚窗口按钮。没有自绘标题栏的 hosted 示例可设
+`WindowSettings::system_caption`，以免 Windows 无框窗口失去关闭按钮。
+macOS 默认禁止系统标题区抢占鼠标事件，只有
 空白父区域收到按下事件时才通过 `nana-window` 启动 AppKit 原生拖拽；按钮等子控件
 会先消费事件。拖拽阈值由 AppKit 负责，其他平台由公共状态机的 4px 阈值负责。
-材质与标题栏状态、布局和动作语义仍是彼此独立的宿主合同。
+材质与标题栏状态、布局和动作语义仍是彼此独立的宿主合同。系统模糊由业务通过
+`RuntimeProgram::window_material_mode` 指定，失败回实色，不改用另一种模糊。
 
 窗口恢复是宿主边界，不是持久化服务。应用保存 restore bounds、创建时的 DPI scale
 与 maximized 事实；Scene host 在创建主窗口或辅助窗口前，按当前显示器可用区域选择

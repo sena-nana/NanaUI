@@ -221,7 +221,7 @@ pub use scene_paint::{
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
     AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
-    SettingsTabId, WindowMaterialMode,
+    SettingsTabId, WindowMaterialMode, window_material_effect,
 };
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController};
 pub use theme::{

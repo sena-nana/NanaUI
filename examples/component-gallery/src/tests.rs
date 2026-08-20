@@ -1,6 +1,6 @@
 use super::{
-    ContextAction, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay, GallerySection,
-    GalleryState, SurfaceView,
+    ContextAction, GalleryApp, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay,
+    GallerySection, GalleryState, SurfaceView,
 };
 use crate::runtime_host::RuntimeSceneInput;
 use crate::runtime_settings::SettingsRuntimeInput;
@@ -545,6 +545,43 @@ fn settings_runtime_title_bar_chrome_starts_window_drag() {
     }
 
     assert_eq!(action, Some(WindowChromeAction::Drag));
+}
+
+#[test]
+fn gallery_title_bar_drag_emits_window_drag_command() {
+    let mut app = GalleryApp::new();
+    #[cfg(target_os = "macos")]
+    {
+        let update = app.apply_message(GalleryMessage::WindowChrome(
+            WindowChromeEvent::PointerPressed,
+        ));
+        assert!(
+            update
+                .window_commands
+                .iter()
+                .any(|command| matches!(command, WindowCommand::Drag(_))),
+            "macOS blank press must start AppKit window drag"
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app.apply_message(GalleryMessage::WindowChrome(
+            WindowChromeEvent::PointerMoved(LogicalPoint::new(10.0, 10.0)),
+        ));
+        let _ = app.apply_message(GalleryMessage::WindowChrome(
+            WindowChromeEvent::PointerPressed,
+        ));
+        let update = app.apply_message(GalleryMessage::WindowChrome(
+            WindowChromeEvent::PointerMoved(LogicalPoint::new(16.0, 10.0)),
+        ));
+        assert!(
+            update
+                .window_commands
+                .iter()
+                .any(|command| matches!(command, WindowCommand::Drag(_))),
+            "crossing the 4px threshold must start window drag"
+        );
+    }
 }
 
 #[test]

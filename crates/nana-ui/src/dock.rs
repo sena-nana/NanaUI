@@ -2313,6 +2313,7 @@ pub fn hosted_dock_update(update: DockUpdate, title: impl Into<String>) -> Runti
                     role: WindowRole::Tool,
                     modal: false,
                     parent: None,
+                    system_caption: true,
                 },
             },
             DockHostEffect::CloseFloating(surface) => WindowCommand::Close(WindowId::from(surface)),

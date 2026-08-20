@@ -12,7 +12,8 @@ description: Maintain NanaUI's platform-owned native window material boundary. U
   outcome.
 - Clear an existing effect before reapplying it. Return the effect actually applied or an explicit
   fallback, never the requested effect after failure.
-- Use an opaque readable fallback when native material is unavailable.
+- Use an opaque readable fallback when native material is unavailable. Never
+  substitute another blur type (Mica ↔ Acrylic, or Translucent → platform-preferred).
 - Route Surface and `SceneWgpuPainter` work to `$nanaui-gpu-integration`, and verification to
   `$nanaui-validation`.
 

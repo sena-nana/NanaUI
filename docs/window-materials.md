@@ -1,35 +1,40 @@
 # 原生窗口材质
 
-原生材质由 `nana-window` 管理，NanaUI 控件不读取窗口句柄，也不直接调用平台 API。宿主先创建透明窗口，再把实现 `raw_window_handle::HasWindowHandle` 的窗口交给 `apply_system_material`。
+原生材质由 `nana-window` 管理，NanaUI 控件不读取窗口句柄，也不直接调用平台 API。
+宿主把实现 `raw_window_handle::HasWindowHandle` 的窗口交给
+`apply_system_material` / `apply_hosted_system_material`，只应用
+`RuntimeProgram::window_material_mode`（或 Appearance / Vue `backdrop`）请求的那一种
+效果。`Translucent` 只开窗口透明；`Vibrancy` / `Mica` / `Acrylic` 必须显式申请。
+失败则实色并带上原因，不改试另一种模糊。
 
 自绘标题栏的布局、状态和动作语义是独立合同：`nana-ui::AppTitleBar` 发出窗口
 动作，Scene host / Winit 宿主负责执行。macOS 必须通过原生句柄关闭系统标题区的隐式
 控件拖拽：窗口默认不可由系统标题区隐式移动，只有空白父区域收到按下事件后才启动
 AppKit 原生拖拽；这些无状态平台桥接函数位于 `nana-window`，不拥有按钮或窗口
 控制状态。transparent titlebar / full-size content view 与 Windows/Linux 的
-undecorated window 都由宿主创建窗口时设置，材质应用、清理和失败回退流程保持
-不变。
+undecorated window 都由 Scene host 在创建窗口时设置。`WindowSettings::system_caption`
+为 true 时保留系统标题栏，供没有自绘 `AppTitleBar` 的 hosted 示例使用。
 
-| 平台 | 首选 | 回退 |
+| 平台 | 可申请 | 申请失败 |
 | --- | --- | --- |
-| macOS 10.10+ | Vibrancy / `UnderWindowBackground` | 完全不透明的主题背景 |
-| Windows 11 | Mica | Acrylic，再失败则使用不透明背景 |
-| Windows 10 1809+ | Acrylic | 完全不透明的主题背景 |
-| Linux / 其他 | 由合成器决定，不调用未支持的原生 API | 完全不透明的主题背景 |
+| macOS 10.10+ | 业务指定 `Vibrancy` / `UnderWindowBackground` | 完全不透明的主题背景 |
+| Windows 11 | 业务指定 `Mica` 或 `Acrylic`（互不自动改用另一种） | 完全不透明的主题背景 |
+| Windows 10 1809+ | 业务指定 `Acrylic` | 完全不透明的主题背景 |
+| Linux / 其他 | 不调用未支持的原生模糊 API | 完全不透明的主题背景 |
 
-`MaterialOutcome` 明确返回实际应用的效果和回退原因。宿主只有在获得原生效果时才使用半透明 UI 背景；不支持或调用失败时改用完全不透明背景，保证内容可读。主题深浅切换与 Appearance 中的「窗口材质」切换都会先清除旧效果，再按偏好重新应用材质。Appearance 设置段暴露实色/透明、透明区域、标题栏跟随与材质不透明度；控件只消费公开 outcome，不接触窗口句柄。
+`MaterialOutcome` 返回实际效果和回退原因。宿主只有在获得原生模糊时才使用半透明 UI
+背景。主题或材质切换都会先清除旧效果再按当前请求重试。Appearance 设置段的「实色/透明」
+只覆盖前两档；系统模糊由应用显式申请。控件只消费公开 outcome。
 
 材质不透明度默认值为 `AppearanceSettings::DEFAULT_BACKDROP_OPACITY = 0.64`，与 Lilia /
 `nanavue-components` 的 `BACKDROP_OPACITY_DEFAULT` 及 `--lilia-backdrop-opacity`
 一致。侧边栏透明时，`titlebar_follows_sidebar` 决定标题栏是否共用该 alpha：关闭后
 标题栏保持不透明，侧栏仍可半透明。`BackdropTarget` 在侧栏与主内容区之间切换透明区域。
 
-`run_runtime` 会为主窗口和每个工具窗口分别应用、刷新与清理材质。业务通过
-`AppearanceSettings` 声明窗口材质与 backdrop 偏好，不接触原生句柄。macOS Scene
-GPU 路径固定走 `apply_hosted_system_material` 的实色回退（`NativeMaterialUnavailable`）：
-CAMetalLayer 会盖住 AppKit visual-effect，在窗口于 WGPU layer 之后另有 content view
-之前不会返回 Vibrancy。设备恢复会保留现有窗口，并在重建其 Surface 与 Scene painter 后
-重新应用材质。主窗口默认使用 NanaUI 自绘标题栏。
+`run_runtime` 会为主窗口和每个工具窗口分别应用、刷新与清理材质。macOS Scene GPU 申请
+Vibrancy 时仍报告 `NativeMaterialUnavailable`（CAMetalLayer 盖住 visual-effect）。
+设备恢复会保留现有窗口，并在重建其 Surface 与 Scene painter 后按当前请求重新应用。
+主窗口默认使用 NanaUI 自绘标题栏。
 
 当前本机 macOS 26.5.2 上，WGPU Surface 使用受支持的预乘或后乘 Alpha 模式。
 Workspace 真机截图确认只有一层标题栏、交通灯未遮挡内容；空白区原生拖拽、交互控件

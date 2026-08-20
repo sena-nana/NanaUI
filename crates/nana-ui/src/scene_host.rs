@@ -14,7 +14,7 @@ use nana_ui_platform::{
 use nana_ui_runtime::{AccessibilityUpdate, FrameworkError, LayoutViewport, Task};
 use nana_window::{
     Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
-    clear_system_material,
+    clear_system_material, prepare_client_chrome,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{
@@ -22,6 +22,8 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
+#[cfg(target_os = "macos")]
+use winit::platform::macos::WindowAttributesExtMacOS;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
 #[cfg(target_os = "windows")]
@@ -118,6 +120,7 @@ struct SceneReady<Program: RuntimeProgram> {
     next_gpu_retry: Option<Instant>,
     render_suspended: bool,
     last_theme: crate::ThemeMode,
+    last_material_mode: nana_window::MaterialEffect,
     ime_requests: HashMap<WindowId, TextInputRequest>,
 }
 
@@ -198,6 +201,9 @@ fn initialize<Program: RuntimeProgram>(
             .create_window(scene_window_attributes(&settings).with_visible(false))
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
+    if !settings.system_caption {
+        let _ = prepare_client_chrome(window.as_ref());
+    }
     let graphics = pollster::block_on(HostedGpuContext::new(
         Arc::clone(&window),
         wgpu::Features::empty(),
@@ -216,7 +222,10 @@ fn initialize<Program: RuntimeProgram>(
     let tasks = spawn_task_workers(proxy.clone());
     let geometry = window_geometry(graphics.window());
     let mut last_theme = crate::ThemeMode::default();
-    let mut material = apply_scene_material(graphics.window().as_ref(), last_theme);
+    let mut last_material_mode = nana_window::MaterialEffect::Solid;
+    let mut material =
+        apply_scene_material(graphics.window().as_ref(), last_theme, last_material_mode);
+    apply_window_transparency(graphics.window().as_ref(), last_material_mode);
     let context = program_context(
         &proxy,
         &graphics,
@@ -231,9 +240,9 @@ fn initialize<Program: RuntimeProgram>(
         Arc::clone(graphics.resources().queue()),
     ));
     last_theme = program.theme_mode();
-    if last_theme != crate::ThemeMode::default() {
-        material = apply_scene_material(graphics.window().as_ref(), last_theme);
-    }
+    last_material_mode = program.window_material_mode();
+    material = apply_scene_material(graphics.window().as_ref(), last_theme, last_material_mode);
+    apply_window_transparency(graphics.window().as_ref(), last_material_mode);
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
@@ -269,6 +278,7 @@ fn initialize<Program: RuntimeProgram>(
         next_gpu_retry: None,
         render_suspended: false,
         last_theme,
+        last_material_mode,
         ime_requests: HashMap::new(),
     };
     let update = ready.program.window_event(
@@ -310,7 +320,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn process_message(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
         let update = self.program.update(message, &self.context());
-        self.sync_theme();
+        self.sync_appearance();
         self.apply_update(event_loop, update);
     }
 
@@ -460,7 +470,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if ime_changed {
             update = update.merge(RuntimeProgramUpdate::redraw(id));
         }
-        self.sync_theme();
+        self.sync_appearance();
         self.apply_update(event_loop, update);
         self.apply_ime_request(id);
     }
@@ -523,7 +533,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
         }
-        self.sync_theme();
+        self.sync_appearance();
         self.apply_update(event_loop, update);
     }
 
@@ -629,7 +639,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let update = self
             .program
             .window_frame_presented(id, &self.context_for(id));
-        self.sync_theme();
+        self.sync_appearance();
         self.apply_update(event_loop, update);
         #[cfg(not(target_os = "android"))]
         self.synchronize_accessibility(id);
@@ -742,6 +752,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     window.set_window_level(window_level(always_on_top));
                 }
             }
+            RoutedWindowCommand::Drag(id) => {
+                if let Some(window) = self.window(id) {
+                    drag_scene_window(window.as_ref());
+                }
+            }
         }
     }
 
@@ -774,6 +789,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .create_window(attributes)
                 .map_err(|error| error.to_string())?,
         );
+        if !settings.system_caption {
+            let _ = prepare_client_chrome(window.as_ref());
+        }
         let surface = self
             .graphics
             .create_surface(Arc::clone(&window))
@@ -782,7 +800,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let _ = self.painter_mut(format);
         #[cfg(target_os = "windows")]
         let pen_hook = crate::windows_pen::WindowsPenHook::install(window.as_ref())?;
-        let material = apply_scene_material(window.as_ref(), self.last_theme);
+        let material =
+            apply_scene_material(window.as_ref(), self.last_theme, self.last_material_mode);
+        apply_window_transparency(window.as_ref(), self.last_material_mode);
         #[cfg(not(target_os = "android"))]
         let accessibility = {
             Some(HostedAccessibility::new(
@@ -952,10 +972,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.next_gpu_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
     }
 
-    fn sync_theme(&mut self) {
+    fn sync_appearance(&mut self) {
         let theme = self.program.theme_mode();
-        if theme != self.last_theme {
+        let mode = self.program.window_material_mode();
+        if theme != self.last_theme || mode != self.last_material_mode {
             self.last_theme = theme;
+            self.last_material_mode = mode;
             self.refresh_material();
             self.request_redraw_all();
         }
@@ -963,10 +985,20 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn refresh_material(&mut self) {
         clear_system_material(self.graphics.window().as_ref());
-        self.material = apply_scene_material(self.graphics.window().as_ref(), self.last_theme);
+        self.material = apply_scene_material(
+            self.graphics.window().as_ref(),
+            self.last_theme,
+            self.last_material_mode,
+        );
+        apply_window_transparency(self.graphics.window().as_ref(), self.last_material_mode);
         for host in self.auxiliary.values_mut() {
             clear_system_material(host.surface.window().as_ref());
-            host.material = apply_scene_material(host.surface.window().as_ref(), self.last_theme);
+            host.material = apply_scene_material(
+                host.surface.window().as_ref(),
+                self.last_theme,
+                self.last_material_mode,
+            );
+            apply_window_transparency(host.surface.window().as_ref(), self.last_material_mode);
         }
     }
 
@@ -1069,7 +1101,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let update = scene_runtime_input_update(disposition, id, || {
             self.program.input_event(id, &input, &self.context_for(id))
         });
-        self.sync_theme();
+        self.sync_appearance();
         self.apply_update(event_loop, update);
         disposition
     }
@@ -1429,12 +1461,28 @@ fn next_accessibility_update(
 fn apply_scene_material(
     window: &winit::window::Window,
     theme: crate::ThemeMode,
+    requested: crate::MaterialEffect,
 ) -> MaterialOutcome {
     let (appearance, fallback) = match theme {
         crate::ThemeMode::Dark => (Appearance::Dark, FallbackColor::rgba(24, 24, 24, 220)),
         crate::ThemeMode::Light => (Appearance::Light, FallbackColor::rgba(255, 255, 255, 232)),
     };
-    apply_hosted_system_material(window, appearance, fallback)
+    apply_hosted_system_material(window, requested, appearance, fallback)
+}
+
+fn apply_window_transparency(window: &winit::window::Window, requested: crate::MaterialEffect) {
+    window.set_transparent(requested.wants_transparent_surface());
+}
+
+fn drag_scene_window(window: &winit::window::Window) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = nana_window::drag_custom_title_bar(window);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.drag_window();
+    }
 }
 
 fn scene_paint_viewport(
@@ -1511,7 +1559,36 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
         attributes = attributes.with_position(winit::dpi::LogicalPosition::new(x, y));
     }
 
-    attributes.with_decorations(true)
+    apply_scene_window_chrome(attributes, settings)
+}
+
+fn apply_scene_window_chrome(
+    attributes: winit::window::WindowAttributes,
+    settings: &RuntimeWindowSettings,
+) -> winit::window::WindowAttributes {
+    if settings.system_caption {
+        return attributes.with_decorations(true);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        attributes
+            .with_decorations(true)
+            .with_titlebar_transparent(true)
+            .with_fullsize_content_view(true)
+            .with_title_hidden(true)
+            .with_movable_by_window_background(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let attributes = attributes.with_decorations(false);
+        #[cfg(target_os = "windows")]
+        let attributes = attributes
+            .with_undecorated_shadow(true)
+            .with_corner_preference(winit::platform::windows::CornerPreference::Round);
+        attributes
+    }
 }
 
 fn scene_aux_window_attributes(
@@ -1562,6 +1639,7 @@ enum RoutedWindowCommand {
     SetMinimized(WindowId),
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
+    Drag(WindowId),
     Ignore,
 }
 
@@ -1590,6 +1668,7 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         WindowCommand::SetAlwaysOnTop { id, .. } if known(*id) => {
             RoutedWindowCommand::SetAlwaysOnTop(*id)
         }
+        WindowCommand::Drag(id) if known(*id) => RoutedWindowCommand::Drag(*id),
         _ => RoutedWindowCommand::Ignore,
     }
 }
@@ -2062,7 +2141,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_windows_use_native_chrome_and_runtime_settings() {
+    fn scene_windows_use_client_chrome_and_runtime_settings() {
         let mut settings = WindowSettings::new("Scene");
         settings.transparent = true;
         settings.always_on_top = true;
@@ -2073,7 +2152,10 @@ mod tests {
         let attributes = scene_window_attributes(&settings);
 
         assert_eq!(attributes.title, "Scene");
+        #[cfg(target_os = "macos")]
         assert!(attributes.decorations);
+        #[cfg(not(target_os = "macos"))]
+        assert!(!attributes.decorations);
         assert!(attributes.transparent);
         assert!(attributes.maximized);
         assert!(!attributes.resizable);
@@ -2082,6 +2164,10 @@ mod tests {
             winit::window::WindowLevel::AlwaysOnTop
         );
         assert_eq!(window_level(false), winit::window::WindowLevel::Normal);
+
+        settings.system_caption = true;
+        let caption = scene_window_attributes(&settings);
+        assert!(caption.decorations);
     }
 
     #[test]
@@ -2502,6 +2588,14 @@ mod tests {
                 &known
             ),
             RoutedWindowCommand::SetAlwaysOnTop(tool)
+        );
+        assert_eq!(
+            route_window_command(&WindowCommand::Drag(tool), &known),
+            RoutedWindowCommand::Drag(tool)
+        );
+        assert_eq!(
+            route_window_command(&WindowCommand::Drag(WindowId(3)), &known),
+            RoutedWindowCommand::Ignore
         );
     }
 

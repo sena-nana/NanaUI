@@ -434,6 +434,7 @@ impl GallerySettingsRuntime {
             chrome.leading_inset,
             chrome.trailing_inset,
             state.window_chrome.is_maximized(),
+            false,
         );
         self.flush(state.settings_viewport_size());
     }

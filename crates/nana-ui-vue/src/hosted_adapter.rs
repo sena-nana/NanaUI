@@ -10,7 +10,7 @@ use std::time::Instant;
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, window_material_effect,
 };
 use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::FrameworkError;
@@ -708,6 +708,18 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
 
     fn theme_mode(&self) -> ThemeMode {
         self.theme
+    }
+
+    fn window_material_mode(&self) -> nana_ui::MaterialEffect {
+        self.runtime
+            .vue()
+            .host(VueWindowId::PRIMARY)
+            .and_then(|host| {
+                host.lock()
+                    .ok()
+                    .map(|guard| window_material_effect(guard.appearance().window_material()))
+            })
+            .unwrap_or(nana_ui::MaterialEffect::Solid)
     }
 
     fn host_textures(&self, id: WindowId) -> Option<HostTextureRegistry> {

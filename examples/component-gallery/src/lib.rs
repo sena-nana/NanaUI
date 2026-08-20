@@ -1051,29 +1051,38 @@ impl GalleryApp {
     }
 
     pub(crate) fn apply_message(&mut self, message: GalleryMessage) -> RuntimeProgramUpdate {
-        let exit = matches!(
-            message,
-            GalleryMessage::WindowChrome(WindowChromeEvent::Action(WindowChromeAction::Close))
-        );
-        let chrome_commands = window_chrome_commands(
-            WindowId::PRIMARY,
-            &message,
-            self.state.window_chrome.is_maximized(),
-        );
+        if let GalleryMessage::WindowChrome(event) = message {
+            let action = self.state.window_chrome.update(event);
+            let exit = matches!(action, Some(WindowChromeAction::Close));
+            let window_commands = action
+                .map(|action| {
+                    chrome_action_commands(
+                        WindowId::PRIMARY,
+                        action,
+                        self.state.window_chrome.is_maximized(),
+                    )
+                })
+                .unwrap_or_default();
+            self.sync_dock_windows();
+            self.sync_loading_deadline();
+            return RuntimeProgramUpdate {
+                redraw: RuntimeRedraw::All,
+                window_commands,
+                exit,
+            };
+        }
         let previous_commands = self.state.dock_window_commands.len();
         self.state.update(message);
-        let mut window_commands = chrome_commands;
-        window_commands.extend(
-            self.state.dock_window_commands[previous_commands..]
-                .iter()
-                .cloned(),
-        );
+        let window_commands = self.state.dock_window_commands[previous_commands..]
+            .iter()
+            .cloned()
+            .collect();
         self.sync_dock_windows();
         self.sync_loading_deadline();
         RuntimeProgramUpdate {
             redraw: RuntimeRedraw::All,
             window_commands,
-            exit,
+            exit: false,
         }
     }
 
@@ -1217,6 +1226,24 @@ impl RuntimeProgram for GalleryApp {
         self.state.theme_mode()
     }
 
+    fn window_material_mode(&self) -> nana_ui::MaterialEffect {
+        nana_ui::window_material_effect(self.state.appearance.window_material())
+    }
+
+    fn prepare_window_frame(
+        &mut self,
+        id: WindowId,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        if id == WindowId::PRIMARY && self.state.material_outcome() != context.material() {
+            self.state
+                .update(GalleryMessage::MaterialApplied(context.material()));
+        }
+        if id == WindowId::PRIMARY && !self.state.settings_open {
+            self.persist_primary_dock();
+        }
+    }
+
     fn input_event(
         &mut self,
         id: WindowId,
@@ -1297,16 +1324,6 @@ impl RuntimeProgram for GalleryApp {
         }
         RuntimeProgramUpdate::default()
     }
-
-    fn prepare_window_frame(
-        &mut self,
-        id: WindowId,
-        _context: &RuntimeProgramContext<Self::Message>,
-    ) {
-        if id == WindowId::PRIMARY && !self.state.settings_open {
-            self.persist_primary_dock();
-        }
-    }
 }
 
 impl GalleryApp {
@@ -1342,24 +1359,19 @@ impl GalleryApp {
     }
 }
 
-fn window_chrome_commands(
+fn chrome_action_commands(
     id: WindowId,
-    message: &GalleryMessage,
+    action: WindowChromeAction,
     maximized: bool,
 ) -> Vec<WindowCommand> {
-    let GalleryMessage::WindowChrome(WindowChromeEvent::Action(action)) = message else {
-        return Vec::new();
-    };
     match action {
+        WindowChromeAction::Drag => vec![WindowCommand::Drag(id)],
         WindowChromeAction::Minimize => vec![WindowCommand::SetMinimized {
             id,
             minimized: true,
         }],
-        WindowChromeAction::ToggleMaximize => vec![WindowCommand::SetMaximized {
-            id,
-            maximized: !maximized,
-        }],
-        WindowChromeAction::Close | WindowChromeAction::Drag => Vec::new(),
+        WindowChromeAction::ToggleMaximize => vec![WindowCommand::SetMaximized { id, maximized }],
+        WindowChromeAction::Close => Vec::new(),
     }
 }
 
@@ -1485,6 +1497,7 @@ fn runtime_dock_window_commands(
                     role: WindowRole::Tool,
                     modal: false,
                     parent: None,
+                    system_caption: true,
                 },
             },
             DockWorkspaceEvent::CloseFloating(id) => {

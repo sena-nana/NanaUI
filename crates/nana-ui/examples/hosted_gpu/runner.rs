@@ -27,7 +27,8 @@ pub fn run(started_at: Instant) -> Result<(), HostedRunError> {
     let _ = STARTED_AT.set(started_at);
     let mut settings = RuntimeWindowSettings::new("NanaUI Hosted GPU Demo")
         .initial_size(1100.0, 720.0)
-        .minimum_size(760.0, 520.0);
+        .minimum_size(760.0, 520.0)
+        .system_caption(true);
     settings.transparent = true;
     run_runtime::<DemoProgram>(settings)
 }

@@ -8,16 +8,19 @@ use crate::theme::{ThemeMetrics, ThemeMode, UI_METRICS};
 
 const RADIUS_STEP: f32 = 4.0;
 
-/// Window backdrop mode selected in Appearance settings.
+/// Window backdrop selected by the app or Appearance settings.
 ///
-/// Hosts map `Translucent` onto `nana-window` native materials (or a solid
-/// fallback). Ordinary widgets never touch window handles.
+/// `Translucent` is window alpha only. Vibrancy / Mica / Acrylic must be requested
+/// explicitly; hosts must not substitute another blur.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowMaterialMode {
     #[default]
     Solid,
     Translucent,
+    Vibrancy,
+    Mica,
+    Acrylic,
 }
 
 impl WindowMaterialMode {
@@ -25,11 +28,18 @@ impl WindowMaterialMode {
         match self {
             Self::Solid => "实色",
             Self::Translucent => "透明",
+            Self::Vibrancy => "Vibrancy",
+            Self::Mica => "Mica",
+            Self::Acrylic => "Acrylic",
         }
     }
 
     pub const fn wants_native(self) -> bool {
-        matches!(self, Self::Translucent)
+        matches!(self, Self::Vibrancy | Self::Mica | Self::Acrylic)
+    }
+
+    pub const fn wants_transparent_surface(self) -> bool {
+        !matches!(self, Self::Solid)
     }
 }
 
@@ -600,6 +610,9 @@ mod tests {
         assert_eq!(appearance.standard_radius(), 10.0);
         assert!(appearance.workspace_corners_enabled());
         assert_eq!(appearance.window_material(), WindowMaterialMode::Solid);
+        assert!(!WindowMaterialMode::Translucent.wants_native());
+        assert!(WindowMaterialMode::Mica.wants_native());
+        assert!(WindowMaterialMode::Translucent.wants_transparent_surface());
         assert_eq!(appearance.backdrop_target(), BackdropTarget::Sidebar);
         assert!(
             (appearance.backdrop_opacity() - AppearanceSettings::DEFAULT_BACKDROP_OPACITY).abs()
