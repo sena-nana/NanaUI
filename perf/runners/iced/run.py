@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
-"""Optional Iced triangulation runner. See docs/performance-contract.md.
+"""Issue #12 Iced observation runner. Not a Nana #8 gate.
 
-StaticTree, Mutation (PaintOnly / Text / LayoutStyle), Hover, VirtualList,
-and Table invoke ``engine/iced`` ``scenario-bench`` against the shared Scenario JSON.
-Visibility / Transform / Accessibility stay unsupported: Iced has no
-``hidden`` / ``PaintTransform`` / ``set_accessibility`` equivalent.
-VirtualList and Table materialize only the catalog window (Nana runner now
-passes the same px windows). StaticTree 50k stays unsupported.
-
-``--from-report`` still accepts historical Gallery ``ui-benchmark`` JSON as
-``closest-legacy-reference`` for tiny StaticTree ids. Animation, Ime, Dock,
-Overlay, TextEditor, VirtualTree, and GpuScene stay unsupported (exit 2). Topology-only
-``pane_grid`` is not Nana ``assemble_dock`` chrome. A cached Iced editor frame
-is not Nana ``replace_text_area_selection`` + ``drain_text``.
-
-``--evaluate-invariants`` skips Iced envelopes. Relative Iced/GPUI multipliers
-stay off.
+scenario-bench covers StaticTree, Mutation (PaintOnly/Text/LayoutStyle), Hover,
+VirtualList, and Table. Other kinds stay exit 2. ``--evaluate-invariants`` skips
+Iced envelopes.
 """
 
 from __future__ import annotations
@@ -52,8 +40,7 @@ def plan(scenario_id: str, args: Any) -> list[str]:
     if scenario["kind"] not in SCENARIO_BENCH_KINDS:
         return _unsupported_plan(
             scenario_id,
-            "engine/iced scenario-bench implements StaticTree, Mutation, Hover, "
-            "VirtualList, and Table only",
+            "scenario-bench implements StaticTree, Mutation, Hover, VirtualList, Table",
         )
     output = args.repo_root / "target" / "performance" / "issue12" / f"iced-{scenario_id}.json"
     command = contract.cargo_run_iced_scenario_bench(
@@ -90,9 +77,7 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
             scenario_id=scenario_id,
             scenario=scenario,
             unsupported_reason=(
-                f"engine/iced scenario-bench implements StaticTree, Mutation, Hover, "
-                f"VirtualList, and Table. {scenario['kind']} is required by #8 / not implemented. "
-                "Gallery ui-benchmark is not a substitute. Fake Iced numbers are forbidden."
+                f"scenario-bench has no {scenario['kind']} adapter; fake numbers are forbidden"
             ),
         )
 

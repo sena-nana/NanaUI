@@ -53,8 +53,7 @@
       "overlay",
       "text-editor",
       "gpu-scene-ui"
-    ],
-    "note": "Issue #12 observation, not #8 DoD. same_scenario_ids emit real Iced+GPUI envelopes. unsupported_ids stay exit 2. relative_gate_can_enforce is not multiplier CI. Weekly GHA is not a fixed machine."
+    ]
   },
   "required_by_issue_not_in_harness": [
     {

@@ -44,10 +44,7 @@
     "size_change": false
   },
   "notes": [
-    "10k complete-binary-heap, same topology as Nana tree_mutations. Hover toggles style on the last two nodes, matching Nana set_pointer_hover between node(n) and node(n-1).",
-    "This is a targeted hover-state change, not a 10k hit-test walk and not a smaller tree.",
-    "GPUI has no WorkCounters.layout_nodes; hover_without_size_change stays not-evaluable. Do not invent layout_nodes=0.",
-    "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint on a reused TestAppContext window."
+    "10k heap; hover toggles the last two nodes. No layout_nodes; hover_without_size_change stays not-evaluable."
   ],
   "viewport": [
     900,
@@ -66,8 +63,7 @@
     "backend": "none"
   },
   "machine_identity": {
-    "fixed_benchmark_machine": false,
-    "note": "This dump is not Issue #8 §12.2 / #12 fixed-machine history. Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine."
+    "fixed_benchmark_machine": false
   },
   "view_construction_ms": {
     "p50": 6.692645499999999,

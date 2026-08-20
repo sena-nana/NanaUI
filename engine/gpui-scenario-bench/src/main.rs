@@ -319,11 +319,7 @@ fn merge_meta(payload: &mut Value, warmup: usize, iterations: usize, width: u32,
         );
         map.insert(
             "machine_identity".into(),
-            json!({
-                "fixed_benchmark_machine": false,
-                "note": "This dump is not Issue #8 §12.2 / #12 fixed-machine history. \
-            Weekly GitHub ubuntu-latest / macos-latest is not a fixed benchmark machine.",
-            }),
+            json!({ "fixed_benchmark_machine": false }),
         );
     }
 }
@@ -387,12 +383,7 @@ fn benchmark_static_tree(
         "nodes": nodes,
         "tree": tree_provenance(nodes),
         "notes": [
-            "StaticTree JSON only has params.nodes. Tree shape is the shared complete-binary-heap rule: parent(i)=i/2, root=1, element-div, no text.",
-            "Same rule as nana-runtime-benchmark::tree_mutations and engine/iced scenario-bench. A flat column of N text leaves is not this tree.",
-            "cpu_frame_ms is view construction + AnyElement::layout_as_root (Taffy) + prepaint + scene paint on gpui TestAppContext.",
-            "present_ms is omitted: TestWindow::draw is a no-op. Do not treat missing present as 0.",
-            "frames_after_idle is omitted: TestPlatform on_request_frame is a no-op, so idle redraw cannot be observed honestly.",
-            "Not a fixed benchmark machine. Weekly GHA is not this machine.",
+            "Shared complete-binary-heap StaticTree. present_ms and frames_after_idle omitted (TestWindow / TestPlatform cannot observe them).",
         ],
     });
     merge_meta(
@@ -460,10 +451,7 @@ fn benchmark_mutation(
             "single_node": true,
         },
         "notes": [
-            "Same complete-binary-heap as Nana tree_mutations / Iced StaticTree. One node is mutated per sample; topology is unchanged.",
-            "The TestAppContext window is reused so later samples are not a cold process start.",
-            "GPUI has no WorkCounters.layout_nodes; paint-only / a11y layout invariants stay not-evaluable. Do not invent zeros.",
-            "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint. present_ms omitted.",
+            "Single-node mutation on the shared heap. No layout_nodes; those invariants stay not-evaluable.",
         ],
     });
     merge_meta(
@@ -522,10 +510,7 @@ fn benchmark_hover(
             "size_change": false,
         },
         "notes": [
-            "10k complete-binary-heap, same topology as Nana tree_mutations. Hover toggles style on the last two nodes, matching Nana set_pointer_hover between node(n) and node(n-1).",
-            "This is a targeted hover-state change, not a 10k hit-test walk and not a smaller tree.",
-            "GPUI has no WorkCounters.layout_nodes; hover_without_size_change stays not-evaluable. Do not invent layout_nodes=0.",
-            "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint on a reused TestAppContext window.",
+            "10k heap; hover toggles the last two nodes. No layout_nodes; hover_without_size_change stays not-evaluable.",
         ],
     });
     merge_meta(
@@ -629,10 +614,7 @@ fn benchmark_virtual_list(
         },
         "window_ms": percentiles(&window_ms),
         "notes": [
-            "GPUI materializes only visible+overscan rows from catalog params, plus leading/trailing spacers. This is not 10k real widgets.",
-            "Catalog window: visible×item_extent viewport, overscan items×item_extent. Same window as Iced scenario-bench and the Nana runner flags.",
-            "live_ui_entities is the materialized item widget count, matching Nana list children after materialize_virtual_list.",
-            "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint of the live window only.",
+            "Materializes only the catalog visible+overscan window, not logical_items widgets.",
         ],
     });
     merge_meta(
@@ -808,11 +790,7 @@ fn benchmark_table(
         },
         "window_ms": percentiles(&window_ms),
         "notes": [
-            "GPUI materializes only the catalog table window (visible+overscan rows and columns), not rows×columns widgets.",
-            "Cell generator matches Nana text_table_cell: short_cell_len labels; column 0 of the first wrapped_cells rows in each 40-row band is wrapped_cell_len.",
-            "live_ui_entities is mounted_rows + mounted_rows×mounted_columns, matching Nana virtual table children.",
-            "GPUI has no WorkCounters.text_shaped / glyph_cache_*; those stay omitted / not-evaluable.",
-            "cpu_frame_ms is view construction + layout_as_root + prepaint + scene paint of the live window only.",
+            "Materializes only the catalog table window. No text_shaped / glyph_cache_*.",
         ],
     });
     merge_meta(
