@@ -183,6 +183,9 @@ impl RuntimeProgramUpdate {
 }
 
 /// Canonical retained application contract for the Nana Scene host.
+///
+/// `Message` is for host-level work (windows, GPU, persistence). Control
+/// interaction should update Runtime views through `on` / `observe`.
 pub trait RuntimeProgram: Sized + 'static {
     type Message: Send + 'static;
     type Error: fmt::Display;

@@ -106,10 +106,14 @@ bounds，并区分主窗口 28px dock chrome 与 floating window 36px native tit
 
 ## Application API
 
-`Entity<V>`、`View`、`AppContext` 与 `ViewContext` 提供 typed state/read/update/remove、
-closure event、typed action、registered text presenters 和 staged extension install，不暴露 ECS World。一次 context
-update 汇集为一个 mutation commit。`Task`/`Subscription` 只包装标准 Future/Stream；
-executor、waker 和取消生命周期由 host adapter 拥有。
+`Entity<V>`、`View`、`AppContext`、`ViewContext` 与 `AppContext::mount` 提供 typed
+state/read/update/remove、keyed 子树组装、closure event、typed action、registered text
+presenters 和 staged extension install，不暴露 ECS World。一次 context
+update 汇集为一个 mutation commit。插件通过 `register_component` 与
+`register_activation` 加入指针激活，不必改 `activate_node`。Vue bind 的常见语义走
+`SemanticSpec`；其余属性走 `SemanticSpec::attr`。`Task`/`Subscription` 只包装标准
+Future/Stream；executor、waker 和取消生命周期由 host adapter 拥有。
+`RuntimeProgram::Message` 留给跨窗口/GPU/持久化，不是每个 Button press 的总线。
 
 Pointer/wheel/keyboard 的稳定事件、modifier、pointer phase/type 与 disposition 位于
 `nana-ui-platform`；winit 只负责 adapter conversion。平台输入不得通过 renderer

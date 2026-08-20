@@ -62,6 +62,8 @@ pub struct SemanticSpec<'a> {
     pub max: f32,
     pub step: f32,
     pub number: f32,
+    /// Extra Vue/host attributes. Plugins read these instead of extending this struct.
+    pub attrs: &'a [(&'a str, &'a str)],
 }
 
 impl<'a> SemanticSpec<'a> {
@@ -87,7 +89,14 @@ impl<'a> SemanticSpec<'a> {
             max: 1.0,
             step: 0.1,
             number: 0.0,
+            attrs: &[],
         }
+    }
+
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(*value))
     }
 
     pub fn display_label(&self) -> &str {
