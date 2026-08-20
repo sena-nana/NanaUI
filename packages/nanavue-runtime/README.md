@@ -13,6 +13,17 @@ Style Model 路径：
 
 `scene-view` 接入同一 Scene/Runtime 适配，不是 Iced widget 树。CustomContent / CPU 简化 paint 已移除。
 
+应用入口见 [`docs/application-api.md`](../../docs/application-api.md)。
+
+## 扩展控件走哪条路
+
+| 目标 | 路径 |
+|------|------|
+| 新控件进入布局、命中、Scene | Rust `UiExtension::register_component`（Runtime `ComponentRegistry` / `ComponentTypeId`）+ Vue `nana-*` tag |
+| 仅 JS 描述符、props 白名单、命令 | `NativeComponentRegistry`（JS host 组件工厂表）+ `Nana.components.call` |
+
+两张表不是同一条 ABI。不要只扩 `WidgetKind`，也不要只注册其中一张表却期望另一条路径生效。
+
 ## Source
 
 - `src/createNanaRenderer.js` — hostOps → `__nanaHost.call`, `scheduleJob` via `queueMicrotask`,

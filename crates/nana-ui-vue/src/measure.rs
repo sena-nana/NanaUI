@@ -1,5 +1,7 @@
 //! [`LayoutStyle`] → 可序列化布局盒（测试 / 诊断 / **预绘制回退**，非 CSS 引擎）。
 //!
+//! **Adapter internals.** Application hosts should use [`crate::prelude`].
+//!
 //! ## SoT（与 Scene 对照）
 //!
 //! | 数据 | 权威 | 本模块 |

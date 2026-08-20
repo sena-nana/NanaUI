@@ -1,8 +1,11 @@
-//! Unified component type registry for builtins and plugins.
+//! Unified Runtime component ABI for builtins and plugins.
 //!
 //! L3 `create_component`, Vue tags, and `UiExtension` all resolve through
 //! [`ComponentRegistry`]. Application business state stays in `AppContext`
 //! views; this table only names types and projects generic UI into `UiWorld`.
+//!
+//! This is **not** the Vue JS host factory table (`nana_ui_vue::NativeComponentRegistry`).
+//! Register layout/hit/Scene components here via [`crate::ExtensionRegistrar::register_component`].
 
 use std::any::TypeId;
 use std::collections::HashMap;

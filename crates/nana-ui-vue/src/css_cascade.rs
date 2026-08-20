@@ -1,5 +1,8 @@
 //! Stylesheet → matched nodes → [`LayoutStyle`] cascade (L1 subset).
 //!
+//! **Adapter internals.** Application hosts should use [`crate::prelude`], not this
+//! parser surface.
+//!
 //! Aligns with MDN / CSS Selectors Level 4 + CSS Cascade:
 //! type / class / id / attribute (`[attr]`, `=`, `~=`, `|=`, `^=`, `$=`, `*=`,
 //! optional `i`/`s`); combinators ` ` / `>` / `+` / `~`;

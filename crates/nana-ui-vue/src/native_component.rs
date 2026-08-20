@@ -1,4 +1,9 @@
-//! Extensible native Runtime components mounted as ordinary `nana-*` Vue nodes.
+//! Extensible JS host native-component factories mounted as ordinary `nana-*` Vue nodes.
+//!
+//! This is the **JS host 组件工厂表**, not the Runtime component ABI.
+//! Layout, hit-testing, and Scene identity still go through
+//! `nana_ui::runtime::ComponentRegistry` / `register_component`.
+//! Register descriptors here only for JS props/events/commands (`Nana.components.call`).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -218,7 +223,12 @@ impl std::fmt::Debug for NativeComponentDescriptor {
     }
 }
 
+/// JS host 组件工厂表：描述符、props 白名单与 `Nana.components.call` 命令。
+///
+/// 不扩展 `WidgetKind`，也不是 Runtime [`nana_ui_runtime::ComponentRegistry`] ABI。
+/// 新控件若要进入布局 / 命中 / Scene，必须同时 `register_component`。
 #[derive(Clone, Default)]
+#[doc(alias = "JsHostComponentRegistry")]
 pub struct NativeComponentRegistry {
     inner: Arc<RwLock<BTreeMap<String, Arc<NativeComponentDescriptor>>>>,
     errors: Arc<Mutex<VecDeque<NativeComponentFailure>>>,

@@ -106,6 +106,8 @@ bounds，并区分主窗口 28px dock chrome 与 floating window 36px native tit
 
 ## Application API
 
+应用入口手册见 [`application-api.md`](application-api.md)。
+
 `Entity<V>`、`View`、`AppContext`、`ViewContext` 与 `AppContext::mount` 提供 typed
 state/read/update/remove、keyed 子树组装、closure event、typed action、registered text
 presenters 和 staged extension install，不暴露 ECS World。一次 context
@@ -133,7 +135,15 @@ window/input/IME contract 不应因 TLS 或系统 clipboard toolchain 无法跨�
 （`nana.button` / `app.bilibili-user-card`），Vue tag（含 `nana-` 前缀）与 L3
 `create_component<C>` 都解析到该表。`bind` 只把通用 UI 投影进 `UiWorld`；业务
 state 留在 `AppContext.views`。未注册自定义 tag 仍按 HTML downlevel 落到 Column。
-这与 Vue `NativeComponentRegistry`（JS host 原生组件描述符）不是同一条路径。
+这与 Vue `NativeComponentRegistry`（JS host 组件工厂表，不是 Runtime
+`ComponentTypeId` ABI）不是同一条路径。要加控件时：
+
+| 目标 | 注册到 |
+|------|--------|
+| 进入布局 / 命中 / Scene 的新语义控件 | `ExtensionRegistrar::register_component`（Runtime `ComponentRegistry`）+ Vue `nana-*` tag |
+| 仅 JS props / 事件 / 命令白名单 | `NativeComponentRegistry` + `Nana.components.call` |
+
+禁止只扩展 `WidgetKind`，或只注册其中一张表却期望另一条路径生效。
 动态 dylib 与公开 Bevy Entity 仍不在 ABI 内。
 OverlayHost typed view 只拥有样式；exclusive active 与 focus restore 只存在 UiWorld。切换
 active 时非活跃直属 subtree 从 layout/input/render/accessibility 排除，modal overlay 限制

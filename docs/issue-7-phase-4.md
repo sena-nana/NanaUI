@@ -54,7 +54,7 @@ Action 的 label/category/search/key binding 仍由现有 NanaUI registry 拥有
 - `Task<T>` 拥有一个标准 `Future`，支持 `ready`、`map` 和所有权转交；
 - `Subscription<T>` 拥有带稳定 ID 的标准 wake-driven `Stream`；没有逐帧 polling callback；
 - drop future/stream 即取消未完成工作，Runtime 不启动线程或 executor；
-- `nana-ui::run_task` / `run_subscription` 将合同接入现有 Iced executor/subscription tracker。相同 subscription ID 保持宿主生命周期身份。
+- 宿主通过 `RuntimeProgram` / `run_runtime`（以及 `RuntimeProgramContext::run_task`）把 Future 接到平台事件循环。相同 subscription ID 保持宿主生命周期身份。Iced executor 已不是产品路径。
 
 ## Extension 安装
 
