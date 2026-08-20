@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_origin_subtracts_like_iced_layout_origin() {
+    fn scene_origin_subtracts_layout_origin() {
         let origin = paint_origin([0.0, 0.0], [40.0, 20.0]);
         let rect = translated_rect(
             SceneRect {

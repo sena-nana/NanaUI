@@ -2,7 +2,7 @@
   "id": "T-S04",
   "title": "min-width:0 允许 flex 收缩",
   "status": "pass",
-  "gap_note": "几何：min-width:0 + flex:1；文本 ellipsis 由 iced text-overflow 路径兑现",
+  "gap_note": "几何：min-width:0 + flex:1；文本 ellipsis 由 Runtime text-overflow 兑现",
   "viewport": [
     300,
     80

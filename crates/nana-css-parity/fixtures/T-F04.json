@@ -2,7 +2,7 @@
   "id": "T-F04",
   "title": "两端对齐 justify-content:space-between",
   "status": "pass",
-  "gap_note": "AlignSpec::parse 将 space-between 压成 Start；iced_app 未消费 justify",
+  "gap_note": "AlignSpec::parse 消费 space-between；measure 读取 justify",
   "viewport": [
     400,
     100

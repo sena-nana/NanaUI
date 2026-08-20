@@ -533,7 +533,7 @@ fn component_migration_snapshots(
     let runtime_path = output.join("migration-first-batch-runtime-dark.png");
     write::png(&runtime_path, MIGRATION_SIZE, &runtime_pixels)?;
 
-    let legacy_path = output.join("migration-first-batch-iced-dark.png");
+    let legacy_path = output.join("migration-first-batch-reference-dark.png");
     let legacy_pixels = archived_or_runtime(&legacy_path, MIGRATION_SIZE, &runtime_pixels)?;
 
     let comparison_size = Size::new(MIGRATION_SIZE.width * 2 + 8, MIGRATION_SIZE.height);

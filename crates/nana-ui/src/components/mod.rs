@@ -1,8 +1,7 @@
 //! Runtime component re-exports.
 //!
-//! Iced widget implementations were removed. Product types live in
-//! `nana-ui-runtime` and are re-exported here for existing `components::`
-//! paths used by catalog tests.
+//! Product types live in `nana-ui-runtime` and are re-exported here for existing
+//! `components::` paths used by catalog tests.
 
 pub use nana_ui_core::ControlSize;
 pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};

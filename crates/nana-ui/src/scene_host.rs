@@ -1,7 +1,6 @@
 //! Nana-owned winit + wgpu loop for [`crate::RuntimeProgram`].
 //!
-//! Applications never see Iced Message/Element/window IDs. Paint goes through
-//! [`crate::SceneWgpuPainter`].
+//! Paint goes through [`crate::SceneWgpuPainter`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::SyncSender;
@@ -47,7 +46,7 @@ const GPU_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const TASK_QUEUE_CAPACITY: usize = 256;
 const TASK_WORKERS: usize = 4;
 
-/// Run a [`RuntimeProgram`] on the Nana Scene host (no Iced UserInterface).
+/// Run a [`RuntimeProgram`] on the Nana Scene host.
 pub fn run_runtime_scene<Program: RuntimeProgram>(
     settings: RuntimeWindowSettings,
 ) -> Result<(), HostedRunError> {

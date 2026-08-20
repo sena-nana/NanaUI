@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn zoom_clamps_to_iced_min_max() {
+    fn zoom_clamps_to_min_max() {
         let mut viewer = ImageViewer::new(ImageViewerContent::None);
         let geometry = viewer.geometry(bounds());
         let (x, y) = stage_point(&geometry, 0.2, 0.3);

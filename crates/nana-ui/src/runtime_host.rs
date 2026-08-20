@@ -1,6 +1,6 @@
 //! Backend-neutral application contract for the Nana Scene host.
 //!
-//! Applications own [`RuntimeDocument`] values and never build an Iced tree.
+//! Applications own [`RuntimeDocument`] values and drive [`run_runtime`].
 //! [`run_runtime`] is the product host entry and delegates to
 //! [`crate::run_runtime_scene`].
 

@@ -1653,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn row_default_text_matches_iced_unarmed_alpha() {
+    fn row_default_text_matches_unarmed_alpha() {
         let mut context = AppContext::new();
         let idle = context
             .create_component(document(), SidebarRow::new("外观"))

@@ -2,7 +2,7 @@
   "id": "T-F03",
   "title": "主轴居中 justify-content:center",
   "status": "pass",
-  "gap_note": "measure 读取 LayoutStyle.justify_content；iced_app 接线仍属 P0-1",
+  "gap_note": "measure 读取 LayoutStyle.justify_content",
   "viewport": [400, 100],
   "tolerance_px": 2,
   "tree": {

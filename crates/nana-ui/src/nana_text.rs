@@ -1,4 +1,4 @@
-//! Nana-owned cosmic-text shaper. Layout metrics stay on Runtime; Iced is not used.
+//! Nana-owned cosmic-text shaper. Layout metrics stay on Runtime.
 
 use cosmic_text::{
     Affinity, Attrs, Buffer, Cursor, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics,

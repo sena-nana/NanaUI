@@ -865,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn dialog_wraps_against_final_surface_width_and_settles_at_iced_top_inset() {
+    fn dialog_wraps_against_final_surface_width_and_settles_at_top_inset() {
         let mut cx = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let dialog = cx
