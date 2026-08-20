@@ -222,6 +222,16 @@ impl DockBounds {
             finite(self.y, work_area.y).clamp(work_area.y, work_area.y + work_area.height - height);
         Self::new(x, y, width, height)
     }
+
+    fn intersection_area(self, other: Self) -> f32 {
+        let width = (self.x + self.width).min(other.x + other.width) - self.x.max(other.x);
+        let height = (self.y + self.height).min(other.y + other.height) - self.y.max(other.y);
+        if width <= 0.0 || height <= 0.0 {
+            0.0
+        } else {
+            width * height
+        }
+    }
 }
 
 /// One host-owned floating window.
@@ -352,6 +362,8 @@ pub enum DockAction {
     SurfaceGeometry {
         surface: DockSurfaceId,
         bounds: DockBounds,
+        /// Named monitor, or `None` to infer from live work areas.
+        monitor: Option<String>,
     },
     SurfaceLayout {
         surface: DockSurfaceId,
@@ -431,6 +443,7 @@ pub enum DockMutation {
     SurfaceGeometry {
         surface: DockSurfaceId,
         bounds: DockBounds,
+        monitor: Option<String>,
     },
     SurfaceLayout {
         surface: DockSurfaceId,
@@ -507,9 +520,15 @@ impl From<DockAction> for DockMutation {
                 width,
                 height,
             },
-            DockAction::SurfaceGeometry { surface, bounds } => {
-                Self::SurfaceGeometry { surface, bounds }
-            }
+            DockAction::SurfaceGeometry {
+                surface,
+                bounds,
+                monitor,
+            } => Self::SurfaceGeometry {
+                surface,
+                bounds,
+                monitor,
+            },
             DockAction::SurfaceLayout { surface, bounds } => {
                 Self::SurfaceLayout { surface, bounds }
             }
@@ -561,6 +580,76 @@ pub struct DockUpdate {
     /// Transient pointer, preview, focus and measured geometry updates remain false.
     pub changed: bool,
     pub effects: Vec<DockHostEffect>,
+}
+
+/// Quiet-period throttle for writing [`DockController::layout_json`].
+///
+/// Call [`Self::note`] with [`DockUpdate::changed`], [`Self::poll`] after the
+/// quiet period, and [`Self::flush`] on blur or exit.
+#[derive(Debug, Clone)]
+pub struct DockLayoutPersist {
+    delay: Duration,
+    dirty: bool,
+    last_change: Option<Duration>,
+}
+
+impl DockLayoutPersist {
+    pub const DEFAULT_DELAY: Duration = Duration::from_millis(200);
+
+    pub fn new() -> Self {
+        Self::with_delay(Self::DEFAULT_DELAY)
+    }
+
+    pub fn with_delay(delay: Duration) -> Self {
+        Self {
+            delay,
+            dirty: false,
+            last_change: None,
+        }
+    }
+
+    pub fn note(&mut self, changed: bool, now: Duration) {
+        if !changed {
+            return;
+        }
+        self.dirty = true;
+        self.last_change = Some(now);
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn poll(&mut self, now: Duration) -> bool {
+        if !self.dirty || !self.last_change.is_some_and(|at| now >= at + self.delay) {
+            return false;
+        }
+        self.clear();
+        true
+    }
+
+    pub fn next_wakeup(&self) -> Option<Duration> {
+        self.last_change
+            .filter(|_| self.dirty)
+            .map(|at| at + self.delay)
+    }
+
+    pub fn flush(&mut self) -> bool {
+        let dirty = self.dirty;
+        self.clear();
+        dirty
+    }
+
+    fn clear(&mut self) {
+        self.dirty = false;
+        self.last_change = None;
+    }
+}
+
+impl Default for DockLayoutPersist {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -777,6 +866,7 @@ pub struct DockController {
     floating_window_title: String,
     hovered_card: Option<DockId>,
     clock_origin: Instant,
+    display_work_areas: BTreeMap<String, DockBounds>,
 }
 
 impl DockController {
@@ -823,6 +913,7 @@ impl DockController {
             floating_window_title: String::new(),
             hovered_card: None,
             clock_origin: Instant::now(),
+            display_work_areas: BTreeMap::new(),
         })
     }
 
@@ -838,6 +929,11 @@ impl DockController {
     /// This presentation setting is not part of the serialized dock layout.
     pub fn set_floating_window_title(&mut self, title: impl Into<String>) {
         self.floating_window_title = title.into();
+    }
+
+    /// Live logical work areas used to infer [`FloatingDock::monitor`].
+    pub fn set_display_work_areas(&mut self, monitor_work_areas: BTreeMap<String, DockBounds>) {
+        self.display_work_areas = monitor_work_areas;
     }
 
     pub fn item(&self, id: &DockId) -> Option<&DockItemSpec> {
@@ -1001,6 +1097,45 @@ impl DockController {
         Ok(effects)
     }
 
+    /// Restores JSON and clamps floating windows to logical work areas.
+    pub fn restore_layout_json_clamped(
+        &mut self,
+        value: &str,
+        monitor_work_areas: &BTreeMap<String, DockBounds>,
+        primary_work_area: DockBounds,
+    ) -> Result<DockUpdate, DockError> {
+        let mut effects = self.restore_layout_json(value)?;
+        let clamp = self.clamp_floating_bounds(monitor_work_areas, primary_work_area);
+        for effect in &mut effects {
+            if let DockHostEffect::OpenFloating(opened) = effect
+                && let Some(current) = self
+                    .layout
+                    .floating
+                    .iter()
+                    .find(|floating| floating.surface == opened.surface)
+            {
+                *opened = current.clone();
+            }
+        }
+        for effect in clamp.effects {
+            if let DockHostEffect::MoveFloating { surface, .. } = &effect
+                && effects.iter().any(|existing| {
+                    matches!(
+                        existing,
+                        DockHostEffect::OpenFloating(opened) if opened.surface == *surface
+                    )
+                })
+            {
+                continue;
+            }
+            effects.push(effect);
+        }
+        Ok(DockUpdate {
+            changed: clamp.changed,
+            effects,
+        })
+    }
+
     /// Applies geometry and close events emitted by the Nana Scene host.
     #[cfg(feature = "hosted")]
     pub fn update_hosted_window(&mut self, event: WindowEvent) -> DockUpdate {
@@ -1047,7 +1182,11 @@ impl DockController {
                     drag.bounds = Some(bounds);
                     return DockUpdate::default();
                 }
-                self.update(DockAction::SurfaceGeometry { surface, bounds })
+                self.update(DockAction::SurfaceGeometry {
+                    surface,
+                    bounds,
+                    monitor: resolve_monitor_id(&self.display_work_areas, bounds),
+                })
             }
             WindowEvent::CloseRequested { id } if DockSurfaceId::from(id) != DockSurfaceId(0) => {
                 self.update(DockAction::CloseSurface(DockSurfaceId::from(id)))
@@ -1060,7 +1199,7 @@ impl DockController {
         }
     }
 
-    /// Reopens every floating surface already present in a restored layout.
+    /// Opens every floating surface in the current layout.
     #[cfg(feature = "hosted")]
     pub fn open_hosted_windows(&self, title: impl Into<String>) -> RuntimeProgramUpdate {
         hosted_dock_update(
@@ -1078,36 +1217,56 @@ impl DockController {
         )
     }
 
+    /// Clamps restored floating bounds, then opens those windows.
+    #[cfg(feature = "hosted")]
+    pub fn open_restored_hosted_windows(
+        &mut self,
+        title: impl Into<String>,
+        monitor_work_areas: &BTreeMap<String, DockBounds>,
+        primary_work_area: DockBounds,
+    ) -> (RuntimeProgramUpdate, bool) {
+        let clamp = self.clamp_floating_bounds(monitor_work_areas, primary_work_area);
+        (self.open_hosted_windows(title), clamp.changed)
+    }
+
+    /// Clamps floating windows to logical work areas; missing monitors use primary.
     pub fn clamp_floating_bounds(
         &mut self,
         monitor_work_areas: &BTreeMap<String, DockBounds>,
         primary_work_area: DockBounds,
-    ) -> bool {
+    ) -> DockUpdate {
+        self.display_work_areas = monitor_work_areas.clone();
         let mut changed = false;
+        let mut effects = Vec::new();
         for floating in &mut self.layout.floating {
+            let named_missing = floating
+                .monitor
+                .as_ref()
+                .is_some_and(|monitor| !monitor_work_areas.contains_key(monitor));
             let work_area = floating
                 .monitor
                 .as_ref()
                 .and_then(|monitor| monitor_work_areas.get(monitor))
                 .copied()
                 .unwrap_or(primary_work_area);
-            if floating
-                .monitor
-                .as_ref()
-                .is_some_and(|monitor| !monitor_work_areas.contains_key(monitor))
-            {
+            if named_missing {
                 floating.monitor = None;
                 changed = true;
             }
             let bounds = floating.bounds.clamped_to(work_area);
-            changed |= bounds != floating.bounds;
+            let moved = bounds != floating.bounds;
+            changed |= moved;
             floating.bounds = bounds;
+            let surface = floating.surface;
             self.surface_geometry
-                .entry(floating.surface)
+                .entry(surface)
                 .or_insert(DockSurfaceGeometry::new(bounds))
                 .set_window(bounds);
+            if moved {
+                effects.push(DockHostEffect::MoveFloating { surface, bounds });
+            }
         }
-        changed
+        DockUpdate { changed, effects }
     }
 
     pub fn update(&mut self, action: DockAction) -> DockUpdate {
@@ -1253,11 +1412,11 @@ impl DockController {
                     .surface_geometry
                     .entry(surface)
                     .or_insert(DockSurfaceGeometry::new(layout));
-                let mut changed = geometry.layout() != layout;
                 geometry.set_layout(layout);
                 if is_drag_preview {
                     return DockUpdate::default();
                 }
+                let mut changed = false;
                 if let Some(floating) = self
                     .layout
                     .floating
@@ -1274,7 +1433,11 @@ impl DockController {
                     effects: Vec::new(),
                 }
             }
-            DockAction::SurfaceGeometry { surface, bounds } => {
+            DockAction::SurfaceGeometry {
+                surface,
+                bounds,
+                monitor,
+            } => {
                 if !valid_bounds(bounds) {
                     return DockUpdate::default();
                 }
@@ -1288,6 +1451,7 @@ impl DockController {
                     }
                     return DockUpdate::default();
                 }
+                let inferred = resolve_monitor_id(&self.display_work_areas, bounds);
                 let mut changed = false;
                 if let Some(floating) = self
                     .layout
@@ -1297,6 +1461,10 @@ impl DockController {
                 {
                     changed |= floating.bounds != bounds;
                     floating.bounds = bounds;
+                    if let Some(next_monitor) = monitor.or(inferred) {
+                        changed |= floating.monitor.as_ref() != Some(&next_monitor);
+                        floating.monitor = Some(next_monitor);
+                    }
                 }
                 DockUpdate {
                     changed,
@@ -2148,9 +2316,10 @@ pub fn hosted_dock_update(update: DockUpdate, title: impl Into<String>) -> Runti
                 },
             },
             DockHostEffect::CloseFloating(surface) => WindowCommand::Close(WindowId::from(surface)),
-            DockHostEffect::MoveFloating { surface, bounds } => WindowCommand::Move {
+            DockHostEffect::MoveFloating { surface, bounds } => WindowCommand::SetBounds {
                 id: WindowId::from(surface),
                 position: (bounds.x, bounds.y),
+                size: (bounds.width, bounds.height),
             },
             DockHostEffect::FocusFloating(surface) => WindowCommand::Focus(WindowId::from(surface)),
         })
@@ -2325,6 +2494,24 @@ fn contains_center_in_tabs(node: &DockNode, center: &DockId) -> bool {
             contains_center_in_tabs(first, center) || contains_center_in_tabs(second, center)
         }
     }
+}
+
+fn resolve_monitor_id(
+    monitor_work_areas: &BTreeMap<String, DockBounds>,
+    bounds: DockBounds,
+) -> Option<String> {
+    monitor_work_areas
+        .iter()
+        .filter_map(|(id, area)| {
+            let area = bounds.intersection_area(*area);
+            (area > 0.0).then_some((area, id.clone()))
+        })
+        .max_by(|(left, left_id), (right, right_id)| {
+            left.partial_cmp(right)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left_id.cmp(right_id))
+        })
+        .map(|(_, id)| id)
 }
 
 fn surface_diff(before: &DockLayout, after: &DockLayout) -> Vec<DockHostEffect> {
@@ -4015,6 +4202,7 @@ mod tests {
         controller.update(DockAction::SurfaceGeometry {
             surface: DockSurfaceId(0),
             bounds: DockBounds::new(100.0, 50.0, 1_280.0, 800.0),
+            monitor: None,
         });
 
         let now = Instant::now();
@@ -4557,12 +4745,325 @@ mod tests {
             bounds: DockBounds::new(4_000.0, -500.0, 2_000.0, 1_500.0),
             monitor: Some("gone".into()),
         });
-        let changed = controller
+        let update = controller
             .clamp_floating_bounds(&BTreeMap::new(), DockBounds::new(0.0, 0.0, 1280.0, 900.0));
-        assert!(changed);
+        assert!(update.changed);
         let floating = &controller.layout().floating[0];
         assert_eq!(floating.monitor, None);
         assert_eq!(floating.bounds, DockBounds::new(0.0, 0.0, 1280.0, 900.0));
+        assert_eq!(
+            update.effects,
+            vec![DockHostEffect::MoveFloating {
+                surface: floating.surface,
+                bounds: floating.bounds,
+            }]
+        );
+    }
+
+    #[test]
+    fn move_updates_layout_json_immediately_and_round_trips() {
+        let mut source = controller();
+        source.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let surface = source.layout().floating[0].surface;
+        let initial = source.layout().floating[0].bounds;
+        let moved = DockBounds::new(120.0, 80.0, 360.0, 280.0);
+        let update = source.update(DockAction::SurfaceGeometry {
+            surface,
+            bounds: moved,
+            monitor: None,
+        });
+        assert!(update.changed);
+        assert_eq!(source.layout().floating[0].bounds, moved);
+        assert_ne!(source.layout().floating[0].bounds, initial);
+        let encoded = source.layout_json().expect("layout json");
+        let snapshot: DockLayout = serde_json::from_str(&encoded).expect("layout parses");
+        assert_eq!(snapshot.floating[0].bounds, moved);
+
+        let mut restored = controller();
+        restored
+            .restore_layout_json(&encoded)
+            .expect("geometry restores");
+        assert_eq!(restored.layout().floating[0].bounds, moved);
+    }
+
+    #[test]
+    fn resize_keeps_origin_and_round_trips_size() {
+        let mut source = controller();
+        source.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: None,
+        });
+        let surface = source.layout().floating[0].surface;
+        let update = source.update(DockAction::SurfaceResized {
+            surface,
+            width: 420.0,
+            height: 320.0,
+        });
+        assert!(update.changed);
+        assert_eq!(
+            source.layout().floating[0].bounds,
+            DockBounds::new(40.0, 50.0, 420.0, 320.0)
+        );
+        let encoded = source.layout_json().expect("layout json");
+        let mut restored = controller();
+        restored
+            .restore_layout_json(&encoded)
+            .expect("resized geometry restores");
+        assert_eq!(
+            restored.layout().floating[0].bounds,
+            DockBounds::new(40.0, 50.0, 420.0, 320.0)
+        );
+    }
+
+    #[test]
+    fn main_surface_geometry_does_not_enter_floating_layout() {
+        let mut controller = controller();
+        assert!(controller.layout().floating.is_empty());
+        let update = controller.update(DockAction::SurfaceGeometry {
+            surface: DockSurfaceId(0),
+            bounds: DockBounds::new(10.0, 20.0, 1_000.0, 700.0),
+            monitor: None,
+        });
+        assert!(!update.changed);
+        assert!(controller.layout().floating.is_empty());
+        let encoded = controller.layout_json().expect("layout json");
+        assert!(!encoded.contains("\"floating\":[{"));
+    }
+
+    #[test]
+    fn restoring_on_missing_monitor_clamps_before_open_and_persists() {
+        let mut source = controller();
+        source.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(4_000.0, -500.0, 2_000.0, 1_500.0),
+            monitor: Some("gone".into()),
+        });
+        let encoded = source.layout_json().expect("layout json");
+        let primary = DockBounds::new(0.0, 0.0, 1280.0, 800.0);
+        let mut restored = controller();
+        let update = restored
+            .restore_layout_json_clamped(&encoded, &BTreeMap::new(), primary)
+            .expect("clamped restore");
+        assert!(update.changed);
+        let DockHostEffect::OpenFloating(opened) = &update.effects[0] else {
+            panic!("restored floating open");
+        };
+        assert_eq!(opened.bounds, DockBounds::new(0.0, 0.0, 1280.0, 800.0));
+        assert_eq!(opened.monitor, None);
+        let corrected = restored.layout_json().expect("corrected json");
+        let mut again = controller();
+        let second = again
+            .restore_layout_json_clamped(&corrected, &BTreeMap::new(), primary)
+            .expect("second restore");
+        assert!(!second.changed);
+        assert_eq!(
+            again.layout().floating[0].bounds,
+            DockBounds::new(0.0, 0.0, 1280.0, 800.0)
+        );
+    }
+
+    #[test]
+    fn smaller_logical_work_area_clamps_position_and_size() {
+        let work_area = DockBounds::new(0.0, 0.0, 1280.0, 720.0);
+        let original = DockBounds::new(1_000.0, 40.0, 2_000.0, 1_500.0);
+        assert_eq!(
+            original.clamped_to(work_area),
+            DockBounds::new(0.0, 0.0, 1280.0, 720.0)
+        );
+
+        let mut controller = controller();
+        controller.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: original,
+            monitor: Some("built-in".into()),
+        });
+        let monitors = BTreeMap::from([("built-in".to_string(), work_area)]);
+        let update = controller.clamp_floating_bounds(&monitors, work_area);
+        assert!(update.changed);
+        assert_eq!(
+            controller.layout().floating[0].monitor.as_deref(),
+            Some("built-in")
+        );
+        assert_eq!(
+            controller.layout().floating[0].bounds,
+            original.clamped_to(work_area)
+        );
+    }
+
+    fn dual_monitor_work_areas() -> (BTreeMap<String, DockBounds>, DockBounds) {
+        let primary = DockBounds::new(0.0, 0.0, 1280.0, 800.0);
+        let monitors = BTreeMap::from([
+            ("built-in".to_string(), primary),
+            (
+                "display-2".to_string(),
+                DockBounds::new(1280.0, 0.0, 1920.0, 1080.0),
+            ),
+        ]);
+        (monitors, primary)
+    }
+
+    #[test]
+    fn geometry_persists_named_monitor_and_restore_stays_on_secondary() {
+        let (monitors, primary) = dual_monitor_work_areas();
+        let mut source = controller();
+        source.set_display_work_areas(monitors.clone());
+        source.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(1_400.0, 80.0, 360.0, 280.0),
+            monitor: Some("built-in".into()),
+        });
+        let surface = source.layout().floating[0].surface;
+        let moved = DockBounds::new(1_600.0, 120.0, 400.0, 300.0);
+        let update = source.update(DockAction::SurfaceGeometry {
+            surface,
+            bounds: moved,
+            monitor: None,
+        });
+        assert!(update.changed);
+        assert_eq!(source.layout().floating[0].bounds, moved);
+        assert_eq!(
+            source.layout().floating[0].monitor.as_deref(),
+            Some("display-2")
+        );
+
+        let encoded = source.layout_json().expect("layout json");
+        let snapshot: DockLayout = serde_json::from_str(&encoded).expect("layout parses");
+        assert_eq!(snapshot.floating[0].monitor.as_deref(), Some("display-2"));
+
+        let mut restored = controller();
+        let first = restored
+            .restore_layout_json_clamped(&encoded, &monitors, primary)
+            .expect("secondary restore");
+        assert!(!first.changed);
+        assert_eq!(restored.layout().floating[0].bounds, moved);
+        assert_eq!(
+            restored.layout().floating[0].monitor.as_deref(),
+            Some("display-2")
+        );
+
+        let corrected = restored.layout_json().expect("stable json");
+        let mut again = controller();
+        let second = again
+            .restore_layout_json_clamped(&corrected, &monitors, primary)
+            .expect("second restore");
+        assert!(!second.changed);
+        assert_eq!(again.layout().floating[0].bounds, moved);
+        assert_eq!(
+            again.layout().floating[0].monitor.as_deref(),
+            Some("display-2")
+        );
+    }
+
+    #[test]
+    fn unplugging_secondary_clamps_only_that_window_then_stops_drifting() {
+        let (_, primary) = dual_monitor_work_areas();
+        let mut source = controller();
+        source.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(1_600.0, 80.0, 400.0, 300.0),
+            monitor: Some("display-2".into()),
+        });
+        source.update(DockAction::Float {
+            id: "mixer".into(),
+            bounds: DockBounds::new(80.0, 60.0, 360.0, 240.0),
+            monitor: Some("built-in".into()),
+        });
+        let encoded = source.layout_json().expect("layout json");
+        let only_primary = BTreeMap::from([("built-in".to_string(), primary)]);
+        let mut restored = controller();
+        let update = restored
+            .restore_layout_json_clamped(&encoded, &only_primary, primary)
+            .expect("unplug restore");
+        assert!(update.changed);
+        let secondary = restored
+            .layout()
+            .floating
+            .iter()
+            .find(|dock| dock.root.contains(&DockId::from("sources")))
+            .expect("sources window");
+        assert_eq!(secondary.monitor, None);
+        assert_eq!(
+            secondary.bounds,
+            DockBounds::new(1_600.0, 80.0, 400.0, 300.0).clamped_to(primary)
+        );
+        let primary_window = restored
+            .layout()
+            .floating
+            .iter()
+            .find(|dock| dock.root.contains(&DockId::from("mixer")))
+            .expect("mixer window");
+        assert_eq!(primary_window.monitor.as_deref(), Some("built-in"));
+        assert_eq!(
+            primary_window.bounds,
+            DockBounds::new(80.0, 60.0, 360.0, 240.0)
+        );
+
+        let corrected = restored.layout_json().expect("corrected json");
+        let mut again = controller();
+        let second = again
+            .restore_layout_json_clamped(&corrected, &only_primary, primary)
+            .expect("second unplug restore");
+        assert!(!second.changed);
+    }
+
+    #[test]
+    fn main_surface_resize_does_not_dirty_layout_persist() {
+        let mut controller = controller();
+        controller.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: Some("built-in".into()),
+        });
+        let encoded = controller.layout_json().expect("before main resize");
+        let mut persist = DockLayoutPersist::with_delay(Duration::from_millis(200));
+        let resized = controller.update(DockAction::SurfaceResized {
+            surface: DockSurfaceId(0),
+            width: 1_440.0,
+            height: 900.0,
+        });
+        persist.note(resized.changed, Duration::from_millis(16));
+        assert!(!resized.changed);
+        assert!(!persist.is_dirty());
+        let moved = controller.update(DockAction::SurfaceGeometry {
+            surface: DockSurfaceId(0),
+            bounds: DockBounds::new(12.0, 24.0, 1_440.0, 900.0),
+            monitor: Some("built-in".into()),
+        });
+        persist.note(moved.changed, Duration::from_millis(32));
+        assert!(!moved.changed);
+        assert!(!persist.is_dirty());
+        assert_eq!(controller.layout_json().expect("unchanged"), encoded);
+        assert_eq!(
+            controller.layout().floating[0].monitor.as_deref(),
+            Some("built-in")
+        );
+    }
+
+    #[test]
+    fn persist_throttle_coalesces_moves_and_flushes_on_exit() {
+        let mut persist = DockLayoutPersist::with_delay(Duration::from_millis(200));
+        let mut writes = 0;
+        persist.note(true, Duration::from_millis(0));
+        persist.note(true, Duration::from_millis(16));
+        persist.note(true, Duration::from_millis(32));
+        persist.note(true, Duration::from_millis(48));
+        assert!(!persist.poll(Duration::from_millis(48)));
+        assert_eq!(persist.next_wakeup(), Some(Duration::from_millis(248)));
+        if persist.poll(Duration::from_millis(248)) {
+            writes += 1;
+        }
+        persist.note(true, Duration::from_millis(250));
+        persist.note(false, Duration::from_millis(251));
+        if persist.flush() {
+            writes += 1;
+        }
+        assert!(!persist.flush());
+        assert_eq!(writes, 2);
     }
 
     #[test]
@@ -4615,6 +5116,7 @@ mod tests {
             DockMutation::SurfaceGeometry {
                 surface: DockSurfaceId(0),
                 bounds: DockBounds::new(40.0, 60.0, 1_000.0, 700.0),
+                monitor: None,
             },
             now,
         );
@@ -4687,6 +5189,7 @@ mod tests {
         controller.update(DockAction::SurfaceGeometry {
             surface: DockSurfaceId(0),
             bounds: DockBounds::new(0.0, 0.0, 1_000.0, 760.0),
+            monitor: None,
         });
         controller.update(DockAction::SurfaceLayout {
             surface: DockSurfaceId(0),
@@ -4752,6 +5255,7 @@ mod tests {
         controller.update(DockAction::SurfaceGeometry {
             surface: DockSurfaceId(0),
             bounds: DockBounds::new(0.0, 0.0, 1_000.0, 760.0),
+            monitor: None,
         });
         controller.update(DockAction::SurfaceLayout {
             surface: DockSurfaceId(0),
@@ -4814,10 +5318,12 @@ mod tests {
         controller.update(DockAction::SurfaceGeometry {
             surface: source,
             bounds: DockBounds::new(100.0, 100.0, 360.0, 280.0),
+            monitor: None,
         });
         controller.update(DockAction::SurfaceGeometry {
             surface: target,
             bounds: DockBounds::new(500.0, 100.0, 360.0, 280.0),
+            monitor: None,
         });
 
         let now = Instant::now();
@@ -4893,6 +5399,7 @@ mod tests {
         controller.update(DockAction::SurfaceGeometry {
             surface: DockSurfaceId(0),
             bounds: DockBounds::new(0.0, 0.0, 1_000.0, 760.0),
+            monitor: None,
         });
         controller.update(DockAction::SurfaceLayout {
             surface: DockSurfaceId(0),
@@ -4969,8 +5476,10 @@ mod tests {
         );
         assert!(matches!(
             moved.window_commands.as_slice(),
-            [WindowCommand::Move { id, position }]
-                if *id == WindowId::from(surface) && *position == (80.0, 90.0)
+            [WindowCommand::SetBounds { id, position, size }]
+                if *id == WindowId::from(surface)
+                    && *position == (80.0, 90.0)
+                    && *size == (360.0, 280.0)
         ));
         let restored = controller.open_hosted_windows("NanaUI Dock");
         assert_eq!(restored.window_commands.len(), 1);
@@ -5010,5 +5519,31 @@ mod tests {
             id: WindowId::from(surface),
         });
         assert_eq!(close.effects, vec![DockHostEffect::CloseFloating(surface)]);
+    }
+
+    #[cfg(feature = "hosted")]
+    #[test]
+    fn restored_hosted_windows_open_inside_primary_work_area() {
+        let mut controller = controller();
+        controller.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(4_000.0, -200.0, 500.0, 400.0),
+            monitor: Some("unplugged".into()),
+        });
+        let (opened, persist) = controller.open_restored_hosted_windows(
+            "NanaUI Dock",
+            &BTreeMap::new(),
+            DockBounds::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        assert!(persist);
+        let WindowCommand::Open { settings, .. } = &opened.window_commands[0] else {
+            panic!("clamped hosted open");
+        };
+        assert_eq!(settings.initial_position, Some((780.0, 0.0)));
+        assert_eq!(settings.initial_size, (500.0, 400.0));
+        assert_eq!(
+            controller.layout().floating[0].bounds,
+            DockBounds::new(780.0, 0.0, 500.0, 400.0)
+        );
     }
 }
