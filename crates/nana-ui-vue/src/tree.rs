@@ -24,9 +24,10 @@ use nana_ui_runtime::{
     AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, Button as RuntimeButton,
     CalendarHeatmap as RuntimeCalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions,
     CalendarLevelStrategy, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
-    CommandPalette as RuntimeCommandPalette, ComponentView, ConfirmDialog as RuntimeConfirmDialog,
-    ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode,
-    Dialog as RuntimeDialog, Dock as RuntimeDock, DockAxis, DockNode, Drawer as RuntimeDrawer,
+    CommandPalette as RuntimeCommandPalette, ComponentBindKind, ComponentTypeId, ComponentView,
+    ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
+    ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode, Dialog as RuntimeDialog,
+    Dock as RuntimeDock, DockAxis, DockNode, Drawer as RuntimeDrawer,
     EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
     GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
     GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
@@ -39,13 +40,14 @@ use nana_ui_runtime::{
     Popover as RuntimePopover, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
     RangeField as RuntimeRangeField, SegmentedControl as RuntimeSegmentedControl,
     SegmentedOption as RuntimeSegmentedOption, Select as RuntimeSelect,
-    SelectOption as RuntimeSelectOption, SelectionChrome, SettingsCard as RuntimeSettingsCard,
-    SettingsPage as RuntimeSettingsPage, SettingsRow as RuntimeSettingsRow,
-    SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
-    Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane,
-    StableNodeId, StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch,
-    TextArea as RuntimeTextArea, TextContent, TextInput as RuntimeTextInput, TextInputState,
-    Toast as RuntimeToast, Tooltip as RuntimeTooltip, TreeView as RuntimeTreeView, UiWorld,
+    SelectOption as RuntimeSelectOption, SelectionChrome, SemanticSpec,
+    SettingsCard as RuntimeSettingsCard, SettingsPage as RuntimeSettingsPage,
+    SettingsRow as RuntimeSettingsRow, SidebarFrame as RuntimeSidebarFrame,
+    SidebarRow as RuntimeSidebarRow, Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner,
+    SplitPane as RuntimeSplitPane, StableNodeId, StatusBadge as RuntimeStatusBadge,
+    Switch as RuntimeSwitch, TextArea as RuntimeTextArea, TextContent,
+    TextInput as RuntimeTextInput, TextInputState, Toast as RuntimeToast,
+    Tooltip as RuntimeTooltip, TreeView as RuntimeTreeView, UiWorld,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
@@ -2463,6 +2465,88 @@ fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
     crate::scroll::is_runtime_scroll_body(&widget.props)
 }
 
+fn widget_icon(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Option<nana_ui_core::Icon> {
+    widget
+        .children
+        .iter()
+        .filter_map(|child| snapshot.get(*child))
+        .find(|child| child.kind == crate::WidgetKind::Icon)
+        .and_then(|child| {
+            nana_ui_core::Icon::parse_name(child.props.display_label())
+                .or_else(|| nana_ui_core::Icon::parse_name(&child.props.value))
+        })
+        .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value))
+}
+
+fn resolve_widget_component_type(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    context: &AppContext,
+) -> Option<ComponentTypeId> {
+    if widget.kind == crate::WidgetKind::Button && widget_icon(widget, snapshot).is_some() {
+        if let Some(id) = context.resolve_component_tag("icon-button") {
+            return Some(id.clone());
+        }
+    }
+    let tag = if widget.props.element_tag.is_empty() {
+        widget.kind.as_str()
+    } else {
+        widget.props.element_tag.as_str()
+    };
+    context.resolve_component_tag(tag).cloned()
+}
+
+fn try_bind_registered_component(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    id: StableNodeId,
+    context: &AppContext,
+    mutations: &mut MutationQueue,
+) -> Option<bool> {
+    let type_id = resolve_widget_component_type(widget, snapshot, context)?;
+    let layout_kind = matches!(
+        widget.kind,
+        crate::WidgetKind::Column | crate::WidgetKind::Box | crate::WidgetKind::Row
+    );
+    if !layout_kind {
+        mutations.set_component_type(id, Some(type_id));
+        return None;
+    }
+    let layout = Arc::new(widget.props.layout.clone());
+    let spec = SemanticSpec {
+        label: widget.props.label.as_str(),
+        value: widget.props.value.as_str(),
+        hint: widget.props.hint.as_str(),
+        placeholder: widget.props.placeholder.as_str(),
+        disabled: widget.props.disabled,
+        loading: widget.props.loading,
+        invalid: widget.props.invalid,
+        active: widget.props.active,
+        toggled: widget.props.toggled,
+        read_only: widget.props.read_only,
+        secure: widget.props.secure,
+        button_kind: widget.props.button_kind,
+        size: widget.props.size,
+        icon: widget_icon(widget, snapshot),
+        min: widget.props.min,
+        max: widget.props.max,
+        step: widget.props.step,
+        number: if widget.kind == crate::WidgetKind::Progress {
+            widget.props.progress
+        } else {
+            widget.props.number
+        },
+        ..SemanticSpec::from_parts(&type_id, &layout)
+    };
+    match context.bind_semantic(id, &spec, mutations) {
+        Ok(ComponentBindKind::Projected) => Some(true),
+        Ok(ComponentBindKind::Layout) | Err(_) => None,
+    }
+}
+
 fn project_migrating_component(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
@@ -2475,19 +2559,14 @@ fn project_migrating_component(
     if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
         return true;
     }
+    if !is_sidebar_frame_body(widget)
+        && try_bind_registered_component(widget, snapshot, id, context, mutations) == Some(true)
+    {
+        return true;
+    }
     match widget.kind {
         crate::WidgetKind::Button => {
-            let icon = widget
-                .children
-                .iter()
-                .filter_map(|child| snapshot.get(*child))
-                .find(|child| child.kind == crate::WidgetKind::Icon)
-                .and_then(|child| {
-                    nana_ui_core::Icon::parse_name(child.props.display_label())
-                        .or_else(|| nana_ui_core::Icon::parse_name(&child.props.value))
-                })
-                .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value));
-            if let Some(icon) = icon {
+            if let Some(icon) = widget_icon(widget, snapshot) {
                 let label = if widget.props.hint.is_empty() {
                     widget.props.display_label()
                 } else {
@@ -5624,6 +5703,105 @@ mod tests {
             },
         )]);
         (doc, input)
+    }
+
+    #[derive(Clone)]
+    struct ProbeCard {
+        title: String,
+    }
+
+    impl ComponentView for ProbeCard {
+        fn node_kind(&self) -> NodeKind {
+            NodeKind::Element {
+                tag: "probe-card".into(),
+            }
+        }
+
+        fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+            if world.text(id) != Some(self.title.as_str()) {
+                mutations.set_text(
+                    id,
+                    TextContent {
+                        value: self.title.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    impl nana_ui_runtime::RegisterableComponent for ProbeCard {
+        const TYPE_ID: &'static str = "test.probe-card";
+        const TAGS: &'static [&'static str] = &["nana-probe-card", "probe-card"];
+        fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+            Self {
+                title: spec.display_label().to_owned(),
+            }
+        }
+    }
+
+    struct ProbePlugin;
+
+    impl nana_ui_runtime::UiExtension for ProbePlugin {
+        fn name(&self) -> &'static str {
+            "test.probe"
+        }
+
+        fn install(
+            &self,
+            registrar: &mut nana_ui_runtime::ExtensionRegistrar,
+        ) -> Result<(), nana_ui_runtime::FrameworkError> {
+            registrar.register_component::<ProbeCard>()
+        }
+    }
+
+    #[test]
+    fn installed_plugin_tag_projects_into_ui_world() {
+        let mut doc = NanaTreeDocument::new(400, 200, 1.0);
+        doc.context_mut().install(&ProbePlugin).unwrap();
+        let card = doc.create_element("nana-probe-card");
+        doc.insert(card, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            card.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                element_tag: "nana-probe-card".into(),
+                label: "User".into(),
+                ..crate::WidgetProps::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let id = StableNodeId::try_from(card).unwrap();
+        assert_eq!(doc.world().text(id), Some("User"));
+        assert_eq!(
+            doc.world().component_type(id).map(ComponentTypeId::as_str),
+            Some("test.probe-card")
+        );
+    }
+
+    #[test]
+    fn unregistered_custom_tag_stays_column() {
+        let mut doc = NanaTreeDocument::new(400, 200, 1.0);
+        let unknown = doc.create_element("nana-unknown-widget");
+        doc.insert(unknown, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            unknown.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                element_tag: "nana-unknown-widget".into(),
+                label: "Hello".into(),
+                ..crate::WidgetProps::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let id = StableNodeId::try_from(unknown).unwrap();
+        assert!(doc.world().component_type(id).is_none());
+        assert_ne!(doc.world().text(id), Some("Hello"));
+        assert_eq!(
+            doc.element_tag(unknown).as_deref(),
+            Some("nana-unknown-widget")
+        );
     }
 
     #[test]

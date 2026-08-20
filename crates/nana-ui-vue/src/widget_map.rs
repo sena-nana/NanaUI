@@ -8,6 +8,8 @@
 //!
 //! 已知 class（如 `nana-btn` / `nana-chip`）→ kind + 后续 props；**不是**把 class
 //! 当 ThemeTokens 工厂。Vue 自定义组件通过组合这些 kind 表达，不旁路 paint。
+//! 可实例化权威是 Runtime `ComponentRegistry`（tag → type id）；`WidgetKind`
+//! 仍负责 CSS / HTML downlevel。未注册自定义 tag 落到 Column。
 //!
 //! Overlay / layout kinds come from documented `nana-*` contracts, HTML tags, and
 //! ARIA `role` — not product kit BEM (`ui-dialog`, `ctx-menu`, `dd__menu`, …).

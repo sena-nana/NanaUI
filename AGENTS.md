@@ -18,7 +18,10 @@
   `CustomRenderNode`，`event_flags` 权威是 `UiWorld` `EventListeners`，`attrs`
   仍是 DOM/CSS facade 且不复制树拓扑。host op 进 `PendingHostOps`，
   `flush_host_frame` 才 commit。`LayoutBoxStore` 增量投影，滚动不写回 Runtime
-  `LayoutBox`。三个 facade 仍在。插件 ABI 仍未做，不阻塞产品路径。
+  `LayoutBox`。三个 facade 仍在。内建与插件控件走同一份
+  `ComponentRegistry` / `register_component`；Vue tag 与 L3 `create_component`
+  都解析 `ComponentTypeId`。`NativeComponentRegistry` 是 JS host 原生组件路径，
+  不是这条 Runtime ABI。
 - 依赖版本以 `Cargo.toml`、`Cargo.lock` 和实际依赖图为准，并保持单一 WGPU
   主版本。
 - 视觉改动以 LiliaUI 的真实源码、令牌、状态和快照为依据，不凭印象近似。

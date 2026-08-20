@@ -18,12 +18,12 @@ use crate::components::{EmptyStateTextPresentation, ModalTextPresentation};
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
-    AnimationId, AnimationSpec, ComputedStyle, CustomRenderNode, EventListeners, EventRoute,
-    ExtractedNode, ExtractedTextSpan, HighlightRequest, ImeComposition, InteractionState,
-    LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle, OverlayHostState,
-    PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual, TextContent,
-    TextInputPresentation, TextInputState, TextMetrics, TextPresentation, TextPresenter,
-    TextShaper, UiMutation, WorkCounters,
+    AnimationId, AnimationSpec, ComponentTypeId, ComputedStyle, CustomRenderNode, EventListeners,
+    EventRoute, ExtractedNode, ExtractedTextSpan, HighlightRequest, ImeComposition,
+    InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
+    OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
+    TextContent, TextInputPresentation, TextInputState, TextMetrics, TextPresentation,
+    TextPresenter, TextShaper, UiMutation, WorkCounters,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -1119,6 +1119,11 @@ impl UiWorld {
     pub fn event_listeners(&self, id: StableNodeId) -> Option<&EventListeners> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<EventListeners>(entity)
+    }
+
+    pub fn component_type(&self, id: StableNodeId) -> Option<&ComponentTypeId> {
+        let entity = *self.entities.get(&id)?;
+        self.world.get::<ComponentTypeId>(entity)
     }
 
     pub fn event_targets(&self, document: DocumentId) -> HashSet<(u64, String)> {
@@ -2225,6 +2230,14 @@ impl UiWorld {
                     self.world.entity_mut(entity).remove::<EventListeners>();
                 } else {
                     self.world.entity_mut(entity).insert(listeners);
+                }
+            }
+            UiMutation::SetComponentType { id, type_id } => {
+                let entity = self.entities[id];
+                if let Some(type_id) = type_id {
+                    self.world.entity_mut(entity).insert(type_id.clone());
+                } else {
+                    self.world.entity_mut(entity).remove::<ComponentTypeId>();
                 }
             }
             UiMutation::SetStandardVisual { id, visual } => {
@@ -5508,6 +5521,9 @@ impl<'a> ValidationPlan<'a> {
                     if event.trim().is_empty() {
                         return Err(UiWorldError::InvalidEventListener(*id));
                     }
+                }
+                UiMutation::SetComponentType { id, .. } => {
+                    self.node(*id)?;
                 }
                 UiMutation::SetStandardVisual { id, visual } => {
                     self.node(*id)?;
