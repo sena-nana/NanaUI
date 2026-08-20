@@ -24,8 +24,8 @@ Custom Renderer 把结果映射到 Nana Style Model，最终由 Runtime/UiScene 
   WebSocket；
 - 外部 bundle loader、Tauri 项目探测器或兼容 Demo CLI。
 
-仓库可选的 Hosted Browser 是应用显式承载外部网页的独立能力，不属于 Vue L1，
-也不能用来替代 NanaUI 绘制。
+仓库不把 WebView 当 Vue L1 或产品 UI。`nana-css-parity` 的可选 `webview-ref`
+只用于 CSS 参照测量，不能用来替代 NanaUI 绘制。
 
 ## 当前可验收子集
 

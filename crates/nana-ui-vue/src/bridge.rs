@@ -2911,7 +2911,7 @@ impl MessageBridge {
         let Some(widget) = self.widgets.get(&id) else {
             return (None, None);
         };
-        // Match iced `resolve_content_box` so Fill/grow parents pass viewport size.
+        // Match `resolve_content_box` so Fill/grow parents pass viewport size.
         let parent = ParentBox {
             width: widget.props.containing_block_width,
             height: widget.props.containing_block_height,
@@ -3003,7 +3003,7 @@ impl MessageBridge {
         self.insert_child(id, workspace_row, anchor);
         // Workspace-row fallback skips ResourcePanel's height:100% content host.
         // Re-seed CB from the layout viewport so Fill / overflow-y scrollports
-        // resolve to a finite height instead of iced Fill→0 under auto parents.
+        // resolve to a finite height instead of Fill→0 under auto parents.
         if let Some((vw, vh)) = self.layout_viewport {
             self.sync_layout_containing_blocks(ParentBox::from_viewport(vw, vh));
         }

@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn real_vue_sfc_mounts_pure_and_registered_iced_modes() {
+    fn real_vue_sfc_mounts_pure_and_registered_native_modes() {
         let gpu = gpu();
         for hybrid in [false, true] {
             let mut runtime =

@@ -117,8 +117,8 @@ count, text shape count, GPU upload, draw/batch count for lists.
 | Runner | Command | What it actually does | Status |
 | --- | --- | --- | --- |
 | Nana | `python3 perf/runners/nana/run.py --scenario <id>` | Thin map onto existing `nana-runtime-benchmark`, `nana-framework-benchmark`, `nana-scene-benchmark`, `nana-gpu-scene-benchmark` | **partial** |
-| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | #12 observation via `engine/iced` `scenario-bench`. Not a Nana #8 gate. Visibility / Transform / Accessibility and StaticTree 50k stay **unsupported**. Gallery `--from-report` stays a legacy wrap | **#12 observation** |
-| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | #12 observation via excluded `engine/gpui-scenario-bench`. Not a product renderer and not a #8 gate | **#12 observation** |
+| Iced | `python3 perf/runners/iced/run.py --scenario <id>` | #12 observation via archived `--from-report` fixtures. Live `engine/iced` `scenario-bench` was removed with the snapshot. Not a Nana #8 gate. Visibility / Transform / Accessibility and StaticTree 50k stay **unsupported**. Gallery `--from-report` stays a legacy wrap | **#12 observation** |
+| GPUI | `python3 perf/runners/gpui/run.py --scenario <id>` | #12 observation via archived `--from-report` fixtures. Live `engine/gpui-scenario-bench` was removed. Not a product renderer and not a #8 gate | **#12 observation** |
 
 Exit codes: `0` ok, `1` error, `2` unsupported. CI must distinguish 2 from 1.
 
@@ -142,17 +142,19 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | TextEditor | `nana-framework-benchmark` `catalog_workloads` text-editor | one TextArea, `editor_document(100000)`, caret-local `replace_text_area_selection` then `drain_text` | Hotspot `layout_nodes == 0`. `text_shaped<=1` is not the pass (one TEXT node stays green under full-tree layout). Iced stays **unsupported** (exit 2). A cached view+layout+draw after an untimed edit is not that dirty work. GPUI stays unsupported. Must not share the list-scroll AppContext (`input_hit_test==41`) |
 | GpuScene `gpu-scene-ui` | `nana-gpu-scene-benchmark` from `perf/scenarios/gpu-scene-ui.json` | UiOnly materialization + encode/submit WorkCounters (`gpu_upload_bytes`, draw/batch) | §8.1 honest-ok for Nana encode envelopes. Missing adapter exit 2. Live2D stays out of `harness_ids` (no encode path; do not emit 0) |
 
-Iced mapping: `engine/iced` `scenario-bench` builds StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree may export `frames_after_idle` for triangulation; a busy `request_redraw` probe must be non-zero before 0 is emitted. `--evaluate-invariants` skips Iced envelopes. Missing `work_counters.layout_nodes` on Iced Hover / PaintOnly stays **not-evaluable**, never envelope-ok. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`.
+Iced mapping: archived Iced `scenario-bench` fixtures (the in-tree `engine/iced` snapshot was removed) describe StaticTree, Mutation (PaintOnly / Text / LayoutStyle only), and Hover as the same complete-binary-heap (`parent(i)=i//2`, element-div). StaticTree may export `frames_after_idle` for triangulation; a busy `request_redraw` probe must be non-zero before 0 is emitted. `--evaluate-invariants` skips Iced envelopes. Missing `work_counters.layout_nodes` on Iced Hover / PaintOnly stays **not-evaluable**, never envelope-ok. Visibility / Transform / Accessibility stay **unsupported**. VirtualList materializes only the catalog window (`visible` + `overscan` rows; 10k/100k: 800×160 px at 20 px). Table materializes only the catalog table window (`visible` 16×40, `overscan` 2×8 at 80×20 px). The Nana runner passes the same windows into `nana-framework-benchmark`. Those wired paths are `same-scenario` when the report declares that generation. StaticTree 50k is **unsupported** on both Iced and Nana until they share a work definition (Nana is still construction-only). Gallery `ui-benchmark` `--from-report` remains `closest-legacy-reference` (`static-tree-100` → `list-100`, `static-tree-1k` → `list-1000`). Animation, IME, dock, overlay, editor, GPU scene, and VirtualTree stay **unsupported** (exit 2). A VirtualList window is not a Fenwick disclosure tree. Topology-only Iced `pane_grid` is not Nana `assemble_dock` chrome. A cached Iced editor frame is not Nana `replace_text_area_selection` + `drain_text`.
 
 `overscan_rows`: catalog Table (and list/tree) overscan is **8 rows**. Iced copies that catalog param; Nana `nana-framework-benchmark` writes `mounted − visible`. Do not equate the two fields — compare windows via `list_overscan_px` / `table_overscan_y_px`. Nana extract is `same-scenario` only when the dump declares the catalog window (`list_viewport_px` / `list_overscan_px` / `list_item_extent_px`, or the table viewport/overscan/extent px fields); missing fields stay `closest-legacy-reference`. `window_ms` is index arithmetic (Fenwick lookup may round to 0); judged work is `materialize_ms` + `live_ui_entities`, not `window_ms`.
 
-GPUI is #12 observation (excluded `engine/gpui-scenario-bench`; not a product
-renderer; not #8 DoD). Iced and GPUI live dumps go under
-`target/performance/issue12/`. Unwired kinds stay exit 2 with no metrics
-(`present_ms` / `frames_after_idle` omitted, not 0).
+GPUI is #12 observation (the in-tree `engine/gpui-scenario-bench` was removed;
+not a product renderer; not #8 DoD). Archived Iced/GPUI `--from-report`
+fixtures remain. Do not restore GPUI as a third product paint path. Unwired
+kinds stay exit 2 with no metrics (`present_ms` / `frames_after_idle` omitted,
+not 0).
 
 `--from-report` maps a JSON the binaries already wrote. `--print-plan` prints
-the cargo command without running it.
+the command without running it. Iced/GPUI live compile is gone; print-plan
+reports the removed snapshot.
 
 ## 5. Frame stages
 

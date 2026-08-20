@@ -13,7 +13,7 @@ description: Maintain NanaUI's platform-owned native window material boundary. U
 - Clear an existing effect before reapplying it. Return the effect actually applied or an explicit
   fallback, never the requested effect after failure.
 - Use an opaque readable fallback when native material is unavailable.
-- Route Surface and renderer work to `$nanaui-gpu-integration`, and verification to
+- Route Surface and `SceneWgpuPainter` work to `$nanaui-gpu-integration`, and verification to
   `$nanaui-validation`.
 
 ## Validation

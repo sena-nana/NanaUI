@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = ["engine-quickjs"]
-# Application-level backend choice sample (Iced / Vue+QuickJS / Vue+V8).
+# Application-level JS engine choice sample (Vue+QuickJS vs Vue+V8).
 # This example only enables QuickJS; do not depend on nana-js-v8 / engine-v8 here.
 engine-quickjs = []
 ui-vue-quickjs = ["engine-quickjs"]

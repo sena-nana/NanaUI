@@ -210,7 +210,7 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                 layout.allow_shrink = true;
                 layout.min_width = Some(layout.min_width.unwrap_or(LengthSpec::Px(0.0)));
                 if layout.max_width.is_none() {
-                    layout.max_width = Some(LengthSpec::Fill); // marker: no finite clamp / iced Fill
+                    layout.max_width = Some(LengthSpec::Fill); // marker: no finite clamp
                 }
             }
             "nana-appearance-panel" => {

@@ -1,4 +1,4 @@
-// Adapted from in-tree engine/iced (MIT).
+// Adapted from historical Iced (MIT).
 struct Globals {
     transform: mat4x4<f32>,
     scale: f32,

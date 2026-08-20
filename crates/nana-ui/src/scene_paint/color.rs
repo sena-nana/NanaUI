@@ -1,6 +1,6 @@
-//! sRGB packing matching in-tree Iced (`engine/iced/graphics/src/color.rs`).
+//! sRGB packing adapted from historical Iced (MIT).
 
-/// Converts an sRGB Scene color to the linear RGBA Iced packs into quad/mesh
+/// Converts an sRGB Scene color to linear RGBA packed into quad/mesh
 /// instances when gamma correction is enabled.
 pub(super) fn pack_linear([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     [

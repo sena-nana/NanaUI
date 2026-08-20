@@ -9,7 +9,8 @@ description: Select and report functional validation for NanaUI changes. Use whe
 
 - **UI:** Test changed layout constraints, state transitions, persistence and real action wiring.
 - **Visual:** Render the real workspace/gallery path with `ui-snapshots` and inspect affected PNGs.
-  Keep `UserInterface::Cache` alive through readback and send a real redraw update.
+  Paint `UiScene` through `SceneWgpuPainter`; keep the snapshot painter alive through
+  readback and send a real redraw update.
 - **GPU:** Test geometry, invalidation and resource lifecycle; run `hosted-gpu-demo` for Surface or
   shared-context changes.
 - **Window:** Check the outcome contract and affected targets; require real platform evidence for
@@ -52,8 +53,10 @@ legal-feature matrix above instead of workspace-wide `--all-features`.
 Workspace Clippy remains a full diagnostic pass; the public NanaUI and Gallery path additionally
 enforces `-D warnings` while legacy cross-package lint debt is retired separately.
 
-For Skill-only changes, run `quick_validate.py` on each Skill, verify links and metadata, then run
-`git diff --check`; do not add or rerun unrelated functional tests.
+For Skill-only changes, there is no single skill-validation script. Verify Skill
+frontmatter, links, and `git diff --check`. Choose `cargo test` / snapshots /
+`hosted-gpu-demo` in proportion to the change; do not add or rerun unrelated
+functional tests, and do not treat `cargo check` as GPU evidence.
 
 When the change is performance, Runtime incremental systems, virtualization, or
 dirty/layout-stop behavior, also run the relevant subset:
@@ -73,7 +76,7 @@ python3 perf/runners/nana/run.py --scenario mutation-paint-only --from-report pe
 python3 perf/runners/nana/run.py --scenario static-tree-100 --from-report perf/fixtures/nana-runtime-static-tree.json
 python3 perf/runners/iced/run.py --scenario static-tree-100 --from-report perf/fixtures/iced-scenario-static-tree-100.json
 python3 perf/runners/nana/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase3-runtime.json   # expected exit 2: phase3 has no 10k hover; current nana-runtime-benchmark bench_full includes 10k hover
-python3 perf/runners/gpui/run.py --print-plan --scenario static-tree-100
+python3 perf/runners/gpui/run.py --scenario static-tree-100 --from-report perf/fixtures/gpui-scenario-static-tree-100.json
 python3 perf/runners/iced/run.py --print-plan --scenario static-tree-100
 python3 perf/runners/gpui/run.py --scenario gpu-scene-ui       # expected exit 2
 python3 perf/contract.py --evaluate-relative \

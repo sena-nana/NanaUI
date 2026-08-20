@@ -284,8 +284,12 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let child = arg_handle(args, 0)?;
             unmount_native_subtree(&host, widget_id(child))?;
             let mut guard = lock_doc(&host.document)?;
+            let ids = guard.collect_element_preorder(child);
             guard.remove(child);
             drop(guard);
+            for id in ids {
+                host.layout_boxes.remove(NodeHandle(id));
+            }
             let mut bridge = lock_bridge(&host.bridge)?;
             if bridge.contains(widget_id(child)) {
                 bridge.unregister(widget_id(child));
@@ -533,8 +537,12 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             for child in children {
                 unmount_native_subtree(&host, widget_id(child))?;
                 let mut doc = lock_doc(&host.document)?;
+                let ids = doc.collect_element_preorder(child);
                 doc.remove(child);
                 drop(doc);
+                for id in ids {
+                    host.layout_boxes.remove(NodeHandle(id));
+                }
                 let mut bridge = lock_bridge(&host.bridge)?;
                 if bridge.contains(widget_id(child)) {
                     bridge.unregister(widget_id(child));

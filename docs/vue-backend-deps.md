@@ -20,7 +20,7 @@ nana-ui-core
      └─ nana-ui-vue                       ← first-class L1/L2 Vue + JS
           ├─ NanaTreeDocument   (JS custom-renderer ops; simplified layout)
           ├─ MessageBridge      (all visible nodes → Runtime/Scene)
-          ├─ scene-view         (Scene/Runtime adapter; iced-view is the historical alias)
+          ├─ scene-view         (Scene/Runtime adapter)
           ├─ nana-ui-web-api    (window/document/timer/buffered fetch subset)
           └─ nana-js-engine     (traits only)
                ├─ nana-js-quickjs
@@ -33,7 +33,7 @@ Constraints:
 - `nana-ui-vue` must not depend on concrete QuickJS/V8 types
 - App chooses exactly one JS engine (QuickJS XOR V8)
 - Windowed UI is Runtime/UiScene, painted by `SceneWgpuPainter` via `run_runtime`
-- `nana-ui` / `nana-ui-vue` do not depend on Iced; `engine/iced` remains an excluded compatibility asset
+- `nana-ui` / `nana-ui-vue` do not depend on Iced or GPUI; `engine/` observation trees were removed
 - WebView is not the product UI path
 - Paint / chrome use **host-injected** Device/Queue only — no second `request_device`
 
@@ -48,7 +48,7 @@ Optional JS bridge:
   Nana Vite entry (Vue SFC/TS/CSS) → reproducible IIFE
   → VueHost::initialize_with_web_api
   → hostOps → NanaTreeDocument + MessageBridge
-  → Runtime/UiScene → Scene host (`scene-view`; `iced-view` alias)
+  → Runtime/UiScene → Scene host (`scene-view`)
 ```
 
 ## Docs

@@ -3,8 +3,9 @@
 Date: 2026-08-06
 
 This is a 2026-08-06 evidence log for the removed Blitz / paint-stub path. It is
-not current architecture. Product retained/render is now Runtime/UiScene; Iced is
-the compatibility view.
+not current architecture. Product retained/render is now Runtime/UiScene drawn
+by `SceneWgpuPainter`. Iced is a removed historical migration snapshot, not the
+product view.
 
 ## Commands
 

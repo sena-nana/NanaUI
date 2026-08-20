@@ -11,8 +11,7 @@ Style Model 路径：
 2. `css_map` → Layout；`widget_map` → Semantics；主题档位 → Tokens（非任意 CSS→token）
 3. Runtime / UiScene → `run_runtime` → `SceneWgpuPainter`（桌面产品绘制）
 
-`scene-view` 是正式 feature 名（`iced-view` 为历史别名），接入同一 Scene/Runtime
-适配，不是 Iced widget 树。CustomContent / CPU 简化 paint 已移除。
+`scene-view` 接入同一 Scene/Runtime 适配，不是 Iced widget 树。CustomContent / CPU 简化 paint 已移除。
 
 ## Source
 

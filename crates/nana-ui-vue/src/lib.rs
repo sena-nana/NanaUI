@@ -1136,11 +1136,17 @@ impl VueHost {
     }
 
     pub fn resolve_layout(&mut self) {
-        let painted = self.layout_boxes.snapshot();
+        let painted = {
+            let doc = self.document.lock().expect("vue doc");
+            self.layout_boxes
+                .retain(|id| doc.contains_handle(NodeHandle(id)));
+            self.layout_boxes.snapshot()
+        };
         if painted.is_empty() {
             // Empty paint cache: keep Runtime boxes; CSS auto-height 0 must not overwrite them.
             let mut bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
+            doc.flush_host_frame();
             bridge.resolve_missing_document_layout(&mut doc);
             return;
         }
@@ -1156,7 +1162,12 @@ impl VueHost {
     /// `layoutBox` / `getBoundingClientRect` already prefer the live store; this
     /// keeps hit-tests and `snapshot_boxes` aligned with paint.
     pub fn sync_scene_layout_boxes(&mut self) {
-        let painted = self.layout_boxes.snapshot();
+        let painted = {
+            let doc = self.document.lock().expect("vue doc");
+            self.layout_boxes
+                .retain(|id| doc.contains_handle(NodeHandle(id)));
+            self.layout_boxes.snapshot()
+        };
         if painted.is_empty() {
             return;
         }

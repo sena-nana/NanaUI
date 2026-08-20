@@ -28,7 +28,7 @@ EXIT_UNSUPPORTED = 2
 
 # StaticTree JSON only carries params.nodes. Hierarchy/kind/text are this rule,
 # shared by Nana `tree_mutations` (nana-runtime-benchmark.rs) and Iced
-# `static_tree` / `static_tree_parent` (engine/iced/examples/scenario-bench).
+# `static_tree` / `static_tree_parent` (historical iced scenario-bench fixtures).
 STATIC_TREE_GENERATION = "complete-binary-heap"
 STATIC_TREE_PARENT_RULE = "parent(i)=i//2, root=1"
 STATIC_TREE_NODE_KIND = "element-div"
@@ -270,6 +270,14 @@ ICED_UNSUPPORTED_TEXT_EDITOR_REASON = (
     "buffer. Timing only view + reused UserInterface::build + draw after an untimed "
     "edit is a cached no-op, not that dirty work. Unsupported until the analog of "
     "edit+drain dirties the timed frame. Do not invent WorkCounters.text_shaped."
+)
+ICED_SNAPSHOT_REMOVED_REASON = (
+    "engine/iced snapshot was removed; live scenario-bench is gone. "
+    "Issue #12 observation uses --from-report fixtures only."
+)
+GPUI_SNAPSHOT_REMOVED_REASON = (
+    "engine/gpui-scenario-bench snapshot was removed; live gpui-scenario-bench is gone. "
+    "Issue #12 observation uses --from-report fixtures only."
 )
 ICED_UNSUPPORTED_VIRTUAL_TREE_REASON = (
     "Iced scenario-bench has no VirtualTree Fenwick / disclosure-row materializer. "
@@ -1347,54 +1355,8 @@ def run_command(command: Sequence[str], cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True, env=env)
 
 
-def cargo_run_iced_scenario_bench(
-    root: Path,
-    *,
-    scenario_path: Path,
-    output: Path,
-) -> list[str]:
-    """Invoke engine/iced scenario-bench against a shared Scenario JSON file."""
-    return [
-        "cargo",
-        "run",
-        "--release",
-        "--locked",
-        "--manifest-path",
-        str(root / "engine" / "iced" / "Cargo.toml"),
-        "-p",
-        "scenario-bench",
-        "--",
-        "--scenario",
-        str(scenario_path),
-        "--output",
-        str(output),
-    ]
-
-
 def is_iced_scenario_bench_report(report: Mapping[str, Any] | None) -> bool:
     return isinstance(report, Mapping) and report.get("source") == "iced-scenario-bench"
-
-
-def cargo_run_gpui_scenario_bench(
-    root: Path,
-    *,
-    scenario_path: Path,
-    output: Path,
-) -> list[str]:
-    """Invoke excluded engine/gpui-scenario-bench (#12 observation)."""
-    return [
-        "cargo",
-        "run",
-        "--release",
-        "--locked",
-        "--manifest-path",
-        str(root / "engine" / "gpui-scenario-bench" / "Cargo.toml"),
-        "--",
-        "--scenario",
-        str(scenario_path),
-        "--output",
-        str(output),
-    ]
 
 
 def is_gpui_scenario_bench_report(report: Mapping[str, Any] | None) -> bool:
@@ -2836,7 +2798,7 @@ def extract_iced(
             raise KeyError(
                 f"ui-benchmark has no list case for StaticTree nodes={nodes}; "
                 "5k/10k/50k are unsupported on this legacy path. "
-                "Use engine/iced scenario-bench for same-scenario StaticTree."
+                "Use archived iced scenario-bench fixtures for same-scenario StaticTree."
             )
         case = cases[name]
         return envelope(
@@ -2852,7 +2814,7 @@ def extract_iced(
                 "Gallery lists still layout every item (legacy full-layout). This is a reference, not virtualization.",
                 "Current ui-benchmark paints through SceneWgpuPainter; historical numbers in "
                 "docs/performance-baseline.md were taken on the Iced Gallery path. "
-                "same-scenario StaticTree uses engine/iced scenario-bench, not this Gallery wrap.",
+                "same-scenario StaticTree uses archived iced scenario-bench fixtures, not this Gallery wrap.",
             ],
             metrics={
                 "cpu_frame_ms": percentile_fields(case.get("cpu_total_ms")),
@@ -2875,7 +2837,7 @@ def extract_iced(
         "GpuScene",
     }:
         raise KeyError(
-            f"ui-benchmark / engine/iced scenario-bench has no same-Scenario {kind} adapter. "
+            f"ui-benchmark / archived iced scenario-bench has no same-Scenario {kind} adapter. "
             "Gallery lists are not a substitute. Issue #12 observation / not implemented. "
             "Fake Iced numbers are forbidden."
         )
@@ -6097,9 +6059,9 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         text=True,
         check=False,
     )
-    if hover_iced.returncode != EXIT_OK or "scenario-bench" not in hover_iced.stdout:
+    if hover_iced.returncode != EXIT_OK or "snapshot was removed" not in hover_iced.stdout:
         errors.append(
-            f"iced hover --print-plan must name scenario-bench: {hover_iced.stdout!r} {hover_iced.stderr}"
+            f"iced hover --print-plan must report removed snapshot: {hover_iced.stdout!r} {hover_iced.stderr}"
         )
 
     code, hover_report, err = from_report(
@@ -6476,9 +6438,12 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         text=True,
         check=False,
     )
-    if table_iced_plan.returncode != EXIT_OK or "scenario-bench" not in table_iced_plan.stdout:
+    if (
+        table_iced_plan.returncode != EXIT_OK
+        or "snapshot was removed" not in table_iced_plan.stdout
+    ):
         errors.append(
-            f"iced text-table --print-plan must name scenario-bench: "
+            f"iced text-table --print-plan must report removed snapshot: "
             f"{table_iced_plan.stdout!r} {table_iced_plan.stderr}"
         )
     code, table_from_report, err = from_report(
@@ -6507,15 +6472,10 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         text=True,
         check=False,
     )
-    if gpui_plan.returncode != EXIT_OK or "gpui-scenario-bench" not in gpui_plan.stdout:
+    if gpui_plan.returncode != EXIT_OK or "snapshot was removed" not in gpui_plan.stdout:
         errors.append(
-            f"gpui static-tree-100 --print-plan must name gpui-scenario-bench: "
+            f"gpui static-tree-100 --print-plan must report removed snapshot: "
             f"{gpui_plan.stdout!r} {gpui_plan.stderr}"
-        )
-    elif "issue12" not in gpui_plan.stdout:
-        errors.append(
-            "gpui static-tree-100 --print-plan must write under "
-            "target/performance/issue12, not the Nana issue8 invariant directory"
         )
     elif "issue8" in gpui_plan.stdout:
         errors.append("gpui print-plan must not target target/performance/issue8")
@@ -6721,13 +6681,9 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
         text=True,
         check=False,
     )
-    if plan.returncode != EXIT_OK or "scenario-bench" not in plan.stdout:
+    if plan.returncode != EXIT_OK or "snapshot was removed" not in plan.stdout:
         errors.append(
-            f"iced static-tree-100 --print-plan must name scenario-bench: {plan.stdout!r} {plan.stderr}"
-        )
-    elif "issue12" not in plan.stdout:
-        errors.append(
-            "iced static-tree-100 --print-plan must write under target/performance/issue12"
+            f"iced static-tree-100 --print-plan must report removed snapshot: {plan.stdout!r} {plan.stderr}"
         )
     elif "issue8" in plan.stdout:
         errors.append("iced print-plan must not target target/performance/issue8")

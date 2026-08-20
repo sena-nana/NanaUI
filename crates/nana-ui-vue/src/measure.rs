@@ -383,7 +383,7 @@ fn measure_node_inner(
             Some(LengthSpec::Fill) | Some(LengthSpec::Px(_))
         )
     {
-        // Typography leaf under height:auto — iced letter-spacing glyph rows
+        // Typography leaf under height:auto — letter-spacing glyph rows
         // otherwise collapse; match label_text line-box height.
         if let Some(fs) = node.style.font_size.filter(|v| *v > 0.0) {
             let line = crate::css_map::text_line_box_height_px(fs, node.style.line_height);
@@ -628,7 +628,7 @@ fn layout_column_wrap(
         line_starts.push(acc);
         acc += line.len();
     }
-    // Match row wrap-reverse / iced: reverse flex-line order, then pack LTR.
+    // Match row wrap-reverse: reverse flex-line order, then pack LTR.
     // First DOM line ends at the cross-end (right).
     if reverse_lines {
         lines.reverse();
@@ -1057,12 +1057,12 @@ fn flip_justify_for_reverse(j: JustifySpec) -> JustifySpec {
     }
 }
 
-/// Flex children main-axis sizes after grow + shrink (shared by measure and iced).
+/// Flex children main-axis sizes after grow + shrink.
 ///
 /// Only `flex-grow>0` (`grows()`) enters the flex free-space pool. `Fill` /
 /// `width|height:100%` with `flex-grow:0` resolve to definite main (`content_main`)
 /// so weight-0 never collapses beside grow siblings. Default auto stays at min.
-/// Used so iced can apply Fixed after shrink (T-F18/F19).
+/// After shrink, remaining items keep a definite main size (T-F18/F19).
 pub(crate) fn resolve_flex_children_main_sizes(
     styles: &[&LayoutStyle],
     direction: FlexDirection,

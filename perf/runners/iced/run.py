@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Issue #12 Iced observation runner. Not a Nana #8 gate.
 
-scenario-bench covers StaticTree, Mutation (PaintOnly/Text/LayoutStyle), Hover,
-VirtualList, and Table. Other kinds stay exit 2. ``--evaluate-invariants`` skips
+Live scenario-bench was removed with engine/iced. ``--from-report`` still maps
+archived fixtures. Other kinds stay exit 2. ``--evaluate-invariants`` skips
 Iced envelopes.
 """
 
@@ -42,13 +42,7 @@ def plan(scenario_id: str, args: Any) -> list[str]:
             scenario_id,
             "scenario-bench implements StaticTree, Mutation, Hover, VirtualList, Table",
         )
-    output = args.repo_root / "target" / "performance" / "issue12" / f"iced-{scenario_id}.json"
-    command = contract.cargo_run_iced_scenario_bench(
-        args.repo_root,
-        scenario_path=contract.scenario_path(scenario_id, args.repo_root),
-        output=output,
-    )
-    return [" ".join(command)]
+    return _unsupported_plan(scenario_id, contract.ICED_SNAPSHOT_REMOVED_REASON)
 
 
 def execute(scenario_id: str, args: Any) -> dict[str, Any]:
@@ -81,22 +75,18 @@ def execute(scenario_id: str, args: Any) -> dict[str, Any]:
             ),
         )
 
-    if args.from_report:
-        source = args.from_report
-        payload = contract.load_json(source)
-        command: list[str] = []
-    else:
-        source = (
-            args.repo_root / "target" / "performance" / "issue12" / f"iced-{scenario_id}.json"
+    if not args.from_report:
+        return contract.envelope(
+            runner="iced",
+            status="unsupported",
+            scenario_id=scenario_id,
+            scenario=scenario,
+            unsupported_reason=contract.ICED_SNAPSHOT_REMOVED_REASON,
         )
-        command = contract.cargo_run_iced_scenario_bench(
-            args.repo_root,
-            scenario_path=contract.scenario_path(scenario_id, args.repo_root),
-            output=source,
-        )
-        source.parent.mkdir(parents=True, exist_ok=True)
-        contract.run_command(command, args.repo_root)
-        payload = contract.load_json(source)
+
+    source = args.from_report
+    payload = contract.load_json(source)
+    command: list[str] = []
 
     try:
         report = contract.extract_iced(scenario, payload, source_path=source)

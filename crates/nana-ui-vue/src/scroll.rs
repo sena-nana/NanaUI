@@ -318,11 +318,9 @@ fn translate_descendants(
     let mut stack = doc.children_of(ancestor);
     while let Some(child) = stack.pop() {
         if let Some(mut box_) = get_layout_box_from(layout_store, doc, child) {
-            if layout_store.translate(child, dx, dy).is_none() {
-                box_.x += dx;
-                box_.y += dy;
-                layout_store.record(child, box_.x, box_.y, box_.width, box_.height);
-            }
+            box_.x += dx;
+            box_.y += dy;
+            layout_store.overlay_view(box_);
         }
         stack.extend(doc.children_of(child));
     }
@@ -338,6 +336,7 @@ pub fn reapply_scroll_translations(
     bridge: &MessageBridge,
     layout_store: &LayoutBoxStore,
 ) {
+    layout_store.begin_frame();
     let offsets = doc.scroll_offsets();
     for (id, off) in offsets {
         if !is_scroll_container(bridge, id) {
@@ -398,6 +397,7 @@ pub(crate) fn sync_host_scroll_offset(
 mod tests {
     use super::*;
     use crate::bridge::{MessageBridge, WidgetKind, WidgetProps};
+    use crate::tree::LayoutBox;
     use nana_ui_core::{LengthSpec, OverflowSpec};
 
     fn seed_scroll_tree() -> (
@@ -587,6 +587,66 @@ mod tests {
         assert_eq!(doc.layout_box(top).expect("top after"), top_before);
         assert_eq!(doc.layout_box(footer).expect("footer after"), footer_before);
         assert!(shared_scroll_offset_store().take_pending().is_empty());
+    }
+
+    #[test]
+    fn scroll_store_miss_does_not_write_runtime_layout() {
+        let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+        let body = doc.mount_root();
+        let scroller = doc.create_element("div");
+        let target = doc.create_element("div");
+        doc.insert(scroller, body, None);
+        doc.insert(target, scroller, None);
+        doc.apply_layout_boxes(&[
+            (
+                scroller,
+                LayoutBox {
+                    handle: scroller,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 300.0,
+                    height: 200.0,
+                },
+            ),
+            (
+                target,
+                LayoutBox {
+                    handle: target,
+                    x: 0.0,
+                    y: 400.0,
+                    width: 300.0,
+                    height: 40.0,
+                },
+            ),
+        ]);
+
+        let layout_store = LayoutBoxStore::new();
+        assert!(layout_store.is_empty(), "paint store must start empty");
+        let scroll_store = ScrollOffsetStore::new();
+        set_scroll_offset(
+            &mut doc,
+            &layout_store,
+            &scroll_store,
+            scroller.0,
+            ScrollOffset { x: 0.0, y: 120.0 },
+        );
+
+        assert!((doc.scroll_offset(scroller).y - 120.0).abs() < 0.5);
+        assert!(
+            (get_layout_box_from(&layout_store, &doc, target)
+                .expect("js overlay")
+                .y
+                - 280.0)
+                .abs()
+                < 0.5,
+            "JS overlay still follows scroll when paint store missed"
+        );
+        doc.apply_layout_boxes(&layout_store.snapshot());
+        assert_eq!(
+            doc.layout_box(target).expect("runtime").y,
+            400.0,
+            "store-miss scroll must not seed paint snapshot with scrolled geometry"
+        );
     }
 
     #[test]

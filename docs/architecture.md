@@ -17,15 +17,14 @@ Vue/JS L1/L2 → Runtime/UiScene → RuntimeProgram → run_runtime → SceneWgp
 
 `VueHostedRuntime` / `VueRuntimeProgram` 实现 `RuntimeProgram`，由 `run_runtime`
 进入 Nana-owned winit + `SceneWgpuPainter`，不返回 `iced::Element` 树。
-`scene-view` 是正式 feature 名（`iced-view` 为历史别名），接入同一 Scene/Runtime
-适配，不是 Iced widget 编程模型。`VueHostedProgram` 是 `VueRuntimeProgram` 的
-类型别名。Rust 可以控制语义树，也可以注册高性能 Runtime 组件，但所有供 Vue
-使用的原生能力必须以 `nana-*` Vue 组件或稳定 JS 接口暴露，并与普通 Vue 节点
-处于同一布局、事件和合成树。Vue、业务 JS、多窗口文档及这些组件的 JS 桥共享一个
-V8 isolate/context，而非把 Vue 限定为状态与命令桥。
-L1 不引入真实 WebView、Blitz DOM/CSS 或第二套 wgpu。可选 `browser`
-feature 仅承载应用明确请求的外部网页内容，不参与 NanaUI 组件、布局或
-业务状态渲染。仓内 `engine/iced` 仍是兼容绘制资产，不是 `nana-*` 编译依赖。
+`scene-view` 接入同一 Scene/Runtime 适配，不是 Iced widget 编程模型。
+`VueHostedProgram` 是 `VueRuntimeProgram` 的类型别名。Rust 可以控制语义树，
+也可以注册高性能 Runtime 组件，但所有供 Vue 使用的原生能力必须以 `nana-*`
+Vue 组件或稳定 JS 接口暴露，并与普通 Vue 节点处于同一布局、事件和合成树。
+Vue、业务 JS、多窗口文档及这些组件的 JS 桥共享一个 V8 isolate/context，而非
+把 Vue 限定为状态与命令桥。L1 不引入真实 WebView、Blitz DOM/CSS 或第二套
+wgpu。仓内 `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是
+`nana-*` 编译依赖或当前绘制后端。禁止把 GPUI 接成第三条产品绘制路径。
 Android 实验宿主走 Runtime / UiScene / `SceneWgpuPainter`，不是产品路径。
 
 **三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
@@ -42,9 +41,9 @@ L1/L2/L3 是三种输入合同，不是三个运行时模式或三套渲染实�
 insert / remove / text / focus / layout 全部写入 `UiWorld`，不再维护第二份权威树或几何
 cache。paint 前 Style Model measure 与 paint 后 `LayoutBoxStore` 是两个
 geometry phase：产品几何权威在 Runtime/UiScene，`LayoutBoxStore` 只为该窗口 JS
-查询保存 paint-phase geometry。详细不变量见
-[`runtime-scene.md`](runtime-scene.md)。
-组件从 compatibility painter 向 Runtime painter 的逐项支持状态、公共查询合同与晋级门禁见
+查询保存 paint-phase geometry。Vue host op / `gpu_slots` / `event_flags` /
+滚动投影不变量见 [`runtime-scene.md`](runtime-scene.md)。
+组件从归档 Iced 参照到 `SceneWgpuPainter` 的逐项支持状态、公共查询合同与晋级门禁见
 [`component-migration.md`](component-migration.md)。
 
 | 层 | 含义 | 住在哪 |
@@ -58,8 +57,9 @@ geometry phase：产品几何权威在 Runtime/UiScene，`LayoutBoxStore` 只为
 兼容性阶段目标与 Todo：[`compatibility-roadmap.md`](compatibility-roadmap.md)。
 
 L1 不创建真实 WebView，不提供 Tauri invoke/插件/窗口/事件/存储协议，也不承诺
-普通 `@vue/runtime-dom` 产物直接运行。可选 Hosted Browser 是外部网页内容能力，
-与 Vue L1 互不复用。
+普通 `@vue/runtime-dom` 产物直接运行。`nana-ui` 不提供 `browser`/Wry 产品
+feature；WebView 不是 NanaUI 组件、布局或业务状态路径。
+`nana-css-parity` 的可选 `webview-ref` 只用于 CSS 参照测量，不参与产品绘制。
 
 ```text
 应用状态 / 应用消息
@@ -136,21 +136,12 @@ macOS 使用 transparent titlebar 与 full-size content view，把 36px NanaUI �
 没有 work-area 合同时使用显示器物理边界。存储介质、窗口业务身份、拓扑和写入节流
 继续由应用拥有。
 
-## Hosted Browser 合同
+## WebView 边界
 
-可选 `browser` feature 在 Windows 与 macOS 将 Wry child WebView 绑定到既有
-Scene host 窗口。应用以独立浏览器身份发出 attach、navigate、bounds、
-visibility、focus 与 detach 命令；bounds 使用相对父窗口的逻辑像素，因此应用可以将
-网页作为 Inspector/Sidebar 内容，而不是用整窗 WebView 替代 NanaUI Shell。
-应用应读取 Runtime / `LayoutBoxStore` 中对应占位内容的几何，并仅在 bounds 变化后
-发送 attach 或 `SetBounds`；这样窗口缩放、DPI 与 Pane/Dock 尺寸变化都沿用真实
-Runtime 布局，不需要在应用中复制坐标公式。
-
-NanaUI 只拥有原生 WebView 生命周期、父窗口销毁顺序和 page-load/title 回传。
-允许的 URL、登录态、任务/会话归属、页面标题的业务解释、截图或附件提交仍由应用
-拥有。Linux 在启用 feature 时返回类型化 unsupported failure；Windows 使用 WebView2，
-macOS 使用 WKWebView。跨平台编译不等于目标机验收，IME、DPI、多屏、登录会话与运行时
-恢复必须由消费应用在真实平台门禁中验证。
+`nana-ui` 不提供 `browser` feature，也不绑定 Wry/WebView2/WKWebView。
+WebView 不是产品 UI；L1 是 Vue Custom Renderer → Runtime / UiScene →
+`SceneWgpuPainter`。应用若自行嵌入外部网页，不得用整窗 WebView 替代 NanaUI
+Shell。`nana-css-parity` 的 `webview-ref` 只做盒模型参照，禁止从产品 crate 启用。
 
 ## 工作区合同
 
@@ -242,9 +233,8 @@ Region 折叠目标会立即写入 `WorkspaceLayout`，保证序列化与设置�
 ## WGPU 边界
 
 桌面产品绘制由 `SceneWgpuPainter` 把 `UiScene` 画进宿主 Surface。仓内
-`engine/iced`（Iced `0.15.0-dev`）仍是排除的兼容绘制资产，不是 `nana-*`
-编译依赖，也不是长期 public contract 或桌面应用编程模型；来源、同步规则、
-依赖清单与退出指标见 [`iced-engine.md`](iced-engine.md)。WGPU 主版本为 `30.0.0`。
+`engine/iced` 迁移快照已移除，不是 `nana-*` 编译依赖或当前 renderer；谱系见
+[`iced-engine.md`](iced-engine.md)。WGPU 主版本为 `30.0.0`。
 `GpuView` 是 Scene 图内的 custom renderer；`RenderSlot` 负责逻辑/物理像素换算
 与裁剪。绘制路径切换本身不等于 GPU、快照或跨平台已验收。
 

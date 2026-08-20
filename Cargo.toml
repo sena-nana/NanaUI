@@ -22,9 +22,6 @@ members = [
     "examples/native-rhi-probe",
     "examples/runtime-host-fixture",
 ]
-# engine/iced is the compatibility renderer fork. engine/gpui-scenario-bench is
-# Issue #12 observation only (not a Nana product crate / renderer, not a #8 gate).
-exclude = ["engine/iced", "engine/gpui-scenario-bench"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -48,7 +45,7 @@ base64 = "0.22"
 crossbeam-channel = "0.5"
 url = "2.5"
 ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
-# Keep wgpu aligned with NanaUI/Iced. Single WGPU major version.
+# Keep a single WGPU major version across NanaUI.
 wgpu = "30.0.0"
 # Phase 2 JS engines — apps link exactly one:
 rquickjs = "0.12.2" # QuickJS-NG 0.15.1

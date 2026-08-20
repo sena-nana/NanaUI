@@ -557,7 +557,7 @@ impl RuntimeInputAdapter {
     /// Retained TextInput/TextArea/SearchDropdown/CommandPalette state is the
     /// only editing authority. A
     /// focused editable field, or a blocking overlay, consumes the event so a
-    /// second Iced IME path cannot also mutate it.
+    /// second host IME path cannot also mutate it.
     pub fn dispatch_ime(
         self,
         context: &mut AppContext,

@@ -136,17 +136,14 @@ pub struct LayoutBox {
     pub height: f32,
 }
 
-/// Per-window JS paint-phase geometry buffer. Not layout authority.
+/// Per-window JS paint-phase geometry. Not layout authority.
 ///
-/// Owned by [`crate::VueHost`] and injected into that window's host ops. Cleared
-/// at the start of each Scene frame; refilled when `SceneWgpuPainter` writes
-/// painted boxes. `layoutBox` / [`get_layout_box_from`] read this first so menu
-/// and popover anchors track real paint geometry (including scroll/chrome offsets
-/// that Style-Model measure does not see). Product geometry lives in
-/// `UiWorld` / `UiScene`.
+/// Incremental Scene paint via [`Self::record`]; scroll lives in a JS overlay
+/// and is not written back to Runtime `LayoutBox`.
 #[derive(Debug, Default)]
 pub struct LayoutBoxStore {
     boxes: Mutex<HashMap<u64, LayoutBox>>,
+    views: Mutex<HashMap<u64, LayoutBox>>,
     transforms: Mutex<HashMap<u64, (LayoutBox, [f32; 6])>>,
 }
 
@@ -155,12 +152,9 @@ impl LayoutBoxStore {
         Self::default()
     }
 
-    /// Drop prior-frame entries before rebuilding the Scene view.
+    /// Drop JS scroll overlays; keep last Scene paint boxes.
     pub fn begin_frame(&self) {
-        if let Ok(mut guard) = self.boxes.lock() {
-            guard.clear();
-        }
-        if let Ok(mut guard) = self.transforms.lock() {
+        if let Ok(mut guard) = self.views.lock() {
             guard.clear();
         }
     }
@@ -178,6 +172,7 @@ impl LayoutBoxStore {
                 },
             );
         }
+        self.clear_view(handle);
         if let Ok(mut guard) = self.transforms.lock() {
             guard.remove(&handle.0);
         }
@@ -203,12 +198,46 @@ impl LayoutBoxStore {
         if let Ok(mut guard) = self.boxes.lock() {
             guard.insert(handle.0, transformed);
         }
+        self.clear_view(handle);
         if let Ok(mut guard) = self.transforms.lock() {
             guard.insert(handle.0, (source, affine));
         }
     }
 
+    pub fn remove(&self, handle: NodeHandle) {
+        if let Ok(mut guard) = self.boxes.lock() {
+            guard.remove(&handle.0);
+        }
+        self.clear_view(handle);
+        if let Ok(mut guard) = self.transforms.lock() {
+            guard.remove(&handle.0);
+        }
+    }
+
+    pub fn retain(&self, mut live: impl FnMut(u64) -> bool) {
+        if let Ok(mut guard) = self.boxes.lock() {
+            guard.retain(|&id, _| live(id));
+        }
+        if let Ok(mut guard) = self.views.lock() {
+            guard.retain(|&id, _| live(id));
+        }
+        if let Ok(mut guard) = self.transforms.lock() {
+            guard.retain(|&id, _| live(id));
+        }
+    }
+
+    fn clear_view(&self, handle: NodeHandle) {
+        if let Ok(mut guard) = self.views.lock() {
+            guard.remove(&handle.0);
+        }
+    }
+
     pub fn contains_point(&self, handle: NodeHandle, x: f32, y: f32) -> bool {
+        if self.view_box(handle).is_some() {
+            return self.get(handle).is_some_and(|box_| {
+                x >= box_.x && y >= box_.y && x < box_.x + box_.width && y < box_.y + box_.height
+            });
+        }
         let transformed = self
             .transforms
             .lock()
@@ -228,6 +257,9 @@ impl LayoutBoxStore {
     }
 
     pub fn local_point(&self, handle: NodeHandle, x: f32, y: f32) -> Option<(f32, f32)> {
+        if let Some(box_) = self.view_box(handle) {
+            return Some((x - box_.x, y - box_.y));
+        }
         let transformed = self
             .transforms
             .lock()
@@ -242,38 +274,33 @@ impl LayoutBoxStore {
     }
 
     pub fn translate(&self, handle: NodeHandle, dx: f32, dy: f32) -> Option<LayoutBox> {
-        let transformed = self
-            .transforms
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(&handle.0).copied());
-        if let Some((mut source, mut affine)) = transformed {
-            source.x += dx;
-            source.y += dy;
-            affine[4] += dx;
-            affine[5] += dy;
-            let box_ = transform_layout_box(source, affine);
-            if let Ok(mut boxes) = self.boxes.lock() {
-                boxes.insert(handle.0, box_);
-            }
-            if let Ok(mut transforms) = self.transforms.lock() {
-                transforms.insert(handle.0, (source, affine));
-            }
-            Some(box_)
-        } else {
-            let mut box_ = self.get(handle)?;
-            box_.x += dx;
-            box_.y += dy;
-            self.record(handle, box_.x, box_.y, box_.width, box_.height);
-            Some(box_)
+        let mut box_ = self.get(handle)?;
+        box_.x += dx;
+        box_.y += dy;
+        self.overlay_view(box_);
+        Some(box_)
+    }
+
+    pub(crate) fn overlay_view(&self, box_: LayoutBox) {
+        if let Ok(mut views) = self.views.lock() {
+            views.insert(box_.handle.0, box_);
         }
     }
 
-    pub fn get(&self, handle: NodeHandle) -> Option<LayoutBox> {
-        self.boxes
+    fn view_box(&self, handle: NodeHandle) -> Option<LayoutBox> {
+        self.views
             .lock()
             .ok()
-            .and_then(|g| g.get(&handle.0).copied())
+            .and_then(|guard| guard.get(&handle.0).copied())
+    }
+
+    pub fn get(&self, handle: NodeHandle) -> Option<LayoutBox> {
+        self.view_box(handle).or_else(|| {
+            self.boxes
+                .lock()
+                .ok()
+                .and_then(|g| g.get(&handle.0).copied())
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -284,7 +311,6 @@ impl LayoutBoxStore {
         self.boxes.lock().map(|g| g.len()).unwrap_or(0)
     }
 
-    /// Snapshot for [`NanaTreeDocument::apply_layout_boxes`].
     pub fn snapshot(&self) -> Vec<(NodeHandle, LayoutBox)> {
         let Ok(guard) = self.boxes.lock() else {
             return Vec::new();
@@ -493,6 +519,27 @@ impl std::ops::DerefMut for VueRuntime {
 }
 
 #[derive(Default)]
+struct PendingHostOps {
+    mutations: MutationQueue,
+    parent: HashMap<u64, Option<u64>>,
+    children: HashMap<u64, Vec<u64>>,
+    kinds: HashMap<u64, NodeKind>,
+    texts: HashMap<u64, String>,
+    events: HashMap<u64, HashSet<String>>,
+    gpu: HashMap<u64, Option<CustomRenderNode>>,
+}
+
+impl PendingHostOps {
+    fn is_empty(&self) -> bool {
+        self.mutations.is_empty()
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Default)]
 struct PendingAssembly {
     workspaces: Vec<(StableNodeId, RuntimeWorkspace)>,
     docks: Vec<(StableNodeId, RuntimeDock)>,
@@ -550,8 +597,7 @@ pub struct NanaTreeDocument {
     next_id: u64,
     html_root: NodeHandle,
     mount_root: NodeHandle,
-    event_flags: HashSet<(u64, String)>,
-    gpu_slots: HashMap<u64, String>,
+    pending: PendingHostOps,
     stylesheets: Vec<String>,
     theme: String,
     logical_width: f32,
@@ -648,8 +694,7 @@ impl NanaTreeDocument {
             next_id: node_base + 3,
             html_root: NodeHandle(html_root),
             mount_root: NodeHandle(mount_root),
-            event_flags: HashSet::new(),
-            gpu_slots: HashMap::new(),
+            pending: PendingHostOps::default(),
             stylesheets: Vec::new(),
             theme: "light".into(),
             logical_width,
@@ -699,6 +744,141 @@ impl NanaTreeDocument {
         self.runtime.generation()
     }
 
+    pub fn contains_handle(&self, node: NodeHandle) -> bool {
+        self.nodes.contains_key(&node.0)
+    }
+
+    /// Commit queued Vue host ops, then drain Runtime systems.
+    pub fn flush_host_frame(&mut self) {
+        self.commit_pending();
+        self.flush_runtime_systems();
+    }
+
+    fn commit_pending(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let mutations = self.pending.mutations.take();
+        let _ = self.runtime.commit(mutations);
+        self.pending.clear();
+    }
+
+    fn take_pending_mutations(&mut self) -> MutationQueue {
+        let mutations = self.pending.mutations.take();
+        self.pending.clear();
+        mutations
+    }
+
+    fn committed_children(&self, parent: u64) -> Vec<u64> {
+        let Ok(parent) = StableNodeId::try_from(NodeHandle(parent)) else {
+            return Vec::new();
+        };
+        self.runtime
+            .node(parent)
+            .map(|node| node.children.into_iter().map(|id| id.get()).collect())
+            .unwrap_or_default()
+    }
+
+    fn live_children(&self, parent: u64) -> Vec<u64> {
+        if let Some(children) = self.pending.children.get(&parent) {
+            return children
+                .iter()
+                .copied()
+                .filter(|id| self.nodes.contains_key(id))
+                .collect();
+        }
+        self.committed_children(parent)
+            .into_iter()
+            .filter(|id| self.nodes.contains_key(id))
+            .collect()
+    }
+
+    fn live_parent(&self, node: u64) -> Option<u64> {
+        if let Some(parent) = self.pending.parent.get(&node) {
+            return *parent;
+        }
+        self.runtime
+            .node(StableNodeId::try_from(NodeHandle(node)).ok()?)?
+            .parent
+            .map(|id| id.get())
+    }
+
+    fn overlay_children_mut(&mut self, parent: u64) -> &mut Vec<u64> {
+        if !self.pending.children.contains_key(&parent) {
+            let children = self.committed_children(parent);
+            self.pending.children.insert(parent, children);
+        }
+        self.pending
+            .children
+            .get_mut(&parent)
+            .expect("just inserted")
+    }
+
+    fn enqueue_insert(&mut self, child: u64, parent: u64, anchor: Option<u64>) {
+        if let Some(old_parent) = self.live_parent(child)
+            && old_parent != parent
+        {
+            self.overlay_children_mut(old_parent)
+                .retain(|id| *id != child);
+        }
+        self.pending.parent.insert(child, Some(parent));
+        let siblings = self.overlay_children_mut(parent);
+        siblings.retain(|id| *id != child);
+        let index = anchor
+            .and_then(|anchor| siblings.iter().position(|id| *id == anchor))
+            .unwrap_or(siblings.len());
+        siblings.insert(index, child);
+        self.pending.mutations.insert(
+            StableNodeId::new(parent).expect("known parent is nonzero"),
+            StableNodeId::new(child).expect("known child is nonzero"),
+            anchor.and_then(StableNodeId::new),
+        );
+    }
+
+    fn live_kind(&self, node: NodeHandle) -> Option<NodeKind> {
+        if let Some(kind) = self.pending.kinds.get(&node.0) {
+            return Some(kind.clone());
+        }
+        self.runtime
+            .node(StableNodeId::try_from(node).ok()?)
+            .map(|node| node.kind)
+    }
+
+    fn live_text(&self, node: NodeHandle) -> Option<String> {
+        if let Some(text) = self.pending.texts.get(&node.0) {
+            return Some(text.clone());
+        }
+        self.runtime_committed_text(node)
+    }
+
+    fn runtime_committed_text(&self, node: NodeHandle) -> Option<String> {
+        self.runtime
+            .text(StableNodeId::try_from(node).ok()?)
+            .map(str::to_owned)
+    }
+
+    fn live_events(&self, el: NodeHandle) -> HashSet<String> {
+        if let Some(events) = self.pending.events.get(&el.0) {
+            return events.clone();
+        }
+        let Ok(id) = StableNodeId::try_from(el) else {
+            return HashSet::new();
+        };
+        self.runtime
+            .event_listeners(id)
+            .map(|listeners| listeners.iter().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    fn live_custom_render(&self, el: NodeHandle) -> Option<CustomRenderNode> {
+        if let Some(content) = self.pending.gpu.get(&el.0) {
+            return content.clone();
+        }
+        self.runtime
+            .custom_render(StableNodeId::try_from(el).ok()?)
+            .cloned()
+    }
+
     pub fn scroll_offset(&self, node: NodeHandle) -> nana_ui_runtime::ScrollOffset {
         StableNodeId::try_from(node)
             .ok()
@@ -715,10 +895,10 @@ impl NanaTreeDocument {
             return false;
         };
         let offset = self.runtime.clamp_scroll_offset(id, offset);
-        if self.runtime.scroll_offset(id) == Some(offset) {
+        if self.runtime.scroll_offset(id) == Some(offset) && self.pending.is_empty() {
             return false;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.set_scroll_offset(id, offset);
         if self.runtime.commit(mutations).is_err() {
             return false;
@@ -780,9 +960,7 @@ impl NanaTreeDocument {
         if self.runtime.scroll_metrics(id) == Some(metrics) {
             return;
         }
-        let mut mutations = MutationQueue::new();
-        mutations.set_scroll_metrics(id, Some(metrics));
-        let _ = self.runtime.commit(mutations);
+        self.pending.mutations.set_scroll_metrics(id, Some(metrics));
     }
 
     fn layout_scroll_metrics(&self, node: NodeHandle) -> Option<nana_ui_runtime::ScrollMetrics> {
@@ -812,13 +990,14 @@ impl NanaTreeDocument {
         metrics: nana_ui_runtime::ScrollMetrics,
     ) -> Option<(nana_ui_runtime::ScrollOffset, nana_ui_runtime::ScrollOffset)> {
         let id = StableNodeId::try_from(node).ok()?;
-        let previous = self.runtime.scroll_offset(id)?;
-        if self.runtime.scroll_metrics(id) == Some(metrics)
+        let previous = self.runtime.scroll_offset(id).unwrap_or_default();
+        if self.pending.is_empty()
+            && self.runtime.scroll_metrics(id) == Some(metrics)
             && self.runtime.clamp_scroll_offset(id, offset) == previous
         {
             return None;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.set_scroll_metrics(id, Some(metrics));
         mutations.set_scroll_offset(id, offset);
         self.runtime.commit(mutations).ok()?;
@@ -851,7 +1030,7 @@ impl NanaTreeDocument {
         if self.runtime.text_input(id) == Some(&state) {
             return false;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.set_text_input(id, Some(state));
         self.runtime.commit(mutations).is_ok()
     }
@@ -870,7 +1049,7 @@ impl NanaTreeDocument {
         let Ok(id) = StableNodeId::try_from(node) else {
             return false;
         };
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.set_ime(id, composition);
         self.runtime.commit(mutations).is_ok()
     }
@@ -915,15 +1094,19 @@ impl NanaTreeDocument {
 
     pub fn sync_semantic_styles(&mut self, snapshot: &crate::SemanticSnapshot) {
         if self.synced_semantic_revision == Some(snapshot.revision) {
+            if !self.pending.is_empty() {
+                self.flush_host_frame();
+            }
             return;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         let mut pending = PendingAssembly::default();
         if self.runtime.theme_mode() != snapshot.theme {
             mutations.set_theme(snapshot.theme);
         }
         for widget in &snapshot.widgets {
-            let Some(id) = StableNodeId::new(widget.id).filter(|id| self.runtime.contains(*id))
+            let Some(id) = StableNodeId::new(widget.id)
+                .filter(|id| self.runtime.contains(*id) || self.nodes.contains_key(&id.get()))
             else {
                 continue;
             };
@@ -1130,27 +1313,21 @@ impl NanaTreeDocument {
     /// [`MessageBridge`] may keep a cascade working index; this method is
     /// what makes Runtime hierarchy the observable tree before Scene paint.
     pub(crate) fn apply_runtime_hierarchy(&self, snapshot: &mut crate::SemanticSnapshot) {
-        snapshot.widgets.retain(|widget| {
-            StableNodeId::new(widget.id).is_some_and(|id| self.runtime.contains(id))
-        });
+        snapshot
+            .widgets
+            .retain(|widget| self.nodes.contains_key(&widget.id));
         let visible = snapshot
             .widgets
             .iter()
             .map(|widget| widget.id)
             .collect::<HashSet<_>>();
         for widget in &mut snapshot.widgets {
-            let node = self
-                .runtime
-                .node(StableNodeId::new(widget.id).expect("retained widget ID is nonzero"))
-                .expect("retained widget remains live");
-            widget.parent = node
-                .parent
-                .map(StableNodeId::get)
+            widget.parent = self
+                .live_parent(widget.id)
                 .filter(|parent| visible.contains(parent));
-            widget.children = node
-                .children
+            widget.children = self
+                .live_children(widget.id)
                 .into_iter()
-                .map(StableNodeId::get)
                 .filter(|child| visible.contains(child))
                 .collect();
         }
@@ -1196,19 +1373,16 @@ impl NanaTreeDocument {
 
     /// Child element/text handles in document order.
     pub fn children_of(&self, parent: NodeHandle) -> Vec<NodeHandle> {
-        let Ok(parent) = StableNodeId::try_from(parent) else {
+        if !matches!(
+            self.nodes.get(&parent.0).map(|node| &node.data),
+            Some(NodeData::Element { .. })
+        ) {
             return Vec::new();
-        };
-        self.runtime
-            .node(parent)
-            .filter(|_| {
-                matches!(
-                    self.nodes.get(&parent.get()).map(|node| &node.data),
-                    Some(NodeData::Element { .. })
-                )
-            })
-            .map(|node| node.children.into_iter().map(NodeHandle::from).collect())
-            .unwrap_or_default()
+        }
+        self.live_children(parent.0)
+            .into_iter()
+            .map(NodeHandle)
+            .collect()
     }
 
     /// DOM `Element.parentElement` — element parent only (same as parent_node here).
@@ -1264,17 +1438,15 @@ impl NanaTreeDocument {
                 scope_id: None,
             },
         );
-        let mut mutations = MutationQueue::new();
-        mutations.create(
+        let kind = NodeKind::Element {
+            tag: tag.to_ascii_lowercase(),
+        };
+        self.pending.kinds.insert(id, kind.clone());
+        self.pending.mutations.create(
             StableNodeId::new(id).expect("allocated IDs are nonzero"),
             nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
-            NodeKind::Element {
-                tag: tag.to_ascii_lowercase(),
-            },
+            kind,
         );
-        self.runtime
-            .commit(mutations)
-            .expect("allocated element is unique");
         NodeHandle(id)
     }
 
@@ -1287,17 +1459,17 @@ impl NanaTreeDocument {
                 scope_id: None,
             },
         );
-        let mut mutations = MutationQueue::new();
         let id = StableNodeId::new(id).expect("allocated IDs are nonzero");
-        mutations.create(
+        self.pending.kinds.insert(id.get(), NodeKind::Text);
+        self.pending.texts.insert(id.get(), text.to_string());
+        self.pending.mutations.create(
             id,
             nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
             NodeKind::Text,
         );
-        mutations.set_text(id, TextContent { value: text.into() });
-        self.runtime
-            .commit(mutations)
-            .expect("allocated text is unique");
+        self.pending
+            .mutations
+            .set_text(id, TextContent { value: text.into() });
         NodeHandle::from(id)
     }
 
@@ -1310,17 +1482,17 @@ impl NanaTreeDocument {
                 scope_id: None,
             },
         );
-        let mut mutations = MutationQueue::new();
         let id = StableNodeId::new(id).expect("allocated IDs are nonzero");
-        mutations.create(
+        self.pending.kinds.insert(id.get(), NodeKind::Comment);
+        self.pending.texts.insert(id.get(), text.to_string());
+        self.pending.mutations.create(
             id,
             nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
             NodeKind::Comment,
         );
-        mutations.set_text(id, TextContent { value: text.into() });
-        self.runtime
-            .commit(mutations)
-            .expect("allocated comment is unique");
+        self.pending
+            .mutations
+            .set_text(id, TextContent { value: text.into() });
         NodeHandle::from(id)
     }
 
@@ -1536,26 +1708,37 @@ impl NanaTreeDocument {
         self.set_attribute(el, "data-nana-gpu", slot);
     }
 
-    pub fn gpu_slots(&self) -> &HashMap<u64, String> {
-        &self.gpu_slots
+    pub fn gpu_slots(&self) -> Vec<(NodeHandle, String)> {
+        let mut slots: Vec<_> = self
+            .nodes
+            .keys()
+            .copied()
+            .filter_map(|id| {
+                let handle = NodeHandle(id);
+                let content = self.live_custom_render(handle)?;
+                if content.renderer.as_ref() != HOST_TEXTURE_RENDERER {
+                    return None;
+                }
+                Some((handle, content.resource.as_ref().to_string()))
+            })
+            .collect();
+        slots.sort_by_key(|(handle, _)| handle.0);
+        slots
     }
 
     fn sync_surface_custom_render(&mut self, el: NodeHandle) {
         let Ok(id) = StableNodeId::try_from(el) else {
             return;
         };
-        if !self.runtime.contains(id) {
+        if !self.nodes.contains_key(&el.0) {
             return;
         }
         let content = self.surface_host_texture_slot(el).map(host_texture_content);
-        if self.runtime.custom_render(id) == content.as_ref() {
+        if self.live_custom_render(el) == content {
             return;
         }
-        let mut mutations = MutationQueue::new();
-        mutations.set_custom_render(id, content);
-        self.runtime
-            .commit(mutations)
-            .expect("known surface node remains valid");
+        self.pending.gpu.insert(el.0, content.clone());
+        self.pending.mutations.set_custom_render(id, content);
     }
 
     fn surface_host_texture_slot(&self, el: NodeHandle) -> Option<String> {
@@ -1587,13 +1770,7 @@ impl NanaTreeDocument {
         if !self.nodes.contains_key(&child.0) {
             return;
         }
-        let mut mutations = MutationQueue::new();
-        mutations.insert(
-            StableNodeId::try_from(parent).expect("known parent is nonzero"),
-            StableNodeId::try_from(child).expect("known child is nonzero"),
-            anchor.and_then(|anchor| StableNodeId::try_from(anchor).ok()),
-        );
-        let _ = self.runtime.commit(mutations);
+        self.enqueue_insert(child.0, parent.0, anchor.map(|anchor| anchor.0));
         if self.surface_host_texture_slot(child).is_some() {
             self.sync_surface_custom_render(child);
         }
@@ -1610,12 +1787,11 @@ impl NanaTreeDocument {
             self.nodes.get(&node.0).map(|node| &node.data),
             Some(NodeData::Text)
         ) {
-            let mut mutations = MutationQueue::new();
-            mutations.set_text(
+            self.pending.texts.insert(node.0, text.to_string());
+            self.pending.mutations.set_text(
                 StableNodeId::try_from(node).expect("known text is nonzero"),
                 TextContent { value: text.into() },
             );
-            let _ = self.runtime.commit(mutations);
         }
     }
 
@@ -1645,10 +1821,9 @@ impl NanaTreeDocument {
             attrs.insert(name.to_string(), value.to_string());
         }
         if changed {
-            if name.eq_ignore_ascii_case("data-nana-gpu") {
-                self.gpu_slots.insert(el.0, value.to_string());
-                self.sync_surface_custom_render(el);
-            } else if name.eq_ignore_ascii_case("data-nana-canvas") {
+            if name.eq_ignore_ascii_case("data-nana-gpu")
+                || name.eq_ignore_ascii_case("data-nana-canvas")
+            {
                 self.sync_surface_custom_render(el);
             }
         }
@@ -1674,10 +1849,9 @@ impl NanaTreeDocument {
             removed = attrs.remove(name).is_some();
         }
         if removed {
-            if name.eq_ignore_ascii_case("data-nana-gpu") {
-                self.gpu_slots.remove(&el.0);
-                self.sync_surface_custom_render(el);
-            } else if name.eq_ignore_ascii_case("data-nana-canvas") {
+            if name.eq_ignore_ascii_case("data-nana-gpu")
+                || name.eq_ignore_ascii_case("data-nana-canvas")
+            {
                 self.sync_surface_custom_render(el);
             }
         }
@@ -1685,23 +1859,30 @@ impl NanaTreeDocument {
 
     pub fn set_event_flag(&mut self, el: NodeHandle, event: &str, enabled: bool) {
         let name = normalize_event_name(event);
-        if enabled {
-            self.event_flags.insert((el.0, name));
-        } else {
-            self.event_flags.remove(&(el.0, name));
+        if name.is_empty() || !self.nodes.contains_key(&el.0) {
+            return;
         }
+        let mut events = self.live_events(el);
+        if enabled {
+            events.insert(name.clone());
+        } else {
+            events.remove(&name);
+        }
+        self.pending.events.insert(el.0, events);
+        self.pending.mutations.set_event_listener(
+            StableNodeId::try_from(el).expect("known node is nonzero"),
+            name,
+            enabled,
+        );
     }
 
     pub fn has_event(&self, el: NodeHandle, event: &str) -> bool {
-        self.event_flags
-            .contains(&(el.0, normalize_event_name(event)))
+        let name = normalize_event_name(event);
+        self.live_events(el).contains(&name)
     }
 
     pub fn parent_node(&self, node: NodeHandle) -> Option<NodeHandle> {
-        self.runtime
-            .node(StableNodeId::try_from(node).ok()?)?
-            .parent
-            .map(NodeHandle::from)
+        self.live_parent(node.0).map(NodeHandle)
     }
 
     /// DOM `Node.contains`: true when `other` is `self` or a descendant.
@@ -1800,11 +1981,7 @@ impl NanaTreeDocument {
     }
 
     pub fn node_kind(&self, node: NodeHandle) -> DomNodeKind {
-        match StableNodeId::try_from(node)
-            .ok()
-            .and_then(|id| self.runtime.node(id))
-            .map(|node| node.kind)
-        {
+        match self.live_kind(node) {
             Some(NodeKind::Element { .. }) => DomNodeKind::Element,
             Some(NodeKind::Text) => DomNodeKind::Text,
             Some(NodeKind::Comment) => DomNodeKind::Comment,
@@ -1814,7 +1991,7 @@ impl NanaTreeDocument {
     }
 
     pub fn element_tag(&self, node: NodeHandle) -> Option<String> {
-        match self.runtime.node(StableNodeId::try_from(node).ok()?)?.kind {
+        match self.live_kind(node)? {
             NodeKind::Element { tag } => Some(tag),
             _ => None,
         }
@@ -1859,9 +2036,8 @@ impl NanaTreeDocument {
                 },
             );
         }
-        self.runtime
-            .commit(mutations)
-            .expect("root layout is finite");
+        self.pending.mutations.append(mutations);
+        self.commit_pending();
     }
 
     pub fn layout_box(&self, node: NodeHandle) -> Option<LayoutBox> {
@@ -1887,7 +2063,7 @@ impl NanaTreeDocument {
     pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
         let w = self.logical_width.max(1.0);
         let h = self.logical_height.max(1.0);
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         for root in [self.html_root, self.mount_root] {
             self.enqueue_layout_if_changed(
                 &mut mutations,
@@ -1905,7 +2081,7 @@ impl NanaTreeDocument {
                 continue;
             }
             if let Ok(id) = StableNodeId::try_from(handle)
-                && self.runtime.contains(id)
+                && (self.runtime.contains(id) || self.nodes.contains_key(&handle.0))
             {
                 self.enqueue_layout_if_changed(
                     &mut mutations,
@@ -1919,7 +2095,9 @@ impl NanaTreeDocument {
                 );
             }
         }
-        let _ = self.runtime.commit(mutations);
+        if !mutations.is_empty() {
+            let _ = self.runtime.commit(mutations);
+        }
         self.flush_runtime_systems();
     }
 
@@ -1953,18 +2131,26 @@ impl NanaTreeDocument {
         }
         texts.sort_by_key(|(h, _)| h.0);
         tags.sort_by_key(|(h, _)| h.0);
-        let gpu_slots: Vec<_> = self
-            .gpu_slots
-            .iter()
-            .map(|(&id, s)| (NodeHandle(id), s.clone()))
-            .collect();
         BoxSnapshot {
             boxes,
             texts,
             tags,
-            event_targets: self.event_flags.clone(),
-            gpu_slots,
+            event_targets: self.snapshot_event_targets(),
+            gpu_slots: self.gpu_slots(),
         }
+    }
+
+    fn snapshot_event_targets(&self) -> HashSet<(u64, String)> {
+        let mut targets = self.runtime.event_targets(
+            nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
+        );
+        for (&id, events) in &self.pending.events {
+            targets.retain(|(event_id, _)| *event_id != id);
+            for event in events {
+                targets.insert((id, event.clone()));
+            }
+        }
+        targets
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeHandle> {
@@ -2052,7 +2238,7 @@ impl NanaTreeDocument {
         let Ok(target) = StableNodeId::try_from(target) else {
             return false;
         };
-        if !self.runtime.contains(target) {
+        if !self.nodes.contains_key(&target.get()) && !self.runtime.contains(target) {
             return false;
         }
         let document =
@@ -2060,7 +2246,7 @@ impl NanaTreeDocument {
         if self.runtime.pointer_capture(document, pointer_id) == Some(target) {
             return true;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.capture_pointer(pointer_id, target);
         self.runtime.commit(mutations).is_ok()
     }
@@ -2074,7 +2260,7 @@ impl NanaTreeDocument {
         if self.runtime.pointer_capture(document, pointer_id) != Some(target) {
             return false;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.release_pointer(pointer_id, target);
         self.runtime.commit(mutations).is_ok()
     }
@@ -2096,7 +2282,7 @@ impl NanaTreeDocument {
         if captures.is_empty() {
             return;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         for (pointer_id, target) in captures {
             mutations.release_pointer(pointer_id, target);
         }
@@ -2113,10 +2299,10 @@ impl NanaTreeDocument {
         let Ok(node) = StableNodeId::try_from(node) else {
             return;
         };
-        if !self.runtime.contains(node) {
+        if !self.nodes.contains_key(&node.get()) && !self.runtime.contains(node) {
             return;
         }
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.set_interaction(
             node,
             nana_ui_runtime::InteractionState {
@@ -2133,7 +2319,7 @@ impl NanaTreeDocument {
     }
 
     pub fn clear_focus(&mut self) {
-        let mut mutations = MutationQueue::new();
+        let mut mutations = self.take_pending_mutations();
         mutations.request_focus(
             nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
             None,
@@ -2166,15 +2352,21 @@ impl NanaTreeDocument {
             return;
         }
         let ids = self.collect_element_preorder(root);
-        let mut mutations = MutationQueue::new();
-        mutations.despawn_subtree(StableNodeId::try_from(root).expect("known node is nonzero"));
-        if self.runtime.commit(mutations).is_err() {
-            return;
+        if let Some(parent) = self.live_parent(root.0) {
+            self.overlay_children_mut(parent).retain(|id| *id != root.0);
         }
+        self.pending.parent.insert(root.0, None);
+        self.pending
+            .mutations
+            .despawn_subtree(StableNodeId::try_from(root).expect("known node is nonzero"));
         for id in ids {
             self.nodes.remove(&id);
-            self.gpu_slots.remove(&id);
-            self.event_flags.retain(|(event_id, _)| *event_id != id);
+            self.pending.parent.remove(&id);
+            self.pending.children.remove(&id);
+            self.pending.kinds.remove(&id);
+            self.pending.texts.remove(&id);
+            self.pending.events.remove(&id);
+            self.pending.gpu.remove(&id);
         }
     }
 
@@ -2186,9 +2378,7 @@ impl NanaTreeDocument {
     }
 
     fn runtime_text(&self, node: NodeHandle) -> Option<String> {
-        self.runtime
-            .text(StableNodeId::try_from(node).ok()?)
-            .map(str::to_owned)
+        self.live_text(node)
     }
 
     fn enqueue_layout_if_changed(
@@ -8465,6 +8655,13 @@ mod tests {
             "menu anchors must follow Scene paint, not pre-paint measure"
         );
         store.begin_frame();
+        let kept = get_layout_box_from(&store, &doc, child).expect("incremental paint box");
+        assert_eq!(
+            (kept.x, kept.y, kept.width, kept.height),
+            (16.0, 16.0, 80.0, 24.0),
+            "begin_frame must keep last paint boxes"
+        );
+        store.remove(child);
         let fallback = get_layout_box_from(&store, &doc, child).expect("doc fallback");
         assert_eq!(
             (fallback.x, fallback.y, fallback.width, fallback.height),
@@ -8555,5 +8752,147 @@ mod tests {
 
         assert_eq!(doc.hit_test(11.0, 1.0), Some(node));
         assert_ne!(doc.hit_test(1.0, 1.0), Some(node));
+    }
+
+    #[test]
+    fn gpu_slot_authority_is_runtime_custom_render() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let node = doc.create_element("div");
+        doc.insert(node, doc.mount_root(), None);
+        doc.set_gpu_slot(node, "program");
+        let id = StableNodeId::try_from(node).unwrap();
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .any(|(handle, slot)| *handle == node && slot == "program")
+        );
+        assert!(
+            doc.world().custom_render(id).is_none(),
+            "host ops must not commit GPU slots before the frame boundary"
+        );
+
+        doc.flush_host_frame();
+        let content = doc
+            .world()
+            .custom_render(id)
+            .expect("data-nana-gpu must land on CustomRenderNode");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), "program");
+        assert_eq!(
+            doc.gpu_slots(),
+            vec![(node, "program".into())],
+            "snapshot/host GPU binding must read Runtime, not a facade map"
+        );
+
+        doc.remove_attribute(node, "data-nana-gpu");
+        doc.flush_host_frame();
+        assert!(doc.world().custom_render(id).is_none());
+        assert!(doc.gpu_slots().is_empty());
+    }
+
+    #[test]
+    fn has_event_reads_runtime_listener_authority() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let btn = doc.create_element("button");
+        doc.insert(btn, doc.mount_root(), None);
+        doc.set_event_flag(btn, "onClick", true);
+        assert!(doc.has_event(btn, "click"));
+        let id = StableNodeId::try_from(btn).unwrap();
+        assert!(
+            !doc.world().has_event(id, "click"),
+            "EventRoute is not the listener set; listeners commit at the frame boundary"
+        );
+
+        doc.flush_host_frame();
+        assert!(doc.has_event(btn, "click"));
+        assert!(doc.world().has_event(id, "click"));
+        assert!(
+            doc.world()
+                .event_targets(doc.world().node(id).unwrap().document)
+                .contains(&(btn.0, "click".into()))
+        );
+
+        doc.set_event_flag(btn, "click", false);
+        doc.flush_host_frame();
+        assert!(!doc.has_event(btn, "click"));
+        assert!(!doc.world().has_event(id, "click"));
+    }
+
+    #[test]
+    fn same_frame_host_ops_flush_once_at_frame_boundary() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let root = doc.mount_root();
+        let generation = doc.runtime_generation();
+        let parent = doc.create_element("div");
+        let child = doc.create_element("span");
+        doc.insert(parent, root, None);
+        doc.insert(child, parent, None);
+        doc.set_element_text(child, "hello");
+        doc.set_event_flag(parent, "click", true);
+        doc.set_gpu_slot(parent, "slot");
+
+        assert_eq!(
+            doc.runtime_generation(),
+            generation,
+            "create/insert/text/event/gpu must share one uncommitted batch"
+        );
+        assert_eq!(doc.parent_node(parent), Some(root));
+        assert_eq!(doc.children_of(parent), vec![child]);
+        assert_eq!(doc.parent_node(child), Some(parent));
+        assert!(doc.text_content(child).unwrap().contains("hello"));
+
+        doc.flush_host_frame();
+        assert_eq!(doc.runtime_generation(), generation + 1);
+        assert_eq!(doc.children_of(parent), vec![child]);
+        let parent_id = StableNodeId::try_from(parent).unwrap();
+        assert!(doc.world().has_event(parent_id, "click"));
+        assert!(doc.world().custom_render(parent_id).is_some());
+    }
+
+    #[test]
+    fn layout_box_store_keeps_clean_paint_and_drops_removed_nodes() {
+        let store = LayoutBoxStore::new();
+        let kept = NodeHandle(11);
+        let removed = NodeHandle(12);
+        store.record(kept, 1.0, 2.0, 10.0, 20.0);
+        store.record(removed, 3.0, 4.0, 30.0, 40.0);
+        store.begin_frame();
+        assert_eq!(store.get(kept).unwrap().width, 10.0);
+        assert_eq!(store.get(removed).unwrap().height, 40.0);
+        store.remove(removed);
+        assert!(store.get(kept).is_some());
+        assert!(store.get(removed).is_none());
+        store.retain(|id| id == kept.0);
+        assert!(store.get(kept).is_some());
+        assert!(store.get(removed).is_none());
+    }
+
+    #[test]
+    fn scroll_view_overlay_does_not_write_runtime_layout() {
+        let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+        let target = doc.create_element("div");
+        doc.insert(target, doc.mount_root(), None);
+        let store = LayoutBoxStore::new();
+        store.record(target, 0.0, 400.0, 300.0, 40.0);
+        doc.apply_layout_boxes(&store.snapshot());
+        assert_eq!(doc.layout_box(target).unwrap().y, 400.0);
+
+        store.translate(target, 0.0, -400.0);
+        assert_eq!(
+            store.get(target).unwrap().y,
+            0.0,
+            "JS paint overlay follows scroll"
+        );
+        assert_eq!(
+            doc.layout_box(target).unwrap().y,
+            400.0,
+            "Runtime LayoutBox stays unscrolled"
+        );
+        doc.apply_layout_boxes(&store.snapshot());
+        assert_eq!(
+            doc.layout_box(target).unwrap().y,
+            400.0,
+            "paint snapshot writeback must not copy scrolled coordinates"
+        );
     }
 }
