@@ -38,7 +38,9 @@ use crate::{
     UiWorldError, XYPad, XYPadDragState, XYPadEvent,
 };
 
+mod assemble;
 mod overlay;
+pub use assemble::AssemblyScope;
 pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
     RuntimeOverlayKind,
@@ -292,11 +294,15 @@ struct ComponentLifecycle {
     next_overlay_activation_token: u64,
 }
 
+type ActivationFn =
+    Arc<dyn Fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError> + Send + Sync>;
+
 #[derive(Default)]
 pub struct ExtensionRegistrar {
     actions: HashMap<ActionId, RegisteredAction>,
     presenters: Vec<Box<dyn TextPresenter>>,
     components: ComponentRegistry,
+    activations: HashMap<TypeId, ActivationFn>,
 }
 
 impl ExtensionRegistrar {
@@ -342,6 +348,25 @@ impl ExtensionRegistrar {
     pub fn register_component<C: RegisterableComponent>(&mut self) -> Result<(), FrameworkError> {
         let (entry, tags) = registerable_entry::<C>()?;
         self.components.insert_with_tags(entry, tags)
+    }
+
+    /// Register pointer/keyboard activation for `C`.
+    ///
+    /// Plugins call this from [`UiExtension::install`] instead of adding a
+    /// type branch to [`AppContext::activate_node`].
+    pub fn register_activation<C: View>(
+        &mut self,
+        handler: fn(&mut AppContext, Entity<C>) -> Result<bool, FrameworkError>,
+    ) -> Result<(), FrameworkError> {
+        let type_id = TypeId::of::<C>();
+        if self.activations.contains_key(&type_id) {
+            return Err(FrameworkError::DuplicateActivation);
+        }
+        self.activations.insert(
+            type_id,
+            Arc::new(move |context, id| handler(context, Entity::from_stable_id(id))),
+        );
+        Ok(())
     }
 
     pub fn register_tags(
@@ -414,6 +439,11 @@ pub enum FrameworkError {
     },
     OverlayActivationTokenExhausted(StableNodeId),
     FrameDidNotSettle,
+    DuplicateAssemblyKey {
+        parent: StableNodeId,
+        key: String,
+    },
+    DuplicateActivation,
 }
 
 impl fmt::Display for FrameworkError {
@@ -519,6 +549,14 @@ impl fmt::Display for FrameworkError {
             Self::FrameDidNotSettle => {
                 formatter.write_str("runtime frame did not settle within the bounded pass limit")
             }
+            Self::DuplicateAssemblyKey { parent, key } => write!(
+                formatter,
+                "assembly key `{key}` is duplicated under view {}",
+                parent.get()
+            ),
+            Self::DuplicateActivation => {
+                formatter.write_str("an activation handler is already registered for this type")
+            }
         }
     }
 }
@@ -539,6 +577,8 @@ pub struct AppContext {
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
     components: ComponentRegistry,
+    activations: HashMap<TypeId, ActivationFn>,
+    assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
     component_lifecycle: ComponentLifecycle,
     next_id: u64,
     frame_profiler: FrameProfiler,
@@ -673,6 +713,8 @@ impl AppContext {
             actions: HashMap::new(),
             extensions: HashSet::new(),
             components: ComponentRegistry::default(),
+            activations: HashMap::new(),
+            assembled: HashMap::new(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
             frame_profiler: FrameProfiler::new(),
@@ -682,6 +724,7 @@ impl AppContext {
         context
             .install(&crate::builtin_components::NanaBuiltinComponents)
             .expect("builtin component registry");
+        context.register_builtin_activations();
         #[cfg(feature = "syntax-highlighting")]
         {
             context
@@ -1809,6 +1852,44 @@ impl AppContext {
         self.activate_component(entity, |radio| radio.disabled || radio.checked)
     }
 
+    pub fn activate_tab(&mut self, entity: Entity<Tab>) -> Result<bool, FrameworkError> {
+        let Some(parent) = self.world.node(entity.id).and_then(|node| node.parent) else {
+            return Ok(false);
+        };
+        if self
+            .views
+            .get(&parent)
+            .is_some_and(|view| view.is::<TabList>())
+        {
+            return self.select_tab(Entity::from_stable_id(parent), entity);
+        }
+        Ok(false)
+    }
+
+    pub fn activate_segmented_option(
+        &mut self,
+        entity: Entity<SegmentedOption>,
+    ) -> Result<bool, FrameworkError> {
+        let Some(parent) = self.world.node(entity.id).and_then(|node| node.parent) else {
+            return Ok(false);
+        };
+        if self
+            .views
+            .get(&parent)
+            .is_some_and(|view| view.is::<SegmentedControl>())
+        {
+            return self.request_segmented_selection(Entity::from_stable_id(parent), entity);
+        }
+        if self
+            .views
+            .get(&parent)
+            .is_some_and(|view| view.is::<Tabs>())
+        {
+            return self.activate_tabs_option(Entity::from_stable_id(parent), entity.id);
+        }
+        Ok(false)
+    }
+
     /// Activate a retained component selected by hit testing without exposing
     /// its concrete Rust type to a platform adapter.
     pub fn activate_node(&mut self, id: StableNodeId) -> Result<bool, FrameworkError> {
@@ -1826,104 +1907,14 @@ impl AppContext {
                 );
             }
         }
-        let Some(view) = self.views.get(&id) else {
-            return Ok(false);
-        };
-        if view.is::<Button>() {
-            return self.activate_button(Entity::from_stable_id(id));
+        let handler = self
+            .views
+            .get(&id)
+            .and_then(|view| self.activations.get(&view.as_ref().type_id()).cloned());
+        match handler {
+            Some(handler) => handler(self, id),
+            None => Ok(false),
         }
-        if view.is::<IconButton>() {
-            return self.activate_icon_button(Entity::from_stable_id(id));
-        }
-        if view.is::<ListItem>() {
-            return self.activate_list_item(Entity::from_stable_id(id));
-        }
-        if view.is::<SidebarRow>() {
-            return self.activate_sidebar_row(Entity::from_stable_id(id));
-        }
-        if view.is::<SidebarFooterButton>() {
-            return self.activate_sidebar_footer_button(Entity::from_stable_id(id));
-        }
-        if view.is::<SidebarSection>() {
-            return self.activate_sidebar_section(Entity::from_stable_id(id));
-        }
-        if view.is::<SettingsCollapsibleCard>() {
-            return self.activate_settings_collapsible_card(Entity::from_stable_id(id));
-        }
-        if view.is::<Tabs>() {
-            return self.activate_tabs(Entity::from_stable_id(id));
-        }
-        if view.is::<MenuItem>() {
-            return self.activate_menu_item(Entity::from_stable_id(id));
-        }
-        if view.is::<ActionMenuItem>() {
-            return self.activate_action_menu_item(Entity::from_stable_id(id));
-        }
-        if view.is::<Select>() {
-            return self.toggle_select(Entity::from_stable_id(id));
-        }
-        if view.is::<Dropdown>() {
-            return self.toggle_dropdown(Entity::from_stable_id(id));
-        }
-        if view.is::<SearchDropdown>() {
-            return self.toggle_search_dropdown(Entity::from_stable_id(id));
-        }
-        if view.is::<Popover>() {
-            return self.toggle_popover(Entity::from_stable_id(id));
-        }
-        if view.is::<ActionMenu>() {
-            return self.toggle_action_menu(Entity::from_stable_id(id));
-        }
-        if view.is::<ContextMenu>() {
-            return self.dismiss_context_menu(Entity::from_stable_id(id));
-        }
-        if view.is::<crate::Radio>() {
-            return self.activate_radio(Entity::from_stable_id(id));
-        }
-        if view.is::<Checkbox>() {
-            return self.toggle_checkbox(Entity::from_stable_id(id));
-        }
-        if view.is::<Switch>() {
-            return self.toggle_switch(Entity::from_stable_id(id));
-        }
-        if view.is::<Progress>() {
-            return self.cancel_progress(Entity::from_stable_id(id));
-        }
-        if view.is::<Tab>() {
-            let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
-                return Ok(false);
-            };
-            if self
-                .views
-                .get(&parent)
-                .is_some_and(|view| view.is::<TabList>())
-            {
-                return self.select_tab(Entity::from_stable_id(parent), Entity::from_stable_id(id));
-            }
-        }
-        if view.is::<SegmentedOption>() {
-            let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
-                return Ok(false);
-            };
-            if self
-                .views
-                .get(&parent)
-                .is_some_and(|view| view.is::<SegmentedControl>())
-            {
-                return self.request_segmented_selection(
-                    Entity::from_stable_id(parent),
-                    Entity::from_stable_id(id),
-                );
-            }
-            if self
-                .views
-                .get(&parent)
-                .is_some_and(|view| view.is::<Tabs>())
-            {
-                return self.activate_tabs_option(Entity::from_stable_id(parent), id);
-            }
-        }
-        Ok(false)
     }
 
     /// Reconcile the complete ordered option set and its controlled selection
@@ -5405,21 +5396,62 @@ impl AppContext {
 
     pub fn remove_view<V: View>(&mut self, entity: Entity<V>) -> Result<V, FrameworkError> {
         self.read(entity, |_| ())?;
-        let mut subtree = Vec::new();
-        let mut stack = vec![entity.id];
-        while let Some(id) = stack.pop() {
-            let snapshot = self.world.node(id).ok_or(FrameworkError::MissingView(id))?;
-            stack.extend(snapshot.children.iter().rev().copied());
-            subtree.push(id);
+        let boxed = self
+            .views
+            .remove(&entity.id)
+            .expect("validated view must remain present");
+        self.despawn_node(entity.id)?;
+        boxed
+            .downcast::<V>()
+            .map(|view| *view)
+            .map_err(|_| FrameworkError::ViewType(entity.id))
+    }
+
+    pub(super) fn attach_child(
+        &mut self,
+        parent: StableNodeId,
+        child: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        if !self.world.contains(parent) {
+            return Err(FrameworkError::MissingView(parent));
+        }
+        if !self.world.contains(child) {
+            return Err(FrameworkError::MissingView(child));
         }
         let mut queue = MutationQueue::new();
-        queue.despawn_subtree(entity.id);
+        queue.insert(parent, child, None);
+        self.commit_mutations(queue)?;
+        Ok(())
+    }
+
+    pub(super) fn despawn_node(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        if !self.world.contains(id) {
+            return Err(FrameworkError::MissingView(id));
+        }
+        let mut subtree = Vec::new();
+        let mut stack = vec![id];
+        while let Some(current) = stack.pop() {
+            let snapshot = self
+                .world
+                .node(current)
+                .ok_or(FrameworkError::MissingView(current))?;
+            stack.extend(snapshot.children.iter().rev().copied());
+            subtree.push(current);
+        }
+        let mut queue = MutationQueue::new();
+        queue.despawn_subtree(id);
         self.world.commit(queue)?;
         let removed = subtree.iter().copied().collect::<HashSet<_>>();
-        self.remove_event_handlers_for(&removed);
-        for id in &removed {
+        self.forget_subtree(&removed);
+        Ok(())
+    }
+
+    fn forget_subtree(&mut self, removed: &HashSet<StableNodeId>) {
+        self.remove_event_handlers_for(removed);
+        for id in removed {
             self.component_lifecycle.tooltips.remove(id);
             self.component_lifecycle.loading.remove(id);
+            self.views.remove(id);
         }
         self.component_lifecycle
             .tooltips
@@ -5427,17 +5459,13 @@ impl AppContext {
         if self.component_lifecycle.loading.is_empty() {
             self.component_lifecycle.next_loading_frame = None;
         }
-        let boxed = self
-            .views
-            .remove(&entity.id)
-            .expect("validated view must remain present");
-        for id in subtree.into_iter().filter(|id| *id != entity.id) {
-            self.views.remove(&id);
-        }
-        boxed
-            .downcast::<V>()
-            .map(|view| *view)
-            .map_err(|_| FrameworkError::ViewType(entity.id))
+        self.assembled.retain(|parent, slots| {
+            if removed.contains(parent) {
+                return false;
+            }
+            slots.retain(|_, child| !removed.contains(&child.id));
+            true
+        });
     }
 
     fn remove_event_handlers_for(&mut self, removed: &HashSet<StableNodeId>) {
@@ -5597,13 +5625,56 @@ impl AppContext {
                 presenter.name().to_owned(),
             ));
         }
+        if registrar
+            .activations
+            .keys()
+            .any(|type_id| self.activations.contains_key(type_id))
+        {
+            return Err(FrameworkError::DuplicateActivation);
+        }
         self.components.extend(registrar.components)?;
         self.actions.extend(registrar.actions);
+        self.activations.extend(registrar.activations);
         for presenter in registrar.presenters {
             self.world.register_presenter(presenter)?;
         }
         self.extensions.insert(name);
         Ok(())
+    }
+
+    fn register_builtin_activations(&mut self) {
+        self.bind_activation::<Button>(Self::activate_button);
+        self.bind_activation::<IconButton>(Self::activate_icon_button);
+        self.bind_activation::<ListItem>(Self::activate_list_item);
+        self.bind_activation::<SidebarRow>(Self::activate_sidebar_row);
+        self.bind_activation::<SidebarFooterButton>(Self::activate_sidebar_footer_button);
+        self.bind_activation::<SidebarSection>(Self::activate_sidebar_section);
+        self.bind_activation::<SettingsCollapsibleCard>(Self::activate_settings_collapsible_card);
+        self.bind_activation::<Tabs>(Self::activate_tabs);
+        self.bind_activation::<MenuItem>(Self::activate_menu_item);
+        self.bind_activation::<ActionMenuItem>(Self::activate_action_menu_item);
+        self.bind_activation::<Select>(Self::toggle_select);
+        self.bind_activation::<Dropdown>(Self::toggle_dropdown);
+        self.bind_activation::<SearchDropdown>(Self::toggle_search_dropdown);
+        self.bind_activation::<Popover>(Self::toggle_popover);
+        self.bind_activation::<ActionMenu>(Self::toggle_action_menu);
+        self.bind_activation::<ContextMenu>(Self::dismiss_context_menu);
+        self.bind_activation::<crate::Radio>(Self::activate_radio);
+        self.bind_activation::<Checkbox>(Self::toggle_checkbox);
+        self.bind_activation::<Switch>(Self::toggle_switch);
+        self.bind_activation::<Progress>(Self::cancel_progress);
+        self.bind_activation::<Tab>(Self::activate_tab);
+        self.bind_activation::<SegmentedOption>(Self::activate_segmented_option);
+    }
+
+    fn bind_activation<C: View>(
+        &mut self,
+        handler: fn(&mut Self, Entity<C>) -> Result<bool, FrameworkError>,
+    ) {
+        self.activations.insert(
+            TypeId::of::<C>(),
+            Arc::new(move |context, id| handler(context, Entity::from_stable_id(id))),
+        );
     }
 
     pub fn register_presenter(
@@ -5785,6 +5856,99 @@ mod tests {
             "Go"
         );
         assert_eq!(context.world().text(id), Some("Go"));
+    }
+
+    #[test]
+    fn mount_reuses_keyed_entities_and_drops_unused() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let card = context.create_component(document, Card::new()).unwrap();
+        let mut title = None;
+        let mut save = None;
+        context
+            .mount(card, |ui| {
+                title = Some(ui.child("title", Text::new("Nana"))?);
+                save = Some(ui.child("save", Button::new("Save"))?);
+                Ok(())
+            })
+            .unwrap();
+        let title = title.unwrap();
+        let save = save.unwrap();
+        let title_id = title.stable_id();
+        let save_id = save.stable_id();
+        context
+            .mount(card, |ui| {
+                ui.child("title", Text::new("Nana"))?;
+                ui.child("save", Button::new("Saved"))?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(title.stable_id(), title_id);
+        assert_eq!(save.stable_id(), save_id);
+        assert_eq!(
+            context.read(save, |button| button.label.clone()).unwrap(),
+            "Saved"
+        );
+        context
+            .mount(card, |ui| {
+                ui.child("title", Text::new("Nana"))?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(context.world().contains(title_id));
+        assert!(!context.world().contains(save_id));
+    }
+
+    #[test]
+    fn plugin_register_activation_reaches_activate_node() {
+        #[derive(Clone)]
+        struct Ping;
+        impl ComponentView for Ping {
+            fn node_kind(&self) -> NodeKind {
+                NodeKind::Element { tag: "ping".into() }
+            }
+            fn project(&self, _id: StableNodeId, _world: &UiWorld, _mutations: &mut MutationQueue) {
+            }
+        }
+        impl crate::RegisterableComponent for Ping {
+            const TYPE_ID: &'static str = "test.ping";
+            const TAGS: &'static [&'static str] = &["ping"];
+            fn from_semantic(_: &crate::SemanticSpec<'_>) -> Self {
+                Ping
+            }
+        }
+        fn activate_ping(
+            context: &mut AppContext,
+            entity: Entity<Ping>,
+        ) -> Result<bool, FrameworkError> {
+            context.update_component(entity, |_, cx| cx.emit(Activate))?;
+            Ok(true)
+        }
+        struct PingExt;
+        impl UiExtension for PingExt {
+            fn name(&self) -> &'static str {
+                "test.ping"
+            }
+            fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
+                registrar.register_component::<Ping>()?;
+                registrar.register_activation::<Ping>(activate_ping)
+            }
+        }
+
+        let mut context = AppContext::new();
+        context.install(&PingExt).unwrap();
+        let ping = context
+            .create_component(DocumentId::new(1).unwrap(), Ping)
+            .unwrap();
+        let hits = Arc::new(Mutex::new(0));
+        let observed = Arc::clone(&hits);
+        context
+            .on(ping, move |_, _: &Activate, _| {
+                *observed.lock().unwrap() += 1;
+            })
+            .unwrap();
+        assert!(context.activate_node(ping.stable_id()).unwrap());
+        assert_eq!(*hits.lock().unwrap(), 1);
     }
 
     #[test]
@@ -8562,7 +8726,10 @@ mod tests {
             const TAGS: &'static [&'static str] = &["nana-probe-card", "probe-card"];
             fn from_semantic(spec: &crate::SemanticSpec<'_>) -> Self {
                 Self {
-                    title: spec.display_label().to_owned(),
+                    title: spec
+                        .attr("handle")
+                        .unwrap_or_else(|| spec.display_label())
+                        .to_owned(),
                 }
             }
         }

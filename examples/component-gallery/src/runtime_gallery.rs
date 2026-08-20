@@ -269,8 +269,14 @@ impl GalleryRuntime {
             .layout()
             .region(&RegionId::Resources)
             .is_some_and(nana_ui::RegionState::collapsed_value);
-        let sidebar_toggle = context
-            .create_detached_component(document_id, sidebar_toggle_button(sidebar_collapsed))?;
+        let title_leading =
+            context.create_detached_component(document_id, HostStack::leading_row(0.0))?;
+        let mut sidebar_toggle = None;
+        context.mount(title_leading, |ui| {
+            sidebar_toggle = Some(ui.child("toggle", sidebar_toggle_button(sidebar_collapsed))?);
+            Ok(())
+        })?;
+        let sidebar_toggle = sidebar_toggle.expect("sidebar toggle");
         let search_button =
             context.create_detached_component(document_id, search_command_button())?;
         let theme_button =
@@ -288,9 +294,6 @@ impl GalleryRuntime {
             document_id,
             hugging_text("NanaUI Gallery", SemanticColorRole::Text, 13.0, 600),
         )?;
-        let title_leading =
-            context.create_detached_component(document_id, HostStack::leading_row(0.0))?;
-        context.append_child(title_leading, sidebar_toggle)?;
         let title_trailing = context.create_detached_component(document_id, HostStack::row(6.0))?;
         context.append_child(title_trailing, context_label)?;
         context.append_child(title_trailing, search_button)?;

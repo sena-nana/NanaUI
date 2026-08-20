@@ -2516,6 +2516,12 @@ fn try_bind_registered_component(
         return None;
     }
     let layout = Arc::new(widget.props.layout.clone());
+    let attr_pairs: Vec<(&str, &str)> = widget
+        .props
+        .attrs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
     let spec = SemanticSpec {
         label: widget.props.label.as_str(),
         value: widget.props.value.as_str(),
@@ -2539,6 +2545,7 @@ fn try_bind_registered_component(
         } else {
             widget.props.number
         },
+        attrs: &attr_pairs,
         ..SemanticSpec::from_parts(&type_id, &layout)
     };
     match context.bind_semantic(id, &spec, mutations) {
@@ -5734,7 +5741,10 @@ mod tests {
         const TAGS: &'static [&'static str] = &["nana-probe-card", "probe-card"];
         fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
             Self {
-                title: spec.display_label().to_owned(),
+                title: spec
+                    .attr("handle")
+                    .unwrap_or_else(|| spec.display_label())
+                    .to_owned(),
             }
         }
     }
@@ -5777,6 +5787,30 @@ mod tests {
             doc.world().component_type(id).map(ComponentTypeId::as_str),
             Some("test.probe-card")
         );
+    }
+
+    #[test]
+    fn plugin_bind_reads_open_attrs() {
+        let mut doc = NanaTreeDocument::new(400, 200, 1.0);
+        doc.context_mut().install(&ProbePlugin).unwrap();
+        let card = doc.create_element("nana-probe-card");
+        doc.insert(card, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut attrs = std::collections::BTreeMap::new();
+        attrs.insert("handle".into(), "from-attr".into());
+        bridge.register(
+            card.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                element_tag: "nana-probe-card".into(),
+                label: "User".into(),
+                attrs,
+                ..crate::WidgetProps::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let id = StableNodeId::try_from(card).unwrap();
+        assert_eq!(doc.world().text(id), Some("from-attr"));
     }
 
     #[test]

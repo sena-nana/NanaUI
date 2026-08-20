@@ -1,8 +1,9 @@
 //! NanaUI L3 adapter and the Scene/WGPU paint of Runtime/UiScene.
 //!
 //! Product retained/render contracts live in `nana-ui-runtime` and `nana-ui-scene`.
-//! This crate adapts Style Model (`nana_ui_core::style_model`) and Scene frames to
-//! the Nana Scene host. It is not the long-term application programming model.
+//! New L3 applications should use [`runtime`] (`AppContext`, `mount`,
+//! `ComponentView`, `register_component`). Crate-root widget re-exports are a
+//! compatibility surface, not the extension contract.
 //! L1/L2 Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
 //!
 //! [`WorkspaceController`] owns workspace region layout and interaction.
@@ -59,8 +60,11 @@ pub mod workspace;
 
 /// Canonical backend-neutral Nana framework API.
 ///
-/// New applications should build retained state through this module. Qualified
-/// top-level component exports also route here.
+/// New applications should build retained state through this module: `AppContext`,
+/// `mount` / `AssemblyScope`, typed `Entity` views, and `register_component`.
+/// `RuntimeProgram::Message` is for host-level work (windows, GPU, persistence),
+/// not every control press; prefer `on` / `observe` to update view state.
+/// Qualified top-level component exports also route here.
 pub mod runtime {
     pub use nana_ui_runtime::*;
     pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
