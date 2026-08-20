@@ -12,8 +12,11 @@
   `crates/nana-window` 独立负责平台窗口材质，普通控件不得访问窗口句柄。
 - 消费应用拥有业务状态、配置存储和 Region 内容；NanaUI 只提供通用状态与合同。
 - 宿主拥有 Window、Surface、Device 与 Queue。`SceneWgpuPainter` 注入该 GPU
-  上下文；禁止第二套 Device/Queue、正式路径 CPU 回读或伪零拷贝。Live2D 仍走
-  HostTexture 槽位，禁止写成已直通 Scene pass。
+  上下文；禁止第二套 Device/Queue、正式路径 CPU 回读或伪零拷贝。GPU 内容是
+  一等 Scene 节点（`CustomRenderNode`）：与 Button/Text 一样参与布局、裁剪、
+  命中和 document order。`nana.host-texture` 在该节点的顺序位置采样，不得攒到
+  帧尾。Live2D 仍在框架外，把 1..N 层映射为普通 HostTexture 节点；禁止写成
+  Cubism 直写 Surface，也禁止引入 `Live2DNode`。
 - Vue ECS 折入已落地（#6 为历史动机）：`gpu_slots` 权威是 Runtime
   `CustomRenderNode`，`event_flags` 权威是 `UiWorld` `EventListeners`，`attrs`
   仍是 DOM/CSS facade 且不复制树拓扑。host op 进 `PendingHostOps`，

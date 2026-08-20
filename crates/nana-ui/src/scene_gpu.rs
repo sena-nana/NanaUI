@@ -34,6 +34,19 @@ pub struct SceneGpuRenderContext<'a> {
     pub gpu_work: Option<&'a GpuWorkSink>,
 }
 
+/// In-pass encode for a [`SceneGpuRenderer`] that can share the Scene dest.
+///
+/// `dest_size` is the current dest viewport in physical pixels so implementations
+/// can restore it after changing scissor or viewport.
+pub struct SceneGpuPassContext<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub bounds: PhysicalRect,
+    pub clip: PhysicalRect,
+    pub dest_size: [u32; 2],
+    pub gpu_work: Option<&'a GpuWorkSink>,
+}
+
 /// Advanced WGPU compatibility extension for direct Scene graph passes.
 ///
 /// Implementations receive NanaUI's existing Device/Queue during prepare and
@@ -43,6 +56,20 @@ pub trait SceneGpuRenderer: fmt::Debug + Send + Sync + 'static {
     fn prepare(&self, node: &SceneGpuNode, context: SceneGpuPrepareContext<'_>);
 
     fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>);
+
+    /// Draw into the caller's current pass. Return `true` if this node was encoded.
+    ///
+    /// The default returns `false`, so the painter ends the main pass and calls
+    /// [`Self::render`]. Prefer joining when the renderer can use the dest
+    /// sample count and format.
+    fn draw_in_pass(
+        &self,
+        _node: &SceneGpuNode,
+        _pass: &mut wgpu::RenderPass<'_>,
+        _context: SceneGpuPassContext<'_>,
+    ) -> bool {
+        false
+    }
 }
 
 pub struct SceneResourceEncodeContext<'a> {

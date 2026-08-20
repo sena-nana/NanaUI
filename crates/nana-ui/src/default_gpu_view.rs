@@ -13,18 +13,18 @@ use nana_ui_scene::PrimitiveId;
 
 use crate::gpu_view::GPU_VIEW_SHADER;
 use crate::scene_gpu::{
-    SceneGpuNode, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
-    SceneGpuRendererRegistry,
+    SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext,
+    SceneGpuRenderer, SceneGpuRendererRegistry,
 };
 
 /// Scene painter for [`GPU_VIEW_RENDERER`] (`"gpu-view"`).
 ///
 /// The hosted runtime installs this when a program leaves scene GPU renderers
-/// unset and host Device/Queue handles are available. It always opens a
-/// dedicated pass on [`SceneGpuRenderContext::encoder`]; inline reuse of an
-/// existing Scene pass is not available on [`SceneGpuRenderer`]. Palette comes
-/// from the constructor because [`nana_ui_runtime::CustomRenderNode`] does not
-/// encode [`GpuViewPalette`].
+/// unset and host Device/Queue handles are available. [`Self::draw_in_pass`]
+/// encodes into the current Scene dest pass (Inline). [`Self::render`] opens a
+/// dedicated pass on the same encoder/target only when the painter cannot join.
+/// Palette comes from the constructor because
+/// [`nana_ui_runtime::CustomRenderNode`] does not encode [`GpuViewPalette`].
 pub struct DefaultGpuViewRenderer {
     palette: GpuViewPalette,
     device: Option<Arc<wgpu::Device>>,
@@ -152,13 +152,6 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
     }
 
     fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>) {
-        let state = self.state.lock().expect("default gpu-view pipeline");
-        let Some(prepared) = state.as_ref() else {
-            return;
-        };
-        let Some(slot) = prepared.slots.get(&node.id) else {
-            return;
-        };
         if context.bounds.width == 0 || context.bounds.height == 0 {
             return;
         }
@@ -180,7 +173,45 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-        render_pass.set_viewport(
+        self.draw_in_pass(
+            node,
+            &mut render_pass,
+            SceneGpuPassContext {
+                device: context.device,
+                queue: context.queue,
+                bounds: context.bounds,
+                clip: context.clip,
+                dest_size: [
+                    context.bounds.x.saturating_add(context.bounds.width).max(1),
+                    context
+                        .bounds
+                        .y
+                        .saturating_add(context.bounds.height)
+                        .max(1),
+                ],
+                gpu_work: context.gpu_work,
+            },
+        );
+        drop(render_pass);
+    }
+
+    fn draw_in_pass(
+        &self,
+        node: &SceneGpuNode,
+        pass: &mut wgpu::RenderPass<'_>,
+        context: SceneGpuPassContext<'_>,
+    ) -> bool {
+        let state = self.state.lock().expect("default gpu-view pipeline");
+        let Some(prepared) = state.as_ref() else {
+            return false;
+        };
+        let Some(slot) = prepared.slots.get(&node.id) else {
+            return false;
+        };
+        if context.bounds.width == 0 || context.bounds.height == 0 {
+            return false;
+        }
+        pass.set_viewport(
             slot.viewport[0],
             slot.viewport[1],
             slot.viewport[2].max(1.0),
@@ -188,20 +219,28 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
             0.0,
             1.0,
         );
-        render_pass.set_scissor_rect(
-            context.bounds.x,
-            context.bounds.y,
-            context.bounds.width,
-            context.bounds.height,
+        pass.set_scissor_rect(
+            context.clip.x,
+            context.clip.y,
+            context.clip.width,
+            context.clip.height,
         );
-        render_pass.set_pipeline(&prepared.pipeline);
-        render_pass.set_bind_group(0, &slot.bind_group, &[]);
-        render_pass.draw(0..3, 0..1);
-        drop(render_pass);
+        pass.set_pipeline(&prepared.pipeline);
+        pass.set_bind_group(0, &slot.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+        pass.set_viewport(
+            0.0,
+            0.0,
+            context.dest_size[0].max(1) as f32,
+            context.dest_size[1].max(1) as f32,
+            0.0,
+            1.0,
+        );
         if let Some(work) = context.gpu_work {
             work.record_draw_batch();
             work.record_draw_call();
         }
+        true
     }
 }
 

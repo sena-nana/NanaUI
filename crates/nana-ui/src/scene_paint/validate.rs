@@ -189,7 +189,7 @@ fn supported_family(family: Option<&str>) -> bool {
 mod tests {
     use nana_ui_runtime::{
         AppContext, Button as RuntimeButton, CustomRenderNode, DocumentId, GPU_VIEW_RENDERER,
-        GpuView, LayoutBox, MutationQueue,
+        GpuTextureView, GpuView, LayoutBox, MutationQueue,
     };
     use nana_ui_scene::UiScene;
 
@@ -373,6 +373,89 @@ mod tests {
                 slot: 1,
             }
         )));
+    }
+
+    #[test]
+    fn host_texture_layers_keep_standard_draws_between_them() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let background = context
+            .create_component(document, GpuTextureView::new("live2d.bg"))
+            .unwrap();
+        let chrome = context
+            .create_component(document, RuntimeButton::new("Start"))
+            .unwrap();
+        let foreground = context
+            .create_component(document, GpuTextureView::new("live2d.fg"))
+            .unwrap();
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            background.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+            },
+        );
+        mutations.write_layout(
+            chrome.stable_id(),
+            LayoutBox {
+                x: 8.0,
+                y: 24.0,
+                width: 64.0,
+                height: 28.0,
+            },
+        );
+        mutations.write_layout(
+            foreground.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 80.0,
+            },
+        );
+        context.commit_mutations(mutations).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            context.world().extract_nodes(&work.render_extraction),
+            work.render_removals,
+        );
+        let graph = scene
+            .frame_graph(nana_ui_scene::ResourceId(1))
+            .expect("layered host textures compile");
+        let operations = graph
+            .passes
+            .iter()
+            .flat_map(|pass| pass.operations.iter())
+            .filter(|operation| !matches!(operation, RenderOperation::PrepareExternal(_)))
+            .collect::<Vec<_>>();
+        let background_at = operations.iter().position(|operation| {
+            matches!(
+                operation,
+                RenderOperation::InvokeCustom(id) if id.node == background.stable_id()
+            )
+        });
+        let chrome_at = operations.iter().position(|operation| {
+            matches!(
+                operation,
+                RenderOperation::Draw(id) if id.node == chrome.stable_id()
+            )
+        });
+        let foreground_at = operations.iter().position(|operation| {
+            matches!(
+                operation,
+                RenderOperation::InvokeCustom(id) if id.node == foreground.stable_id()
+            )
+        });
+        assert!(
+            background_at.expect("background layer") < chrome_at.expect("chrome draw")
+                && chrome_at.expect("chrome draw") < foreground_at.expect("foreground layer"),
+            "GUI draws must sit between Live2D layer slots, got {operations:?}"
+        );
     }
 
     #[test]

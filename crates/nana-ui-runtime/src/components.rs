@@ -1312,9 +1312,11 @@ impl TextInputState {
 
 /// Backend-neutral custom render content attached to one retained UI node.
 ///
-/// `renderer` selects an installed renderer extension and `resource` is an
-/// opaque application-owned lookup key. Neither field exposes a GPU backend
-/// object, so the same extraction can be consumed by WGPU or a future RHI.
+/// First-class layout/Scene citizen: the same clip, z-index, hit-test, and
+/// document order as Quad/Text. `renderer` selects an installed renderer
+/// extension and `resource` is an opaque application-owned lookup key. Neither
+/// field exposes a GPU backend object, so the same extraction can be consumed
+/// by WGPU or a future RHI.
 #[derive(Component, Debug, Clone, PartialEq, Eq)]
 pub struct CustomRenderNode {
     pub renderer: Arc<str>,

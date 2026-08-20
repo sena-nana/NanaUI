@@ -1,7 +1,9 @@
 //! macOS acceptance for the supported Live2D -> host texture -> NanaUI path.
 //!
 //! This binary intentionally lives outside NanaUI's public API. Live2D owns
-//! model evaluation and rendering; NanaUI only samples a host-owned texture.
+//! model evaluation and rendering; NanaUI only samples host-owned textures as
+//! ordinary `CustomRenderNode` slots. This harness composes two HostTexture
+//! slots with in-card Selected Button chrome between them.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -18,8 +20,8 @@ use live2d_wgpu::{
     SubmissionBatch, SubmissionToken,
 };
 use nana_ui::runtime::{
-    Button as RuntimeButton, Card as RuntimeCard, CustomRenderNode, DocumentId, LayoutBox,
-    MutationQueue, NodeKind, RuntimeDocument, Text as RuntimeText, UiScene,
+    Button as RuntimeButton, Card as RuntimeCard, CustomRenderNode, DocumentId, GpuTextureView,
+    LayoutBox, MutationQueue, NodeKind, RuntimeDocument, Text as RuntimeText, UiScene,
 };
 use nana_ui::{
     ButtonKind, HostTexture, HostTextureAlphaMode, HostTextureRegistry, NanaTextShaper,
@@ -38,6 +40,25 @@ use write::Size;
 const WIDTH: u32 = 900;
 const HEIGHT: u32 = 640;
 const LIVE2D_SIZE: u32 = 512;
+const PREVIEW_X: f32 = 194.0;
+const PREVIEW_Y: f32 = 64.0;
+const PREVIEW_SIZE: f32 = 512.0;
+const FG_BAND_HEIGHT: f32 = 120.0;
+const CHROME_BUTTON_X: f32 = 370.0;
+const CHROME_BUTTON_Y: f32 = 302.0;
+const CHROME_BUTTON_WIDTH: f32 = 160.0;
+const CHROME_BUTTON_HEIGHT: f32 = 36.0;
+/// Left of the centered "Start" label so the sample hits the opaque fill.
+const CHROME_FILL_SAMPLE_X: u32 = (CHROME_BUTTON_X + 12.0) as u32;
+const CHROME_FILL_SAMPLE_Y: u32 = (CHROME_BUTTON_Y + CHROME_BUTTON_HEIGHT / 2.0) as u32;
+const BG_FILL: wgpu::Color = wgpu::Color {
+    r: 1.0,
+    g: 0.0,
+    b: 1.0,
+    a: 1.0,
+};
+const BG_FILL_RGBA: [u8; 4] = [255, 0, 255, 255];
+const CHROME_FILL_CHANNEL_SLACK: i16 = 24;
 const WARMUP: usize = 20;
 const ITERATIONS: usize = 80;
 const LIVE2D_REVISION: &str = "71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033";
@@ -85,10 +106,14 @@ enum Workload {
     Composed,
 }
 
+struct LayerTextures {
+    background: HostTexture,
+    foreground: HostTexture,
+}
+
 struct PendingLive2dSubmission {
     token: SubmissionToken,
     total_started: Instant,
-    submit_started: Instant,
     cpu_ms: f64,
 }
 
@@ -117,15 +142,18 @@ impl fmt::Debug for Live2dSceneProducer {
 
 impl Live2dSceneProducer {
     fn complete(&self, device: &wgpu::Device, submission: wgpu::SubmissionIndex) -> Sample {
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(submission),
-                timeout: None,
-            })
-            .expect("Scene-managed Live2D GPU frame completes");
+        let wait_started = Instant::now();
+        wait_gpu(
+            device,
+            submission,
+            "Scene-managed Live2D GPU frame completes",
+        );
+        self.finish_pending(wait_started.elapsed())
+    }
+
+    fn finish_pending(&self, submit_to_complete: Duration) -> Sample {
         let mut state = self.state.lock().expect("Live2D producer state");
         let pending = state.pending.take().expect("submitted Live2D frame");
-        let submit_to_complete = pending.submit_started.elapsed();
         state
             .renderer
             .complete_submission(
@@ -148,8 +176,7 @@ impl SceneResourceProducer for Live2dSceneProducer {
         _node: &CustomRenderNode,
         context: SceneResourceEncodeContext<'_>,
     ) -> Result<(), String> {
-        let total_started = Instant::now();
-        let cpu_started = Instant::now();
+        let started = Instant::now();
         let mut state = self.state.lock().map_err(|_| "producer lock poisoned")?;
         if state.pending.is_some() {
             return Err("previous Live2D submission is still pending".into());
@@ -206,25 +233,10 @@ impl SceneResourceProducer for Live2dSceneProducer {
         *sequence += 1;
         *pending = Some(PendingLive2dSubmission {
             token: encoded.submission,
-            total_started,
-            submit_started: Instant::now(),
-            cpu_ms: elapsed_ms(cpu_started),
+            total_started: started,
+            cpu_ms: elapsed_ms(started),
         });
         Ok(())
-    }
-
-    fn submitted(
-        &self,
-        _node: &CustomRenderNode,
-        _device: &wgpu::Device,
-        _submission: wgpu::SubmissionIndex,
-    ) {
-        let mut state = self.state.lock().expect("Live2D producer state");
-        let pending = state
-            .pending
-            .as_mut()
-            .expect("Live2D producer encoded a submission");
-        pending.submit_started = Instant::now();
     }
 }
 
@@ -323,6 +335,13 @@ fn run(screenshot_path: &Path) -> Report {
     });
     let live2d_view = live2d_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let host_texture = HostTexture::from_wgpu(7, 1, live2d_view.clone());
+    let (_background_keep, background_view) =
+        solid_host_texture(&device, &queue, format, LIVE2D_SIZE, LIVE2D_SIZE, BG_FILL);
+    let background_texture = HostTexture::from_wgpu(8, 1, background_view);
+    let layers = LayerTextures {
+        background: background_texture,
+        foreground: host_texture.clone(),
+    };
 
     let snapshot = synthetic_model();
     let static_model = ModelStaticData::from_snapshot(&snapshot);
@@ -353,6 +372,7 @@ fn run(screenshot_path: &Path) -> Report {
     let resource_scene = live2d_resource_scene(host_texture.version());
 
     let ui_only_scene = acceptance_scene(None);
+    let composed_scene = acceptance_scene(Some(&layers));
     let mut ui_only = Vec::with_capacity(ITERATIONS);
     let mut live2d_only = Vec::with_capacity(ITERATIONS);
     let mut composed = Vec::with_capacity(ITERATIONS);
@@ -389,23 +409,28 @@ fn run(screenshot_path: &Path) -> Report {
                     live2d_sample = Some(producer.complete(&device, submission));
                 }
                 Workload::Composed => {
+                    let total_started = Instant::now();
                     resource_producers
                         .encode_scene(&resource_scene, &device, &queue)
                         .expect("encode graph-managed composed Live2D resource")
                         .expect("Live2D resource producer is registered");
-                    let composed = acceptance_scene(Some(host_texture.clone()));
-                    let (sample, submission) = paint_scene(
+                    let ui = submit_scene(
                         &mut painter,
-                        &composed.0,
-                        Some(&composed.1),
+                        &composed_scene.0,
+                        Some(&composed_scene.1),
                         &device,
                         &queue,
                         &ui_target_view,
                     );
-                    let mut live2d = producer.complete(&device, submission);
-                    live2d.cpu_ms += sample.cpu_ms;
-                    live2d.total_ms += sample.total_ms;
-                    composed_sample = Some(live2d);
+                    let wait_started = Instant::now();
+                    wait_gpu(&device, ui.submission, "composed UI GPU frame completes");
+                    let fence = wait_started.elapsed();
+                    let live2d = producer.finish_pending(fence);
+                    composed_sample = Some(Sample {
+                        cpu_ms: live2d.cpu_ms + ui.cpu_ms,
+                        submit_to_complete_ms: duration_ms(fence),
+                        total_ms: elapsed_ms(total_started),
+                    });
                 }
             }
         }
@@ -420,16 +445,20 @@ fn run(screenshot_path: &Path) -> Report {
         .encode_scene(&resource_scene, &device, &queue)
         .expect("encode final graph-managed Live2D resource")
         .expect("Live2D resource producer is registered");
-    let final_frame = acceptance_scene(Some(host_texture.clone()));
-    let (_, final_submission) = paint_scene(
+    let ui = submit_scene(
         &mut painter,
-        &final_frame.0,
-        Some(&final_frame.1),
+        &composed_scene.0,
+        Some(&composed_scene.1),
         &device,
         &queue,
         &ui_target_view,
     );
-    let _ = producer.complete(&device, final_submission);
+    wait_gpu(
+        &device,
+        ui.submission,
+        "final composed UI GPU frame completes",
+    );
+    let _ = producer.finish_pending(Duration::ZERO);
     let pixels = screenshot_target(&device, &queue, &ui_target);
     write::png(screenshot_path, Size::new(WIDTH, HEIGHT), &pixels).expect("write screenshot");
     let distinct_colors = distinct_colors(&pixels);
@@ -437,13 +466,14 @@ fn run(screenshot_path: &Path) -> Report {
         distinct_colors > 32,
         "composed screenshot must contain rendered detail"
     );
+    assert_chrome_between_host_texture_layers(&pixels);
 
     Report {
         platform: std::env::consts::OS,
         adapter: adapter_info.name,
         backend: format!("{:?}", adapter_info.backend),
         live2d_revision: LIVE2D_REVISION,
-        workload: "synthetic 36-drawable live2d-wgpu workload composed through RuntimeDocument mixed Quad/HostTexture/Text UiScene",
+        workload: "synthetic 36-drawable live2d-wgpu workload composed through RuntimeDocument mixed Quad/HostTexture/Text UiScene with background HostTexture, in-card chrome, and a Live2D foreground band",
         viewport: [WIDTH, HEIGHT],
         live2d_target: [LIVE2D_SIZE, LIVE2D_SIZE],
         warmup_iterations: WARMUP,
@@ -459,16 +489,29 @@ fn run(screenshot_path: &Path) -> Report {
     }
 }
 
-fn paint_scene(
+struct SubmittedScene {
+    cpu_ms: f64,
+    submission: wgpu::SubmissionIndex,
+}
+
+fn wait_gpu(device: &wgpu::Device, submission: wgpu::SubmissionIndex, message: &'static str) {
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        })
+        .expect(message);
+}
+
+fn submit_scene(
     painter: &mut SceneWgpuPainter,
     scene: &UiScene,
     textures: Option<&HostTextureRegistry>,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &wgpu::TextureView,
-) -> (Sample, wgpu::SubmissionIndex) {
+) -> SubmittedScene {
     let colors = ThemeMode::Dark.colors();
-    let total_started = Instant::now();
     let cpu_started = Instant::now();
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("nana-ui live2d acceptance paint"),
@@ -497,21 +540,33 @@ fn paint_scene(
         )
         .expect("acceptance scene must paint");
     let cpu_ms = elapsed_ms(cpu_started);
-    let wait_started = Instant::now();
     let submission = queue.submit([encoder.finish()]);
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission.clone()),
-            timeout: None,
-        })
-        .expect("UI GPU frame completes");
+    SubmittedScene { cpu_ms, submission }
+}
+
+fn paint_scene(
+    painter: &mut SceneWgpuPainter,
+    scene: &UiScene,
+    textures: Option<&HostTextureRegistry>,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::TextureView,
+) -> (Sample, wgpu::SubmissionIndex) {
+    let total_started = Instant::now();
+    let submitted = submit_scene(painter, scene, textures, device, queue, target);
+    let wait_started = Instant::now();
+    wait_gpu(
+        device,
+        submitted.submission.clone(),
+        "UI GPU frame completes",
+    );
     (
         Sample {
-            cpu_ms,
+            cpu_ms: submitted.cpu_ms,
             submit_to_complete_ms: elapsed_ms(wait_started),
             total_ms: elapsed_ms(total_started),
         },
-        submission,
+        submitted.submission,
     )
 }
 
@@ -527,10 +582,12 @@ fn screenshot_target(
         .expect("acceptance screenshot readback")
 }
 
-fn acceptance_scene(texture: Option<HostTexture>) -> (UiScene, HostTextureRegistry) {
-    #[derive(Debug)]
-    struct TextureNode;
+/// Opaque Selected fill; Primary AccentSoft would show the magenta slot through.
+fn in_card_chrome_button() -> RuntimeButton {
+    RuntimeButton::new("Start").kind(ButtonKind::Selected)
+}
 
+fn acceptance_scene(layers: Option<&LayerTextures>) -> (UiScene, HostTextureRegistry) {
     let document_id = DocumentId::new(1).expect("acceptance document");
     let mut document = RuntimeDocument::new(document_id);
     let header = document
@@ -545,39 +602,53 @@ fn acceptance_scene(texture: Option<HostTexture>) -> (UiScene, HostTextureRegist
         .context_mut()
         .create_component(document_id, RuntimeCard::new())
         .expect("runtime preview root");
-    let texture_node = texture.as_ref().map(|_| {
+    let background = layers.map(|_| {
         document
             .context_mut()
-            .create_view(
-                document_id,
-                NodeKind::Element {
-                    tag: "host-texture".into(),
-                },
-                TextureNode,
-            )
-            .expect("runtime host texture node")
+            .create_component(document_id, GpuTextureView::new("live2d.bg"))
+            .expect("background host texture")
     });
     let caption = document
         .context_mut()
         .create_component(
             document_id,
-            RuntimeText::new(if texture.is_some() {
+            RuntimeText::new(if layers.is_some() {
                 "Program"
             } else {
                 "Preview"
             }),
         )
         .expect("runtime preview caption");
-    if let Some(texture_node) = texture_node {
+    let chrome = document
+        .context_mut()
+        .create_component(document_id, in_card_chrome_button())
+        .expect("in-card chrome");
+    let foreground = layers.map(|_| {
         document
             .context_mut()
-            .append_child(root, texture_node)
-            .expect("append host texture");
+            .create_component(document_id, GpuTextureView::new("live2d.fg"))
+            .expect("foreground host texture")
+    });
+    if let Some(background) = background {
+        document
+            .context_mut()
+            .append_child(root, background)
+            .expect("append background host texture");
     }
     document
         .context_mut()
         .append_child(root, caption)
         .expect("append caption");
+    document
+        .context_mut()
+        .append_child(root, chrome)
+        .expect("append in-card chrome");
+    if let Some(foreground) = foreground {
+        document
+            .context_mut()
+            .append_child(root, foreground)
+            .expect("append foreground host texture");
+    }
     let preview = document
         .context_mut()
         .create_component(document_id, RuntimeButton::new("Preview"))
@@ -616,28 +687,28 @@ fn acceptance_scene(texture: Option<HostTexture>) -> (UiScene, HostTextureRegist
     mutations.write_layout(
         root.stable_id(),
         LayoutBox {
-            x: 194.0,
-            y: 64.0,
-            width: 512.0,
-            height: 512.0,
+            x: PREVIEW_X,
+            y: PREVIEW_Y,
+            width: PREVIEW_SIZE,
+            height: PREVIEW_SIZE,
         },
     );
-    if let Some(texture_node) = texture_node {
+    if let Some(background) = background {
         mutations.write_layout(
-            texture_node.stable_id(),
+            background.stable_id(),
             LayoutBox {
-                x: 194.0,
-                y: 64.0,
-                width: 512.0,
-                height: 512.0,
+                x: PREVIEW_X,
+                y: PREVIEW_Y,
+                width: PREVIEW_SIZE,
+                height: PREVIEW_SIZE,
             },
         );
         mutations.set_custom_render(
-            texture_node.stable_id(),
+            background.stable_id(),
             Some(CustomRenderNode {
                 renderer: "nana.host-texture".into(),
-                resource: "live2d".into(),
-                revision: texture.as_ref().map_or(0, HostTexture::version),
+                resource: "live2d.bg".into(),
+                revision: layers.map_or(0, |layers| layers.background.version()),
             }),
         );
     }
@@ -650,6 +721,34 @@ fn acceptance_scene(texture: Option<HostTexture>) -> (UiScene, HostTextureRegist
             height: 28.0,
         },
     );
+    mutations.write_layout(
+        chrome.stable_id(),
+        LayoutBox {
+            x: CHROME_BUTTON_X,
+            y: CHROME_BUTTON_Y,
+            width: CHROME_BUTTON_WIDTH,
+            height: CHROME_BUTTON_HEIGHT,
+        },
+    );
+    if let Some(foreground) = foreground {
+        mutations.write_layout(
+            foreground.stable_id(),
+            LayoutBox {
+                x: PREVIEW_X,
+                y: PREVIEW_Y + PREVIEW_SIZE - FG_BAND_HEIGHT,
+                width: PREVIEW_SIZE,
+                height: FG_BAND_HEIGHT,
+            },
+        );
+        mutations.set_custom_render(
+            foreground.stable_id(),
+            Some(CustomRenderNode {
+                renderer: "nana.host-texture".into(),
+                resource: "live2d.fg".into(),
+                revision: layers.map_or(0, |layers| layers.foreground.version()),
+            }),
+        );
+    }
     mutations.write_layout(
         preview.stable_id(),
         LayoutBox {
@@ -689,10 +788,17 @@ fn acceptance_scene(texture: Option<HostTexture>) -> (UiScene, HostTextureRegist
         .expect("extract runtime preview scene");
 
     let registry = HostTextureRegistry::new();
-    if let Some(texture) = texture {
+    if let Some(layers) = layers {
         registry.register(
-            "live2d",
-            texture,
+            "live2d.bg",
+            layers.background.clone(),
+            LIVE2D_SIZE,
+            LIVE2D_SIZE,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        registry.register(
+            "live2d.fg",
+            layers.foreground.clone(),
             LIVE2D_SIZE,
             LIVE2D_SIZE,
             HostTextureAlphaMode::Premultiplied,
@@ -861,6 +967,110 @@ fn distinct_colors(pixels: &[u8]) -> usize {
     colors.sort_unstable();
     colors.dedup();
     colors.len()
+}
+
+fn solid_host_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    color: wgpu::Color,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Live2D acceptance background fill"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Live2D acceptance background fill"),
+    });
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Live2D acceptance background fill"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(color),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    queue.submit([encoder.finish()]);
+    (texture, view)
+}
+
+fn assert_chrome_between_host_texture_layers(pixels: &[u8]) {
+    let background = pixel_at(
+        pixels,
+        (PREVIEW_X + 26.0) as u32,
+        (PREVIEW_Y + 336.0) as u32,
+    );
+    let chrome = pixel_at(pixels, CHROME_FILL_SAMPLE_X, CHROME_FILL_SAMPLE_Y);
+    let foreground = pixel_at(
+        pixels,
+        (PREVIEW_X + PREVIEW_SIZE / 2.0) as u32,
+        (PREVIEW_Y + PREVIEW_SIZE - FG_BAND_HEIGHT / 2.0) as u32,
+    );
+    assert!(
+        is_magenta_fill(background),
+        "background HostTexture slot must keep BG_FILL magenta, got {background:?}"
+    );
+    assert!(
+        is_selected_chrome_fill(chrome),
+        "in-card Selected Button fill must be the opaque Selected theme, got {chrome:?}"
+    );
+    assert!(
+        !is_magenta_fill(foreground) && !is_selected_chrome_fill(foreground),
+        "foreground Live2D HostTexture band must be neither magenta nor chrome, got {foreground:?}"
+    );
+}
+
+fn is_magenta_fill(pixel: [u8; 4]) -> bool {
+    channel_near(pixel[0], BG_FILL_RGBA[0])
+        && channel_near(pixel[1], BG_FILL_RGBA[1])
+        && channel_near(pixel[2], BG_FILL_RGBA[2])
+        && pixel[3] >= 240
+}
+
+fn is_selected_chrome_fill(pixel: [u8; 4]) -> bool {
+    let fill = ThemeMode::Dark.colors().selected;
+    let expected = [
+        (fill.r * 255.0).round() as u8,
+        (fill.g * 255.0).round() as u8,
+        (fill.b * 255.0).round() as u8,
+    ];
+    fill.a > 0.99
+        && channel_near(pixel[0], expected[0])
+        && channel_near(pixel[1], expected[1])
+        && channel_near(pixel[2], expected[2])
+        && pixel[3] >= 240
+}
+
+fn channel_near(actual: u8, expected: u8) -> bool {
+    (i16::from(actual) - i16::from(expected)).abs() <= CHROME_FILL_CHANNEL_SLACK
+}
+
+fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let index = ((y * WIDTH + x) * 4) as usize;
+    pixels[index..index + 4]
+        .try_into()
+        .expect("RGBA pixel inside screenshot")
 }
 
 fn elapsed_ms(started: Instant) -> f64 {
