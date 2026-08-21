@@ -1130,6 +1130,7 @@ fn titlebar_document(
     document.context_mut().append_child(title, center)?;
     document.context_mut().append_child(title, trailing)?;
     document.context_mut().append_child(title, controls)?;
+    document.context_mut().assemble_app_title_bar(title)?;
     document.flush(
         LayoutViewport::new(900.0, 120.0),
         &mut NanaTextShaper::default(),

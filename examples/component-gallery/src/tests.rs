@@ -548,40 +548,16 @@ fn settings_runtime_title_bar_chrome_starts_window_drag() {
 }
 
 #[test]
-fn gallery_title_bar_drag_emits_window_drag_command() {
+fn gallery_title_bar_chrome_keeps_maximized_state_without_host_commands() {
     let mut app = GalleryApp::new();
-    #[cfg(target_os = "macos")]
-    {
-        let update = app.apply_message(GalleryMessage::WindowChrome(
-            WindowChromeEvent::PointerPressed,
-        ));
-        assert!(
-            update
-                .window_commands
-                .iter()
-                .any(|command| matches!(command, WindowCommand::Drag(_))),
-            "macOS blank press must start AppKit window drag"
-        );
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app.apply_message(GalleryMessage::WindowChrome(
-            WindowChromeEvent::PointerMoved(LogicalPoint::new(10.0, 10.0)),
-        ));
-        let _ = app.apply_message(GalleryMessage::WindowChrome(
-            WindowChromeEvent::PointerPressed,
-        ));
-        let update = app.apply_message(GalleryMessage::WindowChrome(
-            WindowChromeEvent::PointerMoved(LogicalPoint::new(16.0, 10.0)),
-        ));
-        assert!(
-            update
-                .window_commands
-                .iter()
-                .any(|command| matches!(command, WindowCommand::Drag(_))),
-            "crossing the 4px threshold must start window drag"
-        );
-    }
+    let update = app.apply_message(GalleryMessage::WindowChrome(WindowChromeEvent::Action(
+        WindowChromeAction::ToggleMaximize,
+    )));
+    assert!(
+        update.window_commands.is_empty(),
+        "Scene host executes title-bar window commands"
+    );
+    assert!(app.state().window_chrome.is_maximized());
 }
 
 #[test]

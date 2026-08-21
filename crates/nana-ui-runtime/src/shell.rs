@@ -11,8 +11,9 @@ use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
     FrameworkError, IconButton, InteractionState, InteractionStyle, MutationQueue, NodeKind,
-    NodeStyle, OverlayHost, SemanticPaint, SidebarFrame, StableNodeId, StandardVisual, TextContent,
-    UiWorld, Workspace, WorkspaceRegionSlot,
+    NodeStyle, OverlayHost, SemanticPaint, SidebarFrame, StableNodeId, StandardVisual, Text,
+    TextContent, TextHorizontalAlignment, TextVerticalAlignment, UiWorld, Workspace,
+    WorkspaceRegionSlot,
 };
 
 const SLOT_PADDING: f32 = 6.0;
@@ -25,6 +26,10 @@ const CONTROL_GAP: f32 = 2.0;
 const TITLE_FONT_SIZE: f32 = 13.0;
 const TITLE_FONT_WEIGHT: u16 = 600;
 const OVERLAY_Z_INDEX: i32 = 1;
+
+const LEADING_COLUMN_TAG: &str = "app-title-bar-leading";
+const CENTER_COLUMN_TAG: &str = "app-title-bar-center";
+const TRAILING_COLUMN_TAG: &str = "app-title-bar-trailing";
 
 /// Typed window command. Runtime never touches a platform window handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,25 +176,17 @@ impl AppTitleBar {
         }
     }
 
-    fn effective_style(&self) -> NodeStyle {
+    fn effective_style(&self, world: &UiWorld, id: StableNodeId) -> NodeStyle {
+        let columns = title_bar_has_columns(world, id);
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = Some(SemanticColorRole::Surface);
-        style.text_horizontal_alignment = crate::TextHorizontalAlignment::Center;
-        style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+        style.text_horizontal_alignment = TextHorizontalAlignment::Center;
+        style.text_vertical_alignment = TextVerticalAlignment::Center;
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
-        layout.justify_content = if self.center.is_some() {
-            JustifySpec::Start
-        } else if (self.show_window_controls && self.controls.is_some())
-            || self.trailing.is_some()
-            || self.leading.is_some()
-        {
-            JustifySpec::SpaceBetween
-        } else {
-            JustifySpec::Start
-        };
+        layout.justify_content = JustifySpec::Start;
         layout.width = Some(LengthSpec::Fill);
         layout.height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
         layout.min_height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
@@ -198,46 +195,78 @@ impl AppTitleBar {
         layout.flex_shrink = Some(0.0);
         layout.font_size = Some(TITLE_FONT_SIZE);
         layout.font_weight = Some(TITLE_FONT_WEIGHT);
-        layout.padding_left = Some(LengthSpec::Px(self.chrome_padding_left()));
-        layout.padding_right = Some(LengthSpec::Px(valid_inset(self.trailing_inset)));
+        if columns {
+            layout.padding_left = Some(LengthSpec::Px(0.0));
+            layout.padding_right = Some(LengthSpec::Px(0.0));
+        } else {
+            layout.padding_left = Some(LengthSpec::Px(self.chrome_padding_left()));
+            layout.padding_right = Some(LengthSpec::Px(valid_inset(self.trailing_inset)));
+        }
         layout.overflow_x = OverflowSpec::Hidden;
         style
     }
 
-    fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue) {
-        if let Some(leading) = self.leading {
-            patch_layout(world, mutations, leading, |layout| {
-                apply_hug_slot(layout, AlignSpec::Center, JustifySpec::Start);
-                layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
-                layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
-                layout.padding_top = Some(LengthSpec::Px(0.0));
-                layout.padding_bottom = Some(LengthSpec::Px(0.0));
-            });
-        }
-        if let Some(center) = self.center {
-            patch_layout(world, mutations, center, |layout| {
-                apply_title_slot(layout);
-                if (self.center_width - DEFAULT_CENTER_WIDTH).abs() > f32::EPSILON {
-                    layout.max_width = Some(LengthSpec::Px(self.resolved_center_width()));
+    fn project_slots(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let children = world.node(id).map(|node| node.children).unwrap_or_default();
+        let mut saw_columns = false;
+        for child in children {
+            match node_tag(world, child).as_deref() {
+                Some(LEADING_COLUMN_TAG) => {
+                    saw_columns = true;
+                    patch_layout(world, mutations, child, |layout| {
+                        apply_fill_column(layout, JustifySpec::Start);
+                        layout.padding_left =
+                            Some(LengthSpec::Px(SLOT_PADDING + self.chrome_padding_left()));
+                        layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
+                        layout.padding_top = Some(LengthSpec::Px(0.0));
+                        layout.padding_bottom = Some(LengthSpec::Px(0.0));
+                    });
                 }
-                layout.padding_left = Some(LengthSpec::Px(CENTER_PADDING_X));
-                layout.padding_right = Some(LengthSpec::Px(CENTER_PADDING_X));
-                layout.padding_top = Some(LengthSpec::Px(0.0));
-                layout.padding_bottom = Some(LengthSpec::Px(0.0));
-                layout.overflow_x = OverflowSpec::Hidden;
-                layout.overflow_y = OverflowSpec::Hidden;
-                layout.white_space_nowrap = true;
-                layout.text_overflow_ellipsis = true;
-            });
+                Some(CENTER_COLUMN_TAG) => {
+                    saw_columns = true;
+                    patch_layout(world, mutations, child, |layout| {
+                        apply_center_column(layout, self.resolved_center_width());
+                    });
+                }
+                Some(TRAILING_COLUMN_TAG) => {
+                    saw_columns = true;
+                    patch_layout(world, mutations, child, |layout| {
+                        apply_fill_column(layout, JustifySpec::End);
+                        layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
+                        layout.padding_right = Some(LengthSpec::Px(
+                            SLOT_PADDING + valid_inset(self.trailing_inset),
+                        ));
+                        layout.padding_top = Some(LengthSpec::Px(0.0));
+                        layout.padding_bottom = Some(LengthSpec::Px(0.0));
+                    });
+                }
+                _ => {}
+            }
         }
-        if let Some(trailing) = self.trailing {
-            patch_layout(world, mutations, trailing, |layout| {
-                apply_hug_slot(layout, AlignSpec::Center, JustifySpec::End);
-                layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
-                layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
-                layout.padding_top = Some(LengthSpec::Px(0.0));
-                layout.padding_bottom = Some(LengthSpec::Px(0.0));
-            });
+        if !saw_columns {
+            if let Some(leading) = self.leading {
+                patch_layout(world, mutations, leading, |layout| {
+                    apply_hug_slot(layout, AlignSpec::Center, JustifySpec::Start);
+                    layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
+                    layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
+                    layout.padding_top = Some(LengthSpec::Px(0.0));
+                    layout.padding_bottom = Some(LengthSpec::Px(0.0));
+                });
+            }
+            if let Some(center) = self.center {
+                patch_layout(world, mutations, center, |layout| {
+                    apply_center_column(layout, self.resolved_center_width());
+                });
+            }
+            if let Some(trailing) = self.trailing {
+                patch_layout(world, mutations, trailing, |layout| {
+                    apply_hug_slot(layout, AlignSpec::Center, JustifySpec::End);
+                    layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
+                    layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
+                    layout.padding_top = Some(LengthSpec::Px(0.0));
+                    layout.padding_bottom = Some(LengthSpec::Px(0.0));
+                });
+            }
         }
         self.project_controls(world, mutations);
     }
@@ -264,7 +293,7 @@ impl ComponentView for AppTitleBar {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let root_text = if self.center.is_some() {
+        let root_text = if self.center.is_some() || title_bar_has_columns(world, id) {
             ""
         } else {
             self.title.as_ref()
@@ -284,7 +313,7 @@ impl ComponentView for AppTitleBar {
             id,
             world,
             mutations,
-            &self.effective_style(),
+            &self.effective_style(world, id),
             InteractionState {
                 pointer_events: true,
                 focusable: false,
@@ -295,7 +324,65 @@ impl ComponentView for AppTitleBar {
                 ..AccessibilityState::default()
             },
         );
-        self.project_slots(world, mutations);
+        self.project_slots(id, world, mutations);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleBarColumn {
+    Leading,
+    Center,
+    Trailing,
+}
+
+impl TitleBarColumn {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Leading => LEADING_COLUMN_TAG,
+            Self::Center => CENTER_COLUMN_TAG,
+            Self::Trailing => TRAILING_COLUMN_TAG,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AppTitleBarSlot {
+    column: TitleBarColumn,
+}
+
+impl ComponentView for AppTitleBarSlot {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: self.column.tag().into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        if world.standard_visual(id).is_some() {
+            mutations.set_standard_visual(id, None);
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &NodeStyle::default(),
+            InteractionState {
+                pointer_events: true,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
     }
 }
 
@@ -767,10 +854,12 @@ impl AppContext {
         Ok(changed || fields_changed)
     }
 
-    /// Create custom Minimize / Maximize / Close controls when the bar shows them.
+    /// Restore the Iced three-column title bar and mount window controls.
     ///
-    /// Host-mounted `controls` are kept. Vue title-bar facades reuse an existing
-    /// `app-title-bar-controls` child instead of allocating a new one each frame.
+    /// Leading and trailing columns fill leftover width; the center column is a
+    /// fixed title slot. Custom Minimize / Maximize / Close buttons live in the
+    /// trailing column. Host-mounted slots and Vue extras are reparented, not
+    /// recreated.
     pub fn assemble_app_title_bar(
         &mut self,
         bar: Entity<AppTitleBar>,
@@ -778,23 +867,74 @@ impl AppContext {
         let parent = bar.stable_id();
         let document = document_of(self, parent)?;
         let snapshot = self.read(bar, Clone::clone)?;
-        if !snapshot.show_window_controls {
-            return Ok(false);
+        let leading_slot = ensure_title_bar_slot(self, document, parent, TitleBarColumn::Leading)?;
+        let center_slot = ensure_title_bar_slot(self, document, parent, TitleBarColumn::Center)?;
+        let trailing_slot =
+            ensure_title_bar_slot(self, document, parent, TitleBarColumn::Trailing)?;
+
+        let mut controls = snapshot
+            .controls
+            .filter(|id| self.world().contains(*id))
+            .or_else(|| find_title_bar_controls_child(self, parent));
+        let mut changed = false;
+        if snapshot.show_window_controls {
+            let mounted =
+                ensure_window_controls(self, document, parent, controls, snapshot.maximized)?;
+            changed |= controls != Some(mounted);
+            controls = Some(mounted);
+            if changed {
+                self.update_component(bar, |bar, _| {
+                    bar.controls = Some(mounted);
+                })?;
+            }
         }
-        let controls = ensure_window_controls(
-            self,
-            document,
-            parent,
-            snapshot.controls,
-            snapshot.maximized,
-        )?;
-        let mut changed = snapshot.controls != Some(controls);
-        if changed {
-            self.update_component(bar, |bar, _| {
-                bar.controls = Some(controls);
-            })?;
+
+        let owned = [
+            snapshot.leading,
+            snapshot.center,
+            snapshot.trailing,
+            controls,
+            Some(leading_slot),
+            Some(center_slot),
+            Some(trailing_slot),
+        ];
+        let extras = unclassified_title_bar_children(self, parent, &owned);
+
+        let mut leading_children = Vec::new();
+        if let Some(leading) = snapshot.leading.filter(|id| self.world().contains(*id)) {
+            leading_children.push(leading);
         }
-        changed |= append_child_if_needed(self, parent, controls)?;
+        let mut center_children = Vec::new();
+        if let Some(center) = snapshot.center.filter(|id| self.world().contains(*id)) {
+            center_children.push(center);
+        }
+        let mut trailing_children = Vec::new();
+        if let Some(trailing) = snapshot.trailing.filter(|id| self.world().contains(*id)) {
+            trailing_children.push(trailing);
+        }
+        if let Some(controls) = controls.filter(|id| self.world().contains(*id)) {
+            trailing_children.push(controls);
+        }
+        for extra in extras {
+            if center_children.is_empty() && is_title_label_node(self, extra) {
+                center_children.push(extra);
+            } else {
+                leading_children.push(extra);
+            }
+        }
+        if snapshot.center.is_none() && center_children.is_empty() {
+            center_children.push(ensure_title_label(
+                self,
+                document,
+                center_slot,
+                snapshot.title.as_ref(),
+            )?);
+        }
+
+        changed |= reconcile_ids(self, leading_slot, &leading_children)?;
+        changed |= reconcile_ids(self, center_slot, &center_children)?;
+        changed |= reconcile_ids(self, trailing_slot, &trailing_children)?;
+        changed |= reconcile_ids(self, parent, &[leading_slot, center_slot, trailing_slot])?;
         self.update_component(bar, |_, _| {})?;
         Ok(changed)
     }
@@ -944,18 +1084,163 @@ fn find_title_bar_controls_child(
     context: &AppContext,
     parent: StableNodeId,
 ) -> Option<StableNodeId> {
-    context
+    let mut stack = context
+        .world()
+        .node(parent)
+        .map(|node| node.children)
+        .unwrap_or_default();
+    while let Some(id) = stack.pop() {
+        if view_is::<AppTitleBarControls>(context, id)
+            || matches!(
+                context.world().node(id).map(|node| node.kind),
+                Some(NodeKind::Element { tag }) if tag == "app-title-bar-controls"
+            )
+        {
+            return Some(id);
+        }
+        if let Some(children) = context.world().node(id).map(|node| node.children) {
+            stack.extend(children);
+        }
+    }
+    None
+}
+
+fn title_bar_has_columns(world: &UiWorld, id: StableNodeId) -> bool {
+    world.node(id).is_some_and(|node| {
+        node.children
+            .iter()
+            .any(|child| is_title_bar_column_tag(node_tag(world, *child).as_deref()))
+    })
+}
+
+fn is_title_bar_column_tag(tag: Option<&str>) -> bool {
+    matches!(
+        tag,
+        Some(LEADING_COLUMN_TAG | CENTER_COLUMN_TAG | TRAILING_COLUMN_TAG)
+    )
+}
+
+fn node_tag(world: &UiWorld, id: StableNodeId) -> Option<String> {
+    match world.node(id).map(|node| node.kind) {
+        Some(NodeKind::Element { tag }) => Some(tag),
+        _ => None,
+    }
+}
+
+fn ensure_title_bar_slot(
+    context: &mut AppContext,
+    document: DocumentId,
+    parent: StableNodeId,
+    column: TitleBarColumn,
+) -> Result<StableNodeId, FrameworkError> {
+    let tag = column.tag();
+    let existing = context
         .world()
         .node(parent)
         .into_iter()
         .flat_map(|node| node.children)
-        .find(|&id| {
-            view_is::<AppTitleBarControls>(context, id)
-                || matches!(
-                    context.world().node(id).map(|node| node.kind),
-                    Some(NodeKind::Element { tag }) if tag == "app-title-bar-controls"
-                )
+        .find(|&id| node_tag(context.world(), id).as_deref() == Some(tag))
+        .or_else(|| {
+            context
+                .world()
+                .node(parent)
+                .into_iter()
+                .flat_map(|node| node.children)
+                .flat_map(|id| {
+                    context
+                        .world()
+                        .node(id)
+                        .map(|node| node.children)
+                        .unwrap_or_default()
+                })
+                .find(|&id| node_tag(context.world(), id).as_deref() == Some(tag))
+        });
+    if let Some(id) = existing.filter(|id| context.world().contains(*id)) {
+        return Ok(id);
+    }
+    Ok(context
+        .create_detached_component(document, AppTitleBarSlot { column })?
+        .stable_id())
+}
+
+fn ensure_title_label(
+    context: &mut AppContext,
+    document: DocumentId,
+    center_slot: StableNodeId,
+    title: &str,
+) -> Result<StableNodeId, FrameworkError> {
+    if let Some(existing) = context
+        .world()
+        .node(center_slot)
+        .into_iter()
+        .flat_map(|node| node.children)
+        .find(|&id| view_is::<Text>(context, id) || is_title_label_node(context, id))
+    {
+        if view_is::<Text>(context, existing) {
+            context.update_component(Entity::<Text>::from_stable_id(existing), |text, _| {
+                if text.value != title {
+                    text.value = title.to_owned();
+                }
+            })?;
+        } else if context.world().text(existing) != Some(title) {
+            let mut mutations = MutationQueue::new();
+            mutations.set_text(
+                existing,
+                TextContent {
+                    value: title.to_owned(),
+                },
+            );
+            context.commit_mutations(mutations)?;
+        }
+        return Ok(existing);
+    }
+    Ok(context
+        .create_detached_component(document, Text::new(title).style(title_label_style()))?
+        .stable_id())
+}
+
+fn title_label_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    style.foreground = Some(SemanticColorRole::Text);
+    style.text_horizontal_alignment = TextHorizontalAlignment::Center;
+    style.text_vertical_alignment = TextVerticalAlignment::Center;
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.width = Some(LengthSpec::Fill);
+    layout.height = Some(LengthSpec::Fill);
+    layout.font_size = Some(TITLE_FONT_SIZE);
+    layout.font_weight = Some(TITLE_FONT_WEIGHT);
+    layout.overflow_x = OverflowSpec::Hidden;
+    layout.overflow_y = OverflowSpec::Hidden;
+    layout.white_space_nowrap = true;
+    layout.text_overflow_ellipsis = true;
+    style
+}
+
+fn is_title_label_node(context: &AppContext, id: StableNodeId) -> bool {
+    view_is::<Text>(context, id)
+        || matches!(
+            context.world().node(id).map(|node| node.kind),
+            Some(NodeKind::Text)
+        )
+}
+
+fn unclassified_title_bar_children(
+    context: &AppContext,
+    parent: StableNodeId,
+    owned: &[Option<StableNodeId>],
+) -> Vec<StableNodeId> {
+    let owned: HashSet<StableNodeId> = owned.iter().copied().flatten().collect();
+    context
+        .world()
+        .node(parent)
+        .map(|node| node.children)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| {
+            !owned.contains(id)
+                && !is_title_bar_column_tag(node_tag(context.world(), *id).as_deref())
         })
+        .collect()
 }
 
 fn window_control_buttons(
@@ -1029,32 +1314,6 @@ fn ensure_window_controls(
     )?;
     reconcile_ids(context, controls.stable_id(), &[minimize, maximize, close])?;
     Ok(controls.stable_id())
-}
-
-fn append_child_if_needed(
-    context: &mut AppContext,
-    parent: StableNodeId,
-    child: StableNodeId,
-) -> Result<bool, FrameworkError> {
-    if parent == child || !context.world().contains(child) {
-        return Ok(false);
-    }
-    let children = context
-        .world()
-        .node(parent)
-        .ok_or(FrameworkError::MissingView(parent))?
-        .children
-        .clone();
-    if children.last() == Some(&child) {
-        return Ok(false);
-    }
-    let mut mutations = MutationQueue::new();
-    if children.contains(&child) {
-        mutations.detach(child);
-    }
-    mutations.insert(parent, child, None);
-    context.commit_mutations(mutations)?;
-    Ok(true)
 }
 
 fn find_title_bar_child(context: &AppContext, parent: StableNodeId) -> Option<StableNodeId> {
@@ -1473,15 +1732,37 @@ fn apply_hug_slot(layout: &mut nana_ui_core::LayoutStyle, align: AlignSpec, just
     layout.min_width = Some(LengthSpec::Px(0.0));
 }
 
-fn apply_title_slot(layout: &mut nana_ui_core::LayoutStyle) {
+fn apply_fill_column(layout: &mut nana_ui_core::LayoutStyle, justify: JustifySpec) {
     layout.direction = Some(FlexDirection::Row);
     layout.align_items = AlignSpec::Center;
-    layout.justify_content = JustifySpec::Center;
+    layout.justify_content = justify;
     layout.width = Some(LengthSpec::Fill);
     layout.height = Some(LengthSpec::Fill);
     layout.flex_grow = Some(1.0);
     layout.flex_shrink = Some(1.0);
     layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.hidden = false;
+}
+
+fn apply_center_column(layout: &mut nana_ui_core::LayoutStyle, width: f32) {
+    layout.direction = Some(FlexDirection::Row);
+    layout.align_items = AlignSpec::Center;
+    layout.justify_content = JustifySpec::Center;
+    layout.width = Some(LengthSpec::Px(width));
+    layout.max_width = Some(LengthSpec::Px(width));
+    layout.height = Some(LengthSpec::Fill);
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.padding_left = Some(LengthSpec::Px(CENTER_PADDING_X));
+    layout.padding_right = Some(LengthSpec::Px(CENTER_PADDING_X));
+    layout.padding_top = Some(LengthSpec::Px(0.0));
+    layout.padding_bottom = Some(LengthSpec::Px(0.0));
+    layout.overflow_x = OverflowSpec::Hidden;
+    layout.overflow_y = OverflowSpec::Hidden;
+    layout.white_space_nowrap = true;
+    layout.text_overflow_ellipsis = true;
+    layout.hidden = false;
 }
 
 fn patch_layout(
@@ -1602,8 +1883,34 @@ mod tests {
                 3,
                 "custom title bar must own minimize, maximize, and close"
             );
-            let children = context.world().node(bar.stable_id()).unwrap().children;
-            assert_eq!(children.last().copied(), Some(controls));
+            let columns = context.world().node(bar.stable_id()).unwrap().children;
+            assert_eq!(
+                columns.len(),
+                3,
+                "Iced title bar is leading | center | trailing"
+            );
+            assert_eq!(
+                node_tag(context.world(), columns[0]).as_deref(),
+                Some(LEADING_COLUMN_TAG)
+            );
+            assert_eq!(
+                node_tag(context.world(), columns[1]).as_deref(),
+                Some(CENTER_COLUMN_TAG)
+            );
+            assert_eq!(
+                node_tag(context.world(), columns[2]).as_deref(),
+                Some(TRAILING_COLUMN_TAG)
+            );
+            assert_eq!(
+                context
+                    .world()
+                    .node(columns[2])
+                    .unwrap()
+                    .children
+                    .last()
+                    .copied(),
+                Some(controls)
+            );
             assert!(
                 context
                     .world()
@@ -1620,15 +1927,13 @@ mod tests {
             );
             assert!(!context.assemble_app_title_bar(bar).unwrap());
         } else {
-            assert!(!mounted);
+            assert!(mounted);
             assert!(snapshot.controls.is_none());
-            assert!(
-                context
-                    .world()
-                    .node(bar.stable_id())
-                    .unwrap()
-                    .children
-                    .is_empty()
+            let columns = context.world().node(bar.stable_id()).unwrap().children;
+            assert_eq!(
+                columns.len(),
+                3,
+                "native chrome still uses three Iced columns"
             );
         }
     }
@@ -1693,9 +1998,12 @@ mod tests {
             .node_style(center.stable_id())
             .unwrap()
             .layout;
-        assert_eq!(center_layout.width, Some(LengthSpec::Fill));
-        assert_eq!(center_layout.flex_grow, Some(1.0));
-        assert_eq!(center_layout.flex_shrink, Some(1.0));
+        assert_eq!(
+            center_layout.width,
+            Some(LengthSpec::Px(DEFAULT_CENTER_WIDTH))
+        );
+        assert_eq!(center_layout.flex_grow, Some(0.0));
+        assert_eq!(center_layout.flex_shrink, Some(0.0));
         assert_eq!(center_layout.justify_content, JustifySpec::Center);
         assert_eq!(center_layout.overflow_x, OverflowSpec::Hidden);
         assert!(center_layout.text_overflow_ellipsis);
@@ -1709,7 +2017,7 @@ mod tests {
     }
 
     #[test]
-    fn title_center_fills_leftover_instead_of_trailing() {
+    fn assembled_title_bar_uses_iced_three_columns() {
         let mut context = AppContext::new();
         let leading = context
             .create_component(
@@ -1730,20 +2038,23 @@ mod tests {
             .unwrap();
         context.append_child(bar, leading).unwrap();
         context.append_child(bar, center).unwrap();
+        assert!(context.assemble_app_title_bar(bar).unwrap());
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
 
         let bar_box = context.world().layout_box(bar.stable_id()).unwrap();
+        let columns = context.world().node(bar.stable_id()).unwrap().children;
+        assert_eq!(columns.len(), 3);
+        let leading_col = context.world().layout_box(columns[0]).unwrap();
+        let center_col = context.world().layout_box(columns[1]).unwrap();
+        let trailing_col = context.world().layout_box(columns[2]).unwrap();
         let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
-        let center_box = context.world().layout_box(center.stable_id()).unwrap();
-        let leading_layout = &context
-            .world()
-            .node_style(leading.stable_id())
-            .unwrap()
-            .layout;
-        assert_eq!(leading_layout.flex_grow, Some(0.0));
-        assert_eq!(leading_layout.width, Some(LengthSpec::Shrink));
+        let center_layout = &context.world().node_style(columns[1]).unwrap().layout;
+        assert_eq!(
+            center_layout.width,
+            Some(LengthSpec::Px(DEFAULT_CENTER_WIDTH))
+        );
         assert!(
             leading_box.width < 80.0,
             "leading chrome must hug, got width {}",
@@ -1753,19 +2064,65 @@ mod tests {
             leading_box.x + 0.5 >= bar_box.x + WindowChrome::platform_default().leading_inset,
             "leading must start after the traffic-light inset"
         );
-        let title_mid = center_box.x + center_box.width / 2.0;
+        let title_mid = center_col.x + center_col.width / 2.0;
         assert!(
-            title_mid < bar_box.x + bar_box.width * 0.65,
-            "title slot mid {title_mid} sat in the trailing third"
+            (title_mid - (bar_box.x + bar_box.width / 2.0)).abs() < 48.0,
+            "title column mid {title_mid} should stay near the window center"
         );
         assert!(
-            center_box.x + 0.5 >= leading_box.x + leading_box.width,
+            leading_col.x + leading_col.width <= center_col.x + 0.5,
             "title must sit after leading chrome"
         );
         assert!(
-            center_box.width > bar_box.width * 0.4,
-            "title slot should occupy leftover, got {}",
-            center_box.width
+            trailing_col.width > bar_box.width * 0.2,
+            "trailing column should fill leftover, got {}",
+            trailing_col.width
+        );
+
+        if WindowChrome::platform_default().uses_custom_controls() {
+            let controls = context
+                .read(bar, |bar| bar.controls)
+                .unwrap()
+                .expect("custom chrome mounts controls");
+            let controls_box = context.world().layout_box(controls).unwrap();
+            assert!(
+                controls_box.x + controls_box.width > bar_box.x + bar_box.width * 0.75,
+                "window controls must sit on the trailing edge, got x={}",
+                controls_box.x
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn default_title_bar_places_window_controls_on_the_right() {
+        let mut context = AppContext::new();
+        let bar = context
+            .create_component(document(), AppTitleBar::new("NanaLive"))
+            .unwrap();
+        assert!(context.assemble_app_title_bar(bar).unwrap());
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document());
+
+        let bar_box = context.world().layout_box(bar.stable_id()).unwrap();
+        let controls = context
+            .read(bar, |bar| bar.controls)
+            .unwrap()
+            .expect("custom chrome mounts controls");
+        let controls_box = context.world().layout_box(controls).unwrap();
+        assert!(
+            controls_box.x > bar_box.x + bar_box.width * 0.7,
+            "controls were on the left: x={} width={}",
+            controls_box.x,
+            bar_box.width
+        );
+        let close = context.world().node(controls).unwrap().children[2];
+        let close_box = context.world().layout_box(close).unwrap();
+        assert!(
+            close_box.x + close_box.width > bar_box.x + bar_box.width - 48.0,
+            "close button must sit near the trailing edge"
         );
     }
 
@@ -2546,7 +2903,18 @@ mod tests {
             .read(shell, |shell| shell.title_bar)
             .unwrap()
             .expect("assembled title bar");
-        assert_eq!(context.world().text(title_bar), Some("NanaShader"));
+        assert_eq!(context.world().text(title_bar), Some(""));
+        let columns = context.world().node(title_bar).unwrap().children;
+        assert_eq!(columns.len(), 3);
+        let title_label = context
+            .world()
+            .node(columns[1])
+            .unwrap()
+            .children
+            .first()
+            .copied()
+            .expect("center column title");
+        assert_eq!(context.world().text(title_label), Some("NanaShader"));
         let title_style = context.world().node_style(title_bar).unwrap();
         assert_eq!(
             title_style.text_horizontal_alignment,
@@ -2561,6 +2929,12 @@ mod tests {
         assert_eq!(leading_layout.width, Some(LengthSpec::Shrink));
 
         let bar_box = context.world().layout_box(title_bar).unwrap();
+        let center_box = context.world().layout_box(columns[1]).unwrap();
+        let title_mid = center_box.x + center_box.width / 2.0;
+        assert!(
+            title_mid < bar_box.x + bar_box.width * 0.65,
+            "title sat on the trailing edge at {title_mid}"
+        );
         let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
         assert!(
             leading_box.width < 80.0,
