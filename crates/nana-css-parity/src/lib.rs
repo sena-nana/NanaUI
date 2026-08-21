@@ -21,8 +21,10 @@ pub const DEFAULT_TOLERANCE_PX: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum CaseStatus {
     /// 当前可测且应通过。
+    #[default]
     Pass,
     /// 实现缺口，默认 `#[ignore]`。
     Ignore,
@@ -70,12 +72,6 @@ pub struct FixtureCase {
 
 fn default_tolerance() -> f32 {
     DEFAULT_TOLERANCE_PX
-}
-
-impl Default for CaseStatus {
-    fn default() -> Self {
-        Self::Pass
-    }
 }
 
 #[derive(Debug, Clone)]

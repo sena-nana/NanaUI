@@ -1,7 +1,9 @@
 //! NativeActivity pointer / key → NanaUI Runtime control-slot (host-testable).
 //!
 //! - Touch samples → platform [`InputEvent::Pointer`] in **logical** px.
-//! - Key samples → platform [`InputEvent::Keyboard`] (US-QWERTY subset + named editing keys).
+//! - Key samples → platform [`InputEvent::Keyboard`]
+//!   (US-QWERTY subset + named editing keys).
+//!
 //! Hit-testing uses the same viewport-bottom rect as [`crate::control_slot`].
 //! Soft IME / AccessKit are not implemented on this host.
 

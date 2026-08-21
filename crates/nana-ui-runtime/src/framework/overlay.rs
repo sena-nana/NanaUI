@@ -372,10 +372,8 @@ impl AppContext {
         // This queue is derived only from retained tooltip/capture authority
         // and emits no application events. One atomic world commit prevents a
         // stale lifecycle record from producing partially applied cleanup.
-        if !mutations.is_empty() {
-            if self.commit_mutations(mutations).is_err() {
-                return;
-            }
+        if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
+            return;
         }
         for (target, button) in closed_tooltips {
             self.views.insert(target, Box::new(button));

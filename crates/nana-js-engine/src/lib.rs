@@ -488,7 +488,7 @@ pub struct JsException {
     pub code: Option<String>,
     pub message: String,
     pub stack: Option<String>,
-    pub details: Option<HostValue>,
+    pub details: Option<Box<HostValue>>,
 }
 
 impl JsException {
@@ -523,7 +523,7 @@ impl JsException {
     }
 
     pub fn with_details(mut self, details: HostValue) -> Self {
-        self.details = Some(details);
+        self.details = Some(Box::new(details));
         self
     }
 
@@ -539,7 +539,7 @@ impl JsException {
             value.insert("stack".into(), HostValue::string(stack));
         }
         if let Some(details) = &self.details {
-            value.insert("details".into(), details.clone());
+            value.insert("details".into(), (**details).clone());
         }
         HostValue::Object(value)
     }
@@ -590,7 +590,7 @@ pub type HostCallObserver = Arc<dyn Fn(HostCallTrace) + Send + Sync>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct JsEngineError {
     pub message: String,
-    pub exception: Option<JsException>,
+    pub exception: Option<Box<JsException>>,
 }
 
 impl JsEngineError {
@@ -604,7 +604,7 @@ impl JsEngineError {
     pub fn from_exception(exception: JsException) -> Self {
         Self {
             message: exception.message.clone(),
-            exception: Some(exception),
+            exception: Some(Box::new(exception)),
         }
     }
 }
@@ -1003,6 +1003,10 @@ impl HostEventSender {
             .lock()
             .map(|queue| queue.events.len())
             .unwrap_or_default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

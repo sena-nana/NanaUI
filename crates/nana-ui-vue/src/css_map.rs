@@ -357,10 +357,9 @@ fn parse_viewport_term(raw: &str) -> Option<(ViewportAxis, f32)> {
         (n, ViewportAxis::Max)
     } else if let Some(n) = s.strip_suffix("vh") {
         (n, ViewportAxis::Height)
-    } else if let Some(n) = s.strip_suffix("vw") {
-        (n, ViewportAxis::Width)
     } else {
-        return None;
+        let n = s.strip_suffix("vw")?;
+        (n, ViewportAxis::Width)
     };
     let value = num.trim().parse::<f32>().ok()?;
     Some((axis, value.max(0.0)))
@@ -1131,10 +1130,10 @@ impl LayoutStyleCss for LayoutStyle {
                 if let Ok(g) = parts[0].parse::<f32>() {
                     self.flex_grow = Some(g.max(0.0));
                 }
-                if parts.len() > 1 {
-                    if let Ok(s) = parts[1].parse::<f32>() {
-                        self.flex_shrink = Some(s.max(0.0));
-                    }
+                if parts.len() > 1
+                    && let Ok(s) = parts[1].parse::<f32>()
+                {
+                    self.flex_shrink = Some(s.max(0.0));
                 }
                 if parts.len() > 2 {
                     self.flex_basis = LengthSpec::parse(parts[2]);
@@ -1846,9 +1845,11 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
 }
 
 fn parse_grid_track_min_px(min_raw: &str, percent_base: Option<f32>) -> f32 {
-    if min_raw == "0" || min_raw == "0px" {
-        0.0
-    } else if is_content_sized_keyword(min_raw) || min_raw.eq_ignore_ascii_case("auto") {
+    if min_raw == "0"
+        || min_raw == "0px"
+        || is_content_sized_keyword(min_raw)
+        || min_raw.eq_ignore_ascii_case("auto")
+    {
         0.0
     } else {
         parse_css_length_px(min_raw, percent_base).unwrap_or(0.0)
@@ -1898,10 +1899,8 @@ fn parse_grid_single_track(token: &str, percent_base: Option<f32>) -> Option<Gri
         // Preserve `%` without CB (parity / cascade often parse before measure).
         let pct = p.trim().parse::<f32>().ok()?;
         Some(GridTrack::Percent(pct.clamp(0.0, 100.0)))
-    } else if let Some(px) = parse_css_length_px(token, percent_base) {
-        Some(GridTrack::Px(px))
     } else {
-        None
+        parse_css_length_px(token, percent_base).map(GridTrack::Px)
     }
 }
 
@@ -1949,9 +1948,9 @@ fn parse_fr(raw: &str) -> Option<f32> {
 // plus per-element inheritance is assembled by the bridge before install.
 thread_local! {
     static ACTIVE_CSS_VARS: std::cell::RefCell<std::collections::BTreeMap<String, String>> =
-        std::cell::RefCell::new(std::collections::BTreeMap::new());
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
     static ACTIVE_VIEWPORT: std::cell::RefCell<Option<(f32, f32)>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
     static ACTIVE_FONT_SIZES: std::cell::RefCell<FontSizeContext> =
         std::cell::RefCell::new(FontSizeContext::default());
     /// Prefer `light-dark()` dark branch when true (document `data-theme=dark`).
@@ -2027,10 +2026,10 @@ pub fn extract_css_custom_properties_from_decls(
             continue;
         };
         let key = raw_key.trim();
-        if let Some(name) = key.strip_prefix("--") {
-            if !name.is_empty() {
-                map.insert(format!("--{name}"), raw_val.trim().to_string());
-            }
+        if let Some(name) = key.strip_prefix("--")
+            && !name.is_empty()
+        {
+            map.insert(format!("--{name}"), raw_val.trim().to_string());
         }
     }
     map
@@ -2189,9 +2188,7 @@ fn document_level_selector_applies(selector_list: &str, theme: &str) -> bool {
 fn data_theme_constraint(sel: &str) -> Option<String> {
     let lower = sel.trim().to_ascii_lowercase();
     let key = "data-theme";
-    let Some(idx) = lower.find(key) else {
-        return None;
-    };
+    let idx = lower.find(key)?;
     let after = lower[idx + key.len()..].trim_start();
     if after.starts_with(']') {
         // `[data-theme]` presence-only — treat as unconstrained for document scrape.
@@ -2450,10 +2447,10 @@ pub fn parse_css_font_size(input: &str) -> Option<f32> {
         "larger" => return Some((fonts.element_px * 1.2).max(1.0)),
         _ => {}
     }
-    if let Some(pct) = s.strip_suffix('%') {
-        if let Ok(p) = pct.trim().parse::<f32>() {
-            return Some((fonts.element_px * p / 100.0).max(0.0));
-        }
+    if let Some(pct) = s.strip_suffix('%')
+        && let Ok(p) = pct.trim().parse::<f32>()
+    {
+        return Some((fonts.element_px * p / 100.0).max(0.0));
     }
     LengthSpec::parse(s)?
         .resolve_with_fonts(None, active_viewport(), fonts)
@@ -2593,10 +2590,10 @@ pub fn parse_css_line_height(input: &str) -> Option<LineHeightSpec> {
     {
         return None;
     }
-    if let Some(pct) = s.strip_suffix('%') {
-        if let Ok(p) = pct.trim().parse::<f32>() {
-            return Some(LineHeightSpec::Relative((p / 100.0).max(0.0)));
-        }
+    if let Some(pct) = s.strip_suffix('%')
+        && let Ok(p) = pct.trim().parse::<f32>()
+    {
+        return Some(LineHeightSpec::Relative((p / 100.0).max(0.0)));
     }
     // Unitless number = multiplier (MDN). Reject function tokens.
     if !s.contains('(')
@@ -2628,9 +2625,7 @@ pub fn parse_css_letter_spacing(input: &str) -> Option<f32> {
     if s.eq_ignore_ascii_case("normal") || s.eq_ignore_ascii_case("initial") {
         return Some(0.0);
     }
-    LengthSpec::parse(s)?
-        .resolve_with_fonts(None, active_viewport(), active_font_sizes())
-        .map(|v| v) // allow negative tracking
+    LengthSpec::parse(s)?.resolve_with_fonts(None, active_viewport(), active_font_sizes())
 }
 
 fn host_value_debug(value: &nana_js_engine::HostValue) -> String {
@@ -2711,8 +2706,6 @@ fn parse_min_max_size(raw: &str) -> Option<LengthSpec> {
         other => Some(other),
     }
 }
-
-/// Resolve min/max [`LengthSpec`] into the px slots stored on [`LayoutStyle`].
 
 /// margin / padding 边长：px / `%` / em / rem / 轻量 calc / viewport / min-max；
 /// `%` 与 `100%` 均保留为 [`LengthSpec`]（不收成 `Fill`），布局时相对包含块宽度解析。

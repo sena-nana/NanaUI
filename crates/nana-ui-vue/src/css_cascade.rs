@@ -403,10 +403,10 @@ pub fn collect_document_custom_properties_from_rules(
             continue;
         }
         for entry in &rule.declaration_entries {
-            if let Some(name) = entry.property.strip_prefix("--") {
-                if !name.is_empty() {
-                    map.insert(entry.property.clone(), entry.value.clone());
-                }
+            if let Some(name) = entry.property.strip_prefix("--")
+                && !name.is_empty()
+            {
+                map.insert(entry.property.clone(), entry.value.clone());
             }
         }
     }
@@ -562,15 +562,16 @@ pub fn rebuild_layout_style(
 }
 
 fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
-    if let Some(tag) = &simple.type_name {
-        if !node.tag.eq_ignore_ascii_case(tag) && tag != "*" {
-            return false;
-        }
+    if let Some(tag) = &simple.type_name
+        && !node.tag.eq_ignore_ascii_case(tag)
+        && tag != "*"
+    {
+        return false;
     }
-    if let Some(id) = &simple.id {
-        if node.id != id {
-            return false;
-        }
+    if let Some(id) = &simple.id
+        && node.id != id
+    {
+        return false;
     }
     for class in &simple.classes {
         if !node.classes.iter().any(|c| c == class) {
@@ -588,15 +589,16 @@ fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
 }
 
 fn compound_matches(compound: &CompoundSelector, node: &MatchNode<'_>) -> bool {
-    if let Some(tag) = &compound.type_name {
-        if !node.tag.eq_ignore_ascii_case(tag) && tag != "*" {
-            return false;
-        }
+    if let Some(tag) = &compound.type_name
+        && !node.tag.eq_ignore_ascii_case(tag)
+        && tag != "*"
+    {
+        return false;
     }
-    if let Some(id) = &compound.id {
-        if node.id != id {
-            return false;
-        }
+    if let Some(id) = &compound.id
+        && node.id != id
+    {
+        return false;
     }
     for class in &compound.classes {
         if !node.classes.iter().any(|c| c == class) {
@@ -634,10 +636,9 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
     if compound.first_child && ctx.sibling_index != 0 {
         return false;
     }
-    if compound.last_child {
-        if ctx.sibling_count == 0 || ctx.sibling_index + 1 != ctx.sibling_count {
-            return false;
-        }
+    if compound.last_child && (ctx.sibling_count == 0 || ctx.sibling_index + 1 != ctx.sibling_count)
+    {
+        return false;
     }
     if let Some(anb) = compound.nth_child {
         // CSS indices are 1-based among all siblings.
@@ -645,10 +646,10 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
             return false;
         }
     }
-    if let Some(anb) = compound.nth_of_type {
-        if !anb.matches_index(ctx.of_type_index.saturating_add(1)) {
-            return false;
-        }
+    if let Some(anb) = compound.nth_of_type
+        && !anb.matches_index(ctx.of_type_index.saturating_add(1))
+    {
+        return false;
     }
     true
 }
@@ -1370,9 +1371,7 @@ fn parse_an_plus_b(raw: &str) -> Option<AnPlusB> {
     let a_part = &compact[..n_pos];
     let b_part = &compact[n_pos + 1..];
 
-    let a = if a_part.is_empty() {
-        1
-    } else if a_part == "+" {
+    let a = if a_part.is_empty() || a_part == "+" {
         1
     } else if a_part == "-" {
         -1

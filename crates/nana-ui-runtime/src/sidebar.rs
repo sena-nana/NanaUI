@@ -433,14 +433,14 @@ impl SidebarRow {
             },
         };
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
-        if matches!(self.tone, SidebarRowTone::Default) {
-            if let Some(role) = style.foreground {
-                let mut rgba = SemanticPalette::for_mode(world.theme_mode())
-                    .get(role)
-                    .as_rgba_array();
-                rgba[3] *= ROW_TEXT_ALPHA;
-                Arc::make_mut(&mut style.layout).color = Some(rgba);
-            }
+        if matches!(self.tone, SidebarRowTone::Default)
+            && let Some(role) = style.foreground
+        {
+            let mut rgba = SemanticPalette::for_mode(world.theme_mode())
+                .get(role)
+                .as_rgba_array();
+            rgba[3] *= ROW_TEXT_ALPHA;
+            Arc::make_mut(&mut style.layout).color = Some(rgba);
         }
         style
     }

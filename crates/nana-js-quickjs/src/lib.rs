@@ -134,7 +134,7 @@ impl QuickJsEngine {
             .context
             .as_ref()
             .ok_or_else(|| JsEngineError::new("QuickJS context missing"))?;
-        context.with(|ctx| f(ctx))
+        context.with(f)
     }
 
     fn install_host_bridge(ctx: &Ctx<'_>, api: &HostApiRegistry) -> Result<(), JsEngineError> {
@@ -197,11 +197,9 @@ impl JsEngine for QuickJsEngine {
     fn initialize(&mut self, artifact: RuntimeArtifact) -> Result<(), JsEngineError> {
         self.ensure_runtime()?;
         match artifact.kind {
-            RuntimeArtifactKind::V8Snapshot => {
-                return Err(JsEngineError::new(
-                    "QuickJsEngine cannot load V8Snapshot artifacts (engine-native only)",
-                ));
-            }
+            RuntimeArtifactKind::V8Snapshot => Err(JsEngineError::new(
+                "QuickJsEngine cannot load V8Snapshot artifacts (engine-native only)",
+            )),
             RuntimeArtifactKind::QuickJsBytecode => {
                 let bytes = artifact.bytes.clone();
                 let host_api = self.host_api.clone();
@@ -471,10 +469,11 @@ fn js_value_to_host<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<HostValue,
             return Ok(HostValue::Object(map));
         }
     }
-    if let Ok(v) = value.get::<String>() {
-        if v != "[object Object]" && !v.contains("[object Object]") {
-            return Ok(HostValue::String(v));
-        }
+    if let Ok(v) = value.get::<String>()
+        && v != "[object Object]"
+        && !v.contains("[object Object]")
+    {
+        return Ok(HostValue::String(v));
     }
     Ok(HostValue::Null)
 }
@@ -1253,7 +1252,7 @@ mod tests {
         {
             let sizes = Arc::clone(&sizes);
             api.register("layoutBox", move |args| {
-                let nid = args.get(0).and_then(HostValue::as_f64).unwrap_or(0.0) as u64;
+                let nid = args.first().and_then(HostValue::as_f64).unwrap_or(0.0) as u64;
                 let (w, h) = sizes
                     .lock()
                     .unwrap()

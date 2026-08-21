@@ -1280,11 +1280,10 @@ impl VueRuntime {
         let host = self
             .host(id)
             .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        let result = host
-            .lock()
+
+        host.lock()
             .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .inject_theme(engine, theme);
-        result
+            .inject_theme(engine, theme)
     }
 
     pub fn pump_frame<E: JsEngine + ?Sized>(

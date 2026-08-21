@@ -226,12 +226,11 @@ impl V8Engine {
     /// Connect structured runtime diagnostics before or after initialization.
     pub fn set_diagnostic_sink(&mut self, sink: Option<JsDiagnosticSink>) {
         self.diagnostics = sink.clone();
-        if let Some(isolate) = self.isolate.as_mut() {
-            if let Some(slot) = isolate.get_slot::<HostApiSlot>() {
-                if let Ok(mut current) = slot.diagnostics.lock() {
-                    *current = sink;
-                }
-            }
+        if let Some(isolate) = self.isolate.as_mut()
+            && let Some(slot) = isolate.get_slot::<HostApiSlot>()
+            && let Ok(mut current) = slot.diagnostics.lock()
+        {
+            *current = sink;
         }
     }
 
@@ -558,7 +557,7 @@ impl JsEngine for V8Engine {
         self.host_api = api.clone();
         if self.isolate.is_some() {
             self.sync_host_slot()?;
-            with_context(self, |scope| install_host_bridge(scope))?;
+            with_context(self, install_host_bridge)?;
         }
         Ok(())
     }
@@ -1306,7 +1305,7 @@ fn throw_host_exception(scope: &mut v8::PinScope, exception: &JsException) {
         for (key, value) in [
             ("name", Some(HostValue::string(&exception.name))),
             ("code", exception.code.as_ref().map(HostValue::string)),
-            ("details", exception.details.clone()),
+            ("details", exception.details.as_deref().cloned()),
         ] {
             let Some(value) = value else { continue };
             let Some(key) = v8::String::new(scope, key) else {

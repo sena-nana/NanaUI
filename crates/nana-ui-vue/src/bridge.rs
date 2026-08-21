@@ -6608,7 +6608,7 @@ mod tests {
                 .primary
                 .widgets
                 .iter()
-                .any(|w| { matches!(w.id, 2 | 3 | 4 | 5 | 6 | 7) }),
+                .any(|w| { matches!(w.id, 2..=7) }),
             "all region-owned ids claimed from primary despite truncation"
         );
         assert!(views.primary.widgets.iter().any(|w| w.id == 8));

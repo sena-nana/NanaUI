@@ -5,6 +5,10 @@
 //! contract, so changing ECS implementations cannot invalidate JS handles,
 //! diagnostics, snapshots, or persisted data.
 
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+
 mod animation;
 mod builtin_components;
 mod calendar;

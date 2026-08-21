@@ -54,8 +54,8 @@ jobs:
       - name: Check macOS WebView reference
         if: runner.os == 'macOS'
         run: cargo check -p nana-css-parity --all-targets --features webview-ref --locked
-      - name: Run workspace Clippy diagnostics
-        run: cargo clippy --workspace --all-targets --locked
+      - name: Enforce workspace Clippy
+        run: cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
       - name: Enforce NanaUI and Gallery Clippy
         run: cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 

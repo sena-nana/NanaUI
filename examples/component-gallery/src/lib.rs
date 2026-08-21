@@ -1073,10 +1073,7 @@ impl GalleryApp {
         }
         let previous_commands = self.state.dock_window_commands.len();
         self.state.update(message);
-        let window_commands = self.state.dock_window_commands[previous_commands..]
-            .iter()
-            .cloned()
-            .collect();
+        let window_commands = self.state.dock_window_commands[previous_commands..].to_vec();
         self.sync_dock_windows();
         self.sync_loading_deadline();
         RuntimeProgramUpdate {

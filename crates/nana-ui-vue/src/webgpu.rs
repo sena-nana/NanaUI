@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use nana_js_engine::{HostApiRegistry, HostCompletion, HostValue, JsException};
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry, HostedGpuResources};
-use wgpu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GpuId(u64);
@@ -276,10 +275,10 @@ impl JsWebGpuRuntime {
     }
 
     fn schedule_completion_poll(&self) {
-        if let Ok(mut deadline) = self.next_completion_poll.lock() {
-            if deadline.is_none() {
-                *deadline = Some(Instant::now());
-            }
+        if let Ok(mut deadline) = self.next_completion_poll.lock()
+            && deadline.is_none()
+        {
+            *deadline = Some(Instant::now());
         }
     }
 
@@ -567,7 +566,7 @@ impl JsWebGpuRuntime {
                     "writeBuffer bufferOffset must be a multiple of 4",
                 ));
             }
-            if bytes.len() as u64 % wgpu::COPY_BUFFER_ALIGNMENT != 0 {
+            if !(bytes.len() as u64).is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) {
                 return Err(webgpu_validation(
                     "writeBuffer data size must be a multiple of 4",
                 ));
@@ -2468,7 +2467,7 @@ fn parse_layout_entry(
     }
     let kinds = ["buffer", "sampler", "storageTexture", "texture"]
         .into_iter()
-        .filter_map(|key| entry.contains_key(key).then_some(key))
+        .filter(|key| entry.contains_key(*key))
         .collect::<Vec<_>>();
     if kinds.len() != 1 {
         return Err(webgpu_validation(
@@ -3259,9 +3258,9 @@ fn validate_buffer_copy(
             "copyBufferToBuffer source and destination must differ",
         ));
     }
-    if source_offset % wgpu::COPY_BUFFER_ALIGNMENT != 0
-        || destination_offset % wgpu::COPY_BUFFER_ALIGNMENT != 0
-        || size % wgpu::COPY_BUFFER_ALIGNMENT != 0
+    if !source_offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+        || !destination_offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+        || !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
     {
         return Err(webgpu_validation(
             "copyBufferToBuffer offsets and size must be multiples of 4",
@@ -3467,7 +3466,7 @@ fn validate_buffer_slice(
             "buffer usage is incompatible with pass binding",
         ));
     }
-    if offset % alignment != 0
+    if !offset.is_multiple_of(alignment)
         || size.is_some_and(|size| {
             size == 0
                 || size % alignment != 0
@@ -3618,10 +3617,10 @@ fn validate_texture_write(
         .format
         .block_copy_size(Some(aspect))
         .ok_or_else(|| webgpu_validation("texture format/aspect is not copyable"))?;
-    if origin.x % block_width != 0
-        || origin.y % block_height != 0
-        || width % block_width != 0 && origin.x + width != mip_width
-        || height % block_height != 0 && origin.y + height != mip_height
+    if !origin.x.is_multiple_of(block_width)
+        || !origin.y.is_multiple_of(block_height)
+        || !width.is_multiple_of(block_width) && origin.x + width != mip_width
+        || !height.is_multiple_of(block_height) && origin.y + height != mip_height
     {
         return Err(webgpu_validation(
             "writeTexture origin and extent must respect format block dimensions",
@@ -3634,7 +3633,7 @@ fn validate_texture_write(
         .ok_or_else(|| webgpu_validation("writeTexture row size overflows"))?;
     let stride = bytes_per_row.unwrap_or(row_bytes);
     if stride < row_bytes
-        || stride % block_size != 0
+        || !stride.is_multiple_of(block_size)
         || height_blocks > 1 && bytes_per_row.is_none()
     {
         return Err(webgpu_validation("invalid writeTexture bytesPerRow"));

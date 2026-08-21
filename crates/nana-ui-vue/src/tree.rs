@@ -16,12 +16,14 @@ use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+#[cfg(any(test, feature = "hosted"))]
+use nana_ui_runtime::AccessibilityUpdate;
 #[cfg(not(feature = "scene-view"))]
 use nana_ui_runtime::MeasureTextShaper;
 use nana_ui_runtime::{
-    AccessibilityDelta, AccessibilityRole, AccessibilityState, AccessibilityUpdate,
-    ActionMenu as RuntimeActionMenu, ActionMenuItem as RuntimeActionMenuItem, AppContext,
-    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, Button as RuntimeButton,
+    AccessibilityDelta, AccessibilityRole, AccessibilityState, ActionMenu as RuntimeActionMenu,
+    ActionMenuItem as RuntimeActionMenuItem, AppContext, AppShell as RuntimeAppShell,
+    AppTitleBar as RuntimeAppTitleBar, Button as RuntimeButton,
     CalendarHeatmap as RuntimeCalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions,
     CalendarLevelStrategy, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
     CommandPalette as RuntimeCommandPalette, ComponentBindKind, ComponentTypeId, ComponentView,
@@ -1066,6 +1068,7 @@ impl NanaTreeDocument {
         )
     }
 
+    #[cfg(any(test, feature = "hosted"))]
     pub(crate) fn take_accessibility_update(&mut self) -> Option<AccessibilityUpdate> {
         if self.accessibility_full_required {
             self.accessibility_full_required = false;
@@ -1822,12 +1825,11 @@ impl NanaTreeDocument {
             changed = attrs.get(name).is_none_or(|current| current != value);
             attrs.insert(name.to_string(), value.to_string());
         }
-        if changed {
-            if name.eq_ignore_ascii_case("data-nana-gpu")
-                || name.eq_ignore_ascii_case("data-nana-canvas")
-            {
-                self.sync_surface_custom_render(el);
-            }
+        if changed
+            && (name.eq_ignore_ascii_case("data-nana-gpu")
+                || name.eq_ignore_ascii_case("data-nana-canvas"))
+        {
+            self.sync_surface_custom_render(el);
         }
     }
 
@@ -1850,12 +1852,11 @@ impl NanaTreeDocument {
         {
             removed = attrs.remove(name).is_some();
         }
-        if removed {
-            if name.eq_ignore_ascii_case("data-nana-gpu")
-                || name.eq_ignore_ascii_case("data-nana-canvas")
-            {
-                self.sync_surface_custom_render(el);
-            }
+        if removed
+            && (name.eq_ignore_ascii_case("data-nana-gpu")
+                || name.eq_ignore_ascii_case("data-nana-canvas"))
+        {
+            self.sync_surface_custom_render(el);
         }
     }
 
@@ -2486,10 +2487,11 @@ fn resolve_widget_component_type(
     snapshot: &crate::SemanticSnapshot,
     context: &AppContext,
 ) -> Option<ComponentTypeId> {
-    if widget.kind == crate::WidgetKind::Button && widget_icon(widget, snapshot).is_some() {
-        if let Some(id) = context.resolve_component_tag("icon-button") {
-            return Some(id.clone());
-        }
+    if widget.kind == crate::WidgetKind::Button
+        && widget_icon(widget, snapshot).is_some()
+        && let Some(id) = context.resolve_component_tag("icon-button")
+    {
+        return Some(id.clone());
     }
     let tag = if widget.props.element_tag.is_empty() {
         widget.kind.as_str()
@@ -3554,7 +3556,7 @@ fn parse_qr_module_matrix(raw: &str, width_hint: Option<usize>) -> Option<(Arc<[
         trimmed.chars().map(|c| c == '1').collect()
     } else {
         trimmed
-            .split(|c: char| matches!(c, '[' | ']' | ',' | ';' | ' ' | '\n' | '\t' | '\r'))
+            .split(['[', ']', ',', ';', ' ', '\n', '\t', '\r'])
             .filter(|part| !part.is_empty())
             .map(|part| match part {
                 "1" | "true" | "TRUE" => Some(true),
@@ -4395,16 +4397,16 @@ fn markdown_source_from_props(props: &crate::WidgetProps) -> String {
     if !props.value.trim().is_empty() {
         return props.value.clone();
     }
-    if let Some(source) = crate::widget_map::attr_value(props, &["source", "markdown", "value"]) {
-        if !source.trim().is_empty() {
-            return source.to_string();
-        }
+    if let Some(source) = crate::widget_map::attr_value(props, &["source", "markdown", "value"])
+        && !source.trim().is_empty()
+    {
+        return source.to_string();
     }
     for key in ["source", "markdown", "value"] {
-        if let Some(text) = props.native_props.get(key).map(host_value_text) {
-            if !text.trim().is_empty() {
-                return text;
-            }
+        if let Some(text) = props.native_props.get(key).map(host_value_text)
+            && !text.trim().is_empty()
+        {
+            return text;
         }
     }
     String::new()

@@ -198,11 +198,11 @@ impl Select {
         if option.disabled || self.inactive() {
             return None;
         }
-        let changed = self.value.as_ref() != Some(&option.value);
+        let changed = self.value.as_deref() != Some(&*option.value);
         self.value = Some(Arc::clone(&option.value));
         self.close();
         changed.then(|| SelectChanged {
-            value: Arc::clone(&self.value.as_ref().expect("selected value")),
+            value: Arc::clone(self.value.as_ref().expect("selected value")),
         })
     }
 
@@ -212,9 +212,7 @@ impl Select {
 
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
-        style.foreground = Some(if self.inactive() {
-            SemanticColorRole::Faint
-        } else if self.display_label().1 {
+        style.foreground = Some(if self.inactive() || self.display_label().1 {
             SemanticColorRole::Faint
         } else {
             SemanticColorRole::Text

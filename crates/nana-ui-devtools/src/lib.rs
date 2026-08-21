@@ -56,25 +56,13 @@ pub struct DiagnosticsSnapshot {
     pub frames: BTreeMap<u64, FrameStatistics>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct DiagnosticsState {
     next_sequence: u64,
     events: VecDeque<DiagnosticEvent>,
     resources: BTreeMap<String, usize>,
     frames: BTreeMap<u64, FrameStatistics>,
     last_presented: BTreeMap<u64, Instant>,
-}
-
-impl Default for DiagnosticsState {
-    fn default() -> Self {
-        Self {
-            next_sequence: 0,
-            events: VecDeque::new(),
-            resources: BTreeMap::new(),
-            frames: BTreeMap::new(),
-            last_presented: BTreeMap::new(),
-        }
-    }
 }
 
 /// Cloneable recorder that can be connected to V8, VueHost and hosted render

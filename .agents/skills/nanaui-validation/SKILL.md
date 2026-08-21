@@ -42,7 +42,7 @@ cargo check -p vue-counter --all-targets --features windowed --locked
 cargo check -p vue-counter --all-targets --no-default-features --features engine-v8,windowed --locked
 (cd crates/nana-js-engine/fixtures/vue-sfc-compat && npm ci && npm run build)
 cargo check -p nana-css-parity --all-targets --features webview-ref --locked # macOS
-cargo clippy --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 cargo run --release -p component-gallery --bin ui-snapshots \
   --features snapshots --locked
@@ -50,8 +50,8 @@ cargo run --release -p component-gallery --bin ui-snapshots \
 
 Application crates intentionally reject simultaneous QuickJS and V8 features. Use the explicit
 legal-feature matrix above instead of workspace-wide `--all-features`.
-Workspace Clippy remains a full diagnostic pass; the public NanaUI and Gallery path additionally
-enforces `-D warnings` while legacy cross-package lint debt is retired separately.
+Workspace Clippy (`--no-deps -- -D warnings`) and the public NanaUI / Gallery path both enforce
+zero warnings.
 
 For Skill-only changes, there is no single skill-validation script. Verify Skill
 frontmatter, links, and `git diff --check`. Choose `cargo test` / snapshots /

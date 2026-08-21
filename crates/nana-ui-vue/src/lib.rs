@@ -1,4 +1,7 @@
 #![recursion_limit = "256"]
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
 
 //! Vue backend host coordination — first-class L1/L2 consumer of Runtime/UiScene.
 //!
@@ -1283,16 +1286,16 @@ impl VueHost {
                 .map_err(|_| JsEngineError::new("web-api state poisoned"))?;
             guard.drain_fetch_completions()
         };
-        if !fetch_completions.is_empty() {
-            if let Some(drain) = self.drain_fetch {
-                let count = fetch_completions.len();
-                engine.invoke(
-                    drain,
-                    &[HostValue::Array(fetch_completions.into_iter().collect())],
-                )?;
-                fired += count;
-                engine.run_microtasks()?;
-            }
+        if !fetch_completions.is_empty()
+            && let Some(drain) = self.drain_fetch
+        {
+            let count = fetch_completions.len();
+            engine.invoke(
+                drain,
+                &[HostValue::Array(fetch_completions.into_iter().collect())],
+            )?;
+            fired += count;
+            engine.run_microtasks()?;
         }
         // Cap nested callbacks (Transition nextFrame + ResizeObserver rAF).
         const MAX_TIMER_PASSES: usize = 16;
@@ -1923,8 +1926,10 @@ impl VueHost {
                 } else {
                     target.or(physical_hit)
                 };
-                if !default_prevented && pressed.is_some() && pressed == physical_hit {
-                    let click_target = pressed.expect("checked above");
+                if !default_prevented
+                    && let Some(click_target) = pressed
+                    && physical_hit == Some(click_target)
+                {
                     let is_semantic = self
                         .bridge
                         .lock()
@@ -2241,6 +2246,7 @@ impl VueHost {
         Ok(allowed)
     }
 
+    #[cfg(any(test, feature = "hosted"))]
     pub(crate) fn accessibility_focus<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -2268,6 +2274,7 @@ impl VueHost {
         Ok(true)
     }
 
+    #[cfg(feature = "hosted")]
     pub(crate) fn accessibility_click<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -2277,6 +2284,7 @@ impl VueHost {
         Ok(result.handled && !result.default_prevented)
     }
 
+    #[cfg(any(test, feature = "hosted"))]
     pub(crate) fn accessibility_set_value<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -2335,6 +2343,7 @@ impl VueHost {
         Ok(true)
     }
 
+    #[cfg(any(test, feature = "hosted"))]
     pub(crate) fn accessibility_set_selection<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,

@@ -1259,7 +1259,7 @@ impl UiWorld {
         let mut modal_shaped = Vec::new();
         for &id in ids {
             if !self.contains(id) {
-                drop(shaper);
+                let _shaper = shaper;
                 self.text_layout_cache = cache;
                 self.glyph_cache = glyphs;
                 return Err(UiWorldError::MissingNode(id));
@@ -1324,7 +1324,7 @@ impl UiWorld {
         }
         let runs = shaper.runs;
         let wrap_layouts = shaper.wrap_layouts;
-        drop(shaper);
+        let _shaper = shaper;
         let (hits, misses, evictions) = cache.take_counters();
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
@@ -1454,7 +1454,7 @@ impl UiWorld {
         }
         let runs = shaper.runs;
         let wrap_layouts = shaper.wrap_layouts;
-        drop(shaper);
+        let _shaper = shaper;
         let (hits, misses, evictions) = cache.take_counters();
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
@@ -1933,7 +1933,7 @@ impl UiWorld {
                     .and_then(|before| siblings.iter().position(|id| *id == before))
                     .unwrap_or(siblings.len());
                 siblings.insert(index, *child);
-                drop(parent_hierarchy);
+                let _parent_hierarchy = parent_hierarchy;
                 self.hierarchy_mut(*child).parent = Some(*parent);
                 let parent_mount = *self.component::<MountState>(*parent);
                 if *self.component::<MountState>(*child) != parent_mount {
@@ -1985,7 +1985,7 @@ impl UiWorld {
                     let mut hierarchy = self.hierarchy_mut(parent);
                     Arc::make_mut(&mut hierarchy.children).retain(|child| child != root);
                     intern_empty_children(&mut hierarchy.children);
-                    drop(hierarchy);
+                    let _hierarchy = hierarchy;
                     self.mark_ancestors(
                         parent,
                         DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
@@ -3559,14 +3559,13 @@ impl UiWorld {
                 y += presentation.title.height;
                 let message = message.as_ref().map(|message| {
                     y += spacing;
-                    let region = crate::ComponentTextRegion {
+                    crate::ComponentTextRegion {
                         bounds: text_bounds(presentation.message.unwrap_or_default(), y),
                         content: Arc::clone(message),
                         color: Some(self.style_model.palette.muted.as_rgba_array()),
                         font_size: message_size,
                         font_weight: None,
-                    };
-                    region
+                    }
                 });
                 Some(crate::ComponentGeometry::EmptyState {
                     root_clip: bounds,
@@ -4539,7 +4538,7 @@ impl UiWorld {
         let mut hierarchy = self.hierarchy_mut(parent);
         Arc::make_mut(&mut hierarchy.children).retain(|child| *child != id);
         intern_empty_children(&mut hierarchy.children);
-        drop(hierarchy);
+        let _hierarchy = hierarchy;
         self.hierarchy_mut(id).parent = None;
         self.mark_ancestors(
             parent,
@@ -5021,7 +5020,7 @@ fn form_field_geometry(
             font_weight: None,
         }),
         indicator,
-        control: control.and_then(|id| layout_box(id)),
+        control: control.and_then(layout_box),
     })
 }
 
@@ -5160,10 +5159,11 @@ fn shape_text_input_presentation(
                 shaper.horizontal_offset(id, &source.text, end, style),
             )
         }),
-        selection_lines: source
-            .multiline
-            .then_some(selection_lines)
-            .unwrap_or_default(),
+        selection_lines: if source.multiline {
+            selection_lines
+        } else {
+            Vec::new()
+        },
         caret_x,
         caret_y: if source.multiline { caret_y } else { 0.0 },
         line_height,
@@ -5173,10 +5173,11 @@ fn shape_text_input_presentation(
                 shaper.horizontal_offset(id, &source.text, end, style),
             )
         }),
-        preedit_lines: source
-            .multiline
-            .then_some(preedit_lines)
-            .unwrap_or_default(),
+        preedit_lines: if source.multiline {
+            preedit_lines
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -6416,8 +6417,9 @@ fn graph_canvas_geometry(
             };
             let node_bounds = intersect_layout_boxes(bounds, raw)?;
             let title_height = node.title_height.clamp(18.0, node_bounds.height.max(18.0));
-            if node_bounds.width >= 32.0 && node_bounds.height >= title_height {
-                if let Some(separator) = intersect_layout_boxes(
+            if node_bounds.width >= 32.0
+                && node_bounds.height >= title_height
+                && let Some(separator) = intersect_layout_boxes(
                     bounds,
                     LayoutBox {
                         x: node_bounds.x,
@@ -6425,9 +6427,9 @@ fn graph_canvas_geometry(
                         width: node_bounds.width,
                         height: 1.0,
                     },
-                ) {
-                    separators.push(separator);
-                }
+                )
+            {
+                separators.push(separator);
             }
             let label = crate::ComponentTextRegion {
                 bounds: intersect_layout_boxes(
@@ -7940,7 +7942,7 @@ mod tests {
         for index in 1..=64 {
             let due = index == 1;
             queue.start_animation(AnimationSpec {
-                id: AnimationId::new(index as u64).unwrap(),
+                id: AnimationId::new(index).unwrap(),
                 target: node(index),
                 start: if due {
                     Duration::ZERO
@@ -7962,7 +7964,7 @@ mod tests {
         let mut all_due = MutationQueue::new();
         for index in 2..=64 {
             all_due.start_animation(AnimationSpec {
-                id: AnimationId::new(index as u64).unwrap(),
+                id: AnimationId::new(index).unwrap(),
                 target: node(index),
                 start: Duration::ZERO,
                 duration: Duration::from_millis(1),
