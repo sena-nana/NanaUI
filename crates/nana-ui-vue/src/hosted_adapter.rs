@@ -11,9 +11,7 @@ use std::time::Instant;
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, TitleBarDragTracker,
-    WindowChromeAction, WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
-    window_commands_for_chrome_action, window_material_effect,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, window_material_effect,
 };
 use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::FrameworkError;
@@ -29,17 +27,11 @@ thread_local! {
     static PENDING_VUE_BOOTSTRAP: RefCell<Option<Box<dyn Any>>> = RefCell::new(None);
 }
 
-struct WindowChromeSession {
-    state: WindowChromeState,
-    drag: TitleBarDragTracker,
-}
-
 /// A single-engine Vue runtime suitable for embedding in `RuntimeProgram`.
 pub struct VueHostedRuntime<E: JsEngine> {
     engine: E,
     vue: VueRuntime,
     application_api: HostApiRegistry,
-    chrome: HashMap<WindowId, WindowChromeSession>,
 }
 
 impl<E: JsEngine> VueHostedRuntime<E> {
@@ -55,7 +47,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             engine,
             vue: VueRuntime::new(physical_width, physical_height, scale_factor),
             application_api,
-            chrome: HashMap::new(),
         };
         runtime
             .vue
@@ -179,67 +170,15 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         }
     }
 
-    fn apply_title_bar_chrome(
-        &mut self,
-        id: WindowId,
-        event: &InputEvent,
-    ) -> Option<WindowChromeAction> {
-        let host = self.vue.host(VueWindowId(id.0))?;
-        let host = host.lock().ok()?;
-        let document_slot = host.document();
-        let document = document_slot.lock().ok()?;
-        let runtime = document.runtime_document();
-        let session = self
-            .chrome
-            .entry(id)
-            .or_insert_with(|| WindowChromeSession {
-                state: WindowChromeState::default(),
-                drag: TitleBarDragTracker::default(),
-            });
-        apply_title_bar_pointer(
-            &mut session.state,
-            &mut session.drag,
-            runtime.context(),
-            runtime.document(),
-            event,
-        )
-    }
-
-    fn sync_window_chrome(&mut self, id: WindowId, geometry: &WindowGeometry) {
-        let session = self
-            .chrome
-            .entry(id)
-            .or_insert_with(|| WindowChromeSession {
-                state: WindowChromeState::default(),
-                drag: TitleBarDragTracker::default(),
-            });
-        session.state.update(WindowChromeEvent::PrepareWindow(id));
-        session.state.update(WindowChromeEvent::MaximizedChanged {
-            window: id,
-            maximized: geometry.maximized,
-        });
-    }
-
     pub fn runtime_input(
         &mut self,
         id: WindowId,
         event: &InputEvent,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        let chrome_action = self.apply_title_bar_chrome(id, event);
-        let mut update = match self.emit_runtime_input(VueWindowId(id.0), event) {
+        Ok(match self.emit_runtime_input(VueWindowId(id.0), event) {
             Ok(_) => self.runtime_program_update(true),
             Err(_) => RuntimeProgramUpdate::default(),
-        };
-        if let Some(action) = chrome_action {
-            let maximized = self
-                .chrome
-                .get(&id)
-                .is_some_and(|session| session.state.is_maximized());
-            update
-                .window_commands
-                .extend(window_commands_for_chrome_action(id, action, maximized));
-        }
-        Ok(update)
+        })
     }
 
     fn emit_runtime_input(
@@ -408,7 +347,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     fn handle_platform_window_event(&mut self, event: WindowEvent) -> Result<(), JsEngineError> {
         match event {
             WindowEvent::Ready { id, geometry } => {
-                self.sync_window_chrome(id, &geometry);
                 let id = VueWindowId(id.0);
                 self.vue.set_viewport(
                     id,
@@ -430,7 +368,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 )?;
             }
             WindowEvent::Resized { id, geometry } => {
-                self.sync_window_chrome(id, &geometry);
                 let id = VueWindowId(id.0);
                 self.vue.set_viewport(
                     id,
@@ -474,7 +411,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     .emit_native_ime_from_runtime(&mut self.engine, &event)?;
             }
             WindowEvent::Closed { id } => {
-                self.chrome.remove(&id);
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
             WindowEvent::Moved { id, geometry } => {
@@ -899,6 +835,9 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
 mod tests {
     use super::*;
     use crate::VueHost;
+    use nana_ui::{
+        TitleBarDragTracker, WindowChromeAction, WindowChromeState, apply_title_bar_pointer,
+    };
 
     #[test]
     fn vue_window_documents_are_the_same_runtime_tree() {
@@ -1060,14 +999,21 @@ mod tests {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let children = context.world().node(title).unwrap().children;
-            let controls = children.iter().copied().find(|&id| {
-                matches!(
+            let mut stack = context.world().node(title).unwrap().children;
+            let mut controls = None;
+            while let Some(id) = stack.pop() {
+                if matches!(
                     context.world().node(id).map(|node| node.kind),
                     Some(nana_ui_runtime::NodeKind::Element { tag })
                         if tag.contains("title-bar-controls")
-                )
-            });
+                ) {
+                    controls = Some(id);
+                    break;
+                }
+                if let Some(children) = context.world().node(id).map(|node| node.children) {
+                    stack.extend(children);
+                }
+            }
             let controls = controls.expect("Windows/Linux title bar must assemble window controls");
             assert_eq!(context.world().node(controls).unwrap().children.len(), 3);
         }

@@ -12,7 +12,9 @@ use nana_ui_platform::{
     ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType, TextInputPurpose,
     TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId,
 };
-use nana_ui_runtime::{AccessibilityUpdate, FrameworkError, LayoutViewport, Task};
+use nana_ui_runtime::{
+    AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
+};
 use nana_window::{
     Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
     clear_system_material, prepare_client_chrome,
@@ -41,8 +43,10 @@ use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::theme::ThemeModeExt;
 use crate::{
     HostedGpuContext, HostedGpuError, HostedGpuSurface, HostedRunError, HostedSurfaceFrame,
-    RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry,
+    RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry, TitleBarDragTracker,
+    WindowChromeAction, WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
     default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers,
+    window_commands_for_chrome_action,
 };
 
 const GPU_RETRY_INTERVAL: Duration = Duration::from_secs(2);
@@ -123,6 +127,21 @@ struct SceneReady<Program: RuntimeProgram> {
     last_theme: crate::ThemeMode,
     last_material_mode: nana_window::MaterialEffect,
     ime_requests: HashMap<WindowId, TextInputRequest>,
+    chrome: HashMap<WindowId, WindowChromeSession>,
+}
+
+struct WindowChromeSession {
+    state: WindowChromeState,
+    drag: TitleBarDragTracker,
+}
+
+impl WindowChromeSession {
+    fn new(id: WindowId) -> Self {
+        Self {
+            state: WindowChromeState::for_window(id, crate::WindowChrome::platform_default()),
+            drag: TitleBarDragTracker::default(),
+        }
+    }
 }
 
 impl<Program: RuntimeProgram> SceneRunner<Program> {
@@ -281,7 +300,9 @@ fn initialize<Program: RuntimeProgram>(
         last_theme,
         last_material_mode,
         ime_requests: HashMap::new(),
+        chrome: HashMap::new(),
     };
+    ready.prepare_window_chrome(WindowId::PRIMARY, ready.geometry.maximized);
     let update = ready.program.window_event(
         WindowEvent::Ready {
             id: WindowId::PRIMARY,
@@ -850,6 +871,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         window.set_visible(true);
         window.request_redraw();
+        self.prepare_window_chrome(id, geometry.maximized);
         Ok(WindowEvent::Ready { id, geometry })
     }
 
@@ -857,6 +879,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if id == WindowId::PRIMARY {
             return;
         }
+        self.chrome.remove(&id);
         if let Some(host) = self.auxiliary.remove(&id) {
             #[cfg(target_os = "windows")]
             if let Some(parent) = host
@@ -1019,6 +1042,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         } else if let Some(host) = self.auxiliary.get_mut(&id) {
             host.geometry = window_geometry(host.surface.window());
         }
+        let maximized = self.geometry_of(id).maximized;
+        if let Some(session) = self.chrome.get_mut(&id) {
+            session.state.update(WindowChromeEvent::MaximizedChanged {
+                window: id,
+                maximized,
+            });
+        }
+        self.sync_title_bar_maximized(id, maximized);
     }
 
     fn resize_window(&mut self, id: WindowId) {
@@ -1106,15 +1137,100 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .transpose()
             .unwrap_or_else(|error| panic!("RuntimeProgram input dispatch failed: {error}"))
             .unwrap_or_default();
+        let chrome_action = self.title_bar_chrome_action(id, &input);
         // Runtime may already have consumed the event (prevent_default). Scene
         // still delivers input_event so Gallery can drain Activate bindings and
         // Vue can emit JS. Leftover winit handling stays gated by the caller.
         let update = scene_runtime_input_update(disposition, id, || {
             self.program.input_event(id, &input, &self.context_for(id))
         });
+        let update = self.merge_title_bar_chrome(id, chrome_action, update);
         self.sync_appearance();
         self.apply_update(event_loop, update);
         disposition
+    }
+
+    fn title_bar_chrome_action(
+        &mut self,
+        id: WindowId,
+        input: &InputEvent,
+    ) -> Option<WindowChromeAction> {
+        let program = &self.program;
+        let chrome = &mut self.chrome;
+        let document = program.document(id)?;
+        let session = chrome
+            .entry(id)
+            .or_insert_with(|| WindowChromeSession::new(id));
+        apply_title_bar_pointer(
+            &mut session.state,
+            &mut session.drag,
+            document.context(),
+            document.document(),
+            input,
+        )
+    }
+
+    fn merge_title_bar_chrome(
+        &mut self,
+        id: WindowId,
+        action: Option<WindowChromeAction>,
+        mut update: RuntimeProgramUpdate,
+    ) -> RuntimeProgramUpdate {
+        let Some(action) = action else {
+            return update;
+        };
+        if action == WindowChromeAction::Close && id == WindowId::PRIMARY {
+            update.exit = true;
+            return update;
+        }
+        let maximized = self
+            .chrome
+            .get(&id)
+            .is_some_and(|session| session.state.is_maximized());
+        if action == WindowChromeAction::ToggleMaximize {
+            self.sync_title_bar_maximized(id, maximized);
+        }
+        update
+            .window_commands
+            .extend(window_commands_for_chrome_action(id, action, maximized));
+        update
+    }
+
+    fn prepare_window_chrome(&mut self, id: WindowId, maximized: bool) {
+        let session = self
+            .chrome
+            .entry(id)
+            .or_insert_with(|| WindowChromeSession::new(id));
+        session.state.update(WindowChromeEvent::PrepareWindow(id));
+        session.state.update(WindowChromeEvent::MaximizedChanged {
+            window: id,
+            maximized,
+        });
+        self.sync_title_bar_maximized(id, maximized);
+    }
+
+    fn sync_title_bar_maximized(&mut self, id: WindowId, maximized: bool) {
+        let Some(document) = self.program.document_mut(id) else {
+            return;
+        };
+        let document_id = document.document();
+        let context = document.context_mut();
+        let bars = context
+            .world()
+            .document_order(document_id)
+            .into_iter()
+            .filter(|&node| {
+                context
+                    .read(Entity::<AppTitleBar>::from_stable_id(node), |_| ())
+                    .is_ok()
+            })
+            .collect::<Vec<_>>();
+        for bar in bars {
+            let _ =
+                context.update_component(Entity::<AppTitleBar>::from_stable_id(bar), |bar, _| {
+                    bar.maximized = maximized;
+                });
+        }
     }
 
     #[cfg(not(target_os = "android"))]

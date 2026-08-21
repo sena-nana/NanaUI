@@ -29,7 +29,7 @@ use nana_ui::settings::{
     WindowMaterialMode,
 };
 use nana_ui::theme::{ThemeMode, ThemeModeExt, ThemeTokens};
-use nana_ui::window_chrome::{WindowChromeAction, WindowChromeEvent, WindowChromeState};
+use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
     AppearanceEvent, DockAction, DockId, DockSurfaceId, DockWorkspace, DockWorkspaceEvent,
@@ -1052,24 +1052,10 @@ impl GalleryApp {
 
     pub(crate) fn apply_message(&mut self, message: GalleryMessage) -> RuntimeProgramUpdate {
         if let GalleryMessage::WindowChrome(event) = message {
-            let action = self.state.window_chrome.update(event);
-            let exit = matches!(action, Some(WindowChromeAction::Close));
-            let window_commands = action
-                .map(|action| {
-                    chrome_action_commands(
-                        WindowId::PRIMARY,
-                        action,
-                        self.state.window_chrome.is_maximized(),
-                    )
-                })
-                .unwrap_or_default();
+            let _ = self.state.window_chrome.update(event);
             self.sync_dock_windows();
             self.sync_loading_deadline();
-            return RuntimeProgramUpdate {
-                redraw: RuntimeRedraw::All,
-                window_commands,
-                exit,
-            };
+            return RuntimeProgramUpdate::redraw_all();
         }
         let previous_commands = self.state.dock_window_commands.len();
         self.state.update(message);
@@ -1353,17 +1339,6 @@ impl GalleryApp {
             }));
         }
         RuntimeProgramUpdate::redraw(id)
-    }
-}
-
-fn chrome_action_commands(
-    id: WindowId,
-    action: WindowChromeAction,
-    maximized: bool,
-) -> Vec<WindowCommand> {
-    match action {
-        WindowChromeAction::Close => Vec::new(),
-        action => nana_ui::window_commands_for_chrome_action(id, action, maximized),
     }
 }
 
