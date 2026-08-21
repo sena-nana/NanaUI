@@ -861,7 +861,7 @@ impl AppContext {
     pub fn finish_frame_profile(&mut self) {
         self.world.end_frame_counters();
         self.profiling = false;
-        let profile = std::mem::replace(&mut self.frame_profiler, FrameProfiler::new()).finish();
+        let profile = std::mem::take(&mut self.frame_profiler).finish();
         // Match last_work_counters: an idle flush (no stage ran) must not wipe
         // the last non-empty product profile.
         if profile.any_stage_ran() {

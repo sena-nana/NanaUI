@@ -4,6 +4,8 @@
 //! second paint path. JavaScript runs in the selected Rust-owned engine and all
 //! visible output still maps through NanaUI to Iced/WGPU.
 
+#![allow(clippy::field_reassign_with_default)]
+
 mod canvas;
 mod fetch;
 

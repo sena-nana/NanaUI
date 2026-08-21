@@ -598,10 +598,10 @@ impl<T: Clone> CalendarHeatmap<T> {
     }
 
     fn resolved_label(&self, model: &CalendarHeatmapModel<T>) -> Arc<str> {
-        if let Some(index) = self.active {
-            if let Some(cell) = model.cells.get(index) {
-                return Arc::from(cell.title.as_str());
-            }
+        if let Some(index) = self.active
+            && let Some(cell) = model.cells.get(index)
+        {
+            return Arc::from(cell.title.as_str());
         }
         self.label
             .clone()

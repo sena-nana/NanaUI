@@ -1719,11 +1719,7 @@ fn append_ellipse_arc(
         let y = ry * angle.sin();
         let px = cx + x * cos_r - y * sin_r;
         let py = cy + x * sin_r + y * cos_r;
-        if index == 0 {
-            builder.line_to(px, py);
-        } else {
-            builder.line_to(px, py);
-        }
+        builder.line_to(px, py);
     }
 }
 
@@ -2027,7 +2023,8 @@ fn unpremultiply_rgba(rgba: &[u8]) -> Vec<u8> {
         let a = pixel[3] as u16;
         if a > 0 {
             for channel in &mut pixel[..3] {
-                *channel = ((*channel as u16 * 255 + a / 2) / a).min(255) as u8;
+                let scaled = (*channel as u16).saturating_mul(255).saturating_add(a / 2);
+                *channel = scaled.checked_div(a).unwrap_or(255).min(255) as u8;
             }
         }
     }

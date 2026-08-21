@@ -324,6 +324,7 @@ impl NativeComponentRegistry {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn report_error(&self, component: &str, id: WidgetId, error: JsException) {
         if let Ok(mut errors) = self.errors.lock() {
             const MAX_PENDING_FAILURES: usize = 256;

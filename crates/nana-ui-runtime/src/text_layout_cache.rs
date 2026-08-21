@@ -91,6 +91,7 @@ impl TextLayoutCache {
         Some(metrics)
     }
 
+    #[allow(clippy::map_entry)]
     pub(crate) fn insert(&mut self, key: TextLayoutKey, metrics: TextMetrics) {
         self.misses = self.misses.saturating_add(1);
         if self.entries.contains_key(&key) {

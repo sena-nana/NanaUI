@@ -899,10 +899,9 @@ fn recovered_title(context: &AppContext, parent: StableNodeId) -> Option<Arc<str
     let id = find_title_bar_child(context, parent)?;
     if let Ok(title) = context.read(Entity::<AppTitleBar>::from_stable_id(id), |bar| {
         Arc::clone(&bar.title)
-    }) {
-        if !title.is_empty() {
-            return Some(title);
-        }
+    }) && !title.is_empty()
+    {
+        return Some(title);
     }
     if let Some(text) = context.world().text(id).filter(|text| !text.is_empty()) {
         return Some(Arc::from(text));

@@ -75,6 +75,7 @@ impl GlyphCache {
         Some(advance)
     }
 
+    #[allow(clippy::map_entry)]
     pub fn insert(&mut self, ch: char, style: &ComputedStyle, advance: f32) {
         self.consulted = true;
         self.misses = self.misses.saturating_add(1);

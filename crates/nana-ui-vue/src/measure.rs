@@ -446,15 +446,14 @@ fn place_positioned_child(
         .width
         .and_then(|w| resolve_len(w, Some(cb.width)))
         .unwrap_or(0.0);
-    if let (Some(l), Some(r)) = (left, right) {
-        if node.style.width.is_none()
+    if let (Some(l), Some(r)) = (left, right)
+        && (node.style.width.is_none()
             || matches!(
                 node.style.width,
                 Some(LengthSpec::Auto) | Some(LengthSpec::Fill) | Some(LengthSpec::Shrink)
-            )
-        {
-            width = (cb.width - l - r).max(0.0);
-        }
+            ))
+    {
+        width = (cb.width - l - r).max(0.0);
     }
     let mw = node
         .style
@@ -472,15 +471,14 @@ fn place_positioned_child(
         .height
         .and_then(|h| resolve_len(h, Some(cb.height)))
         .unwrap_or(0.0);
-    if let (Some(t), Some(b)) = (top, bottom) {
-        if node.style.height.is_none()
+    if let (Some(t), Some(b)) = (top, bottom)
+        && (node.style.height.is_none()
             || matches!(
                 node.style.height,
                 Some(LengthSpec::Auto) | Some(LengthSpec::Fill) | Some(LengthSpec::Shrink)
-            )
-        {
-            height = (cb.height - t - b).max(0.0);
-        }
+            ))
+    {
+        height = (cb.height - t - b).max(0.0);
     }
     let mh = node
         .style
@@ -836,7 +834,7 @@ fn layout_row_line(
             let rem = (budget - used).max(0.0);
             let extra = n - resolved.len();
             let each = if extra > 0 { rem / extra as f32 } else { 0.0 };
-            resolved.extend(std::iter::repeat(each).take(extra));
+            resolved.extend(std::iter::repeat_n(each, extra));
         }
         resolved
     } else {
@@ -953,7 +951,7 @@ fn layout_column(
             let rem = (budget - used).max(0.0);
             let extra = n - resolved.len();
             let each = if extra > 0 { rem / extra as f32 } else { 0.0 };
-            resolved.extend(std::iter::repeat(each).take(extra));
+            resolved.extend(std::iter::repeat_n(each, extra));
         }
         resolved
     } else {
@@ -1202,10 +1200,10 @@ fn resolve_flex_fill_sizes(
                 let min = mins[ci].max(0.0);
                 if share + 1e-3 < min {
                     freeze.push((fi, min));
-                } else if let Some(max) = maxs[ci] {
-                    if share > max + 1e-3 {
-                        freeze.push((fi, max.max(0.0)));
-                    }
+                } else if let Some(max) = maxs[ci]
+                    && share > max + 1e-3
+                {
+                    freeze.push((fi, max.max(0.0)));
                 }
             }
             if freeze.is_empty() {
@@ -1233,10 +1231,10 @@ fn resolve_flex_fill_sizes(
             let min = mins[ci].max(0.0);
             if share + 1e-3 < min {
                 freeze.push((fi, min));
-            } else if let Some(max) = maxs[ci] {
-                if share > max + 1e-3 {
-                    freeze.push((fi, max.max(0.0)));
-                }
+            } else if let Some(max) = maxs[ci]
+                && share > max + 1e-3
+            {
+                freeze.push((fi, max.max(0.0)));
             }
         }
         if freeze.is_empty() {
@@ -1480,7 +1478,7 @@ fn content_box_main_border_size(
 fn resolve_cross_size(spec: Option<LengthSpec>, container: f32, align: AlignSpec) -> f32 {
     match spec {
         Some(LengthSpec::Fill) => container,
-        Some(other) => resolve_len(other, Some(container)).unwrap_or_else(|| {
+        Some(other) => resolve_len(other, Some(container)).unwrap_or({
             if matches!(align, AlignSpec::Stretch) {
                 container
             } else {
@@ -2135,7 +2133,7 @@ mod tests {
             ],
         );
         let map = map_of(&root, 400.0, 80.0);
-        assert!(map.get("hidden").is_none());
+        assert!(!map.contains_key("hidden"));
         assert!((map["b"].x - 60.0).abs() < 0.01);
     }
 
@@ -2165,7 +2163,7 @@ mod tests {
             ],
         );
         let map = map_of(&root, 400.0, 100.0);
-        assert!(map.get("gone").is_none());
+        assert!(!map.contains_key("gone"));
         assert!((map["b"].x - 60.0).abs() < 0.01);
     }
 

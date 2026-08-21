@@ -300,20 +300,22 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     },
                     None,
                 )?;
-                if *pressed && let Some(text) = text.as_deref().filter(|text| !text.is_empty()) {
-                    if let Some(target) = host.focused() {
-                        let is_text =
-                            host.document().lock().ok().is_some_and(|document| {
-                                document.text_input_state(target).is_some()
-                            });
-                        if is_text {
-                            let _ = host.emit_text_events_from_runtime(
-                                &mut self.engine,
-                                target,
-                                text,
-                                "insertText",
-                            );
-                        }
+                if *pressed
+                    && let Some(text) = text.as_deref().filter(|text| !text.is_empty())
+                    && let Some(target) = host.focused()
+                {
+                    let is_text = host
+                        .document()
+                        .lock()
+                        .ok()
+                        .is_some_and(|document| document.text_input_state(target).is_some());
+                    if is_text {
+                        let _ = host.emit_text_events_from_runtime(
+                            &mut self.engine,
+                            target,
+                            text,
+                            "insertText",
+                        );
                     }
                 }
                 Ok(HostedInputResult {
@@ -517,12 +519,14 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HostedTextPosition {
     line: usize,
     index: usize,
 }
 
+#[cfg(test)]
 fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPosition> {
     if byte_offset > value.len() || !value.is_char_boundary(byte_offset) {
         return None;

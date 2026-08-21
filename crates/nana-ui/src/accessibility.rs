@@ -116,10 +116,10 @@ impl AccessibilityProjector {
         );
 
         for id in &removed {
-            if let Some(parent_id) = self.nodes.get(id).and_then(|node| node.parent) {
-                if let Some(parent) = self.nodes.get_mut(&parent_id) {
-                    parent.children.retain(|child| child != id);
-                }
+            if let Some(parent_id) = self.nodes.get(id).and_then(|node| node.parent)
+                && let Some(parent) = self.nodes.get_mut(&parent_id)
+            {
+                parent.children.retain(|child| child != id);
             }
             self.nodes.remove(id);
             changed.remove(id);
@@ -137,13 +137,12 @@ impl AccessibilityProjector {
                 }
                 changed.insert(old_parent);
             }
-            if let Some(parent_id) = node.parent {
-                if let Some(parent) = self.nodes.get_mut(&parent_id) {
-                    if !parent.children.contains(&node.id) {
-                        parent.children.push(node.id);
-                        changed.insert(parent_id);
-                    }
-                }
+            if let Some(parent_id) = node.parent
+                && let Some(parent) = self.nodes.get_mut(&parent_id)
+                && !parent.children.contains(&node.id)
+            {
+                parent.children.push(node.id);
+                changed.insert(parent_id);
             }
             self.nodes.insert(node.id, node);
         }

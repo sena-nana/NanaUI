@@ -1337,21 +1337,20 @@ fn mount_settings_row(
             hint_slot = existing_hint;
             copy_slot = existing_copy;
         }
-        if label_slot.is_none() {
-            if let Some(first_child) = context
+        if label_slot.is_none()
+            && let Some(first_child) = context
                 .world()
                 .node(row_id)
                 .and_then(|node| node.children.first().copied())
                 .filter(|child| *child != control)
-            {
-                let nested = context
-                    .world()
-                    .node(first_child)
-                    .map(|node| node.children.clone())
-                    .unwrap_or_default();
-                if nested.is_empty() {
-                    label_slot = Some(first_child);
-                }
+        {
+            let nested = context
+                .world()
+                .node(first_child)
+                .map(|node| node.children.clone())
+                .unwrap_or_default();
+            if nested.is_empty() {
+                label_slot = Some(first_child);
             }
         }
     }
@@ -1904,16 +1903,14 @@ impl AppContext {
                 cx.emit(AppearanceEvent::TitlebarFollowsSidebar(event.checked));
             })?;
         }
-        if created_opacity_range {
-            if let Some(id) = assembly.opacity_range {
-                self.observe(
-                    Entity::<RangeField>::from_stable_id(id),
-                    section,
-                    |_, event: &RangeChanged, cx| {
-                        cx.emit(AppearanceEvent::BackdropOpacity(event.value as f32 / 100.0));
-                    },
-                )?;
-            }
+        if created_opacity_range && let Some(id) = assembly.opacity_range {
+            self.observe(
+                Entity::<RangeField>::from_stable_id(id),
+                section,
+                |_, event: &RangeChanged, cx| {
+                    cx.emit(AppearanceEvent::BackdropOpacity(event.value as f32 / 100.0));
+                },
+            )?;
         }
         if created_workspace {
             self.observe(workspace_switch, section, |_, event: &ToggleChanged, cx| {
@@ -2235,10 +2232,8 @@ impl AppContext {
         };
 
         let mut column_children = Vec::new();
-        if show_header {
-            if let Some(title) = assembly.title {
-                column_children.push(title);
-            }
+        if show_header && let Some(title) = assembly.title {
+            column_children.push(title);
         }
         if let Some(content) = content {
             column_children.push(content);

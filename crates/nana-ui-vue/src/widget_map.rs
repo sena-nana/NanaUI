@@ -28,10 +28,10 @@ pub fn resolve_kind_from_hints(
     let role = role.unwrap_or("").to_ascii_lowercase();
     let input_type = input_type.unwrap_or("").to_ascii_lowercase();
 
-    if tag.starts_with("nana-") {
-        if let Some(kind) = WidgetKind::parse(&tag) {
-            return Some(kind);
-        }
+    if tag.starts_with("nana-")
+        && let Some(kind) = WidgetKind::parse(&tag)
+    {
+        return Some(kind);
     }
 
     for token in class.split_whitespace() {
@@ -74,10 +74,10 @@ pub fn resolve_kind_from_hints(
         _ => {}
     }
 
-    if !is_html_tag_name(&tag) {
-        if let Some(kind) = WidgetKind::parse(&tag) {
-            return Some(kind);
-        }
+    if !is_html_tag_name(&tag)
+        && let Some(kind) = WidgetKind::parse(&tag)
+    {
+        return Some(kind);
     }
 
     Some(match tag.as_str() {

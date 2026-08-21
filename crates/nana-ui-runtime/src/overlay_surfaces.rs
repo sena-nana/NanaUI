@@ -24,19 +24,10 @@ pub enum ModalInitialFocus {
     Target(StableNodeId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ModalBehavior {
     pub close_policy: DialogClosePolicy,
     pub initial_focus: ModalInitialFocus,
-}
-
-impl Default for ModalBehavior {
-    fn default() -> Self {
-        Self {
-            close_policy: DialogClosePolicy::default(),
-            initial_focus: ModalInitialFocus::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

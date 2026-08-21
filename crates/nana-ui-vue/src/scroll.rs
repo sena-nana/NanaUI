@@ -213,8 +213,8 @@ pub fn scroll_into_view(
         let anc_id = anc.0;
         if let Some(widget) = bridge.get(anc_id) {
             let layout = &widget.props.layout;
-            if scrolls_axis(layout) {
-                if let Some(applied) = scroll_ancestor_to_target(
+            if scrolls_axis(layout)
+                && let Some(applied) = scroll_ancestor_to_target(
                     doc,
                     layout_store,
                     scroll_store,
@@ -223,9 +223,9 @@ pub fn scroll_into_view(
                     opts,
                     layout.scrolls_y(),
                     layout.overflow_x.scrolls(),
-                ) {
-                    result.scrolled.push((anc_id, applied));
-                }
+                )
+            {
+                result.scrolled.push((anc_id, applied));
             }
         }
         ancestor = doc.parent_node(anc);

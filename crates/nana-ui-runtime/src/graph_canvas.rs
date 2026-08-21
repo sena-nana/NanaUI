@@ -80,8 +80,9 @@ pub enum GraphScrollDelta {
     Pixels { y: f32 },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum GraphInteraction {
+    #[default]
     None,
     Pan {
         pointer_id: u64,
@@ -100,12 +101,6 @@ pub enum GraphInteraction {
         source: GraphEndpoint,
         current: GraphPoint,
     },
-}
-
-impl Default for GraphInteraction {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl GraphInteraction {

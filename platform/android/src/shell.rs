@@ -154,21 +154,25 @@ impl AndroidShellStub {
                 color: [0.14, 0.16, 0.20, 1.0],
             });
         }
-        if let Some(resources) = self.geometry.region(&RegionId::Resources) {
-            if resources.visible && resources.physical.width > 0 && resources.physical.height > 0 {
-                bands.push(ShellChromeBand {
-                    rect: resources.physical,
-                    color: [0.11, 0.13, 0.17, 1.0],
-                });
-            }
+        if let Some(resources) = self.geometry.region(&RegionId::Resources)
+            && resources.visible
+            && resources.physical.width > 0
+            && resources.physical.height > 0
+        {
+            bands.push(ShellChromeBand {
+                rect: resources.physical,
+                color: [0.11, 0.13, 0.17, 1.0],
+            });
         }
-        if let Some(primary) = self.geometry.region(&RegionId::Primary) {
-            if primary.visible && primary.physical.width > 0 && primary.physical.height > 0 {
-                bands.push(ShellChromeBand {
-                    rect: primary.physical,
-                    color: [0.10, 0.12, 0.16, 1.0],
-                });
-            }
+        if let Some(primary) = self.geometry.region(&RegionId::Primary)
+            && primary.visible
+            && primary.physical.width > 0
+            && primary.physical.height > 0
+        {
+            bands.push(ShellChromeBand {
+                rect: primary.physical,
+                color: [0.10, 0.12, 0.16, 1.0],
+            });
         }
         if bands.is_empty() && fw > 0 && fh > 0 {
             bands.push(ShellChromeBand {

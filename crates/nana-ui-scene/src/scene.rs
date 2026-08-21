@@ -3353,6 +3353,7 @@ fn component_geometry_owns_text(geometry: Option<&ComponentGeometry>) -> bool {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn component_text_primitive(
     id: StableNodeId,
     slot: u8,

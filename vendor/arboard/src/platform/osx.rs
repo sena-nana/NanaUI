@@ -122,7 +122,7 @@ impl Clipboard {
 	}
 
 	fn clear(&mut self) {
-		unsafe { self.pasteboard.clearContents() };
+		self.pasteboard.clearContents();
 	}
 
 	fn string_from_type(&self, type_: &'static NSString) -> Result<String, Error> {
@@ -132,11 +132,13 @@ impl Clipboard {
 			// XXX: We explicitly use `pasteboardItems` and not `stringForType` since the latter will concat
 			// multiple strings, if present, into one and return it instead of reading just the first which is `arboard`'s
 			// historical behavior.
-			let contents = unsafe { self.pasteboard.pasteboardItems() }
+			let contents = self
+				.pasteboard
+				.pasteboardItems()
 				.ok_or_else(|| Error::unknown("NSPasteboard#pasteboardItems errored"))?;
 
 			for item in contents {
-				if let Some(string) = unsafe { item.stringForType(type_) } {
+				if let Some(string) = item.stringForType(type_) {
 					return Ok(string.to_string());
 				}
 			}
@@ -260,7 +262,7 @@ impl<'clipboard> Get<'clipboard> {
 						.iter()
 						.filter_map(|obj| {
 							obj.downcast::<NSURL>().ok().and_then(|url| {
-								unsafe { url.path() }.map(|p| PathBuf::from(p.to_string()))
+								url.path().map(|p| PathBuf::from(p.to_string()))
 							})
 						})
 						.collect::<Vec<_>>()
@@ -287,7 +289,7 @@ impl<'clipboard> Set<'clipboard> {
 		let string_array = NSArray::from_retained_slice(&[ProtocolObject::from_retained(
 			NSString::from_str(&data),
 		)]);
-		let success = unsafe { self.clipboard.pasteboard.writeObjects(&string_array) };
+		let success = self.clipboard.pasteboard.writeObjects(&string_array);
 
 		add_clipboard_exclusions(self.clipboard, self.exclude_from_history);
 
@@ -361,7 +363,7 @@ impl<'clipboard> Set<'clipboard> {
 			.filter_map(|path| {
 				path.as_ref().canonicalize().ok().and_then(|abs_path| {
 					abs_path.to_str().map(|str| {
-						let url = unsafe { NSURL::fileURLWithPath(&NSString::from_str(str)) };
+						let url = NSURL::fileURLWithPath(&NSString::from_str(str));
 						ProtocolObject::from_retained(url)
 					})
 				})
@@ -373,7 +375,7 @@ impl<'clipboard> Set<'clipboard> {
 		}
 
 		let objects = NSArray::from_retained_slice(&uri_list);
-		let success = unsafe { self.clipboard.pasteboard.writeObjects(&objects) };
+		let success = self.clipboard.pasteboard.writeObjects(&objects);
 
 		add_clipboard_exclusions(self.clipboard, self.exclude_from_history);
 
@@ -406,11 +408,10 @@ fn add_clipboard_exclusions(clipboard: &mut Clipboard, exclude_from_history: boo
 	//
 	// See http://nspasteboard.org/ for details about the community standard.
 	if exclude_from_history {
-		unsafe {
-			clipboard
-				.pasteboard
-				.setString_forType(ns_string!(""), ns_string!("org.nspasteboard.ConcealedType"));
-		}
+		clipboard.pasteboard.setString_forType(
+			ns_string!(""),
+			ns_string!("org.nspasteboard.ConcealedType"),
+		);
 	}
 }
 

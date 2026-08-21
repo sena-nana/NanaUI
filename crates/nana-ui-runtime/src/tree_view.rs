@@ -253,8 +253,6 @@ pub(crate) fn tree_view_geometry(
                     content: Arc::clone(&row.label),
                     color: Some(if row.disabled {
                         palette.faint.as_rgba_array()
-                    } else if row.selected {
-                        palette.text.as_rgba_array()
                     } else {
                         palette.text.as_rgba_array()
                     }),

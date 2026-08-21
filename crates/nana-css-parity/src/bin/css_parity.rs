@@ -39,7 +39,7 @@ fn main() -> ExitCode {
             print!("{}", fixture_to_html(case));
             ExitCode::SUCCESS
         }
-        "compare" | _ => {
+        _ => {
             let fixtures = match load_all_fixtures() {
                 Ok(f) => f,
                 Err(e) => {

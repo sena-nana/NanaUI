@@ -1390,12 +1390,12 @@ fn project_overlay(
             visible: true,
         }
         .project(id, world, mutations);
-    } else if let Some(current) = world.node_style(id) {
-        if !current.layout.hidden {
-            let mut style = current.clone();
-            Arc::make_mut(&mut style.layout).hidden = true;
-            mutations.set_style(id, style);
-        }
+    } else if let Some(current) = world.node_style(id)
+        && !current.layout.hidden
+    {
+        let mut style = current.clone();
+        Arc::make_mut(&mut style.layout).hidden = true;
+        mutations.set_style(id, style);
     }
 }
 

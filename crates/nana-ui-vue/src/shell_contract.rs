@@ -90,10 +90,8 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                     layout.border_radius = Some(8.0);
                 }
             }
-            "rounded-full" | "pill" => {
-                if layout.border_radius.is_none() {
-                    layout.border_radius = Some(999.0);
-                }
+            "rounded-full" | "pill" if layout.border_radius.is_none() => {
+                layout.border_radius = Some(999.0);
             }
             _ => {}
         }
@@ -445,10 +443,8 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
             "nana-switch--control-end" => {
                 layout.justify_content = JustifySpec::SpaceBetween;
             }
-            "nana-tabs--fill" => {
-                if layout.width.is_none() {
-                    layout.width = Some(LengthSpec::Fill);
-                }
+            "nana-tabs--fill" if layout.width.is_none() => {
+                layout.width = Some(LengthSpec::Fill);
             }
             _ => {}
         }

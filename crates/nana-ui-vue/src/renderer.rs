@@ -1065,9 +1065,9 @@ fn patch_prop(doc: &mut NanaTreeDocument, el: NodeHandle, key: &str, value: Host
         _ => match value {
             HostValue::Null | HostValue::Undefined => doc.remove_attribute(el, key),
             other => {
-                if other.as_bool() == Some(false) {
-                    doc.remove_attribute(el, key);
-                } else if is_boolean_attr(key) && is_falsey_attr_value(&other) {
+                if other.as_bool() == Some(false)
+                    || (is_boolean_attr(key) && is_falsey_attr_value(&other))
+                {
                     doc.remove_attribute(el, key);
                 } else if is_boolean_attr(key) && include_boolean_attr(&other) {
                     doc.set_attribute(el, key, "");
@@ -1256,10 +1256,10 @@ fn seed_bridge_node(doc: &NanaTreeDocument, bridge: &mut MessageBridge, node: No
             if let Some(class) = doc.get_attribute(node, "class") {
                 props.class_names = class.split_whitespace().map(str::to_string).collect();
             }
-            if let Some(label) = doc.text_content(node) {
-                if !label.trim().is_empty() {
-                    props.label = label;
-                }
+            if let Some(label) = doc.text_content(node)
+                && !label.trim().is_empty()
+            {
+                props.label = label;
             }
             bridge.register(id, kind, props);
         }
