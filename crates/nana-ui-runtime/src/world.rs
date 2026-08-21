@@ -435,7 +435,8 @@ impl UiWorld {
         }
     }
 
-    /// Whether a retained node currently participates in its document.
+    /// Whether the node is `Mounted`. Parked is not; Detach stays mounted but
+    /// is omitted from the live document until inserted.
     pub fn is_mounted(&self, id: StableNodeId) -> bool {
         let Some(&entity) = self.entities.get(&id) else {
             return false;
@@ -774,7 +775,7 @@ impl UiWorld {
                 .get_mut::<DirtyMask>(entity)
                 .expect("entity must have dirty component")
                 .take();
-            if !self.is_mounted(id) {
+            if !self.presence_live(id) {
                 continue;
             }
             let has_text = matches!(self.component::<Kind>(id).0.as_ref(), NodeKind::Text)
@@ -967,11 +968,10 @@ impl UiWorld {
         let mut child = id;
         let mut current = Some(id);
         while let Some(candidate) = current {
-            if !self.is_mounted(candidate)
-                || self.node_style(candidate).is_some_and(|style| {
-                    style.layout.hidden
-                        || matches!(style.layout.display, Some(nana_ui_core::DisplaySpec::None))
-                })
+            if !self.presence_live(candidate)
+                || self
+                    .node_style(candidate)
+                    .is_some_and(|style| style.layout.omits_box())
                 || (!self.dirty_entities.contains(&candidate)
                     && self
                         .computed_style(candidate)
@@ -1617,7 +1617,7 @@ impl UiWorld {
                 let has_text = matches!(self.component::<Kind>(id).0.as_ref(), NodeKind::Text)
                     || !self.component::<TextContent>(id).value.is_empty();
                 let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
-                if !self.is_mounted(id) || !self.overlay_branch_active(id) {
+                if !self.presence_live(id) || !self.overlay_branch_active(id) || style.omits_box() {
                     Arc::make_mut(&mut style).hidden = true;
                 }
                 let children = hierarchy.children.as_ref().clone();
@@ -1662,7 +1662,7 @@ impl UiWorld {
             .copied()
             .filter(|id| {
                 self.component::<Identity>(*id).document == document
-                    && self.is_mounted(*id)
+                    && self.presence_live(*id)
                     && self.component::<Hierarchy>(*id).parent.is_none()
             })
             .collect::<Vec<_>>();
@@ -1968,45 +1968,16 @@ impl UiWorld {
                 self.detached.remove(child);
                 self.sync_subtree_presence(*child);
             }
-            UiMutation::Remove { id } => {
-                let parent = self.node(*id).expect("validated node must exist").parent;
-                if let Some(parent) = parent {
-                    let mut hierarchy = self.hierarchy_mut(parent);
-                    Arc::make_mut(&mut hierarchy.children).retain(|child| child != id);
-                    intern_empty_children(&mut hierarchy.children);
-                    drop(hierarchy);
-                    self.hierarchy_mut(*id).parent = None;
-                    self.mark_subtree(*id, DirtyMask::ALL);
-                    self.mark_ancestors(
-                        parent,
-                        DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
-                    );
+            UiMutation::Detach { id } => {
+                if self.unlink_from_parent(*id) {
                     report.detached += 1;
                 }
-                if *self.component::<MountState>(*id) != MountState::Mounted {
-                    self.set_subtree_mount_state(*id, MountState::Mounted);
-                }
-                self.detached.insert(*id);
-                self.sync_subtree_presence(*id);
+                self.leave_live_document(*id);
             }
             UiMutation::ParkSubtree { root } => {
-                let parent = self.node(*root).expect("validated node must exist").parent;
-                if let Some(parent) = parent {
-                    let mut hierarchy = self.hierarchy_mut(parent);
-                    Arc::make_mut(&mut hierarchy.children).retain(|child| child != root);
-                    intern_empty_children(&mut hierarchy.children);
-                    drop(hierarchy);
-                    self.hierarchy_mut(*root).parent = None;
-                    self.mark_ancestors(
-                        parent,
-                        DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
-                    );
-                }
-                let subtree = self.subtree_ids(*root);
+                self.unlink_from_parent(*root);
                 self.set_subtree_mount_state(*root, MountState::Parked);
-                self.retire_subtree_from_document(&subtree);
-                self.detached.insert(*root);
-                self.sync_subtree_presence(*root);
+                self.leave_live_document(*root);
             }
             UiMutation::DespawnSubtree { root } => {
                 let root_snapshot = self.node(*root).expect("validated root must exist");
@@ -2086,7 +2057,7 @@ impl UiWorld {
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
                     || previous.layout.opacity != style.layout.opacity;
-                let visibility_changed = previous.layout.hidden != style.layout.hidden;
+                let visibility_changed = previous.layout.omits_box() != style.layout.omits_box();
                 let transform_changed = previous.layout.transform != style.layout.transform
                     || previous.layout.unsupported_transform != style.layout.unsupported_transform;
                 let stacking_changed = previous.layout.z_index != style.layout.z_index;
@@ -2591,7 +2562,7 @@ impl UiWorld {
         ids.len()
     }
 
-    fn presence_live(&self, id: StableNodeId) -> bool {
+    pub(crate) fn presence_live(&self, id: StableNodeId) -> bool {
         if !self.is_mounted(id) {
             return false;
         }
@@ -2672,7 +2643,7 @@ impl UiWorld {
     }
 
     fn extract_node(&self, id: StableNodeId) -> Option<ExtractedNode> {
-        if !self.is_mounted(id) {
+        if !self.presence_live(id) {
             return None;
         }
         let entity = *self.entities.get(&id)?;
@@ -4457,7 +4428,7 @@ impl UiWorld {
                 .border_color
                 .or_else(|| paint.border.map(|role| palette.get(role).as_rgba_array())),
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
-            visible: !layout.hidden && inherited.visible && self.overlay_branch_active(id),
+            visible: !layout.omits_box() && inherited.visible && self.overlay_branch_active(id),
             font_size: layout.font_size.unwrap_or(inherited.font_size),
             font_weight: layout.font_weight.or(inherited.font_weight),
             font_family: layout
@@ -4490,7 +4461,7 @@ impl UiWorld {
             .filter(|id| {
                 let identity = self.component::<Identity>(*id);
                 identity.document == document
-                    && self.is_mounted(*id)
+                    && self.presence_live(*id)
                     && self.component::<Hierarchy>(*id).parent.is_none()
             })
             .collect::<Vec<_>>();
@@ -4559,6 +4530,29 @@ impl UiWorld {
         if state == MountState::Mounted {
             self.mark_subtree(root, DirtyMask::ALL);
         }
+    }
+
+    fn unlink_from_parent(&mut self, id: StableNodeId) -> bool {
+        let Some(parent) = self.node(id).expect("validated node must exist").parent else {
+            return false;
+        };
+        let mut hierarchy = self.hierarchy_mut(parent);
+        Arc::make_mut(&mut hierarchy.children).retain(|child| *child != id);
+        intern_empty_children(&mut hierarchy.children);
+        drop(hierarchy);
+        self.hierarchy_mut(id).parent = None;
+        self.mark_ancestors(
+            parent,
+            DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+        );
+        true
+    }
+
+    fn leave_live_document(&mut self, root: StableNodeId) {
+        let subtree = self.subtree_ids(root);
+        self.retire_subtree_from_document(&subtree);
+        self.detached.insert(root);
+        self.sync_subtree_presence(root);
     }
 
     fn retire_subtree_from_document(&mut self, subtree: &[StableNodeId]) {
@@ -5423,9 +5417,8 @@ impl<'a> ValidationPlan<'a> {
                     child,
                     before,
                 } => self.insert(*parent, *child, *before)?,
-                UiMutation::Remove { id } => {
+                UiMutation::Detach { id } => {
                     self.detach(*id)?;
-                    self.set_parked_subtree(*id, false)?;
                 }
                 UiMutation::ParkSubtree { root } => self.park(*root)?,
                 UiMutation::DespawnSubtree { root } => self.despawn_subtree(*root)?,
@@ -5985,10 +5978,7 @@ impl<'a> ValidationPlan<'a> {
                         .node_style(id)
                         .map(|style| style.layout.as_ref())
                 });
-            if layout.is_some_and(|layout| {
-                layout.hidden || matches!(layout.display, Some(nana_ui_core::DisplaySpec::None))
-            }) || !self.overlay_branch_active(id)?
-            {
+            if layout.is_some_and(|layout| layout.omits_box()) || !self.overlay_branch_active(id)? {
                 return Ok(false);
             }
             let Some(parent) = self.node(id)?.parent else {
@@ -6951,7 +6941,7 @@ mod tests {
 
         let mut queue = MutationQueue::new();
         queue.insert(node(2), node(3), None);
-        queue.remove(node(4));
+        queue.detach(node(4));
         let report = world.commit(queue).unwrap();
         assert_eq!(report.reparented, 1);
         assert_eq!(report.detached, 1);
@@ -6959,6 +6949,14 @@ mod tests {
         assert_eq!(world.node(node(2)).unwrap().children, vec![node(3)]);
         assert_eq!(world.node(node(4)).unwrap().parent, None);
         assert_eq!(world.mount_state(node(4)), Some(MountState::Mounted));
+        assert!(world.contains(node(4)));
+        assert!(!world.document_order(document(1)).contains(&node(4)));
+        assert!(world.extract_nodes(&[node(4)]).is_empty());
+
+        let mut attach = MutationQueue::new();
+        attach.insert(node(1), node(4), None);
+        world.commit(attach).unwrap();
+        assert_eq!(world.node(node(4)).unwrap().parent, Some(node(1)));
         assert!(world.document_order(document(1)).contains(&node(4)));
     }
 
@@ -7190,6 +7188,47 @@ mod tests {
             world.commit(focus),
             Err(UiWorldError::NotFocusable(node(2)))
         );
+    }
+
+    #[test]
+    fn display_none_is_omitted_from_document_extraction() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        world.commit(create).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert!(
+            world
+                .extract_document(document(1))
+                .iter()
+                .any(|extracted| extracted.id == node(2))
+        );
+
+        let mut hidden = NodeStyle::default();
+        Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
+        let mut hide = MutationQueue::new();
+        hide.set_style(node(2), hidden);
+        world.commit(hide).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert!(
+            world
+                .extract_document(document(1))
+                .iter()
+                .all(|extracted| extracted.id != node(2))
+        );
+        let incremental = world.extract_nodes(&[node(2)]);
+        assert_eq!(incremental.len(), 1);
+        assert!(!incremental[0].style.visible);
     }
 
     #[test]
@@ -8627,9 +8666,9 @@ mod tests {
         assert_eq!(world.z_index_nodes, 1);
 
         let mut remove = MutationQueue::new();
-        remove.remove(node(2));
-        remove.remove(node(3));
-        remove.remove(node(4));
+        remove.detach(node(2));
+        remove.detach(node(3));
+        remove.detach(node(4));
         world.commit(remove).unwrap();
         assert_eq!(world.confirm_modals, 0);
         assert_eq!(world.clip_visuals, 0);
