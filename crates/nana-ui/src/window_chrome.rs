@@ -1,5 +1,6 @@
-use nana_ui_core::LogicalPoint;
-use nana_ui_platform::WindowId;
+use nana_ui_core::{LengthSpec, LogicalPoint};
+use nana_ui_platform::{InputEvent, PointerPhase, WindowId};
+use nana_ui_runtime::{AccessibilityRole, AppContext, AppTitleBar, DocumentId, Entity, NodeKind};
 
 pub use nana_ui_core::{WindowChrome, WindowChromeAction, WindowControlMode};
 
@@ -141,6 +142,161 @@ impl WindowChromeState {
 impl Default for WindowChromeState {
     fn default() -> Self {
         Self::new(WindowChrome::platform_default())
+    }
+}
+
+/// Tracks a title-bar pointer gesture and emits [`WindowChromeEvent`]s.
+#[derive(Debug, Clone, Default)]
+pub struct TitleBarDragTracker {
+    pressed: bool,
+}
+
+impl TitleBarDragTracker {
+    pub fn events(
+        &mut self,
+        context: &AppContext,
+        document: DocumentId,
+        event: &InputEvent,
+    ) -> Vec<WindowChromeEvent> {
+        match event {
+            InputEvent::Pointer {
+                phase: PointerPhase::Down,
+                button: 0,
+                is_primary: true,
+                x,
+                y,
+                ..
+            } => {
+                if !title_bar_drag_hit(context, document, *x, *y) {
+                    return Vec::new();
+                }
+                self.pressed = true;
+                vec![
+                    WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)),
+                    WindowChromeEvent::PointerPressed,
+                ]
+            }
+            InputEvent::Pointer {
+                phase: PointerPhase::Move,
+                x,
+                y,
+                ..
+            } if self.pressed => {
+                vec![WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y))]
+            }
+            InputEvent::Pointer {
+                phase: PointerPhase::Up,
+                button: 0,
+                ..
+            } if self.pressed => {
+                self.pressed = false;
+                vec![WindowChromeEvent::PointerReleased]
+            }
+            InputEvent::Pointer {
+                phase: PointerPhase::Cancel,
+                ..
+            } if self.pressed => {
+                self.pressed = false;
+                vec![WindowChromeEvent::PointerCancelled]
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// True when `(x, y)` is blank custom-title-bar chrome (not traffic lights or buttons).
+fn title_bar_drag_hit(context: &AppContext, document: DocumentId, x: f32, y: f32) -> bool {
+    let mut current = context.pointer_target(document, x, y);
+    while let Some(id) = current {
+        if is_app_title_bar(context, id) {
+            return !native_title_bar_control_hit(context, id, x, y);
+        }
+        if is_title_bar_control(context, id) {
+            return false;
+        }
+        current = context.world().node(id).and_then(|node| node.parent);
+    }
+    false
+}
+
+/// Reduces title-bar pointer input through [`TitleBarDragTracker`] and [`WindowChromeState`].
+pub fn apply_title_bar_pointer(
+    state: &mut WindowChromeState,
+    tracker: &mut TitleBarDragTracker,
+    context: &AppContext,
+    document: DocumentId,
+    event: &InputEvent,
+) -> Option<WindowChromeAction> {
+    let mut action = None;
+    for chrome_event in tracker.events(context, document, event) {
+        action = state.update(chrome_event).or(action);
+    }
+    action
+}
+
+fn is_app_title_bar(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
+    context
+        .read(Entity::<AppTitleBar>::from_stable_id(id), |_| ())
+        .is_ok()
+        || context.world().node(id).is_some_and(|node| {
+            matches!(
+                &node.kind,
+                NodeKind::Element { tag }
+                    if tag == "app-title-bar" || tag == "nana-app-title-bar"
+            )
+        })
+}
+
+fn native_title_bar_control_hit(
+    context: &AppContext,
+    title_bar: nana_ui_runtime::StableNodeId,
+    x: f32,
+    y: f32,
+) -> bool {
+    let Some(bounds) = context.world().layout_box(title_bar) else {
+        return false;
+    };
+    if let Ok(hit) = context.read(Entity::<AppTitleBar>::from_stable_id(title_bar), |bar| {
+        bar.native_control_hit(bounds, x, y)
+    }) {
+        return hit;
+    }
+    let style = context.world().node_style(title_bar);
+    let leading = style
+        .map(|s| px_length(s.layout.padding_left))
+        .unwrap_or(0.0);
+    let trailing = style
+        .map(|s| px_length(s.layout.padding_right))
+        .unwrap_or(0.0);
+    WindowChrome::new(
+        if leading > 0.0 {
+            WindowControlMode::NativeLeading
+        } else if trailing > 0.0 {
+            WindowControlMode::NativeTrailing
+        } else {
+            WindowControlMode::Custom
+        },
+        leading,
+        trailing,
+    )
+    .native_control_hit(
+        nana_ui_core::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+        x,
+        y,
+    )
+}
+
+fn is_title_bar_control(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
+    context
+        .world()
+        .accessibility(id)
+        .is_some_and(|state| state.role == AccessibilityRole::Button)
+}
+
+fn px_length(spec: Option<LengthSpec>) -> f32 {
+    match spec {
+        Some(LengthSpec::Px(value)) => value,
+        _ => 0.0,
     }
 }
 
@@ -323,5 +479,112 @@ mod tests {
         assert!(!chrome.native_control_hit(bar, 90.0, 18.0));
         assert!(!chrome.native_control_hit(bar, 12.0, 40.0));
         assert!(!WindowChrome::custom().native_control_hit(bar, 12.0, 18.0));
+    }
+
+    fn pointer_down(x: f32, y: f32) -> nana_ui_platform::InputEvent {
+        nana_ui_platform::InputEvent::Pointer {
+            phase: nana_ui_platform::PointerPhase::Down,
+            pointer_id: 1,
+            pointer_type: nana_ui_platform::PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: 1,
+            pressure: 0.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            modifiers: nana_ui_platform::InputModifiers::default(),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn pointer_move(x: f32, y: f32) -> nana_ui_platform::InputEvent {
+        let mut event = pointer_down(x, y);
+        if let nana_ui_platform::InputEvent::Pointer { phase, buttons, .. } = &mut event {
+            *phase = nana_ui_platform::PointerPhase::Move;
+            *buttons = 1;
+        }
+        event
+    }
+
+    fn title_bar_document() -> (
+        nana_ui_runtime::AppContext,
+        nana_ui_runtime::DocumentId,
+        nana_ui_runtime::Entity<nana_ui_runtime::AppTitleBar>,
+        nana_ui_runtime::Entity<nana_ui_runtime::IconButton>,
+    ) {
+        use nana_ui_core::{ControlSize, Icon};
+        use nana_ui_runtime::{AppContext, AppTitleBar, DocumentId, IconButton, LayoutViewport};
+
+        let document = DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let button = context
+            .create_component(
+                document,
+                IconButton::new(Icon::Sidebar, "toggle").size(ControlSize::Small),
+            )
+            .unwrap();
+        let bar = context
+            .create_component(
+                document,
+                AppTitleBar::new("Nana").leading(button.stable_id()),
+            )
+            .unwrap();
+        context.append_child(bar, button).unwrap();
+        context
+            .layout_document(document, LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+        (context, document, bar, button)
+    }
+
+    #[test]
+    fn blank_title_bar_pointer_starts_window_drag() {
+        use super::{TitleBarDragTracker, apply_title_bar_pointer, title_bar_drag_hit};
+
+        let (context, document, bar, button) = title_bar_document();
+        let bounds = context.world().layout_box(bar.stable_id()).unwrap();
+        let blank_x = bounds.x + bounds.width - 24.0;
+        let blank_y = bounds.y + bounds.height / 2.0;
+        assert!(title_bar_drag_hit(&context, document, blank_x, blank_y));
+
+        let button_box = context.world().layout_box(button.stable_id()).unwrap();
+        assert!(!title_bar_drag_hit(
+            &context,
+            document,
+            button_box.x + button_box.width / 2.0,
+            button_box.y + button_box.height / 2.0,
+        ));
+
+        let mut state = WindowChromeState::default();
+        let mut tracker = TitleBarDragTracker::default();
+        let pressed = apply_title_bar_pointer(
+            &mut state,
+            &mut tracker,
+            &context,
+            document,
+            &pointer_down(blank_x, blank_y),
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(pressed, Some(WindowChromeAction::Drag));
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(pressed, None);
+            assert_eq!(
+                apply_title_bar_pointer(
+                    &mut state,
+                    &mut tracker,
+                    &context,
+                    document,
+                    &pointer_move(blank_x + 8.0, blank_y),
+                ),
+                Some(WindowChromeAction::Drag)
+            );
+        }
     }
 }

@@ -18,6 +18,9 @@ use crate::{
 const SLOT_PADDING: f32 = 6.0;
 const CENTER_PADDING_X: f32 = 14.0;
 const DEFAULT_CENTER_WIDTH: f32 = 168.0;
+/// Extra gap after the native traffic-light exclusion so leading chrome
+/// (sidebar toggle) cannot sit on the caption buttons.
+const NATIVE_LEADING_CLEARANCE: f32 = 8.0;
 const CONTROL_GAP: f32 = 2.0;
 const TITLE_FONT_SIZE: f32 = 13.0;
 const TITLE_FONT_WEIGHT: u16 = 600;
@@ -159,6 +162,15 @@ impl AppTitleBar {
         finite_positive(self.center_width, DEFAULT_CENTER_WIDTH).max(1.0)
     }
 
+    fn chrome_padding_left(&self) -> f32 {
+        let inset = valid_inset(self.leading_inset);
+        if inset > 0.0 && !self.show_window_controls {
+            inset + NATIVE_LEADING_CLEARANCE
+        } else {
+            inset
+        }
+    }
+
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
@@ -168,7 +180,11 @@ impl AppTitleBar {
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
-        layout.justify_content = JustifySpec::Start;
+        layout.justify_content = if self.center.is_none() && self.trailing.is_some() {
+            JustifySpec::SpaceBetween
+        } else {
+            JustifySpec::Start
+        };
         layout.width = Some(LengthSpec::Fill);
         layout.height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
         layout.min_height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
@@ -177,7 +193,7 @@ impl AppTitleBar {
         layout.flex_shrink = Some(0.0);
         layout.font_size = Some(TITLE_FONT_SIZE);
         layout.font_weight = Some(TITLE_FONT_WEIGHT);
-        layout.padding_left = Some(LengthSpec::Px(valid_inset(self.leading_inset)));
+        layout.padding_left = Some(LengthSpec::Px(self.chrome_padding_left()));
         layout.padding_right = Some(LengthSpec::Px(valid_inset(self.trailing_inset)));
         layout.overflow_x = OverflowSpec::Hidden;
         style
@@ -186,7 +202,7 @@ impl AppTitleBar {
     fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue) {
         if let Some(leading) = self.leading {
             patch_layout(world, mutations, leading, |layout| {
-                apply_fill_slot(layout, AlignSpec::Center, JustifySpec::Start);
+                apply_hug_slot(layout, AlignSpec::Center, JustifySpec::Start);
                 layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                 layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
                 layout.padding_top = Some(LengthSpec::Px(0.0));
@@ -194,17 +210,11 @@ impl AppTitleBar {
             });
         }
         if let Some(center) = self.center {
-            let width = self.resolved_center_width();
             patch_layout(world, mutations, center, |layout| {
-                layout.direction = Some(FlexDirection::Row);
-                layout.align_items = AlignSpec::Center;
-                layout.justify_content = JustifySpec::Center;
-                layout.width = Some(LengthSpec::Px(width));
-                layout.min_width = Some(LengthSpec::Px(width));
-                layout.max_width = Some(LengthSpec::Px(width));
-                layout.height = Some(LengthSpec::Fill);
-                layout.flex_grow = Some(0.0);
-                layout.flex_shrink = Some(0.0);
+                apply_title_slot(layout);
+                if (self.center_width - DEFAULT_CENTER_WIDTH).abs() > f32::EPSILON {
+                    layout.max_width = Some(LengthSpec::Px(self.resolved_center_width()));
+                }
                 layout.padding_left = Some(LengthSpec::Px(CENTER_PADDING_X));
                 layout.padding_right = Some(LengthSpec::Px(CENTER_PADDING_X));
                 layout.padding_top = Some(LengthSpec::Px(0.0));
@@ -217,7 +227,7 @@ impl AppTitleBar {
         }
         if let Some(trailing) = self.trailing {
             patch_layout(world, mutations, trailing, |layout| {
-                apply_fill_slot(layout, AlignSpec::Center, JustifySpec::End);
+                apply_hug_slot(layout, AlignSpec::Center, JustifySpec::End);
                 layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                 layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
                 layout.padding_top = Some(LengthSpec::Px(0.0));
@@ -271,7 +281,7 @@ impl ComponentView for AppTitleBar {
             mutations,
             &self.effective_style(),
             InteractionState {
-                pointer_events: false,
+                pointer_events: true,
                 focusable: false,
             },
             AccessibilityState {
@@ -1286,10 +1296,21 @@ fn window_control_style(danger: bool) -> NodeStyle {
     style
 }
 
-fn apply_fill_slot(layout: &mut nana_ui_core::LayoutStyle, align: AlignSpec, justify: JustifySpec) {
+fn apply_hug_slot(layout: &mut nana_ui_core::LayoutStyle, align: AlignSpec, justify: JustifySpec) {
     layout.direction = Some(FlexDirection::Row);
     layout.align_items = align;
     layout.justify_content = justify;
+    layout.width = Some(LengthSpec::Shrink);
+    layout.height = Some(LengthSpec::Fill);
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+}
+
+fn apply_title_slot(layout: &mut nana_ui_core::LayoutStyle) {
+    layout.direction = Some(FlexDirection::Row);
+    layout.align_items = AlignSpec::Center;
+    layout.justify_content = JustifySpec::Center;
     layout.width = Some(LengthSpec::Fill);
     layout.height = Some(LengthSpec::Fill);
     layout.flex_grow = Some(1.0);
@@ -1361,9 +1382,14 @@ mod tests {
         assert_eq!(style.background, Some(SemanticColorRole::Surface));
         assert_eq!(style.layout.direction, Some(FlexDirection::Row));
         let chrome = WindowChrome::platform_default();
+        let expected_leading_pad = if chrome.leading_inset > 0.0 && !chrome.uses_custom_controls() {
+            chrome.leading_inset + NATIVE_LEADING_CLEARANCE
+        } else {
+            chrome.leading_inset
+        };
         assert_eq!(
             style.layout.padding_left,
-            Some(LengthSpec::Px(chrome.leading_inset))
+            Some(LengthSpec::Px(expected_leading_pad))
         );
 
         context
@@ -1388,6 +1414,44 @@ mod tests {
     }
 
     #[test]
+    fn blank_title_bar_is_hittable_and_child_button_wins() {
+        let mut context = AppContext::new();
+        let button = context
+            .create_component(
+                document(),
+                IconButton::new(Icon::Sidebar, "toggle").size(ControlSize::Small),
+            )
+            .unwrap();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana").leading(button.stable_id()),
+            )
+            .unwrap();
+        context.append_child(bar, button).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document());
+
+        let bounds = context.world().layout_box(bar.stable_id()).unwrap();
+        let blank_x = bounds.x + bounds.width - 24.0;
+        let blank_y = bounds.y + bounds.height / 2.0;
+        assert_eq!(
+            context.pointer_target(document(), blank_x, blank_y),
+            Some(bar.stable_id())
+        );
+
+        let button_box = context.world().layout_box(button.stable_id()).unwrap();
+        let button_x = button_box.x + button_box.width / 2.0;
+        let button_y = button_box.y + button_box.height / 2.0;
+        assert_eq!(
+            context.pointer_target(document(), button_x, button_y),
+            Some(button.stable_id())
+        );
+    }
+
+    #[test]
     fn center_slot_suppresses_default_title_text() {
         let mut context = AppContext::new();
         let center = context
@@ -1409,10 +1473,10 @@ mod tests {
             .node_style(center.stable_id())
             .unwrap()
             .layout;
-        assert_eq!(
-            center_layout.width,
-            Some(LengthSpec::Px(DEFAULT_CENTER_WIDTH))
-        );
+        assert_eq!(center_layout.width, Some(LengthSpec::Fill));
+        assert_eq!(center_layout.flex_grow, Some(1.0));
+        assert_eq!(center_layout.flex_shrink, Some(1.0));
+        assert_eq!(center_layout.justify_content, JustifySpec::Center);
         assert_eq!(center_layout.overflow_x, OverflowSpec::Hidden);
         assert!(center_layout.text_overflow_ellipsis);
 
@@ -1422,6 +1486,100 @@ mod tests {
             })
             .unwrap();
         assert_eq!(context.world().text(bar.stable_id()), Some("Nana"));
+    }
+
+    #[test]
+    fn title_center_fills_leftover_instead_of_trailing() {
+        let mut context = AppContext::new();
+        let leading = context
+            .create_component(
+                document(),
+                IconButton::new(Icon::Sidebar, "sidebar").size(ControlSize::Small),
+            )
+            .unwrap();
+        let center = context
+            .create_component(document(), Text::new("NanaShader"))
+            .unwrap();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana")
+                    .leading(leading.stable_id())
+                    .center(center.stable_id()),
+            )
+            .unwrap();
+        context.append_child(bar, leading).unwrap();
+        context.append_child(bar, center).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+
+        let bar_box = context.world().layout_box(bar.stable_id()).unwrap();
+        let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
+        let center_box = context.world().layout_box(center.stable_id()).unwrap();
+        let leading_layout = &context
+            .world()
+            .node_style(leading.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(leading_layout.flex_grow, Some(0.0));
+        assert_eq!(leading_layout.width, Some(LengthSpec::Shrink));
+        assert!(
+            leading_box.width < 80.0,
+            "leading chrome must hug, got width {}",
+            leading_box.width
+        );
+        assert!(
+            leading_box.x + 0.5 >= bar_box.x + WindowChrome::platform_default().leading_inset,
+            "leading must start after the traffic-light inset"
+        );
+        let title_mid = center_box.x + center_box.width / 2.0;
+        assert!(
+            title_mid < bar_box.x + bar_box.width * 0.65,
+            "title slot mid {title_mid} sat in the trailing third"
+        );
+        assert!(
+            center_box.x + 0.5 >= leading_box.x + leading_box.width,
+            "title must sit after leading chrome"
+        );
+        assert!(
+            center_box.width > bar_box.width * 0.4,
+            "title slot should occupy leftover, got {}",
+            center_box.width
+        );
+    }
+
+    #[test]
+    fn leading_chrome_stays_clear_of_native_traffic_lights() {
+        let mut context = AppContext::new();
+        let leading = context
+            .create_component(
+                document(),
+                IconButton::new(Icon::Sidebar, "sidebar").size(ControlSize::Small),
+            )
+            .unwrap();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana").leading(leading.stable_id()),
+            )
+            .unwrap();
+        context.append_child(bar, leading).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+
+        let bar_box = context.world().layout_box(bar.stable_id()).unwrap();
+        let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
+        let bar_view = context.read(bar, |bar| bar.clone()).unwrap();
+        assert!(
+            !bar_view.native_control_hit(
+                bar_box,
+                leading_box.x + 1.0,
+                leading_box.y + leading_box.height / 2.0
+            ),
+            "sidebar toggle overlapped the native caption exclusion"
+        );
     }
 
     #[test]

@@ -239,6 +239,7 @@ pub use virtual_list::{
 };
 pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
 pub use window_chrome::{
-    WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,
+    TitleBarDragTracker, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
+    WindowControlMode, apply_title_bar_pointer,
 };
 pub use workspace::{WorkspaceAction, WorkspaceController};

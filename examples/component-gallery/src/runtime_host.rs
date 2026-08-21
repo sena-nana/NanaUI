@@ -2,12 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
     AlignSpec, AppContext, ComponentView, DesktopShell, Entity, FlexDirection, FrameworkError,
-    IconButton, InteractionState, JustifySpec, LayoutBox, LengthSpec, MutationQueue, NodeKind,
-    NodeStyle, RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, Workspace,
+    IconButton, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind, NodeStyle,
+    RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, Workspace,
     WorkspaceResizeHandle,
 };
 use nana_ui::{
-    ButtonKind, ControlSize, Icon, LogicalPoint, RegionId, ThemeMode, WindowChromeEvent,
+    ButtonKind, ControlSize, Icon, LogicalPoint, RegionId, ThemeMode, TitleBarDragTracker,
     WorkspaceAction,
 };
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
@@ -44,80 +44,28 @@ pub(super) struct RuntimeChrome {
     pub last_pointer: LogicalPoint,
     pub resize_region: Option<RegionId>,
     pub hovered_resize: Option<RegionId>,
-    pub title_bar_pressed: bool,
+    title_bar: TitleBarDragTracker,
 }
 
 impl RuntimeChrome {
     pub(super) fn title_bar_chrome_messages(
         &mut self,
         document: &RuntimeDocument,
-        shell: Entity<DesktopShell>,
-        title_center: StableNodeId,
         event: &InputEvent,
     ) -> Vec<GalleryMessage> {
-        match event {
-            InputEvent::Pointer {
-                phase: PointerPhase::Down,
-                button: 0,
-                is_primary: true,
-                x,
-                y,
-                ..
-            } => {
-                if self.resize_region.is_some() || self.resize_handle_at(document, *x, *y).is_some()
-                {
-                    return Vec::new();
-                }
-                if !title_bar_chrome_hit(document, shell, title_center, *x, *y) {
-                    return Vec::new();
-                }
-                self.title_bar_pressed = true;
-                let point = LogicalPoint::new(*x, *y);
-                vec![
-                    GalleryMessage::WindowChrome(WindowChromeEvent::PointerMoved(point)),
-                    GalleryMessage::WindowChrome(WindowChromeEvent::PointerPressed),
-                ]
+        if let InputEvent::Pointer { phase, x, y, .. } = event {
+            let resizing = self.resize_region.is_some();
+            let grabbing_resize =
+                *phase == PointerPhase::Down && self.resize_handle_at(document, *x, *y).is_some();
+            if resizing || grabbing_resize {
+                return Vec::new();
             }
-            InputEvent::Pointer {
-                phase: PointerPhase::Move,
-                x,
-                y,
-                ..
-            } => {
-                if self.resize_region.is_some() {
-                    return Vec::new();
-                }
-                if self.title_bar_pressed
-                    || title_bar_chrome_hit(document, shell, title_center, *x, *y)
-                {
-                    vec![GalleryMessage::WindowChrome(
-                        WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)),
-                    )]
-                } else {
-                    Vec::new()
-                }
-            }
-            InputEvent::Pointer {
-                phase: PointerPhase::Up,
-                button: 0,
-                ..
-            } if self.title_bar_pressed => {
-                self.title_bar_pressed = false;
-                vec![GalleryMessage::WindowChrome(
-                    WindowChromeEvent::PointerReleased,
-                )]
-            }
-            InputEvent::Pointer {
-                phase: PointerPhase::Cancel,
-                ..
-            } if self.title_bar_pressed => {
-                self.title_bar_pressed = false;
-                vec![GalleryMessage::WindowChrome(
-                    WindowChromeEvent::PointerCancelled,
-                )]
-            }
-            _ => Vec::new(),
         }
+        self.title_bar
+            .events(document.context(), document.document(), event)
+            .into_iter()
+            .map(GalleryMessage::WindowChrome)
+            .collect()
     }
 
     pub(super) fn workspace_resize_messages(
@@ -197,42 +145,6 @@ impl RuntimeChrome {
     }
 }
 
-pub(super) fn title_bar_chrome_hit(
-    document: &RuntimeDocument,
-    shell: Entity<DesktopShell>,
-    title_center: StableNodeId,
-    x: f32,
-    y: f32,
-) -> bool {
-    let context = document.context();
-    let Some(title_bar) = context.read(shell, |shell| shell.title_bar).ok().flatten() else {
-        return false;
-    };
-    let Some(bounds) = context.world().layout_box(title_bar) else {
-        return false;
-    };
-    if !layout_contains(bounds, x, y) {
-        return false;
-    }
-    let native_chrome = context
-        .read(
-            Entity::<nana_ui::runtime::AppTitleBar>::from_stable_id(title_bar),
-            |bar| bar.native_control_hit(bounds, x, y),
-        )
-        .unwrap_or(false);
-    if native_chrome {
-        return false;
-    }
-    let target = context.pointer_target(document.document(), x, y);
-    if target.is_some_and(|target| title_bar_icon_button(context, title_bar, target)) {
-        return false;
-    }
-    match target {
-        None => true,
-        Some(target) => target == title_bar || node_is_or_under(context, target, title_center),
-    }
-}
-
 pub(super) fn apply_title_bar_insets(
     context: &mut AppContext,
     shell: Entity<DesktopShell>,
@@ -269,10 +181,6 @@ pub(super) fn apply_workspace_corners(
     }
 }
 
-pub(super) fn layout_contains(bounds: LayoutBox, x: f32, y: f32) -> bool {
-    x >= bounds.x && y >= bounds.y && x <= bounds.x + bounds.width && y <= bounds.y + bounds.height
-}
-
 pub(super) fn node_is_or_under(
     context: &AppContext,
     target: StableNodeId,
@@ -282,24 +190,6 @@ pub(super) fn node_is_or_under(
     while let Some(id) = current {
         if id == root {
             return true;
-        }
-        current = context.world().node(id).and_then(|node| node.parent);
-    }
-    false
-}
-
-pub(super) fn title_bar_icon_button(
-    context: &AppContext,
-    title_bar: StableNodeId,
-    target: StableNodeId,
-) -> bool {
-    let mut current = Some(target);
-    while let Some(id) = current {
-        if context
-            .read(Entity::<IconButton>::from_stable_id(id), |_| ())
-            .is_ok()
-        {
-            return node_is_or_under(context, id, title_bar);
         }
         current = context.world().node(id).and_then(|node| node.parent);
     }

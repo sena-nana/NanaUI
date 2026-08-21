@@ -484,12 +484,7 @@ impl GallerySettingsRuntime {
         self.note_pointer(event);
         let mut messages = take_pending(&self.pending);
         messages.extend(self.chrome.workspace_resize_messages(&self.document, event));
-        messages.extend(self.chrome.title_bar_chrome_messages(
-            &self.document,
-            self.shell,
-            self.title_center.stable_id(),
-            event,
-        ));
+        messages.extend(self.chrome.title_bar_chrome_messages(&self.document, event));
         #[cfg(test)]
         {
             self.last_window_chrome_events = messages
@@ -515,12 +510,10 @@ impl GallerySettingsRuntime {
             self.chrome
                 .workspace_resize_messages(&self.document, &event),
         );
-        messages.extend(self.chrome.title_bar_chrome_messages(
-            &self.document,
-            self.shell,
-            self.title_center.stable_id(),
-            &event,
-        ));
+        messages.extend(
+            self.chrome
+                .title_bar_chrome_messages(&self.document, &event),
+        );
         #[cfg(test)]
         {
             self.last_window_chrome_events = messages

@@ -11,9 +11,12 @@ use std::time::Instant;
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, window_material_effect,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, TitleBarDragTracker,
+    WindowChromeAction, WindowChromeState, apply_title_bar_pointer, window_material_effect,
 };
-use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
+use nana_ui_platform::{
+    InputEvent, PointerPhase, WindowCommand, WindowEvent, WindowGeometry, WindowId,
+};
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
@@ -27,11 +30,17 @@ thread_local! {
     static PENDING_VUE_BOOTSTRAP: RefCell<Option<Box<dyn Any>>> = RefCell::new(None);
 }
 
+struct WindowChromeSession {
+    state: WindowChromeState,
+    drag: TitleBarDragTracker,
+}
+
 /// A single-engine Vue runtime suitable for embedding in `RuntimeProgram`.
 pub struct VueHostedRuntime<E: JsEngine> {
     engine: E,
     vue: VueRuntime,
     application_api: HostApiRegistry,
+    chrome: HashMap<WindowId, WindowChromeSession>,
 }
 
 impl<E: JsEngine> VueHostedRuntime<E> {
@@ -47,6 +56,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             engine,
             vue: VueRuntime::new(physical_width, physical_height, scale_factor),
             application_api,
+            chrome: HashMap::new(),
         };
         runtime
             .vue
@@ -170,15 +180,46 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         }
     }
 
+    fn apply_title_bar_chrome(
+        &mut self,
+        id: WindowId,
+        event: &InputEvent,
+    ) -> Option<WindowChromeAction> {
+        let host = self.vue.host(VueWindowId(id.0))?;
+        let host = host.lock().ok()?;
+        let document_slot = host.document();
+        let document = document_slot.lock().ok()?;
+        let runtime = document.runtime_document();
+        let session = self
+            .chrome
+            .entry(id)
+            .or_insert_with(|| WindowChromeSession {
+                state: WindowChromeState::default(),
+                drag: TitleBarDragTracker::default(),
+            });
+        apply_title_bar_pointer(
+            &mut session.state,
+            &mut session.drag,
+            runtime.context(),
+            runtime.document(),
+            event,
+        )
+    }
+
     pub fn runtime_input(
         &mut self,
         id: WindowId,
         event: &InputEvent,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        match self.emit_runtime_input(VueWindowId(id.0), event) {
-            Ok(_) => Ok(self.runtime_program_update(true)),
-            Err(_) => Ok(RuntimeProgramUpdate::default()),
+        let chrome_action = self.apply_title_bar_chrome(id, event);
+        let mut update = match self.emit_runtime_input(VueWindowId(id.0), event) {
+            Ok(_) => self.runtime_program_update(true),
+            Err(_) => RuntimeProgramUpdate::default(),
+        };
+        if chrome_action == Some(WindowChromeAction::Drag) {
+            update.window_commands.push(WindowCommand::Drag(id));
         }
+        Ok(update)
     }
 
     fn emit_runtime_input(
@@ -411,6 +452,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     .emit_native_ime_from_runtime(&mut self.engine, &event)?;
             }
             WindowEvent::Closed { id } => {
+                self.chrome.remove(&id);
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
             WindowEvent::Moved { id, geometry } => {
@@ -860,5 +902,155 @@ mod tests {
             Some(HostedTextPosition { line: 1, index: 3 })
         );
         assert_eq!(hosted_text_position(value, 1), None);
+    }
+
+    fn pointer_down(x: f32, y: f32) -> InputEvent {
+        InputEvent::Pointer {
+            phase: PointerPhase::Down,
+            pointer_id: 1,
+            pointer_type: nana_ui_platform::PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: 1,
+            pressure: 0.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            modifiers: nana_ui_platform::InputModifiers::default(),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn pointer_move(x: f32, y: f32) -> InputEvent {
+        let mut event = pointer_down(x, y);
+        if let InputEvent::Pointer { phase, .. } = &mut event {
+            *phase = PointerPhase::Move;
+        }
+        event
+    }
+
+    fn vue_app_shell_document() -> (
+        crate::NanaTreeDocument,
+        nana_ui_runtime::StableNodeId,
+        nana_ui_runtime::StableNodeId,
+    ) {
+        use crate::{MessageBridge, NanaTreeDocument, WidgetKind, WidgetProps};
+        use nana_ui_runtime::{LayoutViewport, StableNodeId};
+
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let shell = doc.create_element("nana-app-shell");
+        let title_bar = doc.create_element("nana-app-title-bar");
+        let button = doc.create_element("button");
+        let body = doc.create_element("div");
+        doc.insert(shell, doc.mount_root(), None);
+        doc.insert(title_bar, shell, None);
+        doc.insert(button, title_bar, None);
+        doc.insert(body, shell, None);
+
+        let mut title_props = WidgetProps {
+            label: "Nana".into(),
+            element_tag: "nana-app-title-bar".into(),
+            ..Default::default()
+        };
+        title_props
+            .attrs
+            .insert("data-slot".into(), "title-bar".into());
+        title_props.class_names.push("nana-app-title-bar".into());
+        let mut button_props = WidgetProps::default();
+        button_props.element_tag = "button".into();
+        button_props.label = "Close".into();
+
+        let mut bridge = MessageBridge::new();
+        bridge.register(title_bar.0, WidgetKind::Column, title_props);
+        bridge.register(button.0, WidgetKind::Button, button_props);
+        bridge.register(
+            body.0,
+            WidgetKind::Column,
+            WidgetProps {
+                label: "Workspace".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            shell.0,
+            WidgetKind::AppShell,
+            WidgetProps {
+                label: "Nana".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(title_bar.0, shell.0, None);
+        bridge.insert_child(button.0, title_bar.0, None);
+        bridge.insert_child(body.0, shell.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let document = doc.runtime_document().document();
+        doc.context_mut()
+            .layout_document(document, LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        doc.context_mut().rebuild_hit_test(document);
+        (
+            doc,
+            StableNodeId::try_from(title_bar).unwrap(),
+            StableNodeId::try_from(button).unwrap(),
+        )
+    }
+
+    #[test]
+    fn vue_app_shell_title_bar_blank_emits_drag_and_skips_buttons() {
+        let (doc, title, button) = vue_app_shell_document();
+        let runtime = doc.runtime_document();
+        let document = runtime.document();
+        let context = runtime.context();
+        let bounds = context.world().layout_box(title).unwrap();
+        let blank_x = bounds.x + bounds.width - 24.0;
+        let blank_y = bounds.y + bounds.height / 2.0;
+
+        let mut state = WindowChromeState::default();
+        let mut tracker = TitleBarDragTracker::default();
+        let pressed = apply_title_bar_pointer(
+            &mut state,
+            &mut tracker,
+            context,
+            document,
+            &pointer_down(blank_x, blank_y),
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(pressed, Some(WindowChromeAction::Drag));
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(pressed, None);
+            assert_eq!(
+                apply_title_bar_pointer(
+                    &mut state,
+                    &mut tracker,
+                    context,
+                    document,
+                    &pointer_move(blank_x + 8.0, blank_y),
+                ),
+                Some(WindowChromeAction::Drag)
+            );
+        }
+
+        let button_box = context.world().layout_box(button).unwrap();
+        let mut control_state = WindowChromeState::default();
+        let mut control_tracker = TitleBarDragTracker::default();
+        assert_eq!(
+            apply_title_bar_pointer(
+                &mut control_state,
+                &mut control_tracker,
+                context,
+                document,
+                &pointer_down(
+                    button_box.x + button_box.width / 2.0,
+                    button_box.y + button_box.height / 2.0,
+                ),
+            ),
+            None
+        );
     }
 }
