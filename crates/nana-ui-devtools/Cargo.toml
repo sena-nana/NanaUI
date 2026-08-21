@@ -3,13 +3,51 @@ name = "nana-ui-devtools"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-description = "NanaUI JS, resource lifecycle, and frame diagnostics"
+description = "NanaUI JS diagnostics plus optional headless Agent snapshot session"
 license = "MIT OR Apache-2.0"
 
 [lib]
 name = "nana_ui_devtools"
 path = "src/lib.rs"
 
+[[bin]]
+name = "nana-agent-session"
+path = "src/bin/nana-agent-session.rs"
+required-features = ["agent-bin"]
+
+[features]
+default = []
+offscreen = [
+    "dep:nana-ui",
+    "nana-ui/gpu",
+    "nana-ui/bundled-fonts",
+    "dep:png",
+    "dep:pollster",
+    "dep:wgpu",
+]
+agent = [
+    "offscreen",
+    "dep:nana-ui-vue",
+    "nana-ui-vue/scene-view",
+    "nana-ui/syntax-highlighting",
+    "dep:nana-ui-platform",
+    "dep:serde",
+    "dep:serde_json",
+]
+agent-bin = ["agent", "dep:nana-js-quickjs"]
+
 [dependencies]
 nana-js-engine.workspace = true
 nana-ui-core.workspace = true
+nana-ui-platform = { workspace = true, optional = true }
+nana-ui = { workspace = true, optional = true }
+nana-ui-vue = { workspace = true, optional = true }
+nana-js-quickjs = { workspace = true, optional = true }
+png = { version = "0.18.1", optional = true }
+pollster = { version = "0.4", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+
+[dev-dependencies]
+nana-js-quickjs.workspace = true

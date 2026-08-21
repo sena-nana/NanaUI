@@ -11,7 +11,6 @@ pub(super) struct LogicalRect {
 }
 
 impl LogicalRect {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn from_xywh(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,

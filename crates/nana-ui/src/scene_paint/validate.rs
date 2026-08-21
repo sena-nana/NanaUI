@@ -308,11 +308,7 @@ mod tests {
         let mut custom = MutationQueue::new();
         custom.set_custom_render(
             button.stable_id(),
-            Some(CustomRenderNode {
-                renderer: "nana.host-texture".into(),
-                resource: "preview".into(),
-                revision: 1,
-            }),
+            Some(CustomRenderNode::new("nana.host-texture", "preview", 1)),
         );
         context.commit_mutations(custom).unwrap();
         let work = context.take_system_work();
@@ -349,11 +345,7 @@ mod tests {
         );
         mutations.set_custom_render(
             button.stable_id(),
-            Some(CustomRenderNode {
-                renderer: "live2d.direct".into(),
-                resource: "model".into(),
-                revision: 7,
-            }),
+            Some(CustomRenderNode::new("live2d.direct", "model", 7)),
         );
         context.commit_mutations(mutations).unwrap();
         let work = context.take_system_work();

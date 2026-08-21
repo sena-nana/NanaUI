@@ -69,11 +69,11 @@ impl ImageViewerContent {
     /// HostTexture slots use [`HOST_TEXTURE_RENDERER`]. Empty identities are omitted.
     pub fn as_custom_render(&self) -> Option<CustomRenderNode> {
         match self {
-            Self::HostTexture(slot) if !slot.trim().is_empty() => Some(CustomRenderNode {
-                renderer: Arc::from(HOST_TEXTURE_RENDERER),
-                resource: Arc::clone(slot),
-                revision: 0,
-            }),
+            Self::HostTexture(slot) if !slot.trim().is_empty() => Some(CustomRenderNode::new(
+                HOST_TEXTURE_RENDERER,
+                Arc::clone(slot),
+                0,
+            )),
             Self::CustomRender(node)
                 if !node.renderer.trim().is_empty() && !node.resource.trim().is_empty() =>
             {

@@ -9168,14 +9168,7 @@ mod tests {
         world.take_system_work();
 
         let mut queue = MutationQueue::new();
-        queue.set_custom_render(
-            node(1),
-            Some(CustomRenderNode {
-                renderer: Arc::from(""),
-                resource: Arc::from("program"),
-                revision: 0,
-            }),
-        );
+        queue.set_custom_render(node(1), Some(CustomRenderNode::new("", "program", 0)));
         assert_eq!(
             world.commit(queue),
             Err(UiWorldError::InvalidCustomRender(node(1)))

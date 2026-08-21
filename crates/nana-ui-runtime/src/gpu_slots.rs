@@ -143,11 +143,11 @@ impl GpuView {
     ///
     /// `resource` is the decimal [`Self::slot_id`].
     pub fn custom_render(&self) -> CustomRenderNode {
-        CustomRenderNode {
-            renderer: Arc::from(GPU_VIEW_RENDERER),
-            resource: resource_key(self.slot_id),
-            revision: self.revision(),
-        }
+        CustomRenderNode::new(
+            GPU_VIEW_RENDERER,
+            resource_key(self.slot_id),
+            self.revision(),
+        )
     }
 
     fn effective_style(&self) -> NodeStyle {
@@ -171,6 +171,7 @@ pub struct GpuTextureView {
     pub version: u64,
     pub opacity: f32,
     pub corner_radius: f32,
+    pub fit: nana_ui_core::ContentFit,
     pub style: NodeStyle,
     pub pointer_events: bool,
 }
@@ -183,6 +184,7 @@ impl GpuTextureView {
             version: 0,
             opacity: 1.0,
             corner_radius: 0.0,
+            fit: nana_ui_core::ContentFit::Fill,
             style: NodeStyle::default(),
             pointer_events: false,
         }
@@ -209,6 +211,17 @@ impl GpuTextureView {
         self
     }
 
+    /// Selects how the host texture maps into the layout box. Default is fill.
+    pub const fn fit(mut self, fit: nana_ui_core::ContentFit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    /// Letterbox the registered host texture inside the layout box.
+    pub const fn contain(self) -> Self {
+        self.fit(nana_ui_core::ContentFit::Contain)
+    }
+
     /// Marks the current view as containing new host-rendered content.
     pub fn invalidate_content(&mut self) -> u64 {
         self.version = self.version.saturating_add(1);
@@ -232,11 +245,14 @@ impl GpuTextureView {
         if self.resource.trim().is_empty() {
             return None;
         }
-        Some(CustomRenderNode {
-            renderer: Arc::from(GPU_TEXTURE_VIEW_RENDERER),
-            resource: Arc::clone(&self.resource),
-            revision: self.revision(),
-        })
+        Some(
+            CustomRenderNode::new(
+                GPU_TEXTURE_VIEW_RENDERER,
+                Arc::clone(&self.resource),
+                self.revision(),
+            )
+            .with_fit(self.fit),
+        )
     }
 
     fn effective_style(&self) -> NodeStyle {
@@ -581,6 +597,15 @@ mod tests {
         assert_eq!(node.revision, pack_gpu_revision(3, 2));
         assert_eq!(unpack_gpu_revision(node.revision), (3, 2));
         assert_eq!(node.revision, (3 << 32) | 2);
+        assert_eq!(node.fit, nana_ui_core::ContentFit::Fill);
+        assert_eq!(
+            GpuTextureView::new("preview-slot")
+                .contain()
+                .custom_render()
+                .unwrap()
+                .fit,
+            nana_ui_core::ContentFit::Contain
+        );
 
         let decimal = GpuTextureView::new("42").custom_render().unwrap();
         assert_eq!(decimal.renderer.as_ref(), "nana.host-texture");

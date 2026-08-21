@@ -124,7 +124,7 @@ pub use menus::{
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
-    ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, FrameStage,
+    ContentFit, ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, FrameStage,
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS,
     GpuWorkObservation, GraphCanvasId, GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel,
     GraphModelError, GraphNode, GraphNodeId, GraphPoint, GraphPort, GraphPortId, GraphPortKind,

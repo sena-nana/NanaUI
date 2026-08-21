@@ -1210,9 +1210,9 @@ dependencies = [
  "live2d-wgpu",
  "nana-ui",
  "nana-ui-core",
+ "nana-ui-devtools",
  "nana-ui-platform",
  "nana-ui-scene",
- "png 0.18.1",
  "pollster",
  "serde",
  "serde_json",
@@ -4218,7 +4218,16 @@ name = "nana-ui-devtools"
 version = "0.1.0"
 dependencies = [
  "nana-js-engine",
+ "nana-js-quickjs",
+ "nana-ui",
  "nana-ui-core",
+ "nana-ui-platform",
+ "nana-ui-vue",
+ "png 0.18.1",
+ "pollster",
+ "serde",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]

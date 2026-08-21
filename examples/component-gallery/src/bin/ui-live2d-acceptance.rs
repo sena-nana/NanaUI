@@ -705,11 +705,11 @@ fn acceptance_scene(layers: Option<&LayerTextures>) -> (UiScene, HostTextureRegi
         );
         mutations.set_custom_render(
             background.stable_id(),
-            Some(CustomRenderNode {
-                renderer: "nana.host-texture".into(),
-                resource: "live2d.bg".into(),
-                revision: layers.map_or(0, |layers| layers.background.version()),
-            }),
+            Some(CustomRenderNode::new(
+                "nana.host-texture",
+                "live2d.bg",
+                layers.map_or(0, |layers| layers.background.version()),
+            )),
         );
     }
     mutations.write_layout(
@@ -742,11 +742,11 @@ fn acceptance_scene(layers: Option<&LayerTextures>) -> (UiScene, HostTextureRegi
         );
         mutations.set_custom_render(
             foreground.stable_id(),
-            Some(CustomRenderNode {
-                renderer: "nana.host-texture".into(),
-                resource: "live2d.fg".into(),
-                revision: layers.map_or(0, |layers| layers.foreground.version()),
-            }),
+            Some(CustomRenderNode::new(
+                "nana.host-texture",
+                "live2d.fg",
+                layers.map_or(0, |layers| layers.foreground.version()),
+            )),
         );
     }
     mutations.write_layout(
@@ -835,11 +835,11 @@ fn live2d_resource_scene(revision: u64) -> Arc<UiScene> {
     );
     mutations.set_custom_render(
         node.stable_id(),
-        Some(CustomRenderNode {
-            renderer: "nana.host-texture".into(),
-            resource: "live2d".into(),
+        Some(CustomRenderNode::new(
+            "nana.host-texture",
+            "live2d",
             revision,
-        }),
+        )),
     );
     document
         .context_mut()

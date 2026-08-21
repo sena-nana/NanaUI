@@ -17,6 +17,20 @@ impl LogicalPoint {
     }
 }
 
+/// How a source image or host texture maps into its layout box.
+///
+/// [`Self::Fill`] keeps the historical stretch-to-bounds sampling. [`Self::Contain`]
+/// letterboxes inside the box by shrinking the destination rect; the painter
+/// samples the full source into that rect (no extra GPU copy).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ContentFit {
+    /// Stretch the source to the layout box.
+    #[default]
+    Fill,
+    /// Keep the source aspect ratio and letterbox inside the layout box.
+    Contain,
+}
+
 /// A logical-pixel rectangle that can be handed to a content view.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LogicalRect {
@@ -34,6 +48,48 @@ impl LogicalRect {
             width: width.max(0.0),
             height: height.max(0.0),
         }
+    }
+
+    /// Destination rect for sampling `content_width`×`content_height` with `fit`.
+    pub fn fitted(self, content_width: f32, content_height: f32, fit: ContentFit) -> Self {
+        match fit {
+            ContentFit::Fill => self,
+            ContentFit::Contain => contain_rect(self, content_width, content_height),
+        }
+    }
+}
+
+fn contain_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
+    if !content_width.is_finite()
+        || !content_height.is_finite()
+        || content_width <= 0.0
+        || content_height <= 0.0
+        || frame.width <= 0.0
+        || frame.height <= 0.0
+    {
+        return frame;
+    }
+    let frame_aspect = frame.width / frame.height;
+    let content_aspect = content_width / content_height;
+    if !frame_aspect.is_finite() || !content_aspect.is_finite() {
+        return frame;
+    }
+    if content_aspect > frame_aspect {
+        let height = frame.width / content_aspect;
+        LogicalRect::new(
+            frame.x,
+            frame.y + (frame.height - height) * 0.5,
+            frame.width,
+            height,
+        )
+    } else {
+        let width = frame.height * content_aspect;
+        LogicalRect::new(
+            frame.x + (frame.width - width) * 0.5,
+            frame.y,
+            width,
+            frame.height,
+        )
     }
 }
 
@@ -448,6 +504,29 @@ mod tests {
         let rect = LogicalRect::new(10.0, 20.0, -4.0, -8.0);
         assert_eq!(rect.width, 0.0);
         assert_eq!(rect.height, 0.0);
+    }
+
+    #[test]
+    fn contain_letterboxes_a_wide_source_in_a_tall_frame() {
+        use super::ContentFit;
+        let frame = LogicalRect::new(10.0, 20.0, 100.0, 200.0);
+        assert_eq!(frame.fitted(200.0, 100.0, ContentFit::Fill), frame);
+        let contained = frame.fitted(200.0, 100.0, ContentFit::Contain);
+        assert_eq!(contained.x, 10.0);
+        assert_eq!(contained.width, 100.0);
+        assert!((contained.height - 50.0).abs() < f32::EPSILON);
+        assert!((contained.y - 95.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn contain_letterboxes_a_tall_source_in_a_wide_frame() {
+        use super::ContentFit;
+        let frame = LogicalRect::new(0.0, 0.0, 200.0, 100.0);
+        let contained = frame.fitted(50.0, 100.0, ContentFit::Contain);
+        assert_eq!(contained.y, 0.0);
+        assert_eq!(contained.height, 100.0);
+        assert!((contained.width - 50.0).abs() < f32::EPSILON);
+        assert!((contained.x - 75.0).abs() < f32::EPSILON);
     }
 
     fn region<'a>(geometry: &'a WorkspaceGeometry, id: &RegionId) -> &'a super::RegionRect {

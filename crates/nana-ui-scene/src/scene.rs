@@ -3662,11 +3662,7 @@ mod tests {
             ..Default::default()
         };
         let mut child = node(2, Some(1), &[]);
-        child.custom_render = Some(CustomRenderNode {
-            renderer: Arc::from("host-texture"),
-            resource: Arc::from("preview"),
-            revision: 3,
-        });
+        child.custom_render = Some(CustomRenderNode::new("host-texture", "preview", 3));
         child.text = Some(TextContent {
             value: "caption".into(),
         });
@@ -3713,11 +3709,7 @@ mod tests {
             .unwrap()
             .clone();
         let mut changed_child = node(2, Some(1), &[]);
-        changed_child.custom_render = Some(CustomRenderNode {
-            renderer: Arc::from("host-texture"),
-            resource: Arc::from("preview"),
-            revision: 4,
-        });
+        changed_child.custom_render = Some(CustomRenderNode::new("host-texture", "preview", 4));
         let delta = scene.apply_delta([changed_child], []);
         assert!(!delta.order_rebuilt);
         assert_eq!(delta.rebuilt_primitives, 1);
@@ -3992,17 +3984,9 @@ mod tests {
     #[test]
     fn frame_graph_rejects_conflicting_revisions_of_one_external_resource() {
         let mut first = node(1, None, &[]);
-        first.custom_render = Some(CustomRenderNode {
-            renderer: Arc::from("nana.host-texture"),
-            resource: Arc::from("program"),
-            revision: 7,
-        });
+        first.custom_render = Some(CustomRenderNode::new("nana.host-texture", "program", 7));
         let mut second = node(2, None, &[]);
-        second.custom_render = Some(CustomRenderNode {
-            renderer: Arc::from("nana.host-texture"),
-            resource: Arc::from("program"),
-            revision: 8,
-        });
+        second.custom_render = Some(CustomRenderNode::new("nana.host-texture", "program", 8));
         let mut scene = UiScene::new();
         scene.apply_delta([first, second], []);
 
@@ -4028,11 +4012,7 @@ mod tests {
             ..Default::default()
         };
         let mut child = node(2, Some(1), &[]);
-        child.custom_render = Some(CustomRenderNode {
-            renderer: Arc::from("test"),
-            resource: Arc::from("resource"),
-            revision: 0,
-        });
+        child.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
         child.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
                 opacity: Some(0.5),

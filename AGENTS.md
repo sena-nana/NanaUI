@@ -35,6 +35,8 @@
 - `$nanaui-gpu-integration`：GPU View、宿主纹理、渲染调度和依赖收敛。
 - `$nanaui-window-materials`：原生窗口材质及回退。
 - `$nanaui-validation`：功能、构建、快照、平台与性能验证。
+- `$nanaui-agent-debug`：无头截图 / a11y / 点击。调试产品 Vue 或 Runtime
+  应用时直接调用 `nana-agent-session` 或 `VueAgentSession`，不要靠日志猜界面。
 
 ## 硬约束
 

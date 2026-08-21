@@ -313,4 +313,15 @@ mod tests {
         assert!(!chrome.uses_custom_controls());
         assert!(WindowChrome::custom().uses_custom_controls());
     }
+
+    #[test]
+    fn native_control_hit_excludes_leading_traffic_light_inset() {
+        use nana_ui_core::LogicalRect;
+        let chrome = WindowChrome::native_leading(78.0);
+        let bar = LogicalRect::new(0.0, 0.0, 800.0, 36.0);
+        assert!(chrome.native_control_hit(bar, 12.0, 18.0));
+        assert!(!chrome.native_control_hit(bar, 90.0, 18.0));
+        assert!(!chrome.native_control_hit(bar, 12.0, 40.0));
+        assert!(!WindowChrome::custom().native_control_hit(bar, 12.0, 18.0));
+    }
 }

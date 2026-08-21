@@ -2448,11 +2448,7 @@ impl NanaTreeDocument {
 }
 
 fn host_texture_content(slot: String) -> CustomRenderNode {
-    CustomRenderNode {
-        renderer: Arc::from(HOST_TEXTURE_RENDERER),
-        resource: Arc::from(slot),
-        revision: 0,
-    }
+    CustomRenderNode::new(HOST_TEXTURE_RENDERER, slot, 0)
 }
 
 fn canvas_host_texture_slot(id: &str) -> Option<String> {
@@ -3211,13 +3207,18 @@ fn project_migrating_component(
                 })
             };
             let leading = slot("leading").or_else(|| slot("list-item-leading"));
-            let trailing = slot("trailing").or_else(|| slot("list-item-trailing"));
+            let tools = slot("tools");
+            let trailing = slot("trailing")
+                .or_else(|| slot("list-item-trailing"))
+                .filter(|id| Some(*id) != tools);
             let content = slot("content")
                 .or_else(|| slot("list-item-content"))
                 .or_else(|| {
                     widget.children.iter().find_map(|child| {
                         let child_id = StableNodeId::new(*child)?;
-                        (Some(child_id) != leading && Some(child_id) != trailing)
+                        (Some(child_id) != leading
+                            && Some(child_id) != trailing
+                            && Some(child_id) != tools)
                             .then_some(child_id)
                     })
                 });
@@ -3232,6 +3233,9 @@ fn project_migrating_component(
                 .state(crate::widget_map::sidebar_row_state(&widget.props))
                 .tone(crate::widget_map::sidebar_row_tone(&widget.props))
                 .depth(crate::widget_map::sidebar_row_depth(&widget.props));
+            if let Some(tools) = tools {
+                component = component.tools(tools);
+            }
             if let Some(expanded) = crate::widget_map::attr_value(
                 &widget.props,
                 &["expanded", "data-expanded", "disclosure"],

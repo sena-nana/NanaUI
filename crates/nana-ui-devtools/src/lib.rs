@@ -1,6 +1,15 @@
 //! Development-only diagnostics for the NanaUI Vue/JS and hosted rendering
 //! stack. The crate stores bounded structured records and deliberately does not
 //! provide product-facing UI.
+//!
+//! Optional `offscreen` / `agent` features add snapshot CPU readback and a
+//! headless Agent session. Those paths are tooling-only and must not be wired
+//! into product Surface present.
+
+#[cfg(feature = "agent")]
+pub mod agent;
+#[cfg(feature = "offscreen")]
+pub mod offscreen;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
