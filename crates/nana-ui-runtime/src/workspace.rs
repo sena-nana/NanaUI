@@ -13,7 +13,7 @@ use crate::{
     InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
 };
 
-const BOTTOM_SEPARATOR_PX: f32 = 1.0;
+const REGION_SEPARATOR_PX: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RegionEdges {
@@ -105,6 +105,7 @@ pub struct Workspace {
     pub middle: Option<StableNodeId>,
     pub primary_column: Option<StableNodeId>,
     pub primary_row: Option<StableNodeId>,
+    pub editor_stack: Option<StableNodeId>,
 }
 
 impl Workspace {
@@ -148,6 +149,7 @@ impl Workspace {
             middle: None,
             primary_column: None,
             primary_row: None,
+            editor_stack: None,
         }
     }
 
@@ -160,6 +162,7 @@ impl Workspace {
         let middle = self.middle;
         let primary_column = self.primary_column;
         let primary_row = self.primary_row;
+        let editor_stack = self.editor_stack;
         *self = Self::from_model(model, slots);
         self.style = style;
         self.handles = handles;
@@ -167,6 +170,7 @@ impl Workspace {
         self.middle = middle;
         self.primary_column = primary_column;
         self.primary_row = primary_row;
+        self.editor_stack = editor_stack;
     }
 
     pub fn slot(mut self, id: RegionId, content: StableNodeId) -> Self {
@@ -213,6 +217,15 @@ impl Workspace {
 
     pub fn primary_track() -> List {
         track_host(FlexDirection::Row, true)
+    }
+
+    pub fn editor_stack() -> List {
+        track_host(FlexDirection::Column, true)
+    }
+
+    pub fn editor_stack_host(mut self, editor_stack: StableNodeId) -> Self {
+        self.editor_stack = Some(editor_stack);
+        self
     }
 
     pub fn region_extent(&self, id: &RegionId) -> f32 {
@@ -514,17 +527,23 @@ impl ComponentView for Workspace {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         self.project_root(id, world, mutations);
         let groups = self.visible_groups();
-        let chrome = match (self.middle, self.primary_column, self.primary_row) {
-            (Some(middle), Some(primary_column), Some(primary_row))
+        let chrome = match (
+            self.middle,
+            self.primary_column,
+            self.primary_row,
+            self.editor_stack,
+        ) {
+            (Some(middle), Some(primary_column), Some(primary_row), Some(editor_stack))
                 if world.contains(middle)
                     && world.contains(primary_column)
-                    && world.contains(primary_row) =>
+                    && world.contains(primary_row)
+                    && world.contains(editor_stack) =>
             {
-                Some((middle, primary_column, primary_row))
+                Some((middle, primary_column, primary_row, editor_stack))
             }
             _ => None,
         };
-        if let Some((middle, primary_column, primary_row)) = chrome {
+        if let Some((middle, primary_column, primary_row, editor_stack)) = chrome {
             self.project_track_host(Some(middle), FlexDirection::Row, true, world, mutations);
             self.project_track_host(
                 Some(primary_column),
@@ -540,6 +559,13 @@ impl ComponentView for Workspace {
                 world,
                 mutations,
             );
+            self.project_track_host(
+                Some(editor_stack),
+                FlexDirection::Column,
+                true,
+                world,
+                mutations,
+            );
         }
 
         for item in groups.iter() {
@@ -548,7 +574,7 @@ impl ComponentView for Workspace {
             }
         }
 
-        if let Some((middle, primary_column, primary_row)) = chrome {
+        if let Some((middle, primary_column, primary_row, editor_stack)) = chrome {
             reconcile_children(
                 id,
                 &chain_ids([
@@ -562,25 +588,31 @@ impl ComponentView for Workspace {
             );
             reconcile_children(
                 middle,
-                &chain_ids([
-                    contents(&groups.starts),
-                    vec![primary_column],
-                    contents(&groups.ends),
-                ]),
+                &chain_ids([contents(&groups.starts), vec![primary_column]]),
                 world,
                 mutations,
             );
             reconcile_children(
                 primary_column,
+                &chain_ids([contents(&groups.primary_top), vec![primary_row]]),
+                world,
+                mutations,
+            );
+            reconcile_children(
+                primary_row,
+                &chain_ids([vec![editor_stack], contents(&groups.ends)]),
+                world,
+                mutations,
+            );
+            reconcile_children(
+                editor_stack,
                 &chain_ids([
-                    contents(&groups.primary_top),
-                    vec![primary_row],
+                    contents(&groups.primaries),
                     contents(&groups.primary_bottom),
                 ]),
                 world,
                 mutations,
             );
-            reconcile_children(primary_row, &contents(&groups.primaries), world, mutations);
         } else {
             // Placement order so unique slots stay Start / Primary / End / Top / Bottom.
             reconcile_children(
@@ -659,6 +691,7 @@ fn track_host_style(direction: FlexDirection, fill: bool) -> NodeStyle {
     layout.height = Some(LengthSpec::Fill);
     layout.overflow_x = OverflowSpec::Hidden;
     layout.overflow_y = OverflowSpec::Hidden;
+    layout.gap = Some(LengthSpec::Px(REGION_SEPARATOR_PX));
     if fill {
         layout.flex_grow = Some(1.0);
         layout.flex_shrink = Some(1.0);
@@ -755,9 +788,9 @@ fn region_style(
             layout.max_height = Some(LengthSpec::Px(state.max_size_value()));
         }
     }
-    if state.placement_value() == RegionPlacement::Bottom {
-        // 1px reserved top gap. LayoutStyle has no border-top token.
-        layout.padding_top = Some(LengthSpec::Px(BOTTOM_SEPARATOR_PX));
+    if state.role() == RegionRole::Inspector {
+        layout.direction = Some(FlexDirection::Column);
+        layout.padding_left = Some(LengthSpec::Px(REGION_SEPARATOR_PX));
     }
     if state.role() == RegionRole::Primary {
         layout.border_radius = Some(primary_radius(workspace_corners, edges));
@@ -819,7 +852,7 @@ fn handle_style(placement: RegionPlacement, highlighted: bool) -> NodeStyle {
 }
 
 impl AppContext {
-    /// Mount the start | primary-column | end chrome hosts, then re-project.
+    /// Mount start | primary-column chrome, with the inspector beside the editor stack.
     pub fn assemble_workspace(
         &mut self,
         workspace: Entity<Workspace>,
@@ -829,12 +862,13 @@ impl AppContext {
             .node(workspace.stable_id())
             .map(|node| node.document)
             .ok_or(FrameworkError::MissingView(workspace.stable_id()))?;
-        let (mut middle, mut primary_column, mut primary_row) =
+        let (mut middle, mut primary_column, mut primary_row, mut editor_stack) =
             self.read(workspace, |workspace| {
                 (
                     workspace.middle,
                     workspace.primary_column,
                     workspace.primary_row,
+                    workspace.editor_stack,
                 )
             })?;
         if middle.is_none() {
@@ -855,10 +889,17 @@ impl AppContext {
                     .stable_id(),
             );
         }
+        if editor_stack.is_none() {
+            editor_stack = Some(
+                self.create_detached_component(document, Workspace::editor_stack())?
+                    .stable_id(),
+            );
+        }
         self.update_component(workspace, |workspace, _| {
             workspace.middle = middle;
             workspace.primary_column = primary_column;
             workspace.primary_row = primary_row;
+            workspace.editor_stack = editor_stack;
         })?;
         Ok(true)
     }
@@ -1326,5 +1367,65 @@ mod tests {
                 .unwrap()
         );
         assert!(context.world().node(resources).unwrap().children.is_empty());
+    }
+
+    #[test]
+    fn inspector_stays_separated_from_primary_toolbar() {
+        let mut context = AppContext::new();
+        let start = surface(&mut context);
+        let primary = surface(&mut context);
+        let inspector = surface(&mut context);
+        let toolbar = surface(&mut context);
+        let layout = WorkspaceLayout::new([
+            RegionState::new(RegionId::Resources, RegionRole::Resources).size(200.0),
+            RegionState::new(RegionId::PrimaryToolbar, RegionRole::Utility)
+                .placement(RegionPlacement::Top)
+                .scope(RegionScope::Primary)
+                .size(34.0),
+            RegionState::new(RegionId::Primary, RegionRole::Primary).fill_priority(1),
+            RegionState::new(RegionId::Inspector, RegionRole::Inspector).size(180.0),
+        ])
+        .expect("layout");
+        let model = WorkspaceModel::with_layout(layout);
+        let entity = mount(
+            &mut context,
+            Workspace::from_model(
+                &model,
+                [
+                    WorkspaceRegionSlot::new(RegionId::Resources, start),
+                    WorkspaceRegionSlot::new(RegionId::Primary, primary),
+                    WorkspaceRegionSlot::new(RegionId::Inspector, inspector),
+                    WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar),
+                ],
+            ),
+        );
+        context.assemble_workspace(entity).unwrap();
+        context
+            .layout_document(document(), crate::LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+
+        let toolbar_box = context.world().layout_box(toolbar).unwrap();
+        let primary_box = context.world().layout_box(primary).unwrap();
+        let inspector_box = context.world().layout_box(inspector).unwrap();
+        assert!(
+            inspector_box.y + 0.5 >= toolbar_box.y + toolbar_box.height,
+            "inspector header must sit below the toolbar row, not on it"
+        );
+        assert!(
+            inspector_box.x + 0.5 >= primary_box.x + primary_box.width,
+            "inspector must be a right column beside the editor"
+        );
+        assert!(
+            (toolbar_box.width - (primary_box.width + inspector_box.width)).abs() < 2.0,
+            "toolbar spans editor + inspector, got toolbar {} vs columns {}",
+            toolbar_box.width,
+            primary_box.width + inspector_box.width
+        );
+        let inspector_style = &context.world().node_style(inspector).unwrap().layout;
+        assert_eq!(inspector_style.direction, Some(FlexDirection::Column));
+        assert_eq!(
+            inspector_style.padding_left,
+            Some(LengthSpec::Px(REGION_SEPARATOR_PX))
+        );
     }
 }

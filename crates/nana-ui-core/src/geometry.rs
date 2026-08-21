@@ -222,23 +222,12 @@ impl WorkspaceGeometry {
         let starts_total = group_extent(&starts);
         let ends_total = group_extent(&ends);
         let primary_x = starts_total.min(logical_width);
-        let primary_width = (logical_width - starts_total - ends_total).max(0.0);
+        let content_width = (logical_width - starts_total).max(0.0);
+        let primary_width = (content_width - ends_total).max(0.0);
         let primary_end = primary_x + primary_width;
 
         let mut x = 0.0;
         for (index, region) in starts {
-            let width = region.extent();
-            set_region(
-                &mut regions[index],
-                LogicalRect::new(x, middle_y, width, middle_height),
-                false,
-                scale_factor,
-            );
-            x += width;
-        }
-
-        x = primary_end;
-        for (index, region) in ends {
             let width = region.extent();
             set_region(
                 &mut regions[index],
@@ -254,17 +243,30 @@ impl WorkspaceGeometry {
         let primary_middle_y = middle_y + primary_top_total;
         let primary_middle_height =
             (middle_height - primary_top_total - primary_bottom_total).max(0.0);
+        let inspector_height = (middle_height - primary_top_total).max(0.0);
 
         y = middle_y;
         for (index, region) in primary_top {
             let height = region.extent();
             set_region(
                 &mut regions[index],
-                LogicalRect::new(primary_x, y, primary_width, height),
+                LogicalRect::new(primary_x, y, content_width, height),
                 false,
                 scale_factor,
             );
             y += height;
+        }
+
+        x = primary_end;
+        for (index, region) in ends {
+            let width = region.extent();
+            set_region(
+                &mut regions[index],
+                LogicalRect::new(x, primary_middle_y, width, inspector_height),
+                false,
+                scale_factor,
+            );
+            x += width;
         }
 
         let primary_widths = allocate_primary_widths(&primaries, primary_width);
@@ -425,6 +427,12 @@ mod tests {
         assert_eq!(
             region(&geometry, &RegionId::PrimaryToolbar).logical.width,
             region(&geometry, &RegionId::Primary).logical.width
+                + region(&geometry, &RegionId::Inspector).logical.width
+        );
+        assert!(
+            region(&geometry, &RegionId::Inspector).logical.y
+                >= region(&geometry, &RegionId::PrimaryToolbar).logical.y
+                    + region(&geometry, &RegionId::PrimaryToolbar).logical.height
         );
     }
 
@@ -441,9 +449,9 @@ mod tests {
 
         assert_eq!(global, LogicalRect::new(0.0, 36.0, 56.0, 684.0));
         assert_eq!(resources, LogicalRect::new(56.0, 36.0, 260.0, 684.0));
-        assert_eq!(toolbar, LogicalRect::new(316.0, 36.0, 684.0, 34.0));
+        assert_eq!(toolbar, LogicalRect::new(316.0, 36.0, 964.0, 34.0));
         assert_eq!(primary, LogicalRect::new(316.0, 70.0, 684.0, 450.0));
-        assert_eq!(inspector, LogicalRect::new(1000.0, 36.0, 280.0, 684.0));
+        assert_eq!(inspector, LogicalRect::new(1000.0, 70.0, 280.0, 650.0));
         assert_eq!(diagnostics, LogicalRect::new(316.0, 520.0, 684.0, 200.0));
     }
 

@@ -5085,6 +5085,7 @@ fn workspace_from_widget(
         component.middle = existing.middle;
         component.primary_column = existing.primary_column;
         component.primary_row = existing.primary_row;
+        component.editor_stack = existing.editor_stack;
         component.handles = existing.handles;
     }
     component
@@ -8294,7 +8295,7 @@ mod tests {
             "primary",
             "workspace region child must be recorded as a WorkspaceRegionSlot"
         );
-        let (middle, primary_column, primary_row) = doc
+        let (middle, primary_column, primary_row, editor_stack) = doc
             .context()
             .read(
                 Entity::<RuntimeWorkspace>::from_stable_id(workspace_id),
@@ -8303,6 +8304,7 @@ mod tests {
                         workspace.middle,
                         workspace.primary_column,
                         workspace.primary_row,
+                        workspace.editor_stack,
                     )
                 },
             )
@@ -8318,6 +8320,10 @@ mod tests {
         assert!(
             primary_row.is_some(),
             "assemble_workspace creates the primary row"
+        );
+        assert!(
+            editor_stack.is_some(),
+            "assemble_workspace creates the editor stack"
         );
         let children = doc.runtime.node(workspace_id).unwrap().children;
         assert!(
