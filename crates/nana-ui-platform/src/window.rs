@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /// Stable application-owned window identity. Platform backends keep their
 /// native/winit window IDs private and map them to this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -47,6 +49,19 @@ pub enum WindowEvent {
         id: WindowId,
     },
     Closed {
+        id: WindowId,
+    },
+    FileHovered {
+        id: WindowId,
+        paths: Vec<PathBuf>,
+        position: Option<(f32, f32)>,
+    },
+    FileDropped {
+        id: WindowId,
+        paths: Vec<PathBuf>,
+        position: Option<(f32, f32)>,
+    },
+    FileHoverCancelled {
         id: WindowId,
     },
 }

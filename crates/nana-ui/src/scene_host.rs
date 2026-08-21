@@ -3,6 +3,7 @@
 //! Paint goes through [`crate::SceneWgpuPainter`].
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -417,6 +418,16 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
             WinitWindowEvent::Ime(ime) => {
                 self.handle_ime(event_loop, id, platform_ime_event(ime.clone()))
+            }
+            WinitWindowEvent::HoveredFile(_)
+            | WinitWindowEvent::DroppedFile(_)
+            | WinitWindowEvent::HoveredFileCancelled => {
+                if let Some(window_event) = self.input_mut(id).map_file_window_event(&event, id) {
+                    let update = self
+                        .program
+                        .window_event(window_event, &self.context_for(id));
+                    self.apply_update(event_loop, update);
+                }
             }
             _ => {}
         }
@@ -1804,6 +1815,8 @@ struct InputTracker {
     modifiers: ModifiersState,
     active_touches: HashSet<u64>,
     primary_touch: Option<u64>,
+    pending_file_paths: Vec<PathBuf>,
+    file_drop_emitted: bool,
 }
 
 impl InputTracker {
@@ -1984,6 +1997,46 @@ impl InputTracker {
             _ => None,
         }
     }
+
+    fn map_file_window_event(
+        &mut self,
+        event: &WinitWindowEvent,
+        id: WindowId,
+    ) -> Option<WindowEvent> {
+        match event {
+            WinitWindowEvent::HoveredFile(path) => {
+                self.file_drop_emitted = false;
+                self.pending_file_paths.push(path.clone());
+                Some(WindowEvent::FileHovered {
+                    id,
+                    paths: self.pending_file_paths.clone(),
+                    position: Some(self.cursor),
+                })
+            }
+            WinitWindowEvent::HoveredFileCancelled => {
+                self.pending_file_paths.clear();
+                self.file_drop_emitted = false;
+                Some(WindowEvent::FileHoverCancelled { id })
+            }
+            WinitWindowEvent::DroppedFile(path) => {
+                if self.file_drop_emitted {
+                    return None;
+                }
+                self.file_drop_emitted = true;
+                let paths = if self.pending_file_paths.is_empty() {
+                    vec![path.clone()]
+                } else {
+                    std::mem::take(&mut self.pending_file_paths)
+                };
+                Some(WindowEvent::FileDropped {
+                    id,
+                    paths,
+                    position: Some(self.cursor),
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 fn platform_window_event(
@@ -2032,6 +2085,7 @@ mod tests {
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate};
+    use std::path::PathBuf;
     use winit::dpi::PhysicalPosition;
     use winit::event::{
         DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase,
@@ -2438,6 +2492,73 @@ mod tests {
                 geometry(),
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn file_drag_batches_hover_paths_and_emits_one_drop() {
+        let mut tracker = InputTracker::default();
+        tracker.cursor = (24.0, 48.0);
+        let first = PathBuf::from("a.png");
+        let second = PathBuf::from("b.png");
+        assert_eq!(
+            tracker
+                .map_file_window_event(
+                    &WinitWindowEvent::HoveredFile(first.clone()),
+                    WindowId::PRIMARY,
+                )
+                .and_then(|event| match event {
+                    WindowEvent::FileHovered {
+                        paths, position, ..
+                    } => Some((paths, position)),
+                    _ => None,
+                }),
+            Some((vec![first.clone()], Some((24.0, 48.0))))
+        );
+        tracker.map_file_window_event(
+            &WinitWindowEvent::HoveredFile(second.clone()),
+            WindowId::PRIMARY,
+        );
+        assert_eq!(
+            tracker
+                .map_file_window_event(
+                    &WinitWindowEvent::DroppedFile(first.clone()),
+                    WindowId::PRIMARY,
+                )
+                .and_then(|event| match event {
+                    WindowEvent::FileDropped { paths, .. } => Some(paths),
+                    _ => None,
+                }),
+            Some(vec![first, second.clone()])
+        );
+        assert!(
+            tracker
+                .map_file_window_event(&WinitWindowEvent::DroppedFile(second), WindowId::PRIMARY,)
+                .is_none()
+        );
+
+        let mut cancelled = InputTracker::default();
+        cancelled.map_file_window_event(
+            &WinitWindowEvent::HoveredFile(PathBuf::from("gone.png")),
+            WindowId::PRIMARY,
+        );
+        assert!(matches!(
+            cancelled
+                .map_file_window_event(&WinitWindowEvent::HoveredFileCancelled, WindowId::PRIMARY,),
+            Some(WindowEvent::FileHoverCancelled { .. })
+        ));
+        let solo = PathBuf::from("solo.txt");
+        assert_eq!(
+            cancelled
+                .map_file_window_event(
+                    &WinitWindowEvent::DroppedFile(solo.clone()),
+                    WindowId::PRIMARY,
+                )
+                .and_then(|event| match event {
+                    WindowEvent::FileDropped { paths, .. } => Some(paths),
+                    _ => None,
+                }),
+            Some(vec![solo])
         );
     }
 
