@@ -15,11 +15,10 @@ use nana_ui::runtime::{
     Switch, TabOption, Tabs, TabsEvent, TextArea, TextChanged, TextInput, Toast, ToggleChanged,
     TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
 };
-use nana_ui::window_chrome::WindowChromeAction;
 use nana_ui::{
     ButtonKind, CardKind, ControlSize, DockAction, DockBounds, DockId, Icon, LogicalPoint,
     NanaTextShaper, RegionId, RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent,
-    WindowChromeEvent, WorkspaceAction,
+    WorkspaceAction,
 };
 use nana_ui_platform::InputEvent;
 
@@ -27,7 +26,7 @@ use super::runtime_host::{
     DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_insets,
     apply_workspace_corners, bind_event, hugging_text, labeled_text, node_is_or_under,
     reconcile_children, runtime_input_event, search_command_button, sidebar_toggle_button,
-    styled_text, take_pending, theme_toggle_button, window_control_button,
+    styled_text, take_pending, theme_toggle_button,
 };
 use super::{GalleryMessage, GallerySection, GalleryState, SurfaceView, section_label};
 
@@ -121,7 +120,6 @@ pub(super) struct GalleryRuntime {
     title_center: Entity<nana_ui::runtime::Text>,
     title_trailing: Entity<HostStack>,
     context_label: Entity<nana_ui::runtime::Text>,
-    maximize: Option<Entity<IconButton>>,
     sidebar: Entity<SidebarFrame>,
     sidebar_rows: [Entity<SidebarRow>; 6],
     settings_footer: Entity<SidebarFooterButton>,
@@ -299,65 +297,6 @@ impl GalleryRuntime {
         context.append_child(title_trailing, search_button)?;
         context.append_child(title_trailing, theme_button)?;
 
-        let chrome = state.window_chrome.chrome();
-        let maximize = if chrome.uses_custom_controls() {
-            let minimize = context.create_detached_component(
-                document_id,
-                window_control_button(Icon::Minimize, "Minimize"),
-            )?;
-            let maximize = context.create_detached_component(
-                document_id,
-                window_control_button(
-                    if state.window_chrome.is_maximized() {
-                        Icon::Restore
-                    } else {
-                        Icon::Maximize
-                    },
-                    if state.window_chrome.is_maximized() {
-                        "Restore"
-                    } else {
-                        "Maximize"
-                    },
-                ),
-            )?;
-            let close = context.create_detached_component(
-                document_id,
-                window_control_button(Icon::Close, "Close"),
-            )?;
-            context.append_child(title_trailing, minimize)?;
-            context.append_child(title_trailing, maximize)?;
-            context.append_child(title_trailing, close)?;
-            bind_event(
-                context,
-                minimize,
-                Arc::clone(&pending),
-                |event: &Activate| {
-                    let _ = event;
-                    GalleryMessage::WindowChrome(WindowChromeEvent::Action(
-                        WindowChromeAction::Minimize,
-                    ))
-                },
-            )?;
-            bind_event(
-                context,
-                maximize,
-                Arc::clone(&pending),
-                |event: &Activate| {
-                    let _ = event;
-                    GalleryMessage::WindowChrome(WindowChromeEvent::Action(
-                        WindowChromeAction::ToggleMaximize,
-                    ))
-                },
-            )?;
-            bind_event(context, close, Arc::clone(&pending), |event: &Activate| {
-                let _ = event;
-                GalleryMessage::WindowChrome(WindowChromeEvent::Action(WindowChromeAction::Close))
-            })?;
-            Some(maximize)
-        } else {
-            None
-        };
-
         let primary = section_root(
             state.section,
             &controls,
@@ -447,7 +386,6 @@ impl GalleryRuntime {
             title_center,
             title_trailing,
             context_label,
-            maximize,
             sidebar,
             sidebar_rows,
             settings_footer,
@@ -497,19 +435,6 @@ impl GalleryRuntime {
                 400,
             );
         });
-        if let Some(maximize) = self.maximize {
-            let maximized = state.window_chrome.is_maximized();
-            let _ = context.update_component(maximize, |button, _| {
-                *button = window_control_button(
-                    if maximized {
-                        Icon::Restore
-                    } else {
-                        Icon::Maximize
-                    },
-                    if maximized { "Restore" } else { "Maximize" },
-                );
-            });
-        }
         for (index, row) in self.sidebar_rows.iter().copied().enumerate() {
             let active = state.section == SECTIONS[index].0;
             let _ = context.update_component(row, |row, _| {
@@ -588,7 +513,7 @@ impl GalleryRuntime {
             chrome.leading_inset,
             chrome.trailing_inset,
             state.window_chrome.is_maximized(),
-            false,
+            chrome.uses_custom_controls(),
         );
         self.flush(state.gallery_viewport_size());
     }

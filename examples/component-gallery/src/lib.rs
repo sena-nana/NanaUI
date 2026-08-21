@@ -1362,13 +1362,8 @@ fn chrome_action_commands(
     maximized: bool,
 ) -> Vec<WindowCommand> {
     match action {
-        WindowChromeAction::Drag => vec![WindowCommand::Drag(id)],
-        WindowChromeAction::Minimize => vec![WindowCommand::SetMinimized {
-            id,
-            minimized: true,
-        }],
-        WindowChromeAction::ToggleMaximize => vec![WindowCommand::SetMaximized { id, maximized }],
         WindowChromeAction::Close => Vec::new(),
+        action => nana_ui::window_commands_for_chrome_action(id, action, maximized),
     }
 }
 

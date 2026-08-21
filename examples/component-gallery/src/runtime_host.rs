@@ -253,12 +253,6 @@ pub(super) fn theme_toggle_button(theme: ThemeMode) -> IconButton {
         .kind(ButtonKind::Text)
 }
 
-pub(super) fn window_control_button(icon: Icon, label: &'static str) -> IconButton {
-    IconButton::new(icon, label)
-        .size(ControlSize::Small)
-        .kind(ButtonKind::Text)
-}
-
 pub(super) fn search_command_button() -> IconButton {
     IconButton::new(Icon::Search, "搜索命令")
         .size(ControlSize::Small)

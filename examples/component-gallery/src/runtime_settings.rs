@@ -1,23 +1,24 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use nana_ui::WindowChromeEvent;
 use nana_ui::runtime::{
     AboutSection, Activate, AppearanceSection, Button, DesktopShell, DocumentId, Entity,
     FrameworkError, IconButton, LayoutViewport, LengthSpec, OverlayHost, RuntimeDocument,
     SemanticColorRole, SettingsBack, SettingsCollapsibleCard, SettingsPage, SettingsSidebar,
     SettingsTabSelected, StableNodeId, ToggleChanged,
 };
-use nana_ui::window_chrome::WindowChromeAction;
 use nana_ui::{
     AppearanceEvent, ButtonKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
-    RuntimeInputAdapter, WindowChromeEvent, WorkspaceAction,
+    RuntimeInputAdapter, WorkspaceAction,
 };
 use nana_ui_platform::InputEvent;
 
 use super::runtime_host::{
     DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_insets,
     apply_workspace_corners, bind_event, hugging_text, runtime_input_event, search_command_button,
-    sidebar_toggle_button, styled_text, take_pending, theme_toggle_button, window_control_button,
+    sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
 };
 use super::{GalleryMessage, GalleryState, appearance_message, settings_view};
 
@@ -40,7 +41,6 @@ pub(super) struct GallerySettingsRuntime {
     title_leading: Entity<HostStack>,
     title_center: Entity<nana_ui::runtime::Text>,
     title_trailing: Entity<HostStack>,
-    maximize: Option<Entity<IconButton>>,
     last_viewport: LayoutViewport,
     chrome: RuntimeChrome,
     pending: Arc<Mutex<Vec<GalleryMessage>>>,
@@ -175,65 +175,6 @@ impl GallerySettingsRuntime {
         context.append_child(title_trailing, search_button)?;
         context.append_child(title_trailing, theme_button)?;
 
-        let chrome = state.window_chrome.chrome();
-        let maximize = if chrome.uses_custom_controls() {
-            let minimize = context.create_detached_component(
-                document_id,
-                window_control_button(Icon::Minimize, "Minimize"),
-            )?;
-            let maximize = context.create_detached_component(
-                document_id,
-                window_control_button(
-                    if state.window_chrome.is_maximized() {
-                        Icon::Restore
-                    } else {
-                        Icon::Maximize
-                    },
-                    if state.window_chrome.is_maximized() {
-                        "Restore"
-                    } else {
-                        "Maximize"
-                    },
-                ),
-            )?;
-            let close = context.create_detached_component(
-                document_id,
-                window_control_button(Icon::Close, "Close"),
-            )?;
-            context.append_child(title_trailing, minimize)?;
-            context.append_child(title_trailing, maximize)?;
-            context.append_child(title_trailing, close)?;
-            bind_event(
-                context,
-                minimize,
-                Arc::clone(&pending),
-                |event: &Activate| {
-                    let _ = event;
-                    GalleryMessage::WindowChrome(WindowChromeEvent::Action(
-                        WindowChromeAction::Minimize,
-                    ))
-                },
-            )?;
-            bind_event(
-                context,
-                maximize,
-                Arc::clone(&pending),
-                |event: &Activate| {
-                    let _ = event;
-                    GalleryMessage::WindowChrome(WindowChromeEvent::Action(
-                        WindowChromeAction::ToggleMaximize,
-                    ))
-                },
-            )?;
-            bind_event(context, close, Arc::clone(&pending), |event: &Activate| {
-                let _ = event;
-                GalleryMessage::WindowChrome(WindowChromeEvent::Action(WindowChromeAction::Close))
-            })?;
-            Some(maximize)
-        } else {
-            None
-        };
-
         let shell = context.create_component(
             document_id,
             DesktopShell::from_model(state.settings_workspace.model().clone())
@@ -338,7 +279,6 @@ impl GallerySettingsRuntime {
             title_leading,
             title_center,
             title_trailing,
-            maximize,
             last_viewport,
             chrome: RuntimeChrome::default(),
             pending,
@@ -395,19 +335,6 @@ impl GallerySettingsRuntime {
         let _ = context.update_component(self.theme_button, |button, _| {
             *button = theme_toggle_button(state.theme);
         });
-        if let Some(maximize) = self.maximize {
-            let maximized = state.window_chrome.is_maximized();
-            let _ = context.update_component(maximize, |button, _| {
-                *button = window_control_button(
-                    if maximized {
-                        Icon::Restore
-                    } else {
-                        Icon::Maximize
-                    },
-                    if maximized { "Restore" } else { "Maximize" },
-                );
-            });
-        }
         let _ = context.update_component(self.shell, |shell, _| {
             shell.model = state.settings_workspace.model().clone();
             shell.title_leading = Some(self.title_leading.stable_id());
@@ -434,7 +361,7 @@ impl GallerySettingsRuntime {
             chrome.leading_inset,
             chrome.trailing_inset,
             state.window_chrome.is_maximized(),
-            false,
+            chrome.uses_custom_controls(),
         );
         self.flush(state.settings_viewport_size());
     }

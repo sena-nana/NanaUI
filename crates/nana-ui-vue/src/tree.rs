@@ -548,6 +548,7 @@ struct PendingAssembly {
     workspaces: Vec<(StableNodeId, RuntimeWorkspace)>,
     docks: Vec<(StableNodeId, RuntimeDock)>,
     split_panes: Vec<(StableNodeId, RuntimeSplitPane)>,
+    title_bars: Vec<(StableNodeId, RuntimeAppTitleBar)>,
     app_shells: Vec<(StableNodeId, RuntimeAppShell)>,
     markdowns: Vec<(StableNodeId, RuntimeNativeMarkdown)>,
     settings_pages: Vec<(StableNodeId, RuntimeSettingsPage)>,
@@ -555,6 +556,11 @@ struct PendingAssembly {
 
 impl PendingAssembly {
     fn apply(self, context: &mut AppContext) {
+        for (id, component) in self.title_bars {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_app_title_bar(entity);
+            }
+        }
         for (id, component) in self.workspaces {
             if let Ok(entity) = context.bind_component(id, component) {
                 let _ = context.assemble_workspace(entity);
@@ -2562,6 +2568,13 @@ fn project_migrating_component(
 ) -> bool {
     let world = context.world();
     if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
+        return true;
+    }
+    if is_title_bar_child(widget) {
+        let title = widget.props.display_label();
+        let bar = RuntimeAppTitleBar::new(title);
+        bar.project(id, world, mutations);
+        pending.title_bars.push((id, bar));
         return true;
     }
     if !is_sidebar_frame_body(widget)

@@ -10,9 +10,9 @@ use nana_ui_core::{
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
-    FrameworkError, InteractionState, InteractionStyle, MutationQueue, NodeKind, NodeStyle,
-    OverlayHost, SemanticPaint, SidebarFrame, StableNodeId, StandardVisual, TextContent, UiWorld,
-    Workspace, WorkspaceRegionSlot,
+    FrameworkError, IconButton, InteractionState, InteractionStyle, MutationQueue, NodeKind,
+    NodeStyle, OverlayHost, SemanticPaint, SidebarFrame, StableNodeId, StandardVisual, TextContent,
+    UiWorld, Workspace, WorkspaceRegionSlot,
 };
 
 const SLOT_PADDING: f32 = 6.0;
@@ -180,7 +180,12 @@ impl AppTitleBar {
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
-        layout.justify_content = if self.center.is_none() && self.trailing.is_some() {
+        layout.justify_content = if self.center.is_some() {
+            JustifySpec::Start
+        } else if (self.show_window_controls && self.controls.is_some())
+            || self.trailing.is_some()
+            || self.leading.is_some()
+        {
             JustifySpec::SpaceBetween
         } else {
             JustifySpec::Start
@@ -752,9 +757,46 @@ impl AppContext {
         if let Some(overlay) = overlay {
             children.push(overlay);
         }
-        let changed = reconcile_ids(self, parent, &children)?;
+        let mut changed = reconcile_ids(self, parent, &children)?;
         self.update_component(shell, |_, _| {})?;
+        if let Some(title_bar) = title_bar {
+            changed |= self
+                .assemble_app_title_bar(Entity::<AppTitleBar>::from_stable_id(title_bar))
+                .unwrap_or(false);
+        }
         Ok(changed || fields_changed)
+    }
+
+    /// Create custom Minimize / Maximize / Close controls when the bar shows them.
+    ///
+    /// Host-mounted `controls` are kept. Vue title-bar facades reuse an existing
+    /// `app-title-bar-controls` child instead of allocating a new one each frame.
+    pub fn assemble_app_title_bar(
+        &mut self,
+        bar: Entity<AppTitleBar>,
+    ) -> Result<bool, FrameworkError> {
+        let parent = bar.stable_id();
+        let document = document_of(self, parent)?;
+        let snapshot = self.read(bar, Clone::clone)?;
+        if !snapshot.show_window_controls {
+            return Ok(false);
+        }
+        let controls = ensure_window_controls(
+            self,
+            document,
+            parent,
+            snapshot.controls,
+            snapshot.maximized,
+        )?;
+        let mut changed = snapshot.controls != Some(controls);
+        if changed {
+            self.update_component(bar, |bar, _| {
+                bar.controls = Some(controls);
+            })?;
+        }
+        changed |= append_child_if_needed(self, parent, controls)?;
+        self.update_component(bar, |_, _| {})?;
+        Ok(changed)
     }
 
     /// Mount title bar, workspace regions, and overlay host on `shell`.
@@ -790,6 +832,9 @@ impl AppContext {
             snapshot.title_center,
             snapshot.title_trailing,
         )?;
+        if let Some(title_bar) = title_bar {
+            let _ = self.assemble_app_title_bar(Entity::<AppTitleBar>::from_stable_id(title_bar));
+        }
         let (resources, navigation_frame) = resolve_navigation(
             self,
             document,
@@ -893,6 +938,123 @@ fn resolve_app_overlay(
             .create_detached_component(document, OverlayHost::new())?
             .stable_id(),
     ))
+}
+
+fn find_title_bar_controls_child(
+    context: &AppContext,
+    parent: StableNodeId,
+) -> Option<StableNodeId> {
+    context
+        .world()
+        .node(parent)
+        .into_iter()
+        .flat_map(|node| node.children)
+        .find(|&id| {
+            view_is::<AppTitleBarControls>(context, id)
+                || matches!(
+                    context.world().node(id).map(|node| node.kind),
+                    Some(NodeKind::Element { tag }) if tag == "app-title-bar-controls"
+                )
+        })
+}
+
+fn window_control_buttons(
+    context: &mut AppContext,
+    document: DocumentId,
+    maximized: bool,
+) -> Result<[StableNodeId; 3], FrameworkError> {
+    let mut button = |action: WindowChromeAction| {
+        context
+            .create_detached_component(
+                document,
+                IconButton::new(action.icon(maximized), action.label(maximized))
+                    .size(ControlSize::Small),
+            )
+            .map(|entity| entity.stable_id())
+    };
+    Ok([
+        button(WindowChromeAction::Minimize)?,
+        button(WindowChromeAction::ToggleMaximize)?,
+        button(WindowChromeAction::Close)?,
+    ])
+}
+
+fn ensure_window_controls(
+    context: &mut AppContext,
+    document: DocumentId,
+    parent: StableNodeId,
+    existing: Option<StableNodeId>,
+    maximized: bool,
+) -> Result<StableNodeId, FrameworkError> {
+    let controls = existing
+        .filter(|id| context.world().contains(*id))
+        .or_else(|| find_title_bar_controls_child(context, parent));
+    if let Some(controls) = controls {
+        let count = context
+            .world()
+            .node(controls)
+            .map(|node| node.children.len())
+            .unwrap_or(0);
+        if count < 3 {
+            let [minimize, maximize, close] = window_control_buttons(context, document, maximized)?;
+            if view_is::<AppTitleBarControls>(context, controls) {
+                context.update_component(
+                    Entity::<AppTitleBarControls>::from_stable_id(controls),
+                    |controls, _| {
+                        controls.maximized = maximized;
+                        controls.minimize = Some(minimize);
+                        controls.maximize = Some(maximize);
+                        controls.close = Some(close);
+                    },
+                )?;
+            }
+            reconcile_ids(context, controls, &[minimize, maximize, close])?;
+        } else if view_is::<AppTitleBarControls>(context, controls) {
+            context.update_component(
+                Entity::<AppTitleBarControls>::from_stable_id(controls),
+                |controls, _| {
+                    controls.maximized = maximized;
+                },
+            )?;
+        }
+        return Ok(controls);
+    }
+    let [minimize, maximize, close] = window_control_buttons(context, document, maximized)?;
+    let controls = context.create_detached_component(
+        document,
+        AppTitleBarControls::new(maximized)
+            .minimize(minimize)
+            .maximize(maximize)
+            .close(close),
+    )?;
+    reconcile_ids(context, controls.stable_id(), &[minimize, maximize, close])?;
+    Ok(controls.stable_id())
+}
+
+fn append_child_if_needed(
+    context: &mut AppContext,
+    parent: StableNodeId,
+    child: StableNodeId,
+) -> Result<bool, FrameworkError> {
+    if parent == child || !context.world().contains(child) {
+        return Ok(false);
+    }
+    let children = context
+        .world()
+        .node(parent)
+        .ok_or(FrameworkError::MissingView(parent))?
+        .children
+        .clone();
+    if children.last() == Some(&child) {
+        return Ok(false);
+    }
+    let mut mutations = MutationQueue::new();
+    if children.contains(&child) {
+        mutations.detach(child);
+    }
+    mutations.insert(parent, child, None);
+    context.commit_mutations(mutations)?;
+    Ok(true)
 }
 
 fn find_title_bar_child(context: &AppContext, parent: StableNodeId) -> Option<StableNodeId> {
@@ -1420,6 +1582,54 @@ mod tests {
             ));
         } else {
             assert!(!bar_view.native_control_hit(bounds, bounds.x + 8.0, bounds.y + 8.0));
+        }
+    }
+
+    #[test]
+    fn assemble_title_bar_mounts_custom_window_controls_when_enabled() {
+        let mut context = AppContext::new();
+        let bar = context
+            .create_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let mounted = context.assemble_app_title_bar(bar).unwrap();
+        let chrome = WindowChrome::platform_default();
+        let snapshot = context.read(bar, Clone::clone).unwrap();
+        if chrome.uses_custom_controls() {
+            assert!(mounted);
+            let controls = snapshot.controls.expect("custom chrome mounts controls");
+            assert_eq!(
+                context.world().node(controls).unwrap().children.len(),
+                3,
+                "custom title bar must own minimize, maximize, and close"
+            );
+            let children = context.world().node(bar.stable_id()).unwrap().children;
+            assert_eq!(children.last().copied(), Some(controls));
+            assert!(
+                context
+                    .world()
+                    .node(controls)
+                    .unwrap()
+                    .children
+                    .iter()
+                    .all(|id| {
+                        context
+                            .world()
+                            .accessibility(*id)
+                            .is_some_and(|state| state.role == AccessibilityRole::Button)
+                    })
+            );
+            assert!(!context.assemble_app_title_bar(bar).unwrap());
+        } else {
+            assert!(!mounted);
+            assert!(snapshot.controls.is_none());
+            assert!(
+                context
+                    .world()
+                    .node(bar.stable_id())
+                    .unwrap()
+                    .children
+                    .is_empty()
+            );
         }
     }
 
