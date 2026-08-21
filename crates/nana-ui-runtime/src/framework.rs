@@ -2823,6 +2823,7 @@ impl AppContext {
         if self.views.get(&id).is_some_and(|view| view.is::<Tabs>()) {
             self.sync_tabs_options(Entity::from_stable_id(id))?;
         }
+        self.sync_sidebar_section_body_port(id);
         let tooltip = self
             .views
             .get(&id)
@@ -2922,6 +2923,30 @@ impl AppContext {
             }
         }
         Ok(())
+    }
+
+    fn sync_sidebar_section_body_port(&mut self, id: StableNodeId) {
+        let Some(body) = self
+            .views
+            .get(&id)
+            .and_then(|view| view.downcast_ref::<SidebarSection>())
+            .and_then(|section| section.body)
+        else {
+            return;
+        };
+        let Some(style) = self.world.node_style(body).cloned() else {
+            return;
+        };
+        let Some(list) = self
+            .views
+            .get_mut(&body)
+            .and_then(|view| view.downcast_mut::<List>())
+        else {
+            return;
+        };
+        if list.style != style {
+            list.style = style;
+        }
     }
 
     fn retained_subtree(&self, root: StableNodeId) -> Vec<StableNodeId> {

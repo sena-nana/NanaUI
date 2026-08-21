@@ -692,6 +692,9 @@ impl SidebarSection {
     }
 
     /// Clip port for application-owned section children.
+    ///
+    /// Expanded ports are unconstrained. `List::project` must not store a
+    /// permanent height of 0, or it will clobber the section's body layout.
     pub fn body_port() -> List {
         let mut body = List::new();
         body.style = body_port_style(1.0, None, 0.0);
@@ -1042,7 +1045,7 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
         layout.font_size = Some(SECTION_EMPTY_FONT_SIZE);
     }
     let clip_height = content_height * expansion.clamp(0.0, 1.0);
-    if expansion <= 0.0 || content_height <= 0.0 {
+    if expansion <= 0.0 {
         layout.height = Some(LengthSpec::Px(0.0));
         layout.min_height = Some(LengthSpec::Px(0.0));
         layout.max_height = Some(LengthSpec::Px(0.0));
@@ -1737,6 +1740,64 @@ mod tests {
         context.append_child(section, header).unwrap();
         context.append_child(section, body).unwrap();
         (section, header, body, disclosure, count)
+    }
+
+    #[test]
+    fn expanded_section_body_lays_out_child_rows() {
+        let mut context = AppContext::new();
+        let (_, _, body, _, _) = mount_section(
+            &mut context,
+            SidebarSection::new("表演"),
+            &["待机", "动作"],
+            None,
+        );
+        context.update_component(body, |_, _| {}).unwrap();
+        context
+            .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
+            .unwrap();
+        let gallery_body = context.world().layout_box(body.stable_id()).unwrap();
+        let row_height = ControlSize::Small.height();
+        assert!(gallery_body.height >= row_height * 2.0);
+        context
+            .read(body, |list| {
+                assert_eq!(list.style.layout.height, None);
+                assert_eq!(list.style.layout.min_height, None);
+                assert_eq!(list.style.layout.max_height, None);
+            })
+            .unwrap();
+
+        let spec = SidebarSection::new("资源");
+        let title = context
+            .create_component(document(), spec.title_label())
+            .unwrap();
+        let spec = spec.title_slot(title.stable_id());
+        let header = context
+            .create_component(document(), spec.header_item())
+            .unwrap();
+        context.append_child(header, title).unwrap();
+        let late_body = context
+            .create_component(document(), SidebarSection::body_port())
+            .unwrap();
+        let late_section = context
+            .create_component(
+                document(),
+                spec.header(header.stable_id()).body(late_body.stable_id()),
+            )
+            .unwrap();
+        context.append_child(late_section, header).unwrap();
+        context.append_child(late_section, late_body).unwrap();
+        for label in ["模型", "动作"] {
+            let row = context
+                .create_component(document(), SidebarRow::new(label))
+                .unwrap();
+            context.append_child(late_body, row).unwrap();
+        }
+        context.update_component(late_body, |_, _| {}).unwrap();
+        context
+            .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
+            .unwrap();
+        let late_box = context.world().layout_box(late_body.stable_id()).unwrap();
+        assert!(late_box.height >= row_height * 2.0);
     }
 
     #[test]
