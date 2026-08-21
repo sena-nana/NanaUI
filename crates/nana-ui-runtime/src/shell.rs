@@ -653,6 +653,8 @@ impl DesktopShell {
         self
     }
 
+    /// Right column below a Primary-scoped toolbar. Inspector tabs belong here,
+    /// not on [`RegionId::PrimaryToolbar`].
     pub fn inspector(mut self, inspector: StableNodeId) -> Self {
         self.inspector = Some(inspector);
         self
@@ -663,6 +665,8 @@ impl DesktopShell {
         self
     }
 
+    /// Extra region content. For [`RegionId::PrimaryToolbar`], pass only
+    /// document / edit / kind actions — inspector tabs belong in [`Self::inspector`].
     pub fn region(mut self, id: RegionId, content: StableNodeId) -> Self {
         if let Some((_, existing)) = self
             .extra_regions
@@ -1353,8 +1357,14 @@ fn finite_positive(value: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, DocumentId, Entity, IconButton, LayoutViewport, SidebarFrame, Text};
-    use nana_ui_core::RegionId;
+    use crate::{
+        AppContext, DocumentId, Entity, IconButton, LayoutViewport, SidebarFrame, Text,
+        TextHorizontalAlignment,
+    };
+    use nana_ui_core::{
+        RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
+        WorkspaceModel,
+    };
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -2270,6 +2280,120 @@ mod tests {
         assert_eq!(
             context.world().node(shell.stable_id()).unwrap().children[0],
             title.stable_id()
+        );
+    }
+
+    #[test]
+    fn desktop_shell_keeps_title_off_trailing_edge_and_sidebar_below_chrome() {
+        let mut context = AppContext::new();
+        let leading = context
+            .create_detached_component(
+                document(),
+                IconButton::new(Icon::Sidebar, "切换侧栏").size(ControlSize::Small),
+            )
+            .unwrap();
+        let files = context
+            .create_detached_component(document(), Text::new("文件"))
+            .unwrap();
+        let navigation = context
+            .create_detached_component(document(), SidebarFrame::new().body(files.stable_id()))
+            .unwrap();
+        context.append_child(navigation, files).unwrap();
+        let toolbar = context
+            .create_detached_component(document(), Text::new("toolbar"))
+            .unwrap();
+        let primary = context
+            .create_detached_component(document(), Text::new("primary"))
+            .unwrap();
+        let inspector = context
+            .create_detached_component(document(), Text::new("通道"))
+            .unwrap();
+        let layout = WorkspaceLayout::new([
+            RegionState::new(RegionId::Resources, RegionRole::Resources).size(220.0),
+            RegionState::new(RegionId::PrimaryToolbar, RegionRole::Utility)
+                .placement(RegionPlacement::Top)
+                .scope(RegionScope::Primary)
+                .size(34.0),
+            RegionState::new(RegionId::Primary, RegionRole::Primary).fill_priority(1),
+            RegionState::new(RegionId::Inspector, RegionRole::Inspector).size(286.0),
+        ])
+        .expect("editor regions");
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::from_model(WorkspaceModel::with_layout(layout))
+                .title("NanaShader")
+                .title_leading(leading.stable_id())
+                .navigation(navigation.stable_id())
+                .primary(primary.stable_id())
+                .inspector(inspector.stable_id())
+                .region(RegionId::PrimaryToolbar, toolbar.stable_id()),
+        );
+        context
+            .layout_document(document(), LayoutViewport::new(1200.0, 800.0))
+            .unwrap();
+
+        let title_bar = context
+            .read(shell, |shell| shell.title_bar)
+            .unwrap()
+            .expect("assembled title bar");
+        assert_eq!(context.world().text(title_bar), Some("NanaShader"));
+        let title_style = context.world().node_style(title_bar).unwrap();
+        assert_eq!(
+            title_style.text_horizontal_alignment,
+            TextHorizontalAlignment::Center
+        );
+        let leading_layout = &context
+            .world()
+            .node_style(leading.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(leading_layout.flex_grow, Some(0.0));
+        assert_eq!(leading_layout.width, Some(LengthSpec::Shrink));
+
+        let bar_box = context.world().layout_box(title_bar).unwrap();
+        let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
+        assert!(
+            leading_box.width < 80.0,
+            "leading chrome must hug, got {}",
+            leading_box.width
+        );
+        let chrome = WindowChrome::platform_default();
+        assert!(
+            leading_box.x + 0.5 >= bar_box.x + chrome.leading_inset,
+            "toggle overlapped the traffic-light inset"
+        );
+        let bar_view = context
+            .read(Entity::<AppTitleBar>::from_stable_id(title_bar), |bar| {
+                bar.clone()
+            })
+            .unwrap();
+        assert!(!bar_view.native_control_hit(
+            bar_box,
+            leading_box.x + 1.0,
+            leading_box.y + leading_box.height / 2.0
+        ));
+
+        let nav_box = context.world().layout_box(navigation.stable_id()).unwrap();
+        let files_box = context.world().layout_box(files.stable_id()).unwrap();
+        assert!(
+            nav_box.y + 0.5 >= bar_box.y + bar_box.height,
+            "sidebar entered the title-bar / traffic-light band"
+        );
+        assert!(
+            files_box.y + 0.5 >= bar_box.y + bar_box.height,
+            "文件 header overlapped native window chrome"
+        );
+
+        let toolbar_box = context.world().layout_box(toolbar.stable_id()).unwrap();
+        let primary_box = context.world().layout_box(primary.stable_id()).unwrap();
+        let inspector_box = context.world().layout_box(inspector.stable_id()).unwrap();
+        assert!(
+            inspector_box.y + 0.5 >= toolbar_box.y + toolbar_box.height,
+            "inspector tabs must not sit on the window toolbar row"
+        );
+        assert!(
+            inspector_box.x + 0.5 >= primary_box.x + primary_box.width,
+            "inspector must be a right column beside the workspace"
         );
     }
 }

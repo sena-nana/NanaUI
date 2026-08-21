@@ -372,6 +372,15 @@ impl SidebarRow {
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
+        layout.justify_content = if self.tools.is_some() {
+            if self.slots.leading.is_some() {
+                JustifySpec::SpaceBetween
+            } else {
+                JustifySpec::End
+            }
+        } else {
+            JustifySpec::Start
+        };
         layout.width = Some(LengthSpec::Fill);
         layout.gap = Some(LengthSpec::Px(self.gap));
         layout.min_height = Some(LengthSpec::Px(self.size.height()));
@@ -469,6 +478,10 @@ impl SidebarRow {
         }
         if layout.flex_shrink != Some(0.0) {
             layout.flex_shrink = Some(0.0);
+            changed = true;
+        }
+        if layout.width != Some(LengthSpec::Shrink) {
+            layout.width = Some(LengthSpec::Shrink);
             changed = true;
         }
         if changed {
@@ -1728,6 +1741,7 @@ mod tests {
             .layout;
         assert_eq!(tools_layout.flex_grow, Some(0.0));
         assert_eq!(tools_layout.flex_shrink, Some(0.0));
+        assert_eq!(tools_layout.width, Some(LengthSpec::Shrink));
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 80.0))
             .unwrap();
@@ -1735,6 +1749,20 @@ mod tests {
         let tools_box = context.world().layout_box(close.stable_id()).unwrap();
         assert!(tools_box.x > row_box.x);
         assert!(tools_box.x + tools_box.width <= row_box.x + row_box.width + 0.5);
+        let Some(crate::ComponentGeometry::ListItem {
+            content: Some(label_box),
+            ..
+        }) = context.world().component_geometry(row.stable_id())
+        else {
+            panic!("row should keep a label content box");
+        };
+        assert!(
+            label_box.width > 48.0,
+            "tools must not collapse the row label, got {}",
+            label_box.width
+        );
+        assert!(label_box.x + label_box.width <= tools_box.x + 0.5);
+        assert_eq!(context.world().text(row.stable_id()), Some("着色器"));
     }
 
     #[test]
