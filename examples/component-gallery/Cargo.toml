@@ -27,7 +27,7 @@ live2d-acceptance = [
     "dep:live2d-core",
     "dep:live2d-test-support",
     "dep:live2d-wgpu",
-    "dep:png",
+    "dep:nana-ui-devtools",
 ]
 snapshots = [
     "bundled-fonts",
@@ -35,8 +35,8 @@ snapshots = [
     "nana-ui/hosted",
     "nana-ui/syntax-highlighting",
     "dep:nana-ui-core",
+    "dep:nana-ui-devtools",
     "dep:nana-ui-scene",
-    "dep:png",
     "dep:pollster",
     "dep:wgpu",
 ]
@@ -52,9 +52,9 @@ nana-ui = {
     features = ["components", "gpu", "hosted"],
 }
 nana-ui-core = { workspace = true, optional = true }
+nana-ui-devtools = { workspace = true, optional = true, features = ["offscreen"] }
 nana-ui-platform.workspace = true
 nana-ui-scene = { workspace = true, optional = true }
-png = { version = "0.18.1", optional = true }
 pollster = { version = "0.4", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }

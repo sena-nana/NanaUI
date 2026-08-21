@@ -8,6 +8,9 @@ description: Select and report functional validation for NanaUI changes. Use whe
 ## Matrix
 
 - **UI:** Test changed layout constraints, state transitions, persistence and real action wiring.
+- **Agent headless:** Operate Vue/Runtime without a window via `$nanaui-agent-debug`
+  (`nana-agent-session` / `VueAgentSession`). Inspect a11y bounds and the PNG; do
+  not treat semantic-only updates as visual proof.
 - **Visual:** Render the real workspace/gallery path with `ui-snapshots` and inspect affected PNGs.
   Paint `UiScene` through `SceneWgpuPainter`; keep the snapshot painter alive through
   readback and send a real redraw update.
@@ -46,6 +49,7 @@ cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 cargo run --release -p component-gallery --bin ui-snapshots \
   --features snapshots --locked
+cargo test -p nana-ui-devtools --features agent --lib --locked
 ```
 
 Application crates intentionally reject simultaneous QuickJS and V8 features. Use the explicit

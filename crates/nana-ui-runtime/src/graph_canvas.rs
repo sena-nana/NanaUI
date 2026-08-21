@@ -619,11 +619,11 @@ impl GraphCanvas {
     /// [`ComponentView::project`] does not attach this node. The default
     /// Scene painter fails on unregistered `"graph-canvas"` renderers.
     pub fn custom_render(&self) -> CustomRenderNode {
-        CustomRenderNode {
-            renderer: Arc::from(GRAPH_CANVAS_RENDERER),
-            resource: Arc::from(self.canvas_id.as_str()),
-            revision: self.revision,
-        }
+        CustomRenderNode::new(
+            GRAPH_CANVAS_RENDERER,
+            self.canvas_id.as_str(),
+            self.revision,
+        )
     }
 
     fn effective_style(&self) -> NodeStyle {

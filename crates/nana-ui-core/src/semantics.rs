@@ -317,6 +317,35 @@ impl WindowChrome {
             Self::custom()
         }
     }
+
+    /// True when `(x, y)` sits in the platform traffic-light / caption exclusion.
+    ///
+    /// Title-bar drag and app chrome hit-testing should ignore this band so
+    /// native controls keep the event. Insets of `0` never exclude.
+    pub fn native_control_hit(self, bar: crate::LogicalRect, x: f32, y: f32) -> bool {
+        native_control_hit(
+            bar,
+            valid_inset(self.leading_inset),
+            valid_inset(self.trailing_inset),
+            x,
+            y,
+        )
+    }
+}
+
+pub(crate) fn native_control_hit(
+    bar: crate::LogicalRect,
+    leading_inset: f32,
+    trailing_inset: f32,
+    x: f32,
+    y: f32,
+) -> bool {
+    if x < bar.x || y < bar.y || x >= bar.x + bar.width || y >= bar.y + bar.height {
+        return false;
+    }
+    let local_x = x - bar.x;
+    (leading_inset > 0.0 && local_x < leading_inset)
+        || (trailing_inset > 0.0 && local_x >= (bar.width - trailing_inset).max(0.0))
 }
 
 impl Default for WindowChrome {

@@ -444,6 +444,37 @@ impl SidebarRow {
         }
         style
     }
+
+    fn projected_slots(&self) -> ListItemSlots {
+        ListItemSlots {
+            leading: self.slots.leading,
+            content: self.slots.content,
+            trailing: self.tools.or(self.slots.trailing),
+        }
+    }
+
+    fn project_tools_layout(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(tools) = self.tools else {
+            return;
+        };
+        if world.node(tools).is_none() {
+            return;
+        }
+        let mut style = world.node_style(tools).cloned().unwrap_or_default();
+        let layout = Arc::make_mut(&mut style.layout);
+        let mut changed = false;
+        if layout.flex_grow != Some(0.0) {
+            layout.flex_grow = Some(0.0);
+            changed = true;
+        }
+        if layout.flex_shrink != Some(0.0) {
+            layout.flex_shrink = Some(0.0);
+            changed = true;
+        }
+        if changed {
+            mutations.set_style(tools, style);
+        }
+    }
 }
 
 impl ComponentView for SidebarRow {
@@ -455,13 +486,14 @@ impl ComponentView for SidebarRow {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let mut item = ListItem::new(self.label.as_ref())
-            .slots(self.slots)
+            .slots(self.projected_slots())
             .gap(self.gap)
             .size(self.size)
             .selected(self.selected())
             .disabled(self.disabled());
         item.style = self.effective_style(world);
         item.project(id, world, mutations);
+        self.project_tools_layout(world, mutations);
     }
 }
 
@@ -1653,6 +1685,56 @@ mod tests {
         assert!(context.world().accessibility(disabled_id).unwrap().disabled);
         assert!(!context.activate_sidebar_row(disabled).unwrap());
         assert!(context.activate_sidebar_row(selected).unwrap());
+    }
+
+    #[test]
+    fn row_tools_project_as_trailing_list_item_slot() {
+        let mut context = AppContext::new();
+        let close = context
+            .create_component(
+                document(),
+                IconButton::new(Icon::Close, "关闭").size(ControlSize::Small),
+            )
+            .unwrap();
+        let leading = context
+            .create_component(document(), SidebarRowIcon::new(Icon::File))
+            .unwrap();
+        let row = context
+            .create_component(
+                document(),
+                SidebarRow::new("着色器")
+                    .slots(ListItemSlots {
+                        leading: Some(leading.stable_id()),
+                        content: None,
+                        trailing: None,
+                    })
+                    .tools(close.stable_id()),
+            )
+            .unwrap();
+        context.append_child(row, leading).unwrap();
+        context.append_child(row, close).unwrap();
+        assert_eq!(
+            context.world().standard_visual(row.stable_id()),
+            Some(StandardVisual::ListItem {
+                leading: Some(leading.stable_id()),
+                content: None,
+                trailing: Some(close.stable_id()),
+            })
+        );
+        let tools_layout = &context
+            .world()
+            .node_style(close.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(tools_layout.flex_grow, Some(0.0));
+        assert_eq!(tools_layout.flex_shrink, Some(0.0));
+        context
+            .layout_document(document(), crate::LayoutViewport::new(220.0, 80.0))
+            .unwrap();
+        let row_box = context.world().layout_box(row.stable_id()).unwrap();
+        let tools_box = context.world().layout_box(close.stable_id()).unwrap();
+        assert!(tools_box.x > row_box.x);
+        assert!(tools_box.x + tools_box.width <= row_box.x + row_box.width + 0.5);
     }
 
     #[test]

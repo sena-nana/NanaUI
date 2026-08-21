@@ -314,13 +314,24 @@ impl SceneWgpuPainter {
                         let binding = host_textures
                             .and_then(|registry| registry.get(custom.resource.as_ref()))
                             .expect("validated host texture remains registered");
+                        let dest = nana_ui_core::LogicalRect::new(
+                            bounds.x,
+                            bounds.y,
+                            bounds.width,
+                            bounds.height,
+                        )
+                        .fitted(
+                            binding.width as f32,
+                            binding.height as f32,
+                            custom.fit,
+                        );
                         commands.push(DrawCommand::HostTexture(self.host_textures.prepare(
                             &self.device,
                             &self.queue,
                             binding,
                             primitive.id.node.get(),
                             primitive.id.slot,
-                            bounds,
+                            LogicalRect::from_xywh(dest.x, dest.y, dest.width, dest.height),
                             scissor,
                             primitive.opacity,
                             dest_physical,
@@ -663,11 +674,7 @@ mod tests {
         );
         layout.set_custom_render(
             button.stable_id(),
-            Some(CustomRenderNode {
-                renderer: "nana.host-texture".into(),
-                resource: "preview".into(),
-                revision: 1,
-            }),
+            Some(CustomRenderNode::new("nana.host-texture", "preview", 1)),
         );
         context.commit_mutations(layout).unwrap();
         let work = context.take_system_work();

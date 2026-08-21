@@ -71,6 +71,7 @@ pub use component_support::{
     ComponentCapability, ComponentFamily, ComponentId, ComponentMigrationState, ComponentSupport,
     component_catalog, component_ids, component_support, component_uses_runtime,
 };
+pub use nana_ui_core::ContentFit;
 pub use nana_ui_core::ControlSize;
 pub use nana_ui_core::{AnchoredMenuPlacement, StatusTone, ToastTone, ValidationIntent};
 pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};

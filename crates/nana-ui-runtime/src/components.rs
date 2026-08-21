@@ -1317,11 +1317,35 @@ impl TextInputState {
 /// extension and `resource` is an opaque application-owned lookup key. Neither
 /// field exposes a GPU backend object, so the same extraction can be consumed
 /// by WGPU or a future RHI.
+///
+/// [`Self::fit`] is presentation-only. Host-texture sampling uses it to choose
+/// a destination rect; other renderers ignore Fill.
 #[derive(Component, Debug, Clone, PartialEq, Eq)]
 pub struct CustomRenderNode {
     pub renderer: Arc<str>,
     pub resource: Arc<str>,
     pub revision: u64,
+    pub fit: nana_ui_core::ContentFit,
+}
+
+impl CustomRenderNode {
+    pub fn new(
+        renderer: impl Into<Arc<str>>,
+        resource: impl Into<Arc<str>>,
+        revision: u64,
+    ) -> Self {
+        Self {
+            renderer: renderer.into(),
+            resource: resource.into(),
+            revision,
+            fit: nana_ui_core::ContentFit::Fill,
+        }
+    }
+
+    pub const fn with_fit(mut self, fit: nana_ui_core::ContentFit) -> Self {
+        self.fit = fit;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

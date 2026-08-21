@@ -45,8 +45,8 @@ pub use box_layout::{
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use expansion::ExpansionState;
 pub use geometry::{
-    LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect, TITLE_BAR_HEIGHT,
-    WorkspaceGeometry,
+    ContentFit, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect,
+    TITLE_BAR_HEIGHT, WorkspaceGeometry,
 };
 pub use graph::{
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_PORT_HIT_RADIUS, GraphCanvasId,

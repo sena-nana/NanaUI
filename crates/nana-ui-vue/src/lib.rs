@@ -1169,6 +1169,67 @@ impl VueHost {
         bridge.resolve_document_layout(&mut doc);
     }
 
+    /// Commit host ops and flush Runtime layout/extract like a window Scene host.
+    /// Headless sessions call this after [`Self::semantic_snapshot`].
+    #[cfg(feature = "scene-view")]
+    pub fn flush_scene_frame(
+        &mut self,
+        logical_width: f32,
+        logical_height: f32,
+    ) -> Result<(), nana_ui_runtime::FrameworkError> {
+        {
+            let mut doc = self.document.lock().expect("vue doc");
+            doc.flush_host_frame();
+        }
+        self.flush_runtime_scene(logical_width, logical_height)?;
+        if !self
+            .shared_runtime_document()
+            .get()
+            .scene()
+            .primitives()
+            .any(|primitive| primitive.bounds.width > 1.0 || primitive.bounds.height > 1.0)
+        {
+            {
+                let mut bridge = self.bridge.lock().expect("vue bridge");
+                let mut doc = self.document.lock().expect("vue doc");
+                bridge.resolve_document_layout(&mut doc);
+            }
+            self.flush_runtime_scene(logical_width, logical_height)?;
+        }
+        let shared = self.shared_runtime_document();
+        let document_id = shared.get().document();
+        let records: Vec<(u64, nana_ui_scene::SceneRect)> = {
+            let runtime = shared.get();
+            let scene = runtime.scene();
+            runtime
+                .context()
+                .world()
+                .document_order(document_id)
+                .into_iter()
+                .filter_map(|id| scene.node_bounds(id).map(|rect| (id.get(), rect)))
+                .collect()
+        };
+        self.layout_boxes.begin_frame();
+        for (id, rect) in records {
+            self.layout_boxes
+                .record(NodeHandle(id), rect.x, rect.y, rect.width, rect.height);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "scene-view")]
+    fn flush_runtime_scene(
+        &mut self,
+        logical_width: f32,
+        logical_height: f32,
+    ) -> Result<(), nana_ui_runtime::FrameworkError> {
+        self.shared_runtime_document().get_mut().flush(
+            nana_ui_runtime::LayoutViewport::new(logical_width, logical_height),
+            &mut nana_ui::NanaTextShaper::default(),
+        )?;
+        Ok(())
+    }
+
     pub fn resolve_layout(&mut self) {
         let painted = {
             let doc = self.document.lock().expect("vue doc");

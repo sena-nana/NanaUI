@@ -136,6 +136,25 @@ impl AppTitleBar {
         self
     }
 
+    /// True when `(x, y)` is in the platform traffic-light / caption exclusion
+    /// of a title bar laid out at `bounds`. Drag hit-testing must skip it.
+    pub fn native_control_hit(&self, bounds: crate::LayoutBox, x: f32, y: f32) -> bool {
+        nana_ui_core::WindowChrome::new(
+            if self.show_window_controls {
+                nana_ui_core::WindowControlMode::Custom
+            } else {
+                nana_ui_core::WindowControlMode::NativeLeading
+            },
+            self.leading_inset,
+            self.trailing_inset,
+        )
+        .native_control_hit(
+            nana_ui_core::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+            x,
+            y,
+        )
+    }
+
     fn resolved_center_width(&self) -> f32 {
         finite_positive(self.center_width, DEFAULT_CENTER_WIDTH).max(1.0)
     }
@@ -158,6 +177,8 @@ impl AppTitleBar {
         layout.flex_shrink = Some(0.0);
         layout.font_size = Some(TITLE_FONT_SIZE);
         layout.font_weight = Some(TITLE_FONT_WEIGHT);
+        layout.padding_left = Some(LengthSpec::Px(valid_inset(self.leading_inset)));
+        layout.padding_right = Some(LengthSpec::Px(valid_inset(self.trailing_inset)));
         layout.overflow_x = OverflowSpec::Hidden;
         style
     }
@@ -166,9 +187,7 @@ impl AppTitleBar {
         if let Some(leading) = self.leading {
             patch_layout(world, mutations, leading, |layout| {
                 apply_fill_slot(layout, AlignSpec::Center, JustifySpec::Start);
-                layout.padding_left = Some(LengthSpec::Px(
-                    SLOT_PADDING + valid_inset(self.leading_inset),
-                ));
+                layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                 layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
                 layout.padding_top = Some(LengthSpec::Px(0.0));
                 layout.padding_bottom = Some(LengthSpec::Px(0.0));
@@ -200,9 +219,7 @@ impl AppTitleBar {
             patch_layout(world, mutations, trailing, |layout| {
                 apply_fill_slot(layout, AlignSpec::Center, JustifySpec::End);
                 layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
-                layout.padding_right = Some(LengthSpec::Px(
-                    SLOT_PADDING + valid_inset(self.trailing_inset),
-                ));
+                layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
                 layout.padding_top = Some(LengthSpec::Px(0.0));
                 layout.padding_bottom = Some(LengthSpec::Px(0.0));
             });
@@ -1343,6 +1360,11 @@ mod tests {
         assert_eq!(style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(style.background, Some(SemanticColorRole::Surface));
         assert_eq!(style.layout.direction, Some(FlexDirection::Row));
+        let chrome = WindowChrome::platform_default();
+        assert_eq!(
+            style.layout.padding_left,
+            Some(LengthSpec::Px(chrome.leading_inset))
+        );
 
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
@@ -1350,10 +1372,19 @@ mod tests {
         let bounds = context.world().layout_box(id).unwrap();
         assert_eq!(bounds.height, TITLE_BAR_HEIGHT);
         assert_eq!(bounds.width, 800.0);
-        let chrome = WindowChrome::platform_default();
         let bar_view = context.read(bar, |bar| bar.clone()).unwrap();
         assert_eq!(bar_view.leading_inset, chrome.leading_inset);
         assert_eq!(bar_view.show_window_controls, chrome.uses_custom_controls());
+        if chrome.leading_inset > 0.0 {
+            assert!(bar_view.native_control_hit(bounds, bounds.x + 8.0, bounds.y + 8.0));
+            assert!(!bar_view.native_control_hit(
+                bounds,
+                bounds.x + chrome.leading_inset + 8.0,
+                bounds.y + 8.0
+            ));
+        } else {
+            assert!(!bar_view.native_control_hit(bounds, bounds.x + 8.0, bounds.y + 8.0));
+        }
     }
 
     #[test]

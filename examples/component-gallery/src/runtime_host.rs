@@ -214,6 +214,15 @@ pub(super) fn title_bar_chrome_hit(
     if !layout_contains(bounds, x, y) {
         return false;
     }
+    let native_chrome = context
+        .read(
+            Entity::<nana_ui::runtime::AppTitleBar>::from_stable_id(title_bar),
+            |bar| bar.native_control_hit(bounds, x, y),
+        )
+        .unwrap_or(false);
+    if native_chrome {
+        return false;
+    }
     let target = context.pointer_target(document.document(), x, y);
     if target.is_some_and(|target| title_bar_icon_button(context, title_bar, target)) {
         return false;
