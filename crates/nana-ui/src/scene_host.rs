@@ -1486,14 +1486,10 @@ fn apply_window_transparency(window: &winit::window::Window, requested: crate::M
 }
 
 fn drag_scene_window(window: &winit::window::Window) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = nana_window::drag_custom_title_bar(window);
+    if nana_window::drag_custom_title_bar(window) {
+        return;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window.drag_window();
-    }
+    let _ = window.drag_window();
 }
 
 fn scene_paint_viewport(

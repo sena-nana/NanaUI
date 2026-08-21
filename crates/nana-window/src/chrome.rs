@@ -14,7 +14,6 @@ pub fn prepare_custom_title_bar<W: HasWindowHandle + ?Sized>(window: &W) -> bool
 }
 
 /// Performs one explicit NanaUI titlebar drag.
-#[cfg(target_os = "macos")]
 pub fn drag_custom_title_bar<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     drag(window)
 }
@@ -71,6 +70,40 @@ fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
 #[cfg(not(target_os = "macos"))]
 fn set_drag_enabled<W: HasWindowHandle + ?Sized>(_window: &W, _enabled: bool) -> bool {
     true
+}
+
+#[cfg(target_os = "windows")]
+fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::{HWND, POINT};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, HTCAPTION, SendMessageW, WM_NCLBUTTONDOWN,
+    };
+
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return false;
+    };
+    let hwnd = handle.hwnd.get() as HWND;
+    unsafe {
+        ReleaseCapture();
+        let mut point = POINT { x: 0, y: 0 };
+        let lparam = if GetCursorPos(&mut point) != 0 {
+            ((point.y as u32) << 16 | (point.x as u32 & 0xFFFF)) as isize
+        } else {
+            0
+        };
+        SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, lparam);
+    }
+    true
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn drag<W: HasWindowHandle + ?Sized>(_window: &W) -> bool {
+    false
 }
 
 #[cfg(target_os = "windows")]

@@ -12,11 +12,10 @@ use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, TitleBarDragTracker,
-    WindowChromeAction, WindowChromeState, apply_title_bar_pointer, window_material_effect,
+    WindowChromeAction, WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
+    window_commands_for_chrome_action, window_material_effect,
 };
-use nana_ui_platform::{
-    InputEvent, PointerPhase, WindowCommand, WindowEvent, WindowGeometry, WindowId,
-};
+use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
@@ -206,6 +205,21 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         )
     }
 
+    fn sync_window_chrome(&mut self, id: WindowId, geometry: &WindowGeometry) {
+        let session = self
+            .chrome
+            .entry(id)
+            .or_insert_with(|| WindowChromeSession {
+                state: WindowChromeState::default(),
+                drag: TitleBarDragTracker::default(),
+            });
+        session.state.update(WindowChromeEvent::PrepareWindow(id));
+        session.state.update(WindowChromeEvent::MaximizedChanged {
+            window: id,
+            maximized: geometry.maximized,
+        });
+    }
+
     pub fn runtime_input(
         &mut self,
         id: WindowId,
@@ -216,8 +230,14 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             Ok(_) => self.runtime_program_update(true),
             Err(_) => RuntimeProgramUpdate::default(),
         };
-        if chrome_action == Some(WindowChromeAction::Drag) {
-            update.window_commands.push(WindowCommand::Drag(id));
+        if let Some(action) = chrome_action {
+            let maximized = self
+                .chrome
+                .get(&id)
+                .is_some_and(|session| session.state.is_maximized());
+            update
+                .window_commands
+                .extend(window_commands_for_chrome_action(id, action, maximized));
         }
         Ok(update)
     }
@@ -388,6 +408,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     fn handle_platform_window_event(&mut self, event: WindowEvent) -> Result<(), JsEngineError> {
         match event {
             WindowEvent::Ready { id, geometry } => {
+                self.sync_window_chrome(id, &geometry);
                 let id = VueWindowId(id.0);
                 self.vue.set_viewport(
                     id,
@@ -409,6 +430,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 )?;
             }
             WindowEvent::Resized { id, geometry } => {
+                self.sync_window_chrome(id, &geometry);
                 let id = VueWindowId(id.0);
                 self.vue.set_viewport(
                     id,
@@ -1007,7 +1029,7 @@ mod tests {
         let document = runtime.document();
         let context = runtime.context();
         let bounds = context.world().layout_box(title).unwrap();
-        let blank_x = bounds.x + bounds.width - 24.0;
+        let blank_x = bounds.x + bounds.width / 2.0;
         let blank_y = bounds.y + bounds.height / 2.0;
 
         let mut state = WindowChromeState::default();
@@ -1034,6 +1056,20 @@ mod tests {
                 ),
                 Some(WindowChromeAction::Drag)
             );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let children = context.world().node(title).unwrap().children;
+            let controls = children.iter().copied().find(|&id| {
+                matches!(
+                    context.world().node(id).map(|node| node.kind),
+                    Some(nana_ui_runtime::NodeKind::Element { tag })
+                        if tag.contains("title-bar-controls")
+                )
+            });
+            let controls = controls.expect("Windows/Linux title bar must assemble window controls");
+            assert_eq!(context.world().node(controls).unwrap().children.len(), 3);
         }
 
         let button_box = context.world().layout_box(button).unwrap();
