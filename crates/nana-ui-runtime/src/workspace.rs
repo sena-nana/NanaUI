@@ -260,20 +260,6 @@ impl Workspace {
             .and_then(|slot| slot.content)
     }
 
-    fn managed_ids(&self) -> HashSet<StableNodeId> {
-        let mut ids = HashSet::new();
-        for slot in &self.slots {
-            if let Some(content) = slot.content {
-                ids.insert(content);
-            }
-        }
-        ids.extend(self.handles.values().copied());
-        ids.extend(self.middle);
-        ids.extend(self.primary_column);
-        ids.extend(self.primary_row);
-        ids
-    }
-
     fn effective_root_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         style.background = Some(style.background.unwrap_or(SemanticColorRole::Surface));
@@ -407,7 +393,12 @@ impl Workspace {
         }
         let show = self.shows_resize_handle(state.id());
         if show {
-            reconcile_children(region, &[handle], &self.managed_ids(), world, mutations);
+            if world
+                .node(region)
+                .is_none_or(|node| !node.children.contains(&handle))
+            {
+                mutations.insert(region, handle, None);
+            }
             let highlighted = self.hovered_resize.as_ref() == Some(state.id());
             if world.text(handle) != Some("") {
                 mutations.set_text(
@@ -435,7 +426,7 @@ impl Workspace {
             .node(handle)
             .is_some_and(|node| node.parent == Some(region))
         {
-            mutations.remove(handle);
+            mutations.park_subtree(handle);
         }
     }
 
@@ -523,7 +514,6 @@ impl ComponentView for Workspace {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         self.project_root(id, world, mutations);
         let groups = self.visible_groups();
-        let managed = self.managed_ids();
         let chrome = match (self.middle, self.primary_column, self.primary_row) {
             (Some(middle), Some(primary_column), Some(primary_row))
                 if world.contains(middle)
@@ -567,7 +557,6 @@ impl ComponentView for Workspace {
                     contents(&groups.workspace_bottom),
                     contents(&groups.overlays),
                 ]),
-                &managed,
                 world,
                 mutations,
             );
@@ -578,7 +567,6 @@ impl ComponentView for Workspace {
                     vec![primary_column],
                     contents(&groups.ends),
                 ]),
-                &managed,
                 world,
                 mutations,
             );
@@ -589,17 +577,10 @@ impl ComponentView for Workspace {
                     vec![primary_row],
                     contents(&groups.primary_bottom),
                 ]),
-                &managed,
                 world,
                 mutations,
             );
-            reconcile_children(
-                primary_row,
-                &contents(&groups.primaries),
-                &managed,
-                world,
-                mutations,
-            );
+            reconcile_children(primary_row, &contents(&groups.primaries), world, mutations);
         } else {
             // Placement order so unique slots stay Start / Primary / End / Top / Bottom.
             reconcile_children(
@@ -614,7 +595,6 @@ impl ComponentView for Workspace {
                     contents(&groups.primary_bottom),
                     contents(&groups.overlays),
                 ]),
-                &managed,
                 world,
                 mutations,
             );
@@ -895,7 +875,6 @@ fn handle_accessibility(region: &RegionId) -> AccessibilityState {
 fn reconcile_children(
     parent: StableNodeId,
     desired: &[StableNodeId],
-    managed: &HashSet<StableNodeId>,
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) {
@@ -906,19 +885,14 @@ fn reconcile_children(
         .collect::<Vec<_>>();
     let current = world
         .node(parent)
-        .map(|node| {
-            node.children
-                .into_iter()
-                .filter(|id| managed.contains(id))
-                .collect::<Vec<_>>()
-        })
+        .map(|node| node.children)
         .unwrap_or_default();
-    if current == desired {
+    if current.as_slice() == desired.as_slice() {
         return;
     }
     for child in &current {
-        if !desired.contains(child) && !managed.contains(child) {
-            mutations.remove(*child);
+        if !desired.contains(child) {
+            mutations.park_subtree(*child);
         }
     }
     for child in desired {
@@ -933,7 +907,7 @@ mod tests {
     use nana_ui_core::{NarrowBehavior, RegionRole, RegionScope, WorkspaceMutation};
 
     use super::*;
-    use crate::{AppContext, DocumentId, PositionSpec};
+    use crate::{AppContext, DocumentId, MountState, PositionSpec};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -1059,6 +1033,56 @@ mod tests {
             context.world().node_style(bottom).unwrap().layout.height,
             Some(LengthSpec::Px(80.0))
         );
+    }
+
+    #[test]
+    fn switching_primary_slot_parks_previous_content_and_remounts_it() {
+        let mut context = AppContext::new();
+        let first = surface(&mut context);
+        let second = surface(&mut context);
+        let layout =
+            WorkspaceLayout::new([
+                RegionState::new(RegionId::Primary, RegionRole::Primary).fill_priority(1)
+            ])
+            .expect("layout");
+        let model = WorkspaceModel::with_layout(layout);
+        let entity = mount(
+            &mut context,
+            Workspace::from_model(&model, [WorkspaceRegionSlot::new(RegionId::Primary, first)]),
+        );
+        assert_eq!(
+            context.world().node(entity.stable_id()).unwrap().children,
+            vec![first]
+        );
+
+        context
+            .update_component(entity, |workspace, _| {
+                workspace.slots = vec![WorkspaceRegionSlot::new(RegionId::Primary, second)];
+            })
+            .unwrap();
+        assert_eq!(
+            context.world().node(entity.stable_id()).unwrap().children,
+            vec![second]
+        );
+        assert_eq!(context.world().mount_state(first), Some(MountState::Parked));
+        assert!(context.world().is_mounted(second));
+        assert!(!context.world().document_order(document()).contains(&first));
+
+        context
+            .update_component(entity, |workspace, _| {
+                workspace.slots = vec![WorkspaceRegionSlot::new(RegionId::Primary, first)];
+            })
+            .unwrap();
+        assert_eq!(
+            context.world().node(entity.stable_id()).unwrap().children,
+            vec![first]
+        );
+        assert!(context.world().is_mounted(first));
+        assert_eq!(
+            context.world().mount_state(second),
+            Some(MountState::Parked)
+        );
+        assert!(context.world().document_order(document()).contains(&first));
     }
 
     #[test]

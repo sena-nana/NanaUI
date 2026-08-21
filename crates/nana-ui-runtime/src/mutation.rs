@@ -21,12 +21,13 @@ pub enum UiMutation {
         child: StableNodeId,
         before: Option<StableNodeId>,
     },
-    /// Detach a node without destroying its retained subtree.
-    Remove {
+    /// Unparent a node. It stays retained and `Mounted`, but leaves the live
+    /// document until [`Self::Insert`].
+    Detach {
         id: StableNodeId,
     },
-    /// Detach a subtree while preserving its stable identities and views.
-    /// Parked nodes do not participate in the retained document until inserted.
+    /// Unparent a subtree and keep its identities. Parked nodes stay out of the
+    /// live document until inserted.
     ParkSubtree {
         root: StableNodeId,
     },
@@ -155,8 +156,8 @@ impl MutationQueue {
         });
     }
 
-    pub fn remove(&mut self, id: StableNodeId) {
-        self.mutations.push(UiMutation::Remove { id });
+    pub fn detach(&mut self, id: StableNodeId) {
+        self.mutations.push(UiMutation::Detach { id });
     }
 
     pub fn park_subtree(&mut self, root: StableNodeId) {

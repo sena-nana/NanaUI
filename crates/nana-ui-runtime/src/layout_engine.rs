@@ -111,7 +111,7 @@ fn intrinsic_size(
     }
     let node = &nodes[&id];
     let style = node.style.as_ref();
-    if style.hidden {
+    if style.omits_box() {
         return Size::default();
     }
     let padding = style.resolved_padding_against(Some(available.width));
@@ -130,9 +130,9 @@ fn intrinsic_size(
         .iter()
         .copied()
         .filter(|child| {
-            nodes
-                .get(child)
-                .is_some_and(|child| !child.style.hidden && !child.style.position.is_out_of_flow())
+            nodes.get(child).is_some_and(|child| {
+                !child.style.omits_box() && !child.style.position.is_out_of_flow()
+            })
         })
         .collect::<Vec<_>>();
     let child_sizes = flow_children
@@ -234,7 +234,7 @@ fn place_node(
 ) {
     let node = &nodes[&id];
     let style = node.style.as_ref();
-    if style.hidden {
+    if style.omits_box() {
         output.insert(
             id,
             LayoutBox {
@@ -282,7 +282,11 @@ fn place_node(
         .children
         .iter()
         .copied()
-        .filter(|child| nodes.get(child).is_some_and(|child| !child.style.hidden))
+        .filter(|child| {
+            nodes
+                .get(child)
+                .is_some_and(|child| !child.style.omits_box())
+        })
         .collect::<Vec<_>>();
     children.sort_by_key(|child| nodes[child].style.order);
     if style.flex_reverse {
@@ -829,6 +833,66 @@ mod tests {
         assert_eq!(layouts[&id(2)].y, 12.0);
         assert_eq!(layouts[&id(2)].width, 56.0);
         assert_eq!(layouts[&id(2)].height, 32.0);
+    }
+
+    #[test]
+    fn display_none_child_does_not_take_a_gap_slot() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        for value in 2..=4 {
+            queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+            queue.insert(id(1), id(value), None);
+        }
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(200.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    direction: Some(FlexDirection::Row),
+                    gap: Some(LengthSpec::Px(10.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for value in [2, 4] {
+            queue.set_style(
+                id(value),
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(50.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        queue.set_style(
+            id(3),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    display: Some(nana_ui_core::DisplaySpec::None),
+                    width: Some(LengthSpec::Px(50.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, LayoutViewport::new(200.0, 40.0))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(layouts[&id(3)].width, 0.0);
+        assert_eq!(layouts[&id(3)].height, 0.0);
+        assert_eq!(layouts[&id(2)].x, 0.0);
+        assert_eq!(layouts[&id(4)].x, 60.0);
     }
 
     #[test]

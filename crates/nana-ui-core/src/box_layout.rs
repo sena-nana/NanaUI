@@ -1272,6 +1272,11 @@ impl LayoutStyle {
         self.overflow_x.clips() || self.overflow_y.clips()
     }
 
+    /// `hidden` or `display: none` — skip layout flow and paint.
+    pub fn omits_box(&self) -> bool {
+        self.hidden || matches!(self.display, Some(DisplaySpec::None))
+    }
+
     /// Column tracks that participate in layout.
     ///
     /// CSS: `grid-template-columns` is inert on flex containers. Tracks remain

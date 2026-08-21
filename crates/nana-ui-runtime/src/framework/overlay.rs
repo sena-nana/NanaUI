@@ -676,11 +676,11 @@ impl AppContext {
         let mut child = id;
         let mut current = Some(id);
         while let Some(candidate) = current {
-            if !self.world.is_mounted(candidate)
-                || self.world.node_style(candidate).is_some_and(|style| {
-                    style.layout.hidden
-                        || matches!(style.layout.display, Some(nana_ui_core::DisplaySpec::None))
-                })
+            if !self.world.presence_live(candidate)
+                || self
+                    .world
+                    .node_style(candidate)
+                    .is_some_and(|style| style.layout.omits_box())
             {
                 return false;
             }
