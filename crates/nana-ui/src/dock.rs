@@ -1191,11 +1191,7 @@ impl DockController {
             WindowEvent::CloseRequested { id } if DockSurfaceId::from(id) != DockSurfaceId(0) => {
                 self.update(DockAction::CloseSurface(DockSurfaceId::from(id)))
             }
-            WindowEvent::CloseRequested { .. }
-            | WindowEvent::Closed { .. }
-            | WindowEvent::VisibilityChanged { .. }
-            | WindowEvent::FocusChanged { .. }
-            | WindowEvent::Ime { .. } => DockUpdate::default(),
+            _ => DockUpdate::default(),
         }
     }
 

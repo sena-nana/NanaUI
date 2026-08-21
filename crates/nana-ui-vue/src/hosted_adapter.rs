@@ -4,6 +4,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -17,9 +18,9 @@ use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
 use crate::{
-    BridgeEvent, HostedInputResult, InputModifiers, KeyboardEventKind, KeyboardInput,
-    PointerEventKind, PointerInput, PointerType, SharedRuntimeDocument, VueRuntime, VueWindowId,
-    WheelInput, WindowLifecycleEvent,
+    BridgeEvent, FileDragEventKind, HostedInputResult, InputModifiers, KeyboardEventKind,
+    KeyboardInput, PointerEventKind, PointerInput, PointerType, SharedRuntimeDocument, VueRuntime,
+    VueWindowId, WheelInput, WindowLifecycleEvent,
 };
 
 thread_local! {
@@ -421,7 +422,34 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     self.vue.request_close(VueWindowId(id.0))?;
                 }
             }
+            WindowEvent::FileHovered {
+                id,
+                paths,
+                position,
+            } => self.emit_file_drag(id, FileDragEventKind::Hover, &paths, position)?,
+            WindowEvent::FileDropped {
+                id,
+                paths,
+                position,
+            } => self.emit_file_drag(id, FileDragEventKind::Drop, &paths, position)?,
+            WindowEvent::FileHoverCancelled { id } => {
+                self.emit_file_drag(id, FileDragEventKind::Cancel, &[], None)?
+            }
         }
+        Ok(())
+    }
+
+    fn emit_file_drag(
+        &mut self,
+        id: WindowId,
+        kind: FileDragEventKind,
+        paths: &[PathBuf],
+        position: Option<(f32, f32)>,
+    ) -> Result<(), JsEngineError> {
+        self.require_host(VueWindowId(id.0))?
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .dispatch_file_drag(&mut self.engine, kind, paths, position)?;
         Ok(())
     }
 
