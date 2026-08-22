@@ -176,9 +176,10 @@ pub use nana_ui_runtime::{
     SettingsCollapsibleCard, SettingsRow, SidebarFooter, SidebarFooterButton, SidebarFrame,
     SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, SidebarSectionSlots,
     SidebarSectionState, Skeleton, Spinner, SplitPane, StatusBadge, Switch, TabDragGroup,
-    TabDragLease, TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Toast,
-    Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent, ValidationMessage, Workspace,
-    WorkspaceRegionSlot, WorkspaceResizeHandle, XYPad, tree_navigation_event,
+    TabDragLease, TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Thumbnail,
+    ThumbnailState, Toast, Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent,
+    ValidationMessage, Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle, XYPad,
+    tree_navigation_event,
 };
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,

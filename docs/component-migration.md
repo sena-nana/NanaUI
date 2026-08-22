@@ -257,9 +257,11 @@ add that inset.
 paints these through Quad/Text geometry. Archived `reference.png` output is a
 baseline, not a pixel oracle.
 
-`GraphCanvas`, `GpuView`, and `GpuTextureView` are `RuntimeQualified`. The
+`GraphCanvas`, `GpuView`, `GpuTextureView`, and `Thumbnail` are `RuntimeQualified`. The
 graph model lives once in `nana-ui-core`. Root `nana_ui::GraphCanvas`,
-`GpuView`, and `GpuTextureView` are the Runtime views. GraphCanvas paints Scene
+`GpuView`, and `GpuTextureView` are the Runtime views. `Thumbnail` is a compact
+list-row image box: host-declared aspect (default 1:1), four states sharing that
+geometry, and `"nana.host-texture"` Contain only when Ready. GraphCanvas paints Scene
 Quad/Text geometry from `StandardVisual::GraphCanvas`: background grid,
 cubic edges, node title bars, port discs and labels, hover/selected, and
 live drag or connection preview. `RuntimeInputAdapter` routes pointer,
@@ -274,7 +276,7 @@ adapter.
 
 ## Current remaining work
 
-`component_catalog()` lists 68 identities; every entry is `RuntimeQualified`
+`component_catalog()` lists 69 identities; every entry is `RuntimeQualified`
 and none remain `RuntimeCandidate`. Leaf qualification is complete. There is
 no further leaf batch.
 

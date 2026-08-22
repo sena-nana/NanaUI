@@ -12,8 +12,8 @@ use crate::{
     ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue, LevelMeter, ListItem,
     NativeMarkdown, Popover, Progress, QrCode, RangeField, SearchDropdown, SegmentedControl,
     Select, SidebarFrame, SidebarRow, SidebarRowState, Skeleton, Spinner, SplitPane, StatusBadge,
-    Switch, Tabs, Text, TextArea, TextInput, TextInputState, Toast, ToastTone, Tooltip, TreeView,
-    UiExtension, ValidationMessage, Workspace, XYPad, XYPadValue,
+    Switch, Tabs, Text, TextArea, TextInput, TextInputState, Thumbnail, ThumbnailState, Toast,
+    ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, Workspace, XYPad, XYPadValue,
 };
 
 pub struct NanaBuiltinComponents;
@@ -40,6 +40,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<Switch>()?;
         registrar.register_component::<Card>()?;
         registrar.register_component::<ListItem>()?;
+        registrar.register_component::<Thumbnail>()?;
         registrar.register_component::<TextInput>()?;
         registrar.register_component::<TextArea>()?;
         registrar.register_component::<RangeField>()?;
@@ -173,6 +174,26 @@ impl RegisterableComponent for ListItem {
             .selected(spec.active)
             .disabled(spec.disabled)
             .size(spec.size)
+    }
+}
+
+impl RegisterableComponent for Thumbnail {
+    const TYPE_ID: &'static str = "nana.thumbnail";
+    const TAGS: &'static [&'static str] = &["thumbnail"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut thumbnail = Thumbnail::new(spec.value).size(spec.size);
+        if !spec.display_label().is_empty() {
+            thumbnail = thumbnail.label(Arc::<str>::from(spec.display_label()));
+        }
+        if let Some(aspect) = spec.attr("aspect").and_then(|value| value.parse().ok()) {
+            thumbnail = thumbnail.aspect(aspect);
+        }
+        if spec.loading {
+            thumbnail = thumbnail.state(ThumbnailState::Loading);
+        } else if spec.invalid {
+            thumbnail = thumbnail.state(ThumbnailState::Unavailable);
+        }
+        thumbnail
     }
 }
 

@@ -49,6 +49,7 @@ mod sidebar;
 mod split_pane;
 mod tabs;
 mod text_layout_cache;
+mod thumbnail;
 mod toast;
 mod tree_view;
 mod view_components;
@@ -183,6 +184,7 @@ pub use sidebar::{
 };
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
+pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
 pub use view_components::{
