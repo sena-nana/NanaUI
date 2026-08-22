@@ -31,7 +31,7 @@ undecorated window 都由 Scene host 在创建窗口时设置。`WindowSettings:
 一致。侧边栏透明时，`titlebar_follows_sidebar` 决定标题栏是否共用该 alpha：关闭后
 标题栏保持不透明，侧栏仍可半透明。`BackdropTarget` 在侧栏与主内容区之间切换透明区域。
 
-`run_runtime` 会为主窗口和每个工具窗口分别应用、刷新与清理材质。窗口若 `WindowSettings.transparent` 为 true，则申请 `Transparent`（透明表面与 `[0,0,0,0]` 清屏），不以主窗口 Appearance 的 Solid 覆盖。Windows 上 Transparent 会调用 `DwmExtendFrameIntoClientArea`（负边距）并设置 `WS_EX_NOREDIRECTIONBITMAP`，Scene host 在创建 WGPU Surface 之前应用该 HWND/DWM 效果。macOS Scene GPU 申请
+`run_runtime` 会为主窗口和每个工具窗口分别应用、刷新与清理材质。窗口若 `WindowSettings.transparent` 为 true，则申请 `Transparent`（透明表面与 `[0,0,0,0]` 清屏），不以主窗口 Appearance 的 Solid 覆盖。Windows 上 Transparent 必须从窗口创建起保留 `WS_EX_NOREDIRECTIONBITMAP`，并调用 `DwmExtendFrameIntoClientArea`（负边距）；DWM 客户区 Alpha 仍需后续截图验收。macOS Scene GPU 申请
 Vibrancy 时仍报告 `NativeMaterialUnavailable`（CAMetalLayer 盖住 visual-effect）。
 设备恢复会保留现有窗口，并在重建其 Surface 与 Scene painter 后按当前请求重新应用。
 主窗口默认使用 NanaUI 自绘标题栏。

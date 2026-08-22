@@ -17,6 +17,9 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
     fallback: FallbackColor,
 ) -> MaterialOutcome {
     clear(window);
+    if should_clear_no_redirection_bitmap(requested) {
+        apply_solid(window);
+    }
     match requested {
         MaterialEffect::Solid => MaterialOutcome::chosen_solid(),
         MaterialEffect::Transparent => {
@@ -24,6 +27,7 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
             MaterialOutcome::transparent()
         }
         MaterialEffect::Mica => {
+            reset_dwm_margins(window);
             let dark = matches!(appearance, Appearance::Dark);
             if apply_mica(window, Some(dark)).is_ok() {
                 MaterialOutcome::native(MaterialEffect::Mica)
@@ -32,6 +36,7 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
             }
         }
         MaterialEffect::Acrylic => {
+            reset_dwm_margins(window);
             if apply_acrylic(window, Some(fallback.tuple())).is_ok() {
                 MaterialOutcome::native(MaterialEffect::Acrylic)
             } else {
@@ -47,7 +52,18 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
 pub(crate) fn clear<W: HasWindowHandle + ?Sized>(window: &W) {
     let _ = clear_mica(window);
     let _ = clear_acrylic(window);
-    clear_transparent(window);
+}
+
+const fn should_clear_no_redirection_bitmap(requested: MaterialEffect) -> bool {
+    matches!(requested, MaterialEffect::Solid)
+}
+
+fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
+    let Some(hwnd) = hwnd(window) else {
+        return;
+    };
+    extend_frame(hwnd, 0);
+    set_no_redirection_bitmap(hwnd, false);
 }
 
 fn apply_transparent<W: HasWindowHandle + ?Sized>(window: &W) {
@@ -58,12 +74,11 @@ fn apply_transparent<W: HasWindowHandle + ?Sized>(window: &W) {
     set_no_redirection_bitmap(hwnd, true);
 }
 
-fn clear_transparent<W: HasWindowHandle + ?Sized>(window: &W) {
+fn reset_dwm_margins<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;
     };
     extend_frame(hwnd, 0);
-    set_no_redirection_bitmap(hwnd, false);
 }
 
 fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
@@ -108,5 +123,24 @@ fn set_no_redirection_bitmap(hwnd: HWND, enabled: bool) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_clear_no_redirection_bitmap;
+    use crate::MaterialEffect;
+
+    #[test]
+    fn only_solid_clears_no_redirection_bitmap() {
+        assert!(should_clear_no_redirection_bitmap(MaterialEffect::Solid));
+        assert!(!should_clear_no_redirection_bitmap(
+            MaterialEffect::Transparent
+        ));
+        assert!(!should_clear_no_redirection_bitmap(MaterialEffect::Mica));
+        assert!(!should_clear_no_redirection_bitmap(MaterialEffect::Acrylic));
+        assert!(!should_clear_no_redirection_bitmap(
+            MaterialEffect::Vibrancy
+        ));
     }
 }
