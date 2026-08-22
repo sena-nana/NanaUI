@@ -823,8 +823,21 @@ impl AppContext {
         let document = document_of(self, parent)?;
         let snapshot = self.read(shell, Clone::clone)?;
         let title_bar = resolve_app_title_bar(self, document, parent, &snapshot)?;
-        let body = snapshot.body.filter(|id| self.world().contains(*id));
+        let mut changed = false;
+        // Assemble the title bar before resolving body so nested shell slots
+        // are reparented out of leading extras and become siblings.
+        if let Some(title_bar) = title_bar {
+            changed |= self
+                .assemble_app_title_bar(Entity::<AppTitleBar>::from_stable_id(title_bar))
+                .unwrap_or(false);
+        }
         let overlay = resolve_app_overlay(self, document, parent, &snapshot)?;
+        let body = snapshot
+            .body
+            .filter(|id| {
+                self.world().contains(*id) && Some(*id) != title_bar && Some(*id) != overlay
+            })
+            .or_else(|| find_app_shell_body_child(self, parent, title_bar, overlay));
         let fields_changed =
             title_bar != snapshot.title_bar || body != snapshot.body || overlay != snapshot.overlay;
         if fields_changed {
@@ -834,22 +847,16 @@ impl AppContext {
                 shell.overlay = overlay;
             })?;
         }
-        let mut children = Vec::new();
-        if let Some(title_bar) = title_bar {
-            children.push(title_bar);
-        }
-        if let Some(body) = body {
-            children.push(body);
-        }
-        if let Some(overlay) = overlay {
-            children.push(overlay);
-        }
-        let mut changed = reconcile_ids(self, parent, &children)?;
+        let children = app_shell_child_ids(title_bar, body, overlay);
+        changed |= reconcile_ids(self, parent, &children)?;
         self.update_component(shell, |_, _| {})?;
         if let Some(title_bar) = title_bar {
             changed |= self
                 .assemble_app_title_bar(Entity::<AppTitleBar>::from_stable_id(title_bar))
                 .unwrap_or(false);
+            // Title-bar assemble must not swallow body/overlay; keep them
+            // stacked under the shell.
+            changed |= reconcile_ids(self, parent, &children)?;
         }
         Ok(changed || fields_changed)
     }
@@ -899,6 +906,15 @@ impl AppContext {
             Some(trailing_slot),
         ];
         let extras = unclassified_title_bar_children(self, parent, &owned);
+        let shell_parent = app_shell_parent(self, parent);
+        let (shell_body, shell_overlay) = shell_parent
+            .and_then(|id| {
+                self.read(Entity::<AppShell>::from_stable_id(id), |shell| {
+                    (shell.body, shell.overlay)
+                })
+                .ok()
+            })
+            .unwrap_or((None, None));
 
         let mut leading_children = Vec::new();
         if let Some(leading) = snapshot.leading.filter(|id| self.world().contains(*id)) {
@@ -915,12 +931,31 @@ impl AppContext {
         if let Some(controls) = controls.filter(|id| self.world().contains(*id)) {
             trailing_children.push(controls);
         }
+        let mut reserved_shell_children = Vec::new();
         for extra in extras {
-            if center_children.is_empty() && is_title_label_node(self, extra) {
+            if is_reserved_shell_slot(extra, shell_body, shell_overlay)
+                || (shell_parent.is_some() && view_is::<OverlayHost>(self, extra))
+                || (shell_parent.is_some()
+                    && shell_body.is_none()
+                    && !is_title_label_node(self, extra)
+                    && !is_title_bar_chrome(self, extra))
+            {
+                reserved_shell_children.push(extra);
+            } else if center_children.is_empty() && is_title_label_node(self, extra) {
                 center_children.push(extra);
             } else {
                 leading_children.push(extra);
             }
+        }
+        if let Some(shell) = shell_parent
+            && !reserved_shell_children.is_empty()
+        {
+            let mut mutations = MutationQueue::new();
+            for id in &reserved_shell_children {
+                mutations.insert(shell, *id, None);
+            }
+            self.commit_mutations(mutations)?;
+            changed = true;
         }
         if snapshot.center.is_none() && center_children.is_empty() {
             center_children.push(ensure_title_label(
@@ -1241,6 +1276,74 @@ fn unclassified_title_bar_children(
                 && !is_title_bar_column_tag(node_tag(context.world(), *id).as_deref())
         })
         .collect()
+}
+
+fn app_shell_child_ids(
+    title_bar: Option<StableNodeId>,
+    body: Option<StableNodeId>,
+    overlay: Option<StableNodeId>,
+) -> Vec<StableNodeId> {
+    let mut children = Vec::new();
+    if let Some(title_bar) = title_bar {
+        children.push(title_bar);
+    }
+    if let Some(body) = body {
+        children.push(body);
+    }
+    if let Some(overlay) = overlay {
+        children.push(overlay);
+    }
+    children
+}
+
+fn app_shell_parent(context: &AppContext, title_bar: StableNodeId) -> Option<StableNodeId> {
+    let parent = context.world().node(title_bar)?.parent?;
+    if view_is::<AppShell>(context, parent) {
+        return Some(parent);
+    }
+    match node_tag(context.world(), parent).as_deref() {
+        Some("app-shell" | "nana-app-shell") => Some(parent),
+        _ => None,
+    }
+}
+
+fn is_reserved_shell_slot(
+    extra: StableNodeId,
+    shell_body: Option<StableNodeId>,
+    shell_overlay: Option<StableNodeId>,
+) -> bool {
+    Some(extra) == shell_body || Some(extra) == shell_overlay
+}
+
+fn is_title_bar_chrome(context: &AppContext, id: StableNodeId) -> bool {
+    view_is::<IconButton>(context, id)
+        || view_is::<AppTitleBarControls>(context, id)
+        || matches!(
+            context.world().standard_visual(id),
+            Some(StandardVisual::Icon { .. })
+        )
+        || context
+            .world()
+            .accessibility(id)
+            .is_some_and(|state| state.role == AccessibilityRole::Button)
+}
+
+fn find_app_shell_body_child(
+    context: &AppContext,
+    parent: StableNodeId,
+    title_bar: Option<StableNodeId>,
+    overlay: Option<StableNodeId>,
+) -> Option<StableNodeId> {
+    context
+        .world()
+        .node(parent)
+        .into_iter()
+        .flat_map(|node| node.children)
+        .find(|&id| {
+            Some(id) != title_bar
+                && Some(id) != overlay
+                && !is_title_bar_column_tag(node_tag(context.world(), id).as_deref())
+        })
 }
 
 fn window_control_buttons(
@@ -1801,8 +1904,8 @@ fn finite_positive(value: f32, fallback: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::{
-        AppContext, DocumentId, Entity, IconButton, LayoutViewport, SidebarFrame, Text,
-        TextHorizontalAlignment,
+        AppContext, Card, DocumentId, Entity, IconButton, LayoutViewport, SidebarFrame,
+        StableNodeId, Text, TextHorizontalAlignment, UiWorld,
     };
     use nana_ui_core::{
         RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
@@ -1811,6 +1914,17 @@ mod tests {
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
+    }
+
+    fn is_descendant(world: &UiWorld, ancestor: StableNodeId, node: StableNodeId) -> bool {
+        let mut current = world.node(node).and_then(|node| node.parent);
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            current = world.node(id).and_then(|node| node.parent);
+        }
+        false
     }
 
     #[test]
@@ -2530,6 +2644,82 @@ mod tests {
             .copied()
             .expect("center column title");
         assert_eq!(context.world().text(title_label), Some("Nana"));
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        assert!(
+            !is_descendant(context.world(), title.stable_id(), body.stable_id()),
+            "body must stay a sibling of the title bar, not a descendant"
+        );
+        let title_box = context.world().layout_box(title.stable_id()).unwrap();
+        let body_box = context.world().layout_box(body.stable_id()).unwrap();
+        assert!(
+            body_box.y + 0.5 >= title_box.y + TITLE_BAR_HEIGHT,
+            "body.y={} must sit below title bar y={} height={}",
+            body_box.y,
+            title_box.y,
+            title_box.height
+        );
+    }
+
+    #[test]
+    fn assemble_app_shell_keeps_nested_body_out_of_title_bar() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_detached_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let body = context
+            .create_detached_component(document(), Card::new())
+            .unwrap();
+        let shell = context
+            .create_component(document(), AppShell::new().title_bar(title.stable_id()))
+            .unwrap();
+        context.append_child(shell, title).unwrap();
+        context.append_child(title, body).unwrap();
+
+        assert!(context.assemble_app_shell(shell).unwrap());
+        assert_eq!(
+            context.world().node(shell.stable_id()).unwrap().children,
+            vec![title.stable_id(), body.stable_id()]
+        );
+        assert_eq!(
+            context.read(shell, |shell| shell.body).unwrap(),
+            Some(body.stable_id())
+        );
+        assert!(
+            !is_descendant(context.world(), title.stable_id(), body.stable_id()),
+            "nested AppShell body must be lifted out of the title bar"
+        );
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        let title_box = context.world().layout_box(title.stable_id()).unwrap();
+        let body_box = context.world().layout_box(body.stable_id()).unwrap();
+        assert!(
+            body_box.y + 0.5 >= title_box.y + TITLE_BAR_HEIGHT,
+            "body.y={} must sit below title bar y={} height={}",
+            body_box.y,
+            title_box.y,
+            title_box.height
+        );
+        let leading = context
+            .world()
+            .node(title.stable_id())
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|&id| node_tag(context.world(), id).as_deref() == Some(LEADING_COLUMN_TAG))
+            .expect("leading column");
+        assert!(
+            !context
+                .world()
+                .node(leading)
+                .unwrap()
+                .children
+                .contains(&body.stable_id()),
+            "body must not land in the title-bar leading column"
+        );
     }
 
     #[test]
