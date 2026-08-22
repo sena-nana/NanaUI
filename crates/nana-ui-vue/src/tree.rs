@@ -2652,6 +2652,38 @@ fn resolve_widget_component_type(
     context.resolve_component_tag(tag).cloned()
 }
 
+fn is_shell_composer_kind(kind: crate::WidgetKind) -> bool {
+    matches!(
+        kind,
+        crate::WidgetKind::Workspace
+            | crate::WidgetKind::Dock
+            | crate::WidgetKind::SplitPane
+            | crate::WidgetKind::AppShell
+    )
+}
+
+fn shell_kind_from_ident(raw: &str) -> Option<crate::WidgetKind> {
+    let parsed = crate::WidgetKind::parse(raw).or_else(|| {
+        let lower = raw.trim().to_ascii_lowercase();
+        let stripped = lower.strip_prefix("nana.").unwrap_or(&lower);
+        crate::WidgetKind::parse(stripped)
+    })?;
+    is_shell_composer_kind(parsed).then_some(parsed)
+}
+
+fn effective_kind(widget: &crate::SemanticWidget) -> crate::WidgetKind {
+    if !matches!(
+        widget.kind,
+        crate::WidgetKind::Column | crate::WidgetKind::Box | crate::WidgetKind::Row
+    ) {
+        return widget.kind;
+    }
+    if widget.props.element_tag.is_empty() {
+        return widget.kind;
+    }
+    shell_kind_from_ident(&widget.props.element_tag).unwrap_or(widget.kind)
+}
+
 fn try_bind_registered_component(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
@@ -2668,6 +2700,10 @@ fn try_bind_registered_component(
         if context.world().component_type(id) != Some(&type_id) {
             mutations.set_component_type(id, Some(type_id));
         }
+        return None;
+    }
+    // Empty from_semantic stubs; WidgetKind slot arms own dock/shell projection.
+    if shell_kind_from_ident(type_id.as_str()).is_some() {
         return None;
     }
     let layout = Arc::new(widget.props.layout.clone());
@@ -2733,7 +2769,7 @@ fn project_migrating_component(
     {
         return true;
     }
-    match widget.kind {
+    match effective_kind(widget) {
         crate::WidgetKind::Button => {
             if let Some(icon) = widget_icon(widget, snapshot) {
                 let label = if widget.props.hint.is_empty() {
@@ -2765,9 +2801,7 @@ fn project_migrating_component(
             }
             true
         }
-        crate::WidgetKind::Chip
-            if !widget.props.role.eq_ignore_ascii_case("tab") =>
-        {
+        crate::WidgetKind::Chip if !widget.props.role.eq_ignore_ascii_case("tab") => {
             let kind = if widget.props.active || widget.props.toggled {
                 nana_ui_core::ButtonKind::Selected
             } else {
@@ -3634,7 +3668,10 @@ fn project_migrating_component(
                 };
                 let bar = RuntimeAppTitleBar::new(bar_title);
                 bar.project(title_bar, world, mutations);
-                if !snapshot.get(title_bar.get()).is_some_and(is_title_bar_child) {
+                if !snapshot
+                    .get(title_bar.get())
+                    .is_some_and(is_title_bar_child)
+                {
                     pending.title_bars.push((title_bar, bar));
                 }
             }
@@ -4992,15 +5029,7 @@ fn is_shell_composer_slot(
     widget
         .parent
         .and_then(|parent| snapshot.get(parent))
-        .is_some_and(|parent| {
-            matches!(
-                parent.kind,
-                crate::WidgetKind::Workspace
-                    | crate::WidgetKind::Dock
-                    | crate::WidgetKind::SplitPane
-                    | crate::WidgetKind::AppShell
-            )
-        })
+        .is_some_and(|parent| is_shell_composer_kind(effective_kind(parent)))
 }
 
 fn retain_projected_children(
@@ -8322,6 +8351,92 @@ mod tests {
     }
 
     #[test]
+    fn column_nana_app_shell_title_bar_and_body_keep_layout_after_assemble() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let shell = doc.create_element("nana-app-shell");
+        let title_bar = doc.create_element("nana-app-title-bar");
+        let body = doc.create_element("div");
+        doc.insert(shell, doc.mount_root(), None);
+        doc.insert(title_bar, shell, None);
+        doc.insert(body, shell, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut title_props = crate::WidgetProps {
+            label: "Nana".into(),
+            element_tag: "nana-app-title-bar".into(),
+            ..Default::default()
+        };
+        title_props
+            .attrs
+            .insert("data-slot".into(), "title-bar".into());
+        title_props.class_names.push("nana-app-title-bar".into());
+        bridge.register(title_bar.0, crate::WidgetKind::Column, title_props);
+        bridge.register(
+            body.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                label: "Workspace".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            shell.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                label: "Nana".into(),
+                element_tag: "nana-app-shell".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(title_bar.0, shell.0, None);
+        bridge.insert_child(body.0, shell.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let shell_id = StableNodeId::try_from(shell).unwrap();
+        let title_id = StableNodeId::try_from(title_bar).unwrap();
+        let body_id = StableNodeId::try_from(body).unwrap();
+        let (bound_title, bound_body, bound_overlay) = doc
+            .context()
+            .read(
+                Entity::<RuntimeAppShell>::from_stable_id(shell_id),
+                |shell| (shell.title_bar, shell.body, shell.overlay),
+            )
+            .unwrap();
+        assert_eq!(bound_title, Some(title_id));
+        assert_eq!(bound_body, Some(body_id));
+        assert_eq!(bound_overlay, None);
+        assert_eq!(
+            doc.runtime.node(shell_id).unwrap().children,
+            vec![title_id, body_id]
+        );
+        let title_style = doc.runtime.node_style(title_id).unwrap();
+        let body_style = doc.runtime.node_style(body_id).unwrap();
+        assert_eq!(
+            title_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Px(nana_ui_core::TITLE_BAR_HEIGHT))
+        );
+        assert_eq!(title_style.layout.flex_grow, Some(0.0));
+        assert!(
+            doc.runtime.text(title_id).unwrap_or("").is_empty(),
+            "title-bar root text must be empty after assemble, got {:?}",
+            doc.runtime.text(title_id)
+        );
+        let title_label =
+            assembled_title_bar_center_label(&doc, title_id).expect("center column title");
+        assert_eq!(doc.runtime.text(title_label), Some("Nana"));
+        assert_eq!(
+            doc.runtime
+                .accessibility(title_id)
+                .and_then(|state| state.label.as_deref()),
+            Some("Nana")
+        );
+        assert_eq!(body_style.layout.flex_grow, Some(1.0));
+        assert_eq!(
+            body_style.layout.height,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+    }
+
+    #[test]
     fn app_shell_empty_title_bar_still_assembles_columns() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let shell = doc.create_element("nana-app-shell");
@@ -8607,6 +8722,81 @@ mod tests {
             dock.0,
             crate::WidgetKind::Dock,
             crate::WidgetProps::default(),
+        );
+        bridge.register(nav.0, crate::WidgetKind::Column, nav_props);
+        bridge.register(files.0, crate::WidgetKind::Column, files_props);
+        bridge.insert_child(nav.0, dock.0, None);
+        bridge.insert_child(files.0, dock.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let dock_id = StableNodeId::try_from(dock).unwrap();
+        let nav_id = StableNodeId::try_from(nav).unwrap();
+        let files_id = StableNodeId::try_from(files).unwrap();
+        let items = doc
+            .context()
+            .read(Entity::<RuntimeDock>::from_stable_id(dock_id), |dock| {
+                dock.flatten()
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_ne!(
+            items.as_slice(),
+            ["dock"],
+            "dock with two item children must not project DockNode::item(\"dock\", None)"
+        );
+        assert_eq!(items, ["nav", "files"]);
+        assert!(
+            doc.runtime.node_style(files_id).unwrap().layout.hidden,
+            "inactive dock tab body is hidden"
+        );
+        let children = doc.runtime.node(dock_id).unwrap().children;
+        assert!(
+            children.len() > 2,
+            "assemble_dock must mount chrome beyond the two content nodes"
+        );
+        assert!(children.contains(&nav_id));
+        assert!(children.contains(&files_id));
+        assert!(
+            children.iter().any(|child| {
+                doc.runtime
+                    .accessibility(*child)
+                    .is_some_and(|state| state.role == AccessibilityRole::TabList)
+            }),
+            "assemble_dock mounts a tab-strip chrome node"
+        );
+    }
+
+    #[test]
+    fn column_nana_dock_two_item_children_are_not_dummy_dock_item() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let dock = doc.create_element("nana-dock");
+        let nav = doc.create_element("div");
+        let files = doc.create_element("div");
+        doc.insert(dock, doc.mount_root(), None);
+        doc.insert(nav, dock, None);
+        doc.insert(files, dock, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut nav_props = crate::WidgetProps {
+            label: "Nav".into(),
+            ..Default::default()
+        };
+        nav_props.attrs.insert("data-dock-id".into(), "nav".into());
+        let mut files_props = crate::WidgetProps {
+            label: "Files".into(),
+            ..Default::default()
+        };
+        files_props
+            .attrs
+            .insert("data-dock-id".into(), "files".into());
+        bridge.register(
+            dock.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                element_tag: "nana-dock".into(),
+                ..Default::default()
+            },
         );
         bridge.register(nav.0, crate::WidgetKind::Column, nav_props);
         bridge.register(files.0, crate::WidgetKind::Column, files_props);
