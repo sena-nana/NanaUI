@@ -11,12 +11,17 @@ function flatten(nodes) {
     .filter(Boolean);
 }
 
+function nodeSlot(node) {
+  const props = (node && node.props) || {};
+  return String(props["data-slot"] || props.dataSlot || "");
+}
+
 function isTitleBarNode(node) {
   if (!node || typeof node !== "object") return false;
   const type = node.type;
   const props = node.props || {};
   const tag = typeof type === "string" ? type : String(type?.name || "");
-  const slot = props["data-slot"] || props.dataSlot;
+  const slot = nodeSlot(node);
   const cls = String(props.class || "");
   return (
     slot === "title-bar" ||
@@ -24,6 +29,17 @@ function isTitleBarNode(node) {
     cls.includes("nana-app-title-bar") ||
     /title-bar|titlebar/i.test(tag)
   );
+}
+
+function isOverlayNode(node) {
+  if (!node || typeof node !== "object") return false;
+  const slot = nodeSlot(node);
+  const cls = String((node.props || {}).class || "");
+  return slot === "overlay" || cls.includes("nana-app-shell__overlay");
+}
+
+function isBodyNode(node) {
+  return nodeSlot(node) === "body";
 }
 
 export const NanaAppShell = {
@@ -34,21 +50,35 @@ export const NanaAppShell = {
   setup(props, { slots, attrs }) {
     return () => {
       const slotted = flatten(slots.default?.());
+      const titleBars = slotted.filter(isTitleBarNode);
+      const overlays = slotted.filter(isOverlayNode);
+      const bodyNodes = slotted.filter((node) => !isTitleBarNode(node) && !isOverlayNode(node));
       const children = [];
-      if (props.title && !slotted.some(isTitleBarNode)) {
+      if (props.title && titleBars.length === 0) {
+        children.push(
+          h("nana-app-title-bar", {
+            class: "nana-app-title-bar",
+            title: props.title,
+            "data-slot": "title-bar",
+          }),
+        );
+      }
+      children.push(...titleBars);
+      if (bodyNodes.length === 1 && isBodyNode(bodyNodes[0])) {
+        children.push(bodyNodes[0]);
+      } else if (bodyNodes.length) {
         children.push(
           h(
-            "nana-app-title-bar",
+            "div",
             {
-              class: "nana-app-title-bar",
-              title: props.title,
-              "data-slot": "title-bar",
+              class: "nana-app-shell__body",
+              "data-slot": "body",
             },
-            props.title,
+            bodyNodes,
           ),
         );
       }
-      children.push(...slotted);
+      children.push(...overlays);
       return h(
         "nana-app-shell",
         {

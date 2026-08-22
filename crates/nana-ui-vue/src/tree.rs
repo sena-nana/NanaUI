@@ -5103,6 +5103,10 @@ fn is_title_bar_child(widget: &crate::SemanticWidget) -> bool {
         || class.contains("nana-app-title-bar")
 }
 
+fn is_body_child(widget: &crate::SemanticWidget) -> bool {
+    widget_slot(widget) == "body"
+}
+
 fn is_overlay_child(widget: &crate::SemanticWidget) -> bool {
     let slot = widget_slot(widget);
     if slot == "overlay" {
@@ -5591,11 +5595,28 @@ fn app_shell_slots(
     let body = children
         .iter()
         .find(|child| {
-            let id = child.id;
-            Some(id) != title_bar.map(StableNodeId::get)
-                && Some(id) != overlay.map(StableNodeId::get)
+            is_body_child(child)
+                && Some(child.id) != title_bar.map(StableNodeId::get)
+                && Some(child.id) != overlay.map(StableNodeId::get)
         })
-        .and_then(|child| StableNodeId::new(child.id));
+        .or_else(|| {
+            children.iter().find(|child| {
+                let id = child.id;
+                Some(id) != title_bar.map(StableNodeId::get)
+                    && Some(id) != overlay.map(StableNodeId::get)
+            })
+        })
+        .and_then(|child| StableNodeId::new(child.id))
+        .or_else(|| {
+            title_bar.and_then(|title_bar| {
+                snapshot.get(title_bar.get()).and_then(|bar| {
+                    element_child_widgets(bar, snapshot)
+                        .into_iter()
+                        .find(|child| is_body_child(child))
+                        .and_then(|child| StableNodeId::new(child.id))
+                })
+            })
+        });
     (title_bar, body, overlay)
 }
 
@@ -8434,6 +8455,179 @@ mod tests {
             body_style.layout.height,
             Some(nana_ui_core::LengthSpec::Fill)
         );
+        runtime_layout(&mut doc, 800.0, 600.0);
+        assert!(
+            !runtime_is_descendant(&doc, title_id, body_id),
+            "body must stay a sibling of the title bar"
+        );
+        let title_box = doc.runtime.layout_box(title_id).unwrap();
+        let body_box = doc.runtime.layout_box(body_id).unwrap();
+        assert!(
+            body_box.y + 0.5 >= title_box.y + nana_ui_core::TITLE_BAR_HEIGHT,
+            "body.y={} must sit below title bar y={} height={}",
+            body_box.y,
+            title_box.y,
+            title_box.height
+        );
+    }
+
+    #[test]
+    fn column_nana_app_shell_title_bar_and_body_copy_stays_below_title_bar() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let shell = doc.create_element("nana-app-shell");
+        let title_bar = doc.create_element("nana-app-title-bar");
+        let body = doc.create_element("div");
+        let copy = doc.create_text("Type in the field below.");
+        doc.insert(shell, doc.mount_root(), None);
+        doc.insert(title_bar, shell, None);
+        doc.insert(body, shell, None);
+        doc.insert(copy, body, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut title_props = crate::WidgetProps {
+            label: "Nana".into(),
+            element_tag: "nana-app-title-bar".into(),
+            ..Default::default()
+        };
+        title_props
+            .attrs
+            .insert("data-slot".into(), "title-bar".into());
+        title_props.class_names.push("nana-app-title-bar".into());
+        let mut body_props = crate::WidgetProps {
+            element_tag: "div".into(),
+            ..Default::default()
+        };
+        body_props.attrs.insert("data-slot".into(), "body".into());
+        body_props.class_names.push("chrome-probe-body".into());
+        bridge.register(title_bar.0, crate::WidgetKind::Column, title_props);
+        bridge.register(body.0, crate::WidgetKind::Column, body_props);
+        bridge.register(
+            copy.0,
+            crate::WidgetKind::Text,
+            crate::WidgetProps {
+                label: "Type in the field below.".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            shell.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                label: "Nana".into(),
+                element_tag: "nana-app-shell".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(title_bar.0, shell.0, None);
+        bridge.insert_child(body.0, shell.0, None);
+        bridge.insert_child(copy.0, body.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        runtime_layout(&mut doc, 800.0, 600.0);
+
+        let shell_id = StableNodeId::try_from(shell).unwrap();
+        let title_id = StableNodeId::try_from(title_bar).unwrap();
+        let body_id = StableNodeId::try_from(body).unwrap();
+        let copy_id = StableNodeId::try_from(copy).unwrap();
+        assert_eq!(
+            doc.runtime.node(shell_id).unwrap().children,
+            vec![title_id, body_id]
+        );
+        assert!(
+            !runtime_is_descendant(&doc, title_id, body_id),
+            "body must not be a descendant of the title bar"
+        );
+        assert!(
+            !runtime_is_descendant(&doc, title_id, copy_id),
+            "body copy must not be a child of the title-bar node"
+        );
+        assert_eq!(doc.runtime.text(copy_id), Some("Type in the field below."));
+        let title_box = doc.runtime.layout_box(title_id).unwrap();
+        let body_box = doc.runtime.layout_box(body_id).unwrap();
+        assert!(
+            body_box.y + 0.5 >= title_box.y + nana_ui_core::TITLE_BAR_HEIGHT,
+            "body.y={} must sit below title bar y={} height={}",
+            body_box.y,
+            title_box.y,
+            title_box.height
+        );
+    }
+
+    #[test]
+    fn column_nana_app_shell_nested_body_is_reparented_below_title_bar() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let shell = doc.create_element("nana-app-shell");
+        let title_bar = doc.create_element("nana-app-title-bar");
+        let body = doc.create_element("div");
+        let copy = doc.create_text("Type in the field below.");
+        doc.insert(shell, doc.mount_root(), None);
+        doc.insert(title_bar, shell, None);
+        doc.insert(body, title_bar, None);
+        doc.insert(copy, body, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut title_props = crate::WidgetProps {
+            label: "Nana".into(),
+            element_tag: "nana-app-title-bar".into(),
+            ..Default::default()
+        };
+        title_props
+            .attrs
+            .insert("data-slot".into(), "title-bar".into());
+        title_props.class_names.push("nana-app-title-bar".into());
+        let mut body_props = crate::WidgetProps {
+            element_tag: "div".into(),
+            ..Default::default()
+        };
+        body_props.attrs.insert("data-slot".into(), "body".into());
+        body_props.class_names.push("chrome-probe-body".into());
+        bridge.register(title_bar.0, crate::WidgetKind::Column, title_props);
+        bridge.register(body.0, crate::WidgetKind::Column, body_props);
+        bridge.register(
+            copy.0,
+            crate::WidgetKind::Text,
+            crate::WidgetProps {
+                label: "Type in the field below.".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            shell.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                label: "Nana".into(),
+                element_tag: "nana-app-shell".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(title_bar.0, shell.0, None);
+        bridge.insert_child(body.0, title_bar.0, None);
+        bridge.insert_child(copy.0, body.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        runtime_layout(&mut doc, 800.0, 600.0);
+
+        let shell_id = StableNodeId::try_from(shell).unwrap();
+        let title_id = StableNodeId::try_from(title_bar).unwrap();
+        let body_id = StableNodeId::try_from(body).unwrap();
+        let copy_id = StableNodeId::try_from(copy).unwrap();
+        assert_eq!(
+            doc.runtime.node(shell_id).unwrap().children,
+            vec![title_id, body_id]
+        );
+        assert!(
+            !runtime_is_descendant(&doc, title_id, body_id),
+            "nested body must be lifted out of the title bar"
+        );
+        assert!(
+            !runtime_is_descendant(&doc, title_id, copy_id),
+            "body copy must not stay under the title-bar node"
+        );
+        let title_box = doc.runtime.layout_box(title_id).unwrap();
+        let body_box = doc.runtime.layout_box(body_id).unwrap();
+        assert!(
+            body_box.y + 0.5 >= title_box.y + nana_ui_core::TITLE_BAR_HEIGHT,
+            "body.y={} must sit below title bar y={} height={}",
+            body_box.y,
+            title_box.y,
+            title_box.height
+        );
     }
 
     #[test]
@@ -8500,6 +8694,21 @@ mod tests {
                 .and_then(|state| state.label.as_deref()),
             Some("")
         );
+    }
+
+    fn runtime_is_descendant(
+        doc: &NanaTreeDocument,
+        ancestor: StableNodeId,
+        node: StableNodeId,
+    ) -> bool {
+        let mut current = doc.runtime.node(node).and_then(|node| node.parent);
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            current = doc.runtime.node(id).and_then(|node| node.parent);
+        }
+        false
     }
 
     fn assembled_title_bar_center_label(

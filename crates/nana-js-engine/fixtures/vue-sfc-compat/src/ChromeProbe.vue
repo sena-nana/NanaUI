@@ -12,7 +12,7 @@ onMounted(async () => {
 
 <template>
   <NanaAppShell title="Chrome probe">
-    <div class="chrome-probe-body">
+    <div class="chrome-probe-body" data-slot="body">
       <p>Type in the field below.</p>
       <label>Text <input ref="input" data-agent-id="chrome-probe-input" /></label>
     </div>
