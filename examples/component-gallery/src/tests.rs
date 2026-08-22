@@ -849,3 +849,87 @@ fn dock_float_backs_a_runtime_document_for_the_window() {
     );
     assert!(nana_ui::RuntimeProgram::document(&app, id).is_none());
 }
+
+#[test]
+fn dock_float_platform_moved_persists_without_move_command() {
+    let mut app = super::GalleryApp::new();
+    let _ = app.apply_message(GalleryMessage::Dock(GalleryDock::Float {
+        id: "gallery.assets".into(),
+        x: 20.0,
+        y: 30.0,
+        width: 320.0,
+        height: 240.0,
+    }));
+    let surface = app.state().dock.floating.first().expect("floated surface");
+    let id = nana_ui_platform::WindowId(nana_ui::runtime::dock_surface_window_key(&surface.id));
+    let commands_before = app.state().dock_window_commands.len();
+
+    let update = app.apply_window_geometry(
+        id,
+        nana_ui_platform::WindowGeometry {
+            physical_position: None,
+            physical_size: (80, 90),
+            logical_position: Some((80.0, 90.0)),
+            logical_size: (360.0, 280.0),
+            scale_factor: 1.0,
+            maximized: false,
+        },
+    );
+    let floating = app.state().dock.floating.first().expect("floated surface");
+    assert_eq!(floating.x, 80.0);
+    assert_eq!(floating.y, 90.0);
+    assert_eq!(floating.width, 360.0);
+    assert_eq!(floating.height, 280.0);
+    assert_eq!(
+        app.state().dock_window_commands.len(),
+        commands_before,
+        "platform Moved must not record WindowCommand::Move"
+    );
+    assert!(
+        !update
+            .window_commands
+            .iter()
+            .any(|command| matches!(command, WindowCommand::Move { .. })),
+        "platform Moved must not echo WindowCommand::Move"
+    );
+
+    let commands_before = app.state().dock_window_commands.len();
+    let _ = app.apply_window_geometry(
+        id,
+        nana_ui_platform::WindowGeometry {
+            physical_position: None,
+            physical_size: (90, 100),
+            logical_position: None,
+            logical_size: (400.0, 300.0),
+            scale_factor: 1.0,
+            maximized: false,
+        },
+    );
+    let floating = app.state().dock.floating.first().expect("floated surface");
+    assert_eq!(floating.x, 80.0);
+    assert_eq!(floating.y, 90.0);
+    assert_eq!(floating.width, 400.0);
+    assert_eq!(floating.height, 300.0);
+    assert_eq!(
+        app.state().dock_window_commands.len(),
+        commands_before,
+        "platform Resized must not record WindowCommand::Move"
+    );
+
+    let _ = app.handle_window_event(nana_ui_platform::WindowEvent::Moved {
+        id: nana_ui_platform::WindowId::PRIMARY,
+        geometry: nana_ui_platform::WindowGeometry {
+            physical_position: Some((12, 24)),
+            physical_size: (1024, 768),
+            logical_position: Some((12.0, 24.0)),
+            logical_size: (1024.0, 768.0),
+            scale_factor: 1.0,
+            maximized: false,
+        },
+    });
+    assert_eq!(
+        app.state().window_size,
+        None,
+        "primary Moved must not apply WorkspaceAction::WindowResized"
+    );
+}
