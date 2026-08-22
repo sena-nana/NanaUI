@@ -1,8 +1,8 @@
 //! Backend-neutral render scene and frame graph for NanaUI.
 //!
 //! The crate consumes Runtime extraction deltas. It owns no application state,
-//! window, GPU device, or renderer objects and therefore remains usable by the
-//! Iced/WGPU compatibility backend and future native backends alike.
+//! window, GPU device, or renderer objects. `SceneWgpuPainter` is the product
+//! paint path.
 
 mod graph;
 mod icon;

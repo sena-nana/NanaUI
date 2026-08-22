@@ -3,8 +3,8 @@
 //! Runtime owns the block model, source parse, grapheme selection ranges, and
 //! leaf projection. Applications own link handling, image decode, mermaid/math
 //! rendering, and clipboard writes. [`NativeMarkdown::from_source`] maps GFM
-//! blocks onto [`MarkdownBlock`] / [`MarkdownSpan`]; Iced still owns view and
-//! SVG cache.
+//! blocks onto [`MarkdownBlock`] / [`MarkdownSpan`]. Scene paint consumes the
+//! projected visual; hosts own mermaid/math presenter slots.
 //!
 //! [`ComponentView`] projection keeps [`TextContent`] as fallback text and
 //! writes [`StandardVisual::NativeMarkdown`] /
