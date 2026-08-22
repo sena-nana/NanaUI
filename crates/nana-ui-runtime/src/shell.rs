@@ -548,7 +548,6 @@ impl AppShell {
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
-        style.background = Some(SemanticColorRole::Background);
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Column);
         layout.align_items = AlignSpec::Stretch;
@@ -2547,6 +2546,58 @@ mod tests {
         assert_eq!(overlay_box.width, shell_box.width);
         assert_eq!(overlay_box.height, shell_box.height);
         assert_eq!(shell_box.height, 400.0);
+    }
+
+    #[test]
+    fn app_shell_default_background_is_none_and_title_bar_keeps_surface() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_component(document(), AppTitleBar::new("Nana"))
+            .unwrap();
+        let shell = context
+            .create_component(document(), AppShell::new().title_bar(title.stable_id()))
+            .unwrap();
+        context.append_child(shell, title).unwrap();
+
+        assert_eq!(
+            context
+                .world()
+                .node_style(shell.stable_id())
+                .unwrap()
+                .background,
+            None
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(title.stable_id())
+                .unwrap()
+                .background,
+            Some(SemanticColorRole::Surface)
+        );
+    }
+
+    #[test]
+    fn app_shell_preserves_caller_set_background() {
+        let mut context = AppContext::new();
+        let shell = context
+            .create_component(
+                document(),
+                AppShell::new().style(NodeStyle {
+                    background: Some(SemanticColorRole::Background),
+                    ..NodeStyle::default()
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            context
+                .world()
+                .node_style(shell.stable_id())
+                .unwrap()
+                .background,
+            Some(SemanticColorRole::Background)
+        );
     }
 
     #[test]
