@@ -1,12 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use nana_ui_core::{
-    AlignSpec, BoxSizing, FlexDirection, JustifySpec, LengthSpec, PositionSpec,
-};
+use nana_ui_core::{AlignSpec, BoxSizing, FlexDirection, JustifySpec, LengthSpec, PositionSpec};
 
-use crate::{
-    DocumentId, LayoutBox, LayoutInput, StableNodeId, UiWorld, UiWorldError,
-};
+use crate::{DocumentId, LayoutBox, LayoutInput, StableNodeId, UiWorld, UiWorldError};
 
 /// Logical viewport supplied by the platform host to the retained layout system.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,31 +38,25 @@ impl RuntimeLayoutEngine {
         viewport: LayoutViewport,
     ) -> Result<Vec<(StableNodeId, LayoutBox)>, UiWorldError> {
         let order = world.document_order(document);
-        let inputs = world.layout_inputs(&order)?;
-        let nodes = inputs
-            .into_iter()
-            .map(|input| (input.id, input))
-            .collect::<HashMap<_, _>>();
-        let roots = order
-            .iter()
-            .copied()
-            .filter(|id| nodes[id].parent.is_none())
-            .collect::<Vec<_>>();
+        let mut nodes = LayoutInputMap::new(world);
+        nodes.prefetch(&order)?;
+        let roots = world.document_roots(document);
         let mut output = HashMap::with_capacity(nodes.len());
         let mut intrinsic = HashMap::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
         for root in roots {
-            let root_size = intrinsic_size(root, available, None, viewport, &nodes, &mut intrinsic);
+            let root_size =
+                intrinsic_size(root, available, None, viewport, &mut nodes, &mut intrinsic)?;
             place_node(
                 root,
                 Point::ZERO,
                 root_size,
                 available,
                 viewport,
-                &nodes,
+                &mut nodes,
                 &mut intrinsic,
                 &mut output,
-            );
+            )?;
         }
         Ok(order
             .into_iter()
@@ -96,16 +87,15 @@ impl RuntimeLayoutEngine {
         if force_full {
             retained.clear();
         }
-        let order = world.document_order(document);
-        let inputs = world.layout_inputs(&order)?;
-        let nodes = inputs
-            .into_iter()
-            .map(|input| (input.id, input))
-            .collect::<HashMap<_, _>>();
+        let mut nodes = LayoutInputMap::new(world);
+        if force_full {
+            let order = world.document_order(document);
+            nodes.prefetch(&order)?;
+        }
         let mut affected = HashSet::new();
         if !force_full {
             for &id in dirty {
-                if !nodes.contains_key(&id) {
+                if !world.contains(id) {
                     continue;
                 }
                 let mut cursor = Some(id);
@@ -113,7 +103,7 @@ impl RuntimeLayoutEngine {
                     if !affected.insert(id) {
                         break;
                     }
-                    cursor = nodes[&id].parent;
+                    cursor = world.parent_id(id);
                 }
             }
         }
@@ -122,11 +112,7 @@ impl RuntimeLayoutEngine {
             retained: &*retained,
         };
         let scope_ref = (!force_full).then_some(&scope);
-        let roots = order
-            .iter()
-            .copied()
-            .filter(|id| nodes[id].parent.is_none())
-            .collect::<Vec<_>>();
+        let roots = world.document_roots(document);
         let mut output = HashMap::with_capacity(nodes.len());
         let mut intrinsic = HashMap::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
@@ -136,37 +122,41 @@ impl RuntimeLayoutEngine {
                 available,
                 None,
                 viewport,
-                &nodes,
+                &mut nodes,
                 &mut intrinsic,
                 scope_ref,
-            );
+            )?;
             place_node_scoped(
                 root,
                 Point::ZERO,
                 root_size,
                 available,
                 viewport,
-                &nodes,
+                &mut nodes,
                 &mut intrinsic,
                 &mut output,
                 scope_ref,
-            );
+            )?;
         }
-        // Publish recomputed boxes; emitted set only.
-        let mut emitted = Vec::with_capacity(output.len());
-        for id in &order {
-            if let Some(box_) = output.remove(id) {
-                retained.boxes.insert(*id, box_);
-                emitted.push((*id, box_));
-            }
+        // Publish recomputed boxes from the placed set; no document_order walk.
+        let mut emitted = output.into_iter().collect::<Vec<_>>();
+        emitted.sort_unstable_by_key(|(id, _)| *id);
+        for (id, box_) in &emitted {
+            retained.boxes.insert(*id, *box_);
         }
         retained.intrinsics.extend(intrinsic);
+        retained.materialized_inputs = nodes.materialized;
         // Despawned ids linger in the retained maps; keep them bounded.
-        if retained.boxes.len() > nodes.len().saturating_mul(2) {
-            retained.boxes.retain(|id, _| nodes.contains_key(id));
+        // Scoped passes only materialize a subset, so membership is the live
+        // world, not the partial input map.
+        let universe = if force_full { nodes.len() } else { world.len() };
+        if retained.boxes.len() > universe.saturating_mul(2) {
+            retained.boxes.retain(|id, _| world.contains(*id));
         }
-        if retained.intrinsics.len() > nodes.len().saturating_mul(4) {
-            retained.intrinsics.retain(|(id, _, _), _| nodes.contains_key(id));
+        if retained.intrinsics.len() > universe.saturating_mul(4) {
+            retained
+                .intrinsics
+                .retain(|(id, _, _), _| world.contains(*id));
         }
         Ok(emitted)
     }
@@ -178,12 +168,84 @@ impl RuntimeLayoutEngine {
 pub struct RetainedLayoutCache {
     intrinsics: HashMap<(StableNodeId, u32, u32), Size>,
     boxes: HashMap<StableNodeId, LayoutBox>,
+    materialized_inputs: usize,
 }
 
 impl RetainedLayoutCache {
     fn clear(&mut self) {
         self.intrinsics.clear();
         self.boxes.clear();
+        self.materialized_inputs = 0;
+    }
+}
+
+/// On-demand `LayoutInput` cache. A miss loads exactly that id from `UiWorld`.
+struct LayoutInputMap<'a> {
+    world: &'a UiWorld,
+    nodes: HashMap<StableNodeId, LayoutInput>,
+    materialized: usize,
+}
+
+impl<'a> LayoutInputMap<'a> {
+    fn new(world: &'a UiWorld) -> Self {
+        Self {
+            world,
+            nodes: HashMap::new(),
+            materialized: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn prefetch(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
+        let missing = ids
+            .iter()
+            .copied()
+            .filter(|id| !self.nodes.contains_key(id))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let inputs = self.world.layout_inputs(&missing)?;
+        self.materialized = self.materialized.saturating_add(inputs.len());
+        self.nodes
+            .extend(inputs.into_iter().map(|input| (input.id, input)));
+        Ok(())
+    }
+
+    fn get(&mut self, id: StableNodeId) -> Result<Option<&LayoutInput>, UiWorldError> {
+        if !self.load(id)? {
+            return Ok(None);
+        }
+        Ok(self.nodes.get(&id))
+    }
+
+    /// Style for classifying / measuring siblings without assembling `LayoutInput`.
+    fn style(&self, id: StableNodeId) -> Option<Arc<nana_ui_core::LayoutStyle>> {
+        if let Some(node) = self.nodes.get(&id) {
+            return Some(Arc::clone(&node.style));
+        }
+        self.world.layout_style(id)
+    }
+
+    fn load(&mut self, id: StableNodeId) -> Result<bool, UiWorldError> {
+        if self.nodes.contains_key(&id) {
+            return Ok(true);
+        }
+        if !self.world.contains(id) {
+            return Ok(false);
+        }
+        let mut batch = self.world.layout_inputs(&[id])?;
+        match batch.pop() {
+            Some(input) => {
+                self.materialized = self.materialized.saturating_add(1);
+                self.nodes.insert(id, input);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 }
 
@@ -252,10 +314,18 @@ fn intrinsic_size(
     available: Size,
     parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
-    nodes: &HashMap<StableNodeId, LayoutInput>,
+    nodes: &mut LayoutInputMap<'_>,
     cache: &mut IntrinsicCache,
-) -> Size {
-    intrinsic_size_scoped(id, available, parent_direction, viewport, nodes, cache, None)
+) -> Result<Size, UiWorldError> {
+    intrinsic_size_scoped(
+        id,
+        available,
+        parent_direction,
+        viewport,
+        nodes,
+        cache,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -264,13 +334,13 @@ fn intrinsic_size_scoped(
     available: Size,
     parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
-    nodes: &HashMap<StableNodeId, LayoutInput>,
+    nodes: &mut LayoutInputMap<'_>,
     cache: &mut IntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
-) -> Size {
+) -> Result<Size, UiWorldError> {
     let cache_key = (id, available.width.to_bits(), available.height.to_bits());
     if let Some(size) = cache.get(&cache_key) {
-        return *size;
+        return Ok(*size);
     }
     // A subtree outside the affected closure has no change inside it, so its
     // intrinsic size under the same constraints is unchanged.
@@ -279,12 +349,17 @@ fn intrinsic_size_scoped(
         && let Some(size) = scope.retained.intrinsics.get(&cache_key)
     {
         cache.insert(cache_key, *size);
-        return *size;
+        return Ok(*size);
     }
-    let node = &nodes[&id];
-    let style = node.style.as_ref();
+    let Some(node) = nodes.get(id)? else {
+        return Ok(Size::default());
+    };
+    let style = node.style.clone();
+    let children = node.children.clone();
+    let text_metrics = node.text_metrics;
+    let style = style.as_ref();
     if style.omits_box() {
-        return Size::default();
+        return Ok(Size::default());
     }
     let padding = style.resolved_padding_against(Some(available.width));
     let border = style.resolved_border_width();
@@ -297,30 +372,27 @@ fn intrinsic_size_scoped(
         (available.height - chrome.height).max(0.0),
     );
     let direction = style.direction.unwrap_or(FlexDirection::Column);
-    let flow_children = node
-        .children
-        .iter()
-        .copied()
-        .filter(|child| {
-            nodes.get(child).is_some_and(|child| {
-                !child.style.omits_box() && !child.style.position.is_out_of_flow()
-            })
-        })
-        .collect::<Vec<_>>();
-    let child_sizes = flow_children
-        .iter()
-        .map(|child| {
-            intrinsic_size_scoped(
-                *child,
-                content_available,
-                Some(direction),
-                viewport,
-                nodes,
-                cache,
-                scope,
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut flow_children = Vec::new();
+    for child in children.iter().copied() {
+        let include = nodes
+            .style(child)
+            .is_some_and(|style| !style.omits_box() && !style.position.is_out_of_flow());
+        if include {
+            flow_children.push(child);
+        }
+    }
+    let mut child_sizes = Vec::with_capacity(flow_children.len());
+    for child in &flow_children {
+        child_sizes.push(intrinsic_size_scoped(
+            *child,
+            content_available,
+            Some(direction),
+            viewport,
+            nodes,
+            cache,
+            scope,
+        )?);
+    }
     let gap = style.main_gap_against(
         direction,
         nana_ui_core::ParentBox::from_viewport(content_available.width, content_available.height),
@@ -342,7 +414,7 @@ fn intrinsic_size_scoped(
             child_sizes.iter().map(|size| size.height).sum::<f32>() + gaps,
         ),
     };
-    let text = node.text_metrics.unwrap_or_default();
+    let text = text_metrics.unwrap_or_default();
     let content = Size::new(
         children.width.max(text.width),
         children.height.max(text.height),
@@ -391,7 +463,7 @@ fn intrinsic_size_scoped(
     }
     let size = Size::new(width, height);
     cache.insert(cache_key, size);
-    size
+    Ok(size)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -401,21 +473,13 @@ fn place_node(
     size: Size,
     containing: Size,
     viewport: LayoutViewport,
-    nodes: &HashMap<StableNodeId, LayoutInput>,
+    nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
-) {
+) -> Result<(), UiWorldError> {
     place_node_scoped(
-        id,
-        origin,
-        size,
-        containing,
-        viewport,
-        nodes,
-        intrinsic,
-        output,
-        None,
-    );
+        id, origin, size, containing, viewport, nodes, intrinsic, output, None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -425,13 +489,27 @@ fn place_node_scoped(
     size: Size,
     containing: Size,
     viewport: LayoutViewport,
-    nodes: &HashMap<StableNodeId, LayoutInput>,
+    nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
-) {
-    let node = &nodes[&id];
-    let style = node.style.as_ref();
+) -> Result<(), UiWorldError> {
+    let Some(node) = nodes.get(id)? else {
+        output.insert(
+            id,
+            LayoutBox {
+                x: origin.x,
+                y: origin.y,
+                width: 0.0,
+                height: 0.0,
+            },
+        );
+        return Ok(());
+    };
+    let style = node.style.clone();
+    let child_ids = node.children.clone();
+    let modal = node.modal.clone();
+    let style = style.as_ref();
     if style.omits_box() {
         output.insert(
             id,
@@ -442,7 +520,7 @@ fn place_node_scoped(
                 height: 0.0,
             },
         );
-        return;
+        return Ok(());
     }
     let (relative_x, relative_y) =
         style.relative_offset_against(Some(containing.width), Some(containing.height));
@@ -460,11 +538,11 @@ fn place_node_scoped(
         },
     );
 
-    if let Some(modal) = node.modal.as_ref() {
+    if let Some(modal) = modal.as_ref() {
         place_modal_children(
             id, origin, size, modal, viewport, nodes, intrinsic, output, scope,
-        );
-        return;
+        )?;
+        return Ok(());
     }
 
     let padding = style.resolved_padding_against(Some(size.width));
@@ -478,33 +556,49 @@ fn place_node_scoped(
         size.height - padding.top - padding.bottom - border * 2.0,
     );
     let direction = style.direction.unwrap_or(FlexDirection::Column);
-    let mut children = node
-        .children
-        .iter()
-        .copied()
-        .filter(|child| {
-            nodes
-                .get(child)
-                .is_some_and(|child| !child.style.omits_box())
-        })
-        .collect::<Vec<_>>();
-    children.sort_by_key(|child| nodes[child].style.order);
+    let mut keyed = Vec::new();
+    for child in child_ids.iter().copied() {
+        let Some(child_style) = nodes.style(child) else {
+            continue;
+        };
+        if child_style.omits_box() {
+            continue;
+        }
+        keyed.push((child_style.order, child));
+    }
+    keyed.sort_by_key(|(order, _)| *order);
+    let mut children = keyed.into_iter().map(|(_, id)| id).collect::<Vec<_>>();
     if style.flex_reverse {
         children.reverse();
     }
-    let (flow, positioned): (Vec<_>, Vec<_>) = children
-        .into_iter()
-        .partition(|child| !nodes[child].style.position.is_out_of_flow());
+    let mut flow = Vec::new();
+    let mut positioned = Vec::new();
+    for child in children {
+        let in_flow = nodes
+            .style(child)
+            .is_some_and(|child_style| !child_style.position.is_out_of_flow());
+        if in_flow {
+            flow.push(child);
+        } else {
+            positioned.push(child);
+        }
+    }
     let gap = style.main_gap_against(
         direction,
         nana_ui_core::ParentBox::from_viewport(content.width, content.height),
     );
-    let mut child_sizes = flow
-        .iter()
-        .map(|child| {
-            intrinsic_size_scoped(*child, content, Some(direction), viewport, nodes, intrinsic, scope)
-        })
-        .collect::<Vec<_>>();
+    let mut child_sizes = Vec::with_capacity(flow.len());
+    for child in &flow {
+        child_sizes.push(intrinsic_size_scoped(
+            *child,
+            content,
+            Some(direction),
+            viewport,
+            nodes,
+            intrinsic,
+            scope,
+        )?);
+    }
     distribute_fill(&flow, &mut child_sizes, direction, content, gap, nodes);
     let occupied = main_occupied(&flow, &child_sizes, direction, content, gap, nodes);
     let (mut cursor, effective_gap) = justify_offsets(
@@ -515,7 +609,10 @@ fn place_node_scoped(
         flow.len(),
     );
     for (child, mut child_size) in flow.into_iter().zip(child_sizes) {
-        let child_style = nodes[&child].style.as_ref();
+        let Some(child_style) = nodes.style(child) else {
+            continue;
+        };
+        let child_style = child_style.as_ref();
         let margin = child_style.resolved_margin_against(Some(content.width));
         let align = child_style.align_self.unwrap_or(style.align_items);
         let cross_available = cross_extent(content, direction) - cross_margin(margin, direction);
@@ -555,7 +652,7 @@ fn place_node_scoped(
                 intrinsic,
                 output,
                 scope,
-            );
+            )?;
         }
         cursor += main_extent(child_size, direction)
             + main_start_margin(margin, direction)
@@ -563,7 +660,10 @@ fn place_node_scoped(
             + effective_gap;
     }
     for child in positioned {
-        let child_style = nodes[&child].style.as_ref();
+        let Some(child_style) = nodes.style(child) else {
+            continue;
+        };
+        let child_style = child_style.as_ref();
         let base = if child_style.position == PositionSpec::Fixed {
             Size::new(viewport.width, viewport.height)
         } else {
@@ -575,7 +675,7 @@ fn place_node_scoped(
             content_origin
         };
         let child_size =
-            intrinsic_size_scoped(child, base, None, viewport, nodes, intrinsic, scope);
+            intrinsic_size_scoped(child, base, None, viewport, nodes, intrinsic, scope)?;
         let left = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_left, base.width);
         let right = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_right, base.width);
         let top = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_top, base.height);
@@ -599,9 +699,10 @@ fn place_node_scoped(
                 intrinsic,
                 output,
                 scope,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -611,11 +712,11 @@ fn place_modal_children(
     size: Size,
     modal: &crate::ModalLayoutInput,
     viewport: LayoutViewport,
-    nodes: &HashMap<StableNodeId, LayoutInput>,
+    nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
-    _scope: Option<&ScopeContext<'_>>,
-) {
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
     let has_close = modal.slots.close_action.is_some();
     let has_footer = modal.slots.footer.is_some() || !modal.slots.actions.is_empty();
     let chrome = crate::overlay_surfaces::ModalChrome::measure(
@@ -651,23 +752,25 @@ fn place_modal_children(
                     - body_gap)
                     .max(0.0),
             );
-            let body_slot =
-                modal
-                    .slots
-                    .body
-                    .filter(|id| nodes.contains_key(id))
-                    .map_or(0.0, |id| {
-                        intrinsic_size(
-                            id,
-                            body_available,
-                            Some(FlexDirection::Column),
-                            viewport,
-                            nodes,
-                            intrinsic,
-                        )
-                        .height
-                        .min(body_available.height)
-                    });
+            let body_slot = if let Some(id) = modal.slots.body {
+                if nodes.get(id)?.is_some() {
+                    intrinsic_size_scoped(
+                        id,
+                        body_available,
+                        Some(FlexDirection::Column),
+                        viewport,
+                        nodes,
+                        intrinsic,
+                        scope,
+                    )?
+                    .height
+                    .min(body_available.height)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
             crate::overlay_surfaces::modal_surface_bounds(
                 root,
                 modal.kind,
@@ -684,36 +787,42 @@ fn place_modal_children(
             0.0
         };
     let slot_height = (body.y + body.height - slot_y).max(0.0);
-    if let Some(id) = modal.slots.body.filter(|id| nodes.contains_key(id)) {
-        place_node(
-            id,
-            Point {
-                x: body.x,
-                y: slot_y,
-            },
-            Size::new(body.width, slot_height),
-            Size::new(body.width, slot_height),
-            viewport,
-            nodes,
-            intrinsic,
-            output,
-        );
+    if let Some(id) = modal.slots.body {
+        if nodes.get(id)?.is_some() {
+            place_modal_slot(
+                id,
+                Point {
+                    x: body.x,
+                    y: slot_y,
+                },
+                Size::new(body.width, slot_height),
+                Size::new(body.width, slot_height),
+                viewport,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            )?;
+        }
     }
-    if let Some(id) = modal.slots.close_action.filter(|id| nodes.contains_key(id)) {
-        let close = chrome.close_box(surface, modal.kind);
-        place_node(
-            id,
-            Point {
-                x: close.x,
-                y: close.y,
-            },
-            Size::new(close.width, close.height),
-            Size::new(close.width, close.height),
-            viewport,
-            nodes,
-            intrinsic,
-            output,
-        );
+    if let Some(id) = modal.slots.close_action {
+        if nodes.get(id)?.is_some() {
+            let close = chrome.close_box(surface, modal.kind);
+            place_modal_slot(
+                id,
+                Point {
+                    x: close.x,
+                    y: close.y,
+                },
+                Size::new(close.width, close.height),
+                Size::new(close.width, close.height),
+                viewport,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            )?;
+        }
     }
     let footer_y = surface.y + surface.height - chrome.footer_height;
     let action_band = match modal.kind {
@@ -721,22 +830,22 @@ fn place_modal_children(
         _ => 0.0,
     };
     let mut action_right = surface.x + surface.width - chrome.pad_x;
-    for id in modal
-        .slots
-        .actions
-        .iter()
-        .rev()
-        .copied()
-        .filter(|id| nodes.contains_key(id))
-    {
-        let measured = intrinsic_size(
+    let mut actions = Vec::new();
+    for id in modal.slots.actions.iter().rev().copied() {
+        if nodes.get(id)?.is_some() {
+            actions.push(id);
+        }
+    }
+    for id in actions {
+        let measured = intrinsic_size_scoped(
             id,
             Size::new(body.width, crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
             Some(FlexDirection::Row),
             viewport,
             nodes,
             intrinsic,
-        );
+            scope,
+        )?;
         let action_size = Size::new(
             measured.width.min(body.width),
             measured
@@ -744,7 +853,7 @@ fn place_modal_children(
                 .min(crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
         );
         action_right -= action_size.width;
-        place_node(
+        place_modal_slot(
             id,
             Point {
                 x: action_right,
@@ -756,25 +865,53 @@ fn place_modal_children(
             nodes,
             intrinsic,
             output,
-        );
+            scope,
+        )?;
         action_right -= crate::overlay_surfaces::MODAL_ACTION_GAP;
     }
-    if let Some(id) = modal.slots.footer.filter(|id| nodes.contains_key(id)) {
-        let width = (action_right - (surface.x + chrome.pad_x)).max(0.0);
-        place_node(
-            id,
-            Point {
-                x: surface.x + chrome.pad_x,
-                y: footer_y,
-            },
-            Size::new(width, chrome.footer_height),
-            Size::new(width, chrome.footer_height),
-            viewport,
-            nodes,
-            intrinsic,
-            output,
-        );
+    if let Some(id) = modal.slots.footer {
+        if nodes.get(id)?.is_some() {
+            let width = (action_right - (surface.x + chrome.pad_x)).max(0.0);
+            place_modal_slot(
+                id,
+                Point {
+                    x: surface.x + chrome.pad_x,
+                    y: footer_y,
+                },
+                Size::new(width, chrome.footer_height),
+                Size::new(width, chrome.footer_height),
+                viewport,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            )?;
+        }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_modal_slot(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut IntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    let Some(child_style) = nodes.get(id)?.map(|node| node.style.clone()) else {
+        return Ok(());
+    };
+    if subtree_unchanged(id, origin, size, containing, child_style.as_ref(), scope) {
+        return Ok(());
+    }
+    place_node_scoped(
+        id, origin, size, containing, viewport, nodes, intrinsic, output, scope,
+    )
 }
 
 fn distribute_fill(
@@ -783,36 +920,40 @@ fn distribute_fill(
     direction: FlexDirection,
     content: Size,
     gap: f32,
-    nodes: &HashMap<StableNodeId, LayoutInput>,
+    nodes: &LayoutInputMap<'_>,
 ) {
     let total_gap = gap * children.len().saturating_sub(1) as f32;
-    let fixed = children
-        .iter()
-        .zip(sizes.iter())
-        .map(|(id, size)| {
-            let margin = nodes[id].style.resolved_margin_against(Some(content.width));
-            (if child_fills(nodes[id].style.as_ref(), direction) {
-                0.0
-            } else {
-                main_extent(*size, direction)
-            }) + main_start_margin(margin, direction)
-                + main_end_margin(margin, direction)
-        })
-        .sum::<f32>();
-    let weights = children
-        .iter()
-        .filter_map(|id| {
-            let style = nodes[id].style.as_ref();
-            child_fills(style, direction).then_some(style.flex_grow.unwrap_or(1.0).max(0.0))
-        })
-        .sum::<f32>();
+    let mut fixed = 0.0;
+    for (id, size) in children.iter().zip(sizes.iter()) {
+        let Some(style) = nodes.style(*id) else {
+            continue;
+        };
+        let margin = style.resolved_margin_against(Some(content.width));
+        let main = if child_fills(style.as_ref(), direction) {
+            0.0
+        } else {
+            main_extent(*size, direction)
+        };
+        fixed += main + main_start_margin(margin, direction) + main_end_margin(margin, direction);
+    }
+    let mut weights = 0.0;
+    for id in children {
+        let Some(style) = nodes.style(*id) else {
+            continue;
+        };
+        if child_fills(style.as_ref(), direction) {
+            weights += style.flex_grow.unwrap_or(1.0).max(0.0);
+        }
+    }
     if weights <= 0.0 {
         return;
     }
     let remaining = (main_extent(content, direction) - fixed - total_gap).max(0.0);
     for (id, size) in children.iter().zip(sizes.iter_mut()) {
-        let style = nodes[id].style.as_ref();
-        if child_fills(style, direction) {
+        let Some(style) = nodes.style(*id) else {
+            continue;
+        };
+        if child_fills(style.as_ref(), direction) {
             let weight = style.flex_grow.unwrap_or(1.0).max(0.0);
             set_main_extent(size, direction, remaining * weight / weights);
         }
@@ -825,19 +966,19 @@ fn main_occupied(
     direction: FlexDirection,
     content: Size,
     gap: f32,
-    nodes: &HashMap<StableNodeId, LayoutInput>,
+    nodes: &LayoutInputMap<'_>,
 ) -> f32 {
-    children
-        .iter()
-        .zip(sizes)
-        .map(|(id, size)| {
-            let margin = nodes[id].style.resolved_margin_against(Some(content.width));
-            main_extent(*size, direction)
-                + main_start_margin(margin, direction)
-                + main_end_margin(margin, direction)
-        })
-        .sum::<f32>()
-        + gap * children.len().saturating_sub(1) as f32
+    let mut occupied = 0.0;
+    for (id, size) in children.iter().zip(sizes) {
+        let margin = match nodes.style(*id) {
+            Some(style) => style.resolved_margin_against(Some(content.width)),
+            None => Default::default(),
+        };
+        occupied += main_extent(*size, direction)
+            + main_start_margin(margin, direction)
+            + main_end_margin(margin, direction);
+    }
+    occupied + gap * children.len().saturating_sub(1) as f32
 }
 
 fn justify_offsets(
@@ -999,7 +1140,12 @@ mod tests {
             queue.create(label_id, document, NodeKind::Text);
             queue.insert(id(2), row_id, None);
             queue.insert(row_id, label_id, None);
-            queue.set_text(label_id, TextContent { value: "行".into() });
+            queue.set_text(
+                label_id,
+                TextContent {
+                    value: "行".into()
+                },
+            );
             queue.set_style(
                 row_id,
                 NodeStyle {
@@ -1057,6 +1203,24 @@ mod tests {
             .collect::<HashMap<_, _>>()
     }
 
+    fn write_changed_boxes(
+        world: &mut UiWorld,
+        emitted: &[(StableNodeId, LayoutBox)],
+    ) -> Vec<StableNodeId> {
+        let mut queue = MutationQueue::new();
+        let mut written = Vec::new();
+        for (id, box_) in emitted {
+            if world.layout_box(*id) != Some(*box_) {
+                queue.write_layout(*id, *box_);
+                written.push(*id);
+            }
+        }
+        if !written.is_empty() {
+            world.commit(queue).unwrap();
+        }
+        written
+    }
+
     #[test]
     fn scoped_layout_touches_only_the_change_closure_and_matches_full_recompute() {
         let (mut world, document) = column_tree(400);
@@ -1072,6 +1236,8 @@ mod tests {
             .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
             .unwrap();
         assert_eq!(emitted.len(), 802, "full pass emits every node");
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
 
         // Change the LAST row: nothing shifts above it, so the scoped pass
         // must recompute only that row's ancestor chain.
@@ -1100,6 +1266,8 @@ mod tests {
                 "scoped layout diverged from full recompute at {node:?}"
             );
         }
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
 
         // Change a MIDDLE row: every row below shifts; the scoped pass must
         // emit exactly the shifted set (rows and their labels) and still
@@ -1131,8 +1299,77 @@ mod tests {
                 "shifted scoped layout diverged from full recompute at {node:?}"
             );
         }
+
+        let written = write_changed_boxes(&mut world, &emitted);
+        let extract = world.take_system_work();
+        let changed_row = id(3 + 200 * 2);
+        let changed_label = id(4 + 200 * 2);
+        let row_above = id(3 + 199 * 2);
+        let label_above = id(4 + 199 * 2);
+        let shifted_row = id(3 + 201 * 2);
+        let shifted_label = id(4 + 201 * 2);
+        assert!(written.contains(&changed_row));
+        assert!(written.contains(&shifted_row));
+        assert!(written.contains(&shifted_label));
+        assert!(extract.render_extraction.contains(&changed_row));
+        assert!(extract.render_extraction.contains(&shifted_row));
+        assert!(extract.render_extraction.contains(&shifted_label));
+        assert!(
+            !written.contains(&changed_label),
+            "bit-identical label of the changed row must not be written"
+        );
+        assert!(!extract.render_extraction.contains(&changed_label));
+        assert!(!extract.render_extraction.contains(&row_above));
+        assert!(!extract.render_extraction.contains(&label_above));
     }
 
+    #[test]
+    fn scoped_layout_materializes_far_fewer_inputs_than_the_document_for_a_tail_row() {
+        let (mut world, document) = column_tree(400);
+        let viewport = LayoutViewport::new(300.0, 800.0);
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+
+        let emitted = RuntimeLayoutEngine
+            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        assert_eq!(emitted.len(), 802);
+        assert_eq!(retained.materialized_inputs, 802);
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+
+        resize_row(&mut world, 399, 26.0);
+        let work = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_scoped(
+                &world,
+                document,
+                viewport,
+                &work.layout,
+                &mut retained,
+                false,
+            )
+            .unwrap();
+        assert!(
+            emitted.len() < 16,
+            "tail row change must stay O(depth), not relayout {} nodes",
+            emitted.len()
+        );
+        // Document + column + dirty row (+ label / path ancestors). Unshifted
+        // siblings are classified from layout style, not full LayoutInput.
+        assert!(
+            retained.materialized_inputs <= 16,
+            "tail row must not assemble unshifted siblings, materialized {} of 802",
+            retained.materialized_inputs
+        );
+        for (node, box_) in full_boxes(&world, document, viewport) {
+            assert_eq!(
+                retained.boxes.get(&node),
+                Some(&box_),
+                "on-demand scoped layout diverged from full recompute at {node:?}"
+            );
+        }
+    }
 
     #[test]
     fn lays_out_shaped_controls_without_application_geometry() {
