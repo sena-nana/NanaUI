@@ -8,6 +8,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use nana_ui_core::AppearanceSettings;
 use nana_ui_platform::{
     ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType, TextInputPurpose,
     TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId,
@@ -15,7 +16,6 @@ use nana_ui_platform::{
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
 };
-use nana_ui_core::AppearanceSettings;
 use nana_window::{
     Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
     clear_system_material, prepare_client_chrome,
@@ -42,10 +42,10 @@ use crate::runtime_host::{
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
-    HostedGpuContext, HostedGpuError, HostedGpuSurface, HostedRunError, HostedSurfaceFrame,
-    RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry, TitleBarDragTracker,
-    WindowChromeAction, WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
-    default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers,
+    HostTextureRegistry, HostedGpuContext, HostedGpuError, HostedGpuSurface, HostedRunError,
+    HostedSurfaceFrame, RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry,
+    TitleBarDragTracker, WindowChromeAction, WindowChromeEvent, WindowChromeState,
+    apply_title_bar_pointer, default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers,
     window_commands_for_chrome_action,
 };
 
@@ -366,11 +366,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             {
                 Ok(update) => update,
                 Err(error) => {
-                    self.program
-                        .host_failure(HostFailure::AccessibilityAction {
-                            window: id,
-                            error: error.to_string(),
-                        });
+                    self.program.host_failure(HostFailure::AccessibilityAction {
+                        window: id,
+                        error: error.to_string(),
+                    });
                     continue;
                 }
             };
@@ -609,7 +608,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             let Some(document) = self.program.document_mut(id) else {
                 // prepare_window_frame ran program code that may have closed
                 // this window's document; skip the frame instead of panicking.
-                self.program.host_failure(HostFailure::MissingDocument { window: id });
+                self.program
+                    .host_failure(HostFailure::MissingDocument { window: id });
                 return;
             };
             document.flush(viewport, &mut self.text)
@@ -635,7 +635,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         };
         let scene = {
             let Some(document) = self.program.document_mut(id) else {
-                self.program.host_failure(HostFailure::MissingDocument { window: id });
+                self.program
+                    .host_failure(HostFailure::MissingDocument { window: id });
                 return;
             };
             document.shared_scene()
@@ -707,6 +708,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 window: id,
                 error: error.to_string(),
             });
+            self.request_redraw(id);
             return;
         }
         let submit_started = std::time::Instant::now();
@@ -998,6 +1000,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     ),
                 );
                 let previous = std::mem::take(&mut self.auxiliary);
+                let recovery_windows: Vec<WindowId> = std::iter::once(WindowId::PRIMARY)
+                    .chain(previous.keys().copied())
+                    .collect();
                 let mut rebuilt = HashMap::new();
                 let mut failed = Vec::new();
                 for (id, mut host) in previous {
@@ -1028,6 +1033,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 self.refresh_material();
                 self.next_gpu_retry = None;
                 self.render_suspended = false;
+                invalidate_program_host_textures(recovery_windows, |id| {
+                    self.program.host_textures(id)
+                });
                 self.program.rebuild_gpu(&self.context());
                 for (id, window_id) in failed {
                     self.window_ids.remove(&window_id);
@@ -1877,6 +1885,21 @@ fn windows_to_redraw(redraw: RuntimeRedraw, known: &[WindowId]) -> Vec<WindowId>
     }
 }
 
+/// Drop HostTexture views bound to the previous Device, then the caller runs
+/// `rebuild_gpu` so programs can re-register on the new one.
+fn invalidate_program_host_textures(
+    window_ids: impl IntoIterator<Item = WindowId>,
+    mut host_textures: impl FnMut(WindowId) -> Option<HostTextureRegistry>,
+) -> usize {
+    let mut invalidated = 0;
+    for id in window_ids {
+        if let Some(registry) = host_textures(id) {
+            invalidated += registry.invalidate_all();
+        }
+    }
+    invalidated
+}
+
 fn should_deliver_program_ime(modal_blocks: bool) -> bool {
     !modal_blocks
 }
@@ -2258,13 +2281,15 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        InputTracker, RoutedWindowCommand, mouse_button_code, mouse_button_mask,
-        platform_ime_event, platform_input_key, platform_input_modifiers, platform_window_event,
-        resolved_scene_ime_request, route_window_command, scene_runtime_input_update,
-        scene_window_attributes, screen_position, should_deliver_program_ime, window_level,
-        windows_to_redraw,
+        InputTracker, RoutedWindowCommand, invalidate_program_host_textures, mouse_button_code,
+        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
+        platform_window_event, resolved_scene_ime_request, route_window_command,
+        scene_runtime_input_update, scene_window_attributes, screen_position,
+        should_deliver_program_ime, window_level, windows_to_redraw,
     };
-    use crate::{RuntimeProgramUpdate, RuntimeRedraw};
+    use crate::{
+        HostTexture, HostTextureAlphaMode, HostTextureRegistry, RuntimeProgramUpdate, RuntimeRedraw,
+    };
     use nana_ui_platform::{
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
         WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
@@ -2968,5 +2993,97 @@ mod tests {
         assert_eq!(update.redraw, RuntimeRedraw::Window(WindowId::PRIMARY));
         assert!(!update.exit);
         assert!(update.window_commands.is_empty());
+    }
+
+    #[test]
+    fn device_recovery_invalidates_cloned_program_host_textures_before_rebuild() {
+        let registry = occupied_host_textures("live");
+        struct FakeProgram {
+            textures: HostTextureRegistry,
+            rebuilt_len: std::cell::Cell<Option<usize>>,
+        }
+        impl FakeProgram {
+            fn host_textures(&self, id: WindowId) -> Option<HostTextureRegistry> {
+                match id {
+                    WindowId::PRIMARY | WindowId(2) => Some(self.textures.clone()),
+                    _ => None,
+                }
+            }
+
+            fn rebuild_gpu(&self) {
+                self.rebuilt_len.set(Some(self.textures.len()));
+            }
+        }
+
+        let program = FakeProgram {
+            textures: registry.clone(),
+            rebuilt_len: std::cell::Cell::new(None),
+        };
+        let cleared =
+            invalidate_program_host_textures([WindowId::PRIMARY, WindowId(2), WindowId(9)], |id| {
+                program.host_textures(id)
+            });
+        program.rebuild_gpu();
+
+        assert_eq!(cleared, 1);
+        assert_eq!(program.rebuilt_len.get(), Some(0));
+        assert!(registry.is_empty());
+        assert_eq!(
+            invalidate_program_host_textures([WindowId::PRIMARY, WindowId(2)], |id| program
+                .host_textures(id)),
+            0
+        );
+    }
+
+    fn occupied_host_textures(slot: &str) -> HostTextureRegistry {
+        let (device, _) = test_device();
+        let registry = HostTextureRegistry::new();
+        registry.register(
+            slot,
+            HostTexture::from_wgpu(1, 1, test_texture_view(&device)),
+            8,
+            8,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        registry
+    }
+
+    fn test_texture_view(device: &wgpu::Device) -> wgpu::TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("NanaUI scene host recovery test texture"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    fn test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
+            &instance, None,
+        ))
+        .expect("scene host recovery test requires a WGPU adapter");
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("NanaUI scene host recovery test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        }))
+        .expect("scene host recovery test requires a WGPU device")
     }
 }
