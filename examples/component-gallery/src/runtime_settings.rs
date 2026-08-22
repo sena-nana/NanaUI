@@ -80,7 +80,7 @@ impl GallerySettingsRuntime {
         let appearance = context.create_detached_component(
             document_id,
             AppearanceSection::new(state.theme, state.appearance)
-                .platform_hint(nana_ui::platform_material_support().hint())
+                .platform_hint(nana_ui::hosted_platform_material_support().hint())
                 .material_status(state.material_outcome.status_label()),
         )?;
         let about = context.create_detached_component(
@@ -309,7 +309,7 @@ impl GallerySettingsRuntime {
         let _ = context.update_component(self.appearance, |section, _| {
             section.theme = state.theme;
             section.appearance = state.appearance;
-            section.platform_hint = Some(Arc::from(nana_ui::platform_material_support().hint()));
+            section.platform_hint = Some(Arc::from(nana_ui::hosted_platform_material_support().hint()));
             section.material_status = Some(Arc::from(state.material_outcome.status_label()));
         });
         let _ = context.update_component(self.about, |section, _| {

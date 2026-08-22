@@ -34,7 +34,7 @@ agent = [
     "dep:serde",
     "dep:serde_json",
 ]
-agent-bin = ["agent", "dep:nana-js-quickjs"]
+agent-bin = ["agent", "dep:nana-js-v8", "nana-js-v8/engine"]
 
 [dependencies]
 nana-js-engine.workspace = true
@@ -42,7 +42,7 @@ nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, optional = true }
 nana-ui = { workspace = true, optional = true }
 nana-ui-vue = { workspace = true, optional = true }
-nana-js-quickjs = { workspace = true, optional = true }
+nana-js-v8 = { workspace = true, optional = true }
 png = { version = "0.18.1", optional = true }
 pollster = { version = "0.4", optional = true }
 serde = { workspace = true, optional = true }
@@ -50,4 +50,4 @@ serde_json = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
-nana-js-quickjs.workspace = true
+nana-js-v8 = { workspace = true, features = ["engine"] }

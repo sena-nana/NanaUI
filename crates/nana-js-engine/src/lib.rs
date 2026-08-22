@@ -1,8 +1,8 @@
 //! Engine-agnostic JavaScript host interface for NanaUI Vue.
 //!
-//! Concrete QuickJS / V8 types must not leak through this crate. Applications and
-//! `nana-ui-vue` depend only on these types; each app links exactly one of
-//! `nana-js-quickjs` or `nana-js-v8`.
+//! Concrete V8 types must not leak through this crate. Applications and
+//! `nana-ui-vue` depend only on these types; each app links `nana-js-v8`.
+//! The [`JsEngine`] trait remains as the test injection seam.
 
 use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
@@ -414,15 +414,13 @@ impl HostValue {
 
 /// Kind of bytes carried by [`RuntimeArtifact`].
 ///
-/// QuickJS bytecode and V8 snapshots are **not** interchangeable. Dev / dual-engine
-/// paths use [`RuntimeArtifactKind::SourceUtf8`]; Release embeds one engine-native
-/// binary form so business JS is not shipped as plaintext.
+/// V8 snapshots are engine-native and **not** source. Dev paths use
+/// [`RuntimeArtifactKind::SourceUtf8`]; Release embeds a snapshot binary form
+/// where the engine supports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeArtifactKind {
-    /// UTF-8 JavaScript source (shared by QuickJS and V8 in development).
+    /// UTF-8 JavaScript source.
     SourceUtf8,
-    /// QuickJS-NG module bytecode from `JS_WriteObject` / `Module::write`.
-    QuickJsBytecode,
     /// V8 `StartupData` snapshot blob from `SnapshotCreator::create_blob`.
     V8Snapshot,
 }
@@ -441,14 +439,6 @@ impl RuntimeArtifact {
             bytes: source.as_ref().to_vec(),
             name: name.into(),
             kind: RuntimeArtifactKind::SourceUtf8,
-        }
-    }
-
-    pub fn from_quickjs_bytecode(name: impl Into<String>, bytes: impl AsRef<[u8]>) -> Self {
-        Self {
-            bytes: bytes.as_ref().to_vec(),
-            name: name.into(),
-            kind: RuntimeArtifactKind::QuickJsBytecode,
         }
     }
 
@@ -474,10 +464,7 @@ impl RuntimeArtifact {
     }
 
     pub fn is_binary_release(&self) -> bool {
-        matches!(
-            self.kind,
-            RuntimeArtifactKind::QuickJsBytecode | RuntimeArtifactKind::V8Snapshot
-        )
+        matches!(self.kind, RuntimeArtifactKind::V8Snapshot)
     }
 }
 
@@ -1020,7 +1007,7 @@ pub type HostAsyncApiHandler = Arc<
         + Sync,
 >;
 
-/// Registry of named host callbacks shared by QuickJS and V8 backends.
+/// Registry of named host callbacks shared by the JS engine and tests.
 #[derive(Default, Clone)]
 pub struct HostApiRegistry {
     handlers: BTreeMap<String, HostApiHandler>,
@@ -1324,7 +1311,7 @@ pub mod probe {
         }
     }
 
-    /// Build the shared HostApiRegistry used by QuickJS and V8 probe runs.
+    /// Build the shared HostApiRegistry used by V8 probe runs.
     pub fn probe_host_registry() -> (HostApiRegistry, Arc<Mutex<ProbeHostState>>) {
         let state = Arc::new(Mutex::new(ProbeHostState::default()));
         let mut api = HostApiRegistry::new();

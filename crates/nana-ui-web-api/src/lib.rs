@@ -1,8 +1,8 @@
 //! **L1** progressive `window` / `document` / Web API compatibility for NanaUI Vue.
 //!
 //! This is a buffered WebView-source compatibility subset, not a WebView or a
-//! second paint path. JavaScript runs in the selected Rust-owned engine and all
-//! visible output still maps through NanaUI to Iced/WGPU.
+//! second paint path. JavaScript runs in the Rust-owned V8 engine and all
+//! visible output still maps through NanaUI Runtime/UiScene to `SceneWgpuPainter`.
 
 #![allow(clippy::field_reassign_with_default)]
 

@@ -25,8 +25,9 @@ use nana_ui_core::{
 };
 
 use crate::css_cascade::{
-    MatchContext, MatchNode, StyleRule, collect_document_custom_properties_from_rules,
-    parse_stylesheet, rebuild_layout_style,
+    MatchContext, MatchNode, StyleRule, StylesheetParseReport,
+    collect_document_custom_properties_from_rules, parse_stylesheet_with_report,
+    rebuild_layout_style,
 };
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
@@ -1869,6 +1870,8 @@ pub struct MessageBridge {
     stylesheet_vars: BTreeMap<String, String>,
     /// Last synced layout viewport (`vw`/`vh` resolve during cascade).
     layout_viewport: Option<(f32, f32)>,
+    /// Accumulated skipped-content counters across `inject_stylesheet` calls.
+    stylesheet_skips: StylesheetParseReport,
 }
 
 impl Default for MessageBridge {
@@ -1891,6 +1894,7 @@ impl MessageBridge {
             next_rule_order: 0,
             stylesheet_vars: BTreeMap::new(),
             layout_viewport: None,
+            stylesheet_skips: StylesheetParseReport::default(),
         }
     }
 
@@ -1903,7 +1907,8 @@ impl MessageBridge {
         if css.trim().is_empty() {
             return;
         }
-        let parsed = parse_stylesheet(css, self.next_rule_order);
+        let (parsed, report) = parse_stylesheet_with_report(css, self.next_rule_order);
+        self.stylesheet_skips = self.stylesheet_skips.combine(report);
         if parsed.is_empty() {
             return;
         }
@@ -1913,6 +1918,12 @@ impl MessageBridge {
         self.stylesheet_rules.extend(parsed);
         self.rebuild_stylesheet_vars();
         self.reapply_layout_cascade_all();
+    }
+
+    /// Accumulated stylesheet skipped-content counters, so hosts can surface
+    /// dropped rules/selectors instead of styles silently going missing.
+    pub fn stylesheet_skips(&self) -> StylesheetParseReport {
+        self.stylesheet_skips
     }
 
     /// Re-collect document `--*` for the active theme from cached rule entries.

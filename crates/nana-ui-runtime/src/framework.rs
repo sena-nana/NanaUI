@@ -584,6 +584,10 @@ pub struct AppContext {
     frame_profiler: FrameProfiler,
     last_profile: FrameProfile,
     profiling: bool,
+    /// Cross-frame layout memo for [`Self::layout_document_scoped`].
+    layout_cache: crate::RetainedLayoutCache,
+    /// Nodes recomputed by the last layout pass (relayout + shape scope).
+    last_layout_scope: Vec<StableNodeId>,
 }
 
 /// Application-owned mapping between visible data keys and retained component
@@ -720,6 +724,8 @@ impl AppContext {
             frame_profiler: FrameProfiler::new(),
             last_profile: FrameProfile::default(),
             profiling: false,
+            layout_cache: crate::RetainedLayoutCache::default(),
+            last_layout_scope: Vec::new(),
         };
         context
             .install(&crate::builtin_components::NanaBuiltinComponents)
@@ -940,11 +946,66 @@ impl AppContext {
         result
     }
 
+    /// [`Self::shape_text_for_layout`] restricted to `ids` (the last layout
+    /// scope): nodes outside it keep shapes matching their unchanged boxes.
+    pub fn shape_text_for_layout_scoped(
+        &mut self,
+        ids: &[StableNodeId],
+        shaper: &mut impl crate::TextShaper,
+    ) -> Result<bool, FrameworkError> {
+        let started = self.stage_clock();
+        let result = self
+            .world
+            .shape_text_for_layout_scoped(ids, shaper)
+            .map_err(FrameworkError::from);
+        self.record_stage(FrameStage::TextShape, started);
+        result
+    }
     /// Compute and atomically publish canonical Runtime layout for one window.
+    ///
+    /// Full pass: recomputes every box and rebuilds the retained layout cache.
+    /// Used when viewport semantics changed or a complete layout is required.
     pub fn layout_document(
         &mut self,
         document: DocumentId,
         viewport: crate::LayoutViewport,
+    ) -> Result<crate::CommitReport, FrameworkError> {
+        self.layout_document_impl(document, viewport, &[], true)
+    }
+
+    /// [`Self::layout_document`] restricted to the ancestor closure of
+    /// `dirty`. Clean subtrees reuse the retained cache, so the cost scales
+    /// with the change, not the document. [`Self::take_last_layout_scope`]
+    /// reports the recomputed set for scoped text re-shaping.
+    pub fn layout_document_scoped(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+        dirty: &[StableNodeId],
+    ) -> Result<crate::CommitReport, FrameworkError> {
+        let mut dirty = dirty.to_vec();
+        dirty.sort_unstable();
+        dirty.dedup();
+        self.layout_document_impl(document, viewport, &dirty, false)
+    }
+
+    /// Nodes recomputed by the most recent layout pass; drains on read.
+    pub fn take_last_layout_scope(&mut self) -> Vec<StableNodeId> {
+        std::mem::take(&mut self.last_layout_scope)
+    }
+
+    /// Nodes carrying an undrained LAYOUT-dirty bit (e.g. set by a shaping
+    /// pass after the work drain). Sorted for determinism.
+    pub fn pending_layout_dirty(&mut self) -> Vec<StableNodeId> {
+        self.world.pending_layout_dirty()
+    }
+
+    fn layout_document_impl(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+        dirty: &[StableNodeId],
+        force_full: bool,
     ) -> Result<crate::CommitReport, FrameworkError> {
         let started = self.stage_clock();
         self.component_lifecycle
@@ -952,14 +1013,23 @@ impl AppContext {
             .insert(document, viewport);
         let result = (|| {
             self.position_open_tooltips(document)?;
-            let layouts =
-                crate::RuntimeLayoutEngine.layout_document(&self.world, document, viewport)?;
+            let layouts = crate::RuntimeLayoutEngine.layout_document_scoped(
+                &self.world,
+                document,
+                viewport,
+                dirty,
+                &mut self.layout_cache,
+                force_full,
+            )?;
             let mut mutations = MutationQueue::new();
+            let mut scope = Vec::with_capacity(layouts.len());
             for (id, layout) in layouts {
+                scope.push(id);
                 if self.world.layout_box(id) != Some(layout) {
                     mutations.write_layout(id, layout);
                 }
             }
+            self.last_layout_scope = scope;
             self.commit_mutations(mutations)
         })();
         self.record_stage(FrameStage::Layout, started);
@@ -978,6 +1048,33 @@ impl AppContext {
     pub fn rebuild_hit_test(&mut self, document: DocumentId) {
         let started = self.stage_clock();
         self.world.rebuild_hit_test(document);
+        self.record_stage(FrameStage::HitTest, started);
+    }
+
+    /// Drain recorded scroll deltas for the in-place hit-index patch.
+    pub fn take_scroll_hit_updates(&mut self) -> Vec<(StableNodeId, [f32; 2])> {
+        self.world.take_scroll_hit_updates()
+    }
+
+    /// See [`UiWorld::hit_test_work_is_scroll_only`].
+    pub fn hit_test_work_is_scroll_only(
+        &self,
+        input: &[StableNodeId],
+        updates: &[(StableNodeId, [f32; 2])],
+    ) -> bool {
+        self.world.hit_test_work_is_scroll_only(input, updates)
+    }
+
+    /// Pre-compose a scroll translation onto the scroller subtree's hit
+    /// entries instead of rebuilding the document index.
+    pub fn update_hit_test_scroll(
+        &mut self,
+        document: DocumentId,
+        scroller: StableNodeId,
+        delta: [f32; 2],
+    ) {
+        let started = self.stage_clock();
+        self.world.update_hit_test_scroll(document, scroller, delta);
         self.record_stage(FrameStage::HitTest, started);
     }
 
@@ -7535,6 +7632,7 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn scroll_view_with_forty_rows_dirties_forty_one_hit_targets() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -7554,9 +7652,18 @@ mod tests {
                 .unwrap()
         );
         let work = context.take_system_work();
-        assert_eq!(work.input_hit_test.len(), 41);
+        // Scrolling repaints all 41 nodes (scroller + rows move under the
+        // viewport), but hit work is now the scroller alone: the index is
+        // patched in place from the recorded scroll delta instead of
+        // rebuilding per-subtree hit entries.
+        assert_eq!(work.input_hit_test.len(), 1);
         assert_eq!(work.render_extraction.len(), 41);
         assert!(work.layout.is_empty());
+        let updates = context.take_scroll_hit_updates();
+        assert!(
+            context.hit_test_work_is_scroll_only(&work.input_hit_test, &updates),
+            "pure scrolling must be recognized as patch-only"
+        );
     }
 
     #[test]

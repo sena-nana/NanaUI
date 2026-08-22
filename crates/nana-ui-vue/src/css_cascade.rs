@@ -244,9 +244,47 @@ impl<'a> MatchContext<'a> {
     }
 }
 
+/// Skipped-content counters for one stylesheet parse. Lets L1 hosts surface
+/// how much of a sheet was dropped (malformed blocks, unsupported selectors,
+/// at-rules) instead of styles silently going missing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StylesheetParseReport {
+    pub rules: usize,
+    /// Malformed blocks recovered by skipping to the next `}`.
+    pub skipped_rules: usize,
+    /// Rules dropped because no declaration survived parsing.
+    pub skipped_declarations: usize,
+    /// Selectors that failed to parse (deferred/unsupported syntax).
+    pub skipped_selectors: usize,
+    /// At-rule blocks skipped entirely (@media, @keyframes, ...).
+    pub skipped_at_rules: usize,
+}
+
+impl StylesheetParseReport {
+    /// Sum two reports (accumulated across stylesheet injections).
+    pub fn combine(self, other: Self) -> Self {
+        Self {
+            rules: self.rules + other.rules,
+            skipped_rules: self.skipped_rules + other.skipped_rules,
+            skipped_declarations: self.skipped_declarations + other.skipped_declarations,
+            skipped_selectors: self.skipped_selectors + other.skipped_selectors,
+            skipped_at_rules: self.skipped_at_rules + other.skipped_at_rules,
+        }
+    }
+}
+
 /// Parse stylesheet text into rules (skips at-rules / unsupported selectors).
 pub fn parse_stylesheet(css: &str, order_base: u32) -> Vec<StyleRule> {
+    parse_stylesheet_with_report(css, order_base).0
+}
+
+/// [`parse_stylesheet`] plus skipped-content diagnostics.
+pub fn parse_stylesheet_with_report(
+    css: &str,
+    order_base: u32,
+) -> (Vec<StyleRule>, StylesheetParseReport) {
     let stripped = strip_css_comments(css);
+    let mut report = StylesheetParseReport::default();
     let mut rules = Vec::new();
     let mut order = order_base;
     let mut rest = stripped.as_str();
@@ -257,29 +295,43 @@ pub fn parse_stylesheet(css: &str, order_base: u32) -> Vec<StyleRule> {
         }
         if rest.starts_with('@') {
             rest = skip_at_rule(rest);
+            report.skipped_at_rules += 1;
             continue;
         }
         let Some((selector_text, body, next)) = split_rule(rest) else {
-            break;
+            // Malformed block (e.g. an unclosed `{`): recover like a browser
+            // and keep parsing after the next `}` instead of truncating
+            // every rule that follows.
+            report.skipped_rules += 1;
+            rest = match rest.find('}') {
+                Some(end) => &rest[end + 1..],
+                None => "",
+            };
+            continue;
         };
         rest = next;
         let declarations = body.trim().to_string();
         if declarations.is_empty() {
+            report.skipped_declarations += 1;
             continue;
         }
         let declaration_entries = parse_declaration_entries(&declarations);
         if declaration_entries.is_empty() {
+            report.skipped_declarations += 1;
             continue;
         }
         let mut selectors = Vec::new();
         for part in split_selector_list(selector_text) {
             if let Some(sel) = parse_selector(part) {
                 selectors.push(sel);
+            } else {
+                report.skipped_selectors += 1;
             }
         }
         if selectors.is_empty() {
             continue;
         }
+        report.rules += 1;
         rules.push(StyleRule {
             selectors,
             declarations,
@@ -288,7 +340,7 @@ pub fn parse_stylesheet(css: &str, order_base: u32) -> Vec<StyleRule> {
         });
         order = order.saturating_add(1);
     }
-    rules
+    (rules, report)
 }
 
 /// Apply matched stylesheet declarations onto a fresh layout (author layer).
@@ -1401,21 +1453,26 @@ fn parse_signed_int_full(s: &str) -> Option<i32> {
 }
 
 fn strip_css_comments(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
+    // Copy non-comment byte ranges as slices so multi-byte UTF-8 payloads
+    // (Chinese comments, `content` strings, family names) survive verbatim.
     let bytes = css.as_bytes();
+    let mut out = String::with_capacity(css.len());
+    let mut copy_from = 0;
     let mut i = 0;
     while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            out.push_str(&css[copy_from..i]);
             i += 2;
             while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
                 i += 1;
             }
             i = (i + 2).min(bytes.len());
+            copy_from = i;
             continue;
         }
-        out.push(bytes[i] as char);
         i += 1;
     }
+    out.push_str(&css[copy_from..]);
     out
 }
 
@@ -1606,6 +1663,64 @@ mod tests {
             classes,
             attrs,
         }
+    }
+
+    #[test]
+    fn malformed_rule_does_not_truncate_following_rules() {
+        // An unclosed outer block used to abort the whole parse; recovery must
+        // keep the rules that follow the first `}`.
+        let css = ".x { .a { color: red } .b { color: blue }";
+        let (rules, report) = parse_stylesheet_with_report(css, 0);
+        assert_eq!(report.skipped_rules, 1);
+        let selectors: Vec<String> = rules
+            .iter()
+            .filter_map(|rule| {
+                rule.selectors
+                    .first()
+                    .and_then(|sel| sel.subject.classes.first().cloned())
+            })
+            .collect();
+        assert_eq!(selectors, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn skipped_content_counters_report_every_drop_kind() {
+        let css = concat!(
+            "@media (prefers-color-scheme: dark) { .dark { color: red } }",
+            ".empty { }",
+            ".deferred:has(.x) { color: red }",
+            ".kept { color: blue }"
+        );
+        let (rules, report) = parse_stylesheet_with_report(css, 0);
+        assert_eq!(report.skipped_at_rules, 1);
+        assert_eq!(report.skipped_declarations, 1);
+        assert_eq!(report.skipped_selectors, 1);
+        assert_eq!(report.rules, 1);
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn strip_css_comments_preserves_utf8_payloads() {
+        let css = "/* 中文注释 */ .card { color: red; content: \"中文提示\" } /* 尾注 */";
+        assert_eq!(
+            strip_css_comments(css),
+            " .card { color: red; content: \"中文提示\" } "
+        );
+        // Unterminated comment swallows the rest, byte-identically for ASCII.
+        assert_eq!(strip_css_comments("a { } /* 未闭合"), "a { } ");
+    }
+
+    #[test]
+    fn non_ascii_comments_and_content_survive_parsing() {
+        let with_comments =
+            "/* 深色主题 */ .card { color: red; content: \"按钮文字\" } /* 杂项 */";
+        let without = " .card { color: red; content: \"按钮文字\" }  ";
+        let commented = parse_stylesheet(with_comments, 0);
+        let plain = parse_stylesheet(without, 0);
+        assert_eq!(commented.len(), 1);
+        assert_eq!(plain.len(), 1);
+        assert_eq!(commented[0].declarations, plain[0].declarations);
+        assert!(commented[0].declarations.contains("按钮文字"));
     }
 
     #[test]

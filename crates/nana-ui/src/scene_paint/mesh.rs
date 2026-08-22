@@ -1,3 +1,6 @@
+use std::collections::{HashMap, VecDeque};
+use std::mem;
+
 use bytemuck::{Pod, Zeroable};
 use lyon::math::{Box2D, Point, point};
 use lyon::path::{Path, Winding, builder::BorderRadii};
@@ -14,6 +17,46 @@ use crate::icons::Icon;
 
 const INITIAL_VERTICES: usize = 1_024;
 const INITIAL_INDICES: usize = 2_048;
+const ICON_CACHE_CAP: usize = 256;
+
+/// Tessellated icon geometry reuse: icons redraw identically every frame at
+/// the same position/size/color, and lyon tessellation is the icon-path CPU
+/// cost. Indices are stored relative to the icon's vertex base.
+#[derive(Default)]
+struct IconCache {
+    entries: HashMap<IconKey, CachedIcon>,
+    order: VecDeque<IconKey>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct IconKey {
+    icon: mem::Discriminant<Icon>,
+    scale_bits: u32,
+    offset_bits: [u32; 2],
+    color_bits: [u32; 4],
+}
+
+struct CachedIcon {
+    vertices: Vec<MeshVertex>,
+    indices: Vec<u32>,
+}
+
+impl IconCache {
+    fn insert(&mut self, key: IconKey, cached: CachedIcon) {
+        if self.entries.contains_key(&key) {
+            return;
+        }
+        while self.entries.len() >= ICON_CACHE_CAP {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, cached);
+    }
+}
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -46,6 +89,7 @@ pub(super) struct MeshPipeline {
     pending_indices: Vec<u32>,
     fill: FillTessellator,
     stroke: StrokeTessellator,
+    icon_cache: IconCache,
 }
 
 impl MeshPipeline {
@@ -117,6 +161,7 @@ impl MeshPipeline {
             pending_indices: Vec::new(),
             fill: FillTessellator::new(),
             stroke: StrokeTessellator::new(),
+            icon_cache: IconCache::default(),
         }
     }
 
@@ -141,18 +186,42 @@ impl MeshPipeline {
             bounds.y + (bounds.height - 24.0 * scale) / 2.0,
         ];
         let color = pack_linear(with_opacity(color, opacity));
+        let key = IconKey {
+            icon: mem::discriminant(&icon),
+            scale_bits: scale.to_bits(),
+            offset_bits: [offset[0].to_bits(), offset[1].to_bits()],
+            color_bits: color.map(f32::to_bits),
+        };
         let start = self.pending_indices.len() as u32;
-        tessellate_icon(
-            &mut self.fill,
-            &mut self.stroke,
-            &mut self.pending_vertices,
-            &mut self.pending_indices,
-            icon,
-            scale,
-            offset,
-            color,
-            1.7,
-        );
+        if let Some(cached) = self.icon_cache.entries.get(&key) {
+            let base = self.pending_vertices.len() as u32;
+            self.pending_vertices.extend_from_slice(&cached.vertices);
+            self.pending_indices
+                .extend(cached.indices.iter().map(|index| index + base));
+        } else {
+            let vertex_base = self.pending_vertices.len();
+            tessellate_icon(
+                &mut self.fill,
+                &mut self.stroke,
+                &mut self.pending_vertices,
+                &mut self.pending_indices,
+                icon,
+                scale,
+                offset,
+                color,
+                1.7,
+            );
+            self.icon_cache.insert(
+                key,
+                CachedIcon {
+                    vertices: self.pending_vertices[vertex_base..].to_vec(),
+                    indices: self.pending_indices[start as usize..]
+                        .iter()
+                        .map(|index| index - vertex_base as u32)
+                        .collect(),
+                },
+            );
+        }
         let index_count = self.pending_indices.len() as u32 - start;
         (index_count > 0).then_some(MeshRange {
             first_index: start,

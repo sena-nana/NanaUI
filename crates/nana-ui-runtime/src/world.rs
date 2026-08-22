@@ -334,6 +334,9 @@ pub struct UiWorld {
     dirty_entities: HashSet<StableNodeId>,
     focused: HashMap<DocumentId, StableNodeId>,
     hit_test_index: HashMap<DocumentId, Vec<HitEntry>>,
+    /// Scroll deltas awaiting the in-place hit-index patch (see
+    /// `UiMutation::SetScrollOffset`). Drained by the frame driver.
+    scroll_hit_updates: Vec<(StableNodeId, [f32; 2])>,
     pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
     pointer_hover: HashMap<(DocumentId, u64), StableNodeId>,
     pointer_press: HashMap<(DocumentId, u64), StableNodeId>,
@@ -387,6 +390,7 @@ impl UiWorld {
             dirty_entities: HashSet::new(),
             focused: HashMap::new(),
             hit_test_index: HashMap::new(),
+            scroll_hit_updates: Vec::new(),
             pointer_captures: HashMap::new(),
             pointer_hover: HashMap::new(),
             pointer_press: HashMap::new(),
@@ -1347,6 +1351,49 @@ impl UiWorld {
         document: DocumentId,
         shaper: &mut impl TextShaper,
     ) -> Result<bool, UiWorldError> {
+        self.shape_text_for_layout_impl(self.document_order(document), shaper)
+    }
+
+    /// [`Self::shape_text_for_layout`] restricted to `ids` (typically the
+    /// relayout scope plus nodes whose published box changed). Nodes outside
+    /// the scope keep their previous shape, which already matches their
+    /// unchanged constraints.
+    pub fn shape_text_for_layout_scoped(
+        &mut self,
+        ids: &[StableNodeId],
+        shaper: &mut impl TextShaper,
+    ) -> Result<bool, UiWorldError> {
+        let mut scope = ids.to_vec();
+        scope.sort_unstable();
+        scope.dedup();
+        scope.retain(|id| self.entities.contains_key(id));
+        self.shape_text_for_layout_impl(scope, shaper)
+    }
+
+    /// Nodes currently carrying a LAYOUT-dirty bit that has not been drained
+    /// by [`Self::take_system_work`] — e.g. marked by a shaping pass between
+    /// drains. Sorted for determinism.
+    pub fn pending_layout_dirty(&self) -> Vec<StableNodeId> {
+        let mut ids = self
+            .dirty_entities
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.entities
+                    .get(id)
+                    .and_then(|entity| self.world.get::<DirtyMask>(*entity))
+                    .is_some_and(|mask| mask.has(DirtyMask::LAYOUT))
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn shape_text_for_layout_impl(
+        &mut self,
+        ids: Vec<StableNodeId>,
+        shaper: &mut impl TextShaper,
+    ) -> Result<bool, UiWorldError> {
         // Same production adapter as [`Self::shape_text`].
         let mut cache = std::mem::take(&mut self.text_layout_cache);
         let mut glyphs = std::mem::take(&mut self.glyph_cache);
@@ -1354,7 +1401,7 @@ impl UiWorld {
         let mut shaped = Vec::new();
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
-        for id in self.document_order(document) {
+        for id in ids {
             let presentation = self.text_input_presentation_source(id);
             let text = presentation.as_ref().map_or_else(
                 || self.component::<TextContent>(id).clone(),
@@ -1756,6 +1803,73 @@ impl UiWorld {
         self.hit_test_index.insert(document, entries);
     }
 
+    /// Drain the scroll deltas recorded since the last drain.
+    pub fn take_scroll_hit_updates(&mut self) -> Vec<(StableNodeId, [f32; 2])> {
+        std::mem::take(&mut self.scroll_hit_updates)
+    }
+
+    /// Whether every input-dirty node is explained by recorded scroll deltas
+    /// (it is a scroller or descends from one). When true, the frame driver
+    /// can patch the hit index in place instead of rebuilding the document.
+    pub fn hit_test_work_is_scroll_only(
+        &self,
+        input: &[StableNodeId],
+        updates: &[(StableNodeId, [f32; 2])],
+    ) -> bool {
+        !updates.is_empty()
+            && input.iter().all(|node| {
+                updates.iter().any(|(scroller, _)| {
+                    *scroller == *node || {
+                        let mut cursor = self.parent_id(*node);
+                        while let Some(ancestor) = cursor {
+                            if ancestor == *scroller {
+                                return true;
+                            }
+                            cursor = self.parent_id(ancestor);
+                        }
+                        false
+                    }
+                })
+            })
+    }
+
+    /// Pre-compose a scroll translation onto every hit entry under `scroller`.
+    /// Equivalent to a rebuild because scroll changes nothing else about the
+    /// entries (membership, order, z-index, and clips are scroll-invariant:
+    /// the scroller's own clip never includes its scroll offset).
+    pub fn update_hit_test_scroll(
+        &mut self,
+        document: DocumentId,
+        scroller: StableNodeId,
+        delta: [f32; 2],
+    ) {
+        let mut subtree = vec![scroller];
+        let mut index = 0;
+        while index < subtree.len() {
+            let id = subtree[index];
+            index += 1;
+            subtree.extend(self.component::<Hierarchy>(id).children.iter().copied());
+        }
+        let subtree = subtree.into_iter().collect::<std::collections::HashSet<_>>();
+        let Some(entries) = self.hit_test_index.get_mut(&document) else {
+            return;
+        };
+        for entry in entries.iter_mut() {
+            if !subtree.contains(&entry.id) {
+                continue;
+            }
+            let [a, b, c, d, e, f] = entry.transform;
+            entry.transform = [
+                a,
+                b,
+                c,
+                d,
+                a * delta[0] + c * delta[1] + e,
+                b * delta[0] + d * delta[1] + f,
+            ];
+        }
+    }
+
     pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
         self.hit_test_candidates(document, x, y).into_iter().next()
     }
@@ -1792,6 +1906,13 @@ impl UiWorld {
     }
 
     pub fn commit(&mut self, queue: MutationQueue) -> Result<CommitReport, UiWorldError> {
+        self.commit_ref(&queue)
+    }
+
+    /// Borrowing variant of [`commit`]: validate-then-apply against a queue
+    /// the caller still owns. Validation runs fully before the apply loop, so
+    /// a rejected batch never lands partially and the caller may replay it.
+    pub fn commit_ref(&mut self, queue: &MutationQueue) -> Result<CommitReport, UiWorldError> {
         let mut report = CommitReport {
             generation: self.generation,
             mutations: queue.len(),
@@ -2146,9 +2267,21 @@ impl UiWorld {
             }
             UiMutation::SetScrollOffset { id, offset } => {
                 let offset = self.clamp_scroll_offset(*id, *offset);
-                if *self.component::<ScrollOffset>(*id) != offset {
+                let previous = *self.component::<ScrollOffset>(*id);
+                if previous != offset {
                     *self.component_mut::<ScrollOffset>(*id) = offset;
-                    self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
+                    // Scrolling never changes hit-entry membership, order, or
+                    // clips — it pre-composes one translation onto every
+                    // descendant transform. Record the delta so the frame
+                    // driver can patch the index in place instead of
+                    // rebuilding the whole document; the scroller itself is
+                    // marked INPUT to signal the pending patch.
+                    self.scroll_hit_updates.push((
+                        *id,
+                        [previous.x - offset.x, previous.y - offset.y],
+                    ));
+                    self.mark(*id, DirtyMask::INPUT);
+                    self.mark_subtree(*id, DirtyMask::RENDER);
                 }
             }
             UiMutation::SetScrollMetrics { id, metrics } => {
@@ -2162,7 +2295,14 @@ impl UiWorld {
                 let clamped = self.clamp_scroll_offset(*id, current);
                 if current != clamped {
                     *self.component_mut::<ScrollOffset>(*id) = clamped;
-                    self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
+                    // Same in-place hit-index patch contract as
+                    // `SetScrollOffset`: the clamp shifts descendants by a
+                    // single translation, so record the delta and mark the
+                    // scroller instead of invalidating the whole subtree.
+                    self.scroll_hit_updates
+                        .push((*id, [current.x - clamped.x, current.y - clamped.y]));
+                    self.mark(*id, DirtyMask::INPUT);
+                    self.mark_subtree(*id, DirtyMask::RENDER);
                 }
             }
             UiMutation::SetInteraction { id, interaction } => {
@@ -9644,6 +9784,7 @@ mod tests {
         );
         world.commit(queue).unwrap();
         world.take_system_work();
+        world.rebuild_hit_test(document(1));
 
         let mut scroll = MutationQueue::new();
         scroll.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: 60.0 });
@@ -9651,9 +9792,19 @@ mod tests {
         assert_eq!(world.layout_box(node(3)).unwrap().y, 80.0);
         assert_eq!(world.scroll_offset(node(2)).unwrap().y, 60.0);
         let work = world.take_system_work();
-        assert_eq!(work.input_hit_test, vec![node(2), node(3)]);
+        // Scrolling marks only the scroller for hit work; the index is patched
+        // in place via the recorded delta instead of a subtree invalidation.
+        assert_eq!(work.input_hit_test, vec![node(2)]);
         assert_eq!(work.render_extraction, vec![node(2), node(3)]);
         assert!(work.layout.is_empty());
+        let scroll_updates = world.take_scroll_hit_updates();
+        assert!(world.hit_test_work_is_scroll_only(&work.input_hit_test, &scroll_updates));
+        for (scroller, delta) in scroll_updates {
+            world.update_hit_test_scroll(document(1), scroller, delta);
+        }
+        assert_eq!(world.hit_test(document(1), 10.0, 25.0), Some(node(3)));
+        assert_ne!(world.hit_test(document(1), 10.0, 85.0), Some(node(3)));
+        // The in-place patch must agree with a full rebuild.
         world.rebuild_hit_test(document(1));
         assert_eq!(world.hit_test(document(1), 10.0, 25.0), Some(node(3)));
         assert_ne!(world.hit_test(document(1), 10.0, 85.0), Some(node(3)));
@@ -9671,7 +9822,9 @@ mod tests {
         world.commit(metrics).unwrap();
         assert_eq!(world.scroll_offset(node(2)).unwrap().y, 50.0);
         let work = world.take_system_work();
-        assert_eq!(work.input_hit_test, vec![node(2), node(3)]);
+        // The metrics clamp re-anchors the offset; the scroller-only input
+        // mark plus the recorded delta cover the hit index update.
+        assert_eq!(work.input_hit_test, vec![node(2)]);
         assert!(work.layout.is_empty());
 
         let generation = world.generation();

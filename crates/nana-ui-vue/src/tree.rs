@@ -49,7 +49,7 @@ use nana_ui_runtime::{
     SplitPane as RuntimeSplitPane, StableNodeId, StatusBadge as RuntimeStatusBadge,
     Switch as RuntimeSwitch, TextArea as RuntimeTextArea, TextContent,
     TextInput as RuntimeTextInput, TextInputState, Toast as RuntimeToast,
-    Tooltip as RuntimeTooltip, TreeView as RuntimeTreeView, UiWorld,
+    Tooltip as RuntimeTooltip, TreeView as RuntimeTreeView, UiMutation, UiWorld,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
@@ -534,12 +534,52 @@ struct PendingHostOps {
 }
 
 impl PendingHostOps {
+    /// Whether a commit is needed. Every facade write pushes a mutation; the
+    /// overlay maps are read-through mirrors of the same pending writes (plus
+    /// runtime-primed child caches), so `mutations` is the commit signal.
+    /// `commit_pending_queue` clears both sides together to keep them in
+    /// lockstep — never clear one without the other.
     fn is_empty(&self) -> bool {
         self.mutations.is_empty()
     }
 
     fn clear(&mut self) {
         *self = Self::default();
+    }
+}
+
+/// Variant name for a rejected mutation, kept out of diagnostics payloads to
+/// avoid dumping whole node styles into the sink.
+fn mutation_label(mutation: &UiMutation) -> &'static str {
+    match mutation {
+        UiMutation::Create { .. } => "Create",
+        UiMutation::Insert { .. } => "Insert",
+        UiMutation::Detach { .. } => "Detach",
+        UiMutation::ParkSubtree { .. } => "ParkSubtree",
+        UiMutation::DespawnSubtree { .. } => "DespawnSubtree",
+        UiMutation::SetStyle { .. } => "SetStyle",
+        UiMutation::SetTheme { .. } => "SetTheme",
+        UiMutation::SetText { .. } => "SetText",
+        UiMutation::WriteLayout { .. } => "WriteLayout",
+        UiMutation::SetScrollOffset { .. } => "SetScrollOffset",
+        UiMutation::SetScrollMetrics { .. } => "SetScrollMetrics",
+        UiMutation::SetInteraction { .. } => "SetInteraction",
+        UiMutation::SetCustomRender { .. } => "SetCustomRender",
+        UiMutation::SetEventListener { .. } => "SetEventListener",
+        UiMutation::SetComponentType { .. } => "SetComponentType",
+        UiMutation::SetStandardVisual { .. } => "SetStandardVisual",
+        UiMutation::SetAccessibility { .. } => "SetAccessibility",
+        UiMutation::SetOverlayHost { .. } => "SetOverlayHost",
+        UiMutation::CapturePointer { .. } => "CapturePointer",
+        UiMutation::ReleasePointer { .. } => "ReleasePointer",
+        UiMutation::StartAnimation { .. } => "StartAnimation",
+        UiMutation::StopAnimation { .. } => "StopAnimation",
+        UiMutation::RequestFocus { .. } => "RequestFocus",
+        UiMutation::SetIme { .. } => "SetIme",
+        UiMutation::SetTextInput { .. } => "SetTextInput",
+        UiMutation::SetTextSelection { .. } => "SetTextSelection",
+        UiMutation::ReplaceTextSelection { .. } => "ReplaceTextSelection",
+        UiMutation::SetHighlightRequest { .. } => "SetHighlightRequest",
     }
 }
 
@@ -618,9 +658,11 @@ pub struct NanaTreeDocument {
     pending_accessibility_removed: BTreeSet<StableNodeId>,
     pending_accessibility_generation: u64,
     accessibility_full_required: bool,
+    commit_rejections: Vec<String>,
 }
 
 const MAX_PENDING_ACCESSIBILITY_CHANGES: usize = 4_096;
+const MAX_COMMIT_REJECTIONS: usize = 32;
 
 impl std::fmt::Debug for NanaTreeDocument {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -715,6 +757,7 @@ impl NanaTreeDocument {
             pending_accessibility_removed: BTreeSet::new(),
             pending_accessibility_generation: 0,
             accessibility_full_required: false,
+            commit_rejections: Vec::new(),
         };
         doc.reset_layout_roots();
         doc
@@ -760,23 +803,70 @@ impl NanaTreeDocument {
 
     /// Commit queued Vue host ops, then drain Runtime systems.
     pub fn flush_host_frame(&mut self) {
-        self.commit_pending();
+        self.commit_pending_queue().ok();
         self.flush_runtime_systems();
     }
 
-    fn commit_pending(&mut self) {
-        if self.pending.is_empty() {
-            return;
-        }
-        let mutations = self.pending.mutations.take();
-        let _ = self.runtime.commit(mutations);
-        self.pending.clear();
+    /// Transactional pending-ops commit used by input/IME/focus paths that
+    /// must land host ops before reading back Runtime state.
+    fn commit_pending_with(
+        &mut self,
+        add: impl FnOnce(&mut MutationQueue),
+    ) -> Result<(), nana_ui_runtime::UiWorldError> {
+        add(&mut self.pending.mutations);
+        self.commit_pending_queue()
     }
 
-    fn take_pending_mutations(&mut self) -> MutationQueue {
-        let mutations = self.pending.mutations.take();
+    /// Commit `extra` after everything currently pending, in one transaction.
+    fn commit_extra(
+        &mut self,
+        extra: MutationQueue,
+    ) -> Result<(), nana_ui_runtime::UiWorldError> {
+        self.pending.mutations.append(extra);
+        self.commit_pending_queue()
+    }
+
+    /// Commit the whole pending batch, never dropping it silently.
+    ///
+    /// `UiWorld::commit` validates before applying, so a rejected batch lands
+    /// nothing. In that case the batch is replayed one mutation at a time:
+    /// valid ops land, and each rejected op is dropped together with its
+    /// overlay mirror (the whole overlay set is cleared either way because no
+    /// pending writes remain) and recorded for the host diagnostics sink.
+    /// Valid mutations therefore survive a sibling's rejection instead of the
+    /// entire frame's host ops disappearing.
+    fn commit_pending_queue(&mut self) -> Result<(), nana_ui_runtime::UiWorldError> {
+        if self.pending.mutations.is_empty() {
+            return Ok(());
+        }
+        let outcome = self.runtime.commit_ref(&self.pending.mutations);
+        if let Err(error) = outcome {
+            let queue = self.pending.mutations.take();
+            let mut first_error = Some(error);
+            for mutation in queue.as_slice() {
+                let mut single = MutationQueue::new();
+                single.push(mutation.clone());
+                if let Err(error) = self.runtime.commit(single) {
+                    if self.commit_rejections.len() < MAX_COMMIT_REJECTIONS {
+                        self.commit_rejections.push(format!(
+                            "{:?}: {error}",
+                            mutation_label(mutation)
+                        ));
+                    }
+                    first_error.get_or_insert(error);
+                }
+            }
+            self.pending.clear();
+            return Err(first_error.expect("batch rejection sets the first error"));
+        }
         self.pending.clear();
-        mutations
+        Ok(())
+    }
+
+    /// Rejections dropped by [`Self::commit_pending_queue`]; drained by the
+    /// host and forwarded to the JS diagnostics sink.
+    pub fn take_commit_rejections(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.commit_rejections)
     }
 
     fn committed_children(&self, parent: u64) -> Vec<u64> {
@@ -908,9 +998,9 @@ impl NanaTreeDocument {
         if self.runtime.scroll_offset(id) == Some(offset) && self.pending.is_empty() {
             return false;
         }
-        let mut mutations = self.take_pending_mutations();
-        mutations.set_scroll_offset(id, offset);
-        if self.runtime.commit(mutations).is_err() {
+        self.commit_pending_with(|mutations| mutations.set_scroll_offset(id, offset))
+            .ok();
+        if self.runtime.scroll_offset(id) != Some(offset) {
             return false;
         }
         self.flush_runtime_systems();
@@ -1007,11 +1097,12 @@ impl NanaTreeDocument {
         {
             return None;
         }
-        let mut mutations = self.take_pending_mutations();
-        mutations.set_scroll_metrics(id, Some(metrics));
-        mutations.set_scroll_offset(id, offset);
-        self.runtime.commit(mutations).ok()?;
-        Some((previous, self.runtime.scroll_offset(id)?))
+        self.commit_pending_with(|mutations| {
+            mutations.set_scroll_metrics(id, Some(metrics));
+            mutations.set_scroll_offset(id, offset);
+        })
+        .ok();
+        Some((previous, self.runtime.scroll_offset(id).unwrap_or(previous)))
     }
 
     pub(crate) fn scroll_offsets(&self) -> Vec<(u64, nana_ui_runtime::ScrollOffset)> {
@@ -1040,9 +1131,10 @@ impl NanaTreeDocument {
         if self.runtime.text_input(id) == Some(&state) {
             return false;
         }
-        let mut mutations = self.take_pending_mutations();
-        mutations.set_text_input(id, Some(state));
-        self.runtime.commit(mutations).is_ok()
+        let expected = state.clone();
+        self.commit_pending_with(|mutations| mutations.set_text_input(id, Some(state)))
+            .ok();
+        self.runtime.text_input(id) == Some(&expected)
     }
 
     pub(crate) fn ime_composition(&self, node: NodeHandle) -> Option<ImeComposition> {
@@ -1059,9 +1151,10 @@ impl NanaTreeDocument {
         let Ok(id) = StableNodeId::try_from(node) else {
             return false;
         };
-        let mut mutations = self.take_pending_mutations();
-        mutations.set_ime(id, composition);
-        self.runtime.commit(mutations).is_ok()
+        let expected = composition.clone();
+        self.commit_pending_with(|mutations| mutations.set_ime(id, composition))
+            .ok();
+        self.runtime.ime(id) == expected.as_ref()
     }
 
     pub fn scene(&self) -> &UiScene {
@@ -1110,7 +1203,7 @@ impl NanaTreeDocument {
             }
             return;
         }
-        let mut mutations = self.take_pending_mutations();
+        let mut mutations = MutationQueue::new();
         let mut pending = PendingAssembly::default();
         if self.runtime.theme_mode() != snapshot.theme {
             mutations.set_theme(snapshot.theme);
@@ -1295,7 +1388,7 @@ impl NanaTreeDocument {
                 mutations.set_text_input(id, None);
             }
         }
-        let _ = self.runtime.commit(mutations);
+        self.commit_extra(mutations).ok();
         pending.apply(self.runtime.context_mut());
         self.adopt_runtime_allocated_ids();
         self.flush_runtime_systems();
@@ -2045,8 +2138,7 @@ impl NanaTreeDocument {
                 },
             );
         }
-        self.pending.mutations.append(mutations);
-        self.commit_pending();
+        self.commit_extra(mutations).ok();
     }
 
     pub fn layout_box(&self, node: NodeHandle) -> Option<LayoutBox> {
@@ -2072,7 +2164,7 @@ impl NanaTreeDocument {
     pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
         let w = self.logical_width.max(1.0);
         let h = self.logical_height.max(1.0);
-        let mut mutations = self.take_pending_mutations();
+        let mut mutations = MutationQueue::new();
         for root in [self.html_root, self.mount_root] {
             self.enqueue_layout_if_changed(
                 &mut mutations,
@@ -2104,8 +2196,8 @@ impl NanaTreeDocument {
                 );
             }
         }
-        if !mutations.is_empty() {
-            let _ = self.runtime.commit(mutations);
+        if !mutations.is_empty() || !self.pending.is_empty() {
+            self.commit_extra(mutations).ok();
         }
         self.flush_runtime_systems();
     }
@@ -2255,9 +2347,9 @@ impl NanaTreeDocument {
         if self.runtime.pointer_capture(document, pointer_id) == Some(target) {
             return true;
         }
-        let mut mutations = self.take_pending_mutations();
-        mutations.capture_pointer(pointer_id, target);
-        self.runtime.commit(mutations).is_ok()
+        self.commit_pending_with(|mutations| mutations.capture_pointer(pointer_id, target))
+            .ok();
+        self.runtime.pointer_capture(document, pointer_id) == Some(target)
     }
 
     pub fn release_pointer(&mut self, pointer_id: u64, target: NodeHandle) -> bool {
@@ -2269,9 +2361,9 @@ impl NanaTreeDocument {
         if self.runtime.pointer_capture(document, pointer_id) != Some(target) {
             return false;
         }
-        let mut mutations = self.take_pending_mutations();
-        mutations.release_pointer(pointer_id, target);
-        self.runtime.commit(mutations).is_ok()
+        self.commit_pending_with(|mutations| mutations.release_pointer(pointer_id, target))
+            .ok();
+        self.runtime.pointer_capture(document, pointer_id) != Some(target)
     }
 
     pub fn pointer_capture(&self, pointer_id: u64) -> Option<NodeHandle> {
@@ -2291,13 +2383,15 @@ impl NanaTreeDocument {
         if captures.is_empty() {
             return;
         }
-        let mut mutations = self.take_pending_mutations();
-        for (pointer_id, target) in captures {
-            mutations.release_pointer(pointer_id, target);
-        }
-        self.runtime
-            .commit(mutations)
-            .expect("current pointer captures must release atomically");
+        // Captures whose release is rejected (e.g. target despawned) are
+        // dropped with a recorded rejection instead of panicking; the world
+        // drops stale captures on despawn anyway.
+        self.commit_pending_with(|mutations| {
+            for (pointer_id, target) in captures {
+                mutations.release_pointer(pointer_id, target);
+            }
+        })
+        .ok();
     }
 
     pub fn take_pointer_capture_changes(&mut self) -> Vec<nana_ui_runtime::PointerCaptureChange> {
@@ -2311,29 +2405,27 @@ impl NanaTreeDocument {
         if !self.nodes.contains_key(&node.get()) && !self.runtime.contains(node) {
             return;
         }
-        let mut mutations = self.take_pending_mutations();
-        mutations.set_interaction(
-            node,
-            nana_ui_runtime::InteractionState {
-                pointer_events: true,
-                focusable: true,
-            },
-        );
-        mutations.request_focus(
-            nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
-            Some(node),
-        );
-        let _ = self.runtime.commit(mutations);
+        let document =
+            nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero");
+        self.commit_pending_with(|mutations| {
+            mutations.set_interaction(
+                node,
+                nana_ui_runtime::InteractionState {
+                    pointer_events: true,
+                    focusable: true,
+                },
+            );
+            mutations.request_focus(document, Some(node));
+        })
+        .ok();
         self.flush_runtime_systems();
     }
 
     pub fn clear_focus(&mut self) {
-        let mut mutations = self.take_pending_mutations();
-        mutations.request_focus(
-            nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
-            None,
-        );
-        let _ = self.runtime.commit(mutations);
+        let document =
+            nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero");
+        self.commit_pending_with(|mutations| mutations.request_focus(document, None))
+            .ok();
         self.flush_runtime_systems();
     }
 
@@ -5704,6 +5796,67 @@ fn selector_matches(sel: &str, tag: &str, attrs: &HashMap<String, String>) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_mutation_does_not_drop_valid_pending_ops() {
+        let mut doc = NanaTreeDocument::new(400, 200, 1.0);
+        let text = doc.create_text("正文");
+        doc.insert(text, doc.mount_root(), None);
+        doc.flush_host_frame();
+
+        // One invalid mutation (duplicate Create of the html root) plus one
+        // valid mutation (text update). The batch is rejected wholesale and
+        // must be replayed so the valid op lands instead of the whole frame's
+        // host ops disappearing.
+        let mut extra = MutationQueue::new();
+        extra.create(
+            StableNodeId::new(doc.html_root.0).expect("html root id is nonzero"),
+            nana_ui_runtime::DocumentId::try_from(doc.id).expect("document ID is nonzero"),
+            NodeKind::Element { tag: "html".into() },
+        );
+        extra.set_text(
+            StableNodeId::try_from(text).expect("text id is nonzero"),
+            TextContent {
+                value: "更新".into(),
+            },
+        );
+        let result = doc.commit_extra(extra);
+        assert!(result.is_err(), "duplicate Create must be reported");
+        assert_eq!(doc.runtime_text(text).as_deref(), Some("更新"));
+
+        // The pending batch is fully drained: a later flush neither re-fails
+        // nor resurrects the rejected mutation.
+        doc.flush_host_frame();
+        assert_eq!(doc.runtime_text(text).as_deref(), Some("更新"));
+        assert!(doc.pending.is_empty());
+
+        let rejections = doc.take_commit_rejections();
+        assert_eq!(rejections.len(), 1, "only the rejected op is recorded");
+        assert!(rejections[0].contains("Create"));
+        assert!(doc.take_commit_rejections().is_empty());
+    }
+
+    #[test]
+    fn clear_pointer_captures_survives_poisoned_pending() {
+        let mut doc = NanaTreeDocument::new(400, 200, 1.0);
+        let target = doc.create_element("div");
+        doc.insert(target, doc.mount_root(), None);
+        doc.flush_host_frame();
+        assert!(doc.capture_pointer(7, target));
+
+        // A poisoned pending mutation (duplicate Create of the html root)
+        // used to make the capture release panic on commit; the replay path
+        // must still release the captures and drop only the poison.
+        doc.pending.mutations.create(
+            StableNodeId::new(doc.html_root.0).expect("html root id is nonzero"),
+            nana_ui_runtime::DocumentId::try_from(doc.id).expect("document ID is nonzero"),
+            NodeKind::Element { tag: "html".into() },
+        );
+        doc.clear_pointer_captures();
+        assert!(doc.pointer_capture(7).is_none());
+        assert_eq!(doc.take_commit_rejections().len(), 1);
+        assert!(doc.pending.is_empty());
+    }
 
     fn native_html_input(value: &str) -> (NanaTreeDocument, NodeHandle) {
         let mut doc = NanaTreeDocument::new(400, 200, 1.0);

@@ -5,7 +5,7 @@
 //! L2 Vue props ─► 同一套 Model
 //! L3 Rust API ──► 同一套 Model
 //!                  ▼
-//!            唯一绘制：nana-ui widgets（Iced）
+//!            唯一绘制：Runtime / UiScene → SceneWgpuPainter
 //! ```
 //!
 //! ## Parts
@@ -88,6 +88,15 @@ impl SemanticColor {
 
     pub const fn as_rgba_array(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
+    }
+
+    pub fn to_u8_rgba(self) -> (u8, u8, u8, u8) {
+        (
+            (self.r * 255.0 + 0.5) as u8,
+            (self.g * 255.0 + 0.5) as u8,
+            (self.b * 255.0 + 0.5) as u8,
+            (self.a * 255.0 + 0.5) as u8,
+        )
     }
 }
 

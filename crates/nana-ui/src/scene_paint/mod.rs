@@ -13,6 +13,7 @@ mod quad;
 mod text;
 mod validate;
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -25,6 +26,9 @@ use crate::scene_gpu::{
     SceneGpuRenderer, SceneGpuRendererRegistry,
 };
 use crate::{HostTextureRegistry, PhysicalRect};
+
+/// How many distinct scene instances keep a validated operation stream.
+const VALIDATED_SCENE_CACHE: usize = 8;
 
 pub(crate) use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
@@ -62,9 +66,19 @@ pub struct SceneWgpuPainter {
     text: TextPipeline,
     host_textures: HostTexturePipeline,
     dest: Option<DestTarget>,
+    /// Shared across resize-driven `DestTarget` recreations so the blit
+    /// pipeline is not recompiled on every interactive resize event. `None`
+    /// when the host device lacks `PIPELINE_CACHE`.
+    dest_pipeline_cache: Option<wgpu::PipelineCache>,
     last_gpu_work: Option<GpuWorkObservation>,
     last_gpu_timings: Option<GpuStageTimings>,
     last_dest_pass_counts: Option<DestPassCounts>,
+    /// Validated operation streams keyed by scene instance. An unchanged
+    /// scene revalidates nothing: no frame-graph rebuild, no per-primitive
+    /// validation scan, no label allocation. Copy-on-write mutation gives the
+    /// scene a fresh instance id, so entries cannot go stale.
+    validated_scenes: HashMap<u64, Arc<[RenderOperation]>>,
+    validated_order: VecDeque<u64>,
 }
 
 enum DrawCommand {
@@ -100,9 +114,26 @@ impl SceneWgpuPainter {
             text: TextPipeline::new(device, queue, format),
             host_textures: HostTexturePipeline::new(device, queue, format),
             dest: None,
+            // Pipeline-cache reuse requires a host-enabled device feature;
+            // the painter must not demand it, so degrade to per-recreate
+            // compilation when the host did not opt in.
+            // SAFETY: `data: None` loads no untrusted cache blob; the cache
+            // only lets the driver reuse compilation state in-process.
+            dest_pipeline_cache: device
+                .features()
+                .contains(wgpu::Features::PIPELINE_CACHE)
+                .then(|| unsafe {
+                    device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                        label: Some("nana-ui.scene.dest.cache"),
+                        data: None,
+                        fallback: true,
+                    })
+                }),
             last_gpu_work: None,
             last_gpu_timings: None,
             last_dest_pass_counts: None,
+            validated_scenes: HashMap::new(),
+            validated_order: VecDeque::new(),
         }
     }
 
@@ -122,6 +153,12 @@ impl SceneWgpuPainter {
         self.last_gpu_timings
     }
 
+    /// Text shape-cache counters from the last `paint`: (hits, misses,
+    /// evictions). Tests use this to pin the reshaping-skip contract.
+    pub fn text_shape_cache_stats(&self) -> (usize, usize, usize) {
+        self.text.shape_cache_stats()
+    }
+
     /// Record host `queue.submit` duration for the last encoded frame.
     pub fn record_submit(&mut self, duration: std::time::Duration) {
         if let Some(timings) = &mut self.last_gpu_timings {
@@ -138,7 +175,22 @@ impl SceneWgpuPainter {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
-        let operations = validate_scene(scene, host_textures, gpu_renderers)?;
+        let instance = scene.instance_id();
+        let operations = match self.validated_scenes.get(&instance) {
+            Some(cached) => Arc::clone(cached),
+            None => {
+                let operations = validate_scene(scene, host_textures, gpu_renderers)?;
+                self.validated_scenes.insert(instance, Arc::clone(&operations));
+                self.validated_order.push_back(instance);
+                while self.validated_scenes.len() > VALIDATED_SCENE_CACHE {
+                    let Some(oldest) = self.validated_order.pop_front() else {
+                        break;
+                    };
+                    self.validated_scenes.remove(&oldest);
+                }
+                operations
+            }
+        };
         if viewport.physical_size[0] == 0 || viewport.physical_size[1] == 0 {
             self.last_gpu_work = None;
             self.last_gpu_timings = None;
@@ -311,9 +363,14 @@ impl SceneWgpuPainter {
                 }
                 ScenePrimitiveKind::Custom(custom) => {
                     if custom.renderer.as_ref() == "nana.host-texture" {
-                        let binding = host_textures
-                            .and_then(|registry| registry.get(custom.resource.as_ref()))
-                            .expect("validated host texture remains registered");
+                        // The registry is a shared RwLock: an entry validated at
+                        // frame start can be removed before prepare. Skip the
+                        // node for this frame instead of panicking.
+                        let Some(binding) =
+                            host_textures.and_then(|registry| registry.get(custom.resource.as_ref()))
+                        else {
+                            continue;
+                        };
                         let dest = nana_ui_core::LogicalRect::new(
                             bounds.x,
                             bounds.y,
@@ -339,9 +396,11 @@ impl SceneWgpuPainter {
                             Some(&gpu_work),
                         )));
                     } else {
-                        let renderer = gpu_renderers
+                        let Some(renderer) = gpu_renderers
                             .and_then(|registry| registry.get(custom.renderer.as_ref()))
-                            .expect("validated scene GPU renderer remains registered");
+                        else {
+                            continue;
+                        };
                         let node = SceneGpuNode {
                             id: primitive.id,
                             custom: custom.clone(),
@@ -391,6 +450,7 @@ impl SceneWgpuPainter {
         DestTarget::ensure(
             &mut self.dest,
             &self.device,
+            self.dest_pipeline_cache.as_ref(),
             self.format,
             dest_physical[0],
             dest_physical[1],
@@ -484,8 +544,7 @@ impl SceneWgpuPainter {
         );
         let encode = encode_started.elapsed();
         self.host_textures.trim();
-        self.last_gpu_work = Some(gpu_work.snapshot());
-        self.last_gpu_timings = Some(GpuStageTimings {
+        self.last_gpu_work = Some(gpu_work.snapshot());        self.last_gpu_timings = Some(GpuStageTimings {
             batch,
             gpu_upload,
             encode,
@@ -769,6 +828,64 @@ mod tests {
             painter.last_gpu_work().unwrap().gpu_upload_bytes,
             observed.gpu_upload_bytes
         );
+    }
+
+    #[test]
+    fn text_shape_cache_hits_on_repaint_with_identical_pixels() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let scene = labeled_selected_button_scene();
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+
+        let paint_once = |painter: &mut SceneWgpuPainter| -> Vec<u8> {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nana-ui shape cache test"),
+            });
+            painter
+                .paint(&scene, &mut encoder, &view, viewport, None, None)
+                .unwrap();
+            queue.submit([encoder.finish()]);
+            readback_rgba(
+                &device,
+                &queue,
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("nana-ui shape cache readback"),
+                }),
+                &texture,
+                64,
+                64,
+            )
+        };
+
+        let first = paint_once(&mut painter);
+        let (hits_after_first, misses_after_first, _) = painter.text_shape_cache_stats();
+        assert!(
+            misses_after_first > 0,
+            "labeled button scene contains text that must shape once"
+        );
+        assert_eq!(hits_after_first, 0);
+
+        let second = paint_once(&mut painter);
+        let (hits_after_second, misses_after_second, _) = painter.text_shape_cache_stats();
+        assert_eq!(
+            misses_after_second, misses_after_first,
+            "repaint of an unchanged scene must not reshape any paragraph"
+        );
+        assert!(
+            hits_after_second >= misses_after_first,
+            "every paragraph from the first frame must be a cache hit on repaint"
+        );
+        assert_eq!(first, second, "cached shaping must produce identical pixels");
     }
 
     #[test]

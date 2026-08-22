@@ -5,7 +5,7 @@ current NanaUI product target.** The control slot is a basic NanaUI Runtime /
 UiScene path painted by `SceneWgpuPainter`. It is not DesktopShell, not a
 shipping feature, and does not claim complete IME / accessibility / CJK.
 
-Rust owns QuickJS + Vue custom renderer (`VueHost`) + wgpu Vulkan Surface +
+Rust owns V8 (desktop smoke) + Vue custom renderer (`VueHost`) + wgpu Vulkan Surface +
 `AndroidShellStub` (Nana shell geometry). There is no System WebView.
 
 ## Layout
@@ -17,7 +17,7 @@ Rust owns QuickJS + Vue custom renderer (`VueHost`) + wgpu Vulkan Surface +
 | `src/runtime.rs` | NativeActivity lifecycle + shell viewport + Scene present |
 | `src/gpu.rs` | Host-owned wgpu 30 Surface (Vulkan) |
 | `src/slot_runtime.rs` | RuntimeDocument + pointer/key into Runtime |
-| `src/engine.rs` | QuickJS + VueHost smoke boot |
+| `src/engine.rs` | V8 + VueHost smoke boot (desktop); Android cross-build skips V8 |
 | `app/` | Optional Gradle wrapper notes (load `libnana_android_host.so`) |
 
 ## Build
@@ -41,7 +41,9 @@ cargo test -p nana-android-host --lib --locked
 
 ## Features
 
-- `engine-quickjs` (default) — historical Android host engine; do not enable V8 here.
+- `engine-v8` (default on host) — desktop smoke. Android ARM64 cross-check links
+  V8 when `RUSTY_V8_ARCHIVE` is set (GitHub Actions `Package V8`); otherwise
+  `--no-default-features` (`docs/android-arm64.md`).
 - **`AndroidShellStub`** sizes Primary viewport from the same `nana-ui-core` geometry as desktop
   `DesktopShell`. `VueHost` resolves layout in that viewport. Frame presentation is wgpu chrome
   fill plus a NanaUI Runtime control-slot strip; this is not DesktopShell.

@@ -63,7 +63,6 @@ struct AcceptanceProgram {
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
-    nana_ui_vue::refuse_dual_js_engines!();
     run_runtime::<AcceptanceProgram>(
         RuntimeWindowSettings::new(if std::env::args().any(|argument| argument == "--hybrid") {
             "NanaUI Vue + native probe acceptance"

@@ -303,7 +303,13 @@ impl MutationQueue {
         self.mutations.is_empty()
     }
 
-    pub(crate) fn as_slice(&self) -> &[UiMutation] {
+    pub fn as_slice(&self) -> &[UiMutation] {
         &self.mutations
+    }
+
+    /// Append one pre-built mutation. Used by adapters that replay a queue
+    /// one mutation at a time after a batch was rejected.
+    pub fn push(&mut self, mutation: UiMutation) {
+        self.mutations.push(mutation);
     }
 }

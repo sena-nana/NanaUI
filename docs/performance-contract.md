@@ -129,7 +129,7 @@ Nana mapping (existing binaries are not dedicated Scenario processes):
 | StaticTree 100/1k/5k/10k | `nana-runtime-benchmark` + `nana-scene-benchmark` | enqueue, commit, initial systems (when present); `frames_after_idle` after settle; scene extraction/idle/frame-graph | memory/allocations not exported |
 | StaticTree 50k | **unsupported** (incomparable) | Nana `nana-runtime-benchmark` is `kind=construction` only (enqueue/commit/paint/hover). Iced `scenario-bench` would otherwise run a full 50k layout+draw. Neither runner emits `ok` until both sides share that work definition. |
 | PaintOnly | `nana-runtime-benchmark` `local_paint_*` at 5k | systems P50/P95/P99, `local_paint_work` WorkCounters including `layout_nodes` when present | invariant `layout_nodes == 0` is evaluable when the field is present; missing stays **not-evaluable** |
-| Text / LayoutStyle | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | 5k full case. Iced/GPUI `scenario-bench` Mutation is same-scenario for these kinds only (5k heap, single node) |
+| Text / LayoutStyle | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | 5k single-node case. Production layout is scoped (§11.2): the engine recomputes the change closure plus shifted descendants, not the document; `layout_nodes` measures the dirty list, not engine cost. Iced/GPUI `scenario-bench` Mutation is same-scenario for these kinds only (5k heap, single node) |
 | Visibility / Transform / Accessibility | `nana-runtime-benchmark` `single_node_mutations.<kind>` at 5k | systems/commit/schedule + WorkCounters | Iced stays **unsupported** (exit 2). Height-0, Shadow, or widget Id is not Nana `hidden` / `PaintTransform.e` / `set_accessibility`. |
 | Hover | `nana-runtime-benchmark` `pointer_hover_*` | only when the report has `nodes == 10000`; `pointer_hover_work` WorkCounters when present | otherwise **unsupported** (exit 2). Do not substitute a smaller tree. `layout_nodes == 0` is evaluable when the field is present. Iced/GPUI `scenario-bench` Hover is same-scenario at 10k |
 | VirtualList 10k/100k/1M | `nana-framework-benchmark` `virtual_scales` (legacy `virtual_list_10k_*` fallback) | materialize/window; `live_ui_entities` when `virtual_scales` exists | Nana runner passes catalog window (`visible×extent` viewport, `overscan×extent` px; 10k/100k: 800 / 160 / 20). Standalone binary still defaults to 200px overscan. 1M needs `NANA_PERF_SCALE=large` or the scale row is skipped (runner exit 2). Iced/GPUI materialize only that catalog window |
@@ -417,6 +417,14 @@ Long-term, not currently all machine-checked:
 
 1. No change → no UI frame.
 2. Local change must not default to full-tree diff/layout/render.
+   Machine-checked by
+   `layout_engine::tests::scoped_layout_touches_only_the_change_closure_and_matches_full_recompute`
+   (scoped relayout recomputes only the change closure plus shifted
+   descendants and must match a full recompute) and
+   `framework::tests::scroll_view_with_forty_rows_dirties_forty_one_hit_targets`
+   (pure scrolling patches the hit index in place from the recorded scroll
+   delta: `input_hit_test == 1` while repaint keeps the mounted set). Both
+   run in the `runtime-work-invariants` CI job.
 3. ECS systems must not default to a full World scan every frame.
 4. Text shaping/layout must have a stable, observable cache.
    Runtime `TextLayoutCache` lookup/insert fills `text_layout_cache_hits` /

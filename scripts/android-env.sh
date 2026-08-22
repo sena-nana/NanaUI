@@ -4,7 +4,8 @@
 # Prefer bash. Under zsh, `source` still works if BASH_SOURCE is emulated below.
 #
 # Resolves ANDROID_HOME / ANDROID_NDK_HOME and exports the aarch64 linker
-# toolchain variables Cargo + cc/bindgen expect.
+# toolchain variables Cargo + cc expect. BINDGEN_EXTRA_CLANG_ARGS remains for
+# remaining C deps; rquickjs/QuickJS bindgen is gone with that engine.
 
 set -euo pipefail
 
@@ -60,18 +61,25 @@ _resolve_ndk() {
   return 1
 }
 
-if ! ANDROID_HOME="$(_resolve_sdk)"; then
-  echo "android-env: ANDROID_HOME not found. Run scripts/setup-android-ndk.sh first." >&2
-  return 1 2>/dev/null || exit 1
+# GitHub Actions `setup-ndk` provides ANDROID_NDK_HOME without a full SDK.
+if [[ -n "${ANDROID_NDK_HOME:-}" && -d "${ANDROID_NDK_HOME}" ]]; then
+  export ANDROID_NDK_HOME
+else
+  if ! ANDROID_HOME="$(_resolve_sdk)"; then
+    echo "android-env: ANDROID_HOME not found. Run scripts/setup-android-ndk.sh first." >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  export ANDROID_HOME
+  export ANDROID_SDK_ROOT="${ANDROID_HOME}"
+  if ! ANDROID_NDK_HOME="$(_resolve_ndk "${ANDROID_HOME}")"; then
+    echo "android-env: NDK not found under ${ANDROID_HOME}/ndk. Run scripts/setup-android-ndk.sh." >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  export ANDROID_NDK_HOME
 fi
-export ANDROID_HOME
-export ANDROID_SDK_ROOT="${ANDROID_HOME}"
-
-if ! ANDROID_NDK_HOME="$(_resolve_ndk "${ANDROID_HOME}")"; then
-  echo "android-env: NDK not found under ${ANDROID_HOME}/ndk. Run scripts/setup-android-ndk.sh." >&2
-  return 1 2>/dev/null || exit 1
+if [[ -n "${ANDROID_HOME:-}" ]]; then
+  export ANDROID_SDK_ROOT="${ANDROID_HOME}"
 fi
-export ANDROID_NDK_HOME
 export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
 
 _HOST_TAG=""
@@ -121,7 +129,7 @@ if [[ -z "${JAVA_HOME:-}" ]]; then
   fi
 fi
 
-echo "android-env: ANDROID_HOME=${ANDROID_HOME}"
+echo "android-env: ANDROID_HOME=${ANDROID_HOME:-}"
 echo "android-env: ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"
 echo "android-env: linker=${CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER}"
 echo "android-env: repo=${_REPO_ROOT}"

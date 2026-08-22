@@ -1,4 +1,4 @@
-//! Android activity loop: window lifecycle → wgpu Surface → QuickJS + NanaUI slot.
+//! Android activity loop: window lifecycle → wgpu Surface → V8 + NanaUI slot.
 
 use std::time::{Duration, Instant};
 
@@ -45,7 +45,7 @@ impl HostState {
         match smoke_engine_only() {
             Ok(report) => {
                 log::info!(
-                    "nana-android-host: QuickJS ok={} count={} createElement={} caps={:?}",
+                    "nana-android-host: V8 ok={} count={} createElement={} caps={:?}",
                     report.ok,
                     report.count,
                     report.create_element,

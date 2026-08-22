@@ -3,7 +3,7 @@
 ## 目标
 
 Nana 的 L1 是“WebView 中常见 Vue 3 + JavaScript 源码”的兼容子集：消费应用用
-Nana 专用 Vite 入口构建 SFC、TypeScript 和 CSS，IIFE 在 QuickJS 或 V8 中执行，
+Nana 专用 Vite 入口构建 SFC、TypeScript 和 CSS，IIFE 在 V8 中执行，
 Custom Renderer 把结果映射到 Nana Style Model，最终由 Runtime/UiScene 保留，
 并由 `SceneWgpuPainter` 绘制。
 
@@ -33,7 +33,7 @@ Custom Renderer 把结果映射到 Nana Style Model，最终由 Runtime/UiScene 
 
 - Vue 3 SFC、`<script setup lang="ts">`、Composition API、template 与 CSS；
 - `@nanaui/nanavue-runtime` 的 `createNanaApp()` Custom Renderer；
-- QuickJS 与 V8 加载同一份可复现 IIFE；
+- V8 加载可复现 IIFE（单一产品引擎）；
 - L1 `createElement` 与 L2 `createWidget` 写入同一 `MessageBridge`。
 
 最小权威夹具：
@@ -64,10 +64,8 @@ L1 CSS 继续只映射到 Style Model 的已记录子集。Flex、盒模型、�
 cargo test -p nana-ui-platform --lib --locked
 cargo test -p nana-ui-web-api --lib --locked
 cargo test -p nana-ui-vue --features scene-view --locked
-cargo test -p nana-js-quickjs --lib --locked
 cargo test -p nana-js-v8 --features engine --lib --locked -- --test-threads=1
 cargo check -p vue-counter --all-targets --features windowed --locked
-cargo check -p vue-counter --all-targets --no-default-features --features engine-v8,windowed --locked
 ./scripts/check-android-arm64.sh
 ```
 

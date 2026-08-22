@@ -148,17 +148,56 @@ pub struct SceneDelta {
     pub primitive_count: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct UiScene {
     nodes: HashMap<StableNodeId, ExtractedNode>,
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
     ordered: BTreeSet<SceneOrderKey>,
+    /// Identity that changes on every mutation (copy-on-write clones get a
+    /// fresh value). Painters use it to reuse a validated frame graph across
+    /// repaints of an unchanged scene. Never zero: two freshly created scenes
+    /// must not share an identity.
+    instance: u64,
+}
+
+impl Default for UiScene {
+    fn default() -> Self {
+        Self {
+            nodes: HashMap::new(),
+            node_order: HashMap::new(),
+            primitives: BTreeMap::new(),
+            ordered: BTreeSet::new(),
+            instance: next_scene_instance(),
+        }
+    }
+}
+
+impl Clone for UiScene {
+    fn clone(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            node_order: self.node_order.clone(),
+            primitives: self.primitives.clone(),
+            ordered: self.ordered.clone(),
+            instance: next_scene_instance(),
+        }
+    }
+}
+
+fn next_scene_instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl UiScene {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Mutation-unique identity; copy-on-write clones get a fresh value.
+    pub fn instance_id(&self) -> u64 {
+        self.instance
     }
 
     pub fn is_empty(&self) -> bool {

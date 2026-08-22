@@ -194,7 +194,7 @@ pub use nana_window::apply_hosted_system_material;
 pub use nana_window::{
     Appearance as WindowAppearance, FallbackColor, MaterialEffect, MaterialFallback,
     MaterialOutcome, PlatformMaterialSupport, apply_system_material, clear_system_material,
-    platform_material_support,
+    hosted_platform_material_support, platform_material_support,
 };
 pub use overlay::ExclusiveOverlay;
 pub use pane::ratio_pane_split;
@@ -203,8 +203,8 @@ pub use runtime_animation::RuntimeAnimationClock;
 pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError,
-    RuntimeWindowSettings, run_runtime,
+    HostFailure, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
+    RuntimeTaskError, RuntimeWindowSettings, run_runtime,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]

@@ -20,6 +20,7 @@ impl DestTarget {
     pub(super) fn ensure(
         current: &mut Option<Self>,
         device: &wgpu::Device,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
@@ -30,10 +31,16 @@ impl DestTarget {
         {
             return;
         }
-        *current = Some(Self::new(device, format, width, height));
+        *current = Some(Self::new(device, pipeline_cache, format, width, height));
     }
 
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
         let msaa = device
@@ -142,7 +149,7 @@ impl DestTarget {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: pipeline_cache,
         });
         Self {
             width,

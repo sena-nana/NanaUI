@@ -10,7 +10,7 @@ use std::io;
 use std::process::ExitCode;
 
 use nana_js_engine::RuntimeArtifact;
-use nana_js_quickjs::QuickJsEngine;
+use nana_js_v8::V8Engine;
 use nana_ui_devtools::agent::{VueAgentSession, semantic_counter_artifact};
 
 fn main() -> ExitCode {
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut session = match VueAgentSession::new(QuickJsEngine::new(), artifact, width, height) {
+    let mut session = match VueAgentSession::new(V8Engine::new(), artifact, width, height) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("nana-agent-session failed: {error}");

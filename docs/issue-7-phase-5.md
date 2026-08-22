@@ -1,5 +1,7 @@
 # Issue #7 Phase 5：Vue / component consumer 迁移
 
+> 状态注记：历史证据。产品 JS 引擎现为单一 V8；`nana-js-quickjs` 已移除。Iced widget 映射已退出产品路径。
+
 本阶段在 `2026-08-14` 将 Vue custom renderer 的 retained identity/hierarchy/tag/text/focus/layout/style/input/hit-test 接入 `nana-ui-runtime::UiWorld`。迁移保持现有 Vue hostOps、CSS compatibility、Iced widget 映射、QuickJS/V8 与 DOM facade 行为，不引入并行 DOM tree 或第二 renderer。
 
 ## 单一权威状态

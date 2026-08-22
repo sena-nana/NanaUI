@@ -84,9 +84,28 @@ impl RuntimeDocument {
         let update = self.flush_with(|context, work| {
             context.shape_text(&work.text, shaper)?;
             if force_layout || !work.layout.is_empty() {
-                context.layout_document(document, viewport)?;
-                if context.shape_text_for_layout(document, shaper)? {
+                if force_layout {
                     context.layout_document(document, viewport)?;
+                } else {
+                    // `shape_text` may have marked additional LAYOUT nodes
+                    // (intrinsic changes propagate) after the drain; include
+                    // them so scoped layout sees the full change set.
+                    let mut dirty = work.layout.clone();
+                    dirty.extend(context.pending_layout_dirty());
+                    context.layout_document_scoped(document, viewport, &dirty)?;
+                }
+                // Re-shape only the relayout scope: nodes outside it keep
+                // shapes that already match their unchanged boxes.
+                let mut shape_scope = context.take_last_layout_scope();
+                if context.shape_text_for_layout_scoped(&shape_scope, shaper)? {
+                    // Shaping re-dirtied layout (empty-state padding, modal
+                    // presentations); relayout that closure plus the scope
+                    // whose boxes may have shifted again.
+                    let mut redirty = context.pending_layout_dirty();
+                    redirty.append(&mut shape_scope);
+                    redirty.sort_unstable();
+                    redirty.dedup();
+                    context.layout_document_scoped(document, viewport, &redirty)?;
                 }
                 force_layout = false;
             }
@@ -140,8 +159,22 @@ impl RuntimeDocument {
                 self.context.finish_frame_profile();
                 return Err(error);
             }
+            let scroll_updates = self.context.take_scroll_hit_updates();
             if !work.input_hit_test.is_empty() || !work.layout.is_empty() {
-                self.context.rebuild_hit_test(self.document);
+                if work.layout.is_empty()
+                    && self
+                        .context
+                        .hit_test_work_is_scroll_only(&work.input_hit_test, &scroll_updates)
+                {
+                    // Pure scrolling: patch the scrolled subtree's entry
+                    // transforms in place instead of rebuilding the document.
+                    for (scroller, delta) in scroll_updates {
+                        self.context
+                            .update_hit_test_scroll(self.document, scroller, delta);
+                    }
+                } else {
+                    self.context.rebuild_hit_test(self.document);
+                }
             }
 
             let started = std::time::Instant::now();
