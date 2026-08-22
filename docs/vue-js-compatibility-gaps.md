@@ -46,6 +46,18 @@
    / `nana-app-title-bar`；HostedAcceptance 仍无标题栏且仍用系统标题栏。#21 /
    IME-vs-chrome 未关闭（本次无真窗口 IME 证据）。
 
+   2026-08-23 02:03–02:10 同机续跑（仍不关闭上述三行）：
+   `--hybrid --windows` 辅助窗 stderr 为 `nana surface alpha window=1 PreMultiplied`
+   （swapchain 未锁 `Opaque`）。DWM `CopyFromScreen` 截图
+   `target/acceptance/hybrid-20260823-later-desktop.png` 中，日历桌面仍只出现在
+   圆角窗体四周，客户区卡片下方仍是不透明白底；`PrintWindow` 同为白底。HWND
+   辅助窗 `WS_CAPTION=1`，`WS_EX_LAYERED=0`，`WS_EX_NOREDIRECTIONBITMAP=0`
+   （`hybrid-20260823-later-hwnd.txt`）。PreMultiplied 不能当作桌面透出验收。
+   `--chrome-probe` 真窗口标题栏绘出壳标题 “Chrome probe” 与窗口按钮
+   （`chrome-probe-20260823-desktop.png`）；正文 “Type in the field below.”
+   叠进标题栏左侧，输入框在截图中不可见。HWND 仍带 `WS_CAPTION`。未向 TSF
+   注入按键。HKL `0x08040804`，`SM_DIGITIZER=0x88`，XP-Pen 仍在线；未用物理笔。
+
 代码层 P1 已关闭：外部文件拖放现在进入 Vue 事件树；仿射包装通过 Operation proxy 转换
 容器、滚动、焦点、文本输入、文本和自定义节点的报告边界，同时保持控件状态与原布局关联。
 系统多文件拖放利用 winit 同一原生事件周期的 `AboutToWait` 作为批次边界，保序去重后只向
@@ -85,10 +97,9 @@ cargo run -p vue-hosted-acceptance --locked -- --chrome-probe
 验收者需要实际选择中文输入法，确认预编辑、候选框位置和最终文本。`--hybrid --windows`
 启动注册原生组件与透明模态辅助窗口，用于检查 Vue/Runtime 交错合成和桌面 Alpha。
 `--chrome-probe` 在无系统标题栏的主窗挂载 NanaAppShell，供后续 IME/标题栏人工检查；不替代 HostedAcceptance，也不关闭 #21。
-历史 Windows/WGPU 运行曾输出 `PreMultiplied`，证明发布路径可以不退化为 `Opaque`；
-2026-08-23 本次真窗口运行没有再次打出 `PreMultiplied`/`Opaque` 行。合成桌面截图里
-透明辅助窗客户区为不透明白底，桌面没有透出；这不能用“截图策略把 Alpha 拍坏”一笔带过，
-因为同一张图上窗体四周的日历/任务栏是正常 DWM 合成。行仍开。
+2026-08-23 02:03 续跑 `--hybrid --windows` 已打出 `PreMultiplied`，证明当前发布路径
+可以不退化为 `Opaque`；同一次 DWM 截图里辅助窗客户区仍是不透明白底，桌面只出现在
+窗体四周。这不能用“截图策略把 Alpha 拍坏”一笔带过。行仍开。
 真实笔验收必须使用物理笔在 Canvas 上交互，不以合成 pointer 事件代替硬件证据。
 
 ## 1. 目标架构
