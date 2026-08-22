@@ -95,20 +95,29 @@ impl HostedGpuSurface {
             .configure(resources.device(), &self.configuration);
     }
 
-    /// Re-query surface capabilities and reconfigure if the alpha mode changes.
-    pub fn reconfigure_alpha_mode(
+    fn apply_alpha_mode(
         &mut self,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
         resources: &HostedGpuResources,
         want_transparent: bool,
-    ) {
+    ) -> Result<(), HostedGpuError> {
         self.want_transparent = want_transparent;
-        let capabilities = self.surface.get_capabilities(resources.adapter());
+        let capabilities = self.surface.get_capabilities(adapter);
+        if alpha_mode_needs_surface_recreate(
+            want_transparent,
+            self.configuration.alpha_mode,
+            &capabilities.alpha_modes,
+        ) {
+            return self.recover(instance, adapter, resources);
+        }
         let alpha_mode = preferred_alpha_mode(&capabilities.alpha_modes, want_transparent);
         if self.configuration.alpha_mode == alpha_mode {
-            return;
+            return Ok(());
         }
         self.configuration.alpha_mode = alpha_mode;
         self.reconfigure(resources);
+        Ok(())
     }
 
     fn recover(
@@ -289,17 +298,26 @@ impl HostedGpuContext {
             .recover(&self.instance, self.resources.adapter(), &self.resources)
     }
 
-    pub fn reconfigure_alpha_mode(&mut self, want_transparent: bool) {
-        self.primary
-            .reconfigure_alpha_mode(&self.resources, want_transparent);
+    pub fn apply_alpha_mode(&mut self, want_transparent: bool) -> Result<(), HostedGpuError> {
+        self.primary.apply_alpha_mode(
+            &self.instance,
+            self.resources.adapter(),
+            &self.resources,
+            want_transparent,
+        )
     }
 
-    pub fn reconfigure_surface_alpha_mode(
+    pub fn apply_surface_alpha_mode(
         &self,
         surface: &mut HostedGpuSurface,
         want_transparent: bool,
-    ) {
-        surface.reconfigure_alpha_mode(&self.resources, want_transparent);
+    ) -> Result<(), HostedGpuError> {
+        surface.apply_alpha_mode(
+            &self.instance,
+            self.resources.adapter(),
+            &self.resources,
+            want_transparent,
+        )
     }
 
     pub fn is_drawable(&self) -> bool {
@@ -474,9 +492,39 @@ pub(crate) fn preferred_alpha_mode(
     }
 }
 
+fn advertised_transparent_alpha(modes: &[wgpu::CompositeAlphaMode]) -> bool {
+    modes.iter().any(|mode| {
+        matches!(
+            *mode,
+            wgpu::CompositeAlphaMode::PreMultiplied
+                | wgpu::CompositeAlphaMode::PostMultiplied
+                | wgpu::CompositeAlphaMode::Auto
+        )
+    })
+}
+
+/// Recreate when transparency is requested but the live surface still only
+/// advertises Opaque (or nothing). HWND/DWM flags applied after first
+/// `create_surface` need a new DXGI swapchain before Pre/Post/Auto appear.
+pub(crate) fn alpha_mode_needs_surface_recreate(
+    want_transparent: bool,
+    current: wgpu::CompositeAlphaMode,
+    advertised: &[wgpu::CompositeAlphaMode],
+) -> bool {
+    if !want_transparent {
+        return false;
+    }
+    let picked = preferred_alpha_mode(advertised, true);
+    !advertised_transparent_alpha(advertised)
+        || (current == wgpu::CompositeAlphaMode::Opaque
+            && picked == wgpu::CompositeAlphaMode::Opaque)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{preferred_alpha_mode, preferred_surface_format};
+    use super::{
+        alpha_mode_needs_surface_recreate, preferred_alpha_mode, preferred_surface_format,
+    };
 
     #[test]
     fn surface_preferences_preserve_transparency_and_srgb() {
@@ -507,5 +555,27 @@ mod tests {
             ]),
             Some(wgpu::TextureFormat::Bgra8UnormSrgb)
         );
+    }
+
+    #[test]
+    fn alpha_mode_needs_surface_recreate_when_opaque_only() {
+        assert!(alpha_mode_needs_surface_recreate(
+            true,
+            wgpu::CompositeAlphaMode::Opaque,
+            &[wgpu::CompositeAlphaMode::Opaque],
+        ));
+        assert!(!alpha_mode_needs_surface_recreate(
+            true,
+            wgpu::CompositeAlphaMode::Opaque,
+            &[
+                wgpu::CompositeAlphaMode::Opaque,
+                wgpu::CompositeAlphaMode::PreMultiplied,
+            ],
+        ));
+        assert!(!alpha_mode_needs_surface_recreate(
+            false,
+            wgpu::CompositeAlphaMode::Opaque,
+            &[wgpu::CompositeAlphaMode::Opaque],
+        ));
     }
 }

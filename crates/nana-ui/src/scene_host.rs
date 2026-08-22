@@ -272,10 +272,12 @@ fn initialize<Program: RuntimeProgram>(
         settings.transparent,
         last_material_mode,
     );
-    graphics.reconfigure_alpha_mode(window_wants_transparent_surface(
-        settings.transparent,
-        last_material_mode,
-    ));
+    graphics
+        .apply_alpha_mode(window_wants_transparent_surface(
+            settings.transparent,
+            last_material_mode,
+        ))
+        .map_err(|error| error.to_string())?;
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
@@ -1122,11 +1124,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.settings.transparent,
             self.last_material_mode,
         );
-        self.graphics
-            .reconfigure_alpha_mode(window_wants_transparent_surface(
+        let mut alpha_error = self
+            .graphics
+            .apply_alpha_mode(window_wants_transparent_surface(
                 self.settings.transparent,
                 self.last_material_mode,
-            ));
+            ))
+            .err();
         for host in self.auxiliary.values_mut() {
             clear_system_material(host.surface.window().as_ref());
             host.material = apply_window_surface(
@@ -1139,8 +1143,15 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 host.settings.transparent,
                 self.last_material_mode,
             );
-            self.graphics
-                .reconfigure_surface_alpha_mode(&mut host.surface, want_transparent);
+            if let Err(error) = self
+                .graphics
+                .apply_surface_alpha_mode(&mut host.surface, want_transparent)
+            {
+                alpha_error = Some(error);
+            }
+        }
+        if let Some(error) = alpha_error {
+            self.suspend_rendering(error);
         }
     }
 
