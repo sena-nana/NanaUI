@@ -2359,10 +2359,13 @@ impl UiWorld {
             }
             UiMutation::SetComponentType { id, type_id } => {
                 let entity = self.entities[id];
-                if let Some(type_id) = type_id {
-                    self.world.entity_mut(entity).insert(type_id.clone());
-                } else {
-                    self.world.entity_mut(entity).remove::<ComponentTypeId>();
+                let current = self.world.get::<ComponentTypeId>(entity);
+                if current != type_id.as_ref() {
+                    if let Some(type_id) = type_id {
+                        self.world.entity_mut(entity).insert(type_id.clone());
+                    } else {
+                        self.world.entity_mut(entity).remove::<ComponentTypeId>();
+                    }
                 }
             }
             UiMutation::SetStandardVisual { id, visual } => {
@@ -8357,6 +8360,66 @@ mod tests {
         assert_eq!(work.focus_ime, vec![node(3), node(4)]);
         assert_eq!(work.layout, vec![node(1), node(2), node(3), node(4)]);
         assert_eq!(work.render_extraction, work.layout);
+        assert!(world.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn set_component_type_is_noop_when_unchanged() {
+        use bevy_ecs::change_detection::DetectChanges;
+
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+
+        let button = ComponentTypeId::new("nana.button").unwrap();
+        let mut queue = MutationQueue::new();
+        queue.set_component_type(node(1), Some(button.clone()));
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+        let entity = world.entities[&node(1)];
+        let tick_before = world
+            .world
+            .entity(entity)
+            .get_ref::<ComponentTypeId>()
+            .expect("stamped type")
+            .last_changed();
+        world.world.increment_change_tick();
+
+        let mut queue = MutationQueue::new();
+        queue.set_component_type(node(1), Some(button));
+        world.commit(queue).unwrap();
+        assert!(world.take_system_work().is_empty());
+        let tick_after = world
+            .world
+            .entity(entity)
+            .get_ref::<ComponentTypeId>()
+            .expect("stamped type")
+            .last_changed();
+        assert_eq!(tick_before, tick_after);
+
+        let mut queue = MutationQueue::new();
+        queue.set_component_type(node(1), Some(ComponentTypeId::new("nana.select").unwrap()));
+        world.commit(queue).unwrap();
+        assert_eq!(
+            world.component_type(node(1)).map(ComponentTypeId::as_str),
+            Some("nana.select")
+        );
+
+        let mut queue = MutationQueue::new();
+        queue.set_component_type(node(1), None);
+        world.commit(queue).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.set_component_type(node(1), None);
+        world.commit(queue).unwrap();
+        assert!(world.component_type(node(1)).is_none());
         assert!(world.take_system_work().is_empty());
     }
 
