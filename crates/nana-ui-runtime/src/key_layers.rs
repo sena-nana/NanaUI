@@ -1,10 +1,10 @@
 //! Backend-neutral shortcut capture and keymap resolution.
 //!
-//! `KeyStroke`, `Keymap`, and `ActionRegistry` still live in the Iced adapter
-//! (`nana-ui::command`). Until those types move to `nana-ui-core`, this module
-//! uses [`CapturedStroke`] and a thin enabled-state registry. Hosts map
-//! `nana_ui_platform::InputEvent::Keyboard` (or a Vue `KeyboardEvent`) into
-//! [`KeyInput`]; this file does not depend on Iced or platform types.
+//! Host-facing `KeyStroke` / `Keymap` / `ActionRegistry` live in
+//! `nana-ui::command`. This module uses [`CapturedStroke`] and a thin
+//! enabled-state registry. Hosts map `nana_ui_platform::InputEvent::Keyboard`
+//! (or a Vue `KeyboardEvent`) into [`KeyInput`]; this file does not depend on
+//! platform types.
 
 use std::collections::BTreeMap;
 use std::fmt;
