@@ -61,14 +61,11 @@ Fetch 使用每请求可取消的 DNS/transport 链；取消会关闭登记的 T
 ```powershell
 cargo run -p vue-hosted-acceptance --locked -- --input-probe
 cargo run -p vue-hosted-acceptance --locked -- --hybrid --windows
-cargo run -p vue-hosted-acceptance --locked -- --alpha-probe
 ```
 
 `--input-probe` 仅让真实 Vue 输入框在挂载后获得焦点，不注入、伪造或代替 IME 事件；
 验收者需要实际选择中文输入法，确认预编辑、候选框位置和最终文本。`--hybrid --windows`
-启动注册原生组件与透明模态辅助窗口，用于检查 Vue/Runtime 交错合成和桌面 Alpha；
-`--alpha-probe` 则以透明主窗口启动，并在标准错误输出中报告 WGPU 从当前原生 surface
-能力选中的真实 alpha mode。该输出能验证 NanaUI 透明渲染链，但不替代桌面合成器的视觉验收。
+启动注册原生组件与透明模态辅助窗口，用于检查 Vue/Runtime 交错合成和桌面 Alpha。
 当前 Windows/WGPU 实际运行输出为 `PreMultiplied`，证明发布路径没有退化为
 `Opaque`；尚缺的只是不受当前桌面捕获策略干扰的底层桌面像素合成证据。
 真实笔验收必须使用物理笔在 Canvas 上交互，不以合成 pointer 事件代替硬件证据。

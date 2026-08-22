@@ -39,15 +39,15 @@
 | `UiTextarea` | `Textarea` | 调用方拥有 Content，支持 disabled、invalid 与真实 Action |
 | `UiSegmentedControl` | `SegmentedControl` | 三档行高、通用值类型、图标、disabled option 与真实选择消息 |
 | `UiTabs` | `Tabs` | 三档行高，与分段控件共享选择合同，使用独立的 Tab 表面 |
-| `UiSelect` | `Select` | Iced 原生 pick-list、三档尺寸、loading/disabled/invalid；自定义菜单仍由 `Dropdown` 补齐 |
+| `UiSelect` | `Select` | Runtime 选择菜单、三档尺寸、loading/disabled/invalid；自定义菜单仍由 `Dropdown` 补齐 |
 | `UiXYPad` | `XYPad` | 指针与触摸拖动、Shift 主轴锁定、量化、键盘步进、Input/Change 两阶段事件 |
 | `Dropdown` | `Dropdown` | 单选/多选、hint、受控选择事件；使用原生菜单的键盘导航和视口约束 |
-| `SearchDropdown` | `SearchDropdown` | Iced combo-box 的过滤、键盘导航、hint 与受控选择状态 |
+| `SearchDropdown` | `SearchDropdown` | 过滤、键盘导航、hint 与受控选择状态 |
 | `UiDialog` | `Dialog` | 标题、描述、正文、Footer、尺寸、关闭/外部点击/内部交互消息 |
 | `ConfirmDialog` | `ConfirmDialog` | 复用 Dialog，支持 danger 与真实确认/取消消息 |
 | `UiDrawer` | `Drawer` | 左右方向、正文、Footer、关闭与内部交互消息；L2 `nana-drawer` / `side` 已映射 |
 | `Tooltip` | `Tooltip` | 统一 placement、delay、viewport padding 与视觉样式 |
-| `UiPopover` | `Popover` | 自定义 Iced overlay、受控打开、四向锚定、Escape/外部点击关闭与嵌套交互 |
+| `UiPopover` | `Popover` | Runtime overlay、受控打开、四向锚定、Escape/外部点击关闭与嵌套交互 |
 | `ActionMenu` | `ActionMenu` | 触发器锚定、默认起始边对齐、标准菜单间距与视口约束 |
 | `ActionMenuItem` | `ActionMenuItem` | 三档行高、leading/hint/active/danger/disabled 与真实消息 |
 | `AnchoredActionMenu` | `AnchoredActionMenu` | 四种锚点方向和视口边界约束 |
@@ -68,17 +68,17 @@
 | `LiliaAboutSection` | `AboutSection` / `AboutMetadata` | 消费者注入名称、版本与描述，不绑定应用常量 |
 | `LiliaAppShell` | `app_shell` | 标题栏、工作区和 overlay 组合 |
 | `LiliaDesktopShell` | `DesktopShell` | 标题栏、动态 Workspace Region、导航 Footer、检查器、底部面板和 overlay 便捷组合 |
-| `PopupShell` | `PopupShell` | 普通弹窗与透明状态窗布局 |
-| `PopupTitleBarFrame` | `PopupTitleBarFrame` | 回主窗口、新建、最小化、关闭和原生拖拽事件 |
-| `LiliaWorkspace` | `workspace_view` / `WorkspaceController` | 动态 Region、响应式、持久化、resize、collapse |
-| `LiliaWorkspaceRegion` 与六个 preset | `WorkspaceRegion` / `WorkspaceRegions` / `WorkspaceSlots` | 任意 Region ID 加标准六区便捷入口 |
+| `PopupShell` | `AppShell` / `PopupTitleBarFrame` 合同由 `AppTitleBar` + 窗口命令承担 | 普通弹窗与透明状态窗布局 |
+| `PopupTitleBarFrame` | `AppTitleBar` / `WindowChromeState` | 回主窗口、新建、最小化、关闭和原生拖拽事件 |
+| `LiliaWorkspace` | `Workspace` / `WorkspaceController` / `DesktopShell` | 动态 Region、响应式、持久化、resize、collapse |
+| `LiliaWorkspaceRegion` 与六个 preset | `Workspace` Region ID | 任意 Region ID 加标准六区便捷入口 |
 | `LiliaUIProvider` | `ThemeTokens` 与宿主显式状态 | 原生应用不需要 Vue 注入层；主题和密度合同直接传递 |
 
 ## 当前缺口
 
 基于上述公开入口，本轮没有未映射的 LiliaUI Vue 组件。Vue Provider、DOM Teleport、
 ARIA 属性和路由链接这类平台机制不复制为伪组件；NanaUI 分别用显式
-`ThemeTokens`、Iced overlay、原生消息合同与消费应用导航状态承担对应职责。
+`ThemeTokens`、Runtime overlay、原生消息合同与消费应用导航状态承担对应职责。
 
 ## 实施与性能门禁
 

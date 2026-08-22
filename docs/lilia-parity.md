@@ -51,10 +51,10 @@ NanaUI 内置并注册 LiliaUI `fonts.css` 对应的 Noto Sans SC
 400/500/600/700 字体面；标题使用同样的 0.2px tracking，分区与 Card 标题使用
 0.5px tracking。这样文字宽度来自同一字体数据，而不是依赖平台 fallback。
 
-独立 `component-gallery` crate 的 `ui-snapshots` 使用真实 `GalleryState::view`
-和 Iced WGPU 30 renderer 生成四个 Gallery 分类、dark/light、设置、菜单与对话框
+独立 `component-gallery` crate 的 `ui-snapshots` 使用真实 `GalleryState`
+经 Runtime / `UiScene` / `SceneWgpuPainter` 生成四个 Gallery 分类、dark/light、设置、菜单与对话框
 快照，并单独覆盖 custom controls 与 native-leading 标题栏。Gallery 本身通过
-公共 `WorkspaceRegions` / `workspace_view` 组合，因此快照覆盖动态框架路径而非
+`Workspace` / `DesktopShell` 组合，因此快照覆盖动态框架路径而非
 单独制作的静态布局。
 LiliaGithub 的实际 AppShell、SecondaryPanel、SidebarFooter 与 LiliaUI token/CSS
 源码仍是结构、尺寸和颜色的权威依据。

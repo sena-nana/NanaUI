@@ -71,16 +71,15 @@ feature；WebView 不是 NanaUI 组件、布局或业务状态路径。
         │      └── WindowChromeState → 宿主窗口动作
         ├── SidebarFrame / SidebarSection / SidebarRow
         ├── SettingsModel / SettingsState / settings_page
-        └── WorkspaceRegions / WorkspaceSlots
+        └── Workspace / DesktopShell
                 │
                 ▼
-        workspace_view
+        WorkspaceController / WorkspaceModel
                 │
-                ├── WorkspaceController
-                │      ├── WorkspaceLayout
-                │      ├── resize / collapse / visibility
-                │      ├── JSON persistence
-                │      └── viewport geometry
+                ├── WorkspaceLayout
+                ├── resize / collapse / visibility
+                ├── JSON persistence
+                └── viewport geometry
                 ├── theme / widgets
                 └── application-owned region content
                      （可嵌 L3 控件，或 L1/L2 语义快照）
@@ -88,10 +87,10 @@ feature；WebView 不是 NanaUI 组件、布局或业务状态路径。
 
 框架与 Demo 的边界是明确的：
 
-- `WorkspaceController` 只拥有布局、交互和视口状态；
-- `WorkspaceRegions` 将应用内容绑定到动态注册的 Region ID；
-- `WorkspaceSlots` 只为标准六区提供便捷构造，不是框架结构上限；
-- `workspace_view` 统一施加区域尺寸、裁剪、表面层级和分隔条；
+- `WorkspaceController` / `WorkspaceModel` 只拥有布局、交互和视口状态；
+- `Workspace` 将应用内容绑定到动态注册的 Region ID；
+- 标准六区是便捷构造，不是框架结构上限；
+- `DesktopShell` / `assemble_workspace` 统一施加区域尺寸、裁剪、表面层级和分隔条；
 - Sidebar 原语只负责通用结构与交互消息，不内置应用链接、状态或路由；
 - Settings model 只维护稳定 Tab 和恢复规则，具体设置值仍由应用状态拥有；
 - `component_gallery::GalleryState` 只保存分类导航、组件交互、外观和设置等
@@ -276,7 +275,7 @@ NanaUI 只保证对话框在操作期间不会产生重复提交或意外关闭�
 | --- | --- |
 | `app_shell` / `AppTitleBar` / `WindowChromeState` | `LiliaAppShell` / `TitleBar` / `useNativeWindowChrome` |
 | `WorkspaceController` | `LiliaWorkspace` 的布局上下文 |
-| `RegionState` / `WorkspaceRegions` / `workspace_view` | `LiliaWorkspaceRegion` 的注册合同与区域组合 |
+| `RegionState` / `Workspace` / `DesktopShell` | `LiliaWorkspaceRegion` 的注册合同与区域组合 |
 | `SidebarFrame` / `SidebarSection` / `SidebarRow` | `LiliaSidebarFrame` / `LiliaSidebarSection` / `LiliaSidebarRow` |
 | `SettingsModel` / `settings_sidebar` / `settings_page` | LiliaUI settings model、`SettingsSidebar` 与 `SettingsPage` |
 | `GlobalNavigation` | `LiliaGlobalNavigation` |
