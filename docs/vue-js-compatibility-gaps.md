@@ -29,6 +29,21 @@
    对父窗口的原生禁用/恢复，以及三个显示器间 96→120 DPI 切换；仍缺中文 IME 候选框交互、
    真实笔输入和透明窗口 Alpha 的人工验收证据。
 
+   2026-08-23 Windows 11 26300 / RTX 5060 / 控制台会话实机（未关闭上述三行）：
+   Microsoft Pinyin 与日文 IME 均已启用，当前 HKL `0x08040804`；`--input-probe` 真窗口
+   系统标题栏 + Name 输入框焦点环可见（`target/acceptance/input-probe-region.png`），
+   但本 agent 无法代替人手按键，注入的键盘未被 TSF 组词，没有候选框对 caret 的截图。
+   `SM_DIGITIZER=0x88`（EXTERNAL_PEN|READY），XP-Pen Tablet 在线，`GetPointerDevices=2`；
+   未用物理笔在 Canvas 上划，禁止合成 pointer 事件，故 `NUI-INPUT-01` 笔字段仍开。
+   `--hybrid --windows` 打开了 `NanaUI Vue auxiliary acceptance`（`transparent: true`，
+   `rgba(15,23,42,.86)` 内容卡）；DWM 合成桌面截图
+   `target/acceptance/hybrid-desktop-2.png` 中辅助窗客户区是不透明白底，日历桌面只出现
+   在窗体四周而不是透过窗体。HWND：`WS_CAPTION`，`WS_EX_LAYERED=0`，
+   `WS_EX_NOREDIRECTIONBITMAP=0`。本次运行没有 `PreMultiplied`/`Opaque` 日志行
+   （`vue-hosted-acceptance` 未初始化 `log` 订阅者，`RUST_LOG` 无输出）。
+   标题栏（#21 旁观）：该验收程序 `system_caption(true)`，主窗与辅助窗都是系统 caption
+   / 系统拖拽，不是自绘 frameless chrome；IME 候选是否被无边框裁切本次未验。
+
 代码层 P1 已关闭：外部文件拖放现在进入 Vue 事件树；仿射包装通过 Operation proxy 转换
 容器、滚动、焦点、文本输入、文本和自定义节点的报告边界，同时保持控件状态与原布局关联。
 系统多文件拖放利用 winit 同一原生事件周期的 `AboutToWait` 作为批次边界，保序去重后只向
@@ -66,8 +81,10 @@ cargo run -p vue-hosted-acceptance --locked -- --hybrid --windows
 `--input-probe` 仅让真实 Vue 输入框在挂载后获得焦点，不注入、伪造或代替 IME 事件；
 验收者需要实际选择中文输入法，确认预编辑、候选框位置和最终文本。`--hybrid --windows`
 启动注册原生组件与透明模态辅助窗口，用于检查 Vue/Runtime 交错合成和桌面 Alpha。
-当前 Windows/WGPU 实际运行输出为 `PreMultiplied`，证明发布路径没有退化为
-`Opaque`；尚缺的只是不受当前桌面捕获策略干扰的底层桌面像素合成证据。
+历史 Windows/WGPU 运行曾输出 `PreMultiplied`，证明发布路径可以不退化为 `Opaque`；
+2026-08-23 本次真窗口运行没有再次打出 `PreMultiplied`/`Opaque` 行。合成桌面截图里
+透明辅助窗客户区为不透明白底，桌面没有透出；这不能用“截图策略把 Alpha 拍坏”一笔带过，
+因为同一张图上窗体四周的日历/任务栏是正常 DWM 合成。行仍开。
 真实笔验收必须使用物理笔在 Canvas 上交互，不以合成 pointer 事件代替硬件证据。
 
 ## 1. 目标架构
@@ -406,6 +423,13 @@ Windows/Linux CJK、多窗口焦点切换与 selection 仍需各目标平台实�
 `AXTextField`。本机将进程置前台后拼音 `nihao`+空格一次提交「你好」；预编辑时
 进程自有 layer-20 候选条（397×28）贴输入框，提交后消失，AXValue/`Hello, …`
 同步为 `NanaUI你好`。VoiceOver 未验。Windows/Linux CJK 仍需各目标平台实机验收。
+
+2026-08-23 Windows 11 26300：用户语言含 `zh-Hans-CN` Microsoft Pinyin（HKCU Enable=1）
+与 `ja` Microsoft IME；前台 HKL `0x08040804`。`--input-probe` 真窗口 Name 输入框带
+系统焦点环（`target/acceptance/input-probe-region.png`）。本 agent 不能代替人手按键；
+`SendInput`/`SendKeys("nihao")` 未进入组词，输入值仍为 `NanaUI`，没有候选窗相对
+caret 的截图（`target/acceptance/ime-sendkeys.png`）。AccessKit 在 composition 期间
+未验。GitHub #20 保持打开。
 
 ### NUI-WINDOW-01：单 V8 多窗口 Vue 根
 
