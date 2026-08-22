@@ -1,11 +1,34 @@
 use raw_window_handle::HasWindowHandle;
 
+/// Win32 `WS_CAPTION` (`WS_BORDER | WS_DLGFRAME`).
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+const WS_CAPTION: isize = 0x00C0_0000;
+
 /// Prepares native titlebar dragging and client-chrome window shape.
 pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     let prepared = prepare_custom_title_bar(window);
     #[cfg(target_os = "windows")]
     let prepared = apply_rounded_corners(window) && prepared;
     prepared
+}
+
+/// Clears the Win32 caption frame so a transparent client-chrome window is not
+/// left with `WS_CAPTION`. Other platforms no-op.
+pub fn suppress_system_caption<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        clear_caption_style(window)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        true
+    }
+}
+
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+fn client_chrome_style_without_caption(current: isize) -> isize {
+    current & !WS_CAPTION
 }
 
 /// Prepares native titlebar dragging for NanaUI's custom titlebar regions.
@@ -132,4 +155,62 @@ fn apply_rounded_corners<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
         )
     };
     status >= 0
+}
+
+#[cfg(target_os = "windows")]
+fn clear_caption_style<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
+    };
+
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return false;
+    };
+    let hwnd = handle.hwnd.get() as HWND;
+    unsafe {
+        let current = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let next = client_chrome_style_without_caption(current);
+        if next != current {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, next);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WS_CAPTION, client_chrome_style_without_caption};
+
+    const WS_BORDER: isize = 0x0080_0000;
+    const WS_CLIPSIBLINGS: isize = 0x0400_0000;
+    const WS_SYSMENU: isize = 0x0008_0000;
+    const WS_THICKFRAME: isize = 0x0004_0000;
+    const WS_VISIBLE: isize = 0x1000_0000;
+
+    #[test]
+    fn client_chrome_style_clears_caption_and_keeps_frame_bits() {
+        let current = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_CLIPSIBLINGS | WS_VISIBLE;
+        let next = client_chrome_style_without_caption(current);
+        assert_eq!(next & WS_CAPTION, 0);
+        assert_eq!(next & WS_BORDER, 0);
+        assert_eq!(next & WS_THICKFRAME, WS_THICKFRAME);
+        assert_eq!(next & WS_SYSMENU, WS_SYSMENU);
+        assert_eq!(next & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+        assert_eq!(next & WS_VISIBLE, WS_VISIBLE);
+    }
 }

@@ -18,7 +18,7 @@ use nana_ui_runtime::{
 };
 use nana_window::{
     Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
-    clear_system_material, prepare_client_chrome,
+    clear_system_material, prepare_client_chrome, suppress_system_caption,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{
@@ -224,6 +224,9 @@ fn initialize<Program: RuntimeProgram>(
     );
     if !settings.system_caption {
         let _ = prepare_client_chrome(window.as_ref());
+        if settings.transparent {
+            let _ = suppress_system_caption(window.as_ref());
+        }
     }
     let mut last_theme = crate::ThemeMode::default();
     let mut last_material_mode = nana_window::MaterialEffect::Solid;
@@ -890,6 +893,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         );
         if !settings.system_caption {
             let _ = prepare_client_chrome(window.as_ref());
+            if settings.transparent {
+                let _ = suppress_system_caption(window.as_ref());
+            }
         }
         let material = apply_window_surface(
             window.as_ref(),
@@ -1875,16 +1881,32 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
     apply_scene_window_chrome(attributes, settings)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+struct WindowsSceneChrome {
+    decorations: bool,
+    undecorated_shadow: bool,
+    no_redirection_bitmap: bool,
+}
+
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+fn windows_scene_chrome(system_caption: bool, transparent: bool) -> WindowsSceneChrome {
+    WindowsSceneChrome {
+        decorations: system_caption,
+        undecorated_shadow: !system_caption && !transparent,
+        no_redirection_bitmap: transparent,
+    }
+}
+
 fn apply_scene_window_chrome(
     attributes: winit::window::WindowAttributes,
     settings: &RuntimeWindowSettings,
 ) -> winit::window::WindowAttributes {
-    if settings.system_caption {
-        return attributes.with_decorations(true);
-    }
-
     #[cfg(target_os = "macos")]
     {
+        if settings.system_caption {
+            return attributes.with_decorations(true);
+        }
         attributes
             .with_decorations(true)
             .with_titlebar_transparent(true)
@@ -1895,11 +1917,19 @@ fn apply_scene_window_chrome(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let attributes = attributes.with_decorations(false);
+        let chrome = windows_scene_chrome(settings.system_caption, settings.transparent);
+        let attributes = attributes.with_decorations(chrome.decorations);
         #[cfg(target_os = "windows")]
-        let attributes = attributes
-            .with_undecorated_shadow(true)
-            .with_corner_preference(winit::platform::windows::CornerPreference::Round);
+        let attributes = {
+            let attributes = attributes.with_no_redirection_bitmap(chrome.no_redirection_bitmap);
+            if chrome.decorations {
+                attributes
+            } else {
+                attributes
+                    .with_undecorated_shadow(chrome.undecorated_shadow)
+                    .with_corner_preference(winit::platform::windows::CornerPreference::Round)
+            }
+        };
         attributes
     }
 }
@@ -2395,7 +2425,7 @@ mod tests {
         platform_window_event, resolved_scene_ime_request, route_window_command,
         scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, window_level, window_surface_effect,
-        window_wants_transparent_surface, windows_to_redraw,
+        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect,
@@ -2541,9 +2571,27 @@ mod tests {
         );
         assert_eq!(window_level(false), winit::window::WindowLevel::Normal);
 
+        let transparent_client =
+            windows_scene_chrome(settings.system_caption, settings.transparent);
+        assert!(!transparent_client.decorations);
+        assert!(!transparent_client.undecorated_shadow);
+        assert!(transparent_client.no_redirection_bitmap);
+
+        let opaque_client = windows_scene_chrome(false, false);
+        assert!(!opaque_client.decorations);
+        assert!(opaque_client.undecorated_shadow);
+        assert!(!opaque_client.no_redirection_bitmap);
+
         settings.system_caption = true;
         let caption = scene_window_attributes(&settings);
         assert!(caption.decorations);
+        let transparent_caption = windows_scene_chrome(true, true);
+        assert!(transparent_caption.decorations);
+        assert!(!transparent_caption.undecorated_shadow);
+        assert!(transparent_caption.no_redirection_bitmap);
+        let opaque_caption = windows_scene_chrome(true, false);
+        assert!(opaque_caption.decorations);
+        assert!(!opaque_caption.no_redirection_bitmap);
     }
 
     #[test]
