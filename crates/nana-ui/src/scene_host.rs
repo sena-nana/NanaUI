@@ -225,9 +225,18 @@ fn initialize<Program: RuntimeProgram>(
     if !settings.system_caption {
         let _ = prepare_client_chrome(window.as_ref());
     }
-    let graphics = pollster::block_on(HostedGpuContext::new(
+    let mut last_theme = crate::ThemeMode::default();
+    let mut last_material_mode = nana_window::MaterialEffect::Solid;
+    let mut material = apply_window_surface(
+        window.as_ref(),
+        last_theme,
+        settings.transparent,
+        last_material_mode,
+    );
+    let mut graphics = pollster::block_on(HostedGpuContext::new(
         Arc::clone(&window),
         wgpu::Features::empty(),
+        window_wants_transparent_surface(settings.transparent, last_material_mode),
     ))
     .map_err(|error| error.to_string())?;
     let format = graphics.format();
@@ -242,14 +251,6 @@ fn initialize<Program: RuntimeProgram>(
     );
     let tasks = spawn_task_workers(proxy.clone());
     let geometry = window_geometry(graphics.window());
-    let mut last_theme = crate::ThemeMode::default();
-    let mut last_material_mode = nana_window::MaterialEffect::Solid;
-    let mut material = apply_window_surface(
-        graphics.window().as_ref(),
-        last_theme,
-        settings.transparent,
-        last_material_mode,
-    );
     let context = program_context(
         &proxy,
         &graphics,
@@ -271,6 +272,10 @@ fn initialize<Program: RuntimeProgram>(
         settings.transparent,
         last_material_mode,
     );
+    graphics.reconfigure_alpha_mode(window_wants_transparent_surface(
+        settings.transparent,
+        last_material_mode,
+    ));
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
@@ -882,20 +887,23 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if !settings.system_caption {
             let _ = prepare_client_chrome(window.as_ref());
         }
-        let surface = self
-            .graphics
-            .create_surface(Arc::clone(&window))
-            .map_err(|error| error.to_string())?;
-        let format = surface.format();
-        let _ = self.painter_mut(format);
-        #[cfg(target_os = "windows")]
-        let pen_hook = crate::windows_pen::WindowsPenHook::install(window.as_ref())?;
         let material = apply_window_surface(
             window.as_ref(),
             self.last_theme,
             settings.transparent,
             self.last_material_mode,
         );
+        let surface = self
+            .graphics
+            .create_surface(
+                Arc::clone(&window),
+                window_wants_transparent_surface(settings.transparent, self.last_material_mode),
+            )
+            .map_err(|error| error.to_string())?;
+        let format = surface.format();
+        let _ = self.painter_mut(format);
+        #[cfg(target_os = "windows")]
+        let pen_hook = crate::windows_pen::WindowsPenHook::install(window.as_ref())?;
         #[cfg(not(target_os = "android"))]
         let accessibility = {
             Some(HostedAccessibility::new(
@@ -1000,7 +1008,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn recover_device(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::clone(self.graphics.window());
-        match pollster::block_on(HostedGpuContext::new(window, wgpu::Features::empty())) {
+        let _ = apply_window_surface(
+            window.as_ref(),
+            self.last_theme,
+            self.settings.transparent,
+            self.last_material_mode,
+        );
+        match pollster::block_on(HostedGpuContext::new(
+            window,
+            wgpu::Features::empty(),
+            window_wants_transparent_surface(self.settings.transparent, self.last_material_mode),
+        )) {
             Ok(graphics) => {
                 let mut painters = HashMap::new();
                 painters.insert(
@@ -1019,7 +1037,19 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 let mut failed = Vec::new();
                 for (id, mut host) in previous {
                     let window = Arc::clone(host.surface.window());
-                    match graphics.create_surface(window) {
+                    host.material = apply_window_surface(
+                        window.as_ref(),
+                        self.last_theme,
+                        host.settings.transparent,
+                        self.last_material_mode,
+                    );
+                    match graphics.create_surface(
+                        window,
+                        window_wants_transparent_surface(
+                            host.settings.transparent,
+                            self.last_material_mode,
+                        ),
+                    ) {
                         Ok(surface) => {
                             let format = surface.format();
                             painters.entry(format).or_insert_with(|| {
@@ -1092,6 +1122,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.settings.transparent,
             self.last_material_mode,
         );
+        self.graphics
+            .reconfigure_alpha_mode(window_wants_transparent_surface(
+                self.settings.transparent,
+                self.last_material_mode,
+            ));
         for host in self.auxiliary.values_mut() {
             clear_system_material(host.surface.window().as_ref());
             host.material = apply_window_surface(
@@ -1100,6 +1135,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 host.settings.transparent,
                 self.last_material_mode,
             );
+            let want_transparent = window_wants_transparent_surface(
+                host.settings.transparent,
+                self.last_material_mode,
+            );
+            self.graphics
+                .reconfigure_surface_alpha_mode(&mut host.surface, want_transparent);
         }
     }
 
@@ -1676,6 +1717,13 @@ fn window_surface_effect(
     } else {
         appearance
     }
+}
+
+fn window_wants_transparent_surface(
+    settings_transparent: bool,
+    appearance: crate::MaterialEffect,
+) -> bool {
+    window_surface_effect(settings_transparent, appearance).wants_transparent_surface()
 }
 
 fn apply_scene_material(
@@ -2320,7 +2368,8 @@ mod tests {
         mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
         platform_window_event, resolved_scene_ime_request, route_window_command,
         scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, window_level, window_surface_effect, windows_to_redraw,
+        should_deliver_program_ime, window_level, window_surface_effect,
+        window_wants_transparent_surface, windows_to_redraw,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect,
@@ -2483,6 +2532,48 @@ mod tests {
             MaterialEffect::Transparent
         );
         assert!(window_surface_effect(true, appearance).wants_transparent_surface());
+        assert!(window_wants_transparent_surface(true, appearance));
+        assert!(!window_wants_transparent_surface(false, appearance));
+    }
+
+    #[test]
+    fn transparent_surface_picks_non_opaque_alpha_before_surface_lock() {
+        let appearance = MaterialEffect::Solid;
+        let transparent = window_wants_transparent_surface(true, appearance);
+        assert!(transparent);
+        assert_eq!(
+            crate::hosted_context::preferred_alpha_mode(
+                &[
+                    wgpu::CompositeAlphaMode::Opaque,
+                    wgpu::CompositeAlphaMode::PreMultiplied,
+                    wgpu::CompositeAlphaMode::PostMultiplied,
+                ],
+                transparent,
+            ),
+            wgpu::CompositeAlphaMode::PreMultiplied
+        );
+        assert_eq!(
+            crate::hosted_context::preferred_alpha_mode(
+                &[
+                    wgpu::CompositeAlphaMode::Opaque,
+                    wgpu::CompositeAlphaMode::PostMultiplied,
+                ],
+                transparent,
+            ),
+            wgpu::CompositeAlphaMode::PostMultiplied
+        );
+        let opaque = window_wants_transparent_surface(false, appearance);
+        assert!(!opaque);
+        assert_eq!(
+            crate::hosted_context::preferred_alpha_mode(
+                &[
+                    wgpu::CompositeAlphaMode::Opaque,
+                    wgpu::CompositeAlphaMode::PostMultiplied,
+                ],
+                opaque,
+            ),
+            wgpu::CompositeAlphaMode::Opaque
+        );
     }
 
     #[test]

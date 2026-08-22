@@ -53,6 +53,7 @@ pub struct HostedGpuSurface {
     surface: wgpu::Surface<'static>,
     format: wgpu::TextureFormat,
     configuration: wgpu::SurfaceConfiguration,
+    want_transparent: bool,
 }
 
 impl HostedGpuSurface {
@@ -94,6 +95,22 @@ impl HostedGpuSurface {
             .configure(resources.device(), &self.configuration);
     }
 
+    /// Re-query surface capabilities and reconfigure if the alpha mode changes.
+    pub fn reconfigure_alpha_mode(
+        &mut self,
+        resources: &HostedGpuResources,
+        want_transparent: bool,
+    ) {
+        self.want_transparent = want_transparent;
+        let capabilities = self.surface.get_capabilities(resources.adapter());
+        let alpha_mode = preferred_alpha_mode(&capabilities.alpha_modes, want_transparent);
+        if self.configuration.alpha_mode == alpha_mode {
+            return;
+        }
+        self.configuration.alpha_mode = alpha_mode;
+        self.reconfigure(resources);
+    }
+
     fn recover(
         &mut self,
         instance: &wgpu::Instance,
@@ -109,7 +126,8 @@ impl HostedGpuSurface {
                 expected: self.format,
             });
         }
-        self.configuration.alpha_mode = preferred_alpha_mode(&capabilities.alpha_modes);
+        self.configuration.alpha_mode =
+            preferred_alpha_mode(&capabilities.alpha_modes, self.want_transparent);
         self.surface = surface;
         self.reconfigure(resources);
         Ok(())
@@ -168,6 +186,7 @@ impl HostedGpuContext {
     pub async fn new(
         window: Arc<winit::window::Window>,
         required_features: wgpu::Features,
+        want_transparent: bool,
     ) -> Result<Self, HostedGpuError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
@@ -214,7 +233,14 @@ impl HostedGpuContext {
             queue: Arc::new(queue),
             adapter_info,
         };
-        let primary = configure_surface(window, surface, format, &capabilities, &resources);
+        let primary = configure_surface(
+            window,
+            surface,
+            format,
+            &capabilities,
+            &resources,
+            want_transparent,
+        );
 
         Ok(Self {
             instance,
@@ -263,6 +289,19 @@ impl HostedGpuContext {
             .recover(&self.instance, self.resources.adapter(), &self.resources)
     }
 
+    pub fn reconfigure_alpha_mode(&mut self, want_transparent: bool) {
+        self.primary
+            .reconfigure_alpha_mode(&self.resources, want_transparent);
+    }
+
+    pub fn reconfigure_surface_alpha_mode(
+        &self,
+        surface: &mut HostedGpuSurface,
+        want_transparent: bool,
+    ) {
+        surface.reconfigure_alpha_mode(&self.resources, want_transparent);
+    }
+
     pub fn is_drawable(&self) -> bool {
         self.primary.is_drawable()
     }
@@ -279,6 +318,7 @@ impl HostedGpuContext {
     pub fn create_surface(
         &self,
         window: Arc<winit::window::Window>,
+        want_transparent: bool,
     ) -> Result<HostedGpuSurface, HostedGpuError> {
         let surface = self
             .instance
@@ -293,6 +333,7 @@ impl HostedGpuContext {
             format,
             &capabilities,
             &self.resources,
+            want_transparent,
         ))
     }
 
@@ -323,6 +364,7 @@ fn configure_surface(
     format: wgpu::TextureFormat,
     capabilities: &wgpu::SurfaceCapabilities,
     resources: &HostedGpuResources,
+    want_transparent: bool,
 ) -> HostedGpuSurface {
     let size = window.inner_size();
     let configuration = wgpu::SurfaceConfiguration {
@@ -332,7 +374,7 @@ fn configure_surface(
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: wgpu::PresentMode::AutoVsync,
-        alpha_mode: preferred_alpha_mode(&capabilities.alpha_modes),
+        alpha_mode: preferred_alpha_mode(&capabilities.alpha_modes, want_transparent),
         view_formats: vec![],
         desired_maximum_frame_latency: 1,
     };
@@ -342,6 +384,7 @@ fn configure_surface(
         surface,
         format,
         configuration,
+        want_transparent,
     }
 }
 
@@ -407,16 +450,28 @@ fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Tex
         .or_else(|| formats.first().copied())
 }
 
-fn preferred_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAlphaMode {
-    [
-        wgpu::CompositeAlphaMode::PreMultiplied,
-        wgpu::CompositeAlphaMode::PostMultiplied,
-        wgpu::CompositeAlphaMode::Auto,
-    ]
-    .into_iter()
-    .find(|mode| modes.contains(mode))
-    .or_else(|| modes.first().copied())
-    .unwrap_or(wgpu::CompositeAlphaMode::Auto)
+pub(crate) fn preferred_alpha_mode(
+    modes: &[wgpu::CompositeAlphaMode],
+    want_transparent: bool,
+) -> wgpu::CompositeAlphaMode {
+    if want_transparent {
+        [
+            wgpu::CompositeAlphaMode::PreMultiplied,
+            wgpu::CompositeAlphaMode::PostMultiplied,
+            wgpu::CompositeAlphaMode::Auto,
+        ]
+        .into_iter()
+        .find(|mode| modes.contains(mode))
+        .or_else(|| modes.first().copied())
+        .unwrap_or(wgpu::CompositeAlphaMode::Auto)
+    } else if modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+        wgpu::CompositeAlphaMode::Opaque
+    } else {
+        modes
+            .first()
+            .copied()
+            .unwrap_or(wgpu::CompositeAlphaMode::Auto)
+    }
 }
 
 #[cfg(test)]
@@ -426,11 +481,24 @@ mod tests {
     #[test]
     fn surface_preferences_preserve_transparency_and_srgb() {
         assert_eq!(
-            preferred_alpha_mode(&[
-                wgpu::CompositeAlphaMode::Opaque,
-                wgpu::CompositeAlphaMode::PostMultiplied,
-            ]),
+            preferred_alpha_mode(
+                &[
+                    wgpu::CompositeAlphaMode::Opaque,
+                    wgpu::CompositeAlphaMode::PostMultiplied,
+                ],
+                true,
+            ),
             wgpu::CompositeAlphaMode::PostMultiplied
+        );
+        assert_eq!(
+            preferred_alpha_mode(
+                &[
+                    wgpu::CompositeAlphaMode::Opaque,
+                    wgpu::CompositeAlphaMode::PostMultiplied,
+                ],
+                false,
+            ),
+            wgpu::CompositeAlphaMode::Opaque
         );
         assert_eq!(
             preferred_surface_format(&[
