@@ -1,4 +1,4 @@
-//! Backend-neutral tree navigation. Iced and Runtime consume the same walk.
+//! Backend-neutral tree navigation. Runtime consumes this walk.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeNode<Id> {

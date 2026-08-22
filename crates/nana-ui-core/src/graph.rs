@@ -1,7 +1,7 @@
 //! Application-owned graph model, viewport, hit testing, and target descriptors.
 //!
-//! This crate is backend-neutral. Runtime and Iced consume these types; neither
-//! may define a second graph model.
+//! This crate is backend-neutral. Runtime consumes these types; do not define
+//! a second graph model.
 
 use std::collections::HashSet;
 use std::error::Error;

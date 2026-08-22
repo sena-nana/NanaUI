@@ -15,4 +15,4 @@ Gallery/LiliaUI 设计基线、通用 Vue Counter 证据以及其他进行中的
 
 本次没有视觉行为变更，因此不新增视觉快照。验收以可复现 SFC 构建、Fetch 行为、
 当时 QuickJS/V8 同产物语义树、workspace/Clippy 和 Android ARM64 交叉编译为准。
-QuickJS 此后已移除；产品引擎为 V8。Android ARM64 交叉编译现不链接 V8 预编译库。
+QuickJS 此后已移除；产品引擎为 V8。Android ARM64 V8 档案由 workflow `Package V8` 打包。
