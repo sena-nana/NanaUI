@@ -227,6 +227,12 @@ describe("L2 professional first-knife exports", () => {
     });
   }
 
+  test("package.json exports subpaths for professional components", () => {
+    for (const name of PROFESSIONAL_EXPORTS) {
+      assert.ok(pkg.exports[`./${name}`], `missing exports["./${name}"]`);
+    }
+  });
+
   test("professional wrappers stay host tags (no Teleport / fetch / decode)", () => {
     for (const name of PROFESSIONAL_EXPORTS) {
       const src = readFileSync(join(root, SOURCE_FILES[name]), "utf8");
