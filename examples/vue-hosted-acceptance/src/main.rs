@@ -5,6 +5,9 @@
 //!
 //! Vue + registered native-component probe (JS/Runtime authority; no Iced chrome):
 //! `cargo run -p vue-hosted-acceptance --locked -- --hybrid`
+//!
+//! Frameless client chrome probe (`NanaAppShell` / `nana-app-title-bar`):
+//! `cargo run -p vue-hosted-acceptance --locked -- --chrome-probe`
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -63,16 +66,22 @@ struct AcceptanceProgram {
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
-    run_runtime::<AcceptanceProgram>(
-        RuntimeWindowSettings::new(if std::env::args().any(|argument| argument == "--hybrid") {
-            "NanaUI Vue + native probe acceptance"
-        } else {
-            "NanaUI pure Vue acceptance"
-        })
-        .initial_size(1120.0, 760.0)
-        .minimum_size(760.0, 520.0)
-        .system_caption(true),
-    )
+    let chrome_probe = std::env::args().any(|argument| argument == "--chrome-probe");
+    let hybrid = std::env::args().any(|argument| argument == "--hybrid");
+    run_runtime::<AcceptanceProgram>(primary_window_settings(chrome_probe, hybrid))
+}
+
+fn primary_window_settings(chrome_probe: bool, hybrid: bool) -> RuntimeWindowSettings {
+    RuntimeWindowSettings::new(if chrome_probe {
+        "NanaUI chrome probe"
+    } else if hybrid {
+        "NanaUI Vue + native probe acceptance"
+    } else {
+        "NanaUI pure Vue acceptance"
+    })
+    .initial_size(1120.0, 760.0)
+    .minimum_size(760.0, 520.0)
+    .system_caption(!chrome_probe)
 }
 
 fn build_runtime(
@@ -80,6 +89,7 @@ fn build_runtime(
     hybrid: bool,
     auto_windows: bool,
     input_probe: bool,
+    chrome_probe: bool,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -87,11 +97,15 @@ fn build_runtime(
     let mut application_api = HostApiRegistry::new();
     application_api.register("acceptanceMode", move |_| {
         Ok(HostValue::String(
-            match (hybrid, auto_windows) {
-                (true, true) => "hybrid-windows",
-                (true, false) => "hybrid",
-                (false, true) => "pure-windows",
-                (false, false) => "pure",
+            if chrome_probe {
+                "chrome-probe"
+            } else {
+                match (hybrid, auto_windows) {
+                    (true, true) => "hybrid-windows",
+                    (true, false) => "hybrid",
+                    (false, true) => "pure-windows",
+                    (false, false) => "pure",
+                }
             }
             .into(),
         ))
@@ -144,15 +158,19 @@ impl RuntimeProgram for AcceptanceProgram {
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-        let hybrid = std::env::args().any(|argument| argument == "--hybrid");
-        let auto_windows = std::env::args().any(|argument| argument == "--windows");
-        let input_probe = std::env::args().any(|argument| argument == "--input-probe");
+        let chrome_probe = std::env::args().any(|argument| argument == "--chrome-probe");
+        let hybrid = !chrome_probe && std::env::args().any(|argument| argument == "--hybrid");
+        let auto_windows =
+            !chrome_probe && std::env::args().any(|argument| argument == "--windows");
+        let input_probe =
+            !chrome_probe && std::env::args().any(|argument| argument == "--input-probe");
         let geometry = context.geometry();
         let runtime = build_runtime(
             context.gpu().clone(),
             hybrid,
             auto_windows,
             input_probe,
+            chrome_probe,
             geometry.physical_size.0.max(1),
             geometry.physical_size.1.max(1),
             geometry.scale_factor.max(0.01),
@@ -283,7 +301,7 @@ mod tests {
         let gpu = gpu();
         for hybrid in [false, true] {
             let mut runtime =
-                build_runtime(gpu.clone(), hybrid, false, false, 1120, 760, 1.0).unwrap();
+                build_runtime(gpu.clone(), hybrid, false, false, false, 1120, 760, 1.0).unwrap();
             for _ in 0..24 {
                 runtime.pump().unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -420,7 +438,7 @@ mod tests {
     fn hosted_acceptance_canvas_draws_and_webgpu_stays_below_header() {
         const VIEW_W: f32 = 1120.0;
         const VIEW_H: f32 = 760.0;
-        let mut runtime = build_runtime(gpu(), false, false, false, 1120, 760, 1.0).unwrap();
+        let mut runtime = build_runtime(gpu(), false, false, false, false, 1120, 760, 1.0).unwrap();
         for _ in 0..24 {
             runtime.pump().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -610,6 +628,69 @@ mod tests {
             image.props.layout.height,
             Some(nana_ui_vue::LengthSpec::Px(48.0)),
             "Vue img stylesheet height was not applied: {image:?}"
+        );
+    }
+
+    #[test]
+    fn chrome_probe_mounts_app_shell_on_frameless_primary() {
+        assert!(!primary_window_settings(true, false).system_caption);
+        assert!(primary_window_settings(false, false).system_caption);
+        assert!(primary_window_settings(false, true).system_caption);
+
+        let mut runtime = build_runtime(gpu(), false, false, false, true, 1120, 760, 1.0).unwrap();
+        for _ in 0..24 {
+            runtime.pump().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let snapshot = runtime
+            .vue()
+            .host(VueWindowId::PRIMARY)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .semantic_snapshot();
+        assert!(
+            snapshot.widgets.iter().any(|widget| {
+                widget.kind == WidgetKind::AppShell
+                    || widget
+                        .props
+                        .element_tag
+                        .eq_ignore_ascii_case("nana-app-shell")
+            }),
+            "nana-app-shell missing: {snapshot:?}"
+        );
+        assert!(
+            snapshot.widgets.iter().any(|widget| {
+                widget
+                    .props
+                    .element_tag
+                    .eq_ignore_ascii_case("nana-app-title-bar")
+                    || widget
+                        .props
+                        .class_names
+                        .iter()
+                        .any(|class| class.contains("nana-app-title-bar"))
+            }),
+            "nana-app-title-bar missing: {snapshot:?}"
+        );
+        assert!(
+            snapshot.widgets.iter().any(|widget| {
+                widget.kind == WidgetKind::Input && widget.props.agent_id == "chrome-probe-input"
+            }),
+            "chrome-probe input missing: {snapshot:?}"
+        );
+        assert!(
+            !runtime
+                .drain_window_commands()
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    VueWindowCommand::Open {
+                        id: VueWindowId(1),
+                        ..
+                    }
+                )),
+            "chrome-probe must not open the auxiliary window"
         );
     }
 

@@ -42,9 +42,9 @@
    `WS_EX_NOREDIRECTIONBITMAP=0`。本次运行没有 `PreMultiplied`/`Opaque` 日志行
    （`vue-hosted-acceptance` 未初始化 `log` 订阅者，`RUST_LOG` 无输出）。
    标题栏（#21 旁观）：L1 未显式指定的 `Nana.windows.create()` 现映射
-   `system_caption: false`；验收主窗仍硬编码 `system_caption(true)`，因为 Vue
-   fixture 未装配 `nana-app-shell` / `nana-app-title-bar`；IME 候选是否被无边框
-   裁切本次未验。
+   `system_caption: false`。独立 `--chrome-probe` 在无边框主窗挂载 NanaAppShell
+   / `nana-app-title-bar`；HostedAcceptance 仍无标题栏且仍用系统标题栏。#21 /
+   IME-vs-chrome 未关闭（本次无真窗口 IME 证据）。
 
 代码层 P1 已关闭：外部文件拖放现在进入 Vue 事件树；仿射包装通过 Operation proxy 转换
 容器、滚动、焦点、文本输入、文本和自定义节点的报告边界，同时保持控件状态与原布局关联。
@@ -78,11 +78,13 @@ Fetch 使用每请求可取消的 DNS/transport 链；取消会关闭登记的 T
 ```powershell
 cargo run -p vue-hosted-acceptance --locked -- --input-probe
 cargo run -p vue-hosted-acceptance --locked -- --hybrid --windows
+cargo run -p vue-hosted-acceptance --locked -- --chrome-probe
 ```
 
 `--input-probe` 仅让真实 Vue 输入框在挂载后获得焦点，不注入、伪造或代替 IME 事件；
 验收者需要实际选择中文输入法，确认预编辑、候选框位置和最终文本。`--hybrid --windows`
 启动注册原生组件与透明模态辅助窗口，用于检查 Vue/Runtime 交错合成和桌面 Alpha。
+`--chrome-probe` 在无系统标题栏的主窗挂载 NanaAppShell，供后续 IME/标题栏人工检查；不替代 HostedAcceptance，也不关闭 #21。
 历史 Windows/WGPU 运行曾输出 `PreMultiplied`，证明发布路径可以不退化为 `Opaque`；
 2026-08-23 本次真窗口运行没有再次打出 `PreMultiplied`/`Opaque` 行。合成桌面截图里
 透明辅助窗客户区为不透明白底，桌面没有透出；这不能用“截图策略把 Alpha 拍坏”一笔带过，

@@ -168,6 +168,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                             .map(|_| WidgetKind::Column)
                     })
                 })
+                .or_else(|| app_shell_slot_widget_kind(&kind_raw))
                 .ok_or_else(|| JsException::new(format!("unknown widget kind: {kind_raw}")))?;
             let prop_map = match args.get(1) {
                 Some(HostValue::Object(map)) => Some(map),
@@ -193,6 +194,8 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 .unwrap_or_else(|| {
                     if WidgetKind::parse(&kind_raw).is_some() {
                         kind.element_tag().to_owned()
+                    } else if app_shell_slot_widget_kind(&kind_raw).is_some() {
+                        "nana-app-title-bar".into()
                     } else {
                         kind_raw.trim().to_ascii_lowercase()
                     }
@@ -1186,6 +1189,13 @@ fn lock_bridge(
         .map_err(|_| JsException::new("nana message bridge poisoned"))
 }
 
+/// AppShell title-bar is a tagged slot, not a `WidgetKind` / ComponentRegistry tag.
+fn app_shell_slot_widget_kind(kind_raw: &str) -> Option<WidgetKind> {
+    let raw = kind_raw.trim().to_ascii_lowercase();
+    let raw = raw.strip_prefix("nana-").unwrap_or(&raw);
+    (raw == "app-title-bar").then_some(WidgetKind::Column)
+}
+
 fn arg_str(args: &[HostValue], index: usize) -> Option<String> {
     args.get(index).and_then(|v| match v {
         HostValue::String(s) => Some(s.clone()),
@@ -1503,6 +1513,34 @@ mod tests {
         assert_eq!(w.kind, WidgetKind::Button);
         assert_eq!(w.props.label, "Increment");
         assert_eq!(w.props.button_kind, nana_ui_core::ButtonKind::Primary);
+    }
+
+    #[test]
+    fn create_widget_registers_app_title_bar_slot() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        for kind in ["app-title-bar", "nana-app-title-bar"] {
+            let id = api
+                .call("createWidget", &[HostValue::string(kind)])
+                .unwrap_or_else(|error| panic!("createWidget({kind}): {error}"));
+            let nid = id.as_f64().expect("id") as u64;
+            let snap = bridge.lock().unwrap().snapshot();
+            let w = snap.get(nid).expect("widget");
+            assert_eq!(w.kind, WidgetKind::Column);
+            assert_eq!(w.props.element_tag, "nana-app-title-bar");
+        }
+        assert!(
+            api.call("createWidget", &[HostValue::string("title-bar")])
+                .is_err(),
+            "generic title-bar is not AppShell chrome"
+        );
     }
 
     #[test]

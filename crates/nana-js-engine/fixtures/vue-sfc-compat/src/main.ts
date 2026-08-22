@@ -1,4 +1,5 @@
 import { createNanaApp, mountRootHandle } from "@nanaui/nanavue-runtime";
+import ChromeProbe from "./ChromeProbe.vue";
 import CompatFixture from "./CompatFixture.vue";
 import HostedAcceptance from "./HostedAcceptance.vue";
 
@@ -11,10 +12,13 @@ try {
 if (acceptanceMode) {
   (globalThis as any).__nanaHostedAcceptance = {
     mount() {
-      const app = createApp(HostedAcceptance, {
-        hybrid: acceptanceMode.startsWith("hybrid"),
-        autoWindows: acceptanceMode.endsWith("-windows"),
-      });
+      const app =
+        acceptanceMode === "chrome-probe"
+          ? createApp(ChromeProbe)
+          : createApp(HostedAcceptance, {
+              hybrid: acceptanceMode.startsWith("hybrid"),
+              autoWindows: acceptanceMode.endsWith("-windows"),
+            });
       app.mount(mountRootHandle());
       return { mounted: true, mode: acceptanceMode };
     },
