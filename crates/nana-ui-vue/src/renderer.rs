@@ -168,6 +168,12 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                             .map(|_| WidgetKind::Column)
                     })
                 })
+                .or_else(|| {
+                    kind_raw
+                        .trim()
+                        .eq_ignore_ascii_case("form")
+                        .then_some(WidgetKind::Column)
+                })
                 .or_else(|| app_shell_slot_widget_kind(&kind_raw))
                 .ok_or_else(|| JsException::new(format!("unknown widget kind: {kind_raw}")))?;
             let prop_map = match args.get(1) {
@@ -1513,6 +1519,40 @@ mod tests {
         assert_eq!(w.kind, WidgetKind::Button);
         assert_eq!(w.props.label, "Increment");
         assert_eq!(w.props.button_kind, nana_ui_core::ButtonKind::Primary);
+    }
+
+    #[test]
+    fn create_widget_html_form_is_layout_column() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let form_id = api
+            .call("createWidget", &[HostValue::string("form")])
+            .expect("HTML form")
+            .as_f64()
+            .expect("id") as u64;
+        {
+            let snap = bridge.lock().unwrap().snapshot();
+            let w = snap.get(form_id).expect("widget");
+            assert_eq!(w.kind, WidgetKind::Column);
+            assert_eq!(w.props.element_tag, "form");
+        }
+        for kind in ["nana-form", "form-field", "nana-form-field"] {
+            let id = api
+                .call("createWidget", &[HostValue::string(kind)])
+                .unwrap_or_else(|error| panic!("createWidget({kind}): {error}"));
+            let nid = id.as_f64().expect("id") as u64;
+            let snap = bridge.lock().unwrap().snapshot();
+            let w = snap.get(nid).expect("widget");
+            assert_eq!(w.kind, WidgetKind::FormField, "{kind}");
+            assert_eq!(w.props.element_tag, "nana-form-field", "{kind}");
+        }
     }
 
     #[test]
