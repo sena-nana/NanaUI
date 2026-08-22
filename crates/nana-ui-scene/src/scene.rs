@@ -154,10 +154,12 @@ pub struct UiScene {
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
     ordered: BTreeSet<SceneOrderKey>,
-    /// Identity that changes on every mutation (copy-on-write clones get a
-    /// fresh value). Painters use it to reuse a validated frame graph across
-    /// repaints of an unchanged scene. Never zero: two freshly created scenes
-    /// must not share an identity.
+    /// Identity that changes on node-changing mutation and on Clone.
+    /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
+    /// gets a fresh value, because product flush mutates a unique `Arc` in
+    /// place after the first paint. Painters key a validated op stream on
+    /// this id. Never zero: two freshly created scenes must not share an
+    /// identity.
     instance: u64,
 }
 
@@ -195,7 +197,9 @@ impl UiScene {
         Self::default()
     }
 
-    /// Mutation-unique identity; copy-on-write clones get a fresh value.
+    /// Mutation-unique identity. Clone and in-place node-changing
+    /// [`Self::apply_delta`] both get a fresh value; idle `apply_delta([], [])`
+    /// keeps it so unchanged-scene paint caches still hit.
     pub fn instance_id(&self) -> u64 {
         self.instance
     }
@@ -239,6 +243,8 @@ impl UiScene {
     }
 
     /// Apply Runtime's dirty extraction and tombstone stream atomically.
+    /// Updating or removing nodes refreshes [`Self::instance_id`]; an empty
+    /// no-op keeps the current instance.
     pub fn apply_delta(
         &mut self,
         extracted: impl IntoIterator<Item = ExtractedNode>,
@@ -286,6 +292,7 @@ impl UiScene {
                     self.insert_node_ordered(id);
                 }
             }
+            self.instance = next_scene_instance();
         }
         SceneDelta {
             updated_nodes,
@@ -3651,6 +3658,48 @@ mod tests {
             standard_visual_foreground: None,
             custom_render: None,
         }
+    }
+
+    #[test]
+    fn apply_delta_refreshes_instance_on_node_changes_not_idle() {
+        let mut scene = UiScene::new();
+        let created = scene.instance_id();
+        scene.apply_delta([], []);
+        assert_eq!(
+            scene.instance_id(),
+            created,
+            "empty apply_delta must keep the instance so idle paint caches hit"
+        );
+
+        scene.apply_delta([node(1, None, &[])], []);
+        let after_insert = scene.instance_id();
+        assert_ne!(
+            after_insert, created,
+            "inserting a node in place must refresh the instance"
+        );
+
+        let mut updated = node(1, None, &[]);
+        updated.layout.width = 40.0;
+        scene.apply_delta([updated], []);
+        let after_update = scene.instance_id();
+        assert_ne!(
+            after_update, after_insert,
+            "updating a node in place must refresh the instance"
+        );
+
+        scene.apply_delta([], []);
+        assert_eq!(
+            scene.instance_id(),
+            after_update,
+            "empty apply_delta after a real delta must keep the instance"
+        );
+
+        let cloned = scene.clone();
+        assert_ne!(
+            cloned.instance_id(),
+            scene.instance_id(),
+            "Clone still gets a distinct instance"
+        );
     }
 
     #[test]

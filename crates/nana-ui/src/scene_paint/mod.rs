@@ -75,8 +75,9 @@ pub struct SceneWgpuPainter {
     last_dest_pass_counts: Option<DestPassCounts>,
     /// Validated operation streams keyed by scene instance. An unchanged
     /// scene revalidates nothing: no frame-graph rebuild, no per-primitive
-    /// validation scan, no label allocation. Copy-on-write mutation gives the
-    /// scene a fresh instance id, so entries cannot go stale.
+    /// validation scan, no label allocation. Node-changing `apply_delta` and
+    /// Clone both refresh the instance, so in-place mutation cannot leave a
+    /// stale stream.
     validated_scenes: HashMap<u64, Arc<[RenderOperation]>>,
     validated_order: VecDeque<u64>,
 }
@@ -180,7 +181,8 @@ impl SceneWgpuPainter {
             Some(cached) => Arc::clone(cached),
             None => {
                 let operations = validate_scene(scene, host_textures, gpu_renderers)?;
-                self.validated_scenes.insert(instance, Arc::clone(&operations));
+                self.validated_scenes
+                    .insert(instance, Arc::clone(&operations));
                 self.validated_order.push_back(instance);
                 while self.validated_scenes.len() > VALIDATED_SCENE_CACHE {
                     let Some(oldest) = self.validated_order.pop_front() else {
@@ -366,8 +368,8 @@ impl SceneWgpuPainter {
                         // The registry is a shared RwLock: an entry validated at
                         // frame start can be removed before prepare. Skip the
                         // node for this frame instead of panicking.
-                        let Some(binding) =
-                            host_textures.and_then(|registry| registry.get(custom.resource.as_ref()))
+                        let Some(binding) = host_textures
+                            .and_then(|registry| registry.get(custom.resource.as_ref()))
                         else {
                             continue;
                         };
@@ -544,7 +546,8 @@ impl SceneWgpuPainter {
         );
         let encode = encode_started.elapsed();
         self.host_textures.trim();
-        self.last_gpu_work = Some(gpu_work.snapshot());        self.last_gpu_timings = Some(GpuStageTimings {
+        self.last_gpu_work = Some(gpu_work.snapshot());
+        self.last_gpu_timings = Some(GpuStageTimings {
             batch,
             gpu_upload,
             encode,
@@ -701,8 +704,9 @@ fn restore_dest_viewport(pass: &mut wgpu::RenderPass<'_>, dest_physical: [u32; 2
 mod tests {
     use nana_ui_core::{ButtonKind, LengthSpec, SemanticColorRole};
     use nana_ui_runtime::{
-        AppContext, Button as RuntimeButton, ComponentGeometry, CustomRenderNode, DocumentId,
-        GpuTextureView, LayoutBox, MutationQueue, NodeStyle,
+        AppContext, Button as RuntimeButton, ComponentGeometry, ComputedStyle, CustomRenderNode,
+        DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue, NodeKind, NodeStyle,
+        StableNodeId,
     };
     use nana_ui_scene::{ScenePrimitiveKind, UiScene};
 
@@ -885,7 +889,91 @@ mod tests {
             hits_after_second >= misses_after_first,
             "every paragraph from the first frame must be a cache hit on repaint"
         );
-        assert_eq!(first, second, "cached shaping must produce identical pixels");
+        assert_eq!(
+            first, second,
+            "cached shaping must produce identical pixels"
+        );
+    }
+
+    #[test]
+    fn paint_draws_node_inserted_by_in_place_apply_delta() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [colored_quad_node(
+                1,
+                0.0,
+                0.0,
+                32.0,
+                64.0,
+                [1.0, 0.0, 0.0, 1.0],
+            )],
+            [],
+        );
+        let first_instance = scene.instance_id();
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+
+        let paint = |painter: &mut SceneWgpuPainter, scene: &UiScene| -> Vec<u8> {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nana-ui in-place delta paint"),
+            });
+            painter
+                .paint(scene, &mut encoder, &view, viewport, None, None)
+                .unwrap();
+            readback_rgba(&device, &queue, encoder, &texture, 64, 64)
+        };
+
+        let first = paint(&mut painter, &scene);
+        let left = pixel(&first, 64, 8, 32);
+        let right = pixel(&first, 64, 48, 32);
+        assert!(
+            is_red_slot(left),
+            "first paint must draw the existing quad, got {left:?}"
+        );
+        assert!(
+            right[0] < 40 && right[1] < 40 && right[2] < 40,
+            "right half must stay clear before the inserted node, got {right:?}"
+        );
+
+        scene.apply_delta(
+            [colored_quad_node(
+                2,
+                32.0,
+                0.0,
+                32.0,
+                64.0,
+                [0.0, 1.0, 0.0, 1.0],
+            )],
+            [],
+        );
+        assert_ne!(
+            scene.instance_id(),
+            first_instance,
+            "in-place apply_delta must refresh instance so the painter cannot reuse the stale op stream"
+        );
+
+        let second = paint(&mut painter, &scene);
+        let left = pixel(&second, 64, 8, 32);
+        let right = pixel(&second, 64, 48, 32);
+        assert!(
+            is_red_slot(left),
+            "existing quad must still draw after the in-place insert, got {left:?}"
+        );
+        assert!(
+            is_green_slot(right),
+            "new primitive must be encoded after in-place apply_delta, got {right:?}"
+        );
     }
 
     #[test]
@@ -1207,6 +1295,51 @@ mod tests {
         write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
         context.commit_mutations(layout).unwrap();
         commit_scene(&mut context)
+    }
+
+    fn colored_quad_node(
+        value: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],
+    ) -> ExtractedNode {
+        ExtractedNode {
+            id: StableNodeId::new(value).unwrap(),
+            kind: std::sync::Arc::new(NodeKind::Element { tag: "div".into() }),
+            parent: None,
+            children: std::sync::Arc::new(Vec::new()),
+            layout: LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+            scroll_offset: nana_ui_runtime::ScrollOffset::default(),
+            source_style: NodeStyle {
+                layout: std::sync::Arc::new(nana_ui_core::LayoutStyle {
+                    background: Some(color),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+            style: std::sync::Arc::new(ComputedStyle {
+                background: Some(color),
+                ..ComputedStyle::default()
+            }),
+            text: None,
+            text_metrics: None,
+            z_index: 0,
+            focused: false,
+            ime: None,
+            text_input: None,
+            text_spans: Vec::new(),
+            standard_visual: None,
+            component_geometry: None,
+            standard_visual_foreground: None,
+            custom_render: None,
+        }
     }
 
     fn commit_scene(context: &mut AppContext) -> UiScene {
