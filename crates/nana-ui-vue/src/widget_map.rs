@@ -115,7 +115,7 @@ pub fn resolve_kind_from_hints(
         "span" | "p" | "label" | "strong" | "em" | "code" | "small" | "b" | "h1" | "h2" | "h3"
         | "h4" | "h5" | "h6" | "output" | "#text" => WidgetKind::Text,
         "div" | "section" | "article" | "main" | "aside" | "nav" | "header" | "footer" | "ul"
-        | "ol" | "form" | "fieldset" | "body" | "template" | "fragment" => {
+        | "ol" | "form" | "search" | "fieldset" | "body" | "template" | "fragment" => {
             // Direction comes from CSS / documented utilities only — never invent
             // Row from product `--row` / `*horizontal*` class substrings.
             if class
@@ -156,6 +156,7 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "ol"
             | "li"
             | "form"
+            | "search"
             | "fieldset"
             | "a"
             | "img"
@@ -1054,6 +1055,15 @@ mod tests {
             resolve_kind_from_hints("form", None, None, None),
             Some(WidgetKind::Column),
             "HTML form stays a layout box"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("search", None, None, None),
+            Some(WidgetKind::Column),
+            "HTML search stays a layout box"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-search", None, None, None),
+            Some(WidgetKind::Select)
         );
         assert_eq!(
             resolve_kind_from_hints("div", Some("nana-interactive-card"), None, None),

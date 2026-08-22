@@ -2665,7 +2665,9 @@ fn try_bind_registered_component(
         crate::WidgetKind::Column | crate::WidgetKind::Box | crate::WidgetKind::Row
     );
     if !layout_kind {
-        mutations.set_component_type(id, Some(type_id));
+        if context.world().component_type(id) != Some(&type_id) {
+            mutations.set_component_type(id, Some(type_id));
+        }
         return None;
     }
     let layout = Arc::new(widget.props.layout.clone());
