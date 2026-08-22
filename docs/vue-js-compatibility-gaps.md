@@ -41,8 +41,10 @@
    在窗体四周而不是透过窗体。HWND：`WS_CAPTION`，`WS_EX_LAYERED=0`，
    `WS_EX_NOREDIRECTIONBITMAP=0`。本次运行没有 `PreMultiplied`/`Opaque` 日志行
    （`vue-hosted-acceptance` 未初始化 `log` 订阅者，`RUST_LOG` 无输出）。
-   标题栏（#21 旁观）：该验收程序 `system_caption(true)`，主窗与辅助窗都是系统 caption
-   / 系统拖拽，不是自绘 frameless chrome；IME 候选是否被无边框裁切本次未验。
+   标题栏（#21 旁观）：L1 未显式指定的 `Nana.windows.create()` 现映射
+   `system_caption: false`；验收主窗仍硬编码 `system_caption(true)`，因为 Vue
+   fixture 未装配 `nana-app-shell` / `nana-app-title-bar`；IME 候选是否被无边框
+   裁切本次未验。
 
 代码层 P1 已关闭：外部文件拖放现在进入 Vue 事件树；仿射包装通过 Operation proxy 转换
 容器、滚动、焦点、文本输入、文本和自定义节点的报告边界，同时保持控件状态与原布局关联。

@@ -51,6 +51,7 @@ pub struct VueWindowOptions {
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub transparent: bool,
+    /// Default true → `system_caption: false`. Pass `false` for OS caption.
     pub frameless: bool,
     pub always_on_top: bool,
     pub resizable: bool,
@@ -97,7 +98,7 @@ impl Default for VueWindowOptions {
             x: None,
             y: None,
             transparent: false,
-            frameless: false,
+            frameless: true,
             always_on_top: false,
             resizable: true,
             modal: false,
@@ -1481,7 +1482,45 @@ mod tests {
         assert!(matches!(
             runtime.drain_window_commands().as_slice(),
             [VueWindowCommand::Open { id: VueWindowId(1), options }]
-                if options.title == "Tool" && options.role == VueWindowRole::Tool
+                if options.title == "Tool"
+                    && options.role == VueWindowRole::Tool
+                    && options.frameless
+        ));
+    }
+
+    #[test]
+    fn unspecified_create_defaults_to_client_chrome() {
+        assert!(VueWindowOptions::default().frameless);
+
+        let runtime = VueRuntime::default();
+        let api = runtime.host_api_registry();
+        api.call("windowCreate", &[]).expect("create window");
+        let commands = runtime.drain_runtime_window_commands();
+        assert!(matches!(
+            commands.as_slice(),
+            [nana_ui_platform::WindowCommand::Open { settings, .. }]
+                if !settings.system_caption
+        ));
+    }
+
+    #[test]
+    fn explicit_framed_create_requests_system_caption() {
+        let runtime = VueRuntime::default();
+        let api = runtime.host_api_registry();
+        api.call(
+            "windowCreate",
+            &[HostValue::Object(
+                [("frameless".into(), HostValue::Bool(false))]
+                    .into_iter()
+                    .collect(),
+            )],
+        )
+        .expect("create framed window");
+        let commands = runtime.drain_runtime_window_commands();
+        assert!(matches!(
+            commands.as_slice(),
+            [nana_ui_platform::WindowCommand::Open { settings, .. }]
+                if settings.system_caption
         ));
     }
 
