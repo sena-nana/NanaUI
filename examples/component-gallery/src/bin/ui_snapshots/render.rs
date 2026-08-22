@@ -438,7 +438,6 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
 
     let mut workspace_dock_preview = GalleryState::new();
     workspace_dock_preview.update(GalleryMessage::SelectSection(GallerySection::Workspace));
-    prepare_dock_preview(&mut workspace_dock_preview);
     paths.push(gallery_snapshot(
         &mut snapshots,
         &output,
@@ -448,7 +447,6 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut workspace_dock_preview_light = GalleryState::new();
     workspace_dock_preview_light.update(GalleryMessage::SelectSection(GallerySection::Workspace));
     workspace_dock_preview_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
-    prepare_dock_preview(&mut workspace_dock_preview_light);
     paths.push(gallery_snapshot(
         &mut snapshots,
         &output,
@@ -1337,24 +1335,6 @@ fn paint_gallery(
         Some(scene) => snapshots.paint(scene, size, clear, None, None),
         None => snapshots.paint_layers(&[], size, clear, None, None),
     }
-}
-
-fn prepare_dock_preview(state: &mut GalleryState) {
-    let surface = nana_ui::DockSurfaceId(0);
-    state.update(GalleryMessage::Dock(nana_ui::DockAction::DragStart {
-        surface,
-        id: nana_ui::DockId::from("gallery.assets"),
-    }));
-    state.update(GalleryMessage::Dock(nana_ui::DockAction::DragMove {
-        surface,
-        position: LogicalPoint::new(350.0, 250.0),
-    }));
-    state.update(GalleryMessage::Dock(nana_ui::DockAction::DragMove {
-        surface,
-        position: LogicalPoint::new(355.0, 250.0),
-    }));
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    state.update(GalleryMessage::Dock(nana_ui::DockAction::Hover(false)));
 }
 
 fn archived_or_runtime(
