@@ -34,7 +34,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 nana-ui = { path = "../nana-ui", optional = true, default-features = false }
 wgpu = { workspace = true, optional = true }
-# Intentionally NOT depending on nana-js-quickjs or nana-js-v8.
+# Intentionally NOT depending on nana-js-v8. Apps link the concrete engine.
 
 [[bin]]
 name = "nana-vue-runtime-benchmark"

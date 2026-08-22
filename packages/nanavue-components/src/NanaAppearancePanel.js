@@ -72,7 +72,7 @@ export const NanaAppearancePanel = {
     const materialHint = computed(
       () =>
         props.platformHint ||
-        "本平台首选 Vibrancy。Hosted GPU 表面若与材质层冲突会回退实色，不崩溃。",
+        "实色或窗口透明由设置选择；系统模糊由应用显式申请。Hosted GPU 不提供恒 no-op 的 Vibrancy 选项。",
     );
 
     const backdropTargetOptions = computed(() => [

@@ -1,5 +1,7 @@
 /target/
 /target-android/
+/dist/
 .DS_Store
+__pycache__/
 /perf/reports/**
 !/perf/reports/.gitkeep

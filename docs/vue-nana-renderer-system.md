@@ -9,7 +9,7 @@ Vue 3 SFC / TypeScript / JavaScript
         │ Nana Vite entry + createNanaApp
         ▼
 reproducible IIFE + CSS subset
-        │ QuickJS XOR V8
+        │ V8
         ▼
 Custom Renderer hostOps
         │
@@ -30,7 +30,7 @@ L1 是 WebView Vue 源码的 Nana 兼容子集，不是 WebView，也不是 Taur
 | 模块 | 责任 |
 | --- | --- |
 | `nana-js-engine` | 引擎无关值、函数和 `HostApiRegistry` |
-| `nana-js-quickjs` / `nana-js-v8` | 二选一执行 JS |
+| `nana-js-v8` | 产品 JS 引擎；`JsEngine` 是测试注入缝 |
 | `nanavue-runtime` | Vue `createRenderer` hostOps 与事件桥 |
 | `nana-ui-web-api` | window/document/EventTarget/timer/fetch 缓冲子集 |
 | `nana-ui-platform` | clipboard、Fetch 策略和真实阻塞 HTTP(S) 后端 |

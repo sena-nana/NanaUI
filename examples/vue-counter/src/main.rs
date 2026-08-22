@@ -16,8 +16,6 @@ use nana_js_engine::probe::vue_phase3_artifact;
 use nana_js_engine::{HostValue, JsEngine, RuntimeArtifact};
 use nana_ui_vue::{BridgeEvent, NodeHandle, VueHost, WidgetKind};
 
-nana_ui_vue::refuse_dual_js_engines!();
-
 /// Minimal JS counter that owns state and drives the Rust semantic bridge.
 const SEMANTIC_COUNTER_JS: &str = r#"
 (function () {
@@ -163,26 +161,14 @@ fn run_headless(app: &str, clicks: usize, use_bytecode: bool) -> Result<String, 
     let mut engine = create_engine()?;
 
     if use_bytecode {
-        #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
-        {
-            use nana_js_engine::probe::VUE_PHASE3_JS;
-            use nana_ui_web_api::WEB_API_SHIM_JS;
-            let composed = format!("{WEB_API_SHIM_JS}\n{VUE_PHASE3_JS}");
-            let artifact =
-                nana_js_quickjs::QuickJsEngine::compile_bytecode("vue-phase3.qbc.js", &composed)
-                    .map_err(|e| e.to_string())?;
-            host.initialize_with_web_api(&mut *engine, artifact)
-                .map_err(|e| e.to_string())?;
-            engine.run_microtasks().map_err(|e| e.to_string())?;
-        }
-        #[cfg(feature = "engine-v8")]
-        {
-            return Err("--bytecode is QuickJS-only (QuickJsBytecode)".into());
-        }
-        #[cfg(not(any(feature = "engine-quickjs", feature = "engine-v8")))]
-        {
-            return Err("no engine feature".into());
-        }
+        use nana_js_engine::probe::VUE_PHASE3_JS;
+        use nana_ui_web_api::WEB_API_SHIM_JS;
+        let composed = format!("{WEB_API_SHIM_JS}\n{VUE_PHASE3_JS}");
+        let artifact = nana_js_v8::V8Engine::compile_snapshot("vue-phase3.v8snap.js", &composed)
+            .map_err(|e| e.to_string())?;
+        host.initialize_with_web_api(&mut *engine, artifact)
+            .map_err(|e| e.to_string())?;
+        engine.run_microtasks().map_err(|e| e.to_string())?;
     } else {
         host.attach_engine(&mut *engine)
             .map_err(|e| e.to_string())?;
@@ -244,7 +230,7 @@ fn run_headless(app: &str, clicks: usize, use_bytecode: bool) -> Result<String, 
         .and_then(HostValue::as_bool)
         .unwrap_or(false);
     let artifact_kind = if use_bytecode {
-        "QuickJsBytecode"
+        "V8Snapshot"
     } else {
         "SourceUtf8"
     };
@@ -285,34 +271,22 @@ fn settle_layout_stable(
 }
 
 fn create_engine() -> Result<Box<dyn JsEngine>, String> {
-    #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
-    {
-        Ok(Box::new(nana_js_quickjs::QuickJsEngine::new()))
-    }
-    #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
+    #[cfg(feature = "engine-v8")]
     {
         Ok(Box::new(nana_js_v8::V8Engine::new()))
     }
-    #[cfg(all(feature = "engine-quickjs", feature = "engine-v8"))]
+    #[cfg(not(feature = "engine-v8"))]
     {
-        compile_error!("enable only one of engine-quickjs / engine-v8");
-    }
-    #[cfg(not(any(feature = "engine-quickjs", feature = "engine-v8")))]
-    {
-        Err("enable engine-quickjs or engine-v8".into())
+        Err("enable engine-v8".into())
     }
 }
 
 fn engine_label() -> &'static str {
-    #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
-    {
-        "quickjs"
-    }
-    #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
+    #[cfg(feature = "engine-v8")]
     {
         "v8"
     }
-    #[cfg(not(any(feature = "engine-quickjs", feature = "engine-v8")))]
+    #[cfg(not(feature = "engine-v8"))]
     {
         "none"
     }
@@ -326,15 +300,9 @@ mod windowed {
 
     use super::{SEMANTIC_COUNTER_JS, engine_label};
 
-    #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
-    type CounterEngine = nana_js_quickjs::QuickJsEngine;
-    #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
     type CounterEngine = nana_js_v8::V8Engine;
 
     pub fn run(_app: &str) -> Result<(), HostedRunError> {
-        #[cfg(all(feature = "engine-quickjs", not(feature = "engine-v8")))]
-        let engine = nana_js_quickjs::QuickJsEngine::new();
-        #[cfg(all(feature = "engine-v8", not(feature = "engine-quickjs")))]
         let engine = nana_js_v8::V8Engine::new();
         let title = format!("Vue Counter NanaUI bridge ({})", engine_label());
         VueRuntimeProgram::<CounterEngine>::run(

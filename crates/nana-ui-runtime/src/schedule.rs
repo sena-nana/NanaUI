@@ -48,6 +48,11 @@ impl DirtyMask {
     pub(crate) fn take(&mut self) -> u16 {
         std::mem::take(&mut self.0)
     }
+
+    /// Whether every bit in `bits` is set.
+    pub(crate) fn has(&self, bits: u16) -> bool {
+        self.0 & bits == bits
+    }
 }
 
 /// Deterministic per-system work produced from entity dirty components.

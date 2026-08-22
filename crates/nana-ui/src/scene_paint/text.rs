@@ -4,10 +4,13 @@ use cosmic_text::{
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::SceneTextSpan;
+use std::collections::{HashMap, VecDeque};
 
 use super::clip::LogicalRect;
 use super::color::{to_rgba8, with_opacity};
 use crate::PhysicalRect;
+
+const SHAPE_CACHE_CAP: usize = 512;
 
 pub(super) struct TextPipeline {
     font_system: FontSystem,
@@ -17,7 +20,75 @@ pub(super) struct TextPipeline {
     viewport: cryoglyph::Viewport,
     swash: SwashCache,
     renderers: Vec<cryoglyph::TextRenderer>,
-    buffers: Vec<Buffer>,
+    /// Shaped paragraphs reused across frames. Shaping is the dominant CPU
+    /// cost of a text-heavy frame and identical text+style+box repeats on
+    /// every repaint (scroll, hover, unrelated animations), so the shaped
+    /// `Buffer` is cached and only glyph vertices are regenerated per frame.
+    shape_cache: ShapeCache,
+    frame_texts: usize,
+    prev_frame_texts: usize,
+}
+
+#[derive(Default)]
+struct ShapeCache {
+    entries: HashMap<ShapeKey, Buffer>,
+    order: VecDeque<ShapeKey>,
+    hits: usize,
+    misses: usize,
+    evictions: usize,
+}
+
+impl ShapeCache {
+    fn get(&mut self, key: &ShapeKey) -> Option<&Buffer> {
+        if self.entries.contains_key(key) {
+            self.hits += 1;
+            self.entries.get(key)
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    fn insert(&mut self, key: ShapeKey, buffer: Buffer) {
+        if self.entries.contains_key(&key) {
+            return;
+        }
+        while self.entries.len() >= SHAPE_CACHE_CAP {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+            self.evictions += 1;
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, buffer);
+    }
+}
+
+/// Everything that determines the shaped output. Position is applied at draw
+/// time via `TextArea` and plain-text color via `default_color`, so neither
+/// is part of the key; rich spans bake their colors into shaping attrs and
+/// therefore belong to it.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ShapeKey {
+    content: String,
+    family: Option<String>,
+    weight: Option<u16>,
+    font_size_bits: u32,
+    line_height_bits: u32,
+    wrap: bool,
+    ellipsis: bool,
+    shaping: u8,
+    width_bits: u32,
+    height_bits: u32,
+    align: u8,
+    color: ColorKey,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ColorKey {
+    Plain,
+    Rich { spans: Vec<(String, [u32; 4])> },
 }
 
 pub(super) struct PreparedText {
@@ -46,12 +117,21 @@ impl TextPipeline {
             viewport,
             swash: SwashCache::new(),
             renderers: Vec::new(),
-            buffers: Vec::new(),
+            shape_cache: ShapeCache::default(),
+            frame_texts: 0,
+            prev_frame_texts: 0,
         }
     }
 
     pub(super) fn begin_frame(&mut self, queue: &wgpu::Queue, physical_size: [u32; 2]) {
-        self.buffers.clear();
+        self.prev_frame_texts = self.frame_texts;
+        self.frame_texts = 0;
+        // Renderer high-water decay: keep the GPU-side working set near the
+        // last frame's text count instead of retaining a peak forever.
+        let keep = self.prev_frame_texts + 8;
+        if self.renderers.len() > keep {
+            self.renderers.truncate(keep);
+        }
         self.viewport.update(
             queue,
             cryoglyph::Resolution {
@@ -59,6 +139,16 @@ impl TextPipeline {
                 height: physical_size[1].max(1),
             },
         );
+    }
+
+    /// Shape-cache counters for tests: (hits, misses, evictions). None until
+    /// consulted, mirroring the Runtime text cache contract.
+    pub(super) fn shape_cache_stats(&self) -> (usize, usize, usize) {
+        (
+            self.shape_cache.hits,
+            self.shape_cache.misses,
+            self.shape_cache.evictions,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -115,29 +205,66 @@ impl TextPipeline {
             TextHorizontalAlignment::Center => Some(Align::Center),
             TextHorizontalAlignment::End => Some(Align::Right),
         };
-        let mut buffer = Buffer::new(
-            &mut self.font_system,
-            Metrics::new(physical_size, physical_line_height),
-        );
-        buffer.set_size(Some(physical_width), Some(physical_height));
-        buffer.set_wrap(if wrap { Wrap::Word } else { Wrap::None });
-        buffer.set_ellipsize(if ellipsis {
-            cosmic_text::Ellipsize::End(cosmic_text::EllipsizeHeightLimit::Height(physical_height))
-        } else {
-            cosmic_text::Ellipsize::None
-        });
         let painted = presentation_spans(content, spans, default_color, opacity);
-        if painted.len() > 1 || painted.first().is_some_and(|span| span.1 != default_color) {
-            let rich = painted
-                .iter()
-                .map(|(text, color)| (*text, attrs.clone().color(rgba8_color(*color))))
-                .collect::<Vec<_>>();
-            buffer.set_rich_text(rich, &attrs, shaping, align);
-        } else {
-            buffer.set_text(content, &attrs, shaping, align);
+        let rich = painted.len() > 1 || painted.first().is_some_and(|span| span.1 != default_color);
+        let key = ShapeKey {
+            content: content.to_owned(),
+            family: family.map(str::to_owned),
+            weight,
+            font_size_bits: physical_size.to_bits(),
+            line_height_bits: physical_line_height.to_bits(),
+            wrap,
+            ellipsis,
+            shaping: match shaping {
+                Shaping::Basic => 0,
+                Shaping::Advanced => 1,
+            },
+            width_bits: physical_width.to_bits(),
+            height_bits: physical_height.to_bits(),
+            align: match horizontal {
+                TextHorizontalAlignment::Start => 0,
+                TextHorizontalAlignment::Center => 1,
+                TextHorizontalAlignment::End => 2,
+            },
+            color: if rich {
+                ColorKey::Rich {
+                    spans: painted
+                        .iter()
+                        .map(|(text, color)| ((*text).to_owned(), color.map(f32::to_bits)))
+                        .collect(),
+                }
+            } else {
+                ColorKey::Plain
+            },
+        };
+        if self.shape_cache.get(&key).is_none() {
+            let mut buffer = Buffer::new(
+                &mut self.font_system,
+                Metrics::new(physical_size, physical_line_height),
+            );
+            buffer.set_size(Some(physical_width), Some(physical_height));
+            buffer.set_wrap(if wrap { Wrap::Word } else { Wrap::None });
+            buffer.set_ellipsize(if ellipsis {
+                cosmic_text::Ellipsize::End(cosmic_text::EllipsizeHeightLimit::Height(
+                    physical_height,
+                ))
+            } else {
+                cosmic_text::Ellipsize::None
+            });
+            if rich {
+                let rich_text = painted
+                    .iter()
+                    .map(|(text, color)| (*text, attrs.clone().color(rgba8_color(*color))))
+                    .collect::<Vec<_>>();
+                buffer.set_rich_text(rich_text, &attrs, shaping, align);
+            } else {
+                buffer.set_text(content, &attrs, shaping, align);
+            }
+            buffer.shape_until_scroll(&mut self.font_system, false);
+            self.shape_cache.insert(key.clone(), buffer);
         }
-        buffer.shape_until_scroll(&mut self.font_system, false);
-        let (_, laid_out_height) = measure(&buffer);
+        let buffer = self.shape_cache.entries.get(&key).expect("shaped above");
+        let (_, laid_out_height) = measure(buffer);
         let [left, top] = text_box_origin(
             LogicalRect {
                 x: bounds.x * scale,
@@ -154,8 +281,8 @@ impl TextPipeline {
             right: ((clip.x + clip.width) * scale).round() as i32,
             bottom: ((clip.y + clip.height) * scale).round() as i32,
         };
-        let index = self.buffers.len();
-        self.buffers.push(buffer);
+        let index = self.frame_texts;
+        self.frame_texts += 1;
         if self.renderers.len() <= index {
             self.renderers.push(cryoglyph::TextRenderer::new(
                 &mut self.atlas,
@@ -165,7 +292,7 @@ impl TextPipeline {
             ));
         }
         let area = cryoglyph::TextArea {
-            text: self.buffers[index].layout_runs(),
+            text: buffer.layout_runs(),
             left,
             top,
             scale: 1.0,
@@ -185,7 +312,7 @@ impl TextPipeline {
         if matches!(result, Err(cryoglyph::PrepareError::AtlasFull)) {
             self.atlas.trim();
             let area = cryoglyph::TextArea {
-                text: self.buffers[index].layout_runs(),
+                text: buffer.layout_runs(),
                 left,
                 top,
                 scale: 1.0,

@@ -1,6 +1,5 @@
 //! V8-only Vue `runtime-core` probe.
 //!
-//! Mutually exclusive with `examples/vue-quickjs` — this binary never links QuickJS.
 //! Uses crates.io `v8 = "150.4.0"` (rusty_v8 successor).
 //!
 //! Stops at JS execution + HostApiRegistry callbacks. Product retained/render is
@@ -15,8 +14,6 @@ use nana_js_v8::V8Engine;
 use nana_ui_vue::VueHost;
 
 fn main() {
-    nana_ui_vue::refuse_dual_js_engines!();
-
     let iterations = env::args()
         .nth(1)
         .and_then(|s| s.parse::<usize>().ok())

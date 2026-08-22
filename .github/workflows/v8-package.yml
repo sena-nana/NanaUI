@@ -1,0 +1,86 @@
+name: Package V8
+
+# Source-build v8 150.4.0 for aarch64-linux-android. Official rusty_v8
+# releases omit this target. Manual only — GN+V8 is multi-hour.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Attach archives to release rusty-v8-v150.4.0
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  android-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      V8_FROM_SOURCE: "1"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Host deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libglib2.0-dev clang-19 libclang-19-dev gzip
+          echo LIBCLANG_PATH=/usr/lib/llvm-19/lib >> "$GITHUB_ENV"
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+      - name: Build and pack
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          source scripts/android-env.sh
+          cargo build -p nana-js-v8 --features engine \
+            --target aarch64-linux-android --release --locked
+          bash scripts/package-v8-android.sh dist/v8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rusty-v8-aarch64-linux-android
+          path: dist/v8/
+          if-no-files-found: error
+      - name: GitHub release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rusty-v8-v150.4.0
+          files: dist/v8/*
+
+  verify:
+    needs: android-arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rusty-v8-aarch64-linux-android
+          path: dist/v8
+      - name: Link packaged V8 into Android host
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          source scripts/use-v8-prebuilt.sh dist/v8
+          source scripts/android-env.sh
+          bash scripts/check-android-arm64.sh --build

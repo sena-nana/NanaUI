@@ -1,5 +1,7 @@
 # HISTORICAL — Phase 3 evidence — Vue Custom Renderer + blitz-dom + paint-stub
 
+> 状态注记：历史证据。QuickJS 已移除；产品引擎为 V8。
+
 Date: 2026-08-06
 
 This is a 2026-08-06 evidence log for the removed Blitz / paint-stub path. It is

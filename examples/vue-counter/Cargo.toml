@@ -11,16 +11,14 @@ name = "vue-counter"
 path = "src/main.rs"
 
 [features]
-default = ["engine-quickjs"]
-engine-quickjs = ["dep:nana-js-quickjs"]
+default = ["engine-v8"]
 engine-v8 = ["dep:nana-js-v8", "nana-js-v8/engine"]
-windowed = ["dep:nana-ui", "nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/controls", "nana-ui-vue/scene-view", "nana-ui-vue/hosted"]
+windowed = ["engine-v8", "dep:nana-ui", "nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/controls", "nana-ui-vue/scene-view", "nana-ui-vue/hosted"]
 
 [dependencies]
 nana-js-engine.workspace = true
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
 nana-ui-web-api.workspace = true
-nana-js-quickjs = { workspace = true, optional = true }
 nana-js-v8 = { workspace = true, optional = true }
 nana-ui = { path = "../../crates/nana-ui", optional = true, default-features = false }
 serde_json.workspace = true

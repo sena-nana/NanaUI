@@ -1,11 +1,14 @@
-//! QuickJS bootstrap shared by Android runtime and host-side smoke checks.
+//! V8 bootstrap shared by Android runtime and host-side smoke checks.
 
+#[cfg(feature = "engine-v8")]
 use nana_js_engine::probe::{probe_host_registry, vue_runtime_probe_artifact};
+#[cfg(feature = "engine-v8")]
 use nana_js_engine::{HostValue, JsEngine};
 use nana_ui_platform::PlatformCapabilities;
+#[cfg(feature = "engine-v8")]
 use nana_ui_vue::VueHost;
 
-/// Result of a one-shot QuickJS + VueHost bring-up (no GPU).
+/// Result of a one-shot V8 + VueHost bring-up (no GPU).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineBootReport {
     pub ok: bool,
@@ -14,19 +17,19 @@ pub struct EngineBootReport {
     pub capabilities: PlatformCapabilities,
 }
 
-/// Load QuickJS, attach VueHost, run the shared Vue runtime-core probe.
+/// Load V8, attach VueHost, run the shared Vue runtime-core probe.
 ///
-/// Used on Android before the first paint, and on host CI without a Surface.
+/// Used on host CI without a Surface. Android ARM64 links V8 when
+/// `RUSTY_V8_ARCHIVE` points at the GitHub Actions package
+/// (`docs/android-arm64.md`).
 pub fn smoke_engine_only() -> Result<EngineBootReport, String> {
-    nana_ui_vue::refuse_dual_js_engines!();
-
-    #[cfg(feature = "engine-quickjs")]
+    #[cfg(feature = "engine-v8")]
     {
-        use nana_js_quickjs::QuickJsEngine;
+        use nana_js_v8::V8Engine;
 
         let caps = PlatformCapabilities::android_mvp();
         let mut host = VueHost::with_viewport(720, 1280, 2.0);
-        let mut engine = QuickJsEngine::new();
+        let mut engine = V8Engine::new();
         host.attach_engine(&mut engine)
             .map_err(|e| format!("attach vue host: {e}"))?;
 
@@ -71,10 +74,13 @@ pub fn smoke_engine_only() -> Result<EngineBootReport, String> {
         Ok(report)
     }
 
-    #[cfg(not(feature = "engine-quickjs"))]
+    #[cfg(not(feature = "engine-v8"))]
     {
         let _ = PlatformCapabilities::android_mvp();
-        Err("nana-android-host requires feature `engine-quickjs`".into())
+        Err(
+            "nana-android-host requires feature `engine-v8` (desktop smoke, or Android with RUSTY_V8_ARCHIVE)"
+                .into(),
+        )
     }
 }
 
@@ -82,9 +88,10 @@ pub fn smoke_engine_only() -> Result<EngineBootReport, String> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "engine-v8")]
     #[test]
     fn smoke_engine_boots_on_host() {
-        let report = smoke_engine_only().expect("quickjs smoke");
+        let report = smoke_engine_only().expect("v8 smoke");
         assert!(report.ok);
         assert!(report.create_element > 0);
         assert!(report.capabilities.vulkan_surface);

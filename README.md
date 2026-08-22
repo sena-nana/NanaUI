@@ -96,10 +96,9 @@ cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
 `nana-ui-vue` 提供的是 WebView 中常见 Vue 3 源码的 Nana 兼容子集，不是
 WebView 或 Tauri 运行时。消费应用以 Vite 编译 SFC、TypeScript 与 CSS，在自己的
 入口中从 `@nanaui/nanavue-runtime` 调用 `createNanaApp()`；产出的 IIFE 由
-QuickJS 或 V8 执行；stable identity、hierarchy、text、focus、layout 与 render
+V8 执行；stable identity、hierarchy、text、focus、layout 与 render
 extraction 进入同一 Nana Runtime/UiScene。桌面标准控件由 `SceneWgpuPainter`
-绘制；仓内 Iced 仍是兼容资产与 Android 实验槽，不是应用编程模型。custom GPU
-node 已由同一 Scene frame graph 解析。
+绘制。custom GPU node 已由同一 Scene frame graph 解析。
 Runtime/Scene 合同与退出门禁见
 [`docs/runtime-scene.md`](docs/runtime-scene.md)。
 
@@ -136,17 +135,15 @@ cargo check --workspace --all-targets --locked
 cargo check -p nana-ui --all-targets --all-features --locked
 cargo check -p component-gallery --all-targets --all-features --locked
 cargo check -p vue-counter --all-targets --features windowed --locked
-cargo check -p vue-counter --all-targets --no-default-features --features engine-v8,windowed --locked
+cargo test -p nana-js-v8 --features engine --locked -- --test-threads=1
 (cd crates/nana-js-engine/fixtures/vue-sfc-compat && npm ci && npm run build)
 cargo check -p nana-css-parity --all-targets --features webview-ref --locked # macOS
 cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 ```
 
-Workspace application crates intentionally make QuickJS and V8 mutually exclusive, so the legal
-feature combinations are checked independently instead of enabling `--all-features` globally.
-Default-feature workspace Clippy and the public NanaUI / Gallery path both enforce zero warnings
-(`--no-deps -- -D warnings`).
+V8 is the single product JS engine. Default-feature workspace Clippy and the public NanaUI /
+Gallery path both enforce zero warnings (`--no-deps -- -D warnings`).
 
 生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
 

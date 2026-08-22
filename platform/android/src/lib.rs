@@ -1,6 +1,6 @@
 //! Experimental Android ARM64 host — not a current NanaUI product target.
 //!
-//! NativeActivity + `ANativeWindow` Surface + QuickJS (wgpu 30 / Vulkan). Desktop
+//! NativeActivity + `ANativeWindow` Surface + V8 (wgpu 30 / Vulkan). Desktop
 //! builds expose [`smoke_engine_only`] for host-side compile/smoke without NDK UI.
 //! The control slot is NanaUI Runtime + UiScene + `SceneWgpuPainter`.
 

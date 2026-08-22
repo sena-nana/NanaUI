@@ -9,7 +9,6 @@ description = "Windowed V8 acceptance app for pure Vue and Vue/Runtime compositi
 [features]
 default = ["engine-v8"]
 engine-v8 = []
-engine-quickjs = []
 
 [dependencies]
 nana-js-engine.workspace = true

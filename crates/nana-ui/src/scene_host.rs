@@ -15,6 +15,7 @@ use nana_ui_platform::{
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
 };
+use nana_ui_core::AppearanceSettings;
 use nana_window::{
     Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
     clear_system_material, prepare_client_chrome,
@@ -36,11 +37,10 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::accessibility::HostedAccessibility;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
+    HostFailure, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
     RuntimeWindowSettings, gated_runtime_window_update, runtime_text_input_request,
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
-use crate::theme::ThemeModeExt;
 use crate::{
     HostedGpuContext, HostedGpuError, HostedGpuSurface, HostedRunError, HostedSurfaceFrame,
     RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry, TitleBarDragTracker,
@@ -360,12 +360,20 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         #[cfg(not(target_os = "android"))]
         for request in self.take_accessibility_actions(id) {
-            let update = self
+            let update = match self
                 .program
                 .accessibility_action(id, request, &self.context_for(id))
-                .unwrap_or_else(|error| {
-                    panic!("RuntimeProgram accessibility action failed: {error}")
-                });
+            {
+                Ok(update) => update,
+                Err(error) => {
+                    self.program
+                        .host_failure(HostFailure::AccessibilityAction {
+                            window: id,
+                            error: error.to_string(),
+                        });
+                    continue;
+                }
+            };
             self.apply_update(event_loop, update);
             if event_loop.exiting() {
                 return;
@@ -485,7 +493,15 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     })
             })
             .transpose()
-            .unwrap_or_else(|error| panic!("RuntimeProgram IME dispatch failed: {error}"))
+            .unwrap_or_else(|error| {
+                // Drop this IME event instead of panicking; the program sees
+                // the failure through host_failure.
+                self.program.host_failure(HostFailure::ImeDispatch {
+                    window: id,
+                    error: error.to_string(),
+                });
+                Some(false)
+            })
             .unwrap_or(false);
         let modal_blocks_ime = self.program.document(id).is_some_and(|document| {
             document
@@ -554,13 +570,18 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 continue;
             };
             let had_samples = frame.has_updates();
-            update = update.merge(
-                self.program
-                    .animation_frame(id, frame, &self.context_for(id))
-                    .unwrap_or_else(|error| {
-                        panic!("RuntimeProgram animation handler failed: {error}")
-                    }),
-            );
+            match self
+                .program
+                .animation_frame(id, frame, &self.context_for(id))
+            {
+                Ok(frame_update) => update = update.merge(frame_update),
+                Err(error) => {
+                    self.program.host_failure(HostFailure::AnimationFrame {
+                        window: id,
+                        error: error.to_string(),
+                    });
+                }
+            }
             if had_samples {
                 update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
@@ -584,45 +605,68 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let geometry = self.geometry_of(id);
         let material = self.material_of(id);
         let viewport = LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
-        let (scene, pending) = {
-            let document = self
-                .program
-                .document_mut(id)
-                .unwrap_or_else(|| panic!("RuntimeProgram has no document for window {}", id.0));
-            let update = document
-                .flush(viewport, &mut self.text)
-                .unwrap_or_else(|error| panic!("RuntimeProgram frame did not settle: {error}"));
-            let pending = if !update.accessibility.updated.is_empty()
-                || !update.accessibility.removed.is_empty()
-            {
-                Some(AccessibilityUpdate::Delta(update.accessibility))
-            } else {
-                None
+        let flush = {
+            let Some(document) = self.program.document_mut(id) else {
+                // prepare_window_frame ran program code that may have closed
+                // this window's document; skip the frame instead of panicking.
+                self.program.host_failure(HostFailure::MissingDocument { window: id });
+                return;
             };
-            (document.shared_scene(), pending)
+            document.flush(viewport, &mut self.text)
+        };
+        let update = match flush {
+            Ok(update) => update,
+            Err(error) => {
+                // The frame did not settle; Runtime restored its dirty work,
+                // so the next redraw retries. Skipping keeps the process alive.
+                self.program.host_failure(HostFailure::FrameDidNotSettle {
+                    window: id,
+                    error: error.to_string(),
+                });
+                return;
+            }
+        };
+        let pending = if !update.accessibility.updated.is_empty()
+            || !update.accessibility.removed.is_empty()
+        {
+            Some(AccessibilityUpdate::Delta(update.accessibility))
+        } else {
+            None
+        };
+        let scene = {
+            let Some(document) = self.program.document_mut(id) else {
+                self.program.host_failure(HostFailure::MissingDocument { window: id });
+                return;
+            };
+            document.shared_scene()
         };
         if let Some(pending) = pending {
             *self.accessibility_pending_mut(id) = Some(pending);
         }
-        if let Some(producers) = self.program.scene_resource_producers(id) {
-            producers
-                .encode_scene(
-                    scene.as_ref(),
-                    self.graphics.resources().device(),
-                    self.graphics.resources().queue(),
-                )
-                .unwrap_or_else(|error| {
-                    panic!("RuntimeProgram resource production failed: {error}")
-                });
+        if let Some(producers) = self.program.scene_resource_producers(id)
+            && let Err(error) = producers.encode_scene(
+                scene.as_ref(),
+                self.graphics.resources().device(),
+                self.graphics.resources().queue(),
+            )
+        {
+            self.program.host_failure(HostFailure::ResourceProduction {
+                window: id,
+                error: error.to_string(),
+            });
+            return;
         }
         let format = if id == WindowId::PRIMARY {
             self.graphics.format()
         } else {
-            self.auxiliary
-                .get(&id)
-                .expect("validated auxiliary")
-                .surface
-                .format()
+            let Some(auxiliary) = self.auxiliary.get(&id) else {
+                // prepare_window_frame may have closed this auxiliary surface
+                // after the redraw guard above admitted it.
+                self.program
+                    .host_failure(HostFailure::AuxiliarySurfaceLost { window: id });
+                return;
+            };
+            auxiliary.surface.format()
         };
         let frame = match self.acquire_frame(id) {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
@@ -650,18 +694,21 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.default_scene_gpu_renderers.clone(),
         );
         let theme = self.program.theme_mode();
-        self.painter_mut(format)
-            .paint(
-                scene.as_ref(),
-                &mut encoder,
-                &target,
-                scene_paint_viewport(&geometry, material, theme),
-                host_textures.as_ref(),
-                gpu_renderers.as_ref(),
-            )
-            .unwrap_or_else(|error| {
-                panic!("RuntimeProgram produced an unpaintable UiScene: {error}")
+        let paint = self.painter_mut(format).paint(
+            scene.as_ref(),
+            &mut encoder,
+            &target,
+            scene_paint_viewport(&geometry, material, theme),
+            host_textures.as_ref(),
+            gpu_renderers.as_ref(),
+        );
+        if let Err(error) = paint {
+            self.program.host_failure(HostFailure::UnpaintableScene {
+                window: id,
+                error: error.to_string(),
             });
+            return;
+        }
         let submit_started = std::time::Instant::now();
         self.graphics.resources().queue().submit([encoder.finish()]);
         self.painter_mut(format)
@@ -1122,7 +1169,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         id: WindowId,
         input: InputEvent,
     ) -> nana_ui_platform::InputDisposition {
-        let disposition = self
+        let disposition = match self
             .program
             .document_mut(id)
             .map(|document| {
@@ -1135,15 +1182,30 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 )
             })
             .transpose()
-            .unwrap_or_else(|error| panic!("RuntimeProgram input dispatch failed: {error}"))
-            .unwrap_or_default();
+        {
+            Ok(disposition) => disposition.unwrap_or_default(),
+            Err(error) => {
+                // Drop this input event; the program sees the failure through
+                // host_failure instead of the process dying in the event loop.
+                self.program.host_failure(HostFailure::InputDispatch {
+                    window: id,
+                    error: error.to_string(),
+                });
+                nana_ui_platform::InputDisposition::default()
+            }
+        };
         let chrome_action = self.title_bar_chrome_action(id, &input);
         // Runtime may already have consumed the event (prevent_default). Scene
         // still delivers input_event so Gallery can drain Activate bindings and
         // Vue can emit JS. Leftover winit handling stays gated by the caller.
-        let update = scene_runtime_input_update(disposition, id, || {
-            self.program.input_event(id, &input, &self.context_for(id))
-        });
+        let program_input = self.program.input_event(id, &input, &self.context_for(id));
+        if let Err(error) = &program_input {
+            self.program.host_failure(HostFailure::InputHandler {
+                window: id,
+                error: error.to_string(),
+            });
+        }
+        let update = scene_runtime_input_update(disposition, id, program_input);
         let update = self.merge_title_bar_chrome(id, chrome_action, update);
         self.sync_appearance();
         self.apply_update(event_loop, update);
@@ -1590,11 +1652,18 @@ fn apply_scene_material(
     theme: crate::ThemeMode,
     requested: crate::MaterialEffect,
 ) -> MaterialOutcome {
-    let (appearance, fallback) = match theme {
-        crate::ThemeMode::Dark => (Appearance::Dark, FallbackColor::rgba(24, 24, 24, 220)),
-        crate::ThemeMode::Light => (Appearance::Light, FallbackColor::rgba(255, 255, 255, 232)),
+    let appearance = match theme {
+        crate::ThemeMode::Dark => Appearance::Dark,
+        crate::ThemeMode::Light => Appearance::Light,
     };
-    apply_hosted_system_material(window, requested, appearance, fallback)
+    let (red, green, blue, _) = theme.palette().background.to_u8_rgba();
+    let alpha = (AppearanceSettings::DEFAULT_BACKDROP_OPACITY * 255.0 + 0.5) as u8;
+    apply_hosted_system_material(
+        window,
+        requested,
+        appearance,
+        FallbackColor::rgba(red, green, blue, alpha),
+    )
 }
 
 fn apply_window_transparency(window: &winit::window::Window, requested: crate::MaterialEffect) {
@@ -1628,8 +1697,12 @@ fn scene_clear_color(theme: crate::ThemeMode, material: MaterialOutcome) -> [f32
     if material.effect == MaterialEffect::Transparent {
         return [0.0, 0.0, 0.0, 0.0];
     }
-    let color = theme.colors().background;
-    let alpha = if material.is_native() { 0.78 } else { color.a };
+    let color = theme.palette().background;
+    let alpha = if material.is_native() {
+        AppearanceSettings::DEFAULT_BACKDROP_OPACITY
+    } else {
+        color.a
+    };
     [color.r, color.g, color.b, alpha]
 }
 
@@ -1809,14 +1882,15 @@ fn should_deliver_program_ime(modal_blocks: bool) -> bool {
 }
 
 /// Always invoke the program input hook. Runtime `prevent_default` still
-/// requests a window redraw; it does not drop Gallery/Vue delivery.
+/// requests a window redraw; it does not drop Gallery/Vue delivery. A failed
+/// handler degrades to an empty update (the caller reports it via
+/// `host_failure`) instead of panicking.
 fn scene_runtime_input_update(
     disposition: nana_ui_platform::InputDisposition,
     id: WindowId,
-    program_input: impl FnOnce() -> Result<RuntimeProgramUpdate, FrameworkError>,
+    program_input: Result<RuntimeProgramUpdate, FrameworkError>,
 ) -> RuntimeProgramUpdate {
-    let program_update = program_input()
-        .unwrap_or_else(|error| panic!("RuntimeProgram input handler failed: {error}"));
+    let program_update = program_input.unwrap_or_default();
     if disposition.prevent_default {
         RuntimeProgramUpdate::redraw(id).merge(program_update)
     } else {
@@ -2196,7 +2270,7 @@ mod tests {
         WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
     };
     #[cfg(not(target_os = "android"))]
-    use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate};
+    use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
     use std::path::PathBuf;
     use winit::dpi::PhysicalPosition;
     use winit::event::{
@@ -2609,8 +2683,10 @@ mod tests {
 
     #[test]
     fn file_drag_batches_hover_paths_and_emits_one_drop() {
-        let mut tracker = InputTracker::default();
-        tracker.cursor = (24.0, 48.0);
+        let mut tracker = InputTracker {
+            cursor: (24.0, 48.0),
+            ..InputTracker::default()
+        };
         let first = PathBuf::from("a.png");
         let second = PathBuf::from("b.png");
         assert_eq!(
@@ -2858,33 +2934,39 @@ mod tests {
 
     #[test]
     fn runtime_prevent_default_still_invokes_the_program_input_hook() {
-        let mut calls = 0;
         let update = scene_runtime_input_update(
             InputDisposition {
                 prevent_default: true,
             },
             WindowId::PRIMARY,
-            || {
-                calls += 1;
-                Ok(RuntimeProgramUpdate::exit())
-            },
+            Ok(RuntimeProgramUpdate::exit()),
         );
-        assert_eq!(calls, 1);
         assert!(update.exit);
         assert_eq!(update.redraw, RuntimeRedraw::Window(WindowId::PRIMARY));
 
-        calls = 0;
         let update = scene_runtime_input_update(
             InputDisposition {
                 prevent_default: false,
             },
             WindowId::PRIMARY,
-            || {
-                calls += 1;
-                Ok(RuntimeProgramUpdate::default())
-            },
+            Ok(RuntimeProgramUpdate::default()),
         );
-        assert_eq!(calls, 1);
         assert_eq!(update.redraw, RuntimeRedraw::None);
+    }
+
+    #[test]
+    fn failed_program_input_degrades_without_panicking() {
+        let update = scene_runtime_input_update(
+            InputDisposition {
+                prevent_default: true,
+            },
+            WindowId::PRIMARY,
+            Err(FrameworkError::InvalidAction),
+        );
+        // The failed handler's effect is dropped, but the Runtime's
+        // prevent_default redraw still happens instead of a panic.
+        assert_eq!(update.redraw, RuntimeRedraw::Window(WindowId::PRIMARY));
+        assert!(!update.exit);
+        assert!(update.window_commands.is_empty());
     }
 }

@@ -1,8 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use nana_ui_core::{AlignSpec, BoxSizing, FlexDirection, JustifySpec, LengthSpec, PositionSpec};
+use nana_ui_core::{
+    AlignSpec, BoxSizing, FlexDirection, JustifySpec, LengthSpec, PositionSpec,
+};
 
-use crate::{DocumentId, LayoutBox, LayoutInput, StableNodeId, UiWorld, UiWorldError};
+use crate::{
+    DocumentId, LayoutBox, LayoutInput, StableNodeId, UiWorld, UiWorldError,
+};
 
 /// Logical viewport supplied by the platform host to the retained layout system.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,6 +72,151 @@ impl RuntimeLayoutEngine {
             .map(|id| (id, output.remove(&id).unwrap_or_default()))
             .collect())
     }
+
+    /// Incremental variant of [`Self::layout_document`].
+    ///
+    /// `dirty` lists layout-dirty nodes; their ancestor closure (`affected`)
+    /// is exactly the set of nodes whose subtree contains a change. Subtrees
+    /// outside `affected` reuse the retained intrinsic size, and placement
+    /// recursion prunes as soon as a recomputed child box is bit-identical to
+    /// the retained one (same origin and size ⇒ identical internal layout,
+    /// because subtree layout depends only on its own box and content). The
+    /// returned vec contains only recomputed nodes; callers diff exactly
+    /// those. `force_full` disables pruning (viewport semantics changed) and
+    /// rebuilds the retained cache.
+    pub fn layout_document_scoped(
+        self,
+        world: &UiWorld,
+        document: DocumentId,
+        viewport: LayoutViewport,
+        dirty: &[StableNodeId],
+        retained: &mut RetainedLayoutCache,
+        force_full: bool,
+    ) -> Result<Vec<(StableNodeId, LayoutBox)>, UiWorldError> {
+        if force_full {
+            retained.clear();
+        }
+        let order = world.document_order(document);
+        let inputs = world.layout_inputs(&order)?;
+        let nodes = inputs
+            .into_iter()
+            .map(|input| (input.id, input))
+            .collect::<HashMap<_, _>>();
+        let mut affected = HashSet::new();
+        if !force_full {
+            for &id in dirty {
+                if !nodes.contains_key(&id) {
+                    continue;
+                }
+                let mut cursor = Some(id);
+                while let Some(id) = cursor {
+                    if !affected.insert(id) {
+                        break;
+                    }
+                    cursor = nodes[&id].parent;
+                }
+            }
+        }
+        let scope = ScopeContext {
+            affected: &affected,
+            retained: &*retained,
+        };
+        let scope_ref = (!force_full).then_some(&scope);
+        let roots = order
+            .iter()
+            .copied()
+            .filter(|id| nodes[id].parent.is_none())
+            .collect::<Vec<_>>();
+        let mut output = HashMap::with_capacity(nodes.len());
+        let mut intrinsic = HashMap::with_capacity(nodes.len());
+        let available = Size::new(viewport.width, viewport.height);
+        for root in roots {
+            let root_size = intrinsic_size_scoped(
+                root,
+                available,
+                None,
+                viewport,
+                &nodes,
+                &mut intrinsic,
+                scope_ref,
+            );
+            place_node_scoped(
+                root,
+                Point::ZERO,
+                root_size,
+                available,
+                viewport,
+                &nodes,
+                &mut intrinsic,
+                &mut output,
+                scope_ref,
+            );
+        }
+        // Publish recomputed boxes; emitted set only.
+        let mut emitted = Vec::with_capacity(output.len());
+        for id in &order {
+            if let Some(box_) = output.remove(id) {
+                retained.boxes.insert(*id, box_);
+                emitted.push((*id, box_));
+            }
+        }
+        retained.intrinsics.extend(intrinsic);
+        // Despawned ids linger in the retained maps; keep them bounded.
+        if retained.boxes.len() > nodes.len().saturating_mul(2) {
+            retained.boxes.retain(|id, _| nodes.contains_key(id));
+        }
+        if retained.intrinsics.len() > nodes.len().saturating_mul(4) {
+            retained.intrinsics.retain(|(id, _, _), _| nodes.contains_key(id));
+        }
+        Ok(emitted)
+    }
+}
+
+/// Cross-frame layout memo for scoped relayout: last published boxes and
+/// intrinsic sizes keyed like the per-pass intrinsic cache.
+#[derive(Default)]
+pub struct RetainedLayoutCache {
+    intrinsics: HashMap<(StableNodeId, u32, u32), Size>,
+    boxes: HashMap<StableNodeId, LayoutBox>,
+}
+
+impl RetainedLayoutCache {
+    fn clear(&mut self) {
+        self.intrinsics.clear();
+        self.boxes.clear();
+    }
+}
+
+struct ScopeContext<'a> {
+    affected: &'a HashSet<StableNodeId>,
+    retained: &'a RetainedLayoutCache,
+}
+
+/// Prune a child recursion when the child is outside the affected closure and
+/// its recomputed entry box is bit-identical to the retained one.
+fn subtree_unchanged(
+    child: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    child_style: &nana_ui_core::LayoutStyle,
+    scope: Option<&ScopeContext<'_>>,
+) -> bool {
+    let Some(scope) = scope else {
+        return false;
+    };
+    if scope.affected.contains(&child) {
+        return false;
+    }
+    let Some(cached) = scope.retained.boxes.get(&child) else {
+        return false;
+    };
+    let (relative_x, relative_y) =
+        child_style.relative_offset_against(Some(containing.width), Some(containing.height));
+    cached.x == origin.x + relative_x
+        && cached.y == origin.y + relative_y
+        && cached.width == size.width
+        && cached.height == size.height
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -97,6 +246,7 @@ impl Size {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn intrinsic_size(
     id: StableNodeId,
     available: Size,
@@ -105,8 +255,30 @@ fn intrinsic_size(
     nodes: &HashMap<StableNodeId, LayoutInput>,
     cache: &mut IntrinsicCache,
 ) -> Size {
+    intrinsic_size_scoped(id, available, parent_direction, viewport, nodes, cache, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn intrinsic_size_scoped(
+    id: StableNodeId,
+    available: Size,
+    parent_direction: Option<FlexDirection>,
+    viewport: LayoutViewport,
+    nodes: &HashMap<StableNodeId, LayoutInput>,
+    cache: &mut IntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Size {
     let cache_key = (id, available.width.to_bits(), available.height.to_bits());
     if let Some(size) = cache.get(&cache_key) {
+        return *size;
+    }
+    // A subtree outside the affected closure has no change inside it, so its
+    // intrinsic size under the same constraints is unchanged.
+    if let Some(scope) = scope
+        && !scope.affected.contains(&id)
+        && let Some(size) = scope.retained.intrinsics.get(&cache_key)
+    {
+        cache.insert(cache_key, *size);
         return *size;
     }
     let node = &nodes[&id];
@@ -138,13 +310,14 @@ fn intrinsic_size(
     let child_sizes = flow_children
         .iter()
         .map(|child| {
-            intrinsic_size(
+            intrinsic_size_scoped(
                 *child,
                 content_available,
                 Some(direction),
                 viewport,
                 nodes,
                 cache,
+                scope,
             )
         })
         .collect::<Vec<_>>();
@@ -232,6 +405,31 @@ fn place_node(
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
 ) {
+    place_node_scoped(
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        nodes,
+        intrinsic,
+        output,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_node_scoped(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    viewport: LayoutViewport,
+    nodes: &HashMap<StableNodeId, LayoutInput>,
+    intrinsic: &mut IntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) {
     let node = &nodes[&id];
     let style = node.style.as_ref();
     if style.omits_box() {
@@ -263,7 +461,9 @@ fn place_node(
     );
 
     if let Some(modal) = node.modal.as_ref() {
-        place_modal_children(id, origin, size, modal, viewport, nodes, intrinsic, output);
+        place_modal_children(
+            id, origin, size, modal, viewport, nodes, intrinsic, output, scope,
+        );
         return;
     }
 
@@ -301,7 +501,9 @@ fn place_node(
     );
     let mut child_sizes = flow
         .iter()
-        .map(|child| intrinsic_size(*child, content, Some(direction), viewport, nodes, intrinsic))
+        .map(|child| {
+            intrinsic_size_scoped(*child, content, Some(direction), viewport, nodes, intrinsic, scope)
+        })
         .collect::<Vec<_>>();
     distribute_fill(&flow, &mut child_sizes, direction, content, gap, nodes);
     let occupied = main_occupied(&flow, &child_sizes, direction, content, gap, nodes);
@@ -342,16 +544,19 @@ fn place_node(
                 y: content_origin.y + main_start,
             },
         };
-        place_node(
-            child,
-            child_origin,
-            child_size,
-            content,
-            viewport,
-            nodes,
-            intrinsic,
-            output,
-        );
+        if !subtree_unchanged(child, child_origin, child_size, content, child_style, scope) {
+            place_node_scoped(
+                child,
+                child_origin,
+                child_size,
+                content,
+                viewport,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            );
+        }
         cursor += main_extent(child_size, direction)
             + main_start_margin(margin, direction)
             + main_end_margin(margin, direction)
@@ -369,7 +574,8 @@ fn place_node(
         } else {
             content_origin
         };
-        let child_size = intrinsic_size(child, base, None, viewport, nodes, intrinsic);
+        let child_size =
+            intrinsic_size_scoped(child, base, None, viewport, nodes, intrinsic, scope);
         let left = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_left, base.width);
         let right = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_right, base.width);
         let top = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_top, base.height);
@@ -382,16 +588,19 @@ fn place_node(
                 + top
                     .unwrap_or_else(|| bottom.map_or(0.0, |v| base.height - v - child_size.height)),
         };
-        place_node(
-            child,
-            child_origin,
-            child_size,
-            base,
-            viewport,
-            nodes,
-            intrinsic,
-            output,
-        );
+        if !subtree_unchanged(child, child_origin, child_size, base, child_style, scope) {
+            place_node_scoped(
+                child,
+                child_origin,
+                child_size,
+                base,
+                viewport,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            );
+        }
     }
 }
 
@@ -405,6 +614,7 @@ fn place_modal_children(
     nodes: &HashMap<StableNodeId, LayoutInput>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
+    _scope: Option<&ScopeContext<'_>>,
 ) {
     let has_close = modal.slots.close_action.is_some();
     let has_footer = modal.slots.footer.is_some() || !modal.slots.actions.is_empty();
@@ -760,6 +970,169 @@ mod tests {
     fn id(value: u64) -> StableNodeId {
         StableNodeId::new(value).unwrap()
     }
+
+    /// Column of `rows` fixed-height rows, each with one fixed-height label,
+    /// under document(1) → column(2). Row `r` is id(3 + r*2), label id(4 + r*2).
+    fn column_tree(rows: u64) -> (UiWorld, DocumentId) {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        queue.create(id(2), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(1), id(2), None);
+        queue.set_style(
+            id(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(300.0)),
+                    height: Some(LengthSpec::Fill),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for row in 0..rows {
+            let row_id = id(3 + row * 2);
+            let label_id = id(4 + row * 2);
+            queue.create(row_id, document, NodeKind::Element { tag: "div".into() });
+            queue.create(label_id, document, NodeKind::Text);
+            queue.insert(id(2), row_id, None);
+            queue.insert(row_id, label_id, None);
+            queue.set_text(label_id, TextContent { value: "行".into() });
+            queue.set_style(
+                row_id,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(300.0)),
+                        height: Some(LengthSpec::Px(20.0)),
+                        direction: Some(FlexDirection::Row),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            queue.set_style(
+                label_id,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(40.0)),
+                        height: Some(LengthSpec::Px(20.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        world.commit(queue).unwrap();
+        (world, document)
+    }
+
+    fn resize_row(world: &mut UiWorld, row: u64, height: f32) {
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(3 + row * 2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(300.0)),
+                    height: Some(LengthSpec::Px(height)),
+                    direction: Some(FlexDirection::Row),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+    }
+
+    fn full_boxes(
+        world: &UiWorld,
+        document: DocumentId,
+        viewport: LayoutViewport,
+    ) -> HashMap<StableNodeId, LayoutBox> {
+        RuntimeLayoutEngine
+            .layout_document(world, document, viewport)
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>()
+    }
+
+    #[test]
+    fn scoped_layout_touches_only_the_change_closure_and_matches_full_recompute() {
+        let (mut world, document) = column_tree(400);
+        let viewport = LayoutViewport::new(300.0, 800.0);
+        let mut retained = RetainedLayoutCache::default();
+
+        // Production drains dirty work before layout; the create-time marks
+        // must not leak into the scoped measurement below.
+        let _ = world.take_system_work();
+
+        // Bootstrap: full pass populates the retained cache with every box.
+        let emitted = RuntimeLayoutEngine
+            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        assert_eq!(emitted.len(), 802, "full pass emits every node");
+
+        // Change the LAST row: nothing shifts above it, so the scoped pass
+        // must recompute only that row's ancestor chain.
+        resize_row(&mut world, 399, 26.0);
+        let work = world.take_system_work();
+        assert!(!work.layout.is_empty());
+        let emitted = RuntimeLayoutEngine
+            .layout_document_scoped(
+                &world,
+                document,
+                viewport,
+                &work.layout,
+                &mut retained,
+                false,
+            )
+            .unwrap();
+        assert!(
+            emitted.len() < 16,
+            "tail row change must stay O(depth), not relayout {} nodes",
+            emitted.len()
+        );
+        for (node, box_) in full_boxes(&world, document, viewport) {
+            assert_eq!(
+                retained.boxes.get(&node),
+                Some(&box_),
+                "scoped layout diverged from full recompute at {node:?}"
+            );
+        }
+
+        // Change a MIDDLE row: every row below shifts; the scoped pass must
+        // emit exactly the shifted set (rows and their labels) and still
+        // match a full recompute. Rows above stay pruned.
+        resize_row(&mut world, 200, 32.0);
+        let work = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_scoped(
+                &world,
+                document,
+                viewport,
+                &work.layout,
+                &mut retained,
+                false,
+            )
+            .unwrap();
+        assert!(emitted.len() > 16, "shifted rows must be re-emitted");
+        // 199 shifted rows + labels + the change closure; the 400 nodes above
+        // the change must stay pruned (well under the 802-node document).
+        assert!(
+            emitted.len() < 420,
+            "rows above the change stay pruned, got {} of 802",
+            emitted.len()
+        );
+        for (node, box_) in full_boxes(&world, document, viewport) {
+            assert_eq!(
+                retained.boxes.get(&node),
+                Some(&box_),
+                "shifted scoped layout diverged from full recompute at {node:?}"
+            );
+        }
+    }
+
 
     #[test]
     fn lays_out_shaped_controls_without_application_geometry() {

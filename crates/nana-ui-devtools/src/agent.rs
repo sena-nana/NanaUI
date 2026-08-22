@@ -668,10 +668,10 @@ pub fn semantic_counter_artifact() -> RuntimeArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_js_quickjs::QuickJsEngine;
+    use nana_js_v8::V8Engine;
     use nana_ui::runtime::{Button, DocumentId, List, Text};
 
-    fn count_label(session: &VueAgentSession<QuickJsEngine>) -> String {
+    fn count_label(session: &VueAgentSession<V8Engine>) -> String {
         session
             .semantic_dump()
             .into_iter()
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn vue_session_click_updates_semantic_and_a11y() {
         let mut session =
-            VueAgentSession::new(QuickJsEngine::new(), semantic_counter_artifact(), 480, 320)
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
                 .expect("session");
         assert_eq!(count_label(&session), "count = 0");
         let increment = session
@@ -719,7 +719,7 @@ mod tests {
             return;
         }
         let mut session =
-            VueAgentSession::new(QuickJsEngine::new(), semantic_counter_artifact(), 240, 160)
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 240, 160)
                 .expect("session");
         session.click_agent_id("increment").expect("click");
         let (size, pixels) = session.screenshot_rgba().expect("screenshot");

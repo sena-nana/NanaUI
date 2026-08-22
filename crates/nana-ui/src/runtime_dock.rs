@@ -21,7 +21,9 @@ pub fn runtime_dock_window_update(
     effects: impl IntoIterator<Item = DockWorkspaceEvent>,
     title: &str,
 ) -> RuntimeProgramUpdate {
-    let window_commands = effects
+    let collected: Vec<DockWorkspaceEvent> = effects.into_iter().collect();
+    let redraw = redraw_for_runtime_dock_effects(&collected);
+    let window_commands = collected
         .into_iter()
         .map(|effect| match effect {
             DockWorkspaceEvent::OpenFloating(surface) => WindowCommand::Open {
@@ -41,10 +43,34 @@ pub fn runtime_dock_window_update(
         })
         .collect();
     RuntimeProgramUpdate {
-        redraw: RuntimeRedraw::All,
+        redraw,
         window_commands,
         exit: false,
     }
+}
+
+fn redraw_for_runtime_dock_effects(effects: &[DockWorkspaceEvent]) -> RuntimeRedraw {
+    let mut redraw = RuntimeRedraw::None;
+    for effect in effects {
+        let next = match effect {
+            DockWorkspaceEvent::OpenFloating(_) | DockWorkspaceEvent::CloseFloating(_) => {
+                RuntimeRedraw::All
+            }
+            DockWorkspaceEvent::MoveFloating { id, .. }
+            | DockWorkspaceEvent::FocusFloating(id) => {
+                RuntimeRedraw::Window(dock_workspace_window_id(id))
+            }
+        };
+        redraw = match (redraw, next) {
+            (RuntimeRedraw::All, _) | (_, RuntimeRedraw::All) => RuntimeRedraw::All,
+            (RuntimeRedraw::None, value) | (value, RuntimeRedraw::None) => value,
+            (RuntimeRedraw::Window(left), RuntimeRedraw::Window(right)) if left == right => {
+                RuntimeRedraw::Window(left)
+            }
+            _ => RuntimeRedraw::All,
+        };
+    }
+    redraw
 }
 
 fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> WindowSettings {
@@ -60,7 +86,7 @@ fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> Windo
         role: WindowRole::Tool,
         modal: false,
         parent: None,
-        system_caption: true,
+        system_caption: false,
     }
 }
 
@@ -95,6 +121,7 @@ mod tests {
         assert_eq!(settings.initial_position, Some((40.0, 50.0)));
         assert_eq!(settings.initial_size, (360.0, 280.0));
         assert_eq!(settings.minimum_size, (160.0, 120.0));
+        assert!(!settings.system_caption);
     }
 
     #[test]

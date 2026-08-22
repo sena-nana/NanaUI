@@ -182,6 +182,75 @@ impl RuntimeProgramUpdate {
     }
 }
 
+/// A degraded outcome the Scene host recovered from by dropping the failed
+/// callback's effect or skipping one frame. Reported through
+/// [`RuntimeProgram::host_failure`] so programs decide how to surface the
+/// failure instead of the host panicking inside the platform event loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostFailure {
+    AccessibilityAction { window: WindowId, error: String },
+    ImeDispatch { window: WindowId, error: String },
+    AnimationFrame { window: WindowId, error: String },
+    InputDispatch { window: WindowId, error: String },
+    InputHandler { window: WindowId, error: String },
+    MissingDocument { window: WindowId },
+    FrameDidNotSettle { window: WindowId, error: String },
+    ResourceProduction { window: WindowId, error: String },
+    UnpaintableScene { window: WindowId, error: String },
+    AuxiliarySurfaceLost { window: WindowId },
+}
+
+impl HostFailure {
+    pub fn window(&self) -> WindowId {
+        match self {
+            Self::AccessibilityAction { window, .. }
+            | Self::ImeDispatch { window, .. }
+            | Self::AnimationFrame { window, .. }
+            | Self::InputDispatch { window, .. }
+            | Self::InputHandler { window, .. }
+            | Self::MissingDocument { window }
+            | Self::FrameDidNotSettle { window, .. }
+            | Self::ResourceProduction { window, .. }
+            | Self::UnpaintableScene { window, .. }
+            | Self::AuxiliarySurfaceLost { window } => *window,
+        }
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            Self::AccessibilityAction { error, .. }
+            | Self::ImeDispatch { error, .. }
+            | Self::AnimationFrame { error, .. }
+            | Self::InputDispatch { error, .. }
+            | Self::InputHandler { error, .. }
+            | Self::FrameDidNotSettle { error, .. }
+            | Self::ResourceProduction { error, .. }
+            | Self::UnpaintableScene { error, .. } => Some(error),
+            Self::MissingDocument { .. } | Self::AuxiliarySurfaceLost { .. } => None,
+        }
+    }
+}
+
+impl fmt::Display for HostFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "host failure on window {}", self.window().0)?;
+        match self {
+            Self::AccessibilityAction { .. } => formatter.write_str(": accessibility action failed"),
+            Self::ImeDispatch { .. } => formatter.write_str(": IME dispatch failed"),
+            Self::AnimationFrame { .. } => formatter.write_str(": animation handler failed"),
+            Self::InputDispatch { .. } => formatter.write_str(": input dispatch failed"),
+            Self::InputHandler { .. } => formatter.write_str(": input handler failed"),
+            Self::MissingDocument { .. } => formatter.write_str(": no document for window"),
+            Self::FrameDidNotSettle { .. } => formatter.write_str(": frame did not settle"),
+            Self::ResourceProduction { .. } => formatter.write_str(": resource production failed"),
+            Self::UnpaintableScene { .. } => formatter.write_str(": unpaintable UiScene"),
+            Self::AuxiliarySurfaceLost { .. } => {
+                formatter.write_str(": auxiliary surface closed during frame")
+            }
+        }
+    }
+}
+
 /// Canonical retained application contract for the Nana Scene host.
 ///
 /// `Message` is for host-level work (windows, GPU, persistence). Control
@@ -256,6 +325,12 @@ pub trait RuntimeProgram: Sized + 'static {
     }
 
     fn rebuild_gpu(&mut self, _context: &RuntimeProgramContext<Self::Message>) {}
+
+    /// Report a [`HostFailure`] the host has already recovered from: the
+    /// failed callback's effect was dropped or the frame was skipped, and the
+    /// event loop keeps running. Override to log, surface UI feedback, or
+    /// exit; the default ignores the report.
+    fn host_failure(&mut self, _failure: HostFailure) {}
 
     fn input_event(
         &mut self,

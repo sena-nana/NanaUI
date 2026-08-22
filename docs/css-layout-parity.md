@@ -12,7 +12,10 @@
 2. **参照**：fixture 内嵌 `expected`（CSS 正确期望），或 `webview-ref` 下 WKWebView/`wry` 的 `getBoundingClientRect`
 3. **断言**：对应节点盒在容差内一致（默认 **±2px**，用例可覆盖）
 
-语义对齐 `LayoutStyle` 子集（历史上曾对照 iced `row`/`column`），**不是**完整 CSS 引擎；无 Blitz。
+语义对齐 `LayoutStyle` 子集，**不是**完整 CSS 引擎；无 Blitz。夹具结论针对
+`measure_layout` 备用路径（Vue measure 边界，见
+[`css-layout-engine-boundary.md`](css-layout-engine-boundary.md)），不是 Runtime
+增量布局引擎的产品几何。产品保留/绘制是 Runtime / UiScene → `SceneWgpuPainter`。
 
 ## 如何跑
 

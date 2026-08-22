@@ -116,7 +116,7 @@ pub use key_layers::{
     KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeyModifiers, Keymap, KeymapLayer, KeymapMatch,
     KeymapState,
 };
-pub use layout_engine::{LayoutViewport, RuntimeLayoutEngine};
+pub use layout_engine::{LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine};
 pub use menus::{
     ActionMenuItem, AnchoredActionMenu, ContextMenu, ContextMenuEvent, ContextMenuItem,
     resolve_anchored_origin,

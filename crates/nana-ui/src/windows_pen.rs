@@ -16,7 +16,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERUP,
     WM_POINTERUPDATE, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
-use winit;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 const SUBCLASS_ID: usize = 0x4E_41_4E_41;

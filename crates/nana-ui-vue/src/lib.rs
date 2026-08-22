@@ -53,7 +53,7 @@
 //! ```text
 //! nana-ui-core          （Style Model 合同：Tokens + Semantics + Layout 数据）
 //!      ↑
-//! nana-ui-vue ──► nana-js-engine ──► (app picks nana-js-quickjs XOR nana-js-v8)
+//! nana-ui-vue ──► nana-js-engine ──► nana-js-v8 (JsEngine trait is the test seam)
 //!      ├────────► renderer / tree     (Custom Renderer hostOps)
 //!      ├────────► widget_map / layout_map / css_map / shell_contract / css_cascade / measure
 //!      ├────────► MessageBridge                       ← L1+L2 同树
@@ -69,15 +69,11 @@
 //! WebView is not the product UI path. Application hosts should import [`prelude`].
 //! CSS cascade / measure exports are adapter internals.
 //!
-//! Applications choose one JS engine:
-//! - `engine-quickjs` → `nana-js-quickjs`
-//! - `engine-v8` → `nana-js-v8`
-//!
-//! Never enable both JS engines in one artifact. Use [`refuse_dual_js_engines`]
-//! (or equivalent) at the application crate.
+//! Applications link `nana-js-v8` as the product JS engine. [`nana_js_engine::JsEngine`]
+//! remains the test injection seam.
 //!
 //! Custom Renderer host ops attach through [`nana_js_engine::JsEngine`] only —
-//! never via `v8::*` / `rquickjs::*`.
+//! never via `v8::*`.
 
 mod app;
 mod bridge;
@@ -159,8 +155,9 @@ pub use bridge::{
 pub use css_cascade::{
     AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,
     MatchContext, MatchNode, Selector, SimpleCompound, Specificity, StyleRule,
-    apply_stylesheet_to_layout, collect_document_custom_properties_from_rules,
-    matched_declaration_entries, matched_declarations, parse_stylesheet, rebuild_layout_style,
+    StylesheetParseReport, apply_stylesheet_to_layout,
+    collect_document_custom_properties_from_rules, matched_declaration_entries,
+    matched_declarations, parse_stylesheet, parse_stylesheet_with_report, rebuild_layout_style,
 };
 /// Adapter internals: CSS subset → LayoutStyle. Prefer [`prelude`] for hosts.
 pub use css_map::{
@@ -581,6 +578,17 @@ impl VueHost {
         self.diagnostics = DiagnosticBindings { sink, host_calls };
     }
 
+    /// Accumulated CSS skipped-content counters across stylesheet injections:
+    /// malformed blocks recovered, dropped declarations, unsupported selectors,
+    /// and skipped at-rules. Lets hosts surface missing styles instead of
+    /// debugging silently-dropped rules.
+    pub fn stylesheet_skips(&self) -> StylesheetParseReport {
+        self.bridge
+            .lock()
+            .expect("vue bridge")
+            .stylesheet_skips()
+    }
+
     #[cfg(feature = "scene-view")]
     pub fn host_textures(&self) -> &HostTextureRegistry {
         &self.host_textures
@@ -748,6 +756,20 @@ impl VueHost {
                 message,
                 stack,
             });
+        }
+    }
+
+    /// Forward host-op commit rejections recorded by [`NanaTreeDocument`]
+    /// to the JS diagnostics sink instead of dropping them silently.
+    #[cfg(feature = "scene-view")]
+    fn report_commit_rejections(&self, doc: &mut NanaTreeDocument) {
+        for rejection in doc.take_commit_rejections() {
+            self.report_diagnostic(
+                "nana.commit",
+                JsDiagnosticLevel::Error,
+                format!("rejected host mutation {rejection}"),
+                None,
+            );
         }
     }
 
@@ -1180,6 +1202,7 @@ impl VueHost {
         {
             let mut doc = self.document.lock().expect("vue doc");
             doc.flush_host_frame();
+            self.report_commit_rejections(&mut doc);
         }
         self.flush_runtime_scene(logical_width, logical_height)?;
         if !self
@@ -1242,6 +1265,8 @@ impl VueHost {
             let mut bridge = self.bridge.lock().expect("vue bridge");
             let mut doc = self.document.lock().expect("vue doc");
             doc.flush_host_frame();
+            #[cfg(feature = "scene-view")]
+            self.report_commit_rejections(&mut doc);
             bridge.resolve_missing_document_layout(&mut doc);
             return;
         }
@@ -3110,17 +3135,6 @@ fn measure_bridge_layout_boxes(
             ))
         })
         .collect()
-}
-
-/// Expand in application crates that expose both `engine-quickjs` and `engine-v8` features.
-#[macro_export]
-macro_rules! refuse_dual_js_engines {
-    () => {
-        #[cfg(all(feature = "engine-quickjs", feature = "engine-v8"))]
-        compile_error!(
-            "nana-js-quickjs and nana-js-v8 are mutually exclusive; enable only one JS engine"
-        );
-    };
 }
 
 #[cfg(test)]

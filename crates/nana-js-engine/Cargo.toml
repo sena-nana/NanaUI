@@ -11,5 +11,5 @@ name = "nana_js_engine"
 path = "src/lib.rs"
 
 [dependencies]
-# Pure trait/surface crate. Concrete engines live in nana-js-quickjs / nana-js-v8.
+# Pure trait/surface crate. The product engine is nana-js-v8.
 serde_json.workspace = true

@@ -13,10 +13,11 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["engine-quickjs"]
-# Android MVP default engine — mutually exclusive with engine-v8 at the app boundary.
-engine-quickjs = ["dep:nana-js-quickjs"]
-engine-v8 = []
+# Desktop host smoke links V8. Android ARM64 uses the GitHub Actions
+# rusty_v8 archive (`RUSTY_V8_ARCHIVE`); without it, cross-check is
+# --no-default-features (see android-arm64.md).
+default = ["engine-v8"]
+engine-v8 = ["dep:nana-js-v8", "nana-js-v8/engine"]
 # Experimental NanaUI Runtime slot. Not a product UI target.
 experimental-android = []
 
@@ -26,7 +27,7 @@ nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, features = ["experimental-android"] }
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["gpu"] }
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
-nana-js-quickjs = { workspace = true, optional = true }
+nana-js-v8 = { workspace = true, optional = true }
 wgpu.workspace = true
 log = "0.4"
 pollster = "0.4"

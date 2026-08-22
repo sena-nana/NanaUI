@@ -1,6 +1,6 @@
 # LiliaUI 表现对齐基线
 
-NanaUI 不依赖 Vue、DOM 或 CSS，但视觉与交互参数直接以当前 LiliaUI 源码为基线。第一阶段 Demo 已逐项核对以下来源：
+NanaUI 产品路径是 Runtime / UiScene，由 `SceneWgpuPainter` 绘制。视觉与交互参数直接以当前 LiliaUI 源码为基线。第一阶段 Demo 已逐项核对以下来源：
 
 | NanaUI 层 | LiliaUI 基线 | 已对齐内容 |
 | --- | --- | --- |

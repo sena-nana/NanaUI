@@ -1,5 +1,7 @@
 # Phase 2：双 JS 引擎粗测（Vue runtime-core probe）
 
+> 状态注记：历史证据。QuickJS 已从产品路径移除；当前单一引擎为 V8 150.4.0。
+
 测量环境：
 
 - macOS 26.5.2（25F84），Apple Silicon arm64；

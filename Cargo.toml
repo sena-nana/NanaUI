@@ -6,7 +6,6 @@ members = [
     "crates/nana-ui",
     "crates/nana-window",
     "crates/nana-js-engine",
-    "crates/nana-js-quickjs",
     "crates/nana-js-v8",
     "crates/nana-ui-web-api",
     "crates/nana-ui-vue",
@@ -15,7 +14,6 @@ members = [
     "crates/nana-ui-devtools",
     "platform/android",
     "examples/component-gallery",
-    "examples/vue-quickjs",
     "examples/vue-v8",
     "examples/vue-counter",
     "examples/vue-hosted-acceptance",
@@ -29,7 +27,6 @@ nana-ui-core = { path = "crates/nana-ui-core" }
 nana-ui-runtime = { path = "crates/nana-ui-runtime" }
 nana-ui-scene = { path = "crates/nana-ui-scene" }
 nana-js-engine = { path = "crates/nana-js-engine" }
-nana-js-quickjs = { path = "crates/nana-js-quickjs" }
 nana-js-v8 = { path = "crates/nana-js-v8" }
 nana-ui-web-api = { path = "crates/nana-ui-web-api" }
 nana-ui-vue = { path = "crates/nana-ui-vue" }
@@ -47,8 +44,8 @@ url = "2.5"
 ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
 # Keep a single WGPU major version across NanaUI.
 wgpu = "30.0.0"
-# Phase 2 JS engines — apps link exactly one:
-rquickjs = "0.12.2" # QuickJS-NG 0.15.1
+# JS engine: V8 is the single product engine (QuickJS was removed; the
+# generic `JsEngine` trait stays as the test injection seam).
 # crates.io `v8` is the renamed successor of `rusty_v8` (same binding lineage).
 # Do NOT pin the legacy `rusty_v8 = "0.32.1"` crate.
 v8 = "150.4.0"

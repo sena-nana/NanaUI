@@ -104,6 +104,20 @@ pub const fn platform_material_support() -> PlatformMaterialSupport {
     }
 }
 
+/// Hosted Scene GPU material capability.
+///
+/// macOS Vibrancy is a constant no-op on this path: CAMetalLayer covers the
+/// AppKit visual-effect view, so [`apply_hosted_system_material`] always reports
+/// [`MaterialFallback::NativeMaterialUnavailable`]. Settings UI should hide
+/// Vibrancy when this returns [`PlatformMaterialSupport::None`].
+pub const fn hosted_platform_material_support() -> PlatformMaterialSupport {
+    if cfg!(target_os = "macos") {
+        PlatformMaterialSupport::None
+    } else {
+        platform_material_support()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaterialOutcome {
     pub effect: MaterialEffect,
@@ -205,7 +219,10 @@ pub fn clear_system_material<W: HasWindowHandle + ?Sized>(window: &W) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MaterialEffect, MaterialFallback, MaterialOutcome};
+    use super::{
+        MaterialEffect, MaterialFallback, MaterialOutcome, hosted_platform_material_support,
+        platform_material_support,
+    };
 
     #[test]
     fn transparent_is_an_explicit_non_native_outcome() {
@@ -227,5 +244,15 @@ mod tests {
         assert!(MaterialOutcome::transparent().wants_transparent_surface());
         assert!(!MaterialOutcome::transparent().is_native());
         assert!(!MaterialOutcome::chosen_solid().wants_transparent_surface());
+    }
+
+    #[test]
+    fn hosted_macos_hides_vibrancy_capability() {
+        let hosted = hosted_platform_material_support();
+        if cfg!(target_os = "macos") {
+            assert_eq!(hosted, super::PlatformMaterialSupport::None);
+        } else {
+            assert_eq!(hosted, platform_material_support());
+        }
     }
 }
