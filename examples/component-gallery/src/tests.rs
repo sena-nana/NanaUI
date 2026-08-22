@@ -1,6 +1,6 @@
 use super::{
-    ContextAction, GalleryApp, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay,
-    GallerySection, GalleryState, SurfaceView,
+    ContextAction, GalleryApp, GalleryContextMenuEvent, GalleryDock, GalleryMessage,
+    GalleryOverlay, GallerySection, GalleryState, SurfaceView,
 };
 use crate::runtime_host::RuntimeSceneInput;
 use crate::runtime_settings::SettingsRuntimeInput;
@@ -9,9 +9,8 @@ use nana_ui::PaneChromeActionKind;
 use nana_ui::window_chrome::{WindowChromeAction, WindowChromeEvent, WindowChromeState};
 use nana_ui::{
     ActionId, ActionPickerNavigation, AppearanceSettings, BackdropTarget, CommandPaletteEvent,
-    DockAction, DockId, DockWorkspaceEvent, Icon, KeyModifiers, KeyStroke, MaterialOutcome,
-    RegionId, SelectionMove, SettingsTabId, SplitPaneAction, ThemeMode, TreeViewEvent,
-    WindowMaterialMode, WorkspaceAction,
+    DockWorkspaceEvent, Icon, KeyModifiers, KeyStroke, MaterialOutcome, RegionId, SelectionMove,
+    SettingsTabId, SplitPaneAction, ThemeMode, TreeViewEvent, WindowMaterialMode, WorkspaceAction,
 };
 use nana_ui_platform::WindowCommand;
 
@@ -674,10 +673,12 @@ fn split_pane_interactions_persist_the_constrained_size() {
 #[test]
 fn dock_gallery_mutates_the_real_layout_and_emits_host_effects() {
     let mut state = GalleryState::new();
-    state.update(GalleryMessage::Dock(DockAction::Float {
-        id: DockId::from("gallery.assets"),
-        bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
-        monitor: None,
+    state.update(GalleryMessage::Dock(GalleryDock::Float {
+        id: "gallery.assets".into(),
+        x: 20.0,
+        y: 30.0,
+        width: 320.0,
+        height: 240.0,
     }));
     assert_eq!(state.dock.floating.len(), 1);
     assert!(!state.dock.main.contains("gallery.assets"));
@@ -686,29 +687,47 @@ fn dock_gallery_mutates_the_real_layout_and_emits_host_effects() {
         [DockWorkspaceEvent::OpenFloating(_)]
     ));
 
-    state.update(GalleryMessage::Dock(DockAction::SetLocked(true)));
-    state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
-        "gallery.navigation",
-    ))));
+    let surface_id = state.dock.floating[0].id.clone();
+    state.update(GalleryMessage::Dock(GalleryDock::MoveFloating {
+        id: surface_id,
+        x: 40.0,
+        y: 50.0,
+        width: 400.0,
+        height: 300.0,
+    }));
+    assert_eq!(state.dock.floating[0].x, 40.0);
+    assert_eq!(state.dock.floating[0].y, 50.0);
+    assert_eq!(state.dock.floating[0].width, 400.0);
+    assert_eq!(state.dock.floating[0].height, 300.0);
+
+    state.update(GalleryMessage::Dock(GalleryDock::SetLocked(true)));
+    state.update(GalleryMessage::Dock(GalleryDock::Hide(
+        "gallery.navigation".into(),
+    )));
     assert!(state.dock_is_visible("gallery.navigation"));
 
-    state.update(GalleryMessage::Dock(DockAction::SetLocked(false)));
-    state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
-        "gallery.primary",
-    ))));
+    state.update(GalleryMessage::Dock(GalleryDock::SetLocked(false)));
+    state.update(GalleryMessage::Dock(GalleryDock::Hide(
+        "gallery.primary".into(),
+    )));
     assert!(state.dock_is_visible("gallery.primary"));
     assert!(state.dock.main.contains("gallery.primary"));
 
-    state.update(GalleryMessage::Dock(DockAction::Hide(DockId::from(
-        "gallery.navigation",
-    ))));
+    state.update(GalleryMessage::Dock(GalleryDock::Hide(
+        "gallery.navigation".into(),
+    )));
     assert!(!state.dock_is_visible("gallery.navigation"));
     assert!(
         state.dock.main.contains("gallery.navigation"),
         "hide must not remove the live DockWorkspace tree"
     );
 
-    state.update(GalleryMessage::Dock(DockAction::Reset));
+    state.update(GalleryMessage::Dock(GalleryDock::Show(
+        "gallery.navigation".into(),
+    )));
+    assert!(state.dock_is_visible("gallery.navigation"));
+
+    state.update(GalleryMessage::Dock(GalleryDock::Reset));
     assert!(state.dock.floating.is_empty());
     assert!(state.dock.main.contains("gallery.assets"));
     assert!(state.dock_is_visible("gallery.assets"));
@@ -718,10 +737,12 @@ fn dock_gallery_mutates_the_real_layout_and_emits_host_effects() {
 #[test]
 fn dock_float_records_a_runtime_open_window_command() {
     let mut state = GalleryState::new();
-    state.update(GalleryMessage::Dock(DockAction::Float {
-        id: DockId::from("gallery.assets"),
-        bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
-        monitor: None,
+    state.update(GalleryMessage::Dock(GalleryDock::Float {
+        id: "gallery.assets".into(),
+        x: 20.0,
+        y: 30.0,
+        width: 320.0,
+        height: 240.0,
     }));
     assert!(
         state
@@ -737,7 +758,7 @@ fn dock_float_records_a_runtime_open_window_command() {
         "Float must map through runtime_dock_window_update into an Open command"
     );
 
-    state.update(GalleryMessage::Dock(DockAction::Reset));
+    state.update(GalleryMessage::Dock(GalleryDock::Reset));
     assert!(state.dock.floating.is_empty());
     assert!(state.dock.main.contains("gallery.assets"));
     assert!(
@@ -798,10 +819,12 @@ fn first_dock_split_ratio(node: &nana_ui::runtime::DockNode) -> f32 {
 #[test]
 fn dock_float_backs_a_runtime_document_for_the_window() {
     let mut app = super::GalleryApp::new();
-    let update = app.apply_message(GalleryMessage::Dock(DockAction::Float {
-        id: DockId::from("gallery.assets"),
-        bounds: nana_ui::DockBounds::new(20.0, 30.0, 320.0, 240.0),
-        monitor: None,
+    let update = app.apply_message(GalleryMessage::Dock(GalleryDock::Float {
+        id: "gallery.assets".into(),
+        x: 20.0,
+        y: 30.0,
+        width: 320.0,
+        height: 240.0,
     }));
     assert!(
         update
@@ -817,7 +840,7 @@ fn dock_float_backs_a_runtime_document_for_the_window() {
         "Open must be backed by a flushed dock document"
     );
 
-    let close = app.apply_message(GalleryMessage::Dock(DockAction::Reset));
+    let close = app.apply_message(GalleryMessage::Dock(GalleryDock::Reset));
     assert!(
         close
             .window_commands

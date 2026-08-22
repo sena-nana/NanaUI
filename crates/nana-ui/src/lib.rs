@@ -17,6 +17,7 @@ pub mod components;
 #[cfg(feature = "gpu")]
 mod default_gpu_view;
 pub mod dialog;
+/// NanaStudio DockController path. Product dock is Runtime [`DockWorkspace`].
 pub mod dock;
 pub mod geometry;
 #[cfg(feature = "gpu")]
@@ -122,12 +123,6 @@ pub use default_gpu_view::{
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "hosted")]
 pub use dock::hosted_dock_update;
-pub use dock::{
-    DockAction, DockAxis, DockBounds, DockChromeStyle, DockController, DockDropTarget,
-    DockDropZone, DockError, DockHostEffect, DockId, DockItemLayout, DockItemSpec, DockLayout,
-    DockLayoutPersist, DockMutation, DockNode, DockSplitLayout, DockSurfaceId, DockSurfaceLayout,
-    DockTabsLayout, DockUpdate, FloatingDock,
-};
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{
@@ -172,8 +167,7 @@ pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::{
     AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppShell,
     AppTitleBar, AppTitleBarControls, AppearanceSection, Button, Card, Checkbox, CommandPalette,
-    ConfirmDialog, ContextMenu, ContextMenuEvent, ContextMenuItem, DesktopShell, Dialog, Dock,
-    DockFloatingSurface, DockPanel, DockSurfaceSpec, DockWorkspace, DockWorkspaceEvent, Drawer,
+    ConfirmDialog, ContextMenu, ContextMenuEvent, ContextMenuItem, DesktopShell, Dialog, Drawer,
     Dropdown, DropdownEvent, DropdownOption, DropdownSelection, EmptyState, FormField,
     HostedTextarea, IconButton, InteractiveCard, LabeledValue, LevelMeter, ListItem, OverlayHost,
     PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, Popover, Progress,
@@ -188,6 +182,10 @@ pub use nana_ui_runtime::{
 };
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
+};
+/// Product dock from Runtime. Controller types live under [`dock`].
+pub use nana_ui_runtime::{
+    Dock, DockFloatingSurface, DockPanel, DockSurfaceSpec, DockWorkspace, DockWorkspaceEvent,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;

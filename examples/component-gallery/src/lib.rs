@@ -32,11 +32,11 @@ use nana_ui::theme::{ThemeMode, ThemeModeExt, ThemeTokens};
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
-    AppearanceEvent, DockAction, DockId, DockSurfaceId, DockWorkspace, DockWorkspaceEvent,
-    GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort,
-    GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport, MaterialOutcome,
-    PaneChromeActionKind, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    RuntimeRedraw, SplitAxis, SplitPaneAction, SplitPaneController,
+    AppearanceEvent, DockWorkspace, DockWorkspaceEvent, GraphCanvasEvent, GraphEdge, GraphEndpoint,
+    GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection,
+    GraphSize, GraphViewport, MaterialOutcome, PaneChromeActionKind, RuntimeProgram,
+    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SplitAxis, SplitPaneAction,
+    SplitPaneController,
 };
 use nana_ui_platform::{
     InputEvent, WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings,
@@ -86,11 +86,37 @@ impl SurfaceView {
     }
 }
 
+/// Gallery dock operations mapped onto [`DockWorkspace`] / [`DockWorkspaceEvent`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum GalleryDock {
+    ActivateTab(Arc<str>),
+    Hide(Arc<str>),
+    Show(Arc<str>),
+    Float {
+        id: Arc<str>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    Focus(Arc<str>),
+    CloseFloating(Arc<str>),
+    MoveFloating {
+        id: Arc<str>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    SetLocked(bool),
+    Reset,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GalleryMessage {
     Workspace(WorkspaceAction),
     SplitPane(SplitPaneAction),
-    Dock(DockAction),
+    Dock(GalleryDock),
     ToggleTheme,
     SetTheme(ThemeMode),
     SetStandardRadius(u8),
@@ -490,7 +516,7 @@ impl GalleryState {
             GalleryMessage::SplitPane(action) => {
                 self.split_pane.update(action);
             }
-            GalleryMessage::Dock(action) => self.apply_dock_action(action),
+            GalleryMessage::Dock(action) => self.apply_gallery_dock(action),
             GalleryMessage::ToggleTheme => self.theme = self.theme.toggle(),
             GalleryMessage::SetTheme(theme) => self.theme = theme,
             GalleryMessage::SetStandardRadius(radius) => {
@@ -758,92 +784,67 @@ impl GalleryState {
         }
     }
 
-    fn apply_dock_action(&mut self, action: DockAction) {
-        if self.dock_locked && !dock_action_allowed_when_locked(&action) {
+    fn apply_gallery_dock(&mut self, action: GalleryDock) {
+        if self.dock_locked && !gallery_dock_allowed_when_locked(&action) {
             return;
         }
         match action {
-            DockAction::ActivateTab(id) => {
-                activate_runtime_dock_tab_in_workspace(&mut self.dock, id.as_str());
+            GalleryDock::ActivateTab(id) => {
+                activate_runtime_dock_tab_in_workspace(&mut self.dock, id.as_ref());
             }
-            DockAction::SurfaceResized {
-                surface,
+            GalleryDock::MoveFloating {
+                id,
+                x,
+                y,
                 width,
                 height,
             } => {
-                if let Some(id) = floating_surface_id(surface) {
-                    let Some(existing) = self
-                        .dock
-                        .floating
-                        .iter()
-                        .find(|item| item.id == id)
-                        .cloned()
-                    else {
-                        return;
-                    };
+                if self.dock.floating.iter().any(|item| item.id == id) {
                     self.apply_dock_workspace_event(DockWorkspaceEvent::MoveFloating {
                         id,
-                        x: existing.x,
-                        y: existing.y,
+                        x,
+                        y,
                         width,
                         height,
                     });
                 }
             }
-            DockAction::SurfaceGeometry {
-                surface, bounds, ..
+            GalleryDock::Hide(id) => {
+                let _ = self.dock.hide(id.as_ref());
             }
-            | DockAction::SurfaceLayout { surface, bounds } => {
-                if let Some(id) = floating_surface_id(surface)
-                    && self.dock.floating.iter().any(|item| item.id == id)
-                {
-                    self.apply_dock_workspace_event(DockWorkspaceEvent::MoveFloating {
-                        id,
-                        x: bounds.x,
-                        y: bounds.y,
-                        width: bounds.width,
-                        height: bounds.height,
-                    });
-                }
+            GalleryDock::Show(id) => {
+                let _ = self.dock.show(id.as_ref());
             }
-            DockAction::Hide(id) => {
-                let _ = self.dock.hide(id.as_str());
-            }
-            DockAction::Show(id) => {
-                let _ = self.dock.show(id.as_str());
-            }
-            DockAction::Float { id, bounds, .. } => {
-                if id.as_str() == DOCK_CENTER {
+            GalleryDock::Float {
+                id,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if id.as_ref() == DOCK_CENTER {
                     return;
                 }
-                let Some(event) = self.dock.float_item_at(
-                    id.as_str(),
-                    bounds.x,
-                    bounds.y,
-                    bounds.width,
-                    bounds.height,
-                ) else {
+                let Some(event) = self.dock.float_item_at(id.as_ref(), x, y, width, height) else {
                     return;
                 };
                 self.record_dock_workspace_events([event]);
             }
-            DockAction::Focus(id) => {
-                activate_runtime_dock_tab_in_workspace(&mut self.dock, id.as_str());
-                if let Some(surface) = floating_surface_for_item(&self.dock, id.as_str()) {
+            GalleryDock::Focus(id) => {
+                activate_runtime_dock_tab_in_workspace(&mut self.dock, id.as_ref());
+                if let Some(surface) = floating_surface_for_item(&self.dock, id.as_ref()) {
                     self.apply_dock_workspace_event(DockWorkspaceEvent::FocusFloating(surface));
                 }
             }
-            DockAction::CloseSurface(surface) => {
-                if let Some(id) = floating_surface_id(surface)
-                    && self.dock.floating.iter().any(|item| item.id == id)
-                {
+            GalleryDock::CloseFloating(id) => {
+                if self.dock.floating.iter().any(|item| item.id == id) {
                     self.apply_dock_workspace_event(DockWorkspaceEvent::CloseFloating(id));
                 }
             }
-            DockAction::SetLocked(locked) => {
+            GalleryDock::SetLocked(locked) => {
                 self.dock_locked = locked;
             }
-            DockAction::Reset => {
+            GalleryDock::Reset => {
                 let closing = self
                     .dock
                     .floating
@@ -854,7 +855,6 @@ impl GalleryState {
                 self.dock_locked = false;
                 self.record_dock_workspace_events(closing);
             }
-            _ => {}
         }
     }
 
@@ -1259,27 +1259,24 @@ impl RuntimeProgram for GalleryApp {
             WindowEvent::CloseRequested { id } if id == WindowId::PRIMARY => {
                 RuntimeProgramUpdate::exit()
             }
-            WindowEvent::CloseRequested { id } => self.apply_message(GalleryMessage::Dock(
-                DockAction::CloseSurface(DockSurfaceId(id.0)),
-            )),
+            WindowEvent::CloseRequested { id } => {
+                if let Some(surface) = floating_surface_for_window(&self.state.dock, id) {
+                    self.apply_message(GalleryMessage::Dock(GalleryDock::CloseFloating(
+                        Arc::clone(&surface.id),
+                    )))
+                } else {
+                    RuntimeProgramUpdate::default()
+                }
+            }
             WindowEvent::Closed { id } => {
                 self.dock_windows.remove(&id);
                 RuntimeProgramUpdate::default()
             }
             WindowEvent::FocusChanged { id, focused: true } if id != WindowId::PRIMARY => {
-                if let Some(surface) =
-                    self.state.dock.floating.iter().find(|surface| {
-                        nana_ui::runtime::dock_surface_window_key(&surface.id) == id.0
-                    })
+                if let Some(item) = floating_surface_for_window(&self.state.dock, id)
+                    .and_then(|surface| surface.root.flatten().first().cloned())
                 {
-                    self.apply_message(GalleryMessage::Dock(DockAction::Focus(DockId::from(
-                        surface
-                            .root
-                            .flatten()
-                            .first()
-                            .map(|id| id.as_ref())
-                            .unwrap_or(""),
-                    ))))
+                    self.apply_message(GalleryMessage::Dock(GalleryDock::Focus(item)))
                 } else {
                     RuntimeProgramUpdate::default()
                 }
@@ -1325,15 +1322,11 @@ impl GalleryApp {
         if let Some(runtime) = self.dock_windows.get_mut(&id) {
             runtime.resize(geometry.logical_size.0, geometry.logical_size.1);
         }
-        if self
-            .state
-            .dock
-            .floating
-            .iter()
-            .any(|surface| nana_ui::runtime::dock_surface_window_key(&surface.id) == id.0)
-        {
-            return self.apply_message(GalleryMessage::Dock(DockAction::SurfaceResized {
-                surface: DockSurfaceId(id.0),
+        if let Some(surface) = floating_surface_for_window(&self.state.dock, id) {
+            return self.apply_message(GalleryMessage::Dock(GalleryDock::MoveFloating {
+                id: Arc::clone(&surface.id),
+                x: surface.x,
+                y: surface.y,
                 width: geometry.logical_size.0,
                 height: geometry.logical_size.1,
             }));
@@ -1388,21 +1381,24 @@ const FLOATING_MIN_HEIGHT: f64 = 120.0;
 const DOCK_WINDOW_TITLE: &str = "NanaUI Gallery";
 const DOCK_CENTER: &str = "gallery.primary";
 
-fn dock_action_allowed_when_locked(action: &DockAction) -> bool {
+fn gallery_dock_allowed_when_locked(action: &GalleryDock) -> bool {
     matches!(
         action,
-        DockAction::SetLocked(_)
-            | DockAction::Focus(_)
-            | DockAction::ActivateTab(_)
-            | DockAction::SurfaceResized { .. }
-            | DockAction::SurfaceGeometry { .. }
-            | DockAction::SurfaceLayout { .. }
-            | DockAction::CardHover(..)
+        GalleryDock::SetLocked(_)
+            | GalleryDock::Focus(_)
+            | GalleryDock::ActivateTab(_)
+            | GalleryDock::MoveFloating { .. }
     )
 }
 
-fn floating_surface_id(surface: DockSurfaceId) -> Option<Arc<str>> {
-    (surface.0 != 0).then(|| Arc::<str>::from(surface.0.to_string()))
+fn floating_surface_for_window(
+    workspace: &DockWorkspace,
+    window_id: WindowId,
+) -> Option<&nana_ui::runtime::DockFloatingSurface> {
+    workspace
+        .floating
+        .iter()
+        .find(|surface| nana_ui::runtime::dock_surface_window_key(&surface.id) == window_id.0)
 }
 
 fn floating_surface_for_item(workspace: &DockWorkspace, id: &str) -> Option<Arc<str>> {

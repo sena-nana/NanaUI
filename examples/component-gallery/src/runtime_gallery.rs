@@ -16,9 +16,8 @@ use nana_ui::runtime::{
     TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
 };
 use nana_ui::{
-    ButtonKind, CardKind, ControlSize, DockAction, DockBounds, DockId, Icon, LogicalPoint,
-    NanaTextShaper, RegionId, RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent,
-    WorkspaceAction,
+    ButtonKind, CardKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
+    RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent, WorkspaceAction,
 };
 use nana_ui_platform::InputEvent;
 
@@ -28,7 +27,9 @@ use super::runtime_host::{
     reconcile_children, runtime_input_event, search_command_button, sidebar_toggle_button,
     styled_text, take_pending, theme_toggle_button,
 };
-use super::{GalleryMessage, GallerySection, GalleryState, SurfaceView, section_label};
+use super::{
+    GalleryDock, GalleryMessage, GallerySection, GalleryState, SurfaceView, section_label,
+};
 
 type SidebarMount = (
     Entity<SidebarFrame>,
@@ -652,7 +653,7 @@ impl GalleryRuntime {
                     if node_is_or_under(context, target, self.workspace.lock.stable_id())
                         && let Ok(locked) = context.read(self.workspace.dock, |dock| dock.locked)
                     {
-                        messages.push(GalleryMessage::Dock(DockAction::SetLocked(!locked)));
+                        messages.push(GalleryMessage::Dock(GalleryDock::SetLocked(!locked)));
                     }
                     if node_is_or_under(context, target, self.workspace.hide.stable_id()) {
                         let assets_visible = context
@@ -663,15 +664,15 @@ impl GalleryRuntime {
                             })
                             .unwrap_or(true);
                         messages.push(GalleryMessage::Dock(if assets_visible {
-                            DockAction::Hide(DockId::from("gallery.assets"))
+                            GalleryDock::Hide(Arc::from("gallery.assets"))
                         } else {
-                            DockAction::Show(DockId::from("gallery.assets"))
+                            GalleryDock::Show(Arc::from("gallery.assets"))
                         }));
                     }
                     if let Ok(Some(selected)) =
                         context.read(self.workspace.dock, |dock| selected_dock_tab(context, dock))
                     {
-                        messages.push(GalleryMessage::Dock(DockAction::ActivateTab(DockId::new(
+                        messages.push(GalleryMessage::Dock(GalleryDock::ActivateTab(Arc::from(
                             selected,
                         ))));
                     }
@@ -820,15 +821,12 @@ impl GalleryState {
             if id.as_ref() == super::DOCK_CENTER {
                 continue;
             }
-            self.apply_dock_action(DockAction::Float {
-                id: DockId::from(id.as_ref()),
-                bounds: DockBounds::new(
-                    runtime.chrome.last_pointer.x,
-                    runtime.chrome.last_pointer.y,
-                    RUNTIME_DOCK_FLOAT_WIDTH,
-                    RUNTIME_DOCK_FLOAT_HEIGHT,
-                ),
-                monitor: None,
+            self.apply_gallery_dock(GalleryDock::Float {
+                id,
+                x: runtime.chrome.last_pointer.x,
+                y: runtime.chrome.last_pointer.y,
+                width: RUNTIME_DOCK_FLOAT_WIDTH,
+                height: RUNTIME_DOCK_FLOAT_HEIGHT,
             });
         }
 
@@ -2169,7 +2167,7 @@ fn mount_workspace(
     )?;
     bind_event(context, reset, Arc::clone(pending), |event: &Activate| {
         let _ = event;
-        GalleryMessage::Dock(DockAction::Reset)
+        GalleryMessage::Dock(GalleryDock::Reset)
     })?;
     let status = context
         .create_detached_component(document_id, workspace_status_text(dock_status(state)))?;
