@@ -126,6 +126,7 @@ struct SceneReady<Program: RuntimeProgram> {
     render_suspended: bool,
     last_theme: crate::ThemeMode,
     last_material_mode: nana_window::MaterialEffect,
+    settings: RuntimeWindowSettings,
     ime_requests: HashMap<WindowId, TextInputRequest>,
     chrome: HashMap<WindowId, WindowChromeSession>,
 }
@@ -243,9 +244,12 @@ fn initialize<Program: RuntimeProgram>(
     let geometry = window_geometry(graphics.window());
     let mut last_theme = crate::ThemeMode::default();
     let mut last_material_mode = nana_window::MaterialEffect::Solid;
-    let mut material =
-        apply_scene_material(graphics.window().as_ref(), last_theme, last_material_mode);
-    apply_window_transparency(graphics.window().as_ref(), last_material_mode);
+    let mut material = apply_window_surface(
+        graphics.window().as_ref(),
+        last_theme,
+        settings.transparent,
+        last_material_mode,
+    );
     let context = program_context(
         &proxy,
         &graphics,
@@ -261,8 +265,12 @@ fn initialize<Program: RuntimeProgram>(
     ));
     last_theme = program.theme_mode();
     last_material_mode = program.window_material_mode();
-    material = apply_scene_material(graphics.window().as_ref(), last_theme, last_material_mode);
-    apply_window_transparency(graphics.window().as_ref(), last_material_mode);
+    material = apply_window_surface(
+        graphics.window().as_ref(),
+        last_theme,
+        settings.transparent,
+        last_material_mode,
+    );
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
@@ -299,6 +307,7 @@ fn initialize<Program: RuntimeProgram>(
         render_suspended: false,
         last_theme,
         last_material_mode,
+        settings,
         ime_requests: HashMap::new(),
         chrome: HashMap::new(),
     };
@@ -881,9 +890,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let _ = self.painter_mut(format);
         #[cfg(target_os = "windows")]
         let pen_hook = crate::windows_pen::WindowsPenHook::install(window.as_ref())?;
-        let material =
-            apply_scene_material(window.as_ref(), self.last_theme, self.last_material_mode);
-        apply_window_transparency(window.as_ref(), self.last_material_mode);
+        let material = apply_window_surface(
+            window.as_ref(),
+            self.last_theme,
+            settings.transparent,
+            self.last_material_mode,
+        );
         #[cfg(not(target_os = "android"))]
         let accessibility = {
             Some(HostedAccessibility::new(
@@ -1074,20 +1086,20 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn refresh_material(&mut self) {
         clear_system_material(self.graphics.window().as_ref());
-        self.material = apply_scene_material(
+        self.material = apply_window_surface(
             self.graphics.window().as_ref(),
             self.last_theme,
+            self.settings.transparent,
             self.last_material_mode,
         );
-        apply_window_transparency(self.graphics.window().as_ref(), self.last_material_mode);
         for host in self.auxiliary.values_mut() {
             clear_system_material(host.surface.window().as_ref());
-            host.material = apply_scene_material(
+            host.material = apply_window_surface(
                 host.surface.window().as_ref(),
                 self.last_theme,
+                host.settings.transparent,
                 self.last_material_mode,
             );
-            apply_window_transparency(host.surface.window().as_ref(), self.last_material_mode);
         }
     }
 
@@ -1655,6 +1667,17 @@ fn next_accessibility_update(
     })
 }
 
+fn window_surface_effect(
+    settings_transparent: bool,
+    appearance: crate::MaterialEffect,
+) -> crate::MaterialEffect {
+    if settings_transparent {
+        crate::MaterialEffect::Transparent
+    } else {
+        appearance
+    }
+}
+
 fn apply_scene_material(
     window: &winit::window::Window,
     theme: crate::ThemeMode,
@@ -1676,6 +1699,18 @@ fn apply_scene_material(
 
 fn apply_window_transparency(window: &winit::window::Window, requested: crate::MaterialEffect) {
     window.set_transparent(requested.wants_transparent_surface());
+}
+
+fn apply_window_surface(
+    window: &winit::window::Window,
+    theme: crate::ThemeMode,
+    settings_transparent: bool,
+    appearance: crate::MaterialEffect,
+) -> MaterialOutcome {
+    let requested = window_surface_effect(settings_transparent, appearance);
+    let material = apply_scene_material(window, theme, requested);
+    apply_window_transparency(window, requested);
+    material
 }
 
 fn drag_scene_window(window: &winit::window::Window) {
@@ -2285,10 +2320,11 @@ mod tests {
         mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
         platform_window_event, resolved_scene_ime_request, route_window_command,
         scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, window_level, windows_to_redraw,
+        should_deliver_program_ime, window_level, window_surface_effect, windows_to_redraw,
     };
     use crate::{
-        HostTexture, HostTextureAlphaMode, HostTextureRegistry, RuntimeProgramUpdate, RuntimeRedraw,
+        HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect,
+        RuntimeProgramUpdate, RuntimeRedraw,
     };
     use nana_ui_platform::{
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
@@ -2433,6 +2469,20 @@ mod tests {
         settings.system_caption = true;
         let caption = scene_window_attributes(&settings);
         assert!(caption.decorations);
+    }
+
+    #[test]
+    fn transparent_aux_keeps_transparent_when_primary_appearance_is_solid() {
+        let appearance = MaterialEffect::Solid;
+        assert_eq!(
+            window_surface_effect(false, appearance),
+            MaterialEffect::Solid
+        );
+        assert_eq!(
+            window_surface_effect(true, appearance),
+            MaterialEffect::Transparent
+        );
+        assert!(window_surface_effect(true, appearance).wants_transparent_surface());
     }
 
     #[test]
