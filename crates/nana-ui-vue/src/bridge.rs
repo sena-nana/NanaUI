@@ -125,8 +125,11 @@ pub enum WidgetKind {
 impl WidgetKind {
     /// Parse an explicit `nana-*` / createWidget kind string.
     pub fn parse(raw: &str) -> Option<Self> {
-        let s = raw.trim().to_ascii_lowercase();
-        let s = s.strip_prefix("nana-").unwrap_or(&s);
+        let original = raw.trim().to_ascii_lowercase();
+        if original == "nana-form" {
+            return Some(Self::FormField);
+        }
+        let s = original.strip_prefix("nana-").unwrap_or(&original);
         Some(match s {
             "column" | "col" | "vstack" => Self::Column,
             "row" | "hstack" => Self::Row,
@@ -151,7 +154,7 @@ impl WidgetKind {
             "labeled-value" | "labeledvalue" => Self::LabeledValue,
             "progress" => Self::Progress,
             "spinner" | "loading" => Self::Spinner,
-            "form-field" | "formfield" | "form" => Self::FormField,
+            "form-field" | "formfield" => Self::FormField,
             "interactive-card" | "interactivecard" => Self::InteractiveCard,
             "skeleton" => Self::Skeleton,
             "level-meter" | "levelmeter" | "level" => Self::LevelMeter,
@@ -5301,6 +5304,16 @@ mod tests {
             WidgetKind::parse("settingspage"),
             Some(WidgetKind::SettingsPage)
         );
+        assert_eq!(WidgetKind::parse("form"), None);
+        assert_eq!(WidgetKind::parse("nana-form"), Some(WidgetKind::FormField));
+        assert_eq!(WidgetKind::parse("form-field"), Some(WidgetKind::FormField));
+        assert_eq!(WidgetKind::parse("formfield"), Some(WidgetKind::FormField));
+        assert_eq!(
+            WidgetKind::parse("nana-form-field"),
+            Some(WidgetKind::FormField)
+        );
+        assert_eq!(WidgetKind::FormField.as_str(), "form-field");
+        assert_eq!(WidgetKind::FormField.element_tag(), "nana-form-field");
         assert_eq!(WidgetKind::SettingsPage.as_str(), "settings-page");
         assert_eq!(WidgetKind::SettingsPage.element_tag(), "nana-settings-page");
         assert_eq!(WidgetKind::CommandPalette.as_str(), "command-palette");
