@@ -1252,8 +1252,37 @@ impl RuntimeProgram for GalleryApp {
         event: WindowEvent,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        self.handle_window_event(event)
+    }
+
+    fn next_wakeup(&self) -> Option<Instant> {
+        self.loading_deadline
+    }
+
+    fn wake(
+        &mut self,
+        now: Instant,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        if self.state.loading
+            && self
+                .loading_deadline
+                .is_some_and(|deadline| now >= deadline)
+        {
+            self.loading_deadline = None;
+            return self.apply_message(GalleryMessage::LoadingTick);
+        }
+        RuntimeProgramUpdate::default()
+    }
+}
+
+impl GalleryApp {
+    pub(crate) fn handle_window_event(&mut self, event: WindowEvent) -> RuntimeProgramUpdate {
         match event {
             WindowEvent::Ready { id, geometry } | WindowEvent::Resized { id, geometry } => {
+                self.apply_window_geometry(id, geometry)
+            }
+            WindowEvent::Moved { id, geometry } if id != WindowId::PRIMARY => {
                 self.apply_window_geometry(id, geometry)
             }
             WindowEvent::CloseRequested { id } if id == WindowId::PRIMARY => {
@@ -1285,29 +1314,7 @@ impl RuntimeProgram for GalleryApp {
         }
     }
 
-    fn next_wakeup(&self) -> Option<Instant> {
-        self.loading_deadline
-    }
-
-    fn wake(
-        &mut self,
-        now: Instant,
-        _context: &RuntimeProgramContext<Self::Message>,
-    ) -> RuntimeProgramUpdate {
-        if self.state.loading
-            && self
-                .loading_deadline
-                .is_some_and(|deadline| now >= deadline)
-        {
-            self.loading_deadline = None;
-            return self.apply_message(GalleryMessage::LoadingTick);
-        }
-        RuntimeProgramUpdate::default()
-    }
-}
-
-impl GalleryApp {
-    fn apply_window_geometry(
+    pub(crate) fn apply_window_geometry(
         &mut self,
         id: WindowId,
         geometry: nana_ui_platform::WindowGeometry,
@@ -1322,14 +1329,21 @@ impl GalleryApp {
         if let Some(runtime) = self.dock_windows.get_mut(&id) {
             runtime.resize(geometry.logical_size.0, geometry.logical_size.1);
         }
-        if let Some(surface) = floating_surface_for_window(&self.state.dock, id) {
-            return self.apply_message(GalleryMessage::Dock(GalleryDock::MoveFloating {
-                id: Arc::clone(&surface.id),
-                x: surface.x,
-                y: surface.y,
+        if let Some((surface_id, fallback_x, fallback_y)) =
+            floating_surface_for_window(&self.state.dock, id)
+                .map(|surface| (Arc::clone(&surface.id), surface.x, surface.y))
+        {
+            let (x, y) = geometry
+                .logical_position
+                .unwrap_or((fallback_x, fallback_y));
+            // Platform-originated geometry must not echo WindowCommand::Move.
+            self.state.dock.apply(DockWorkspaceEvent::MoveFloating {
+                id: surface_id,
+                x,
+                y,
                 width: geometry.logical_size.0,
                 height: geometry.logical_size.1,
-            }));
+            });
         }
         RuntimeProgramUpdate::redraw(id)
     }
