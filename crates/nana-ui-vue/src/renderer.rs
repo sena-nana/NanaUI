@@ -225,6 +225,23 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             if let Some(slot) = props.attrs.get("data-slot") {
                 guard.set_attribute(handle, "data-slot", slot);
             }
+            // Seed GPU/canvas attrs so CustomRenderNode sync runs even when Vue
+            // skips a later patchProp / setGpuSlot for vnode props already
+            // consumed by createWidget.
+            if let Some(gpu) = props
+                .attrs
+                .get("data-nana-gpu")
+                .filter(|slot| !slot.is_empty())
+            {
+                guard.set_attribute(handle, "data-nana-gpu", gpu);
+            }
+            if let Some(canvas) = props
+                .attrs
+                .get("data-nana-canvas")
+                .filter(|id| !id.is_empty())
+            {
+                guard.set_attribute(handle, "data-nana-canvas", canvas);
+            }
             drop(guard);
             let mut bridge = lock_bridge(&host.bridge)?;
             bridge.register(widget_id(handle), kind, props);
@@ -644,8 +661,10 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     {
         let host = host.clone();
         api.register("semanticSnapshot", move |_args| {
-            let bridge = lock_bridge(&host.bridge)?;
-            let snap = bridge.snapshot();
+            // Same hierarchy overwrite as VueHost::semantic_snapshot: Runtime
+            // parent/children/roots win over the MessageBridge working index.
+            let mut snap = lock_bridge(&host.bridge)?.snapshot();
+            lock_doc(&host.document)?.apply_runtime_hierarchy(&mut snap);
             let widgets: Vec<HostValue> = snap
                 .widgets
                 .iter()
@@ -1484,6 +1503,201 @@ mod tests {
         assert_eq!(w.kind, WidgetKind::Button);
         assert_eq!(w.props.label, "Increment");
         assert_eq!(w.props.button_kind, nana_ui_core::ButtonKind::Primary);
+    }
+
+    #[test]
+    fn semantic_snapshot_host_op_uses_runtime_hierarchy() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let parent = api
+            .call(
+                "createWidget",
+                &[
+                    HostValue::string("column"),
+                    HostValue::Object(
+                        [("label".into(), HostValue::string("parent"))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                ],
+            )
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        let child = api
+            .call(
+                "createWidget",
+                &[
+                    HostValue::string("button"),
+                    HostValue::Object(
+                        [("label".into(), HostValue::string("child"))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                ],
+            )
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        for (node, into) in [(parent, body), (child, parent)] {
+            api.call(
+                "insert",
+                &[
+                    HostValue::Number(node),
+                    HostValue::Number(into),
+                    HostValue::Null,
+                ],
+            )
+            .unwrap();
+        }
+
+        let parent_id = parent as u64;
+        let child_id = child as u64;
+        {
+            let snap = bridge.lock().unwrap().snapshot();
+            assert_eq!(
+                snap.get(parent_id).expect("parent").children,
+                vec![child_id],
+                "bridge forest still parents the child before Runtime overwrite"
+            );
+        }
+
+        // Runtime reparents the child onto body; MessageBridge stays stale.
+        {
+            let mut guard = doc.lock().unwrap();
+            let body = NodeHandle(body as u64);
+            guard.insert(NodeHandle(child_id), body, None);
+            assert_eq!(
+                guard.children_of(NodeHandle(parent_id)),
+                Vec::<NodeHandle>::new()
+            );
+            assert!(
+                guard
+                    .children_of(body)
+                    .iter()
+                    .any(|handle| handle.0 == child_id)
+            );
+        }
+
+        let snap = api.call("semanticSnapshot", &[]).expect("snapshot");
+        let widget_children = |id: u64| -> Vec<u64> {
+            snap.as_object()
+                .and_then(|map| map.get("widgets"))
+                .and_then(HostValue::as_array)
+                .into_iter()
+                .flatten()
+                .find_map(|widget| {
+                    let obj = widget.as_object()?;
+                    (obj.get("id").and_then(HostValue::as_f64)? as u64 == id).then(|| {
+                        obj.get("children")
+                            .and_then(HostValue::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(HostValue::as_f64)
+                            .map(|child| child as u64)
+                            .collect()
+                    })
+                })
+                .unwrap_or_default()
+        };
+        let parent_children = widget_children(parent_id);
+        let body_children = widget_children(body as u64);
+        let roots: Vec<u64> = snap
+            .as_object()
+            .and_then(|map| map.get("roots"))
+            .and_then(HostValue::as_array)
+            .expect("roots")
+            .iter()
+            .filter_map(HostValue::as_f64)
+            .map(|id| id as u64)
+            .collect();
+        assert!(
+            !parent_children.contains(&child_id),
+            "semanticSnapshot children must follow Runtime, not the stale bridge forest, got {parent_children:?}"
+        );
+        assert!(
+            body_children.contains(&child_id) || roots.contains(&child_id),
+            "after Runtime reparent onto body, semanticSnapshot must list child under body or as a root, body_children={body_children:?} roots={roots:?}"
+        );
+        {
+            let stale = bridge.lock().unwrap().snapshot();
+            assert_eq!(
+                stale.get(parent_id).expect("parent").children,
+                vec![child_id],
+                "MessageBridge working index stays stale; only the host op snapshot is overwritten"
+            );
+        }
+    }
+
+    #[test]
+    fn create_widget_seeds_gpu_attr_without_set_gpu_slot() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let id = api
+            .call(
+                "createWidget",
+                &[
+                    HostValue::string("box"),
+                    HostValue::Object(
+                        [("data-nana-gpu".into(), HostValue::string("program"))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                ],
+            )
+            .expect("create")
+            .as_f64()
+            .expect("id") as u64;
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(id as f64),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+
+        let node = NodeHandle(id);
+        let stable = nana_ui_runtime::StableNodeId::try_from(node).unwrap();
+        {
+            let guard = doc.lock().unwrap();
+            assert_eq!(
+                guard.get_attribute(node, "data-nana-gpu").as_deref(),
+                Some("program")
+            );
+            assert!(
+                guard.world().custom_render(stable).is_none(),
+                "createWidget must not commit GPU slots before the frame boundary"
+            );
+        }
+
+        {
+            let mut guard = doc.lock().unwrap();
+            guard.flush_host_frame();
+            let content = guard
+                .world()
+                .custom_render(stable)
+                .expect("data-nana-gpu from createWidget must land on CustomRenderNode");
+            assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+            assert_eq!(content.resource.as_ref(), "program");
+        }
     }
 
     #[test]

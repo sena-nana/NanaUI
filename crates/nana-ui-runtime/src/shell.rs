@@ -2508,6 +2508,77 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(context.world().text(title.stable_id()), Some(""));
+        assert_eq!(
+            context
+                .world()
+                .accessibility(title.stable_id())
+                .and_then(|state| state.label.as_deref()),
+            Some("Nana")
+        );
+        let columns = context.world().node(title.stable_id()).unwrap().children;
+        assert_eq!(
+            node_tag(context.world(), columns[1]).as_deref(),
+            Some(CENTER_COLUMN_TAG)
+        );
+        let title_label = context
+            .world()
+            .node(columns[1])
+            .unwrap()
+            .children
+            .first()
+            .copied()
+            .expect("center column title");
+        assert_eq!(context.world().text(title_label), Some("Nana"));
+    }
+
+    #[test]
+    fn assemble_app_shell_empty_title_bar_still_has_columns() {
+        let mut context = AppContext::new();
+        let title = context
+            .create_detached_component(document(), AppTitleBar::new(""))
+            .unwrap();
+        let body = context
+            .create_detached_component(document(), Text::new("workspace"))
+            .unwrap();
+        let shell = context
+            .create_component(
+                document(),
+                AppShell::new()
+                    .title_bar(title.stable_id())
+                    .body(body.stable_id()),
+            )
+            .unwrap();
+
+        assert!(context.assemble_app_shell(shell).unwrap());
+        assert_eq!(context.world().text(title.stable_id()), Some(""));
+        let columns = context.world().node(title.stable_id()).unwrap().children;
+        assert_eq!(
+            columns.len(),
+            3,
+            "empty title still uses three Iced columns"
+        );
+        assert_eq!(
+            node_tag(context.world(), columns[0]).as_deref(),
+            Some(LEADING_COLUMN_TAG)
+        );
+        assert_eq!(
+            node_tag(context.world(), columns[1]).as_deref(),
+            Some(CENTER_COLUMN_TAG)
+        );
+        assert_eq!(
+            node_tag(context.world(), columns[2]).as_deref(),
+            Some(TRAILING_COLUMN_TAG)
+        );
+        let title_label = context
+            .world()
+            .node(columns[1])
+            .unwrap()
+            .children
+            .first()
+            .copied()
+            .expect("center column title");
+        assert_eq!(context.world().text(title_label), Some(""));
     }
 
     #[test]

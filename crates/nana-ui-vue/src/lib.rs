@@ -474,13 +474,17 @@ impl VueHost {
         canvas: SharedCanvasRuntime,
     ) -> Self {
         let theme = ThemeMode::Light;
-        let document =
+        let mut document =
             NanaTreeDocument::with_id(document_id, physical_width, physical_height, scale_factor);
         let mut bridge = MessageBridge::new();
         bridge.set_theme(theme);
         // body/html must exist in the semantic forest so inserts into mountRoot
         // parent correctly (otherwise every top-level node stays an orphan root).
         bridge.ensure_document_roots(document.html_root().0, document.mount_root().0);
+        #[cfg(feature = "scene-view")]
+        let host_textures = HostTextureRegistry::new();
+        #[cfg(feature = "scene-view")]
+        document.attach_host_textures(host_textures.clone());
         Self {
             theme,
             document: Arc::new(Mutex::new(document)),
@@ -505,7 +509,7 @@ impl VueHost {
             #[cfg(feature = "scene-view")]
             components: NativeComponentRegistry::new(),
             #[cfg(feature = "scene-view")]
-            host_textures: HostTextureRegistry::new(),
+            host_textures,
             #[cfg(feature = "hosted")]
             webgpu: None,
             #[cfg(feature = "hosted")]
@@ -583,10 +587,7 @@ impl VueHost {
     /// and skipped at-rules. Lets hosts surface missing styles instead of
     /// debugging silently-dropped rules.
     pub fn stylesheet_skips(&self) -> StylesheetParseReport {
-        self.bridge
-            .lock()
-            .expect("vue bridge")
-            .stylesheet_skips()
+        self.bridge.lock().expect("vue bridge").stylesheet_skips()
     }
 
     #[cfg(feature = "scene-view")]
@@ -824,6 +825,9 @@ impl VueHost {
     #[cfg(feature = "scene-view")]
     pub(crate) fn share_host_textures(&mut self, textures: HostTextureRegistry) {
         self.host_textures = textures;
+        if let Ok(mut document) = self.document.lock() {
+            document.attach_host_textures(self.host_textures.clone());
+        }
     }
 
     #[cfg(feature = "scene-view")]
