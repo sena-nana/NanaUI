@@ -42,4 +42,4 @@ Workspace 真机截图确认只有一层标题栏、交通灯未遮挡内容；�
 （macOS Scene GPU 当前为 solid，不是 Vibrancy）；三次 Surface present 不能当作
 Vibrancy 验收。系统截图只捕获到材质层时，也不能作为 Hosted GPU 最终像素表现证据。
 
-Windows 与 Linux 当前只有条件编译结构和 GitHub Actions 目标，尚未获得真实 Windows 10、Windows 11 和 Linux 合成器运行证据。Acrylic 在部分 Windows 10/11 版本拖拽和 resize 时存在上游已知性能限制，因此不能把编译通过视为平台验收。
+Windows 11 已在 2026-08-23（26300）上真机运行，但 Mica / Acrylic / desktop Alpha 仍未被验收；Linux 当前只有条件编译结构和 GitHub Actions 目标。Acrylic 在部分 Windows 10/11 版本拖拽和 resize 时存在上游已知性能限制，因此不能把编译通过视为平台验收。
