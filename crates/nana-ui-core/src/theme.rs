@@ -85,8 +85,8 @@ impl ThemeMetrics {
 /// The two application themes currently supported by the design system.
 ///
 /// Part of the Style Model **Tokens** slice ([`crate::style_model`]).
-/// Palette RGBA values live on [`crate::SemanticPalette`]; Iced adapts via
-/// `nana-ui::theme::Colors`.
+/// Palette RGBA values live on [`crate::SemanticPalette`]; `nana-ui::theme::Colors`
+/// is the paint adapter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeMode {
     #[default]

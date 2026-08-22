@@ -8,8 +8,6 @@
 //!
 //! `cargo run -p vue-counter --features windowed -- --window`
 
-#![allow(unexpected_cfgs)]
-
 use std::env;
 
 use nana_js_engine::probe::vue_phase3_artifact;

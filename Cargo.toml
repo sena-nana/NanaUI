@@ -44,10 +44,7 @@ url = "2.5"
 ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
 # Keep a single WGPU major version across NanaUI.
 wgpu = "30.0.0"
-# JS engine: V8 is the single product engine (QuickJS was removed; the
-# generic `JsEngine` trait stays as the test injection seam).
-# crates.io `v8` is the renamed successor of `rusty_v8` (same binding lineage).
-# Do NOT pin the legacy `rusty_v8 = "0.32.1"` crate.
+# Product JS engine. crates.io `v8` is the rusty_v8 successor package name.
 v8 = "150.4.0"
 tiny-skia = "0.11.4"
 resvg = { version = "0.45.1", default-features = false, features = ["text"] }

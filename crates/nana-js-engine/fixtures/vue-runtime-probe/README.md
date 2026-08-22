@@ -1,6 +1,6 @@
 # Vue runtime-core Phase 2 probe
 
-Build the shared IIFE consumed by QuickJS and V8:
+Build the shared IIFE consumed by V8 tests:
 
 ```bash
 npm install

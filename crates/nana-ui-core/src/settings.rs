@@ -495,7 +495,7 @@ impl SettingsState {
 
 /// Appearance settings events shared by backend-neutral hosts.
 ///
-/// Kept next to settings data so Vue and Iced can share the same contract
+/// Kept next to settings data so Vue and Runtime can share the same contract
 /// without depending on settings-section widgets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AppearanceEvent {

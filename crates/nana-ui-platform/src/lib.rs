@@ -35,7 +35,7 @@ pub struct PlatformCapabilities {
     pub clipboard: bool,
     /// Host presents via wgpu Surface (Vulkan on Android ARM64).
     pub vulkan_surface: bool,
-    /// Rust-owned JS engine (QuickJS/V8) — never System WebView.
+    /// Rust-owned JS engine (V8) — never System WebView.
     pub rust_js_engine: bool,
     /// Nana `DesktopShell` paint wired on this target.
     pub desktop_shell: bool,

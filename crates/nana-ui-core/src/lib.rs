@@ -1,12 +1,12 @@
-//! Backend-neutral NanaUI contracts shared by Iced and Vue bridge adapters.
+//! Backend-neutral NanaUI contracts shared by Runtime and Vue adapters.
 //!
 //! ## Style Model (L1 / L2 / L3)
 //!
 //! All styling paths converge on one model — see [`style_model`]:
 //! **Tokens + Semantics + Layout**. L1 CSS adapters and L2 Vue props map *into*
-//! this model; L3 Rust APIs are the native entry. Drawing stays in `nana-ui`
-//! widgets. This crate must **not** depend on Iced, Blitz, CSS parsers,
-//! QuickJS, V8, WebView, or window backends.
+//! this model; L3 Rust APIs are the native entry. Drawing stays in Runtime /
+//! UiScene. This crate must **not** depend on CSS parsers, JS engines, WebView,
+//! or window backends.
 
 pub mod action;
 pub mod box_layout;

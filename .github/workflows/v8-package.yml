@@ -12,10 +12,12 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   android-arm64:
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:

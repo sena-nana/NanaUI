@@ -52,7 +52,7 @@ use crate::theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
 
 /// Backend-neutral RGBA in 0..=1.
 ///
-/// Iced `Color` conversion stays in `nana-ui` (adapter layer). Arbitrary CSS
+/// RGBA conversion stays in `nana-ui` (adapter layer). Arbitrary CSS
 /// hex from L1 must map to an existing [`SemanticPalette`] role or stay as a
 /// one-off paint hint on the bridge — never as a new formal token.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -186,7 +186,7 @@ impl SemanticColorRole {
 /// Semantic palette roles shared across backends.
 ///
 /// Field set mirrors the Lilia hierarchy used by `nana-ui::theme::Colors`.
-/// Concrete dark/light values live here; the Iced adapter maps to `Color`.
+/// Concrete dark/light values live here; paint maps them through Tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SemanticPalette {
     pub background: SemanticColor,
