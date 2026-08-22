@@ -57,6 +57,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     geometry: WindowGeometry,
     gpu: HostedGpuResources,
     material: MaterialOutcome,
+    surface_alpha_mode: wgpu::CompositeAlphaMode,
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
 }
@@ -67,6 +68,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         geometry: WindowGeometry,
         gpu: HostedGpuResources,
         material: MaterialOutcome,
+        surface_alpha_mode: wgpu::CompositeAlphaMode,
         dispatch: Arc<dyn Fn(Message) + Send + Sync>,
         tasks: SyncSender<Task<Message>>,
     ) -> Self {
@@ -75,6 +77,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             geometry,
             gpu,
             material,
+            surface_alpha_mode,
             dispatch,
             tasks,
         }
@@ -94,6 +97,10 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     pub const fn material(&self) -> MaterialOutcome {
         self.material
+    }
+
+    pub const fn surface_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.surface_alpha_mode
     }
 
     pub fn dispatch(&self, message: Message) {
@@ -235,7 +242,9 @@ impl fmt::Display for HostFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "host failure on window {}", self.window().0)?;
         match self {
-            Self::AccessibilityAction { .. } => formatter.write_str(": accessibility action failed"),
+            Self::AccessibilityAction { .. } => {
+                formatter.write_str(": accessibility action failed")
+            }
             Self::ImeDispatch { .. } => formatter.write_str(": IME dispatch failed"),
             Self::AnimationFrame { .. } => formatter.write_str(": animation handler failed"),
             Self::InputDispatch { .. } => formatter.write_str(": input dispatch failed"),

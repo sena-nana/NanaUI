@@ -240,6 +240,15 @@ impl RuntimeProgram for AcceptanceProgram {
         event: WindowEvent,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        if let WindowEvent::Ready { id, .. } = &event {
+            if *id != WindowId::PRIMARY {
+                eprintln!(
+                    "nana surface alpha window={} {:?}",
+                    id.0,
+                    context.surface_alpha_mode()
+                );
+            }
+        }
         self.inner.window_event(event, context)
     }
 

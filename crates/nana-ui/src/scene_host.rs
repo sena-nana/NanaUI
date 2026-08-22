@@ -258,6 +258,7 @@ fn initialize<Program: RuntimeProgram>(
         geometry,
         tasks.clone(),
         material,
+        graphics.alpha_mode(),
     );
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     let default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
@@ -353,6 +354,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.geometry_of(id),
             self.tasks.clone(),
             self.material_of(id),
+            self.alpha_mode_of(id),
         )
     }
 
@@ -1532,6 +1534,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
+    fn alpha_mode_of(&self, id: WindowId) -> wgpu::CompositeAlphaMode {
+        if id == WindowId::PRIMARY {
+            self.graphics.alpha_mode()
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| host.surface.alpha_mode())
+                .unwrap_or_else(|| self.graphics.alpha_mode())
+        }
+    }
+
     fn input_of(&self, id: WindowId) -> &InputTracker {
         if id == WindowId::PRIMARY {
             &self.input
@@ -1608,6 +1621,7 @@ fn program_context<Message: Send + 'static>(
     geometry: WindowGeometry,
     tasks: SyncSender<Task<Message>>,
     material: MaterialOutcome,
+    surface_alpha_mode: wgpu::CompositeAlphaMode,
 ) -> RuntimeProgramContext<Message> {
     let proxy = proxy.clone();
     RuntimeProgramContext::new(
@@ -1615,6 +1629,7 @@ fn program_context<Message: Send + 'static>(
         geometry,
         graphics.resources(),
         material,
+        surface_alpha_mode,
         Arc::new(move |message| {
             let _ = proxy.send_event(message);
         }),
