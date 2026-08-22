@@ -7632,7 +7632,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn scroll_view_with_forty_rows_dirties_forty_one_hit_targets() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -8838,6 +8837,65 @@ mod tests {
             Some("nana.button"),
             "chip is the compact Button Selected/Subtle tag, not a second type"
         );
+        assert_eq!(
+            context
+                .resolve_component_tag("select")
+                .map(ComponentTypeId::as_str),
+            Some("nana.select")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-select")
+                .map(ComponentTypeId::as_str),
+            Some("nana.select")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("tabs")
+                .map(ComponentTypeId::as_str),
+            Some("nana.tabs")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("dock")
+                .map(ComponentTypeId::as_str),
+            Some("nana.dock")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("form-field")
+                .map(ComponentTypeId::as_str),
+            Some("nana.form-field")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-form-field")
+                .map(ComponentTypeId::as_str),
+            Some("nana.form-field")
+        );
+        assert!(
+            context.resolve_component_tag("form").is_none(),
+            "HTML form stays a layout box; nana-form-field owns form-field"
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("search-dropdown")
+                .map(ComponentTypeId::as_str),
+            Some("nana.search")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-search-dropdown")
+                .map(ComponentTypeId::as_str),
+            Some("nana.search")
+        );
+        assert_ne!(
+            context
+                .resolve_component_tag("search")
+                .map(ComponentTypeId::as_str),
+            Some("nana.search"),
+            "HTML search stays unregistered; nana-search-dropdown owns search-dropdown"
+        );
 
         #[derive(Clone)]
         struct ProbeCard {
@@ -8900,6 +8958,32 @@ mod tests {
                 .component_type(button.stable_id())
                 .map(ComponentTypeId::as_str),
             Some("nana.button")
+        );
+        let select_type = context.resolve_component_tag("select").unwrap().clone();
+        let select_layout = std::sync::Arc::new(nana_ui_core::LayoutStyle::default());
+        let select_spec = crate::SemanticSpec::from_parts(&select_type, &select_layout);
+        let select = context
+            .create_component(document, Select::from_semantic(&select_spec))
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .component_type(select.stable_id())
+                .map(ComponentTypeId::as_str),
+            Some("nana.select")
+        );
+        let dock = context
+            .create_component(
+                document,
+                crate::Dock::new(crate::DockNode::item("dock", None)),
+            )
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .component_type(dock.stable_id())
+                .map(ComponentTypeId::as_str),
+            Some("nana.dock")
         );
 
         let id = StableNodeId::new(42).unwrap();
