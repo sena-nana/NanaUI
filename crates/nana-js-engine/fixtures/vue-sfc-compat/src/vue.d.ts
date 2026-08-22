@@ -4,7 +4,7 @@ declare module "*.vue" {
   export default component;
 }
 
-declare module "@nanaui/nanavue-components" {
+declare module "@nanaui/nanavue-components/NanaAppShell" {
   import type { Component } from "vue";
   export const NanaAppShell: Component;
 }

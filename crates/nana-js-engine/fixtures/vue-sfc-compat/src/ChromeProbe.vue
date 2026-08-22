@@ -1,12 +1,20 @@
 <script setup lang="ts">
-import { NanaAppShell } from "@nanaui/nanavue-components";
+import { nextTick, onMounted, ref } from "vue";
+import { NanaAppShell } from "@nanaui/nanavue-components/NanaAppShell";
+
+const input = ref<any>(null);
+
+onMounted(async () => {
+  await nextTick();
+  input.value?.focus?.();
+});
 </script>
 
 <template>
   <NanaAppShell title="Chrome probe">
     <div class="chrome-probe-body">
       <p>Type in the field below.</p>
-      <label>Text <input data-agent-id="chrome-probe-input" /></label>
+      <label>Text <input ref="input" data-agent-id="chrome-probe-input" /></label>
     </div>
   </NanaAppShell>
 </template>
