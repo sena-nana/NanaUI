@@ -42,7 +42,8 @@ use nana_ui::runtime::{
     StableNodeId, StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch,
     TabOption as RuntimeTabOption, Tabs as RuntimeTabs, Text as RuntimeText,
     TextArea as RuntimeTextArea, TextHorizontalAlignment, TextInput as RuntimeTextInput,
-    TextSelection, TextVerticalAlignment, TimeSeriesChart as RuntimeTimeSeriesChart,
+    TextSelection, TextVerticalAlignment, Thumbnail as RuntimeThumbnail,
+    TimeSeriesChart as RuntimeTimeSeriesChart,
     Toast as RuntimeToast, TreeView as RuntimeTreeView,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
@@ -144,6 +145,7 @@ enum Component {
     KeymapLayer,
     GpuTextureView,
     GpuView,
+    Thumbnail,
 }
 
 impl Component {
@@ -220,6 +222,7 @@ impl Component {
             Self::KeymapLayer => component_ids::KEYMAP_LAYER,
             Self::GpuTextureView => component_ids::GPU_TEXTURE_VIEW,
             Self::GpuView => component_ids::GPU_VIEW,
+            Self::Thumbnail => component_ids::THUMBNAIL,
         }
     }
 }
@@ -538,6 +541,21 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         Component::GpuView,
         "inline",
         "gpu-view custom renderer paints the inline slot",
+    ),
+    f(
+        Component::Thumbnail,
+        "empty",
+        "empty thumbnail keeps the 1:1 control box without a host-texture node",
+    ),
+    f(
+        Component::Thumbnail,
+        "ready",
+        "ready thumbnail samples nana.host-texture with contain",
+    ),
+    f(
+        Component::Thumbnail,
+        "wide",
+        "host-declared 16:9 aspect widens the shared box",
     ),
     // Platform IME events cannot be injected into the compatibility widget by
     // this headless harness. Preedit remains a real Hosted acceptance gate.
@@ -1557,6 +1575,8 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::NativeMarkdown, _) => Size::new(420, 140),
         (Component::ImageViewer, _) => Size::new(420, 240),
         (Component::GraphCanvas, _) => Size::new(420, 180),
+        (Component::Thumbnail, "wide") => Size::new(80, 40),
+        (Component::Thumbnail, _) => Size::new(40, 40),
         _ => SIZE,
     }
 }
@@ -1572,7 +1592,7 @@ fn is_gpu_fixture(fixture: Fixture) -> bool {
     matches!(
         fixture.component,
         Component::GpuTextureView | Component::GpuView
-    )
+    ) || (fixture.component == Component::Thumbnail && fixture.state == "ready")
 }
 
 struct RuntimeEvidence {
@@ -2629,6 +2649,17 @@ fn runtime_fixture(
                 RuntimeGpuTextureView::new(gpu::SNAPSHOT_GPU_SLOT),
             )?
             .stable_id(),
+        Component::Thumbnail => {
+            let thumb = match fixture.state {
+                "ready" => RuntimeThumbnail::new(gpu::SNAPSHOT_GPU_SLOT),
+                "wide" => RuntimeThumbnail::empty().aspect(16.0 / 9.0),
+                _ => RuntimeThumbnail::empty(),
+            };
+            document
+                .context_mut()
+                .create_component(document_id, thumb)?
+                .stable_id()
+        }
         Component::GpuView => {
             let colors = theme.colors();
             document
@@ -4480,6 +4511,7 @@ fn write_evidence(
             | Component::SettingsPage
             | Component::AppTitleBar
             | Component::GpuTextureView
+            | Component::Thumbnail
     ) {
         hit != Some(runtime.target)
     } else if expects_hit {
@@ -4551,6 +4583,7 @@ fn write_evidence(
             | Component::AppTitleBar
             | Component::GpuTextureView
             | Component::GpuView
+            | Component::Thumbnail
     ) || geometry.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
@@ -4572,6 +4605,15 @@ fn write_evidence(
             (bounds.height - segmented_control_size(fixture.state).height()).abs() < 0.01
         }
         Component::Checkbox => bounds.height >= ControlSize::Medium.height(),
+        Component::Thumbnail if fixture.state == "wide" => {
+            let height = ControlSize::Small.height();
+            let width = height * 16.0 / 9.0;
+            (bounds.height - height).abs() < 0.01 && (bounds.width - width).abs() < 0.01
+        }
+        Component::Thumbnail => {
+            let extent = ControlSize::Small.height();
+            (bounds.width - extent).abs() < 0.01 && (bounds.height - extent).abs() < 0.01
+        }
         Component::Dialog | Component::ConfirmDialog | Component::Drawer => {
             matches!(
                 geometry,
@@ -4743,6 +4785,10 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         (Component::GpuTextureView | Component::GpuView, _) => (
             "manual-required",
             "Review host-texture sampling and gpu-view Scene paint; Iced shader output is a reference, not a pixel oracle",
+        ),
+        (Component::Thumbnail, _) => (
+            "manual-required",
+            "Review the compact list-row box, four shared-geometry states, and ready host-texture contain",
         ),
         (Component::Tooltip, _) => (
             "manual-required",
@@ -4933,6 +4979,9 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         }
         (Component::GpuView, _) => {
             "intentional: Iced GpuView shader is inline; Runtime paints via DefaultGpuViewRenderer using the same WGSL. CustomRenderNode does not encode palette; the snapshot registry supplies the fixture theme"
+        }
+        (Component::Thumbnail, _) => {
+            "intentional: Runtime Thumbnail is a compact HostTexture slot with empty/loading/unavailable chrome; Iced has no list-row thumbnail primitive"
         }
         _ => fixture.divergence,
     }

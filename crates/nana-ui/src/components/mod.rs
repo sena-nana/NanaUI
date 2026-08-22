@@ -23,8 +23,9 @@ pub use nana_ui_runtime::{
     SettingsCard, SettingsCollapsibleCard, SettingsRow, SidebarFooter, SidebarFooterButton,
     SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, SidebarSectionSlots,
     SidebarSectionState, Skeleton, Spinner, StatusBadge, Switch, TabDragGroup, TabDragSurface,
-    TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Toast, Tooltip, TreeNavigation,
-    TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad, tree_navigation_event,
+    TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Thumbnail, ThumbnailState, Toast,
+    Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad,
+    tree_navigation_event,
 };
 #[cfg(feature = "calendar")]
 pub use nana_ui_runtime::{

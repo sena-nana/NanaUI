@@ -12,8 +12,9 @@ use nana_ui::runtime::{
     SearchDropdownOption, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
     SemanticColorRole, SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow,
     SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge,
-    Switch, TabOption, Tabs, TabsEvent, TextArea, TextChanged, TextInput, Toast, ToggleChanged,
-    TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
+    Switch, TabOption, Tabs, TabsEvent, TextArea, TextChanged, TextInput, Thumbnail, Toast,
+    ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage,
+    View, XYPad, XYPadEvent,
 };
 use nana_ui::{
     ButtonKind, CardKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
@@ -1406,6 +1407,40 @@ fn mount_controls(
         styled_text("列表", SemanticColorRole::Muted, 12.0, 400),
     )?;
     context.append_child(list_panel, list_title)?;
+    let thumb_row =
+        context.create_detached_component(document_id, HostStack::leading_row(8.0))?;
+    for thumb in [
+        Thumbnail::empty(),
+        Thumbnail::loading(),
+        Thumbnail::new("gallery.thumb"),
+        Thumbnail::unavailable(),
+    ] {
+        let node = context.create_detached_component(document_id, thumb)?;
+        context.append_child(thumb_row, node)?;
+    }
+    context.append_child(list_panel, thumb_row)?;
+    let thumb_lead =
+        context.create_detached_component(document_id, Thumbnail::empty())?;
+    let thumb_label = context.create_detached_component(document_id, list_label_text("缩略图项"))?;
+    let thumb_item = context.create_detached_component(
+        document_id,
+        ListItem::new("缩略图项").slots(ListItemSlots {
+            leading: Some(thumb_lead.stable_id()),
+            content: Some(thumb_label.stable_id()),
+            trailing: None,
+        }),
+    )?;
+    context.append_child(thumb_item, thumb_lead)?;
+    context.append_child(thumb_item, thumb_label)?;
+    context.set_list_item_slots(
+        thumb_item,
+        ListItemSlots {
+            leading: Some(thumb_lead.stable_id()),
+            content: Some(thumb_label.stable_id()),
+            trailing: None,
+        },
+    )?;
+    context.append_child(list_panel, thumb_item)?;
     context.append_child(list_panel, list)?;
 
     let top = context.create_detached_component(document_id, HostStack::fill_row(10.0))?;

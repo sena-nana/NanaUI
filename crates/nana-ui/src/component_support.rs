@@ -187,6 +187,7 @@ component_catalog! {
     EMPTY_STATE => { id: "empty-state", name: "EmptyState", family: Feedback, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     INTERACTIVE_CARD => { id: "interactive-card", name: "InteractiveCard", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     LIST_ITEM => { id: "list-item", name: "ListItem", family: Navigation, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
+    THUMBNAIL => { id: "thumbnail", name: "Thumbnail", family: Primitive, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Gpu, Animation, Accessibility] },
     DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     WORKSPACE => { id: "workspace", name: "Workspace", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
     DOCK => { id: "dock", name: "Dock", family: Workspace, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
@@ -251,6 +252,7 @@ mod tests {
             component_ids::SWITCH,
             component_ids::CARD,
             component_ids::LIST_ITEM,
+            component_ids::THUMBNAIL,
             component_ids::RANGE_FIELD,
             component_ids::SEGMENTED_CONTROL,
             component_ids::STATUS_BADGE,
@@ -375,6 +377,8 @@ mod tests {
             crate::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
         let _: nana_ui_runtime::GpuView = crate::GpuView::new(1);
         let _: nana_ui_runtime::GpuTextureView = crate::GpuTextureView::new("slot");
+        let _: nana_ui_runtime::Thumbnail = crate::Thumbnail::empty();
+        let _: nana_ui_runtime::Thumbnail = crate::components::Thumbnail::empty();
         let _: nana_ui_runtime::GraphCanvas =
             crate::components::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
     }
@@ -418,6 +422,7 @@ mod tests {
     fn fourth_batch_public_exports_are_runtime_components() {
         let _: nana_ui_runtime::Progress = crate::Progress::new(1.0, 2.0);
         let _: nana_ui_runtime::Spinner = crate::Spinner::new("Loading");
+        let _: nana_ui_runtime::Thumbnail = crate::Thumbnail::empty();
         let _: nana_ui_runtime::Skeleton =
             crate::Skeleton::new(nana_ui_core::LengthSpec::Fill, 16.0);
         let _: nana_ui_runtime::LevelMeter = crate::LevelMeter::new(0.5);
@@ -427,6 +432,7 @@ mod tests {
 
         let _: nana_ui_runtime::Progress = crate::components::Progress::new(1.0, 2.0);
         let _: nana_ui_runtime::Spinner = crate::components::Spinner::new("Loading");
+        let _: nana_ui_runtime::Thumbnail = crate::components::Thumbnail::empty();
         let _: nana_ui_runtime::Skeleton =
             crate::components::Skeleton::new(nana_ui_core::LengthSpec::Fill, 16.0);
         let _: nana_ui_runtime::LevelMeter = crate::components::LevelMeter::new(0.5);
