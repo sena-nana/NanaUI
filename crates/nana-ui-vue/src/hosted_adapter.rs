@@ -490,6 +490,12 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             return;
         };
         host.prepare_canvas_gpu();
+        // Stamp packed HostTexture generation/version onto CustomRenderNode
+        // before extract; content invalidation must not leave revision at 0.
+        if let Ok(mut document) = host.document().lock() {
+            document.flush_host_frame();
+            host.report_commit_rejections(&mut document);
+        }
         let snapshot = host.semantic_snapshot();
         if let Ok(mut document) = host.document().lock() {
             document.sync_semantic_styles(&snapshot);

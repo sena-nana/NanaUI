@@ -45,7 +45,6 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<EmptyState>()?;
         registrar.register_component::<LabeledValue>()?;
         registrar.register_component::<Dialog>()?;
-        registrar.register_tags("nana.chip", &["chip"])?;
         registrar.register_tags("nana.icon", &["icon", "i"])?;
         Ok(())
     }
@@ -64,7 +63,7 @@ impl RegisterableComponent for Text {
 
 impl RegisterableComponent for Button {
     const TYPE_ID: &'static str = "nana.button";
-    const TAGS: &'static [&'static str] = &["button", "btn"];
+    const TAGS: &'static [&'static str] = &["button", "btn", "chip"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Button::new(spec.display_label())
             .layout(Arc::clone(spec.layout))

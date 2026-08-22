@@ -659,6 +659,12 @@ pub struct NanaTreeDocument {
     pending_accessibility_generation: u64,
     accessibility_full_required: bool,
     commit_rejections: Vec<String>,
+    /// Shared slot registry handle. Device/Queue stay on the hosted renderer.
+    #[cfg(feature = "scene-view")]
+    host_textures: Option<nana_ui::HostTextureRegistry>,
+    /// Test stand-in for a registered HostTexture generation/version pair.
+    #[cfg(test)]
+    host_texture_revision_overrides: HashMap<String, u64>,
 }
 
 const MAX_PENDING_ACCESSIBILITY_CHANGES: usize = 4_096;
@@ -758,6 +764,10 @@ impl NanaTreeDocument {
             pending_accessibility_generation: 0,
             accessibility_full_required: false,
             commit_rejections: Vec::new(),
+            #[cfg(feature = "scene-view")]
+            host_textures: None,
+            #[cfg(test)]
+            host_texture_revision_overrides: HashMap::new(),
         };
         doc.reset_layout_roots();
         doc
@@ -803,8 +813,57 @@ impl NanaTreeDocument {
 
     /// Commit queued Vue host ops, then drain Runtime systems.
     pub fn flush_host_frame(&mut self) {
+        self.stamp_host_texture_revisions();
         self.commit_pending_queue().ok();
         self.flush_runtime_systems();
+    }
+
+    /// Attach the window's host-texture registry so flush can pack revisions.
+    #[cfg(feature = "scene-view")]
+    pub(crate) fn attach_host_textures(&mut self, textures: nana_ui::HostTextureRegistry) {
+        self.host_textures = Some(textures);
+    }
+
+    /// Packed revision for a registered slot. Unresolved handles stay `0`.
+    fn packed_host_texture_revision(&self, slot: &str) -> u64 {
+        #[cfg(test)]
+        if let Some(revision) = self.host_texture_revision_overrides.get(slot) {
+            return *revision;
+        }
+        #[cfg(feature = "scene-view")]
+        if let Some(registry) = &self.host_textures
+            && let Some(binding) = registry.get(slot)
+        {
+            return nana_ui_runtime::pack_gpu_revision(
+                binding.texture.generation(),
+                binding.texture.version(),
+            );
+        }
+        0
+    }
+
+    /// Refresh `CustomRenderNode.revision` from the registered texture.
+    fn stamp_host_texture_revisions(&mut self) {
+        let nodes: Vec<NodeHandle> = self
+            .nodes
+            .keys()
+            .copied()
+            .map(NodeHandle)
+            .filter(|handle| self.surface_host_texture_slot(*handle).is_some())
+            .collect();
+        for el in nodes {
+            self.sync_surface_custom_render(el);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn override_host_texture_revision(
+        &mut self,
+        slot: impl Into<String>,
+        revision: u64,
+    ) {
+        self.host_texture_revision_overrides
+            .insert(slot.into(), revision);
     }
 
     /// Transactional pending-ops commit used by input/IME/focus paths that
@@ -818,10 +877,7 @@ impl NanaTreeDocument {
     }
 
     /// Commit `extra` after everything currently pending, in one transaction.
-    fn commit_extra(
-        &mut self,
-        extra: MutationQueue,
-    ) -> Result<(), nana_ui_runtime::UiWorldError> {
+    fn commit_extra(&mut self, extra: MutationQueue) -> Result<(), nana_ui_runtime::UiWorldError> {
         self.pending.mutations.append(extra);
         self.commit_pending_queue()
     }
@@ -848,10 +904,8 @@ impl NanaTreeDocument {
                 single.push(mutation.clone());
                 if let Err(error) = self.runtime.commit(single) {
                     if self.commit_rejections.len() < MAX_COMMIT_REJECTIONS {
-                        self.commit_rejections.push(format!(
-                            "{:?}: {error}",
-                            mutation_label(mutation)
-                        ));
+                        self.commit_rejections
+                            .push(format!("{:?}: {error}", mutation_label(mutation)));
                     }
                     first_error.get_or_insert(error);
                 }
@@ -1837,7 +1891,10 @@ impl NanaTreeDocument {
         if !self.nodes.contains_key(&el.0) {
             return;
         }
-        let content = self.surface_host_texture_slot(el).map(host_texture_content);
+        let content = self.surface_host_texture_slot(el).map(|slot| {
+            let revision = self.packed_host_texture_revision(&slot);
+            host_texture_content(slot, revision)
+        });
         if self.live_custom_render(el) == content {
             return;
         }
@@ -2545,8 +2602,8 @@ impl NanaTreeDocument {
     }
 }
 
-fn host_texture_content(slot: String) -> CustomRenderNode {
-    CustomRenderNode::new(HOST_TEXTURE_RENDERER, slot, 0)
+fn host_texture_content(slot: String, revision: u64) -> CustomRenderNode {
+    CustomRenderNode::new(HOST_TEXTURE_RENDERER, slot, revision)
 }
 
 fn canvas_host_texture_slot(id: &str) -> Option<String> {
@@ -2704,6 +2761,22 @@ fn project_migrating_component(
                     .invalid(widget.props.invalid)
                     .project(id, world, mutations);
             }
+            true
+        }
+        crate::WidgetKind::Chip
+            if !widget.props.role.eq_ignore_ascii_case("tab") =>
+        {
+            let kind = if widget.props.active || widget.props.toggled {
+                nana_ui_core::ButtonKind::Selected
+            } else {
+                nana_ui_core::ButtonKind::Subtle
+            };
+            RuntimeButton::new(widget.props.display_label())
+                .layout(Arc::new(widget.props.layout.clone()))
+                .kind(kind)
+                .size(widget.props.size)
+                .disabled(widget.props.disabled)
+                .project(id, world, mutations);
             true
         }
         crate::WidgetKind::Input => {
@@ -3557,8 +3630,10 @@ fn project_migrating_component(
                 } else {
                     title.to_string()
                 };
-                if !bar_title.is_empty() {
-                    RuntimeAppTitleBar::new(bar_title).project(title_bar, world, mutations);
+                let bar = RuntimeAppTitleBar::new(bar_title);
+                bar.project(title_bar, world, mutations);
+                if !snapshot.get(title_bar.get()).is_some_and(is_title_bar_child) {
+                    pending.title_bars.push((title_bar, bar));
                 }
             }
             let mut component = RuntimeAppShell::new();
@@ -6444,6 +6519,50 @@ mod tests {
     }
 
     #[test]
+    fn nana_chip_projects_selected_button_not_a_second_control() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let node = doc.create_element("nana-chip");
+        doc.insert(node, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            node.0,
+            crate::WidgetKind::Chip,
+            crate::WidgetProps {
+                label: "Beta".into(),
+                active: true,
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let id = StableNodeId::try_from(node).unwrap();
+        assert_eq!(
+            doc.runtime
+                .component_type(id)
+                .map(|type_id| type_id.as_str().to_owned())
+                .as_deref(),
+            Some("nana.button")
+        );
+        let accessibility = doc
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .expect("chip must enter Runtime accessibility");
+        assert_eq!(accessibility.role, AccessibilityRole::Button);
+        assert_eq!(accessibility.label.as_deref(), Some("Beta"));
+        assert_eq!(
+            doc.runtime.standard_visual(id),
+            Some(nana_ui_runtime::StandardVisual::Button {
+                label: std::sync::Arc::from("Beta"),
+                kind: nana_ui_core::ButtonKind::Selected,
+                size: nana_ui_core::ControlSize::Medium,
+                loading: false,
+                loading_phase: 0.0,
+                invalid: false,
+            })
+        );
+    }
+
+    #[test]
     fn migrated_controls_project_one_retained_visual_and_accessibility_state() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let button = doc.create_element("nana-button");
@@ -8094,7 +8213,20 @@ mod tests {
             Some(nana_ui_core::LengthSpec::Px(nana_ui_core::TITLE_BAR_HEIGHT))
         );
         assert_eq!(title_style.layout.flex_grow, Some(0.0));
-        assert_eq!(doc.runtime.text(title_id), Some("Nana"));
+        assert!(
+            doc.runtime.text(title_id).unwrap_or("").is_empty(),
+            "title-bar root text must be empty after assemble, got {:?}",
+            doc.runtime.text(title_id)
+        );
+        let title_label =
+            assembled_title_bar_center_label(&doc, title_id).expect("center column title");
+        assert_eq!(doc.runtime.text(title_label), Some("Nana"));
+        assert_eq!(
+            doc.runtime
+                .accessibility(title_id)
+                .and_then(|state| state.label.as_deref()),
+            Some("Nana")
+        );
         assert_eq!(body_style.layout.flex_grow, Some(1.0));
         assert_eq!(
             body_style.layout.height,
@@ -8166,11 +8298,105 @@ mod tests {
             Some(nana_ui_core::LengthSpec::Px(nana_ui_core::TITLE_BAR_HEIGHT))
         );
         assert_eq!(title_style.layout.flex_grow, Some(0.0));
+        assert!(
+            doc.runtime.text(title_id).unwrap_or("").is_empty(),
+            "title-bar root text must be empty after assemble, got {:?}",
+            doc.runtime.text(title_id)
+        );
+        let title_label =
+            assembled_title_bar_center_label(&doc, title_id).expect("center column title");
+        assert_eq!(doc.runtime.text(title_label), Some("Nana"));
+        assert_eq!(
+            doc.runtime
+                .accessibility(title_id)
+                .and_then(|state| state.label.as_deref()),
+            Some("Nana")
+        );
         assert_eq!(body_style.layout.flex_grow, Some(1.0));
         assert_eq!(
             body_style.layout.height,
             Some(nana_ui_core::LengthSpec::Fill)
         );
+    }
+
+    #[test]
+    fn app_shell_empty_title_bar_still_assembles_columns() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let shell = doc.create_element("nana-app-shell");
+        let title_bar = doc.create_element("nana-app-title-bar");
+        let body = doc.create_element("div");
+        doc.insert(shell, doc.mount_root(), None);
+        doc.insert(title_bar, shell, None);
+        doc.insert(body, shell, None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut title_props = crate::WidgetProps {
+            element_tag: "nana-app-title-bar".into(),
+            ..Default::default()
+        };
+        title_props
+            .attrs
+            .insert("data-slot".into(), "title-bar".into());
+        title_props.class_names.push("nana-app-title-bar".into());
+        bridge.register(title_bar.0, crate::WidgetKind::Column, title_props);
+        bridge.register(
+            body.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.register(
+            shell.0,
+            crate::WidgetKind::AppShell,
+            crate::WidgetProps::default(),
+        );
+        bridge.insert_child(title_bar.0, shell.0, None);
+        bridge.insert_child(body.0, shell.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let title_id = StableNodeId::try_from(title_bar).unwrap();
+        let columns = doc.runtime.node(title_id).unwrap().children;
+        let tags: Vec<String> = columns
+            .iter()
+            .map(|&id| match doc.runtime.node(id).map(|node| node.kind) {
+                Some(NodeKind::Element { tag }) => tag,
+                other => panic!("expected title-bar column, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                "app-title-bar-leading",
+                "app-title-bar-center",
+                "app-title-bar-trailing"
+            ]
+        );
+        assert!(
+            doc.runtime.text(title_id).unwrap_or("").is_empty(),
+            "title-bar root text must be empty after assemble, got {:?}",
+            doc.runtime.text(title_id)
+        );
+        let title_label =
+            assembled_title_bar_center_label(&doc, title_id).expect("center column title");
+        assert_eq!(doc.runtime.text(title_label), Some(""));
+        assert_eq!(
+            doc.runtime
+                .accessibility(title_id)
+                .and_then(|state| state.label.as_deref()),
+            Some("")
+        );
+    }
+
+    fn assembled_title_bar_center_label(
+        doc: &NanaTreeDocument,
+        title_id: StableNodeId,
+    ) -> Option<StableNodeId> {
+        let columns = doc.runtime.node(title_id)?.children;
+        let center = columns.into_iter().find(|&id| {
+            matches!(
+                doc.runtime.node(id).as_ref().map(|node| &node.kind),
+                Some(NodeKind::Element { tag }) if tag == "app-title-bar-center"
+            )
+        })?;
+        doc.runtime.node(center)?.children.first().copied()
     }
 
     #[test]
@@ -9173,11 +9399,59 @@ mod tests {
             vec![(node, "program".into())],
             "snapshot/host GPU binding must read Runtime, not a facade map"
         );
+        assert_eq!(
+            content.revision, 0,
+            "unresolved registry handles keep revision 0"
+        );
 
         doc.remove_attribute(node, "data-nana-gpu");
         doc.flush_host_frame();
         assert!(doc.world().custom_render(id).is_none());
         assert!(doc.gpu_slots().is_empty());
+    }
+
+    #[test]
+    fn flushed_host_texture_revision_matches_packed_generation_and_version() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let node = doc.create_element("div");
+        doc.insert(node, doc.mount_root(), None);
+        doc.set_gpu_slot(node, "program");
+        let generation = 5;
+        let version = 3;
+        doc.override_host_texture_revision(
+            "program",
+            nana_ui_runtime::pack_gpu_revision(generation, version),
+        );
+        let id = StableNodeId::try_from(node).unwrap();
+        assert!(
+            doc.world().custom_render(id).is_none(),
+            "host ops must not commit GPU revisions before the frame boundary"
+        );
+
+        doc.flush_host_frame();
+        let content = doc
+            .world()
+            .custom_render(id)
+            .expect("registered texture must land on CustomRenderNode");
+        assert_eq!(
+            content.revision,
+            nana_ui_runtime::pack_gpu_revision(generation, version)
+        );
+
+        doc.override_host_texture_revision(
+            "program",
+            nana_ui_runtime::pack_gpu_revision(generation, version + 1),
+        );
+        doc.flush_host_frame();
+        let content = doc
+            .world()
+            .custom_render(id)
+            .expect("invalidated texture must keep CustomRenderNode");
+        assert_eq!(
+            content.revision,
+            nana_ui_runtime::pack_gpu_revision(generation, version + 1),
+            "content updates must change CustomRenderNode.revision"
+        );
     }
 
     #[test]

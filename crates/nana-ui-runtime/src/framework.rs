@@ -8831,6 +8831,13 @@ mod tests {
                 .map(ComponentTypeId::as_str),
             Some("nana.button")
         );
+        assert_eq!(
+            context
+                .resolve_component_tag("chip")
+                .map(ComponentTypeId::as_str),
+            Some("nana.button"),
+            "chip is the compact Button Selected/Subtle tag, not a second type"
+        );
 
         #[derive(Clone)]
         struct ProbeCard {
