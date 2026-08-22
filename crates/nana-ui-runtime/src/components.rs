@@ -952,7 +952,7 @@ pub struct TextInputPresentation {
 pub struct LayoutInput {
     pub id: StableNodeId,
     pub parent: Option<StableNodeId>,
-    pub children: Vec<StableNodeId>,
+    pub children: Arc<Vec<StableNodeId>>,
     pub style: Arc<LayoutStyle>,
     pub text_metrics: Option<TextMetrics>,
     pub modal: Option<ModalLayoutInput>,

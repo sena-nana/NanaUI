@@ -373,6 +373,8 @@ pub struct UiWorld {
     /// Subtree roots detached by Remove or Park. Mounted document/scene roots
     /// are created with no parent and are not in this set.
     detached: HashSet<StableNodeId>,
+    /// Live roots per document: `parent.is_none()` and [`Self::presence_live`].
+    live_document_roots: HashMap<DocumentId, BTreeSet<StableNodeId>>,
 }
 
 impl Default for UiWorld {
@@ -418,6 +420,7 @@ impl UiWorld {
             z_index_nodes: 0,
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
+            live_document_roots: HashMap::new(),
         }
     }
 
@@ -1663,17 +1666,11 @@ impl UiWorld {
                 let hierarchy = self.component::<Hierarchy>(id);
                 let has_text = matches!(self.component::<Kind>(id).0.as_ref(), NodeKind::Text)
                     || !self.component::<TextContent>(id).value.is_empty();
-                let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
-                if !self.presence_live(id) || !self.overlay_branch_active(id) || style.omits_box() {
-                    Arc::make_mut(&mut style).hidden = true;
-                }
-                let children = hierarchy.children.as_ref().clone();
-                self.record_id_list_alloc(children.len());
                 Ok(LayoutInput {
                     id,
                     parent: hierarchy.parent,
-                    children,
-                    style,
+                    children: Arc::clone(&hierarchy.children),
+                    style: self.effective_layout_style(id),
                     text_metrics: has_text.then(|| *self.component::<TextMetrics>(id)),
                     modal: self
                         .world
@@ -1700,20 +1697,26 @@ impl UiWorld {
             .collect()
     }
 
+    /// Layout-facing style without assembling a [`LayoutInput`].
+    ///
+    /// Parked, detached, and inactive-overlay nodes match [`Self::layout_inputs`]:
+    /// the returned style reports [`nana_ui_core::LayoutStyle::omits_box`].
+    pub(crate) fn layout_style(&self, id: StableNodeId) -> Option<Arc<nana_ui_core::LayoutStyle>> {
+        self.contains(id).then(|| self.effective_layout_style(id))
+    }
+
+    fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
+        let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
+        if !self.presence_live(id) || !self.overlay_branch_active(id) || style.omits_box() {
+            Arc::make_mut(&mut style).hidden = true;
+        }
+        style
+    }
+
     /// Rebuild one document's event-time hit-test index after scheduled input
     /// or layout work. Pointer dispatch then scans only compact hit entries.
     pub fn rebuild_hit_test(&mut self, document: DocumentId) {
-        let mut roots = self
-            .entities
-            .keys()
-            .copied()
-            .filter(|id| {
-                self.component::<Identity>(*id).document == document
-                    && self.presence_live(*id)
-                    && self.component::<Hierarchy>(*id).parent.is_none()
-            })
-            .collect::<Vec<_>>();
-        roots.sort_unstable();
+        let roots = self.document_roots(document);
         let mut stack = roots
             .into_iter()
             .rev()
@@ -1833,10 +1836,12 @@ impl UiWorld {
             })
     }
 
-    /// Pre-compose a scroll translation onto every hit entry under `scroller`.
-    /// Equivalent to a rebuild because scroll changes nothing else about the
-    /// entries (membership, order, z-index, and clips are scroll-invariant:
-    /// the scroller's own clip never includes its scroll offset).
+    /// Pre-compose a scroll translation onto descendant hit entries of
+    /// `scroller`. The scroller chrome stays un-scrolled — rebuild applies
+    /// scroll only when walking children. Equivalent to a rebuild because
+    /// scroll changes nothing else about the entries (membership, order,
+    /// z-index, and clips are scroll-invariant: the scroller's own clip never
+    /// includes its scroll offset).
     pub fn update_hit_test_scroll(
         &mut self,
         document: DocumentId,
@@ -1850,12 +1855,14 @@ impl UiWorld {
             index += 1;
             subtree.extend(self.component::<Hierarchy>(id).children.iter().copied());
         }
-        let subtree = subtree.into_iter().collect::<std::collections::HashSet<_>>();
+        let subtree = subtree
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
         let Some(entries) = self.hit_test_index.get_mut(&document) else {
             return;
         };
         for entry in entries.iter_mut() {
-            if !subtree.contains(&entry.id) {
+            if entry.id == scroller || !subtree.contains(&entry.id) {
                 continue;
             }
             let [a, b, c, d, e, f] = entry.transform;
@@ -2030,6 +2037,7 @@ impl UiWorld {
                 self.dirty_entities.insert(*id);
                 self.spawned_since_drain += 1;
                 report.created += 1;
+                self.refresh_root_membership(*id);
             }
             UiMutation::Insert {
                 parent,
@@ -2088,17 +2096,20 @@ impl UiWorld {
                 }
                 self.detached.remove(child);
                 self.sync_subtree_presence(*child);
+                self.refresh_root_membership(*child);
             }
             UiMutation::Detach { id } => {
                 if self.unlink_from_parent(*id) {
                     report.detached += 1;
                 }
                 self.leave_live_document(*id);
+                self.refresh_root_membership(*id);
             }
             UiMutation::ParkSubtree { root } => {
                 self.unlink_from_parent(*root);
                 self.set_subtree_mount_state(*root, MountState::Parked);
                 self.leave_live_document(*root);
+                self.refresh_root_membership(*root);
             }
             UiMutation::DespawnSubtree { root } => {
                 let root_snapshot = self.node(*root).expect("validated root must exist");
@@ -2121,6 +2132,7 @@ impl UiWorld {
                         .remove(&id)
                         .expect("entity index must contain node");
                     self.dirty_entities.remove(&id);
+                    self.refresh_root_membership(id);
                     if self.focused.get(&snapshot.document) == Some(&id) {
                         self.focused.remove(&snapshot.document);
                     }
@@ -2167,6 +2179,7 @@ impl UiWorld {
                     self.despawned_since_drain += 1;
                     report.despawned += 1;
                 }
+                self.refresh_root_membership(*root);
             }
             UiMutation::SetStyle { id, style } => {
                 let previous = self.component::<NodeStyle>(*id).clone();
@@ -2260,7 +2273,10 @@ impl UiWorld {
             }
             UiMutation::WriteLayout { id, layout } => {
                 *self.component_mut::<LayoutBox>(*id) = *layout;
-                self.mark_subtree(
+                // Scoped layout already emits every recomputed box, including
+                // shifted descendants. Mark only this node so a bit-identical
+                // child is not extracted solely because an ancestor was written.
+                self.mark(
                     *id,
                     DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
@@ -2276,10 +2292,8 @@ impl UiWorld {
                     // driver can patch the index in place instead of
                     // rebuilding the whole document; the scroller itself is
                     // marked INPUT to signal the pending patch.
-                    self.scroll_hit_updates.push((
-                        *id,
-                        [previous.x - offset.x, previous.y - offset.y],
-                    ));
+                    self.scroll_hit_updates
+                        .push((*id, [previous.x - offset.x, previous.y - offset.y]));
                     self.mark(*id, DirtyMask::INPUT);
                     self.mark_subtree(*id, DirtyMask::RENDER);
                 }
@@ -2688,7 +2702,7 @@ impl UiWorld {
             .expect("entity must have runtime component")
     }
 
-    fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+    pub(crate) fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<Hierarchy>(entity)?.parent
     }
@@ -4592,19 +4606,57 @@ impl UiWorld {
             .is_none_or(|state| state.active == Some(id))
     }
 
-    pub fn document_order(&self, document: DocumentId) -> Vec<StableNodeId> {
+    pub(crate) fn document_roots(&self, document: DocumentId) -> Vec<StableNodeId> {
         let mut roots = self
-            .entities
-            .keys()
-            .copied()
-            .filter(|id| {
-                let identity = self.component::<Identity>(*id);
-                identity.document == document
-                    && self.presence_live(*id)
-                    && self.component::<Hierarchy>(*id).parent.is_none()
-            })
-            .collect::<Vec<_>>();
+            .live_document_roots
+            .get(&document)
+            .map(|set| set.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
         roots.sort_unstable();
+        roots
+    }
+
+    fn refresh_root_membership(&mut self, id: StableNodeId) {
+        let Some(&entity) = self.entities.get(&id) else {
+            for roots in self.live_document_roots.values_mut() {
+                roots.remove(&id);
+            }
+            self.live_document_roots
+                .retain(|_, roots| !roots.is_empty());
+            return;
+        };
+        let document = self
+            .world
+            .get::<Identity>(entity)
+            .expect("entity must have identity")
+            .document;
+        let parent = self
+            .world
+            .get::<Hierarchy>(entity)
+            .expect("entity must have hierarchy")
+            .parent;
+        let live_root = parent.is_none() && self.presence_live(id);
+        if live_root {
+            self.live_document_roots
+                .entry(document)
+                .or_default()
+                .insert(id);
+            return;
+        }
+        let empty = self
+            .live_document_roots
+            .get_mut(&document)
+            .is_some_and(|roots| {
+                roots.remove(&id);
+                roots.is_empty()
+            });
+        if empty {
+            self.live_document_roots.remove(&document);
+        }
+    }
+
+    pub fn document_order(&self, document: DocumentId) -> Vec<StableNodeId> {
+        let roots = self.document_roots(document);
         let mut order = Vec::new();
         let mut stack = roots.into_iter().rev().collect::<Vec<_>>();
         while let Some(id) = stack.pop() {
@@ -7058,6 +7110,14 @@ mod tests {
         DocumentId::new(value).unwrap()
     }
 
+    fn hit_entry_transform(world: &UiWorld, document: DocumentId, id: StableNodeId) -> [f32; 6] {
+        world.hit_test_index[&document]
+            .iter()
+            .find(|entry| entry.id == id)
+            .expect("hit entry")
+            .transform
+    }
+
     #[test]
     fn batch_builds_reparents_and_detaches_hierarchy() {
         let mut world = UiWorld::new();
@@ -7100,6 +7160,93 @@ mod tests {
         world.commit(attach).unwrap();
         assert_eq!(world.node(node(4)).unwrap().parent, Some(node(1)));
         assert!(world.document_order(document(1)).contains(&node(4)));
+    }
+
+    #[test]
+    fn document_roots_indexes_live_parentless_nodes_without_scanning() {
+        fn scanned(world: &UiWorld, document: DocumentId) -> Vec<StableNodeId> {
+            let mut roots = world
+                .entities
+                .keys()
+                .copied()
+                .filter(|id| {
+                    let identity = world.component::<super::Identity>(*id);
+                    identity.document == document
+                        && world.presence_live(*id)
+                        && world.component::<super::Hierarchy>(*id).parent.is_none()
+                })
+                .collect::<Vec<_>>();
+            roots.sort_unstable();
+            roots
+        }
+
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "column".into(),
+            },
+        );
+        queue.insert(node(1), node(2), None);
+        for row in 0..400u64 {
+            let row_id = node(3 + row);
+            queue.create(row_id, document(1), NodeKind::Element { tag: "row".into() });
+            queue.insert(node(2), row_id, None);
+        }
+        world.commit(queue).unwrap();
+        assert_eq!(world.document_roots(document(1)), vec![node(1)]);
+        assert_eq!(
+            world.document_roots(document(1)),
+            scanned(&world, document(1))
+        );
+
+        let detached = node(13);
+        let mut detach = MutationQueue::new();
+        detach.detach(detached);
+        world.commit(detach).unwrap();
+        assert_eq!(world.node(detached).unwrap().parent, None);
+        assert!(!world.presence_live(detached));
+        assert_eq!(world.document_roots(document(1)), vec![node(1)]);
+        assert_eq!(
+            world.document_roots(document(1)),
+            scanned(&world, document(1))
+        );
+
+        let mut extra = MutationQueue::new();
+        extra.create(
+            node(1000),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        world.commit(extra).unwrap();
+        assert_eq!(world.document_roots(document(1)), vec![node(1), node(1000)]);
+        assert_eq!(
+            world.document_roots(document(1)),
+            scanned(&world, document(1))
+        );
+
+        let mut park = MutationQueue::new();
+        park.park_subtree(node(1000));
+        world.commit(park).unwrap();
+        assert_eq!(world.node(node(1000)).unwrap().parent, None);
+        assert!(!world.presence_live(node(1000)));
+        assert_eq!(world.document_roots(document(1)), vec![node(1)]);
+        assert_eq!(
+            world.document_roots(document(1)),
+            scanned(&world, document(1))
+        );
+
+        let mut despawn = MutationQueue::new();
+        despawn.despawn_subtree(node(1));
+        world.commit(despawn).unwrap();
+        assert!(world.document_roots(document(1)).is_empty());
+        assert_eq!(
+            world.document_roots(document(1)),
+            scanned(&world, document(1))
+        );
     }
 
     #[test]
@@ -9804,10 +9951,27 @@ mod tests {
         }
         assert_eq!(world.hit_test(document(1), 10.0, 25.0), Some(node(3)));
         assert_ne!(world.hit_test(document(1), 10.0, 85.0), Some(node(3)));
-        // The in-place patch must agree with a full rebuild.
+        // Scroller chrome is un-scrolled: a point on the chrome (not the
+        // shifted item) still hits the scroller after the patch.
+        assert_eq!(world.hit_test(document(1), 10.0, 45.0), Some(node(2)));
+        assert_eq!(world.hit_test(document(1), 10.0, 5.0), Some(node(2)));
+        let patched_scroller = hit_entry_transform(&world, document(1), node(2));
+        let patched_item = hit_entry_transform(&world, document(1), node(3));
+        // The in-place patch must agree with a full rebuild, including the
+        // scroller's own transform.
         world.rebuild_hit_test(document(1));
+        assert_eq!(
+            patched_scroller,
+            hit_entry_transform(&world, document(1), node(2))
+        );
+        assert_eq!(
+            patched_item,
+            hit_entry_transform(&world, document(1), node(3))
+        );
         assert_eq!(world.hit_test(document(1), 10.0, 25.0), Some(node(3)));
         assert_ne!(world.hit_test(document(1), 10.0, 85.0), Some(node(3)));
+        assert_eq!(world.hit_test(document(1), 10.0, 45.0), Some(node(2)));
+        assert_eq!(world.hit_test(document(1), 10.0, 5.0), Some(node(2)));
 
         let mut metrics = MutationQueue::new();
         metrics.set_scroll_metrics(
@@ -9851,6 +10015,71 @@ mod tests {
             Err(UiWorldError::InvalidScrollMetrics(node(2)))
         );
         assert_eq!(world.generation(), generation);
+    }
+
+    #[test]
+    fn write_layout_does_not_extract_bit_identical_descendants() {
+        fn box_at(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
+            LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            }
+        }
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "column".into(),
+            },
+        );
+        queue.insert(node(1), node(2), None);
+        // Three rows, each with a label. Middle-row size change shifts the
+        // row below; the row above and the middle label stay bit-identical.
+        for row in 0..3u64 {
+            let row_id = node(3 + row * 2);
+            let label_id = node(4 + row * 2);
+            queue.create(row_id, document(1), NodeKind::Element { tag: "row".into() });
+            queue.create(label_id, document(1), NodeKind::Text);
+            queue.insert(node(2), row_id, None);
+            queue.insert(row_id, label_id, None);
+        }
+        queue.write_layout(node(1), box_at(0.0, 0.0, 100.0, 60.0));
+        queue.write_layout(node(2), box_at(0.0, 0.0, 100.0, 60.0));
+        queue.write_layout(node(3), box_at(0.0, 0.0, 100.0, 20.0));
+        queue.write_layout(node(4), box_at(0.0, 0.0, 40.0, 20.0));
+        queue.write_layout(node(5), box_at(0.0, 20.0, 100.0, 20.0));
+        queue.write_layout(node(6), box_at(0.0, 20.0, 40.0, 20.0));
+        queue.write_layout(node(7), box_at(0.0, 40.0, 100.0, 20.0));
+        queue.write_layout(node(8), box_at(0.0, 40.0, 40.0, 20.0));
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        let mut changed = MutationQueue::new();
+        // Parent grew; WriteLayout must not mark the whole subtree.
+        changed.write_layout(node(2), box_at(0.0, 0.0, 100.0, 72.0));
+        changed.write_layout(node(5), box_at(0.0, 20.0, 100.0, 32.0));
+        changed.write_layout(node(7), box_at(0.0, 52.0, 100.0, 20.0));
+        changed.write_layout(node(8), box_at(0.0, 52.0, 40.0, 20.0));
+        world.commit(changed).unwrap();
+        let work = world.take_system_work();
+        assert!(work.render_extraction.contains(&node(2)));
+        assert!(work.render_extraction.contains(&node(5)));
+        assert!(work.render_extraction.contains(&node(7)));
+        assert!(work.render_extraction.contains(&node(8)));
+        assert!(!work.render_extraction.contains(&node(3)));
+        assert!(!work.render_extraction.contains(&node(4)));
+        assert!(
+            !work.render_extraction.contains(&node(6)),
+            "bit-identical middle-row label must not be extracted because its ancestor was written"
+        );
+        assert!(work.layout.is_empty());
+        assert_eq!(work.input_hit_test, work.render_extraction);
+        assert_eq!(work.accessibility, work.render_extraction);
     }
 
     #[test]
