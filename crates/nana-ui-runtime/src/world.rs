@@ -7253,6 +7253,18 @@ mod tests {
         DocumentId::new(value).unwrap()
     }
 
+    fn find_hit_transform(forest: &[HitEntry], id: StableNodeId) -> Option<[f32; 6]> {
+        for entry in forest {
+            if entry.id == id {
+                return Some(entry.transform);
+            }
+            if let Some(transform) = find_hit_transform(&entry.children, id) {
+                return Some(transform);
+            }
+        }
+        None
+    }
+
     fn hit_entry_transform(world: &UiWorld, document: DocumentId, id: StableNodeId) -> [f32; 6] {
         find_hit_transform(&world.hit_test_index[&document], id).expect("hit entry")
     }
