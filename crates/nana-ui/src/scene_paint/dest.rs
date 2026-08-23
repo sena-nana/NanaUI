@@ -1,21 +1,40 @@
 //! Dest-local color target; MSAA is only for frames without GPU nodes.
 
+use std::num::NonZeroU64;
+
+const GROUP_UNIFORM_STRIDE: u64 = 256;
+const GROUP_UNIFORM_SLOTS: u64 = 64;
+const GROUP_UNIFORM_SIZE: u64 = 16;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct DestPassCounts {
     pub color: u32,
     pub msaa: u32,
     pub blit: u32,
+    pub group: u32,
     pub msaa_allocated: bool,
+}
+
+struct GroupLayer {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
 }
 
 pub(super) struct DestTarget {
     pub width: u32,
     pub height: u32,
     pub msaa_allocated: bool,
+    format: wgpu::TextureFormat,
     msaa: Option<wgpu::TextureView>,
     color_view: wgpu::TextureView,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
+    group_layers: Vec<GroupLayer>,
+    group_pipeline: wgpu::RenderPipeline,
+    group_bind_layout: wgpu::BindGroupLayout,
+    group_sampler: wgpu::Sampler,
+    group_uniforms: wgpu::Buffer,
 }
 
 impl DestTarget {
@@ -163,19 +182,223 @@ impl DestTarget {
             multiview_mask: None,
             cache: pipeline_cache,
         });
+        let group_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui.scene.group.sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        let group_bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("nana-ui.scene.group.layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(GROUP_UNIFORM_SIZE),
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let group_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.group.uniforms"),
+            size: GROUP_UNIFORM_STRIDE * GROUP_UNIFORM_SLOTS,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("nana-ui.scene.group.shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "shader/layer.wgsl"
+            ))),
+        });
+        let group_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("nana-ui.scene.group.pipeline"),
+                bind_group_layouts: &[Some(&group_bind_layout)],
+                immediate_size: 0,
+            });
+        let group_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("nana-ui.scene.group.pipeline"),
+            layout: Some(&group_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &group_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &group_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: pipeline_cache,
+        });
         Self {
             width,
             height,
             msaa_allocated: want_msaa,
+            format,
             msaa,
             color_view,
             blit_pipeline,
             blit_bind_group,
+            group_layers: Vec::new(),
+            group_pipeline,
+            group_bind_layout,
+            group_sampler,
+            group_uniforms,
         }
     }
 
     pub(super) fn color_view(&self) -> &wgpu::TextureView {
         &self.color_view
+    }
+
+    pub(super) fn group_view(&self, layer: usize) -> &wgpu::TextureView {
+        &self.group_layers[layer].view
+    }
+
+    pub(super) fn prepare_groups(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layers: usize,
+        opacities: &[f32],
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        while self.group_layers.len() < layers {
+            self.push_group_layer(device);
+        }
+        let count = opacities.len().min(GROUP_UNIFORM_SLOTS as usize);
+        for (slot, opacity) in opacities.iter().copied().take(count).enumerate() {
+            let mut bytes = [0u8; GROUP_UNIFORM_SIZE as usize];
+            bytes[..4].copy_from_slice(&opacity.to_le_bytes());
+            queue.write_buffer(
+                &self.group_uniforms,
+                slot as u64 * GROUP_UNIFORM_STRIDE,
+                &bytes,
+            );
+            if let Some(work) = gpu_work {
+                work.record_upload(bytes.len());
+            }
+        }
+    }
+
+    fn push_group_layer(&mut self, device: &wgpu::Device) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("nana-ui.scene.group.color"),
+            size: wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nana-ui.scene.group.bind"),
+            layout: &self.group_bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.group_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.group_uniforms,
+                        offset: 0,
+                        size: NonZeroU64::new(GROUP_UNIFORM_SIZE),
+                    }),
+                },
+            ],
+        });
+        self.group_layers.push(GroupLayer {
+            _texture: texture,
+            view,
+            bind_group,
+        });
+    }
+
+    pub(super) fn begin_group_pass<'a>(
+        &'a self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        layer: usize,
+        load: wgpu::LoadOp<wgpu::Color>,
+        counts: &mut DestPassCounts,
+    ) -> wgpu::RenderPass<'a> {
+        counts.group = counts.group.saturating_add(1);
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("nana-ui.scene.group"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.group_layers[layer].view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+    }
+
+    pub(super) fn composite_group(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        layer: usize,
+        slot: u32,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        let offset = (slot as u64 * GROUP_UNIFORM_STRIDE) as u32;
+        pass.set_pipeline(&self.group_pipeline);
+        pass.set_bind_group(0, &self.group_layers[layer].bind_group, &[offset]);
+        pass.draw(0..3, 0..1);
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 
     pub(super) fn begin_color_pass<'a>(
