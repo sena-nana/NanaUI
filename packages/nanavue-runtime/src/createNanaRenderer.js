@@ -18,8 +18,6 @@ export { hostCall } from "./layoutMetrics.js";
 const listeners = new Map();
 /** Stable host-node identity so parentNode/nextSibling/=== comparisons stay useful. */
 const nodeCache = new Map();
-/** Epoch for parent/child cache. Bumped only on hierarchy invalidation, never on style flush. */
-let treeFlushGeneration = 0;
 /** nid → live style store; flushed once per frame, not per setProperty. */
 const pendingStyleStores = new Map();
 let styleFlushScheduled = false;
@@ -500,11 +498,11 @@ function syncClassList(el, classValue) {
 }
 
 function parentCacheFresh(node) {
-  return !!node && node.__parentGen === treeFlushGeneration && node.__parentId !== undefined;
+  return !!node && node.__parentId !== undefined;
 }
 
 function childrenCacheFresh(node) {
-  return !!node && node.__childrenGen === treeFlushGeneration && Array.isArray(node.__childIds);
+  return !!node && Array.isArray(node.__childIds);
 }
 
 function refillParent(node) {
@@ -516,7 +514,6 @@ function refillParent(node) {
     pid = null;
   }
   node.__parentId = pid;
-  node.__parentGen = treeFlushGeneration;
   return pid;
 }
 
@@ -528,12 +525,10 @@ function refillChildren(node) {
     ids = [];
   }
   node.__childIds = Array.from(ids, (id) => Number(id));
-  node.__childrenGen = treeFlushGeneration;
   for (const cid of node.__childIds) {
     const child = nodeCache.get(cid);
     if (!child) continue;
     child.__parentId = node.__nid;
-    child.__parentGen = treeFlushGeneration;
   }
   return node.__childIds;
 }
@@ -555,22 +550,18 @@ function nodeTagName(node) {
 function markCreatedNode(node) {
   if (!node) return node;
   node.__parentId = null;
-  node.__parentGen = treeFlushGeneration;
   node.__childIds = [];
-  node.__childrenGen = treeFlushGeneration;
   return node;
 }
 
 function clearChildrenCache(node) {
   if (!node || typeof node !== "object") return;
   node.__childIds = [];
-  node.__childrenGen = treeFlushGeneration;
 }
 
 function invalidateChildrenCache(node) {
   if (!node || typeof node !== "object") return;
   node.__childIds = undefined;
-  node.__childrenGen = -1;
 }
 
 function unlinkChild(child) {
@@ -583,14 +574,12 @@ function unlinkChild(child) {
     }
   }
   child.__parentId = null;
-  child.__parentGen = treeFlushGeneration;
 }
 
 function linkChild(parent, child, anchor) {
   if (!parent || !child) return;
   unlinkChild(child);
   child.__parentId = parent.__nid;
-  child.__parentGen = treeFlushGeneration;
   if (!childrenCacheFresh(parent)) return;
   const kids = parent.__childIds;
   const cid = child.__nid;
