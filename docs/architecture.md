@@ -247,7 +247,9 @@ presenter；切换 syntax/theme 不复制 content handle，也不改变 caret、
 `DockController::surface_layout` 读取。Split 比例与子长度使用 Runtime
 `dock_split_ratio_from_pointer` / `dock_nudge_split_ratio` /
 `dock_split_child_lengths`，禁止第二套 split 算法。Gallery live dock 持有
-`DockWorkspace`，不经过 `DockController`。
+`DockWorkspace`，不经过 `DockController`。持久化 JSON 是 `DockWorkspace` 的投影，
+字段名沿用既有 `DockLayout` JSON。`DockController::layout_json` / restore 经该
+产品树转换；monitor clamp、`DockItemSpec` 与指针/dwell 仍是 adapter。
 
 Region 折叠目标会立即写入 `WorkspaceLayout`，保证序列化与设置页读取到确定
 状态；渲染层同时保留一个 240ms 的临时 extent，使用 ease-out 曲线释放或恢复

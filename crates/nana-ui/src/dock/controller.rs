@@ -1,7 +1,8 @@
 //! Host adapter: pointer/dwell/frame → [`DockMutation`]; geometry via [`DockController::surface_layout`].
 //!
-//! Persisted tree identity stays in [`DockLayout`] (serde, monitors, item specs).
-//! Split ratios and child lengths are Runtime facts — see
+//! Persist JSON is a projection of Runtime [`crate::DockWorkspace`] (historical
+//! `DockLayout` field names). [`DockLayout`] is the adapter tree plus monitor
+//! clamp / item specs. Split ratios and child lengths are Runtime facts — see
 //! `nana_ui_runtime::dock_split_ratio_from_pointer`. Product consumers hold
 //! [`crate::DockWorkspace`], not this controller.
 
@@ -331,13 +332,15 @@ impl DockController {
         drag.target = Some(candidate);
     }
 
+    /// Persist the adapter tree as a Runtime [`crate::DockWorkspace`] JSON projection.
     pub fn layout_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self.layout)
+        serde_json::to_string(&persist_from_layout(&self.layout))
     }
 
     pub fn restore_layout_json(&mut self, value: &str) -> Result<Vec<DockHostEffect>, DockError> {
-        let restored: DockLayout = serde_json::from_str(value)
+        let persist: nana_ui_runtime::DockWorkspacePersist = serde_json::from_str(value)
             .map_err(|error| DockError::InvalidJson(error.to_string()))?;
+        let restored = layout_from_persist(persist);
         let restored = reconcile_layout(restored, &self.default_layout, &self.specs, &self.center)?;
         let mut effects = surface_diff(&self.layout, &restored);
         let cleanup = self.cancel_drag();
@@ -3924,6 +3927,33 @@ mod tests {
         assert!(controller.is_visible(&DockId::from("scenes")));
         assert!(controller.is_visible(&DockId::from("mixer")));
         assert!(controller.is_visible(&DockId::from("controls")));
+    }
+
+    #[test]
+    fn layout_json_is_runtime_workspace_projection() {
+        let mut source = controller();
+        source.update(DockAction::Float {
+            id: "sources".into(),
+            bounds: DockBounds::new(40.0, 50.0, 360.0, 280.0),
+            monitor: Some("display-2".into()),
+        });
+        source.update(DockAction::SetLocked(true));
+        let encoded = source.layout_json().expect("layout json");
+        let workspace = nana_ui_runtime::DockWorkspace::from_layout_json(&encoded)
+            .expect("product tree parses persist json");
+        assert!(workspace.main.contains("editor"));
+        assert_eq!(workspace.floating.len(), 1);
+        assert_eq!(workspace.floating[0].x, 40.0);
+        assert!(workspace.floating[0].root.contains("sources"));
+        assert!(!workspace.main.contains("sources"));
+
+        let snapshot: DockLayout = serde_json::from_str(&encoded).expect("adapter parses");
+        assert!(snapshot.locked);
+        assert_eq!(snapshot.floating[0].monitor.as_deref(), Some("display-2"));
+        assert_eq!(
+            persist_from_layout(&source.layout),
+            serde_json::from_str(&encoded).expect("persist parses")
+        );
     }
 
     #[test]
