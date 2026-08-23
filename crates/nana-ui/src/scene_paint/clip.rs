@@ -94,10 +94,7 @@ pub(super) fn invert_affine([a, b, c, d, e, f]: [f32; 6]) -> Option<[f32; 6]> {
     Some([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
 }
 
-/// Inverse-affine point-in-rect for one non-axis-aligned clip parallelogram.
-/// Axis-aligned clips stay on the GPU scissor (exact). Quad instance locations
-/// 0–15 are full (clip already uses 13–15), so GPU vertex attrs carry only the
-/// innermost rotated clip; extra outer rotated clips are dest-composited.
+/// Innermost non-axis-aligned clip parallelogram; extras dest-composite.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct FragmentClip {
     pub rect: [f32; 4],
@@ -179,8 +176,7 @@ pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2
         .unwrap_or(FragmentClip::PASS)
 }
 
-/// Outer rotated clips excluding the innermost (already in vertex attrs).
-/// Nested 3+ extras nest dest groups, one parallelogram per composite.
+/// Outer rotated clips (innermost already in vertex attrs).
 pub(super) fn extra_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
     origin: [f32; 2],
