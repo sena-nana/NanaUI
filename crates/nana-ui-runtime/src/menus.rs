@@ -771,6 +771,7 @@ pub(crate) fn context_menu_geometry(
             color: [0.0, 0.0, 0.0, if is_light { 0.30 } else { 0.55 }],
             offset_y: 4.0,
             blur_radius: if is_light { 14.0 } else { 18.0 },
+            spread_radius: 0.0,
         },
         background: palette.surface.as_rgba_array(),
         border: palette.border_soft.as_rgba_array(),

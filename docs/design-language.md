@@ -35,10 +35,12 @@ invalid 状态优先使用 `danger`，聚焦或打开时保持 2px 错误边框�
 30px 级宽度，滑轨为 4px，进度条为 6px。disabled、loading、invalid 和 selection
 只通过语义令牌表达，深色与浅色主题保持相同的尺寸和状态层级。
 
-选中表面与交互卡片使用柔和的 `selected` 状态背景和 1px `border-soft` 浅边框；
-hover 与 pressed 分别切换到 `selected-hover` 和 `selected-pressed`。蓝色
-`accent` 不作为选中卡片或输入类组件的 focused / opened 描边，只保留给主操作、
-开关与滑杆等明确值状态和语义强调。
+默认 Surface 卡片无边框、填充 `surface`；`raised` 用 `--shadow-surface`
+elevation，不用浅边框代替阴影。Outlined 使用 1px `border`。选中表面与交互卡片
+使用柔和的 `selected` 状态背景和 1px `border-soft` 浅边框；hover 与 pressed
+分别切换到 `selected-hover` 和 `selected-pressed`。蓝色 `accent` 不作为选中卡片
+或输入类组件的 focused / opened 描边，只保留给主操作、开关与滑杆等明确值状态
+和语义强调。
 
 按钮内容由 Runtime `Button` 统一水平、垂直居中，而不是依靠字体
 baseline 或各页面的偶然 padding。菜单、列表和侧栏等需要左对齐的复合按钮会

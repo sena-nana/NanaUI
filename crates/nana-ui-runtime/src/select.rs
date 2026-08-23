@@ -443,6 +443,7 @@ fn select_menu_geometry(
             color: [0.0, 0.0, 0.0, if is_light { 0.24 } else { 0.48 }],
             offset_y: 8.0,
             blur_radius: 16.0,
+            spread_radius: 0.0,
         },
         background: palette.surface.as_rgba_array(),
         border: palette.border_soft.as_rgba_array(),
