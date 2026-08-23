@@ -20,15 +20,6 @@ benchmark = [
     "dep:serde_json",
     "dep:wgpu",
 ]
-live2d-acceptance = [
-    "benchmark",
-    "nana-ui/gpu",
-    "dep:glam",
-    "dep:live2d-core",
-    "dep:live2d-test-support",
-    "dep:live2d-wgpu",
-    "dep:nana-ui-devtools",
-]
 snapshots = [
     "bundled-fonts",
     "nana-ui/gpu",
@@ -42,10 +33,6 @@ snapshots = [
 ]
 
 [dependencies]
-glam = { version = "0.33.3", optional = true }
-live2d-core = { git = "https://github.com/sena-nana/live2d-rs.git", rev = "71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033", optional = true }
-live2d-test-support = { git = "https://github.com/sena-nana/live2d-rs.git", rev = "71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033", optional = true }
-live2d-wgpu = { git = "https://github.com/sena-nana/live2d-rs.git", rev = "71e92d04ab1b377aae6dac66d6f1ec5f9bb6d033", optional = true, default-features = false }
 nana-ui = {
     path = "../../crates/nana-ui",
     default-features = false,
@@ -84,8 +71,3 @@ required-features = ["snapshots"]
 name = "ui-host-ab"
 path = "src/bin/ui-host-ab.rs"
 required-features = ["snapshots"]
-
-[[bin]]
-name = "ui-live2d-acceptance"
-path = "src/bin/ui-live2d-acceptance.rs"
-required-features = ["live2d-acceptance"]
