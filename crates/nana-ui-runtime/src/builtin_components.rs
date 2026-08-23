@@ -3,21 +3,26 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ButtonKind, CardKind, CommandPaletteItem, DrawerSide, Icon, LengthSpec, SplitAxis,
-    SplitPaneModel, StatusTone, SwitchControlPosition, TreeNode, ValidationIntent,
+    ButtonKind, CardKind, CommandPaletteItem, DrawerSide, GraphEdge, GraphEndpoint, GraphNode,
+    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
+    Icon, LengthSpec, RegionId, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
+    SplitAxis, SplitPaneModel, SplitPaneMutation, StatusTone, SwitchControlPosition, TreeNode,
+    ValidationIntent, WorkspaceModel,
 };
 
 use crate::{
-    ActionMenu, ActionMenuItem, AppShell, Button, CalendarHeatmap, Card, Checkbox, CommandPalette,
-    ConfirmDialog, ContextMenu, ContextMenuItem, Dialog, Dock, DockNode, Drawer, Dropdown,
+    ActionMenu, ActionMenuItem, AppShell, Button, CalendarHeatmap, CalendarHeatmapDatum,
+    CalendarHeatmapOptions, CalendarLevelStrategy, Card, Checkbox, CommandPalette, ConfirmDialog,
+    ContextMenu, ContextMenuItem, Dialog, Dock, DockAxis, DockNode, Drawer, Dropdown,
     DropdownOption, EmptyState, ExtensionRegistrar, FormField, FrameworkError, GraphCanvas,
     GraphModel, HostedTextarea, IconButton, ImageViewer, ImageViewerContent, InteractiveCard,
     LabeledValue, LevelMeter, ListItem, ListItemSlots, ModalSurface, NativeMarkdown, Popover,
     Progress, QrCode, RangeField, SearchDropdown, SearchDropdownOption, SegmentedControl, Select,
-    SettingsCard, SettingsRow, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
-    Skeleton, Spinner, SplitPane, StatusBadge, Switch, Tabs, Text, TextArea, TextInput,
-    TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension,
-    ValidationMessage, ValueEmphasis, Workspace, XYPad, XYPadValue,
+    SettingsCard, SettingsPage, SettingsRow, SidebarFrame, SidebarRow, SidebarRowState,
+    SidebarRowTone, Skeleton, Spinner, SplitPane, StatusBadge, Switch, Tabs, Text, TextArea,
+    TextInput, TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView,
+    UiExtension, ValidationMessage, ValueEmphasis, Workspace, WorkspaceRegionSlot, XYPad,
+    XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 
@@ -90,6 +95,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<SidebarRow>()?;
         registrar.register_component::<SettingsRow>()?;
         registrar.register_component::<SettingsCard>()?;
+        registrar.register_component::<SettingsPage>()?;
         registrar.register_tags("nana.icon", &["icon", "i"])?;
         Ok(())
     }
@@ -802,12 +808,16 @@ impl RegisterableComponent for CommandPalette {
                 .or_else(|| spec.attr("data-query"))
                 .unwrap_or("")
         };
-        let mut component = CommandPalette::new(
-            spec.display_label(),
+        let json_items = spec_json(spec, &["items", "options"])
+            .map(|value| command_palette_items_from_json(&value))
+            .filter(|items| !items.is_empty());
+        let items = json_items.unwrap_or_else(|| {
             spec.options
                 .iter()
-                .map(|option| CommandPaletteItem::new(option.value, option.label)),
-        );
+                .map(|option| CommandPaletteItem::new(option.value, option.label))
+                .collect()
+        });
+        let mut component = CommandPalette::new(spec.display_label(), items);
         if !placeholder.is_empty() {
             component = component.placeholder(Arc::<str>::from(placeholder));
         }
@@ -822,24 +832,20 @@ impl RegisterableComponent for TreeView {
     const TYPE_ID: &'static str = "nana.tree-view";
     const TAGS: &'static [&'static str] = &["tree-view"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let nodes = spec
-            .options
-            .iter()
-            .map(|option| {
-                TreeNode::leaf(Arc::<str>::from(option.value), option.label)
-                    .disabled(option.disabled)
-                    .selected(option.value == spec.value && !spec.value.is_empty())
-            })
-            .collect::<Vec<_>>();
-        TreeView::new(nodes).size(spec.size)
+        TreeView::new(tree_nodes_from_spec(spec)).size(spec.size)
     }
 }
 
 impl RegisterableComponent for CalendarHeatmap<()> {
     const TYPE_ID: &'static str = "nana.calendar-heatmap";
     const TAGS: &'static [&'static str] = &["calendar", "calendar-heatmap"];
-    fn from_semantic(_spec: &SemanticSpec<'_>) -> Self {
-        CalendarHeatmap::new(Vec::new())
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut component =
+            CalendarHeatmap::new(calendar_data_from_spec(spec)).options(calendar_options_from_spec(spec));
+        if !spec.display_label().is_empty() {
+            component = component.label(Arc::<str>::from(spec.display_label()));
+        }
+        component
     }
 }
 
@@ -872,7 +878,7 @@ impl RegisterableComponent for NativeMarkdown {
     const TYPE_ID: &'static str = "nana.native-markdown";
     const TAGS: &'static [&'static str] = &["markdown", "native-markdown"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        NativeMarkdown::from_source(spec.value)
+        NativeMarkdown::from_source(markdown_source_from_spec(spec))
     }
 }
 
@@ -880,35 +886,64 @@ impl RegisterableComponent for GraphCanvas {
     const TYPE_ID: &'static str = "nana.graph-canvas";
     const TAGS: &'static [&'static str] = &["graph-canvas", "graphcanvas"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        GraphCanvas::new("main", GraphModel::empty()).disabled(spec.disabled)
+        let mut component =
+            GraphCanvas::new("main", graph_model_from_spec(spec)).disabled(spec.disabled);
+        if let Some(viewport) = graph_viewport_from_spec(spec) {
+            component = component.viewport(viewport);
+        }
+        if let Some(selection) = graph_selection_from_spec(spec) {
+            component = component.selection(Some(selection));
+        }
+        if !spec.display_label().is_empty() {
+            component = component.label(Arc::<str>::from(spec.display_label()));
+        }
+        component
     }
 }
 
 impl RegisterableComponent for Workspace {
     const TYPE_ID: &'static str = "nana.workspace";
     const TAGS: &'static [&'static str] = &["workspace"];
-    fn from_semantic(_spec: &SemanticSpec<'_>) -> Self {
-        Workspace::new()
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let slots = spec
+            .slots
+            .iter()
+            .filter_map(|(name, id)| {
+                region_id_from_token(name).map(|region| WorkspaceRegionSlot::new(region, *id))
+            })
+            .collect::<Vec<_>>();
+        Workspace::from_model(&WorkspaceModel::new(), slots)
     }
 }
 
 impl RegisterableComponent for Dock {
     const TYPE_ID: &'static str = "nana.dock";
     const TAGS: &'static [&'static str] = &["dock"];
-    fn from_semantic(_spec: &SemanticSpec<'_>) -> Self {
-        Dock::new(DockNode::item("dock", None))
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        Dock::new(dock_root_from_spec(spec))
     }
 }
 
 impl RegisterableComponent for SplitPane {
     const TYPE_ID: &'static str = "nana.split-pane";
     const TAGS: &'static [&'static str] = &["split-pane"];
-    fn from_semantic(_spec: &SemanticSpec<'_>) -> Self {
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let default_size = attr_f32(spec, &["default-size", "defaultsize", "defaultSize"])
+            .or_else(|| attr_f32(spec, &["size"]))
+            .unwrap_or(240.0);
+        let min = attr_f32(spec, &["min"]).unwrap_or(120.0);
+        let max = attr_f32(spec, &["max"]).unwrap_or(800.0);
+        let mut model = SplitPaneModel::new(parse_split_axis(spec.attr("axis")), default_size, min, max);
+        if let Some(size) = attr_f32(spec, &["size"])
+            && (size - model.size()).abs() > f32::EPSILON
+        {
+            model.update(SplitPaneMutation::SetSize(size));
+        }
         SplitPane {
-            first: None,
-            second: None,
-            handle: None,
-            model: SplitPaneModel::new(SplitAxis::Horizontal, 240.0, 120.0, 800.0),
+            first: spec.slot("first"),
+            second: spec.slot("second"),
+            handle: spec.slot("handle"),
+            model,
         }
     }
 }
@@ -916,8 +951,18 @@ impl RegisterableComponent for SplitPane {
 impl RegisterableComponent for AppShell {
     const TYPE_ID: &'static str = "nana.app-shell";
     const TAGS: &'static [&'static str] = &["app-shell"];
-    fn from_semantic(_spec: &SemanticSpec<'_>) -> Self {
-        AppShell::new()
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut component = AppShell::new();
+        if let Some(title_bar) = spec.slot("title-bar").or_else(|| spec.slot("title_bar")) {
+            component = component.title_bar(title_bar);
+        }
+        if let Some(body) = spec.slot("body") {
+            component = component.body(body);
+        }
+        if let Some(overlay) = spec.slot("overlay") {
+            component = component.overlay(overlay);
+        }
+        component
     }
 }
 
@@ -1010,6 +1055,27 @@ impl RegisterableComponent for SettingsCard {
             spec.display_label()
         };
         SettingsCard::new(title)
+    }
+}
+
+impl RegisterableComponent for SettingsPage {
+    const TYPE_ID: &'static str = "nana.settings-page";
+    const TAGS: &'static [&'static str] = &["settings-page", "settingspage"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let model = settings_model_from_spec(spec).unwrap_or_else(|| fallback_settings_model(spec));
+        let mut state = SettingsState::new(&model);
+        if let Some(tab) = spec
+            .attr("tab")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| (!spec.value.trim().is_empty()).then_some(spec.value))
+        {
+            state.select(&model, &SettingsTabId::from(tab.trim()));
+        }
+        let mut component = SettingsPage::new(model, state);
+        if let Some(content) = spec.slot("content").or_else(|| spec.slot("body")) {
+            component = component.content(content);
+        }
+        component
     }
 }
 
@@ -1220,4 +1286,1231 @@ fn qr_placeholder() -> QrCode {
         size: QrCode::DEFAULT_SIZE,
         label: Arc::from("QR code"),
     })
+}
+
+fn spec_json(spec: &SemanticSpec<'_>, names: &[&str]) -> Option<serde_json::Value> {
+    names
+        .iter()
+        .find_map(|name| spec.attr(name))
+        .and_then(parse_json_value)
+}
+
+fn parse_json_value(raw: &str) -> Option<serde_json::Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str(trimmed).ok()
+}
+
+fn json_object_get<'a>(
+    value: &'a serde_json::Value,
+    names: &[&str],
+) -> Option<&'a serde_json::Value> {
+    let object = value.as_object()?;
+    for name in names {
+        if let Some(found) = object.get(*name) {
+            return Some(found);
+        }
+    }
+    for name in names {
+        if let Some((_, found)) = object
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn json_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::Bool(flag) => flag.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn json_object_text(value: &serde_json::Value, names: &[&str]) -> String {
+    json_object_get(value, names)
+        .map(json_text)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_default()
+}
+
+fn json_f32(value: &serde_json::Value) -> Option<f32> {
+    match value {
+        serde_json::Value::Number(number) => number.as_f64().map(|value| value as f32),
+        serde_json::Value::String(text) => text.trim().parse().ok(),
+        serde_json::Value::Bool(true) => Some(1.0),
+        serde_json::Value::Bool(false) => Some(0.0),
+        _ => None,
+    }
+    .filter(|number| number.is_finite())
+}
+
+fn json_object_f32(value: &serde_json::Value, names: &[&str]) -> Option<f32> {
+    json_object_get(value, names).and_then(json_f32)
+}
+
+fn json_truthy(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Bool(flag) => *flag,
+        serde_json::Value::Number(number) => number.as_f64().is_some_and(|value| value != 0.0),
+        serde_json::Value::String(text) => {
+            !text.is_empty() && !text.eq_ignore_ascii_case("false") && text != "0"
+        }
+        serde_json::Value::Null => false,
+        _ => true,
+    }
+}
+
+fn json_object_truthy(value: &serde_json::Value, names: &[&str]) -> bool {
+    json_object_get(value, names).is_some_and(json_truthy)
+}
+
+fn json_array(value: &serde_json::Value) -> Vec<&serde_json::Value> {
+    match value {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(map) => {
+            let mut indexed = map
+                .iter()
+                .filter_map(|(key, item)| key.parse::<usize>().ok().map(|index| (index, item)))
+                .collect::<Vec<_>>();
+            if indexed.is_empty() {
+                return Vec::new();
+            }
+            indexed.sort_by_key(|(index, _)| *index);
+            indexed.into_iter().map(|(_, item)| item).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn command_palette_items_from_json(value: &serde_json::Value) -> Vec<CommandPaletteItem> {
+    json_array(value)
+        .into_iter()
+        .filter_map(command_palette_item_from_json)
+        .collect()
+}
+
+fn command_palette_item_from_json(value: &serde_json::Value) -> Option<CommandPaletteItem> {
+    match value {
+        serde_json::Value::Object(_) => {
+            let action = json_object_text(value, &["value", "action", "id", "key"]);
+            let label = json_object_text(value, &["label", "title", "text"]);
+            if action.is_empty() && label.is_empty() {
+                return None;
+            }
+            let identity = if action.is_empty() {
+                label.clone()
+            } else {
+                action
+            };
+            let caption = if label.is_empty() {
+                identity.clone()
+            } else {
+                label
+            };
+            let mut item = CommandPaletteItem::new(identity, caption);
+            let category = json_object_text(value, &["category", "group"]);
+            if !category.is_empty() {
+                item = item.category(category);
+            }
+            let shortcut = json_object_text(value, &["shortcut", "keys"]);
+            if !shortcut.is_empty() {
+                item = item.shortcut(shortcut);
+            }
+            Some(item)
+        }
+        serde_json::Value::String(text) if !text.is_empty() => {
+            Some(CommandPaletteItem::new(text.as_str(), text.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn tree_nodes_from_spec(spec: &SemanticSpec<'_>) -> Vec<TreeNode<Arc<str>>> {
+    if let Some(value) = spec_json(spec, &["tree", "nodes", "options"]) {
+        let nodes = json_array(&value)
+            .into_iter()
+            .filter_map(tree_node_from_json)
+            .collect::<Vec<_>>();
+        if !nodes.is_empty() {
+            return nodes;
+        }
+    }
+    spec.options
+        .iter()
+        .map(|option| {
+            TreeNode::leaf(Arc::<str>::from(option.value), option.label)
+                .disabled(option.disabled)
+                .selected(option.value == spec.value && !spec.value.is_empty())
+        })
+        .collect()
+}
+
+fn tree_node_from_json(value: &serde_json::Value) -> Option<TreeNode<Arc<str>>> {
+    match value {
+        serde_json::Value::Object(_) => {
+            let id = json_object_text(value, &["value", "id", "key"]);
+            let label = json_object_text(value, &["label", "title", "text"]);
+            if id.is_empty() && label.is_empty() {
+                return None;
+            }
+            let children = json_object_get(value, &["children"])
+                .map(json_array)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(tree_node_from_json)
+                .collect::<Vec<_>>();
+            let expanded = json_object_truthy(value, &["expanded"]);
+            let selected = json_object_truthy(value, &["selected"]);
+            let disabled = json_object_truthy(value, &["disabled"]);
+            let identity = if id.is_empty() { label.clone() } else { id };
+            let caption = if label.is_empty() {
+                identity.clone()
+            } else {
+                label
+            };
+            let mut node = if children.is_empty() {
+                TreeNode::leaf(Arc::<str>::from(identity.as_str()), caption)
+            } else {
+                TreeNode::branch(
+                    Arc::<str>::from(identity.as_str()),
+                    caption,
+                    expanded,
+                    children,
+                )
+            };
+            node = node.selected(selected).disabled(disabled);
+            if let Some(icon) = Icon::parse_name(&json_object_text(value, &["icon"])) {
+                node = node.icon(icon);
+            }
+            Some(node)
+        }
+        serde_json::Value::String(text) if !text.is_empty() => {
+            Some(TreeNode::leaf(Arc::<str>::from(text.as_str()), text.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn calendar_data_from_spec(spec: &SemanticSpec<'_>) -> Vec<CalendarHeatmapDatum<()>> {
+    let candidates = [
+        spec_json(spec, &["data"]),
+        spec_json(spec, &["options"]),
+        parse_json_value(spec.value),
+    ];
+    for value in candidates.into_iter().flatten() {
+        if is_calendar_data_json(&value) {
+            return json_array(&value)
+                .into_iter()
+                .filter_map(calendar_datum_from_json)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn is_calendar_data_json(value: &serde_json::Value) -> bool {
+    json_array(value)
+        .into_iter()
+        .any(|item| calendar_datum_from_json(item).is_some())
+}
+
+fn calendar_datum_from_json(value: &serde_json::Value) -> Option<CalendarHeatmapDatum<()>> {
+    match value {
+        serde_json::Value::Object(_) => {
+            let date = json_object_text(value, &["date", "day", "key"]);
+            if date.is_empty() {
+                return None;
+            }
+            let number = json_object_get(value, &["value", "count"])
+                .and_then(json_f32)
+                .unwrap_or(0.0);
+            Some(CalendarHeatmapDatum::new(date, number))
+        }
+        serde_json::Value::Array(items) if items.len() >= 2 => {
+            let date = json_text(&items[0]);
+            let number = json_f32(&items[1])?;
+            if date.is_empty() {
+                return None;
+            }
+            Some(CalendarHeatmapDatum::new(date, number))
+        }
+        _ => None,
+    }
+}
+
+fn calendar_options_from_spec(spec: &SemanticSpec<'_>) -> CalendarHeatmapOptions<()> {
+    let Some(value) = spec_json(spec, &["options"]) else {
+        return CalendarHeatmapOptions::default();
+    };
+    if !value.is_object() || is_calendar_data_json(&value) {
+        return CalendarHeatmapOptions::default();
+    }
+    calendar_options_from_json(&value)
+}
+
+fn calendar_options_from_json(value: &serde_json::Value) -> CalendarHeatmapOptions<()> {
+    let mut options = CalendarHeatmapOptions::default();
+    if let Some(size) = json_object_f32(value, &["cellSize", "cell_size", "cell-size"]) {
+        options.cell_size = size;
+    }
+    if let Some(gap) = json_object_f32(value, &["cellGap", "cell_gap", "cell-gap"]) {
+        options.cell_gap = gap;
+    }
+    if let Some(radius) = json_object_f32(value, &["cellRadius", "cell_radius", "cell-radius"]) {
+        options.cell_radius = radius;
+    }
+    if let Some(width) = json_object_f32(value, &["labelWidth", "label_width", "label-width"]) {
+        options.label_width = width;
+    }
+    if let Some(height) =
+        json_object_f32(value, &["monthLabelHeight", "month_label_height", "month-label-height"])
+    {
+        options.month_label_height = height;
+    }
+    if let Some(week) =
+        json_object_f32(value, &["weekStartsOn", "week_starts_on", "week-starts-on"])
+    {
+        options = options.week_starts_on(week as i32);
+    }
+    if let Some(labels) =
+        json_object_get(value, &["weekdayLabels", "weekday_labels", "weekday-labels"])
+            .and_then(calendar_weekday_labels_from_json)
+    {
+        options = options.weekday_labels(labels);
+    }
+    if let Some(strategy) =
+        json_object_get(value, &["levelStrategy", "level_strategy", "level-strategy"])
+            .and_then(calendar_level_strategy_from_json)
+    {
+        options = options.level_strategy(strategy);
+    }
+    if let Some(template) = json_object_get(
+        value,
+        &[
+            "monthFormat",
+            "monthFormatter",
+            "month_formatter",
+            "month-formatter",
+        ],
+    )
+    .and_then(calendar_string_template_from_json)
+    {
+        options = options.month_formatter(move |year, month| {
+            apply_calendar_template(
+                &template,
+                &[
+                    ("{year}", year.to_string()),
+                    ("{monthPad}", format!("{month:02}")),
+                    ("{month}", month.to_string()),
+                ],
+            )
+        });
+    }
+    if let Some(template) = json_object_get(
+        value,
+        &[
+            "titleFormat",
+            "titleFormatter",
+            "title_formatter",
+            "title-formatter",
+        ],
+    )
+    .and_then(calendar_string_template_from_json)
+    {
+        options = options.title_formatter(move |datum| {
+            apply_calendar_template(
+                &template,
+                &[
+                    ("{date}", datum.date.clone()),
+                    ("{value}", datum.value.to_string()),
+                ],
+            )
+        });
+    }
+    options
+}
+
+fn calendar_weekday_labels_from_json(value: &serde_json::Value) -> Option<Vec<(u8, String)>> {
+    let items = json_array(value);
+    let mut labels = Vec::new();
+    if items.is_empty() {
+        let serde_json::Value::Object(map) = value else {
+            return None;
+        };
+        for (key, item) in map {
+            let Ok(day) = key.parse::<u8>() else {
+                continue;
+            };
+            let label = json_text(item);
+            if !label.is_empty() {
+                labels.push((day % 7, label));
+            }
+        }
+        return (!labels.is_empty()).then_some(labels);
+    }
+    for (index, item) in items.into_iter().enumerate() {
+        match item {
+            serde_json::Value::Array(pair) if pair.len() >= 2 => {
+                let day = json_f32(&pair[0])
+                    .map(|day| day as u8)
+                    .unwrap_or(index as u8);
+                let label = json_text(&pair[1]);
+                if !label.is_empty() {
+                    labels.push((day % 7, label));
+                }
+            }
+            serde_json::Value::Object(_) => {
+                let day = json_object_f32(item, &["day", "index", "weekday"])
+                    .map(|day| day as u8)
+                    .unwrap_or(index as u8);
+                let label = json_object_text(item, &["label", "text", "name"]);
+                if !label.is_empty() {
+                    labels.push((day % 7, label));
+                }
+            }
+            serde_json::Value::String(label) if !label.is_empty() => {
+                labels.push((index as u8 % 7, label.clone()));
+            }
+            _ => {}
+        }
+    }
+    (!labels.is_empty()).then_some(labels)
+}
+
+fn calendar_level_strategy_from_json(value: &serde_json::Value) -> Option<CalendarLevelStrategy<()>> {
+    match value {
+        serde_json::Value::Array(_) => {
+            let thresholds = json_array(value)
+                .into_iter()
+                .filter_map(json_f32)
+                .collect::<Vec<_>>();
+            (!thresholds.is_empty()).then_some(CalendarLevelStrategy::Thresholds(thresholds))
+        }
+        serde_json::Value::Number(number) => number.as_f64().map(|levels| {
+            CalendarLevelStrategy::Relative {
+                levels: (levels as u8).max(1),
+            }
+        }),
+        serde_json::Value::Object(_) => {
+            let kind = json_object_text(value, &["type", "kind", "strategy"]).to_ascii_lowercase();
+            if kind == "custom" {
+                return None;
+            }
+            if kind == "thresholds"
+                || json_object_get(value, &["thresholds", "stops"]).is_some() && kind != "relative"
+            {
+                let thresholds = json_object_get(value, &["thresholds", "stops", "values"])
+                    .map(json_array)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(json_f32)
+                    .collect::<Vec<_>>();
+                return (!thresholds.is_empty())
+                    .then_some(CalendarLevelStrategy::Thresholds(thresholds));
+            }
+            if kind == "relative" || json_object_get(value, &["levels", "level"]).is_some() {
+                let levels = json_object_f32(value, &["levels", "level"])
+                    .map(|levels| (levels as u8).max(1))
+                    .unwrap_or(5);
+                return Some(CalendarLevelStrategy::Relative { levels });
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn calendar_string_template_from_json(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(template) if !template.is_empty() => Some(template.clone()),
+        _ => None,
+    }
+}
+
+fn apply_calendar_template(template: &str, replacements: &[(&str, String)]) -> String {
+    let mut out = template.to_string();
+    for (needle, value) in replacements {
+        out = out.replace(needle, value);
+    }
+    out
+}
+
+fn markdown_source_from_spec<'a>(spec: &'a SemanticSpec<'_>) -> &'a str {
+    if !spec.value.trim().is_empty() {
+        return spec.value;
+    }
+    spec.attr("source")
+        .or_else(|| spec.attr("markdown"))
+        .or_else(|| spec.attr("value"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+}
+
+const DEFAULT_GRAPH_NODE_WIDTH: f32 = 160.0;
+const DEFAULT_GRAPH_NODE_HEIGHT: f32 = 80.0;
+
+fn graph_model_from_spec(spec: &SemanticSpec<'_>) -> GraphModel {
+    let model = spec_json(spec, &["model"]);
+    if let Some(model) = model.as_ref()
+        && let Ok(parsed) = serde_json::from_value::<GraphModel>(model.clone())
+        && !parsed.nodes().is_empty()
+    {
+        return parsed;
+    }
+    let nodes_value = model
+        .as_ref()
+        .and_then(|value| json_object_get(value, &["nodes"]).cloned())
+        .or_else(|| spec_json(spec, &["nodes"]));
+    let edges_value = model
+        .as_ref()
+        .and_then(|value| json_object_get(value, &["edges"]).cloned())
+        .or_else(|| spec_json(spec, &["edges"]));
+    let nodes = nodes_value
+        .as_ref()
+        .map(|value| {
+            json_array(value)
+                .into_iter()
+                .filter_map(graph_node_from_json)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let edges = edges_value
+        .as_ref()
+        .map(|value| {
+            json_array(value)
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, item)| graph_edge_from_json(index, item))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    GraphModel::new(nodes.clone(), edges)
+        .or_else(|_| GraphModel::new(nodes, Vec::new()))
+        .unwrap_or_else(|_| GraphModel::empty())
+}
+
+fn graph_viewport_from_spec(spec: &SemanticSpec<'_>) -> Option<GraphViewport> {
+    let value = spec_json(spec, &["viewport"]).or_else(|| {
+        spec_json(spec, &["model"])
+            .and_then(|model| json_object_get(&model, &["viewport"]).cloned())
+    })?;
+    if let Ok(viewport) = serde_json::from_value::<GraphViewport>(value.clone()) {
+        return Some(GraphViewport::new(viewport.offset, viewport.zoom));
+    }
+    graph_viewport_from_json(&value)
+}
+
+fn graph_viewport_from_json(value: &serde_json::Value) -> Option<GraphViewport> {
+    if !value.is_object() {
+        return None;
+    }
+    let zoom = json_object_f32(value, &["zoom"]).unwrap_or(1.0);
+    let offset = json_object_get(value, &["offset"])
+        .and_then(graph_point_from_json)
+        .unwrap_or_else(|| {
+            GraphPoint::new(
+                json_object_f32(value, &["offsetX", "offset_x", "offset-x", "x"]).unwrap_or(0.0),
+                json_object_f32(value, &["offsetY", "offset_y", "offset-y", "y"]).unwrap_or(0.0),
+            )
+        });
+    Some(GraphViewport::new(offset, zoom))
+}
+
+fn graph_point_from_json(value: &serde_json::Value) -> Option<GraphPoint> {
+    match value {
+        serde_json::Value::Object(_) => {
+            let x = json_object_f32(value, &["x", "offsetX", "offset_x", "offset-x"])?;
+            let y = json_object_f32(value, &["y", "offsetY", "offset_y", "offset-y"])?;
+            Some(GraphPoint::new(x, y))
+        }
+        serde_json::Value::Array(items) if items.len() >= 2 => {
+            Some(GraphPoint::new(json_f32(&items[0])?, json_f32(&items[1])?))
+        }
+        _ => None,
+    }
+}
+
+fn graph_selection_from_spec(spec: &SemanticSpec<'_>) -> Option<GraphSelection> {
+    let value = spec_json(spec, &["selection"]).or_else(|| {
+        spec_json(spec, &["model"])
+            .and_then(|model| json_object_get(&model, &["selection"]).cloned())
+    })?;
+    graph_selection_from_json(&value)
+        .or_else(|| serde_json::from_value::<GraphSelection>(value).ok())
+}
+
+fn graph_selection_from_json(value: &serde_json::Value) -> Option<GraphSelection> {
+    if !value.is_object() {
+        return None;
+    }
+    let kind = json_object_text(value, &["kind", "type"]).to_ascii_lowercase();
+    let node = json_object_text(value, &["node", "nodeId", "node-id", "node_id"]);
+    let port = json_object_text(value, &["port", "portId", "port-id", "port_id"]);
+    let edge = json_object_text(value, &["edge", "edgeId", "edge-id", "edge_id"]);
+    let id = json_object_text(value, &["id", "key"]);
+    if kind == "port" || (!port.is_empty() && (!node.is_empty() || !id.is_empty())) {
+        let node = if node.is_empty() { id } else { node };
+        if node.is_empty() || port.is_empty() {
+            return None;
+        }
+        return Some(GraphSelection::Port {
+            node: node.into(),
+            port: port.into(),
+        });
+    }
+    if kind == "edge" || !edge.is_empty() {
+        let edge = if edge.is_empty() { id } else { edge };
+        if edge.is_empty() {
+            return None;
+        }
+        return Some(GraphSelection::Edge(edge.into()));
+    }
+    if kind == "node" || !node.is_empty() || !id.is_empty() {
+        let node = if node.is_empty() { id } else { node };
+        if node.is_empty() {
+            return None;
+        }
+        return Some(GraphSelection::Node(node.into()));
+    }
+    None
+}
+
+fn graph_node_from_json(value: &serde_json::Value) -> Option<GraphNode> {
+    if let Ok(node) = serde_json::from_value::<GraphNode>(value.clone()) {
+        return Some(node);
+    }
+    if !value.is_object() {
+        return None;
+    }
+    let label = json_object_text(value, &["title", "label", "name"]);
+    let id = json_object_text(value, &["id", "key"]);
+    if id.is_empty() && label.is_empty() {
+        return None;
+    }
+    let identity = if id.is_empty() { label.clone() } else { id };
+    let caption = if label.is_empty() {
+        identity.clone()
+    } else {
+        label
+    };
+    let position = json_object_get(value, &["position"])
+        .and_then(graph_point_from_json)
+        .unwrap_or_else(|| {
+            GraphPoint::new(
+                json_object_f32(value, &["x"]).unwrap_or(0.0),
+                json_object_f32(value, &["y"]).unwrap_or(0.0),
+            )
+        });
+    let size = json_object_get(value, &["size"])
+        .and_then(|size| {
+            Some(GraphSize::new(
+                json_object_f32(size, &["width"])?,
+                json_object_f32(size, &["height"])?,
+            ))
+        })
+        .unwrap_or_else(|| {
+            GraphSize::new(
+                json_object_f32(value, &["width"])
+                    .filter(|width| *width > 0.0)
+                    .unwrap_or(DEFAULT_GRAPH_NODE_WIDTH),
+                json_object_f32(value, &["height"])
+                    .filter(|height| *height > 0.0)
+                    .unwrap_or(DEFAULT_GRAPH_NODE_HEIGHT),
+            )
+        });
+    if !position.is_finite() || !size.is_valid() {
+        return None;
+    }
+    let mut node = GraphNode::new(identity, caption, position, size);
+    if let Some(ports) = json_object_get(value, &["ports"]) {
+        for port in json_array(ports).into_iter().filter_map(graph_port_from_json) {
+            node = node.with_port(port);
+        }
+    }
+    Some(node)
+}
+
+fn graph_port_from_json(value: &serde_json::Value) -> Option<GraphPort> {
+    if !value.is_object() {
+        return None;
+    }
+    let id = json_object_text(value, &["id", "key"]);
+    if id.is_empty() {
+        return None;
+    }
+    let label = json_object_text(value, &["label", "title", "name"]);
+    let caption = if label.is_empty() { id.clone() } else { label };
+    let kind = parse_graph_port_kind(&json_object_text(value, &["kind", "type"]));
+    let side = parse_graph_port_side(&json_object_text(value, &["side"]), kind);
+    Some(GraphPort::new(id, caption, kind, side))
+}
+
+fn graph_edge_from_json(index: usize, value: &serde_json::Value) -> Option<GraphEdge> {
+    if let Ok(edge) = serde_json::from_value::<GraphEdge>(value.clone()) {
+        return Some(edge);
+    }
+    if !value.is_object() {
+        return None;
+    }
+    let source = graph_endpoint_from_json(value, "source", "from", "source-port", "source_port")?;
+    let target = graph_endpoint_from_json(value, "target", "to", "target-port", "target_port")?;
+    let mut id = json_object_text(value, &["id", "key"]);
+    if id.is_empty() {
+        id = format!(
+            "e{index}-{}:{}-{}:{}",
+            source.node, source.port, target.node, target.port
+        );
+    }
+    let mut edge = GraphEdge::new(id, source, target);
+    let label = json_object_text(value, &["label", "title"]);
+    if !label.is_empty() {
+        edge = edge.with_label(label);
+    }
+    Some(edge)
+}
+
+fn graph_endpoint_from_json(
+    value: &serde_json::Value,
+    primary: &str,
+    alias: &str,
+    port_key: &str,
+    port_alias: &str,
+) -> Option<GraphEndpoint> {
+    let Some(endpoint) = json_object_get(value, &[primary, alias]) else {
+        return None;
+    };
+    match endpoint {
+        serde_json::Value::Object(_) => {
+            let node = json_object_text(endpoint, &["node", "id"]);
+            let port = json_object_text(endpoint, &["port", "id"]);
+            if node.is_empty() || port.is_empty() {
+                return None;
+            }
+            Some(GraphEndpoint::new(node, port))
+        }
+        other => {
+            let node = json_text(other);
+            let port = json_object_text(value, &[port_key, port_alias, "port"]);
+            if node.is_empty() || port.is_empty() {
+                return None;
+            }
+            Some(GraphEndpoint::new(node, port))
+        }
+    }
+}
+
+fn parse_graph_port_kind(raw: &str) -> GraphPortKind {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "input" | "in" => GraphPortKind::Input,
+        "bidirectional" | "both" | "inout" => GraphPortKind::Bidirectional,
+        _ => GraphPortKind::Output,
+    }
+}
+
+fn parse_graph_port_side(raw: &str, kind: GraphPortKind) -> GraphPortSide {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "top" => GraphPortSide::Top,
+        "right" => GraphPortSide::Right,
+        "bottom" => GraphPortSide::Bottom,
+        "left" => GraphPortSide::Left,
+        _ => match kind {
+            GraphPortKind::Input => GraphPortSide::Left,
+            GraphPortKind::Output | GraphPortKind::Bidirectional => GraphPortSide::Right,
+        },
+    }
+}
+
+fn parse_split_axis(raw: Option<&str>) -> SplitAxis {
+    match raw.unwrap_or("").trim().trim_matches('"').to_ascii_lowercase().as_str() {
+        "vertical" | "column" | "y" => SplitAxis::Vertical,
+        _ => SplitAxis::Horizontal,
+    }
+}
+
+fn region_id_from_token(token: &str) -> Option<RegionId> {
+    let token = token.trim().trim_start_matches("region-");
+    if token.is_empty() {
+        return None;
+    }
+    Some(match token {
+        "global-navigation" | "globalnavigation" | "global" => RegionId::GlobalNavigation,
+        "section-navigation" | "sectionnavigation" => RegionId::SectionNavigation,
+        "resources" | "sidebar" | "files" => RegionId::Resources,
+        "primary-toolbar" | "primarytoolbar" | "toolbar" => RegionId::PrimaryToolbar,
+        "primary" | "main" => RegionId::Primary,
+        "inspector" => RegionId::Inspector,
+        "diagnostics" | "console" => RegionId::Diagnostics,
+        other => RegionId::custom(other),
+    })
+}
+
+fn dock_root_from_spec(spec: &SemanticSpec<'_>) -> DockNode {
+    let contents = spec
+        .slots
+        .iter()
+        .map(|(name, id)| (*name, Some(*id)))
+        .collect::<Vec<_>>();
+    if let Some(root) = spec_json(spec, &["root", "layout"])
+        .and_then(|value| dock_node_from_json(&value, &contents))
+    {
+        return root;
+    }
+    dock_root_from_slots(&contents)
+}
+
+fn dock_root_from_slots(contents: &[(&str, Option<crate::StableNodeId>)]) -> DockNode {
+    match contents {
+        [] => DockNode::item("dock", None),
+        [(id, content)] => DockNode::item(*id, *content),
+        _ => {
+            let tabs = contents
+                .iter()
+                .map(|(id, _)| Arc::<str>::from(*id))
+                .collect::<Vec<_>>();
+            let active = Arc::clone(&tabs[0]);
+            let items = contents
+                .iter()
+                .map(|(id, content)| (Arc::<str>::from(*id), *content))
+                .collect::<Vec<_>>();
+            DockNode::tabs(tabs, active, items)
+        }
+    }
+}
+
+fn dock_node_from_json(
+    value: &serde_json::Value,
+    contents: &[(&str, Option<crate::StableNodeId>)],
+) -> Option<DockNode> {
+    let content_for = |id: &str| {
+        contents
+            .iter()
+            .find_map(|(name, content)| (*name == id).then_some(*content).flatten())
+    };
+    match value {
+        serde_json::Value::String(id) if !id.is_empty() => {
+            Some(DockNode::item(id.as_str(), content_for(id)))
+        }
+        serde_json::Value::Array(items) => {
+            let nodes = items
+                .iter()
+                .filter_map(|item| dock_node_from_json(item, contents))
+                .collect::<Vec<_>>();
+            dock_nodes_join(nodes)
+        }
+        serde_json::Value::Object(_) => {
+            let kind = json_object_text(value, &["type", "kind", "node"]).to_ascii_lowercase();
+            if kind == "split"
+                || json_object_get(value, &["first"]).is_some()
+                || json_object_get(value, &["second"]).is_some()
+            {
+                let first =
+                    json_object_get(value, &["first"]).and_then(|item| dock_node_from_json(item, contents))?;
+                let second = json_object_get(value, &["second"])
+                    .and_then(|item| dock_node_from_json(item, contents))?;
+                let axis = parse_dock_axis(&json_object_text(value, &["axis"]));
+                let ratio = json_object_f32(value, &["ratio", "size"]).unwrap_or(0.5);
+                return Some(DockNode::split(axis, ratio, first, second));
+            }
+            if kind == "tabs" || json_object_get(value, &["tabs"]).is_some() {
+                let tab_values = json_object_get(value, &["tabs"])
+                    .map(json_array)
+                    .unwrap_or_default();
+                let mut tabs = Vec::new();
+                let mut tab_contents = Vec::new();
+                for tab in tab_values {
+                    let id = match tab {
+                        serde_json::Value::String(id) if !id.is_empty() => id.clone(),
+                        serde_json::Value::Object(_) => {
+                            let id = json_object_text(tab, &["id", "key", "value"]);
+                            if id.is_empty() {
+                                continue;
+                            }
+                            id
+                        }
+                        _ => continue,
+                    };
+                    if tabs.iter().any(|existing: &Arc<str>| existing.as_ref() == id) {
+                        continue;
+                    }
+                    let content = content_for(&id);
+                    let id = Arc::<str>::from(id);
+                    tab_contents.push((Arc::clone(&id), content));
+                    tabs.push(id);
+                }
+                if tabs.is_empty() {
+                    return None;
+                }
+                let active = json_object_text(value, &["active", "value"]);
+                let active = if active.is_empty() {
+                    Arc::clone(&tabs[0])
+                } else {
+                    Arc::<str>::from(active)
+                };
+                return Some(DockNode::tabs(tabs, active, tab_contents));
+            }
+            let id = json_object_text(value, &["id", "key", "value", "dock-id", "data-dock-id"]);
+            if id.is_empty() {
+                return None;
+            }
+            Some(DockNode::item(id.as_str(), content_for(&id)))
+        }
+        _ => None,
+    }
+}
+
+fn dock_nodes_join(mut nodes: Vec<DockNode>) -> Option<DockNode> {
+    match nodes.len() {
+        0 => None,
+        1 => nodes.pop(),
+        _ => {
+            let ids = nodes.iter().flat_map(DockNode::flatten).collect::<Vec<_>>();
+            if ids.is_empty() {
+                return None;
+            }
+            let mut contents = Vec::new();
+            for node in &nodes {
+                collect_dock_contents(node, &mut contents);
+            }
+            let active = Arc::clone(&ids[0]);
+            Some(DockNode::tabs(ids, active, contents))
+        }
+    }
+}
+
+fn collect_dock_contents(
+    node: &DockNode,
+    output: &mut Vec<(Arc<str>, Option<crate::StableNodeId>)>,
+) {
+    match node {
+        DockNode::Item { id, content } => output.push((Arc::clone(id), *content)),
+        DockNode::Tabs { contents, .. } => output.extend(contents.iter().cloned()),
+        DockNode::Split { first, second, .. } => {
+            collect_dock_contents(first, output);
+            collect_dock_contents(second, output);
+        }
+    }
+}
+
+fn parse_dock_axis(raw: &str) -> DockAxis {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "vertical" | "column" | "y" => DockAxis::Vertical,
+        _ => DockAxis::Horizontal,
+    }
+}
+
+fn settings_model_from_spec(spec: &SemanticSpec<'_>) -> Option<SettingsModel> {
+    let settings = spec_json(spec, &["settings", "model"])?;
+    if !settings.is_object() {
+        return None;
+    }
+    let tabs_value = json_object_get(&settings, &["tabs", "items"])?;
+    let mut tabs = settings_tabs_from_json(tabs_value);
+    if tabs.is_empty() {
+        return None;
+    }
+    let full_page = settings_full_page_keys_from_json(&settings);
+    if !full_page.is_empty() {
+        tabs = tabs
+            .into_iter()
+            .map(|tab| {
+                let flagged =
+                    tab.full_page_value() || full_page.iter().any(|key| key == tab.id().as_str());
+                let mut next = SettingsTab::new(tab.id().clone(), tab.label());
+                if let Some(icon) = tab.icon_value() {
+                    next = next.icon(icon);
+                }
+                next.full_page(flagged)
+            })
+            .collect();
+    }
+    let default_tab = json_object_text(&settings, &["defaultTab", "default_tab", "default-tab"]);
+    let default_tab =
+        if default_tab.is_empty() || tabs.iter().all(|tab| tab.id().as_str() != default_tab) {
+            tabs[0].id().as_str().to_string()
+        } else {
+            default_tab
+        };
+    let mut model = SettingsModel::new(default_tab, tabs).ok()?;
+    if let Some(aliases) = json_object_get(&settings, &["aliases", "alias"]).and_then(|value| value.as_object())
+    {
+        for (alias, target) in aliases {
+            let target = json_text(target);
+            if target.is_empty() {
+                continue;
+            }
+            if let Ok(next) = model.clone().with_alias(alias.as_str(), target) {
+                model = next;
+            }
+        }
+    }
+    let hide_header = json_object_truthy(&settings, &["hideHeader", "hide_header", "hide-header"])
+        || flag_attr(spec, &["hide-header", "hideheader", "hideHeader"]);
+    Some(model.hide_header(hide_header))
+}
+
+fn settings_tabs_from_json(value: &serde_json::Value) -> Vec<SettingsTab> {
+    let items = json_array(value);
+    if !items.is_empty() {
+        return items
+            .into_iter()
+            .filter_map(settings_tab_from_json)
+            .collect();
+    }
+    if let Some(tab) = settings_tab_from_json(value) {
+        return vec![tab];
+    }
+    let serde_json::Value::Object(map) = value else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter_map(|(key, item)| match item {
+            serde_json::Value::String(label) if !label.is_empty() => {
+                Some(SettingsTab::new(key.as_str(), label.as_str()))
+            }
+            serde_json::Value::Object(_) => {
+                let tab = settings_tab_from_json(item)?;
+                if tab.id().as_str().is_empty() {
+                    Some(SettingsTab::new(key.as_str(), tab.label()))
+                } else {
+                    Some(tab)
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn settings_tab_from_json(value: &serde_json::Value) -> Option<SettingsTab> {
+    match value {
+        serde_json::Value::String(id) if !id.is_empty() => {
+            Some(SettingsTab::new(id.as_str(), id.as_str()))
+        }
+        serde_json::Value::Object(_) => {
+            let id = json_object_text(value, &["key", "id", "value"]);
+            if id.is_empty() {
+                return None;
+            }
+            let label = json_object_text(value, &["label", "title", "name"]);
+            let label = if label.is_empty() { id.clone() } else { label };
+            let mut tab = SettingsTab::new(id, label);
+            if let Some(icon) = Icon::parse_name(&json_object_text(
+                value,
+                &["icon", "iconName", "icon-name"],
+            )) {
+                tab = tab.icon(icon);
+            }
+            Some(tab.full_page(json_object_truthy(
+                value,
+                &["fullPage", "full_page", "full-page"],
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn settings_full_page_keys_from_json(value: &serde_json::Value) -> Vec<String> {
+    json_object_get(value, &["fullPageTabs", "full_page_tabs", "full-page-tabs"])
+        .map(json_array)
+        .unwrap_or_default()
+        .into_iter()
+        .map(json_text)
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
+fn fallback_settings_model(spec: &SemanticSpec<'_>) -> SettingsModel {
+    let label = if spec.display_label().is_empty() {
+        "Settings"
+    } else {
+        spec.display_label()
+    };
+    SettingsModel::new("settings", [SettingsTab::new("settings", label)])
+        .expect("fallback settings model has one tab")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ComponentTypeId, RegisterableComponent, SemanticSpec, StableNodeId};
+    use nana_ui_core::LayoutStyle;
+
+    fn spec_with<'a>(
+        type_id: &'a ComponentTypeId,
+        layout: &'a Arc<LayoutStyle>,
+        attrs: &'a [(&'a str, &'a str)],
+        slots: &'a [(&'a str, StableNodeId)],
+        options: &'a [crate::SemanticOption<'a>],
+        value: &'a str,
+        label: &'a str,
+    ) -> SemanticSpec<'a> {
+        SemanticSpec {
+            label,
+            value,
+            options,
+            attrs,
+            slots,
+            ..SemanticSpec::from_parts(type_id, layout)
+        }
+    }
+
+    #[test]
+    fn command_palette_json_items_keep_category() {
+        let type_id = ComponentTypeId::new("nana.command-palette").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [(
+            "items",
+            r#"[{"value":"open","label":"Open file","category":"Workspace","shortcut":"Ctrl+P"}]"#,
+        )];
+        let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "Go to");
+        let palette = CommandPalette::from_semantic(&spec);
+        assert_eq!(palette.items.len(), 1);
+        assert_eq!(palette.items[0].label, "Open file");
+        assert_eq!(palette.items[0].category.as_deref(), Some("Workspace"));
+        assert_eq!(palette.items[0].shortcut.as_deref(), Some("Ctrl+P"));
+    }
+
+    #[test]
+    fn tree_view_json_keeps_nested_children() {
+        let type_id = ComponentTypeId::new("nana.tree-view").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [(
+            "tree",
+            r#"[{"id":"src","label":"src","expanded":true,"children":[{"id":"lib","label":"lib.rs"}]}]"#,
+        )];
+        let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "");
+        let tree = TreeView::from_semantic(&spec);
+        assert_eq!(tree.nodes.len(), 1);
+        assert!(tree.nodes[0].branch && tree.nodes[0].expanded);
+        assert_eq!(tree.nodes[0].children.len(), 1);
+        assert_eq!(tree.nodes[0].children[0].id.as_ref(), "lib");
+    }
+
+    #[test]
+    fn calendar_heatmap_json_data_is_not_empty() {
+        let type_id = ComponentTypeId::new("nana.calendar-heatmap").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [(
+            "data",
+            r#"[{"date":"2026-06-01","value":2},["2026-06-03",8]]"#,
+        )];
+        let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "Activity");
+        let calendar = CalendarHeatmap::<()>::from_semantic(&spec);
+        assert_eq!(calendar.data.len(), 2);
+        assert_eq!(calendar.data[0].date, "2026-06-01");
+        assert_eq!(calendar.label.as_deref(), Some("Activity"));
+    }
+
+    #[test]
+    fn graph_canvas_json_nodes_are_not_empty() {
+        let type_id = ComponentTypeId::new("nana.graph-canvas").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [(
+            "model",
+            r#"{"nodes":[{"id":"source","title":"Source","x":20,"y":24}]}"#,
+        )];
+        let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "Graph");
+        let canvas = GraphCanvas::from_semantic(&spec);
+        assert_eq!(canvas.model.nodes().len(), 1);
+        assert_eq!(canvas.model.nodes()[0].id.as_str(), "source");
+        assert_eq!(canvas.label.as_deref(), Some("Graph"));
+    }
+
+    #[test]
+    fn native_markdown_reads_source_attr_when_value_empty() {
+        let type_id = ComponentTypeId::new("nana.native-markdown").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [("source", "# Native")];
+        let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "");
+        let markdown = NativeMarkdown::from_semantic(&spec);
+        assert!(
+            markdown
+                .plain_text()
+                .contains("Native"),
+            "source attr must parse when value is empty"
+        );
+    }
+
+    #[test]
+    fn app_shell_binds_title_bar_and_body_slots() {
+        let type_id = ComponentTypeId::new("nana.app-shell").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let title = StableNodeId::new(2).unwrap();
+        let body = StableNodeId::new(3).unwrap();
+        let slots = [("title-bar", title), ("body", body)];
+        let spec = spec_with(&type_id, &layout, &[], &slots, &[], "", "");
+        let shell = AppShell::from_semantic(&spec);
+        assert_eq!(shell.title_bar, Some(title));
+        assert_eq!(shell.body, Some(body));
+    }
+
+    #[test]
+    fn split_pane_reads_axis_and_child_slots() {
+        let type_id = ComponentTypeId::new("nana.split-pane").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let first = StableNodeId::new(4).unwrap();
+        let second = StableNodeId::new(5).unwrap();
+        let slots = [("first", first), ("second", second)];
+        let attrs = [("axis", "vertical"), ("size", "320")];
+        let spec = spec_with(&type_id, &layout, &attrs, &slots, &[], "", "");
+        let pane = SplitPane::from_semantic(&spec);
+        assert_eq!(pane.first, Some(first));
+        assert_eq!(pane.second, Some(second));
+        assert_eq!(pane.model.axis(), SplitAxis::Vertical);
+        assert_eq!(pane.model.size(), 320.0);
+    }
+
+    #[test]
+    fn workspace_slots_become_region_tokens() {
+        let type_id = ComponentTypeId::new("nana.workspace").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let primary = StableNodeId::new(6).unwrap();
+        let slots = [("primary", primary)];
+        let spec = spec_with(&type_id, &layout, &[], &slots, &[], "", "");
+        let workspace = Workspace::from_semantic(&spec);
+        assert_eq!(workspace.slots.len(), 1);
+        assert_eq!(workspace.slots[0].id, RegionId::Primary);
+        assert_eq!(workspace.slots[0].content, Some(primary));
+    }
+
+    #[test]
+    fn dock_slots_are_not_dummy_item() {
+        let type_id = ComponentTypeId::new("nana.dock").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let nav = StableNodeId::new(7).unwrap();
+        let files = StableNodeId::new(8).unwrap();
+        let slots = [("nav", nav), ("files", files)];
+        let spec = spec_with(&type_id, &layout, &[], &slots, &[], "", "");
+        let dock = Dock::from_semantic(&spec);
+        let ids = dock
+            .flatten()
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["nav", "files"]);
+    }
+
+    #[test]
+    fn settings_page_parses_model_json_and_content_slot() {
+        let type_id = ComponentTypeId::new("nana.settings-page").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let content = StableNodeId::new(9).unwrap();
+        let slots = [("content", content)];
+        let attrs = [(
+            "settings",
+            r#"{"tabs":[{"id":"appearance","label":"外观"}],"defaultTab":"appearance"}"#,
+        )];
+        let spec = spec_with(&type_id, &layout, &attrs, &slots, &[], "", "");
+        let page = SettingsPage::from_semantic(&spec);
+        assert_eq!(page.content, Some(content));
+        assert_eq!(page.model.tabs().len(), 1);
+        assert_eq!(page.model.tabs()[0].id().as_str(), "appearance");
+    }
 }
