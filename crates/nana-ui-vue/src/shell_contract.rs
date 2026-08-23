@@ -131,17 +131,8 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                 {
                     layout.padding = Some(LengthSpec::Px(12.0));
                 }
-                if layout.background.is_none() {
-                    layout.background = Some([1.0, 1.0, 1.0, 1.0]);
-                }
                 if layout.border_radius.is_none() {
                     layout.border_radius = Some(16.0);
-                }
-                if layout.border_width.is_none() {
-                    layout.border_width = Some(1.0);
-                }
-                if layout.border_color.is_none() {
-                    layout.border_color = Some([0.933, 0.941, 0.953, 1.0]);
                 }
             }
             "nana-settings-card__body" => {

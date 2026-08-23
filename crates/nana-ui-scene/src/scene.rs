@@ -3996,6 +3996,7 @@ mod tests {
                 color: [0.0, 0.0, 0.0, 0.55],
                 offset_y: 4.0,
                 blur_radius: 18.0,
+                spread_radius: 0.0,
             },
             background: [0.1, 0.1, 0.1, 1.0],
             border: [0.2, 0.2, 0.2, 1.0],
@@ -4605,6 +4606,7 @@ mod tests {
                 color: [0.0, 0.0, 0.0, 0.24],
                 offset_y: 8.0,
                 blur_radius: 24.0,
+                spread_radius: 0.0,
             },
         });
         let mut scene = UiScene::default();
@@ -4708,6 +4710,7 @@ mod tests {
                 color: [0.0, 0.0, 0.0, 0.4],
                 offset_y: 12.0,
                 blur_radius: 24.0,
+                spread_radius: 0.0,
             },
         });
 
@@ -4813,6 +4816,7 @@ mod tests {
                 color: [0.0, 0.0, 0.0, 0.45],
                 offset_y: 14.0,
                 blur_radius: 30.0,
+                spread_radius: 0.0,
             },
         });
         let mut scene = UiScene::default();
@@ -5310,6 +5314,7 @@ mod tests {
                 color: [0.0, 0.0, 0.0, 0.25],
                 offset_y: 3.0,
                 blur_radius: 8.0,
+                spread_radius: 0.0,
             }),
             spinner: Some(LayoutBox {
                 x: 68.0,

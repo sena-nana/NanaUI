@@ -4186,6 +4186,9 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         card.apply_class_layout_hints(&["card".into()]);
         assert_eq!(card.border_radius, Some(16.0));
         assert_eq!(card.padding, Some(LengthSpec::Px(12.0)));
+        assert!(card.border_width.is_none());
+        assert!(card.border_color.is_none());
+        assert!(card.background.is_none());
 
         let mut primary_region = LayoutStyle::default();
         primary_region.apply_class_layout_hints(&["nana-workspace-shell__primary".into()]);

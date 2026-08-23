@@ -329,6 +329,27 @@ pub struct ComponentElevation {
     pub color: [f32; 4],
     pub offset_y: f32,
     pub blur_radius: f32,
+    pub spread_radius: f32,
+}
+
+impl ComponentElevation {
+    /// Lilia `--shadow-surface`: `0 10px 30px -24px` (dark) / `0 10px 26px -24px` (light).
+    pub fn surface_shadow(theme_mode: nana_ui_core::ThemeMode) -> Self {
+        match theme_mode {
+            nana_ui_core::ThemeMode::Dark => Self {
+                color: [0.0, 0.0, 0.0, 0.62],
+                offset_y: 10.0,
+                blur_radius: 30.0,
+                spread_radius: -24.0,
+            },
+            nana_ui_core::ThemeMode::Light => Self {
+                color: [17.0 / 255.0, 24.0 / 255.0, 39.0 / 255.0, 0.24],
+                offset_y: 10.0,
+                blur_radius: 26.0,
+                spread_radius: -24.0,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -8504,12 +8504,10 @@ mod tests {
             let card = context
                 .create_component(document, Card::new().kind(kind))
                 .unwrap();
-            let background = context
-                .world()
-                .node_style(card.stable_id())
-                .unwrap()
-                .background;
-            let expected_elevation = kind == nana_ui_core::CardKind::Raised;
+            let (background, border, border_width) = {
+                let style = context.world().node_style(card.stable_id()).unwrap();
+                (style.background, style.border, style.layout.border_width)
+            };
             context
                 .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
                 .unwrap();
@@ -8520,7 +8518,12 @@ mod tests {
             else {
                 panic!("card geometry expected");
             };
-            assert_eq!(elevation.is_some(), expected_elevation);
+            assert_eq!(
+                elevation,
+                (kind == nana_ui_core::CardKind::Raised).then_some(
+                    crate::ComponentElevation::surface_shadow(nana_ui_core::ThemeMode::Dark)
+                )
+            );
             assert_eq!(
                 background,
                 match kind {
@@ -8531,6 +8534,18 @@ mod tests {
                         Some(nana_ui_core::SemanticColorRole::Selected)
                     }
                     nana_ui_core::CardKind::Outlined | nana_ui_core::CardKind::Flat => None,
+                }
+            );
+            assert_eq!(
+                (border, border_width),
+                match kind {
+                    nana_ui_core::CardKind::Outlined => {
+                        (Some(nana_ui_core::SemanticColorRole::Border), Some(1.0))
+                    }
+                    nana_ui_core::CardKind::Selected => {
+                        (Some(nana_ui_core::SemanticColorRole::BorderSoft), Some(1.0))
+                    }
+                    _ => (None, Some(0.0)),
                 }
             );
         }

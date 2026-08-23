@@ -701,12 +701,12 @@ impl Card {
                     padding_bottom: Some(nana_ui_core::LengthSpec::Px(
                         nana_ui_core::UI_METRICS.panel_padding_y,
                     )),
-                    border_width: Some(1.0),
-                    border_radius: Some(8.0),
+                    border_width: Some(0.0),
+                    border_radius: Some(nana_ui_core::UI_METRICS.radius_md),
                     ..nana_ui_core::LayoutStyle::default()
                 }),
                 background: Some(nana_ui_core::SemanticColorRole::Surface),
-                border: Some(nana_ui_core::SemanticColorRole::Border),
+                border: None,
                 ..NodeStyle::default()
             },
         }
@@ -779,33 +779,24 @@ impl ComponentView for Card {
         }
         let mut effective_style = self.style.clone();
         let layout = Arc::make_mut(&mut effective_style.layout);
-        match self.kind {
-            nana_ui_core::CardKind::Surface => {
-                effective_style.background = Some(nana_ui_core::SemanticColorRole::Surface);
-                effective_style.border = Some(nana_ui_core::SemanticColorRole::Border);
-                layout.border_width = Some(1.0);
+        layout.border_radius = Some(world.theme_metrics().radius_md);
+        let (background, border, border_width) = match self.kind {
+            nana_ui_core::CardKind::Surface | nana_ui_core::CardKind::Raised => {
+                (Some(nana_ui_core::SemanticColorRole::Surface), None, 0.0)
             }
             nana_ui_core::CardKind::Outlined => {
-                effective_style.background = None;
-                effective_style.border = Some(nana_ui_core::SemanticColorRole::BorderStrong);
-                layout.border_width = Some(1.0);
+                (None, Some(nana_ui_core::SemanticColorRole::Border), 1.0)
             }
-            nana_ui_core::CardKind::Raised => {
-                effective_style.background = Some(nana_ui_core::SemanticColorRole::Surface);
-                effective_style.border = Some(nana_ui_core::SemanticColorRole::BorderSoft);
-                layout.border_width = Some(1.0);
-            }
-            nana_ui_core::CardKind::Flat => {
-                effective_style.background = None;
-                effective_style.border = None;
-                layout.border_width = Some(0.0);
-            }
-            nana_ui_core::CardKind::Selected => {
-                effective_style.background = Some(nana_ui_core::SemanticColorRole::Selected);
-                effective_style.border = Some(nana_ui_core::SemanticColorRole::BorderSoft);
-                layout.border_width = Some(1.0);
-            }
-        }
+            nana_ui_core::CardKind::Flat => (None, None, 0.0),
+            nana_ui_core::CardKind::Selected => (
+                Some(nana_ui_core::SemanticColorRole::Selected),
+                Some(nana_ui_core::SemanticColorRole::BorderSoft),
+                1.0,
+            ),
+        };
+        effective_style.background = background;
+        effective_style.border = border;
+        layout.border_width = Some(border_width);
         if self.title.is_some() {
             let base =
                 layout

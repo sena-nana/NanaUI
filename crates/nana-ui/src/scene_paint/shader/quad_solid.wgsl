@@ -10,7 +10,8 @@ struct SolidVertexInput {
     @location(6) shadow_color: vec4<f32>,
     @location(7) shadow_offset: vec2<f32>,
     @location(8) shadow_blur_radius: f32,
-    @location(9) snap: u32,
+    @location(9) shadow_spread_radius: f32,
+    @location(10) snap: u32,
 }
 
 struct SolidVertexOutput {
@@ -24,14 +25,16 @@ struct SolidVertexOutput {
     @location(6) shadow_color: vec4<f32>,
     @location(7) shadow_offset: vec2<f32>,
     @location(8) shadow_blur_radius: f32,
+    @location(9) shadow_spread_radius: f32,
 }
 
 @vertex
 fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     var out: SolidVertexOutput;
 
-    var pos: vec2<f32> = (input.pos + min(input.shadow_offset, vec2<f32>(0.0, 0.0)) - input.shadow_blur_radius) * globals.scale;
-    var scale: vec2<f32> = (input.scale + vec2<f32>(abs(input.shadow_offset.x), abs(input.shadow_offset.y)) + input.shadow_blur_radius * 2.0) * globals.scale;
+    let shadow_outset = input.shadow_blur_radius + max(input.shadow_spread_radius, 0.0);
+    var pos: vec2<f32> = (input.pos + min(input.shadow_offset, vec2<f32>(0.0, 0.0)) - shadow_outset) * globals.scale;
+    var scale: vec2<f32> = (input.scale + vec2<f32>(abs(input.shadow_offset.x), abs(input.shadow_offset.y)) + shadow_outset * 2.0) * globals.scale;
 
     var pos_snap = vec2<f32>(0.0, 0.0);
     var scale_snap = vec2<f32>(0.0, 0.0);
@@ -60,6 +63,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.shadow_color = premultiply(input.shadow_color);
     out.shadow_offset = input.shadow_offset * globals.scale;
     out.shadow_blur_radius = input.shadow_blur_radius * globals.scale;
+    out.shadow_spread_radius = input.shadow_spread_radius * globals.scale;
 
     return out;
 }
@@ -89,10 +93,12 @@ fn solid_fs_main(
     let quad_color = mixed_color * quad_alpha;
 
     if input.shadow_color.a > 0.0 {
+        let shadow_size = max(input.scale + vec2(input.shadow_spread_radius * 2.0), vec2(0.0));
+        let shadow_radius = max(input.border_radius + vec4(input.shadow_spread_radius), vec4(0.0));
         var shadow_dist: f32 = rounded_box_sdf(
             -(input.position.xy - input.pos - input.shadow_offset - input.scale/2.0) * 2.0,
-            input.scale,
-            input.border_radius * 2.0
+            shadow_size,
+            shadow_radius * 2.0
         ) / 2.0;
         let shadow_alpha = 1.0 - smoothstep(-input.shadow_blur_radius, input.shadow_blur_radius, max(shadow_dist, 0.0));
 

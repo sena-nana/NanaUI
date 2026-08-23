@@ -3092,6 +3092,7 @@ impl UiWorld {
                         color: [0.0, 0.0, 0.0, shadow_alpha],
                         offset_y: 14.0,
                         blur_radius: 30.0,
+                        spread_radius: 0.0,
                     },
                 })
             }
@@ -3507,11 +3508,7 @@ impl UiWorld {
                     }),
                     content,
                     elevation: (*kind == nana_ui_core::CardKind::Raised).then_some(
-                        crate::ComponentElevation {
-                            color: self.style_model.palette.background.as_rgba_array(),
-                            offset_y: 4.0,
-                            blur_radius: 12.0,
-                        },
+                        crate::ComponentElevation::surface_shadow(self.style_model.theme_mode),
                     ),
                     spinner: (*loading).then_some(LayoutBox {
                         x: (bounds.x + border + padding.left + shaped_title_width + 8.0)

@@ -19,6 +19,7 @@ struct SolidInstance {
     shadow_color: [f32; 4],
     shadow_offset: [f32; 2],
     shadow_blur_radius: f32,
+    shadow_spread_radius: f32,
     snap: u32,
 }
 
@@ -148,6 +149,7 @@ impl QuadPipeline {
             )),
             shadow_offset: [0.0, shadow.map(|shadow| shadow.offset_y).unwrap_or(0.0)],
             shadow_blur_radius: shadow.map(|shadow| shadow.blur_radius).unwrap_or(0.0),
+            shadow_spread_radius: shadow.map(|shadow| shadow.spread_radius).unwrap_or(0.0),
             snap: 1,
         });
         Some(index)
@@ -247,7 +249,8 @@ fn solid_pipeline(
                     6 => Float32x4,
                     7 => Float32x2,
                     8 => Float32,
-                    9 => Uint32,
+                    9 => Float32,
+                    10 => Uint32,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
