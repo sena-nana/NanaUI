@@ -3,20 +3,22 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ButtonKind, CardKind, Icon, LengthSpec, SplitAxis, SplitPaneModel, StatusTone,
-    SwitchControlPosition, ValidationIntent,
+    ButtonKind, CardKind, CommandPaletteItem, DrawerSide, Icon, LengthSpec, SplitAxis,
+    SplitPaneModel, StatusTone, SwitchControlPosition, ValidationIntent,
 };
 
-use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, Button, CalendarHeatmap, Card, Checkbox, CommandPalette,
-    ConfirmDialog, ContextMenu, Dialog, Dock, DockNode, Drawer, Dropdown, EmptyState,
-    ExtensionRegistrar, FormField, FrameworkError, GraphCanvas, GraphModel, IconButton,
-    ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue, LevelMeter, ListItem,
-    NativeMarkdown, Popover, Progress, QrCode, RangeField, SearchDropdown, SegmentedControl,
-    Select, SidebarFrame, SidebarRow, SidebarRowState, Skeleton, Spinner, SplitPane, StatusBadge,
-    Switch, Tabs, Text, TextArea, TextInput, TextInputState, Thumbnail, ThumbnailState, Toast,
-    ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, Workspace, XYPad, XYPadValue,
+    ConfirmDialog, ContextMenu, ContextMenuItem, Dialog, Dock, DockNode, Drawer, Dropdown,
+    DropdownOption, EmptyState, ExtensionRegistrar, FormField, FrameworkError, GraphCanvas,
+    GraphModel, IconButton, ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue,
+    LevelMeter, ListItem, ListItemSlots, ModalSurface, NativeMarkdown, Popover, Progress, QrCode,
+    RangeField, SearchDropdown, SearchDropdownOption, SegmentedControl, Select, SettingsCard,
+    SettingsRow, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, Skeleton, Spinner,
+    SplitPane, StatusBadge, Switch, Tabs, Text, TextArea, TextInput, TextInputState, Thumbnail,
+    ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage,
+    ValueEmphasis, Workspace, XYPad, XYPadValue,
+    component_registry::{RegisterableComponent, SemanticSpec},
 };
 
 pub struct NanaBuiltinComponents;
@@ -85,6 +87,8 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<AppShell>()?;
         registrar.register_component::<SidebarFrame>()?;
         registrar.register_component::<SidebarRow>()?;
+        registrar.register_component::<SettingsRow>()?;
+        registrar.register_component::<SettingsCard>()?;
         registrar.register_tags("nana.icon", &["icon", "i"])?;
         Ok(())
     }
@@ -190,6 +194,13 @@ impl RegisterableComponent for ListItem {
             .selected(spec.active)
             .disabled(spec.disabled)
             .size(spec.size)
+            .gap(spec.layout.gap_or(8.0))
+            .auto_height(flag_attr(spec, &["auto-height", "autoheight"]))
+            .slots(ListItemSlots {
+                leading: spec.slot("leading"),
+                content: spec.slot("content"),
+                trailing: spec.slot("trailing"),
+            })
     }
 }
 
@@ -334,7 +345,18 @@ impl RegisterableComponent for EmptyState {
     const TYPE_ID: &'static str = "nana.empty-state";
     const TAGS: &'static [&'static str] = &["empty", "empty-state", "emptystate"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        EmptyState::new(spec.display_label())
+        let mut component = EmptyState::new(spec.display_label());
+        if !spec.hint.is_empty() {
+            component = component.message(Arc::<str>::from(spec.hint));
+        }
+        if let Some(icon) = spec.icon {
+            component = component.icon(icon);
+        }
+        component = component.compact(flag_attr(spec, &["compact"]));
+        if let Some(action) = spec.slot("action") {
+            component = component.action_child(action);
+        }
+        component
     }
 }
 
@@ -342,7 +364,18 @@ impl RegisterableComponent for LabeledValue {
     const TYPE_ID: &'static str = "nana.labeled-value";
     const TAGS: &'static [&'static str] = &["labeled-value", "labeledvalue"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        LabeledValue::new(spec.label, spec.value)
+        let emphasis = if flag_attr(spec, &["muted"]) {
+            ValueEmphasis::Muted
+        } else {
+            ValueEmphasis::Strong
+        };
+        let mut component = LabeledValue::new(spec.label, spec.value)
+            .emphasis(emphasis)
+            .compact(flag_attr(spec, &["compact"]));
+        if let Some(action) = spec.slot("action") {
+            component = component.action_child(action);
+        }
+        component
     }
 }
 
@@ -420,11 +453,38 @@ impl RegisterableComponent for Dropdown {
     const TYPE_ID: &'static str = "nana.dropdown";
     const TAGS: &'static [&'static str] = &["dropdown"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Dropdown::single((!spec.value.is_empty()).then_some(spec.value))
+        let placeholder = if spec.placeholder.is_empty() {
+            spec.hint
+        } else {
+            spec.placeholder
+        };
+        let mut component = if spec.attr("multiple").is_some() {
+            let values = if spec.value.is_empty() {
+                Vec::new()
+            } else {
+                spec.value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+            };
+            Dropdown::multiple(values)
+        } else {
+            Dropdown::single((!spec.value.is_empty()).then_some(spec.value))
+        };
+        component = component
+            .options(spec.options.iter().map(|option| {
+                DropdownOption::new(option.value, option.label).disabled(option.disabled)
+            }))
             .size(spec.size)
             .disabled(spec.disabled)
             .loading(spec.loading)
             .invalid(spec.invalid)
+            .opened(spec.active || spec.toggled);
+        if !placeholder.is_empty() {
+            component = component.placeholder(Arc::<str>::from(placeholder));
+        }
+        component
     }
 }
 
@@ -432,11 +492,32 @@ impl RegisterableComponent for SearchDropdown {
     const TYPE_ID: &'static str = "nana.search";
     const TAGS: &'static [&'static str] = &["search-dropdown"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        SearchDropdown::new((!spec.value.is_empty()).then_some(spec.value))
+        let placeholder = if spec.placeholder.is_empty() {
+            spec.hint
+        } else {
+            spec.placeholder
+        };
+        let mut component = SearchDropdown::new((!spec.value.is_empty()).then_some(spec.value))
+            .options(
+                spec.options
+                    .iter()
+                    .map(|option| SearchDropdownOption::new(option.value, option.label)),
+            )
             .size(spec.size)
             .disabled(spec.disabled)
             .loading(spec.loading)
-            .invalid(spec.invalid)
+            .invalid(spec.invalid);
+        if !placeholder.is_empty() {
+            component = component.placeholder(Arc::<str>::from(placeholder));
+        }
+        let query = spec
+            .attr("query")
+            .or_else(|| spec.attr("data-query"))
+            .unwrap_or("");
+        if !query.is_empty() {
+            component = component.query(query.to_string());
+        }
+        component.opened(spec.active || spec.toggled)
     }
 }
 
@@ -444,7 +525,15 @@ impl RegisterableComponent for Drawer {
     const TYPE_ID: &'static str = "nana.drawer";
     const TAGS: &'static [&'static str] = &["drawer", "sheet"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Drawer::new(spec.display_label())
+        let mut component =
+            Drawer::new(spec.display_label()).side(parse_drawer_side(spec.attr("side")));
+        if !spec.hint.is_empty() {
+            component = component.description(Arc::<str>::from(spec.hint));
+        }
+        if let Some(body) = spec.slot("body") {
+            component.slots_mut().body = Some(body);
+        }
+        component
     }
 }
 
@@ -462,7 +551,21 @@ impl RegisterableComponent for ContextMenu {
     const TYPE_ID: &'static str = "nana.context-menu";
     const TAGS: &'static [&'static str] = &["context-menu", "contextmenu"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        ContextMenu::new(0.0, 0.0).open(spec.active || spec.toggled)
+        let searchable = flag_attr(spec, &["searchable"]) || spec.options.len() >= 6;
+        let query = spec
+            .attr("query")
+            .or_else(|| spec.attr("data-query"))
+            .unwrap_or("");
+        ContextMenu::new(
+            attr_f32(spec, &["anchor-x", "data-anchor-x"]).unwrap_or(0.0),
+            attr_f32(spec, &["anchor-y", "data-anchor-y"]).unwrap_or(0.0),
+        )
+        .items(spec.options.iter().map(|option| {
+            ContextMenuItem::new(option.value, option.label).disabled(option.disabled)
+        }))
+        .query(query)
+        .searchable(searchable)
+        .open(spec.active || spec.toggled)
     }
 }
 
@@ -579,7 +682,18 @@ impl RegisterableComponent for FormField {
     const TYPE_ID: &'static str = "nana.form-field";
     const TAGS: &'static [&'static str] = &["form-field"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        FormField::new(spec.display_label()).size(spec.size)
+        let mut component = FormField::new(spec.display_label()).size(spec.size);
+        if !spec.hint.is_empty() {
+            if spec.invalid {
+                component = component.error(Arc::<str>::from(spec.hint));
+            } else {
+                component = component.hint(Arc::<str>::from(spec.hint));
+            }
+        }
+        if let Some(control) = spec.slot("control") {
+            component = component.control_child(control);
+        }
+        component
     }
 }
 
@@ -626,7 +740,31 @@ impl RegisterableComponent for CommandPalette {
     const TYPE_ID: &'static str = "nana.command-palette";
     const TAGS: &'static [&'static str] = &["command-palette"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        CommandPalette::new(spec.display_label(), Vec::new())
+        let placeholder = if spec.placeholder.is_empty() {
+            spec.hint
+        } else {
+            spec.placeholder
+        };
+        let query = if !spec.value.is_empty() {
+            spec.value
+        } else {
+            spec.attr("query")
+                .or_else(|| spec.attr("data-query"))
+                .unwrap_or("")
+        };
+        let mut component = CommandPalette::new(
+            spec.display_label(),
+            spec.options
+                .iter()
+                .map(|option| CommandPaletteItem::new(option.value, option.label)),
+        );
+        if !placeholder.is_empty() {
+            component = component.placeholder(Arc::<str>::from(placeholder));
+        }
+        if !query.is_empty() {
+            component = component.query(query.to_string());
+        }
+        component
     }
 }
 
@@ -727,8 +865,19 @@ impl RegisterableComponent for AppShell {
 impl RegisterableComponent for SidebarFrame {
     const TYPE_ID: &'static str = "nana.sidebar-frame";
     const TAGS: &'static [&'static str] = &["sidebar-frame"];
-    fn from_semantic(_spec: &SemanticSpec<'_>) -> Self {
-        SidebarFrame::new()
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut component = SidebarFrame::new().gap(spec.layout.gap_or(14.0));
+        if let Some(top) = spec.slot("top") {
+            component = component.top(top);
+        }
+        if let Some(body) = spec.slot("body") {
+            component = component.body(body);
+        }
+        if let Some(footer) = spec.slot("footer") {
+            component = component.footer(footer);
+        }
+        component.style.layout = Arc::clone(spec.layout);
+        component
     }
 }
 
@@ -736,22 +885,147 @@ impl RegisterableComponent for SidebarRow {
     const TYPE_ID: &'static str = "nana.sidebar-row";
     const TAGS: &'static [&'static str] = &["sidebar-row"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let state = if spec.disabled {
-            SidebarRowState::Disabled
-        } else if spec.active {
-            SidebarRowState::Active
-        } else {
-            SidebarRowState::Idle
-        };
-        SidebarRow::new(spec.display_label())
+        let mut component = SidebarRow::new(spec.display_label())
+            .slots(ListItemSlots {
+                leading: spec.slot("leading"),
+                content: spec.slot("content"),
+                trailing: spec.slot("trailing"),
+            })
+            .gap(spec.layout.gap_or(6.0))
             .size(spec.size)
-            .state(state)
+            .state(parse_sidebar_row_state(spec))
+            .tone(parse_sidebar_row_tone(spec))
+            .depth(attr_u16(spec, &["depth", "data-depth", "indent"]).unwrap_or(0));
+        if let Some(tools) = spec.slot("tools") {
+            component = component.tools(tools);
+        }
+        if let Some(expanded) =
+            parse_tristate_attr(spec, &["expanded", "data-expanded", "disclosure"])
+        {
+            component = component.disclosure(expanded);
+        }
+        component
+    }
+}
+
+impl RegisterableComponent for SettingsRow {
+    const TYPE_ID: &'static str = "nana.settings-row";
+    const TAGS: &'static [&'static str] = &["settings-row"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut component = SettingsRow::new(spec.display_label())
+            .stacked(flag_attr(spec, &["stacked"]))
+            .divided(flag_attr(spec, &["divided"]))
+            .loose(flag_attr(spec, &["loose"]));
+        if !spec.hint.is_empty() {
+            component = component.hint(Arc::<str>::from(spec.hint));
+        }
+        if flag_attr(spec, &["first-in-group", "firstInGroup", "first"]) {
+            component = component.first_in_group();
+        }
+        if flag_attr(spec, &["last-in-group", "lastInGroup", "last"]) {
+            component = component.last_in_group();
+        }
+        if let Some(control) = spec.slot("control") {
+            component = component.control_child(control);
+        }
+        if let Some(copy) = spec.slot("copy") {
+            component = component.copy_slot(copy);
+        }
+        if let Some(label) = spec.slot("label") {
+            component = component.label_slot(label);
+        }
+        if let Some(hint) = spec.slot("hint") {
+            component = component.hint_slot(hint);
+        }
+        component
+    }
+}
+
+impl RegisterableComponent for SettingsCard {
+    const TYPE_ID: &'static str = "nana.settings-card";
+    const TAGS: &'static [&'static str] = &["settings-card"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let title = if spec.slot("title").is_some() {
+            ""
+        } else {
+            spec.display_label()
+        };
+        SettingsCard::new(title)
     }
 }
 
 fn truthy_attr(value: &str) -> bool {
     let value = value.trim();
     !(value.eq_ignore_ascii_case("false") || value == "0")
+}
+
+fn flag_attr(spec: &SemanticSpec<'_>, names: &[&str]) -> bool {
+    names
+        .iter()
+        .find_map(|name| spec.attr(name))
+        .is_some_and(truthy_attr)
+}
+
+fn parse_tristate_attr(spec: &SemanticSpec<'_>, names: &[&str]) -> Option<bool> {
+    names
+        .iter()
+        .find_map(|name| spec.attr(name))
+        .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        })
+}
+
+fn attr_u16(spec: &SemanticSpec<'_>, names: &[&str]) -> Option<u16> {
+    names
+        .iter()
+        .find_map(|name| spec.attr(name))
+        .and_then(|raw| raw.trim().parse().ok())
+}
+
+fn parse_drawer_side(raw: Option<&str>) -> DrawerSide {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "left" | "start" => DrawerSide::Left,
+        "bottom" => DrawerSide::Bottom,
+        _ => DrawerSide::Right,
+    }
+}
+
+fn parse_sidebar_row_state(spec: &SemanticSpec<'_>) -> SidebarRowState {
+    if spec.disabled {
+        return SidebarRowState::Disabled;
+    }
+    match spec
+        .attr("state")
+        .or_else(|| spec.attr("data-state"))
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "disabled" => SidebarRowState::Disabled,
+        "active" => SidebarRowState::Active,
+        "ancestor" | "ancestor-active" | "ancestoractive" => SidebarRowState::AncestorActive,
+        "idle" => SidebarRowState::Idle,
+        _ if spec.active => SidebarRowState::Active,
+        _ => SidebarRowState::Idle,
+    }
+}
+
+fn parse_sidebar_row_tone(spec: &SemanticSpec<'_>) -> SidebarRowTone {
+    match spec
+        .attr("tone")
+        .or_else(|| spec.attr("data-tone"))
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "warning" | "warn" => SidebarRowTone::Warning,
+        "error" | "danger" => SidebarRowTone::Error,
+        _ => SidebarRowTone::Default,
+    }
 }
 
 fn parse_control_position(raw: Option<&str>) -> SwitchControlPosition {
