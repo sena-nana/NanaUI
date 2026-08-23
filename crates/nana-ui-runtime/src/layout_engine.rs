@@ -1009,10 +1009,15 @@ fn place_node_scoped(
             intrinsic,
             scope,
         )?;
-        let left = LayoutStyle::resolve_inset(child_style.offset_left, base.width);
-        let right = LayoutStyle::resolve_inset(child_style.offset_right, base.width);
-        let top = LayoutStyle::resolve_inset(child_style.offset_top, base.height);
-        let bottom = LayoutStyle::resolve_inset(child_style.offset_bottom, base.height);
+        let child_fonts = fonts_of(child_style, child_font_px);
+        let left =
+            LayoutStyle::resolve_inset_fonts(child_style.offset_left, base.width, child_fonts);
+        let right =
+            LayoutStyle::resolve_inset_fonts(child_style.offset_right, base.width, child_fonts);
+        let top =
+            LayoutStyle::resolve_inset_fonts(child_style.offset_top, base.height, child_fonts);
+        let bottom =
+            LayoutStyle::resolve_inset_fonts(child_style.offset_bottom, base.height, child_fonts);
         if let (Some(left), Some(right)) = (left, right)
             && !child_style
                 .width
@@ -1028,7 +1033,6 @@ fn place_node_scoped(
             child_size.height = (base.height - top - bottom).max(0.0);
         }
         let vp = Some((viewport.width, viewport.height));
-        let child_fonts = fonts_of(child_style, child_font_px);
         child_size.width = child_size.width.max(child_style.resolved_min_width_fonts(
             Some(base.width),
             vp,
@@ -3255,6 +3259,43 @@ mod tests {
             "1em padding on both sides must add 64px to the 10px content box"
         );
         assert_eq!(boxes["child"].height, 74.0);
+    }
+
+    #[test]
+    fn child_em_absolute_inset_uses_parent_computed_font_size() {
+        let tree = StyleLayoutNode {
+            id: "parent".into(),
+            style: LayoutStyle {
+                font_size: Some(32.0),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "child".into(),
+                style: LayoutStyle {
+                    position: PositionSpec::Absolute,
+                    offset_top: Some(LengthSpec::Em(1.0)),
+                    offset_left: Some(LengthSpec::Em(1.0)),
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+            }],
+        };
+        let boxes = RuntimeLayoutEngine
+            .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            boxes["child"].x, 32.0,
+            "1em left against inherited 32px font-size must place at 32px, not 16px"
+        );
+        assert_eq!(
+            boxes["child"].y, 32.0,
+            "1em top against inherited 32px font-size must place at 32px, not 16px"
+        );
     }
 
     #[test]

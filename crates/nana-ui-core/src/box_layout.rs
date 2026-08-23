@@ -1327,8 +1327,18 @@ impl LayoutStyle {
     }
 
     /// Resolve a single inset against a containing-block edge length.
+    /// `em`/`rem` 使用 [`FontSizeContext::default`]（16px）。
     pub fn resolve_inset(spec: Option<LengthSpec>, base: f32) -> Option<f32> {
-        spec.and_then(|s| s.resolve_px(Some(base)))
+        Self::resolve_inset_fonts(spec, base, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolve_inset`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolve_inset_fonts(
+        spec: Option<LengthSpec>,
+        base: f32,
+        fonts: FontSizeContext,
+    ) -> Option<f32> {
+        spec.and_then(|s| s.resolve_with_fonts(Some(base), None, fonts))
     }
 
     pub fn is_absolute(&self) -> bool {
@@ -1820,6 +1830,16 @@ mod tests {
         let pad32 = layout.resolved_padding_against_fonts(None, FontSizeContext::new(16.0, 32.0));
         assert_eq!(pad32.left, 32.0);
         assert_eq!(pad32.top, 32.0);
+    }
+
+    #[test]
+    fn resolve_inset_em_default_api_stays_16px_fonts_uses_element_px() {
+        let spec = Some(LengthSpec::Em(1.0));
+        assert_eq!(LayoutStyle::resolve_inset(spec, 200.0), Some(16.0));
+        assert_eq!(
+            LayoutStyle::resolve_inset_fonts(spec, 200.0, FontSizeContext::new(16.0, 32.0)),
+            Some(32.0)
+        );
     }
 
     #[test]
