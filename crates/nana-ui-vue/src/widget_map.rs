@@ -91,7 +91,7 @@ pub fn resolve_kind_from_hints(
                 WidgetKind::Input
             }
         }
-        "textarea" => WidgetKind::Textarea,
+        "textarea" | "hosted-textarea" | "nana-hosted-textarea" => WidgetKind::Textarea,
         "select" => WidgetKind::Select,
         "progress" => WidgetKind::Progress,
         "li" => WidgetKind::ListItem,
@@ -215,6 +215,7 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-switch" | "ui-switch" => WidgetKind::Switch,
         "nana-checkbox" | "ui-checkbox" => WidgetKind::Checkbox,
         "nana-input" | "ui-input" => WidgetKind::Input,
+        "nana-hosted-textarea" | "hosted-textarea" => WidgetKind::Textarea,
         "nana-card" | "ui-card" | "card" => WidgetKind::Card,
         "nana-list-item" | "ui-list-item" | "list-item" => WidgetKind::ListItem,
         "nana-sidebar-row" | "sidebar-row" | "nana-sidebar-nav__item" => WidgetKind::SidebarRow,
@@ -1056,6 +1057,14 @@ mod tests {
         assert_eq!(
             resolve_kind_from_hints("nana-command-palette", None, None, None),
             Some(WidgetKind::CommandPalette)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-hosted-textarea", None, None, None),
+            Some(WidgetKind::Textarea)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", Some("hosted-textarea"), None, None),
+            Some(WidgetKind::Textarea)
         );
         assert_eq!(
             resolve_kind_from_hints("div", Some("nana-tree-view tree-view"), None, None),
