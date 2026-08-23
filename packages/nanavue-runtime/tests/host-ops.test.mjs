@@ -90,6 +90,16 @@ function installMockHost() {
         if (value == null) delete map[key];
         else map[key] = value;
         attrs.set(nid, map);
+        if (key === "innerHTML" || key === "textContent") {
+          children.set(nid, []);
+          const html = String(value ?? "");
+          if (html.includes("<")) {
+            const child = nextId++;
+            children.set(child, []);
+            parents.set(child, nid);
+            children.set(nid, [child]);
+          }
+        }
         return null;
       }
       if (name === "setElementText" || name === "setText") {
@@ -261,6 +271,17 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.equal(parent.childNodes.length, 2);
     assert.equal(parent.firstChild, a);
     assert.equal(treeReads().length, afterRefill, "refilled cache must serve subsequent getters");
+  });
+
+  test("innerHTML invalidates children cache and refills from host", () => {
+    const parent = hostOps.createElement("div");
+    const stale = hostOps.createElement("span");
+    hostOps.insert(stale, parent, null);
+    assert.equal(parent.childNodes.length, 1);
+
+    parent.innerHTML = "<span></span>";
+    assert.equal(parent.childNodes.length, 1);
+    assert.notEqual(parent.firstChild, stale);
   });
 
   test("style setProperty batches until flushHostFrame", async () => {
