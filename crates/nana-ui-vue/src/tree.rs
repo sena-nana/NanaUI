@@ -22,8 +22,7 @@ use nana_ui_runtime::AccessibilityUpdate;
 use nana_ui_runtime::MeasureTextShaper;
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
-    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, CalendarHeatmapDatum,
-    CalendarHeatmapOptions, CalendarLevelStrategy, ComponentBindKind, ComponentTypeId,
+    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, ComponentBindKind, ComponentTypeId,
     ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode, Entity,
     HOST_TEXTURE_RENDERER, HighlightRequest,
     ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
@@ -3872,48 +3871,6 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
     }
 }
 
-#[allow(dead_code)]
-fn tree_nodes_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> Vec<nana_ui_core::TreeNode<Arc<str>>> {
-    if let Some(nodes) = host_tree_nodes(&widget.props) {
-        return nodes;
-    }
-    if !widget.props.options.is_empty() {
-        return widget
-            .props
-            .options
-            .iter()
-            .map(|option| {
-                nana_ui_core::TreeNode::leaf(
-                    Arc::<str>::from(option.value.as_str()),
-                    option.label.as_str(),
-                )
-                .disabled(option.disabled)
-                .selected(option.value == widget.props.value && !widget.props.value.is_empty())
-            })
-            .collect();
-    }
-    widget
-        .children
-        .iter()
-        .filter_map(|child| snapshot.get(*child))
-        .map(|child| {
-            let id = if !child.props.value.is_empty() {
-                child.props.value.as_str()
-            } else if !child.props.element_id.is_empty() {
-                child.props.element_id.as_str()
-            } else {
-                child.props.display_label()
-            };
-            nana_ui_core::TreeNode::leaf(Arc::<str>::from(id), child.props.display_label())
-                .selected(child.props.active)
-                .disabled(child.props.disabled)
-        })
-        .collect()
-}
-
 fn host_tree_nodes(props: &crate::WidgetProps) -> Option<Vec<nana_ui_core::TreeNode<Arc<str>>>> {
     let value = props
         .native_props
@@ -3979,244 +3936,6 @@ fn tree_node_from_host(
         ),
         _ => None,
     }
-}
-
-fn calendar_data_from_props(props: &crate::WidgetProps) -> Vec<CalendarHeatmapDatum<()>> {
-    let value = props
-        .native_props
-        .get("data")
-        .filter(|value| is_calendar_data_array(value))
-        .or_else(|| {
-            props
-                .native_props
-                .get("options")
-                .filter(|value| is_calendar_data_array(value))
-        })
-        .or_else(|| props.native_props.get("value"));
-    let Some(value) = value else {
-        return Vec::new();
-    };
-    host_array(value)
-        .into_iter()
-        .filter_map(calendar_datum_from_host)
-        .collect()
-}
-
-fn is_calendar_data_array(value: &nana_js_engine::HostValue) -> bool {
-    match value {
-        nana_js_engine::HostValue::Array(items) => items
-            .iter()
-            .any(|item| calendar_datum_from_host(item).is_some()),
-        nana_js_engine::HostValue::Object(_) => host_array(value)
-            .into_iter()
-            .any(|item| calendar_datum_from_host(item).is_some()),
-        _ => false,
-    }
-}
-
-fn calendar_options_from_props(props: &crate::WidgetProps) -> CalendarHeatmapOptions<()> {
-    let Some(value) = props.native_props.get("options") else {
-        return CalendarHeatmapOptions::default();
-    };
-    match value {
-        nana_js_engine::HostValue::Object(map) if !is_calendar_data_array(value) => {
-            calendar_options_from_map(map)
-        }
-        _ => CalendarHeatmapOptions::default(),
-    }
-}
-
-fn calendar_options_from_map(
-    map: &BTreeMap<String, nana_js_engine::HostValue>,
-) -> CalendarHeatmapOptions<()> {
-    let mut options = CalendarHeatmapOptions::default();
-    if let Some(size) = host_map_number(map, &["cellSize", "cell_size", "cell-size"]) {
-        options.cell_size = size;
-    }
-    if let Some(gap) = host_map_number(map, &["cellGap", "cell_gap", "cell-gap"]) {
-        options.cell_gap = gap;
-    }
-    if let Some(radius) = host_map_number(map, &["cellRadius", "cell_radius", "cell-radius"]) {
-        options.cell_radius = radius;
-    }
-    if let Some(width) = host_map_number(map, &["labelWidth", "label_width", "label-width"]) {
-        options.label_width = width;
-    }
-    if let Some(height) = host_map_number(
-        map,
-        &[
-            "monthLabelHeight",
-            "month_label_height",
-            "month-label-height",
-        ],
-    ) {
-        options.month_label_height = height;
-    }
-    if let Some(week) = host_map_number(map, &["weekStartsOn", "week_starts_on", "week-starts-on"])
-    {
-        options = options.week_starts_on(week as i32);
-    }
-    if let Some(labels) =
-        host_map_value(map, &["weekdayLabels", "weekday_labels", "weekday-labels"])
-            .and_then(calendar_weekday_labels)
-    {
-        options = options.weekday_labels(labels);
-    }
-    if let Some(strategy) =
-        host_map_value(map, &["levelStrategy", "level_strategy", "level-strategy"])
-            .and_then(calendar_level_strategy)
-    {
-        options = options.level_strategy(strategy);
-    }
-    if let Some(template) = calendar_string_template(host_map_value(
-        map,
-        &[
-            "monthFormat",
-            "monthFormatter",
-            "month_formatter",
-            "month-formatter",
-        ],
-    )) {
-        options = options.month_formatter(move |year, month| {
-            apply_calendar_template(
-                &template,
-                &[
-                    ("{year}", year.to_string()),
-                    ("{monthPad}", format!("{month:02}")),
-                    ("{month}", month.to_string()),
-                ],
-            )
-        });
-    }
-    if let Some(template) = calendar_string_template(host_map_value(
-        map,
-        &[
-            "titleFormat",
-            "titleFormatter",
-            "title_formatter",
-            "title-formatter",
-        ],
-    )) {
-        options = options.title_formatter(move |datum| {
-            apply_calendar_template(
-                &template,
-                &[
-                    ("{date}", datum.date.clone()),
-                    ("{value}", datum.value.to_string()),
-                ],
-            )
-        });
-    }
-    options
-}
-
-fn calendar_weekday_labels(value: &nana_js_engine::HostValue) -> Option<Vec<(u8, String)>> {
-    let items = host_array(value);
-    let mut labels = Vec::new();
-    if items.is_empty() {
-        let nana_js_engine::HostValue::Object(map) = value else {
-            return None;
-        };
-        for (key, item) in map {
-            let Ok(day) = key.parse::<u8>() else {
-                continue;
-            };
-            let label = host_value_text(item);
-            if !label.is_empty() {
-                labels.push((day % 7, label));
-            }
-        }
-        return (!labels.is_empty()).then_some(labels);
-    }
-    for (index, item) in items.into_iter().enumerate() {
-        match item {
-            nana_js_engine::HostValue::Array(pair) if pair.len() >= 2 => {
-                let day = host_value_number(&pair[0])
-                    .map(|day| day as u8)
-                    .unwrap_or(index as u8);
-                let label = host_value_text(&pair[1]);
-                if !label.is_empty() {
-                    labels.push((day % 7, label));
-                }
-            }
-            nana_js_engine::HostValue::Object(map) => {
-                let day = host_map_number(map, &["day", "index", "weekday"])
-                    .map(|day| day as u8)
-                    .unwrap_or(index as u8);
-                let label = host_map_text(map, &["label", "text", "name"]);
-                if !label.is_empty() {
-                    labels.push((day % 7, label));
-                }
-            }
-            nana_js_engine::HostValue::String(label) if !label.is_empty() => {
-                labels.push((index as u8 % 7, label.clone()));
-            }
-            _ => {}
-        }
-    }
-    (!labels.is_empty()).then_some(labels)
-}
-
-fn calendar_level_strategy(value: &nana_js_engine::HostValue) -> Option<CalendarLevelStrategy<()>> {
-    match value {
-        nana_js_engine::HostValue::Function(_) => None,
-        nana_js_engine::HostValue::Array(_) => {
-            let thresholds = host_array(value)
-                .into_iter()
-                .filter_map(host_value_number)
-                .collect::<Vec<_>>();
-            (!thresholds.is_empty()).then_some(CalendarLevelStrategy::Thresholds(thresholds))
-        }
-        nana_js_engine::HostValue::Number(number) if number.is_finite() => {
-            Some(CalendarLevelStrategy::Relative {
-                levels: (*number as u8).max(1),
-            })
-        }
-        nana_js_engine::HostValue::Object(map) => {
-            let kind = host_map_text(map, &["type", "kind", "strategy"]).to_ascii_lowercase();
-            if kind == "custom" {
-                return None;
-            }
-            if kind == "thresholds"
-                || host_map_value(map, &["thresholds", "stops"]).is_some() && kind != "relative"
-            {
-                let thresholds = host_map_value(map, &["thresholds", "stops", "values"])
-                    .map(host_array)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(host_value_number)
-                    .collect::<Vec<_>>();
-                return (!thresholds.is_empty())
-                    .then_some(CalendarLevelStrategy::Thresholds(thresholds));
-            }
-            if kind == "relative" || host_map_value(map, &["levels", "level"]).is_some() {
-                let levels = host_map_number(map, &["levels", "level"])
-                    .map(|levels| (levels as u8).max(1))
-                    .unwrap_or(5);
-                return Some(CalendarLevelStrategy::Relative { levels });
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn calendar_string_template(value: Option<&nana_js_engine::HostValue>) -> Option<String> {
-    match value? {
-        nana_js_engine::HostValue::String(template) if !template.is_empty() => {
-            Some(template.clone())
-        }
-        nana_js_engine::HostValue::Function(_) => None,
-        _ => None,
-    }
-}
-
-fn apply_calendar_template(template: &str, replacements: &[(&str, String)]) -> String {
-    let mut out = template.to_string();
-    for (needle, value) in replacements {
-        out = out.replace(needle, value);
-    }
-    out
 }
 
 fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsModel> {
@@ -4421,32 +4140,6 @@ fn is_settings_page_header_child(widget: &crate::SemanticWidget) -> bool {
         .class_names
         .iter()
         .any(|class| class.contains("nana-settings-page__header") || class.contains("page-header"))
-}
-
-fn calendar_datum_from_host(value: &nana_js_engine::HostValue) -> Option<CalendarHeatmapDatum<()>> {
-    match value {
-        nana_js_engine::HostValue::Object(map) => {
-            let date = host_map_text(map, &["date", "day", "key"]);
-            if date.is_empty() {
-                return None;
-            }
-            let number = map
-                .get("value")
-                .or_else(|| map.get("count"))
-                .and_then(host_value_number)
-                .unwrap_or(0.0);
-            Some(CalendarHeatmapDatum::new(date, number))
-        }
-        nana_js_engine::HostValue::Array(items) if items.len() >= 2 => {
-            let date = host_value_text(&items[0]);
-            let number = host_value_number(&items[1])?;
-            if date.is_empty() {
-                return None;
-            }
-            Some(CalendarHeatmapDatum::new(date, number))
-        }
-        _ => None,
-    }
 }
 
 fn markdown_source_from_props(props: &crate::WidgetProps) -> String {
@@ -7555,9 +7248,9 @@ mod tests {
 
     #[test]
     fn calendar_options_month_format_changes_month_label() {
-        let (_doc, default_props, default_visual) =
+        let (_doc, _default_props, default_visual) =
             project_calendar_with_options(nana_js_engine::HostValue::Object(BTreeMap::new()));
-        let (_doc, formatted_props, formatted_visual) =
+        let (_doc, _formatted_props, formatted_visual) =
             project_calendar_with_options(nana_js_engine::HostValue::Object(
                 [(
                     "monthFormat".into(),
@@ -7592,56 +7285,10 @@ mod tests {
                 .any(|label| label.text.as_ref() == "2026-06"),
             "monthFormat {{year}}-{{monthPad}} must change the painted month label"
         );
-        let default_model = nana_ui_runtime::build_calendar_heatmap_model(
-            &calendar_data_from_props(&default_props),
-            calendar_options_from_props(&default_props),
-        );
-        let formatted_model = nana_ui_runtime::build_calendar_heatmap_model(
-            &calendar_data_from_props(&formatted_props),
-            calendar_options_from_props(&formatted_props),
-        );
-        assert_ne!(default_model.month_labels, formatted_model.month_labels);
     }
 
     #[test]
     fn calendar_options_title_format_changes_cell_title() {
-        let mut default_props = crate::WidgetProps::default();
-        default_props.apply_prop("data", &calendar_sample_cells());
-        let mut formatted_props = crate::WidgetProps::default();
-        formatted_props.apply_prop("data", &calendar_sample_cells());
-        formatted_props.apply_prop(
-            "options",
-            &nana_js_engine::HostValue::Object(
-                [(
-                    "titleFormat".into(),
-                    nana_js_engine::HostValue::string("{date}={value}"),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-        );
-        let default_model = nana_ui_runtime::build_calendar_heatmap_model(
-            &calendar_data_from_props(&default_props),
-            calendar_options_from_props(&default_props),
-        );
-        let formatted_model = nana_ui_runtime::build_calendar_heatmap_model(
-            &calendar_data_from_props(&formatted_props),
-            calendar_options_from_props(&formatted_props),
-        );
-        assert!(
-            default_model
-                .cells
-                .iter()
-                .any(|cell| cell.date == "2026-06-01" && cell.title == "2026-06-01: 4"),
-            "default title formatter is {{date}}: {{value}}"
-        );
-        assert!(
-            formatted_model
-                .cells
-                .iter()
-                .any(|cell| cell.date == "2026-06-01" && cell.title == "2026-06-01=4"),
-            "titleFormat {{date}}={{value}} must change the model cell title"
-        );
         let (_doc, _, visual) = project_calendar_with_options(nana_js_engine::HostValue::Object(
             [(
                 "titleFormat".into(),
@@ -7658,7 +7305,7 @@ mod tests {
 
     #[test]
     fn calendar_options_function_formatter_keeps_default() {
-        let (_doc, props, visual) =
+        let (_doc, _props, visual) =
             project_calendar_with_options(nana_js_engine::HostValue::Object(
                 [
                     (
@@ -7681,17 +7328,6 @@ mod tests {
                 .iter()
                 .any(|label| label.text.as_ref() == "6月"),
             "Function-valued monthFormatter is ignored"
-        );
-        let model = nana_ui_runtime::build_calendar_heatmap_model(
-            &calendar_data_from_props(&props),
-            calendar_options_from_props(&props),
-        );
-        assert!(
-            model
-                .cells
-                .iter()
-                .any(|cell| cell.date == "2026-06-01" && cell.title == "2026-06-01: 4"),
-            "Function-valued titleFormatter is ignored"
         );
     }
 

@@ -2448,6 +2448,32 @@ mod tests {
     }
 
     #[test]
+    fn calendar_title_format_json_changes_cell_title() {
+        let type_id = ComponentTypeId::new("nana.calendar-heatmap").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [
+            (
+                "data",
+                r#"[{"date":"2026-06-01","value":4}]"#,
+            ),
+            (
+                "options",
+                r#"{"titleFormat":"{date}={value}"}"#,
+            ),
+        ];
+        let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "");
+        let calendar = CalendarHeatmap::<()>::from_semantic(&spec);
+        let model = calendar.model();
+        assert!(
+            model
+                .cells
+                .iter()
+                .any(|cell| cell.date == "2026-06-01" && cell.title == "2026-06-01=4"),
+            "titleFormat {{date}}={{value}} must change the model cell title"
+        );
+    }
+
+    #[test]
     fn graph_canvas_json_nodes_are_not_empty() {
         let type_id = ComponentTypeId::new("nana.graph-canvas").unwrap();
         let layout = Arc::new(LayoutStyle::default());
