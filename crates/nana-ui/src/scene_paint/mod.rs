@@ -654,9 +654,7 @@ fn clip_dests_for(
     clips: &[nana_ui_scene::ClipRegion],
     origin: [f32; 2],
 ) -> Vec<FragmentClip> {
-    // Custom GPU nodes only have AABB scissor. Wrap every rotated parallelogram
-    // so SceneGpuRenderer need not implement fragment clip. Built-in primitives
-    // already stamp the innermost clip into vertex attrs.
+    // Custom has no vertex clip so wrap every rotated parallelogram; built-ins wrap extras only.
     let keep_innermost = matches!(
         kind,
         ScenePrimitiveKind::Custom(custom) if custom.renderer.as_ref() != "nana.host-texture"

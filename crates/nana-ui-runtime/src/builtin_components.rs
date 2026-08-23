@@ -183,11 +183,21 @@ impl RegisterableComponent for Card {
         if !spec.label.is_empty() {
             card = card.title(Arc::<str>::from(spec.label));
         }
-        if let Some(LengthSpec::Px(padding)) = spec.layout.padding_left {
-            card = card.padding(padding);
+        card.style.layout = Arc::clone(spec.layout);
+        let layout = Arc::make_mut(&mut card.style.layout);
+        if layout.padding.is_none()
+            && layout.padding_top.is_none()
+            && layout.padding_right.is_none()
+            && layout.padding_bottom.is_none()
+            && layout.padding_left.is_none()
+        {
+            layout.padding_left = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_x));
+            layout.padding_right = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_x));
+            layout.padding_top = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_y));
+            layout.padding_bottom = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_y));
         }
-        if let Some(LengthSpec::Px(height)) = spec.layout.height {
-            card = card.height(height);
+        if layout.border_radius.is_none() {
+            layout.border_radius = Some(nana_ui_core::UI_METRICS.radius_md);
         }
         card
     }
@@ -767,13 +777,17 @@ impl RegisterableComponent for Skeleton {
     const TYPE_ID: &'static str = "nana.skeleton";
     const TAGS: &'static [&'static str] = &["skeleton"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Skeleton::new(
+        let mut skeleton = Skeleton::new(
             spec.layout.width.unwrap_or(LengthSpec::Fill),
             match spec.layout.height {
                 Some(LengthSpec::Px(h)) if h.is_finite() && h > 0.0 => h,
                 _ => 16.0,
             },
-        )
+        );
+        let layout = Arc::make_mut(&mut skeleton.style.layout);
+        layout.width = spec.layout.width.or(Some(LengthSpec::Fill));
+        layout.height = spec.layout.height.or(Some(LengthSpec::Px(skeleton.height)));
+        skeleton
     }
 }
 
@@ -782,11 +796,14 @@ impl RegisterableComponent for LevelMeter {
     const TAGS: &'static [&'static str] = &["level-meter", "level"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = LevelMeter::new(spec.number).tone(parse_status_tone(spec.attr("tone")));
-        if let Some(LengthSpec::Px(height)) = spec.layout.height
-            && height.is_finite()
-            && height > 0.0
-        {
-            component = component.height(height);
+        if let Some(height) = spec.layout.height {
+            Arc::make_mut(&mut component.style.layout).height = Some(height);
+            if let LengthSpec::Px(px) = height
+                && px.is_finite()
+                && px > 0.0
+            {
+                component = component.height(px);
+            }
         }
         component
     }
@@ -2359,6 +2376,28 @@ mod tests {
             slots,
             ..SemanticSpec::from_parts(type_id, layout)
         }
+    }
+
+    #[test]
+    fn card_from_semantic_keeps_uniform_padding_and_em_height() {
+        let type_id = ComponentTypeId::new("nana.card").unwrap();
+        let layout = Arc::new(LayoutStyle {
+            padding: Some(LengthSpec::Px(8.0)),
+            height: Some(LengthSpec::Em(2.0)),
+            ..LayoutStyle::default()
+        });
+        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "");
+        let card = Card::from_semantic(&spec);
+        assert_eq!(card.style.layout.padding, Some(LengthSpec::Px(8.0)));
+        assert_eq!(card.style.layout.padding_left, None);
+        assert_eq!(card.style.layout.padding_right, None);
+        assert_eq!(card.style.layout.padding_top, None);
+        assert_eq!(card.style.layout.padding_bottom, None);
+        assert_eq!(card.style.layout.height, Some(LengthSpec::Em(2.0)));
+        assert_eq!(
+            card.style.layout.border_radius,
+            Some(nana_ui_core::UI_METRICS.radius_md)
+        );
     }
 
     #[test]
