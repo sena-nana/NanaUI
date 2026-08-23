@@ -335,7 +335,7 @@ fn initialize<Program: RuntimeProgram>(
         },
         &ready.context(),
     );
-    ready.apply_update(event_loop, update);
+    ready.apply_update(event_loop, update, None);
     for message in startup {
         if event_loop.exiting() {
             break;
@@ -369,7 +369,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     fn process_message(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
         let update = self.program.update(message, &self.context());
         self.sync_appearance();
-        self.apply_update(event_loop, update);
+        self.apply_update(event_loop, update, None);
     }
 
     fn handle_window_event(
@@ -399,7 +399,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     continue;
                 }
             };
-            self.apply_update(event_loop, update);
+            self.apply_update(event_loop, update, None);
             if event_loop.exiting() {
                 return;
             }
@@ -480,7 +480,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     let update = self
                         .program
                         .window_event(window_event, &self.context_for(id));
-                    self.apply_update(event_loop, update);
+                    self.apply_update(event_loop, update, None);
                 }
             }
             _ => {}
@@ -497,7 +497,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             let update = self
                 .program
                 .window_event(window_event, &self.context_for(id));
-            self.apply_update(event_loop, update);
+            self.apply_update(event_loop, update, None);
         }
     }
 
@@ -544,7 +544,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             update = update.merge(RuntimeProgramUpdate::redraw(id));
         }
         self.sync_appearance();
-        self.apply_update(event_loop, update);
+        self.apply_update(event_loop, update, None);
         self.apply_ime_request(id);
     }
 
@@ -643,7 +643,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         update = update.merge(self.drain_all_program_messages());
         self.sync_appearance();
-        self.apply_update(event_loop, update);
+        self.apply_update(event_loop, update, None);
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
@@ -655,6 +655,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             return;
         }
         if id != WindowId::PRIMARY && !self.auxiliary.contains_key(&id) {
+            return;
+        }
+        let queued = self.drain_program_messages(id);
+        self.apply_update(event_loop, queued, Some(id));
+        if event_loop.exiting() || self.render_suspended {
             return;
         }
         self.program.prepare_window_frame(id, &self.context_for(id));
@@ -778,7 +783,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .program
             .window_frame_presented(id, &self.context_for(id));
         self.sync_appearance();
-        self.apply_update(event_loop, update);
+        self.apply_update(event_loop, update, None);
         #[cfg(not(target_os = "android"))]
         self.synchronize_accessibility(id);
     }
@@ -795,7 +800,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
-    fn apply_update(&mut self, event_loop: &ActiveEventLoop, update: RuntimeProgramUpdate) {
+    fn apply_update(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        update: RuntimeProgramUpdate,
+        painting: Option<WindowId>,
+    ) {
         if update.exit {
             event_loop.exit();
             return;
@@ -807,6 +817,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
         }
         for id in windows_to_redraw(update.redraw, &self.known_window_ids()) {
+            if painting == Some(id) {
+                continue;
+            }
             self.request_redraw(id);
         }
     }
@@ -821,7 +834,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 };
                 if let Ok(event) = self.open_window(event_loop, id, settings) {
                     let update = self.program.window_event(event, &self.context_for(id));
-                    self.apply_update(event_loop, update);
+                    self.apply_update(event_loop, update, None);
                 }
             }
             RoutedWindowCommand::Focus(id) => self.focus_window(id),
@@ -879,7 +892,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                         },
                         &self.context_for(id),
                     );
-                    self.apply_update(event_loop, update);
+                    self.apply_update(event_loop, update, None);
                 }
             }
             RoutedWindowCommand::SetAlwaysOnTop(id) => {
@@ -1045,7 +1058,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             let update = self
                 .program
                 .window_event(WindowEvent::Closed { id }, &self.context_for(id));
-            self.apply_update(event_loop, update);
+            self.apply_update(event_loop, update, None);
         }
     }
 
@@ -1162,7 +1175,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     let update = self
                         .program
                         .window_event(WindowEvent::Closed { id }, &self.context_for(id));
-                    self.apply_update(event_loop, update);
+                    self.apply_update(event_loop, update, None);
                     if event_loop.exiting() {
                         return;
                     }
@@ -1344,10 +1357,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
         };
         let chrome_action = self.title_bar_chrome_action(id, &input);
-        let view_update = self.drain_program_messages(id);
         // Runtime may already have consumed the event (prevent_default). Scene
         // still delivers input_event so Gallery can drain leftover host input and
         // Vue can emit JS. Leftover winit handling stays gated by the caller.
+        // Program messages stay queued until the next frame so navigation
+        // coalesces and does not run inside the pointer handler.
         let program_input = self.program.input_event(id, &input, &self.context_for(id));
         if let Err(error) = &program_input {
             self.program.host_failure(HostFailure::InputHandler {
@@ -1355,12 +1369,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 error: error.to_string(),
             });
         }
-        let update = scene_runtime_input_update(disposition, id, program_input)
-            .merge(view_update)
-            .merge(self.drain_program_messages(id));
+        let mut update = scene_runtime_input_update(disposition, id, program_input);
+        if self
+            .program
+            .document(id)
+            .is_some_and(|document| document.context().has_program_messages())
+        {
+            update = update.merge(RuntimeProgramUpdate::redraw(id));
+        }
         let update = self.merge_title_bar_chrome(id, chrome_action, update);
         self.sync_appearance();
-        self.apply_update(event_loop, update);
+        self.apply_update(event_loop, update, None);
         disposition
     }
 

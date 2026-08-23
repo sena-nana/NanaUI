@@ -30,7 +30,7 @@ use nana_ui::{RuntimeProgram, run_runtime};
 
 // 1. AppContext 持有 UiWorld 与 typed view state
 // 2. create_component / mount 投影到保留树
-// 3. on / observe 更新 view；不要把每次点击塞进 RuntimeProgram::Message
+// 3. on / observe 更新 view；导航用 dispatch_program，由宿主在下一帧合并投递
 // 4. run_runtime 注入宿主 Window / Device / Queue，由 SceneWgpuPainter 绘制
 ```
 
@@ -60,6 +60,8 @@ host op 进 `PendingHostOps`，`flush_host_frame` 才 commit。
 ## 性能（默认语义，不要手写脏位）
 
 - mutation commit 后 Runtime 自己调度；`DirtyMask` 不公开。
+- `dispatch_program` 按类型保留最后一条，在下一帧交给 `RuntimeProgram::update`，不在当前指针处理里执行。
+- `set_desktop_slots` 换 inspector/primary：停泊上一份内容并挂回已有树；槽位未变则是空操作。
 - 无变更不刷帧；文本 intrinsic 不变则 layout-stop。
 - 大列表必须 `AppContext::materialize_virtual_*`，窗口外不建 live entity。
 - GPU 换纹理升 generation/revision，不重建布局。

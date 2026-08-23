@@ -275,6 +275,9 @@ pub trait RuntimeProgram: Sized + 'static {
     fn document(&self, id: WindowId) -> Option<&RuntimeDocument>;
     fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument>;
 
+    /// Apply a host-level message. View `dispatch_program` values of this type
+    /// coalesce to the latest and run on the next frame, not inside pointer
+    /// handling. Keep this as state application; the host owns scheduling.
     fn update(
         &mut self,
         message: Self::Message,

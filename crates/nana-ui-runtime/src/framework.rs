@@ -408,9 +408,15 @@ impl<V: View> ViewContext<'_, V> {
             .push_back((self.entity.id, TypeId::of::<E>(), Box::new(event)));
     }
 
-    /// Queue a `RuntimeProgram::Message` for the Scene host to `update` after
-    /// the current view-event delivery, in the same input or wake turn.
+    /// Queue a `RuntimeProgram::Message` for the Scene host.
+    ///
+    /// The host delivers the latest message of each type on the next frame
+    /// (`RuntimeProgram::update`), not during the current input handler.
+    /// Repeated dispatches of the same type keep only the last value.
     pub fn dispatch_program<M: Send + 'static>(&mut self, message: M) {
+        let type_id = TypeId::of::<M>();
+        self.program_messages
+            .retain(|queued| queued.as_ref().type_id() != type_id);
         self.program_messages.push(Box::new(message));
     }
 }
@@ -762,9 +768,13 @@ impl AppContext {
     }
 
     /// Messages queued by [`ViewContext::dispatch_program`] since the last take.
-    /// The Scene host drains these into `RuntimeProgram::update`.
+    /// The Scene host drains these into `RuntimeProgram::update` on the next frame.
     pub fn take_program_messages(&mut self) -> Vec<Box<dyn Any + Send>> {
         std::mem::take(&mut self.program_messages)
+    }
+
+    pub fn has_program_messages(&self) -> bool {
+        !self.program_messages.is_empty()
     }
 
     pub fn resolve_component_tag(&self, tag: &str) -> Option<&ComponentTypeId> {
@@ -6090,6 +6100,29 @@ mod tests {
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].downcast_ref::<&str>().copied(), Some("stage"));
         assert!(context.take_program_messages().is_empty());
+    }
+
+    #[test]
+    fn dispatch_program_keeps_the_latest_message_of_each_type() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let row = context
+            .create_component(document, SidebarRow::new("舞台"))
+            .unwrap();
+        context
+            .on(row, |_row, _event: &Activate, cx| {
+                cx.dispatch_program("stage");
+                cx.dispatch_program("functions");
+                cx.dispatch_program(1_u8);
+            })
+            .unwrap();
+        assert!(context.activate_sidebar_row(row).unwrap());
+        assert!(context.has_program_messages());
+        let queued = context.take_program_messages();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].downcast_ref::<&str>().copied(), Some("functions"));
+        assert_eq!(queued[1].downcast_ref::<u8>().copied(), Some(1));
+        assert!(!context.has_program_messages());
     }
 
     #[test]
