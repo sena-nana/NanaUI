@@ -1,4 +1,9 @@
-//! Dock controller: mutation reduction and layout queries.
+//! Host adapter: pointer/dwell/frame → [`DockMutation`]; geometry via [`DockController::surface_layout`].
+//!
+//! Persisted tree identity stays in [`DockLayout`] (serde, monitors, item specs).
+//! Split ratios and child lengths are Runtime facts — see
+//! `nana_ui_runtime::dock_split_ratio_from_pointer`. Product consumers hold
+//! [`crate::DockWorkspace`], not this controller.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -26,7 +31,7 @@ struct ActiveResize {
     axis: DockAxis,
     start_position: Option<f32>,
     start_ratio: f32,
-    ratio_per_pixel: f32,
+    available: f32,
 }
 
 impl ActiveResize {
@@ -42,7 +47,12 @@ impl ActiveResize {
             self.start_position = Some(position);
             return None;
         };
-        Some(self.start_ratio + (position - start_position) * self.ratio_per_pixel)
+        Some(nana_ui_runtime::dock_split_ratio_from_pointer(
+            self.start_ratio,
+            start_position,
+            position,
+            self.available,
+        ))
     }
 }
 
@@ -109,7 +119,12 @@ impl DockSurfaceGeometry {
     }
 }
 
-/// Owns a validated dock layout without owning native windows or GPU resources.
+/// Host adapter over [`DockLayout`] / [`DockMutation`].
+///
+/// Converts pointer, dwell, and frame input into [`DockMutation`]. Split
+/// ratios use Runtime `dock_split_ratio_from_pointer`; consumers read geometry
+/// only from [`Self::surface_layout`]. Does not own windows or GPU resources.
+/// Product dock state is [`crate::DockWorkspace`].
 #[derive(Debug, Clone)]
 pub struct DockController {
     center: DockId,
@@ -572,13 +587,13 @@ impl DockController {
             },
             DockAction::ResizeStart { surface, path } => {
                 let geometry = self.split_geometry(surface, &path);
-                self.active_resize = geometry.map(|(axis, ratio, extent)| ActiveResize {
+                self.active_resize = geometry.map(|(axis, ratio, available)| ActiveResize {
                     surface,
                     path: path.clone(),
                     axis,
                     start_position: None,
                     start_ratio: ratio,
-                    ratio_per_pixel: 1.0 / extent,
+                    available,
                 });
                 self.focused_split = geometry.map(|(axis, _, _)| (surface, path, axis));
                 DockUpdate::default()
@@ -614,14 +629,14 @@ impl DockController {
                 path,
                 steps,
             } => {
-                let Some((_, ratio, extent)) = self.split_geometry(surface, &path) else {
+                let Some((_, ratio, _)) = self.split_geometry(surface, &path) else {
                     return DockUpdate::default();
                 };
                 DockUpdate {
                     changed: self.set_surface_split_ratio(
                         surface,
                         &path,
-                        ratio + steps * 8.0 / extent.max(1.0),
+                        nana_ui_runtime::dock_nudge_split_ratio(ratio, steps),
                     ),
                     effects: Vec::new(),
                 }
@@ -1867,26 +1882,28 @@ fn split_bounds_at_path(node: &DockNode, bounds: DockBounds, path: &[usize]) -> 
 fn split_child_bounds(axis: DockAxis, ratio: f32, bounds: DockBounds) -> (DockBounds, DockBounds) {
     match axis {
         DockAxis::Horizontal => {
-            let first_width = (bounds.width - DIVIDER_HIT_SIZE).max(0.0) * ratio;
+            let (first_width, second_width) =
+                nana_ui_runtime::dock_split_child_lengths(ratio, bounds.width);
             (
                 DockBounds::new(bounds.x, bounds.y, first_width, bounds.height),
                 DockBounds::new(
                     bounds.x + first_width + DIVIDER_HIT_SIZE,
                     bounds.y,
-                    (bounds.width - first_width - DIVIDER_HIT_SIZE).max(0.0),
+                    second_width,
                     bounds.height,
                 ),
             )
         }
         DockAxis::Vertical => {
-            let first_height = (bounds.height - DIVIDER_HIT_SIZE).max(0.0) * ratio;
+            let (first_height, second_height) =
+                nana_ui_runtime::dock_split_child_lengths(ratio, bounds.height);
             (
                 DockBounds::new(bounds.x, bounds.y, bounds.width, first_height),
                 DockBounds::new(
                     bounds.x,
                     bounds.y + first_height + DIVIDER_HIT_SIZE,
                     bounds.width,
-                    (bounds.height - first_height - DIVIDER_HIT_SIZE).max(0.0),
+                    second_height,
                 ),
             )
         }
@@ -2275,22 +2292,6 @@ fn valid_bounds(bounds: DockBounds) -> bool {
         && bounds.height.is_finite()
         && bounds.width > 0.0
         && bounds.height > 0.0
-}
-
-fn clamp_ratio(ratio: f32) -> f32 {
-    finite(ratio, 0.5).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO)
-}
-
-fn finite(value: f32, fallback: f32) -> f32 {
-    if value.is_finite() { value } else { fallback }
-}
-
-fn finite_positive(value: f32, fallback: f32) -> f32 {
-    if value.is_finite() && value > 0.0 {
-        value
-    } else {
-        fallback
-    }
 }
 
 #[cfg(test)]
@@ -4381,6 +4382,15 @@ mod tests {
         let (_, root_reentered) =
             split_at_path(&controller.layout().main, &[]).expect("root split reentered");
         assert!((root_reentered - 0.35).abs() < 0.000_1);
+        assert_eq!(
+            root_reentered,
+            nana_ui_runtime::dock_split_ratio_from_pointer(
+                0.25,
+                300.0,
+                399.2,
+                1_000.0 - DIVIDER_HIT_SIZE
+            )
+        );
     }
 
     #[test]

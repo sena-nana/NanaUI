@@ -86,7 +86,10 @@ impl SurfaceView {
     }
 }
 
-/// Gallery dock operations mapped onto [`DockWorkspace`] / [`DockWorkspaceEvent`].
+/// Gallery dock operations mapped onto product [`DockWorkspace`] / [`DockWorkspaceEvent`].
+///
+/// Split ratios live on `DockWorkspace`; this enum does not go through
+/// `nana_ui::dock::DockController`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GalleryDock {
     ActivateTab(Arc<str>),
@@ -114,6 +117,8 @@ pub enum GalleryDock {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GalleryMessage {
+    /// Host pointer/window/frame event. [`WorkspaceController`] converts this
+    /// to [`nana_ui::WorkspaceMutation`]; region state is [`nana_ui::WorkspaceModel`].
     Workspace(WorkspaceAction),
     SplitPane(SplitPaneAction),
     Dock(GalleryDock),
@@ -208,9 +213,12 @@ enum GalleryOverlay {
 pub struct GalleryState {
     theme: ThemeMode,
     appearance: AppearanceSettings,
+    /// Host adapter: Instant→Duration and pointer → `WorkspaceMutation`.
+    /// Region state is `workspace.model()` (`WorkspaceModel`).
     workspace: WorkspaceController,
     settings_workspace: WorkspaceController,
     split_pane: SplitPaneController,
+    /// Product dock authority. Split ratios are Runtime `DockWorkspace` facts.
     dock: DockWorkspace,
     dock_locked: bool,
     dock_events: Vec<DockWorkspaceEvent>,

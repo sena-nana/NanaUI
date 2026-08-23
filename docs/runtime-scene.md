@@ -82,9 +82,8 @@ Scene host 通过 `RuntimeAnimationClock` 将 duration epoch 映射为
 Workspace 的持久布局、viewport/scale、resize drag 与 collapse transition 由
 `nana-ui-core::WorkspaceModel` 单独持有，并只接受显式 `Duration` 时间。静态 geometry
 直接借用布局；只有 active transition 才构造瞬时 extent snapshot。`WorkspaceController`
-保留 Scene host 的 event/frame 与 view conversion，稳定状态与
-mutation API 是 backend-neutral `WorkspaceModel` / `WorkspaceMutation`，不得再在 adapter 中保存
-第二份 workspace 状态或动画。
+只做 Instant→Duration 与指针/`WorkspaceAction` 到 `WorkspaceMutation` 的转换。Gallery 与产品
+消费 `WorkspaceModel` / `WorkspaceMutation`，不得再在 adapter 中保存第二份 workspace 状态或动画。
 
 Sidebar disclosure 使用 backend-neutral `ExpansionState`，以显式 `Duration` 连续采样和反向；
 section state 只换算 host clock 并决定是否订阅 frame。SplitPane 的持久约束、size、focus、
@@ -95,14 +94,19 @@ host `Instant`，frame subscription 发出明确的 `AdvanceDragDwell`，不能�
 时间推进。`DockUpdate.changed` 只表示需持久化的 `DockLayout` 变化；dwell/focus/preview 与
 measured surface geometry 是瞬时状态，由产生该 mutation 的 input/frame host 请求重绘，不能
 借 `changed` 触发配置写入。
-Dock 的稳定状态入口是 `DockMutation` + `LogicalPoint` 与 `update_mutation[_at]`；active
-drag/resize 内部也只保存 logical point、scalar delta 和 `Duration`。旧 `DockAction` 的
+产品 Dock 权威是 Runtime `DockWorkspace`。Split 比例只有一套公式：
+`dock_split_ratio_from_pointer` / `dock_nudge_split_ratio` /
+`dock_split_child_lengths`（`nana-ui-runtime`）。`nana_ui::dock::DockController`
+是 host adapter：指针/dwell/frame → `DockMutation`，几何只经 `surface_layout`，
+内部 resize 调用上述 Runtime 公式，不再自算 ratio-per-pixel。`DockLayout` 仍是
+adapter 的 serde/monitor/item-spec 投影，不是第二条 live dock。旧 `DockAction` 的
 host `Point`、widget/subscription/view 曾是 Iced compatibility adapter，HEAD 不再作为产品路径。三套 Workspace/Split/Dock
 曾共用但现已无消费者的 `ResizeDrag` 已删除，避免保留第二条 resize 规则。
-`DockController::surface_layout` 是 retained consumer 的确定性几何出口：同一份
-`DockLayout` 产生 active item content bounds、tab group 与带 stable path 的 splitter hit
-bounds，并区分主窗口 28px dock chrome 与 floating window 36px native title bar。Runtime
-或 HostTexture consumer 不得再次实现 split ratio、divider 或 chrome offset 算法。
+`DockController::surface_layout` 是 adapter 的确定性几何出口：同一份
+`DockLayout` 经 Runtime 子长度公式投影 active item content bounds、tab group 与带
+stable path 的 splitter hit bounds，并区分主窗口 28px dock chrome 与 floating
+window 36px native title bar。Runtime 指针 resize 写回 `DockWorkspace`；HostTexture
+consumer 不得再实现 split ratio、divider 或 chrome offset 算法。
 
 ## Application API
 

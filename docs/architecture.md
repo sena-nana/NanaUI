@@ -74,20 +74,30 @@ feature；WebView 不是 NanaUI 组件、布局或业务状态路径。
         └── Workspace / DesktopShell
                 │
                 ▼
-        WorkspaceController / WorkspaceModel
+        WorkspaceController (host adapter)
+                │ Instant→Duration / pointer → WorkspaceMutation
+                ▼
+        WorkspaceModel / WorkspaceMutation
                 │
                 ├── WorkspaceLayout
                 ├── resize / collapse / visibility
                 ├── JSON persistence
                 └── viewport geometry
-                ├── theme / widgets
+                ├── theme / Runtime components
                 └── application-owned region content
                      （可嵌 L3 控件，或 L1/L2 语义快照）
+
+产品 Dock：
+        pointer/dwell/frame
+                │
+                ├── nana_ui::dock::*（host adapter：DockMutation + surface_layout）
+                │         split 公式委托 Runtime dock_split_ratio_from_pointer
+                └── Runtime DockWorkspace（产品权威，crate root 再导出）
 ```
 
 框架与 Demo 的边界是明确的：
 
-- `WorkspaceController` / `WorkspaceModel` 只拥有布局、交互和视口状态；
+- `WorkspaceModel` / `WorkspaceMutation` 拥有布局、交互和视口状态；`WorkspaceController` 只做 Instant→Duration 与指针转换。Gallery/产品消费 Model + Mutation，不另存一份 Region 状态；
 - `Workspace` 将应用内容绑定到动态注册的 Region ID；
 - 标准六区是便捷构造，不是框架结构上限；
 - `DesktopShell` / `assemble_workspace` 统一施加区域尺寸、裁剪、表面层级和分隔条；
@@ -222,10 +232,20 @@ presenter；切换 syntax/theme 不复制 content handle，也不改变 caret、
 与当前编辑历史。语言识别、文档 revision、诊断来源和诊断装饰仍由消费应用拥有，
 不能把语法着色误作完整 CodeEditor 或 LSP 集成。
 
-确定性的 `SetRegionCollapsed` 与 `SetRegionSize` action 供设置页和宿主状态同步
+确定性的 `SetRegionCollapsed` 与 `SetRegionSize` mutation 供设置页和宿主状态同步
 使用；它们与拖拽路径共享相同约束。Demo 的设置页使用独立
-`WorkspaceController`，因此进入设置不会覆盖应用工作区的尺寸和折叠状态；窗口
+`WorkspaceController`（同一套 `WorkspaceModel` 合同），因此进入设置不会覆盖应用工作区的尺寸和折叠状态；窗口
 尺寸与 DPI 事件会同步给两套控制器。
+
+## Dock 合同
+
+产品 Dock 是 Runtime `DockWorkspace`，由 `nana-ui` crate root 再导出。
+`nana_ui::dock::*`（`DockController`、`DockAction`、`DockMutation`、`DockLayout`）
+是 host adapter：把指针、dwell 和 frame 转成 `DockMutation`，几何只从
+`DockController::surface_layout` 读取。Split 比例与子长度使用 Runtime
+`dock_split_ratio_from_pointer` / `dock_nudge_split_ratio` /
+`dock_split_child_lengths`，禁止第二套 split 算法。Gallery live dock 持有
+`DockWorkspace`，不经过 `DockController`。
 
 Region 折叠目标会立即写入 `WorkspaceLayout`，保证序列化与设置页读取到确定
 状态；渲染层同时保留一个 240ms 的临时 extent，使用 ease-out 曲线释放或恢复
@@ -274,7 +294,7 @@ NanaUI 只保证对话框在操作期间不会产生重复提交或意外关闭�
 | NanaUI | LiliaUI 语义 |
 | --- | --- |
 | `app_shell` / `AppTitleBar` / `WindowChromeState` | `LiliaAppShell` / `TitleBar` / `useNativeWindowChrome` |
-| `WorkspaceController` | `LiliaWorkspace` 的布局上下文 |
+| `WorkspaceController`（host adapter） / `WorkspaceModel` | `LiliaWorkspace` 的布局上下文 |
 | `RegionState` / `Workspace` / `DesktopShell` | `LiliaWorkspaceRegion` 的注册合同与区域组合 |
 | `SidebarFrame` / `SidebarSection` / `SidebarRow` | `LiliaSidebarFrame` / `LiliaSidebarSection` / `LiliaSidebarRow` |
 | `SettingsModel` / `settings_sidebar` / `settings_page` | LiliaUI settings model、`SettingsSidebar` 与 `SettingsPage` |

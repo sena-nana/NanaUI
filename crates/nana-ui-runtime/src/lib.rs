@@ -84,8 +84,10 @@ pub use components::{
     TooltipVisual,
 };
 pub use dock::{
-    Dock, DockAxis, DockDropZone, DockFloatingSurface, DockNode, DockPanel, DockSurfaceSpec,
-    DockWorkspace, DockWorkspaceEvent, MAIN_SURFACE_ID, dock_surface_window_key,
+    DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockDropZone,
+    DockFloatingSurface, DockNode, DockPanel, DockSurfaceSpec, DockWorkspace, DockWorkspaceEvent,
+    MAIN_SURFACE_ID, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, clamp_ratio, dock_nudge_split_ratio,
+    dock_split_child_lengths, dock_split_ratio_from_pointer, dock_surface_window_key,
 };
 pub use dropdown::{Dropdown, DropdownOption};
 pub use feedback::{

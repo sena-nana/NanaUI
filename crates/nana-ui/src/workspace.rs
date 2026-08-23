@@ -7,6 +7,8 @@ use crate::geometry::WorkspaceGeometry;
 use crate::layout::RegionPlacement;
 use crate::layout::{RegionId, WorkspaceLayout};
 
+pub use nana_ui_core::{WorkspaceModel, WorkspaceMutation};
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RegionEdges {
@@ -44,7 +46,12 @@ pub(crate) fn resize_handle_translation(placement: RegionPlacement) -> HandleOff
     }
 }
 
-/// Framework-owned workspace interaction message.
+/// Host pointer/window/frame event. Converts to [`WorkspaceMutation`].
+///
+/// Product region state is [`WorkspaceModel`]. Prefer
+/// [`WorkspaceController::update_mutation`] when the caller already has a
+/// mutation; this enum only exists so a host can feed Instant-clock and
+/// pointer events without holding Duration itself.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkspaceAction {
     ToggleRegion(RegionId),
@@ -61,8 +68,12 @@ pub enum WorkspaceAction {
     AnimationFrame(Duration),
 }
 
-/// Owns region registrations, persisted layout, resize interaction, and host
-/// viewport geometry. Application content remains outside the controller.
+/// Host adapter: Instant→Duration and [`WorkspaceAction`]→[`WorkspaceMutation`].
+///
+/// Region layout, resize, collapse, and viewport live in [`WorkspaceModel`].
+/// This type does not store a second copy of that state. Application content
+/// remains outside the controller. Gallery/product consume `WorkspaceModel`
+/// (via [`Self::model`]) and `WorkspaceMutation`.
 #[derive(Debug, Clone)]
 pub struct WorkspaceController {
     model: nana_ui_core::WorkspaceModel,
@@ -135,7 +146,7 @@ impl WorkspaceController {
         self.model.viewport_geometry()
     }
 
-    /// Applies one framework action and reports whether observable state changed.
+    /// Applies one host action: Instant→Duration, then [`WorkspaceMutation`].
     pub fn update(&mut self, action: WorkspaceAction) -> bool {
         let now = match action {
             WorkspaceAction::AnimationFrame(now) => now,
@@ -144,50 +155,51 @@ impl WorkspaceController {
         self.update_at(action, now)
     }
 
-    /// Deterministic backend-neutral entry used by hosted runtimes and tests.
+    /// Deterministic host-action entry used by hosted runtimes and tests.
     pub fn update_at(&mut self, action: WorkspaceAction, now: Duration) -> bool {
-        let mutation = match action {
-            WorkspaceAction::ToggleRegion(region) => {
-                nana_ui_core::WorkspaceMutation::ToggleRegion(region)
-            }
-            WorkspaceAction::SetRegionCollapsed(region, collapsed) => {
-                nana_ui_core::WorkspaceMutation::SetRegionCollapsed(region, collapsed)
-            }
-            WorkspaceAction::SetRegionVisible(region, visible) => {
-                nana_ui_core::WorkspaceMutation::SetRegionVisible(region, visible)
-            }
-            WorkspaceAction::SetRegionSize(region, size) => {
-                nana_ui_core::WorkspaceMutation::SetRegionSize(region, size)
-            }
-            WorkspaceAction::ResetRegionSize(region) => {
-                nana_ui_core::WorkspaceMutation::ResetRegionSize(region)
-            }
-            WorkspaceAction::ResizeStart(region) => {
-                nana_ui_core::WorkspaceMutation::ResizeStart(region)
-            }
-            WorkspaceAction::ResizeHover(region) => {
-                nana_ui_core::WorkspaceMutation::ResizeHover(region)
-            }
-            WorkspaceAction::ResizeMove { x, y } => {
-                nana_ui_core::WorkspaceMutation::ResizeMove { x, y }
-            }
-            WorkspaceAction::ResizeEnd => nana_ui_core::WorkspaceMutation::ResizeEnd,
-            WorkspaceAction::WindowResized { width, height } => {
-                nana_ui_core::WorkspaceMutation::SetViewport { width, height }
-            }
-            WorkspaceAction::WindowScaleFactorChanged(scale_factor) => {
-                nana_ui_core::WorkspaceMutation::SetScaleFactor(scale_factor)
-            }
-            WorkspaceAction::AnimationFrame(_) => {
-                nana_ui_core::WorkspaceMutation::AdvanceAnimations
-            }
-        };
+        self.update_mutation_at(workspace_mutation(action), now)
+    }
+
+    /// Applies one [`WorkspaceMutation`] using the adapter clock.
+    pub fn update_mutation(&mut self, mutation: WorkspaceMutation) -> bool {
+        self.update_mutation_at(mutation, self.clock_origin.elapsed())
+    }
+
+    /// Product mutation entry. Region state is only [`WorkspaceModel`].
+    pub fn update_mutation_at(&mut self, mutation: WorkspaceMutation, now: Duration) -> bool {
         self.model.update(mutation, now)
     }
 
     #[cfg(test)]
     fn region_extent(&self, region: &RegionId) -> f32 {
         self.model.region_extent(region)
+    }
+}
+
+fn workspace_mutation(action: WorkspaceAction) -> WorkspaceMutation {
+    match action {
+        WorkspaceAction::ToggleRegion(region) => WorkspaceMutation::ToggleRegion(region),
+        WorkspaceAction::SetRegionCollapsed(region, collapsed) => {
+            WorkspaceMutation::SetRegionCollapsed(region, collapsed)
+        }
+        WorkspaceAction::SetRegionVisible(region, visible) => {
+            WorkspaceMutation::SetRegionVisible(region, visible)
+        }
+        WorkspaceAction::SetRegionSize(region, size) => {
+            WorkspaceMutation::SetRegionSize(region, size)
+        }
+        WorkspaceAction::ResetRegionSize(region) => WorkspaceMutation::ResetRegionSize(region),
+        WorkspaceAction::ResizeStart(region) => WorkspaceMutation::ResizeStart(region),
+        WorkspaceAction::ResizeHover(region) => WorkspaceMutation::ResizeHover(region),
+        WorkspaceAction::ResizeMove { x, y } => WorkspaceMutation::ResizeMove { x, y },
+        WorkspaceAction::ResizeEnd => WorkspaceMutation::ResizeEnd,
+        WorkspaceAction::WindowResized { width, height } => {
+            WorkspaceMutation::SetViewport { width, height }
+        }
+        WorkspaceAction::WindowScaleFactorChanged(scale_factor) => {
+            WorkspaceMutation::SetScaleFactor(scale_factor)
+        }
+        WorkspaceAction::AnimationFrame(_) => WorkspaceMutation::AdvanceAnimations,
     }
 }
 

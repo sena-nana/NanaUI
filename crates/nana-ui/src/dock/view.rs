@@ -31,8 +31,9 @@ pub struct DockSplitLayout {
     pub bounds: DockBounds,
 }
 
-/// A deterministic surface projection shared by Runtime and compatibility
-/// painters. Native windows and renderer resources remain host-owned.
+/// Host-adapter geometry for one surface. Split lengths come from
+/// `nana_ui_runtime::dock_split_child_lengths`; do not reimplement ratios here.
+/// Native windows and renderer resources remain host-owned.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DockSurfaceLayout {
     pub surface: DockSurfaceId,

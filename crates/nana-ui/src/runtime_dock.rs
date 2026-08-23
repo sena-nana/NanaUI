@@ -1,6 +1,7 @@
-//! Maps Runtime dock workspace events to host window commands.
+//! Maps Runtime [`DockWorkspaceEvent`] to host window commands.
 //!
-//! [`crate::dock::hosted_dock_update`] remains the DockController path.
+//! Product floating dock uses this path. [`crate::dock::hosted_dock_update`]
+//! is the `DockController` host-adapter equivalent, not a second dock.
 //! This helper does not build a widget tree or a second GPU context.
 
 use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
