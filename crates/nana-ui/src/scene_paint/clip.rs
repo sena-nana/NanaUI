@@ -94,10 +94,10 @@ pub(super) fn invert_affine([a, b, c, d, e, f]: [f32; 6]) -> Option<[f32; 6]> {
     Some([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
 }
 
-/// Inverse-affine point-in-rect for the innermost non-axis-aligned clip.
-/// Axis-aligned clips stay on the GPU scissor (exact). Nested extra rotated
-/// clips are not represented: a second parallelogram would exceed the Quad
-/// instance's 16 vertex attribute locations, so shader clip keeps this one.
+/// Inverse-affine point-in-rect for one non-axis-aligned clip parallelogram.
+/// Axis-aligned clips stay on the GPU scissor (exact). Quad instance locations
+/// 0–15 are full (clip already uses 13–15), so GPU vertex attrs carry only the
+/// innermost rotated clip; extra outer rotated clips are dest-composited.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct FragmentClip {
     pub rect: [f32; 4],
@@ -149,11 +149,15 @@ impl FragmentClip {
     }
 }
 
-pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2]) -> FragmentClip {
+/// Outer-to-inner non-axis-aligned clips. Empty when every clip is axis-aligned
+/// (GPU scissor is exact) or the list is empty.
+pub(super) fn rotated_fragment_clips(
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: [f32; 2],
+) -> Vec<FragmentClip> {
     clips
         .iter()
-        .rev()
-        .find_map(|clip| {
+        .filter_map(|clip| {
             let affine = paint_affine(clip.transform.0, origin);
             if is_axis_aligned(affine) {
                 return None;
@@ -163,7 +167,27 @@ pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2
                 None => FragmentClip::REJECT,
             })
         })
+        .collect()
+}
+
+/// Innermost rotated clip for Quad/Mesh/Text/HostTexture vertex attrs.
+/// Extra outers are [`extra_fragment_clips`] and dest-composited.
+pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2]) -> FragmentClip {
+    rotated_fragment_clips(clips, origin)
+        .into_iter()
+        .next_back()
         .unwrap_or(FragmentClip::PASS)
+}
+
+/// Outer rotated clips excluding the innermost (already in vertex attrs).
+/// Nested 3+ extras nest dest groups, one parallelogram per composite.
+pub(super) fn extra_fragment_clips(
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: [f32; 2],
+) -> Vec<FragmentClip> {
+    let mut rotated = rotated_fragment_clips(clips, origin);
+    let _innermost = rotated.pop();
+    rotated
 }
 
 pub(super) fn point_in_fragment_clip(x: f32, y: f32, clip: FragmentClip) -> bool {
@@ -183,6 +207,15 @@ pub(super) fn point_in_fragment_clip(x: f32, y: f32, clip: FragmentClip) -> bool
         && local_y >= clip.rect[1]
         && local_x <= clip.rect[0] + clip.rect[2]
         && local_y <= clip.rect[1] + clip.rect[3]
+}
+
+/// Intersection of every rotated parallelogram. Axis-aligned clips are not in
+/// `clips` here; they stay on the GPU scissor.
+pub(super) fn point_in_fragment_clips(x: f32, y: f32, clips: &[FragmentClip]) -> bool {
+    clips
+        .iter()
+        .copied()
+        .all(|clip| point_in_fragment_clip(x, y, clip))
 }
 
 pub(super) fn local_rect(bounds: SceneRect) -> LogicalRect {
@@ -238,10 +271,11 @@ pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [
 /// Transformed AABB scissor for GPU `set_scissor_rect`.
 ///
 /// Rotated/sheared clips still contribute their AABB here as a coarse reject.
-/// Quad, Mesh, affine text, and HostTexture overflow clip to [`fragment_clip`].
-/// Nested extra rotated clips stay AABB-only (Quad instance layout is full).
-/// Custom nodes stay AABB-only. Rounded HostTexture clip is the sibling Quad
-/// SDF, not this intersection.
+/// Quad, Mesh, affine text, and HostTexture overflow clip to [`fragment_clip`]
+/// (innermost parallelogram). Extra outer rotated clips dest-composite through
+/// [`extra_fragment_clips`]. Custom nodes with a non-PASS fragment clip wrap
+/// the same dest path so renderers need not implement parallelogram clip.
+/// Rounded HostTexture clip is the sibling Quad SDF, not this intersection.
 pub(super) fn intersect_clips(
     viewport: LogicalRect,
     clips: &[nana_ui_scene::ClipRegion],
@@ -564,29 +598,11 @@ mod tests {
         assert!(!point_in_fragment_clip(2.0, 2.0, physical));
     }
 
-    #[test]
-    fn fragment_clip_uses_innermost_rotated_when_nested() {
+    fn nested_rotated_45_clips() -> ([ClipRegion; 2], [f32; 2]) {
         let k = std::f32::consts::FRAC_1_SQRT_2;
+        // Outer is the smaller parallelogram so a probe can sit inside the
+        // overflowing inner diamond and still miss the outer one.
         let outer = ClipRegion {
-            bounds: SceneRect {
-                x: 0.0,
-                y: 0.0,
-                width: 64.0,
-                height: 64.0,
-            },
-            transform: AffineTransform(
-                nana_ui_core::PaintTransform {
-                    a: k,
-                    b: k,
-                    c: -k,
-                    d: k,
-                    e: 0.0,
-                    f: 0.0,
-                }
-                .around_center(0.0, 0.0, 64.0, 64.0),
-            ),
-        };
-        let inner = ClipRegion {
             bounds: SceneRect {
                 x: 16.0,
                 y: 16.0,
@@ -605,14 +621,74 @@ mod tests {
                 .around_center(16.0, 16.0, 32.0, 32.0),
             ),
         };
-        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let inner = ClipRegion {
+            bounds: SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            transform: AffineTransform(
+                nana_ui_core::PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    e: 0.0,
+                    f: 0.0,
+                }
+                .around_center(0.0, 0.0, 64.0, 64.0),
+            ),
+        };
+        ([outer, inner], paint_origin([0.0, 0.0], [0.0, 0.0]))
+    }
+
+    #[test]
+    fn fragment_clip_uses_innermost_rotated_when_nested() {
+        let ([outer, inner], origin) = nested_rotated_45_clips();
+        let nested = [outer.clone(), inner.clone()];
         assert_eq!(
-            fragment_clip(&[outer.clone(), inner.clone()], origin),
-            fragment_clip(&[inner.clone()], origin)
+            fragment_clip(&nested, origin),
+            fragment_clip(&[inner.clone()], origin),
+            "Quad vertex attrs still carry only the innermost parallelogram"
         );
-        assert_ne!(
-            fragment_clip(&[outer.clone(), inner], origin),
-            fragment_clip(&[outer], origin)
+        assert_eq!(
+            extra_fragment_clips(&nested, origin),
+            vec![fragment_clip(&[outer.clone()], origin)]
         );
+        assert!(extra_fragment_clips(&[inner.clone()], origin).is_empty());
+        assert!(extra_fragment_clips(&[outer], origin).is_empty());
+
+        let rotated = rotated_fragment_clips(&nested, origin);
+        assert_eq!(rotated.len(), 2);
+        let inner_clip = fragment_clip(&[inner], origin);
+        let mut probe = None;
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                if point_in_fragment_clip(px, py, inner_clip)
+                    && !point_in_fragment_clips(px, py, &rotated)
+                {
+                    probe = Some((px, py));
+                    break;
+                }
+            }
+            if probe.is_some() {
+                break;
+            }
+        }
+        let (px, py) = probe.expect(
+            "nested extra must reject a point inside the inner parallelogram but outside the outer",
+        );
+        assert!(
+            point_in_fragment_clip(px, py, inner_clip),
+            "innermost-only would keep ({px},{py})"
+        );
+        assert!(
+            !point_in_fragment_clips(px, py, &rotated),
+            "AND of both 45° clips must reject ({px},{py})"
+        );
+        assert!(point_in_fragment_clips(32.0, 32.0, &rotated));
     }
 }
