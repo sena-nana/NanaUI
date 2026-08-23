@@ -29,6 +29,10 @@ struct LayerUniform {
     origin: vec4<f32>,
     // rounded clip in the same pre-affine logical space as dest (sibling Quad)
     clip: vec4<f32>,
+    // overflow parallelogram: local rect + inverse CSS matrix
+    clip_rect: vec4<f32>,
+    clip_inv_abcd: vec4<f32>,
+    clip_inv_ef: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -38,6 +42,7 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) local: vec2<f32>,
+    @location(2) world: vec2<f32>,
 }
 
 // Same SDF as scene quad solids so HostTexture and the sibling Quad share a clip.
@@ -78,11 +83,25 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     );
     output.uv = uv;
     output.local = local;
+    output.world = world;
     return output;
+}
+
+fn overflow_clip_local(world: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        layer.clip_inv_abcd.x * world.x + layer.clip_inv_abcd.z * world.y + layer.clip_inv_ef.x,
+        layer.clip_inv_abcd.y * world.x + layer.clip_inv_abcd.w * world.y + layer.clip_inv_ef.y,
+    );
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let overflow = overflow_clip_local(input.world);
+    if any(overflow < layer.clip_rect.xy)
+        || any(overflow > layer.clip_rect.xy + layer.clip_rect.zw)
+    {
+        discard;
+    }
     let sampled = textureSample(source, source_sampler, input.uv);
     let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
     let color = vec4<f32>(sampled.rgb, source_alpha) * layer.params.x;
@@ -412,16 +431,26 @@ pub struct HostTextureLayer {
     opacity: f32,
     corner_radius: f32,
     clip: Option<LogicalRect>,
+    fragment_clip_rect: [f32; 4],
+    fragment_clip_inv_abcd: [f32; 4],
+    fragment_clip_inv_ef: [f32; 2],
     alpha_mode: Option<HostTextureAlphaMode>,
 }
 
 impl HostTextureLayer {
+    const PASS_CLIP_RECT: [f32; 4] = [-1.0e7, -1.0e7, 2.0e7, 2.0e7];
+    const PASS_CLIP_INV_ABCD: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+    const PASS_CLIP_INV_EF: [f32; 2] = [0.0, 0.0];
+
     pub const fn new(texture: HostTexture) -> Self {
         Self {
             texture,
             opacity: 1.0,
             corner_radius: 0.0,
             clip: None,
+            fragment_clip_rect: Self::PASS_CLIP_RECT,
+            fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
+            fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
             alpha_mode: None,
         }
     }
@@ -432,6 +461,9 @@ impl HostTextureLayer {
             opacity: 1.0,
             corner_radius: 0.0,
             clip: None,
+            fragment_clip_rect: Self::PASS_CLIP_RECT,
+            fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
+            fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
             alpha_mode: Some(binding.alpha_mode),
         }
     }
@@ -455,6 +487,20 @@ impl HostTextureLayer {
         } else {
             0.0
         };
+        self
+    }
+
+    /// Overflow parallelogram in paint space. Independent of rounded sibling
+    /// Quad SDF (`clip` + `corner_radius`).
+    pub const fn with_fragment_clip(
+        mut self,
+        rect: [f32; 4],
+        inv_abcd: [f32; 4],
+        inv_ef: [f32; 2],
+    ) -> Self {
+        self.fragment_clip_rect = rect;
+        self.fragment_clip_inv_abcd = inv_abcd;
+        self.fragment_clip_inv_ef = inv_ef;
         self
     }
 
@@ -800,6 +846,9 @@ struct LayerUniform {
     affine: [f32; 4],
     origin: [f32; 4],
     clip: [f32; 4],
+    clip_rect: [f32; 4],
+    clip_inv_abcd: [f32; 4],
+    clip_inv_ef: [f32; 4],
 }
 
 fn make_layer_uniform(
@@ -835,6 +884,14 @@ fn make_layer_uniform(
         affine: [affine[0], affine[1], affine[2], affine[3]],
         origin: [affine[4], affine[5], bounds.x, bounds.y],
         clip: [clip.x, clip.y, clip.width.max(0.0), clip.height.max(0.0)],
+        clip_rect: layer.fragment_clip_rect,
+        clip_inv_abcd: layer.fragment_clip_inv_abcd,
+        clip_inv_ef: [
+            layer.fragment_clip_inv_ef[0],
+            layer.fragment_clip_inv_ef[1],
+            0.0,
+            0.0,
+        ],
     }
 }
 

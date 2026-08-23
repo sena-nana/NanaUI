@@ -350,6 +350,7 @@ impl SceneWgpuPainter {
                         spans,
                         *letter_spacing,
                         affine,
+                        frag_clip,
                         primitive.opacity,
                     ) {
                         commands.push(DrawCommand::Text { prepared, scissor });
@@ -440,6 +441,7 @@ impl SceneWgpuPainter {
                             primitive.opacity,
                             corner_radius,
                             rounded_clip,
+                            frag_clip,
                             dest_physical,
                             scale,
                             Some(&gpu_work),
@@ -905,7 +907,7 @@ mod tests {
     use nana_ui_runtime::{
         AppContext, Button as RuntimeButton, ComponentGeometry, ComputedStyle, CustomRenderNode,
         DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue, NodeKind, NodeStyle,
-        StableNodeId,
+        StableNodeId, TextContent,
     };
     use nana_ui_scene::{AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, UiScene};
 
@@ -1189,56 +1191,7 @@ mod tests {
             ],
             [],
         );
-
-        let k = std::f32::consts::FRAC_1_SQRT_2;
-        let clips = [ClipRegion {
-            bounds: SceneRect {
-                x: 16.0,
-                y: 16.0,
-                width: 32.0,
-                height: 32.0,
-            },
-            transform: AffineTransform(
-                PaintTransform {
-                    a: k,
-                    b: k,
-                    c: -k,
-                    d: k,
-                    ..PaintTransform::default()
-                }
-                .around_center(16.0, 16.0, 32.0, 32.0),
-            ),
-        }];
-        let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
-        let aabb = super::clip::intersect_clips(
-            super::clip::LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
-            &clips,
-            origin,
-        )
-        .unwrap();
-        let frag = super::clip::fragment_clip(&clips, origin);
-        let mut probe = None;
-        for y in 8..24 {
-            for x in 8..24 {
-                let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
-                if px >= aabb.x
-                    && py >= aabb.y
-                    && px < aabb.x + aabb.width
-                    && py < aabb.y + aabb.height
-                    && !super::clip::point_in_fragment_clip(px, py, frag)
-                {
-                    probe = Some((x, y));
-                    break;
-                }
-            }
-            if probe.is_some() {
-                break;
-            }
-        }
-        let (probe_x, probe_y) = probe.expect(
-            "sibling must overlap a pixel inside the rotated AABB but outside the parallelogram",
-        );
+        let (probe_x, probe_y) = aabb_outside_rotated_overflow_probe();
 
         let viewport = ScenePaintViewport {
             logical_size: [64.0, 64.0],
@@ -1267,6 +1220,106 @@ mod tests {
             is_red_slot(inside),
             "rotated clip interior must still paint the overflowing child, got {inside:?}"
         );
+        drop(texture);
+    }
+
+    #[test]
+    fn rotated_clip_does_not_paint_text_sibling_in_aabb_outside_rect() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 8.0, 8.0, 16.0, 16.0, [0.0, 0.0, 1.0, 1.0]),
+                rotated_overflow_parent(2, &[3], 16.0, 16.0, 32.0, 32.0),
+                overflowing_text_child(3, 2, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        let (probe_x, probe_y) = aabb_outside_rotated_overflow_probe();
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rotated clip text sibling"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let sibling = pixel(&pixels, 64, probe_x, probe_y);
+        let inside = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_blue_slot(sibling),
+            "rotated overflow must not cover sibling with text in AABB-outside-rect, pixel ({probe_x},{probe_y})={sibling:?}"
+        );
+        assert!(
+            inside[0] > 40,
+            "rotated clip interior must still paint overflowing text, got {inside:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn rotated_clip_does_not_paint_host_texture_sibling_in_aabb_outside_rect() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 8.0, 8.0, 16.0, 16.0, [0.0, 0.0, 1.0, 1.0]),
+                rotated_overflow_parent(2, &[3], 16.0, 16.0, 32.0, 32.0),
+                host_texture_child(3, 2, 0.0, 0.0, 64.0, 64.0, "layer"),
+            ],
+            [],
+        );
+        let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::RED);
+        let registry = register_host_texture("layer", &view, 64, 64);
+        let (probe_x, probe_y) = aabb_outside_rotated_overflow_probe();
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, target_view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rotated clip host texture sibling"),
+        });
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target_view,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let sibling = pixel(&pixels, 64, probe_x, probe_y);
+        let inside = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_blue_slot(sibling),
+            "rotated overflow must not cover sibling with HostTexture in AABB-outside-rect, pixel ({probe_x},{probe_y})={sibling:?}"
+        );
+        assert!(
+            is_red_slot(inside),
+            "rotated clip interior must still sample HostTexture, got {inside:?}"
+        );
+        drop(view);
         drop(texture);
     }
 
@@ -1825,6 +1878,51 @@ mod tests {
         commit_scene(&mut context)
     }
 
+    fn aabb_outside_rotated_overflow_probe() -> (u32, u32) {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let clips = [ClipRegion {
+            bounds: SceneRect {
+                x: 16.0,
+                y: 16.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            transform: AffineTransform(
+                PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    ..PaintTransform::default()
+                }
+                .around_center(16.0, 16.0, 32.0, 32.0),
+            ),
+        }];
+        let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let aabb = super::clip::intersect_clips(
+            super::clip::LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
+            &clips,
+            origin,
+        )
+        .unwrap();
+        let frag = super::clip::fragment_clip(&clips, origin);
+        for y in 8..24 {
+            for x in 8..24 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                if px >= aabb.x
+                    && py >= aabb.y
+                    && px < aabb.x + aabb.width
+                    && py < aabb.y + aabb.height
+                    && !super::clip::point_in_fragment_clip(px, py, frag)
+                {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("sibling must overlap a pixel inside the rotated AABB but outside the parallelogram");
+    }
+
     fn rotated_overflow_parent(
         value: u64,
         children: &[u64],
@@ -1928,6 +2026,88 @@ mod tests {
             component_geometry: None,
             standard_visual_foreground: None,
             custom_render: None,
+        }
+    }
+
+    fn overflowing_text_child(
+        value: u64,
+        parent: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],
+    ) -> ExtractedNode {
+        ExtractedNode {
+            id: StableNodeId::new(value).unwrap(),
+            kind: Arc::new(NodeKind::Text),
+            parent: Some(StableNodeId::new(parent).unwrap()),
+            children: Arc::new(Vec::new()),
+            layout: LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+            scroll_offset: nana_ui_runtime::ScrollOffset::default(),
+            source_style: NodeStyle::default(),
+            style: Arc::new(ComputedStyle {
+                color: Some(color),
+                font_size: 64.0,
+                ..ComputedStyle::default()
+            }),
+            text: Some(TextContent {
+                value: "██".into(),
+            }),
+            text_metrics: None,
+            z_index: 0,
+            focused: false,
+            ime: None,
+            text_input: None,
+            text_spans: Vec::new(),
+            standard_visual: None,
+            component_geometry: None,
+            standard_visual_foreground: None,
+            custom_render: None,
+        }
+    }
+
+    fn host_texture_child(
+        value: u64,
+        parent: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        resource: &str,
+    ) -> ExtractedNode {
+        ExtractedNode {
+            id: StableNodeId::new(value).unwrap(),
+            kind: Arc::new(NodeKind::Element {
+                tag: "div".into(),
+            }),
+            parent: Some(StableNodeId::new(parent).unwrap()),
+            children: Arc::new(Vec::new()),
+            layout: LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+            scroll_offset: nana_ui_runtime::ScrollOffset::default(),
+            source_style: NodeStyle::default(),
+            style: Arc::new(ComputedStyle::default()),
+            text: None,
+            text_metrics: None,
+            z_index: 0,
+            focused: false,
+            ime: None,
+            text_input: None,
+            text_spans: Vec::new(),
+            standard_visual: None,
+            component_geometry: None,
+            standard_visual_foreground: None,
+            custom_render: Some(CustomRenderNode::new("nana.host-texture", resource, 1)),
         }
     }
 

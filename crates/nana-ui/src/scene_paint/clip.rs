@@ -96,7 +96,8 @@ pub(super) fn invert_affine([a, b, c, d, e, f]: [f32; 6]) -> Option<[f32; 6]> {
 
 /// Inverse-affine point-in-rect for the innermost non-axis-aligned clip.
 /// Axis-aligned clips stay on the GPU scissor (exact). Nested extra rotated
-/// clips are not represented; shader clip uses this one parallelogram.
+/// clips are not represented: a second parallelogram would exceed the Quad
+/// instance's 16 vertex attribute locations, so shader clip keeps this one.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct FragmentClip {
     pub rect: [f32; 4],
@@ -124,6 +125,26 @@ impl FragmentClip {
             rect: [bounds.x, bounds.y, bounds.width, bounds.height],
             inv_abcd: [inverse[0], inverse[1], inverse[2], inverse[3]],
             inv_ef: [inverse[4], inverse[5]],
+        }
+    }
+
+    /// Affine-glyph vertices are physical pixels; divide the linear inverse by
+    /// scale so `point_in_fragment_clip` still tests logical paint space.
+    pub(super) fn for_physical_pixels(self, scale: f32) -> Self {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        Self {
+            rect: self.rect,
+            inv_abcd: [
+                self.inv_abcd[0] / scale,
+                self.inv_abcd[1] / scale,
+                self.inv_abcd[2] / scale,
+                self.inv_abcd[3] / scale,
+            ],
+            inv_ef: self.inv_ef,
         }
     }
 }
@@ -217,9 +238,10 @@ pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [
 /// Transformed AABB scissor for GPU `set_scissor_rect`.
 ///
 /// Rotated/sheared clips still contribute their AABB here as a coarse reject.
-/// Quad and Mesh fragment shaders clip to [`fragment_clip`]. Nested extra
-/// rotated clips, text glyphs, HostTexture, and custom nodes stay AABB-only.
-/// Rounded HostTexture clip is the sibling Quad SDF, not this intersection.
+/// Quad, Mesh, affine text, and HostTexture overflow clip to [`fragment_clip`].
+/// Nested extra rotated clips stay AABB-only (Quad instance layout is full).
+/// Custom nodes stay AABB-only. Rounded HostTexture clip is the sibling Quad
+/// SDF, not this intersection.
 pub(super) fn intersect_clips(
     viewport: LogicalRect,
     clips: &[nana_ui_scene::ClipRegion],
@@ -508,6 +530,89 @@ mod tests {
         assert_eq!(
             fragment_clip(&clips, paint_origin([0.0, 0.0], [0.0, 0.0])),
             FragmentClip::PASS
+        );
+    }
+
+    #[test]
+    fn fragment_clip_physical_pixels_match_logical_probe() {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let clips = [ClipRegion {
+            bounds: SceneRect {
+                x: 16.0,
+                y: 16.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            transform: AffineTransform(
+                nana_ui_core::PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    e: 0.0,
+                    f: 0.0,
+                }
+                .around_center(16.0, 16.0, 32.0, 32.0),
+            ),
+        }];
+        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let clip = fragment_clip(&clips, origin);
+        let physical = clip.for_physical_pixels(2.0);
+        assert!(point_in_fragment_clip(32.0, 32.0, clip));
+        assert!(point_in_fragment_clip(64.0, 64.0, physical));
+        assert!(!point_in_fragment_clip(1.0, 1.0, clip));
+        assert!(!point_in_fragment_clip(2.0, 2.0, physical));
+    }
+
+    #[test]
+    fn fragment_clip_uses_innermost_rotated_when_nested() {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let outer = ClipRegion {
+            bounds: SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            transform: AffineTransform(
+                nana_ui_core::PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    e: 0.0,
+                    f: 0.0,
+                }
+                .around_center(0.0, 0.0, 64.0, 64.0),
+            ),
+        };
+        let inner = ClipRegion {
+            bounds: SceneRect {
+                x: 16.0,
+                y: 16.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            transform: AffineTransform(
+                nana_ui_core::PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    e: 0.0,
+                    f: 0.0,
+                }
+                .around_center(16.0, 16.0, 32.0, 32.0),
+            ),
+        };
+        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        assert_eq!(
+            fragment_clip(&[outer.clone(), inner.clone()], origin),
+            fragment_clip(&[inner.clone()], origin)
+        );
+        assert_ne!(
+            fragment_clip(&[outer.clone(), inner], origin),
+            fragment_clip(&[outer], origin)
         );
     }
 }
