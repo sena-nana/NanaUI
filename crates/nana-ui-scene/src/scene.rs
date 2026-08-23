@@ -125,16 +125,26 @@ pub struct ScenePrimitive {
     pub bounds: SceneRect,
     pub transform: AffineTransform,
     pub clips: Vec<ClipRegion>,
+    /// Paint opacity excluding ancestor opacity groups.
     pub opacity: f32,
     pub z_index: i32,
     pub document_order: usize,
     pub kind: ScenePrimitiveKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Isolating ancestor whose subtree is composited as one layer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpacityGroup {
+    pub node: StableNodeId,
+    pub opacity: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SceneOrderKey {
-    z_index: i32,
-    document_order: usize,
+    /// `(z_index, document_order)` for each isolating opacity group from
+    /// outermost to innermost, then this primitive's node. Keeps a group's
+    /// subtree contiguous against siblings.
+    stack: Vec<(i32, usize)>,
     slot: u8,
     node: StableNodeId,
 }
@@ -230,6 +240,11 @@ impl UiScene {
         })
     }
 
+    /// Isolating opacity groups from outermost to innermost that contain `node`.
+    pub fn opacity_groups(&self, node: StableNodeId) -> Vec<OpacityGroup> {
+        opacity_groups_from(&self.nodes, node)
+    }
+
     pub fn is_node_in_subtree(&self, root: StableNodeId, candidate: StableNodeId) -> bool {
         let mut current = Some(candidate);
         let mut visited = HashSet::new();
@@ -285,13 +300,7 @@ impl UiScene {
             for &id in &changed {
                 rebuilt_primitives += self.rebuild_node_primitives(id);
             }
-            if order_rebuilt {
-                self.sort_primitives();
-            } else {
-                for id in changed {
-                    self.insert_node_ordered(id);
-                }
-            }
+            self.sort_primitives();
             self.instance = next_scene_instance();
         }
         SceneDelta {
@@ -477,20 +486,13 @@ impl UiScene {
     }
 
     fn sort_primitives(&mut self) {
+        let keys: Vec<SceneOrderKey> = self
+            .primitives
+            .values()
+            .map(|primitive| order_key(&self.nodes, &self.node_order, primitive))
+            .collect();
         self.ordered.clear();
-        for primitive in self.primitives.values() {
-            self.ordered.insert(Self::order_key(primitive));
-        }
-    }
-
-    fn insert_node_ordered(&mut self, node: StableNodeId) {
-        let keys = self
-            .primitives_for_node(node)
-            .map(Self::order_key)
-            .collect::<Vec<_>>();
-        for key in keys {
-            self.ordered.insert(key);
-        }
+        self.ordered.extend(keys);
     }
 
     fn rebuild_node_primitives(&mut self, id: StableNodeId) -> usize {
@@ -521,13 +523,12 @@ impl UiScene {
             })
             .unwrap_or_default();
         let transform = parent_transform.then(local_transform);
-        let opacity = parent_opacity
-            * node
-                .source_style
-                .layout
-                .opacity
-                .unwrap_or(1.0)
-                .clamp(0.0, 1.0);
+        let local_opacity = local_opacity(&node);
+        let opacity = if is_opacity_group(&self.nodes, &node) {
+            parent_opacity
+        } else {
+            parent_opacity * local_opacity
+        };
         let mut clips = parent_clips.to_vec();
         if node.source_style.layout.clips_overflow() {
             clips.push(ClipRegion { bounds, transform });
@@ -3175,12 +3176,9 @@ impl UiScene {
                 })
                 .unwrap_or_default();
             transform = transform.then(local);
-            opacity *= ancestor
-                .source_style
-                .layout
-                .opacity
-                .unwrap_or(1.0)
-                .clamp(0.0, 1.0);
+            if !is_opacity_group(&self.nodes, ancestor) {
+                opacity *= local_opacity(ancestor);
+            }
             if ancestor.source_style.layout.clips_overflow() {
                 clips.push(ClipRegion {
                     bounds: SceneRect {
@@ -3244,7 +3242,8 @@ impl UiScene {
             .collect::<Vec<_>>();
         for slot in slots {
             if let Some(primitive) = self.primitives.remove(&slot) {
-                self.ordered.remove(&Self::order_key(&primitive));
+                self.ordered
+                    .remove(&order_key(&self.nodes, &self.node_order, &primitive));
             }
         }
     }
@@ -3272,20 +3271,69 @@ impl UiScene {
     }
 
     fn insert_primitive(&mut self, primitive: ScenePrimitive) {
-        let key = Self::order_key(&primitive);
+        let key = order_key(&self.nodes, &self.node_order, &primitive);
         if let Some(previous) = self.primitives.insert(primitive.id, primitive) {
-            self.ordered.remove(&Self::order_key(&previous));
+            self.ordered
+                .remove(&order_key(&self.nodes, &self.node_order, &previous));
         }
         self.ordered.insert(key);
     }
+}
 
-    fn order_key(primitive: &ScenePrimitive) -> SceneOrderKey {
-        SceneOrderKey {
-            z_index: primitive.z_index,
-            document_order: primitive.document_order,
-            slot: primitive.id.slot,
-            node: primitive.node,
+fn local_opacity(node: &ExtractedNode) -> f32 {
+    node.source_style
+        .layout
+        .opacity
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0)
+}
+
+fn is_opacity_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    let opacity = local_opacity(node);
+    opacity > 0.0 && opacity < 1.0 && node.children.iter().any(|child| nodes.contains_key(child))
+}
+
+fn opacity_groups_from(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node: StableNodeId,
+) -> Vec<OpacityGroup> {
+    let mut groups = Vec::new();
+    let mut current = Some(node);
+    let mut visited = HashSet::new();
+    while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        let Some(candidate) = nodes.get(&id) else {
+            break;
+        };
+        if is_opacity_group(nodes, candidate) {
+            groups.push(OpacityGroup {
+                node: id,
+                opacity: local_opacity(candidate),
+            });
         }
+        current = candidate.parent;
+    }
+    groups.reverse();
+    groups
+}
+
+fn order_key(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node_order: &HashMap<StableNodeId, usize>,
+    primitive: &ScenePrimitive,
+) -> SceneOrderKey {
+    let mut stack = opacity_groups_from(nodes, primitive.node)
+        .into_iter()
+        .map(|group| {
+            let z_index = nodes.get(&group.node).map(|node| node.z_index).unwrap_or(0);
+            let order = node_order.get(&group.node).copied().unwrap_or(0);
+            (z_index, order)
+        })
+        .collect::<Vec<_>>();
+    stack.push((primitive.z_index, primitive.document_order));
+    SceneOrderKey {
+        stack,
+        slot: primitive.id.slot,
+        node: primitive.node,
     }
 }
 
@@ -4091,9 +4139,80 @@ mod tests {
             .primitives()
             .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom(_)))
             .unwrap();
-        assert_eq!(custom.opacity, 0.25);
+        assert_eq!(custom.opacity, 0.5);
+        assert_eq!(
+            scene.opacity_groups(id(2)),
+            vec![OpacityGroup {
+                node: id(1),
+                opacity: 0.5,
+            }]
+        );
         assert_eq!(custom.clips.len(), 1);
         assert_eq!(custom.transform.0[4], 4.0);
+    }
+
+    #[test]
+    fn leaf_opacity_stays_on_the_primitive() {
+        let mut leaf = node(1, None, &[]);
+        leaf.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                opacity: Some(0.5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([leaf], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .unwrap();
+        assert_eq!(primitive.opacity, 0.5);
+        assert!(scene.opacity_groups(id(1)).is_empty());
+    }
+
+    #[test]
+    fn opacity_group_keeps_high_z_child_contiguous() {
+        let mut parent = node(1, None, &[2]);
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                opacity: Some(0.5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.z_index = 10;
+        child.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut sibling = node(3, None, &[]);
+        sibling.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 1.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child, sibling], []);
+        let order = scene
+            .primitives()
+            .map(|primitive| primitive.node.get())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![1, 2, 3],
+            "translucent parent must isolate its high-z child from a later sibling"
+        );
     }
 
     #[test]

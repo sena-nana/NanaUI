@@ -2,7 +2,8 @@
 //!
 //! This is the product Scene backend. It paints [`UiScene`] through the host GPU.
 //! The host owns Device/Queue/encoder. HostTexture is sampled in document order
-//! inside one dest pass.
+//! inside the current dest (or opacity-group) pass; groups do not open a pass
+//! per HostTexture slot.
 
 mod clip;
 mod color;
@@ -107,6 +108,11 @@ enum DrawCommand {
         bounds: PhysicalRect,
         clip: PhysicalRect,
     },
+    PushGroup {
+        layer: usize,
+        slot: u32,
+    },
+    PopGroup,
 }
 
 impl SceneWgpuPainter {
@@ -228,6 +234,11 @@ impl SceneWgpuPainter {
         self.text.begin_frame(&self.queue, dest_physical);
 
         let mut commands = Vec::new();
+        let mut group_stack: Vec<nana_ui_scene::OpacityGroup> = Vec::new();
+        let mut group_depth = 0usize;
+        let mut group_slots = 0u32;
+        let mut max_group_depth = 0usize;
+        let mut group_opacities = Vec::new();
         for operation in operations.iter() {
             let id = match operation {
                 RenderOperation::PrepareExternal(_) => continue,
@@ -236,6 +247,15 @@ impl SceneWgpuPainter {
             let Some(primitive) = scene.primitive(id) else {
                 continue;
             };
+            sync_opacity_groups(
+                &mut commands,
+                &mut group_stack,
+                &mut group_depth,
+                &mut group_slots,
+                &mut max_group_depth,
+                &mut group_opacities,
+                scene.opacity_groups(primitive.node),
+            );
             let Some(clip) = intersect_clips(viewport_clip, &primitive.clips, origin) else {
                 continue;
             };
@@ -451,6 +471,15 @@ impl SceneWgpuPainter {
                 }
             }
         }
+        sync_opacity_groups(
+            &mut commands,
+            &mut group_stack,
+            &mut group_depth,
+            &mut group_slots,
+            &mut max_group_depth,
+            &mut group_opacities,
+            Vec::new(),
+        );
         let batch = batch_started.elapsed();
 
         let upload_started = Instant::now();
@@ -474,7 +503,9 @@ impl SceneWgpuPainter {
         let gpu_interleaved = commands.iter().any(|command| {
             matches!(
                 command,
-                DrawCommand::HostTexture(_) | DrawCommand::Custom { .. }
+                DrawCommand::HostTexture(_)
+                    | DrawCommand::Custom { .. }
+                    | DrawCommand::PushGroup { .. }
             )
         });
         DestTarget::ensure(
@@ -486,6 +517,15 @@ impl SceneWgpuPainter {
             dest_physical[1],
             !gpu_interleaved,
         );
+        if max_group_depth > 0 {
+            self.dest.as_mut().expect("dest target").prepare_groups(
+                &self.device,
+                &self.queue,
+                max_group_depth,
+                &group_opacities,
+                Some(&gpu_work),
+            );
+        }
         let dest = self.dest.as_ref().expect("dest target");
         let clear = wgpu::Color {
             r: viewport.clear_color[0] as f64,
@@ -541,7 +581,9 @@ impl SceneWgpuPainter {
                     }
                     DrawCommand::Text { .. }
                     | DrawCommand::HostTexture(_)
-                    | DrawCommand::Custom { .. } => {}
+                    | DrawCommand::Custom { .. }
+                    | DrawCommand::PushGroup { .. }
+                    | DrawCommand::PopGroup => {}
                 }
             }
             drop(pass);
@@ -584,6 +626,53 @@ impl SceneWgpuPainter {
     }
 }
 
+fn sync_opacity_groups(
+    commands: &mut Vec<DrawCommand>,
+    stack: &mut Vec<nana_ui_scene::OpacityGroup>,
+    depth: &mut usize,
+    slots: &mut u32,
+    max_depth: &mut usize,
+    opacities: &mut Vec<f32>,
+    needed: Vec<nana_ui_scene::OpacityGroup>,
+) {
+    let common = stack
+        .iter()
+        .zip(needed.iter())
+        .take_while(|(open, want)| open.node == want.node)
+        .count();
+    while stack.len() > common {
+        pop_opacity_group(commands, stack, depth, slots, opacities);
+    }
+    for group in needed.into_iter().skip(common) {
+        let layer = *depth;
+        let slot = *slots;
+        *slots = slots.saturating_add(1);
+        *depth = depth.saturating_add(1);
+        *max_depth = (*max_depth).max(*depth);
+        opacities.push(group.opacity);
+        commands.push(DrawCommand::PushGroup { layer, slot });
+        stack.push(group);
+    }
+}
+
+fn pop_opacity_group(
+    commands: &mut Vec<DrawCommand>,
+    stack: &mut Vec<nana_ui_scene::OpacityGroup>,
+    depth: &mut usize,
+    slots: &mut u32,
+    opacities: &mut Vec<f32>,
+) {
+    stack.pop();
+    *depth = depth.saturating_sub(1);
+    if matches!(commands.last(), Some(DrawCommand::PushGroup { .. })) {
+        commands.pop();
+        opacities.pop();
+        *slots = slots.saturating_sub(1);
+        return;
+    }
+    commands.push(DrawCommand::PopGroup);
+}
+
 fn push_quad(commands: &mut Vec<DrawCommand>, index: u32, scissor: PhysicalRect) {
     if let Some(DrawCommand::Quads {
         range,
@@ -611,107 +700,180 @@ struct EncodeOrdered<'a> {
     gpu_work: &'a GpuWorkSink,
 }
 
+struct GroupFrame {
+    layer: usize,
+    slot: u32,
+}
+
 fn encode_ordered(
     pipelines: &EncodeOrdered<'_>,
     encoder: &mut wgpu::CommandEncoder,
     dest: &DestTarget,
     dest_physical: [u32; 2],
-    mut load: wgpu::LoadOp<wgpu::Color>,
+    initial_load: wgpu::LoadOp<wgpu::Color>,
     commands: &[DrawCommand],
     dest_passes: &mut DestPassCounts,
 ) {
     const SAMPLE_COUNT: u32 = 1;
     let mut index = 0;
+    let mut dest_load = initial_load;
+    let mut stack: Vec<GroupFrame> = Vec::new();
+    let mut layer_ready = Vec::new();
     while index < commands.len() {
-        let mut pass = dest.begin_color_pass(encoder, load, dest_passes);
-        restore_dest_viewport(&mut pass, dest_physical);
-        while index < commands.len() {
-            match &commands[index] {
-                DrawCommand::Quads { range, scissor } => {
-                    pipelines.quads.draw(
-                        &mut pass,
-                        range.clone(),
-                        *scissor,
-                        SAMPLE_COUNT,
-                        Some(pipelines.gpu_work),
-                    );
+        match &commands[index] {
+            DrawCommand::PushGroup { layer, slot } => {
+                if *layer >= layer_ready.len() {
+                    layer_ready.resize(*layer + 1, false);
                 }
-                DrawCommand::Mesh { range, scissor } => {
-                    pipelines.meshes.draw(
-                        &mut pass,
-                        range,
-                        *scissor,
-                        SAMPLE_COUNT,
-                        Some(pipelines.gpu_work),
-                    );
+                layer_ready[*layer] = false;
+                stack.push(GroupFrame {
+                    layer: *layer,
+                    slot: *slot,
+                });
+                index += 1;
+            }
+            DrawCommand::PopGroup => {
+                let Some(frame) = stack.pop() else {
+                    index += 1;
+                    continue;
+                };
+                let mut pass = match stack.last() {
+                    Some(parent) => {
+                        let load = group_layer_load(&mut layer_ready, parent.layer);
+                        dest.begin_group_pass(encoder, parent.layer, load, dest_passes)
+                    }
+                    None => {
+                        let pass = dest.begin_color_pass(encoder, dest_load, dest_passes);
+                        dest_load = wgpu::LoadOp::Load;
+                        pass
+                    }
+                };
+                restore_dest_viewport(&mut pass, dest_physical);
+                dest.composite_group(&mut pass, frame.layer, frame.slot, Some(pipelines.gpu_work));
+                drop(pass);
+                index += 1;
+            }
+            _ => {
+                let mut pass = match stack.last() {
+                    Some(frame) => {
+                        let load = group_layer_load(&mut layer_ready, frame.layer);
+                        dest.begin_group_pass(encoder, frame.layer, load, dest_passes)
+                    }
+                    None => {
+                        let pass = dest.begin_color_pass(encoder, dest_load, dest_passes);
+                        dest_load = wgpu::LoadOp::Load;
+                        pass
+                    }
+                };
+                restore_dest_viewport(&mut pass, dest_physical);
+                while index < commands.len() {
+                    match &commands[index] {
+                        DrawCommand::PushGroup { .. } | DrawCommand::PopGroup => break,
+                        DrawCommand::Quads { range, scissor } => {
+                            pipelines.quads.draw(
+                                &mut pass,
+                                range.clone(),
+                                *scissor,
+                                SAMPLE_COUNT,
+                                Some(pipelines.gpu_work),
+                            );
+                        }
+                        DrawCommand::Mesh { range, scissor } => {
+                            pipelines.meshes.draw(
+                                &mut pass,
+                                range,
+                                *scissor,
+                                SAMPLE_COUNT,
+                                Some(pipelines.gpu_work),
+                            );
+                        }
+                        DrawCommand::Text { prepared, scissor } => {
+                            pipelines.text.draw(
+                                &mut pass,
+                                prepared,
+                                *scissor,
+                                Some(pipelines.gpu_work),
+                            );
+                        }
+                        DrawCommand::HostTexture(prepared) => {
+                            pipelines.host_textures.draw(
+                                prepared,
+                                &mut pass,
+                                dest_physical,
+                                Some(pipelines.gpu_work),
+                            );
+                            restore_dest_viewport(&mut pass, dest_physical);
+                        }
+                        DrawCommand::Custom {
+                            node,
+                            renderer,
+                            bounds,
+                            clip,
+                        } if bounds.width > 0 && bounds.height > 0 => {
+                            if renderer.draw_in_pass(
+                                node,
+                                &mut pass,
+                                SceneGpuPassContext {
+                                    device: pipelines.device,
+                                    queue: pipelines.queue,
+                                    bounds: *bounds,
+                                    clip: *clip,
+                                    dest_size: dest_physical,
+                                    gpu_work: Some(pipelines.gpu_work),
+                                },
+                            ) {
+                                restore_dest_viewport(&mut pass, dest_physical);
+                                index += 1;
+                                continue;
+                            }
+                            break;
+                        }
+                        DrawCommand::Custom { .. } => {}
+                    }
+                    index += 1;
                 }
-                DrawCommand::Text { prepared, scissor } => {
-                    pipelines
-                        .text
-                        .draw(&mut pass, prepared, *scissor, Some(pipelines.gpu_work));
-                }
-                DrawCommand::HostTexture(prepared) => {
-                    pipelines.host_textures.draw(
-                        prepared,
-                        &mut pass,
-                        dest_physical,
-                        Some(pipelines.gpu_work),
-                    );
-                    restore_dest_viewport(&mut pass, dest_physical);
-                }
-                DrawCommand::Custom {
+                drop(pass);
+                if let Some(DrawCommand::Custom {
                     node,
                     renderer,
                     bounds,
                     clip,
-                } if bounds.width > 0 && bounds.height > 0 => {
-                    if renderer.draw_in_pass(
-                        node,
-                        &mut pass,
-                        SceneGpuPassContext {
-                            device: pipelines.device,
-                            queue: pipelines.queue,
-                            bounds: *bounds,
-                            clip: *clip,
-                            dest_size: dest_physical,
-                            gpu_work: Some(pipelines.gpu_work),
-                        },
-                    ) {
-                        restore_dest_viewport(&mut pass, dest_physical);
-                        index += 1;
-                        continue;
+                }) = commands.get(index)
+                {
+                    if bounds.width > 0 && bounds.height > 0 {
+                        let target = match stack.last() {
+                            Some(frame) => dest.group_view(frame.layer),
+                            None => dest.color_view(),
+                        };
+                        renderer.render(
+                            node,
+                            SceneGpuRenderContext {
+                                device: pipelines.device,
+                                queue: pipelines.queue,
+                                encoder,
+                                target,
+                                bounds: *bounds,
+                                clip: *clip,
+                                gpu_work: Some(pipelines.gpu_work),
+                            },
+                        );
                     }
-                    break;
+                    index += 1;
                 }
-                DrawCommand::Custom { .. } => {}
             }
-            index += 1;
         }
-        drop(pass);
-        if let Some(DrawCommand::Custom {
-            node,
-            renderer,
-            bounds,
-            clip,
-        }) = commands.get(index)
-        {
-            if bounds.width > 0 && bounds.height > 0 {
-                renderer.render(
-                    node,
-                    SceneGpuRenderContext {
-                        device: pipelines.device,
-                        queue: pipelines.queue,
-                        encoder,
-                        target: dest.color_view(),
-                        bounds: *bounds,
-                        clip: *clip,
-                        gpu_work: Some(pipelines.gpu_work),
-                    },
-                );
-            }
-            index += 1;
-            load = wgpu::LoadOp::Load;
-        }
+    }
+}
+
+fn group_layer_load(ready: &mut Vec<bool>, layer: usize) -> wgpu::LoadOp<wgpu::Color> {
+    if layer >= ready.len() {
+        ready.resize(layer + 1, false);
+    }
+    if ready[layer] {
+        wgpu::LoadOp::Load
+    } else {
+        ready[layer] = true;
+        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
     }
 }
 
@@ -1002,6 +1164,74 @@ mod tests {
             is_green_slot(right),
             "new primitive must be encoded after in-place apply_delta, got {right:?}"
         );
+    }
+
+    #[test]
+    fn translucent_parent_composites_overlapping_children_as_a_group() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                translucent_parent(1, &[2, 3], 0.0, 0.0, 64.0, 32.0, 0.5),
+                colored_quad_child(2, 1, 0.0, 0.0, 40.0, 32.0, [1.0, 0.0, 0.0, 1.0]),
+                colored_quad_child(3, 1, 24.0, 0.0, 40.0, 32.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        assert_eq!(
+            scene.opacity_groups(nana_ui_runtime::StableNodeId::new(2).unwrap()),
+            vec![nana_ui_scene::OpacityGroup {
+                node: nana_ui_runtime::StableNodeId::new(1).unwrap(),
+                opacity: 0.5,
+            }]
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 32.0],
+            physical_size: [64, 32],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 32);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui group opacity paint"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("encoded frame records dest passes");
+        assert!(
+            counts.group >= 1,
+            "overlapping translucent children must use a group layer, got {counts:?}"
+        );
+        assert_eq!(
+            counts.msaa, 0,
+            "group frames share sample_count=1 with GPU-interleaved dest, got {counts:?}"
+        );
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 32);
+        let left = pixel(&pixels, 64, 8, 16);
+        let overlap = pixel(&pixels, 64, 32, 16);
+        let right = pixel(&pixels, 64, 56, 16);
+        assert!(
+            left[0] > 90 && left[0] < 160 && left[1] < 40 && left[2] < 40,
+            "non-overlap must be parent opacity over black, got {left:?}"
+        );
+        assert!(
+            right[0] > 90 && right[0] < 160 && right[1] < 40 && right[2] < 40,
+            "non-overlap must be parent opacity over black, got {right:?}"
+        );
+        let overlap_delta = (overlap[0] as i16 - left[0] as i16).unsigned_abs();
+        assert!(
+            overlap_delta < 20 && overlap[1] < 40 && overlap[2] < 40,
+            "group opacity must not darken overlapping children, left={left:?} overlap={overlap:?}"
+        );
+        drop(texture);
     }
 
     #[test]
@@ -1489,6 +1719,69 @@ mod tests {
         write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
         context.commit_mutations(layout).unwrap();
         commit_scene(&mut context)
+    }
+
+    fn translucent_parent(
+        value: u64,
+        children: &[u64],
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        opacity: f32,
+    ) -> ExtractedNode {
+        ExtractedNode {
+            id: StableNodeId::new(value).unwrap(),
+            kind: Arc::new(NodeKind::Element { tag: "div".into() }),
+            parent: None,
+            children: Arc::new(
+                children
+                    .iter()
+                    .copied()
+                    .map(|child| StableNodeId::new(child).unwrap())
+                    .collect(),
+            ),
+            layout: LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+            scroll_offset: nana_ui_runtime::ScrollOffset::default(),
+            source_style: NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    opacity: Some(opacity),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+            style: Arc::new(ComputedStyle::default()),
+            text: None,
+            text_metrics: None,
+            z_index: 0,
+            focused: false,
+            ime: None,
+            text_input: None,
+            text_spans: Vec::new(),
+            standard_visual: None,
+            component_geometry: None,
+            standard_visual_foreground: None,
+            custom_render: None,
+        }
+    }
+
+    fn colored_quad_child(
+        value: u64,
+        parent: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],
+    ) -> ExtractedNode {
+        let mut node = colored_quad_node(value, x, y, width, height, color);
+        node.parent = Some(StableNodeId::new(parent).unwrap());
+        node
     }
 
     fn colored_quad_node(
