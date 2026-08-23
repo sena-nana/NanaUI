@@ -7846,12 +7846,12 @@ mod tests {
 
         assert!(context.set_theme(ThemeMode::Light).unwrap());
         let work = context.world_mut().take_system_work();
-        assert_eq!(work.style, vec![button.stable_id()]);
+        assert!(work.style.is_empty());
         assert!(work.layout.is_empty());
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        assert!(work.render_extraction.contains(&button.stable_id()));
         let light = context
             .world()
-            .extract_nodes(&work.render_extraction)
+            .extract_nodes(&[button.stable_id()])
             .pop()
             .unwrap();
         assert_eq!(

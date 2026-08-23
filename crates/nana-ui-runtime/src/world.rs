@@ -122,19 +122,15 @@ struct HitEntry {
     id: StableNodeId,
     layout: LayoutBox,
     transform: [f32; 6],
-    clips: Vec<(LayoutBox, [f32; 6])>,
+    /// Clips applied to this node's own hit (and therefore its subtree).
+    self_clips: Vec<(LayoutBox, [f32; 6])>,
+    /// Extra clips applied to descendants only (overflow / visual frames).
+    child_clips: Vec<(LayoutBox, [f32; 6])>,
     z_index: i32,
     order: usize,
-}
-
-impl HitEntry {
-    fn contains(&self, x: f32, y: f32) -> bool {
-        transformed_contains(self.layout, self.transform, x, y)
-            && self
-                .clips
-                .iter()
-                .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y))
-    }
+    hittable: bool,
+    menu: Option<LayoutBox>,
+    children: Vec<HitEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1713,18 +1709,27 @@ impl UiWorld {
         style
     }
 
-    /// Rebuild one document's event-time hit-test index after scheduled input
-    /// or layout work. Pointer dispatch then scans only compact hit entries.
+    /// Rebuild one document's event-time hit-test tree after scheduled input
+    /// or layout work. Pointer dispatch walks that tree in z/order with clip
+    /// early-out instead of flattening and sorting every query.
     pub fn rebuild_hit_test(&mut self, document: DocumentId) {
+        struct Built {
+            entry: HitEntry,
+            parent: Option<usize>,
+        }
         let roots = self.document_roots(document);
         let mut stack = roots
             .into_iter()
             .rev()
-            .map(|id| (id, IDENTITY_AFFINE, Vec::new()))
+            .map(|id| (id, IDENTITY_AFFINE, None::<usize>))
             .collect::<Vec<_>>();
-        let mut entries = Vec::new();
+        let mut built = Vec::new();
         let mut order = 0;
-        while let Some((id, parent_transform, parent_clips)) = stack.pop() {
+        while let Some((id, parent_transform, parent)) = stack.pop() {
+            let style = self.component::<ResolvedStyle>(id).0.as_ref();
+            if !style.visible {
+                continue;
+            }
             let layout = *self.component::<LayoutBox>(id);
             let node_style = self.component::<NodeStyle>(id).layout.as_ref();
             let local = node_style
@@ -1734,8 +1739,8 @@ impl UiWorld {
                 })
                 .unwrap_or(IDENTITY_AFFINE);
             let transform = then_affine(parent_transform, local);
-            let mut child_clips = parent_clips.clone();
-            let mut own_clips = parent_clips.clone();
+            let mut self_clips = Vec::new();
+            let mut child_clips = Vec::new();
             if node_style.clips_overflow() {
                 child_clips.push((layout, transform));
             }
@@ -1751,59 +1756,81 @@ impl UiWorld {
                 {
                     child_clips.push((surface, transform));
                 }
-                if let Some(parent) = self.parent_id(id)
+                if let Some(parent_id) = self.parent_id(id)
                     && let Some(StandardVisual::ModalFrame { slots, .. }) =
-                        self.world.get::<StandardVisual>(self.entities[&parent])
+                        self.world.get::<StandardVisual>(self.entities[&parent_id])
                     && slots.body == Some(id)
                     && let Some(crate::ComponentGeometry::ModalFrame { body, .. }) =
-                        self.component_geometry(parent)
+                        self.component_geometry(parent_id)
                 {
-                    child_clips.push((body, parent_transform));
-                    own_clips.push((body, parent_transform));
+                    self_clips.push((body, parent_transform));
                 }
             }
             let scroll = *self.component::<ScrollOffset>(id);
             let child_transform =
                 then_affine(transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
-            stack.extend(
-                self.component::<Hierarchy>(id)
-                    .children
-                    .iter()
-                    .rev()
-                    .map(|child| (*child, child_transform, child_clips.clone())),
-            );
-
-            let style = self.component::<ResolvedStyle>(id).0.as_ref();
             let interaction = self.component::<InteractionState>(id);
             let confirm_busy = self
                 .confirm_action_effect(id)
                 .is_some_and(|effect| effect.0);
-            if style.visible && interaction.pointer_events && !confirm_busy {
-                entries.push(HitEntry {
+            let hittable = interaction.pointer_events && !confirm_busy;
+            let menu = hittable
+                .then(|| self.component_geometry(id))
+                .flatten()
+                .and_then(|geometry| match geometry {
+                    crate::ComponentGeometry::Select {
+                        menu: Some(menu), ..
+                    } => Some(menu.surface),
+                    _ => None,
+                });
+            let index = built.len();
+            let children = Arc::clone(&self.component::<Hierarchy>(id).children);
+            built.push(Built {
+                entry: HitEntry {
                     id,
                     layout,
                     transform,
-                    clips: own_clips.clone(),
+                    self_clips,
+                    child_clips,
                     z_index: self.stacking_z_index(id),
                     order,
-                });
-                if let Some(crate::ComponentGeometry::Select {
-                    menu: Some(menu), ..
-                }) = self.component_geometry(id)
-                {
-                    entries.push(HitEntry {
-                        id,
-                        layout: menu.surface,
-                        transform,
-                        clips: own_clips,
-                        z_index: self.stacking_z_index(id).max(1_000),
-                        order,
-                    });
-                }
-            }
+                    hittable,
+                    menu,
+                    children: Vec::new(),
+                },
+                parent,
+            });
             order += 1;
+            stack.extend(
+                children
+                    .iter()
+                    .rev()
+                    .map(|child| (*child, child_transform, Some(index))),
+            );
         }
-        self.hit_test_index.insert(document, entries);
+        let n = built.len();
+        let mut parent_of = Vec::with_capacity(n);
+        let mut entries = Vec::with_capacity(n);
+        for node in built {
+            parent_of.push(node.parent);
+            entries.push(Some(node.entry));
+        }
+        for i in (0..n).rev() {
+            if let Some(parent) = parent_of[i] {
+                let child = entries[i].take().expect("child hit node");
+                entries[parent]
+                    .as_mut()
+                    .expect("parent hit node")
+                    .children
+                    .push(child);
+            }
+        }
+        let mut forest = entries.into_iter().flatten().collect::<Vec<_>>();
+        for root in &mut forest {
+            sort_hit_children(root);
+        }
+        forest.sort_by_key(|entry| (entry.z_index, entry.order));
+        self.hit_test_index.insert(document, forest);
     }
 
     /// Drain the scroll deltas recorded since the last drain.
@@ -1861,20 +1888,7 @@ impl UiWorld {
         let Some(entries) = self.hit_test_index.get_mut(&document) else {
             return;
         };
-        for entry in entries.iter_mut() {
-            if entry.id == scroller || !subtree.contains(&entry.id) {
-                continue;
-            }
-            let [a, b, c, d, e, f] = entry.transform;
-            entry.transform = [
-                a,
-                b,
-                c,
-                d,
-                a * delta[0] + c * delta[1] + e,
-                b * delta[0] + d * delta[1] + f,
-            ];
-        }
+        patch_hit_scroll(entries, scroller, &subtree, delta);
     }
 
     pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
@@ -1882,20 +1896,14 @@ impl UiWorld {
     }
 
     pub fn hit_test_candidates(&self, document: DocumentId, x: f32, y: f32) -> Vec<StableNodeId> {
-        let mut candidates = self
-            .hit_test_index
-            .get(&document)
-            .into_iter()
-            .flatten()
-            .filter(|entry| entry.contains(x, y))
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(|entry| {
-            (
-                std::cmp::Reverse(entry.z_index),
-                std::cmp::Reverse(entry.order),
-            )
-        });
-        candidates.into_iter().map(|entry| entry.id).collect()
+        let Some(forest) = self.hit_test_index.get(&document) else {
+            return Vec::new();
+        };
+        let mut candidates = Vec::new();
+        for node in forest.iter().rev() {
+            collect_hit_candidates(node, x, y, &mut candidates);
+        }
+        candidates
     }
 
     /// Produce a renderer-neutral snapshot in retained document order.
@@ -2137,7 +2145,7 @@ impl UiWorld {
                         self.focused.remove(&snapshot.document);
                     }
                     if let Some(index) = self.hit_test_index.get_mut(&snapshot.document) {
-                        index.retain(|entry| entry.id != id);
+                        retain_hit_tree(index, id);
                     }
                     let released = self
                         .pointer_captures
@@ -2257,10 +2265,22 @@ impl UiWorld {
             }
             UiMutation::SetTheme { mode } => {
                 if self.style_model.theme_mode != *mode {
+                    let previous_metrics = self.style_model.metrics;
                     self.style_model = StyleModelRef::new(*mode);
-                    let ids = self.entities.keys().copied().collect::<Vec<_>>();
+                    // Palette roles are resolved at extract from SemanticColorRole;
+                    // skip STYLE so a theme swap does not restyle the live tree.
+                    let mut bits = DirtyMask::RENDER;
+                    if self.style_model.metrics != previous_metrics {
+                        bits |= DirtyMask::LAYOUT;
+                    }
+                    let mut ids = Vec::new();
+                    for roots in self.live_document_roots.values() {
+                        for &root in roots {
+                            ids.extend(self.subtree_ids(root));
+                        }
+                    }
                     for id in ids {
-                        self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
+                        self.mark(id, bits);
                     }
                 }
             }
@@ -2806,6 +2826,18 @@ impl UiWorld {
         let entity = *self.entities.get(&id)?;
         let identity = self.world.get::<Identity>(entity)?;
         let mut style = Arc::clone(&self.world.get::<ResolvedStyle>(entity)?.0);
+        let (foreground, color, background, border_color) = self.palette_paint_colors(id);
+        if style.foreground != foreground
+            || style.color != color
+            || style.background != background
+            || style.border_color != border_color
+        {
+            let style = Arc::make_mut(&mut style);
+            style.foreground = foreground;
+            style.color = color;
+            style.background = background;
+            style.border_color = border_color;
+        }
         let kind = Arc::clone(&self.world.get::<Kind>(entity)?.0);
         let has_text = matches!(kind.as_ref(), NodeKind::Text)
             || self
@@ -4497,26 +4529,7 @@ impl UiWorld {
         }
     }
 
-    fn resolve_style(
-        &mut self,
-        id: StableNodeId,
-        resolved: &mut HashSet<StableNodeId>,
-    ) -> Result<(), UiWorldError> {
-        if !self.contains(id) {
-            return Err(UiWorldError::MissingNode(id));
-        }
-        if !resolved.insert(id) {
-            return Ok(());
-        }
-        let parent = self.component::<Hierarchy>(id).parent;
-        if let Some(parent) = parent {
-            self.resolve_style(parent, resolved)?;
-        }
-        let local = self.component::<NodeStyle>(id).clone();
-        let inherited = parent
-            .map(|parent| self.component::<ResolvedStyle>(parent).0.as_ref().clone())
-            .unwrap_or_default();
-        let layout = local.layout.as_ref();
+    fn semantic_paint(&self, id: StableNodeId, local: &NodeStyle) -> crate::SemanticPaint {
         let mut paint = crate::SemanticPaint {
             foreground: local.foreground,
             background: local.background,
@@ -4552,25 +4565,87 @@ impl UiWorld {
         if accessibility.disabled && !accessibility.busy {
             paint = paint.overlay(local.interaction.disabled);
         }
-        let foreground = paint.foreground.unwrap_or(inherited.foreground);
+        paint
+    }
+
+    fn inherited_palette_color(&self, mut parent: Option<StableNodeId>) -> Option<[f32; 4]> {
         let palette = self.style_model.palette;
+        while let Some(id) = parent {
+            let local = self.component::<NodeStyle>(id);
+            if let Some(color) = local.layout.color {
+                return Some(color);
+            }
+            let paint = self.semantic_paint(id, local);
+            if let Some(role) = paint.foreground {
+                return Some(palette.get(role).as_rgba_array());
+            }
+            parent = self.component::<Hierarchy>(id).parent;
+        }
+        None
+    }
+
+    fn palette_paint_colors(
+        &self,
+        id: StableNodeId,
+    ) -> (
+        SemanticColorRole,
+        Option<[f32; 4]>,
+        Option<[f32; 4]>,
+        Option<[f32; 4]>,
+    ) {
+        let local = self.component::<NodeStyle>(id);
+        let paint = self.semantic_paint(id, local);
+        let layout = local.layout.as_ref();
+        let palette = self.style_model.palette;
+        let parent = self.component::<Hierarchy>(id).parent;
+        let inherited_foreground = parent
+            .map(|parent| self.component::<ResolvedStyle>(parent).0.foreground)
+            .unwrap_or(SemanticColorRole::Text);
+        let foreground = paint.foreground.unwrap_or(inherited_foreground);
+        let color = layout.color.or_else(|| {
+            paint
+                .foreground
+                .map(|role| palette.get(role).as_rgba_array())
+                .or_else(|| self.inherited_palette_color(parent))
+                .or_else(|| Some(palette.get(foreground).as_rgba_array()))
+        });
+        let background = layout.background.or_else(|| {
+            paint
+                .background
+                .map(|role| palette.get(role).as_rgba_array())
+        });
+        let border_color = layout
+            .border_color
+            .or_else(|| paint.border.map(|role| palette.get(role).as_rgba_array()));
+        (foreground, color, background, border_color)
+    }
+
+    fn resolve_style(
+        &mut self,
+        id: StableNodeId,
+        resolved: &mut HashSet<StableNodeId>,
+    ) -> Result<(), UiWorldError> {
+        if !self.contains(id) {
+            return Err(UiWorldError::MissingNode(id));
+        }
+        if !resolved.insert(id) {
+            return Ok(());
+        }
+        let parent = self.component::<Hierarchy>(id).parent;
+        if let Some(parent) = parent {
+            self.resolve_style(parent, resolved)?;
+        }
+        let local = self.component::<NodeStyle>(id).clone();
+        let inherited = parent
+            .map(|parent| self.component::<ResolvedStyle>(parent).0.as_ref().clone())
+            .unwrap_or_default();
+        let layout = local.layout.as_ref();
+        let (foreground, color, background, border_color) = self.palette_paint_colors(id);
         let next = ComputedStyle {
             foreground,
-            color: layout.color.or_else(|| {
-                paint
-                    .foreground
-                    .map(|role| palette.get(role).as_rgba_array())
-                    .or(inherited.color)
-                    .or_else(|| Some(palette.get(foreground).as_rgba_array()))
-            }),
-            background: layout.background.or_else(|| {
-                paint
-                    .background
-                    .map(|role| palette.get(role).as_rgba_array())
-            }),
-            border_color: layout
-                .border_color
-                .or_else(|| paint.border.map(|role| palette.get(role).as_rgba_array())),
+            color,
+            background,
+            border_color,
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
             visible: !layout.omits_box() && inherited.visible && self.overlay_branch_active(id),
             font_size: layout.font_size.unwrap_or(inherited.font_size),
@@ -4746,7 +4821,7 @@ impl UiWorld {
             }
             self.remove_ime(id);
             if let Some(index) = self.hit_test_index.get_mut(&document) {
-                index.retain(|entry| entry.id != id);
+                retain_hit_tree(index, id);
             }
             self.pending_render_removals.push(id);
             self.pending_accessibility_removals.push(id);
@@ -5441,6 +5516,83 @@ fn validate_text_metrics(id: StableNodeId, metrics: TextMetrics) -> Result<(), U
         return Err(UiWorldError::InvalidText(id));
     }
     Ok(())
+}
+
+fn sort_hit_children(node: &mut HitEntry) {
+    // Children were attached last-to-first; (z, order) restores document order
+    // within a stacking level so a reverse walk is front-to-back.
+    node.children
+        .sort_by_key(|child| (child.z_index, child.order));
+    for child in &mut node.children {
+        sort_hit_children(child);
+    }
+}
+
+fn retain_hit_tree(nodes: &mut Vec<HitEntry>, id: StableNodeId) {
+    nodes.retain_mut(|node| {
+        if node.id == id {
+            false
+        } else {
+            retain_hit_tree(&mut node.children, id);
+            true
+        }
+    });
+}
+
+fn patch_hit_scroll(
+    nodes: &mut [HitEntry],
+    scroller: StableNodeId,
+    subtree: &HashSet<StableNodeId>,
+    delta: [f32; 2],
+) {
+    for node in nodes {
+        if node.id != scroller && subtree.contains(&node.id) {
+            let [a, b, c, d, e, f] = node.transform;
+            node.transform = [
+                a,
+                b,
+                c,
+                d,
+                a * delta[0] + c * delta[1] + e,
+                b * delta[0] + d * delta[1] + f,
+            ];
+        }
+        patch_hit_scroll(&mut node.children, scroller, subtree, delta);
+    }
+}
+
+fn collect_hit_candidates(node: &HitEntry, x: f32, y: f32, out: &mut Vec<StableNodeId>) {
+    if !node
+        .self_clips
+        .iter()
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y))
+    {
+        return;
+    }
+    let menu_hit = node
+        .menu
+        .is_some_and(|menu| transformed_contains(menu, node.transform, x, y));
+    let children_ok = node
+        .child_clips
+        .iter()
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y));
+    let menu_z = node.z_index.max(1_000);
+    let mut emitted_menu = !menu_hit;
+    if children_ok {
+        for child in node.children.iter().rev() {
+            if !emitted_menu && child.z_index <= menu_z {
+                out.push(node.id);
+                emitted_menu = true;
+            }
+            collect_hit_candidates(child, x, y, out);
+        }
+    }
+    if !emitted_menu {
+        out.push(node.id);
+    }
+    if node.hittable && transformed_contains(node.layout, node.transform, x, y) {
+        out.push(node.id);
+    }
 }
 
 fn then_affine([a, b, c, d, e, f]: [f32; 6], rhs: [f32; 6]) -> [f32; 6] {
@@ -7102,11 +7254,7 @@ mod tests {
     }
 
     fn hit_entry_transform(world: &UiWorld, document: DocumentId, id: StableNodeId) -> [f32; 6] {
-        world.hit_test_index[&document]
-            .iter()
-            .find(|entry| entry.id == id)
-            .expect("hit entry")
-            .transform
+        find_hit_transform(&world.hit_test_index[&document], id).expect("hit entry")
     }
 
     #[test]
@@ -9211,6 +9359,140 @@ mod tests {
         assert_eq!(world.hit_test(document(1), 55.0, 10.0), Some(node(2)));
         assert_eq!(world.hit_test(document(1), 45.0, 10.0), None);
         assert_eq!(world.hit_test(document(1), 65.0, 10.0), None);
+    }
+
+    #[test]
+    fn hit_test_walks_z_order_and_skips_clipped_subtrees() {
+        fn box_at(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
+            LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            }
+        }
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "root".into() },
+        );
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "clip".into() },
+        );
+        queue.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "inside".into(),
+            },
+        );
+        queue.create(
+            node(4),
+            document(1),
+            NodeKind::Element {
+                tag: "lower".into(),
+            },
+        );
+        queue.create(
+            node(5),
+            document(1),
+            NodeKind::Element {
+                tag: "upper".into(),
+            },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.insert(node(1), node(4), None);
+        queue.insert(node(1), node(5), None);
+        queue.write_layout(node(1), box_at(0.0, 0.0, 100.0, 100.0));
+        queue.write_layout(node(2), box_at(0.0, 0.0, 40.0, 40.0));
+        queue.write_layout(node(3), box_at(30.0, 0.0, 40.0, 20.0));
+        queue.write_layout(node(4), box_at(50.0, 50.0, 40.0, 40.0));
+        queue.write_layout(node(5), box_at(60.0, 50.0, 40.0, 40.0));
+        queue.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+        );
+        queue.set_interaction(
+            node(2),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    overflow_x: OverflowSpec::Hidden,
+                    overflow_y: OverflowSpec::Hidden,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        let mut raised = NodeStyle::default();
+        Arc::make_mut(&mut raised.layout).z_index = Some(2);
+        queue.set_style(node(4), raised);
+        world.commit(queue).unwrap();
+        world.rebuild_hit_test(document(1));
+
+        assert_eq!(world.hit_test(document(1), 35.0, 10.0), Some(node(3)));
+        assert_eq!(world.hit_test(document(1), 50.0, 10.0), None);
+        assert_eq!(world.hit_test(document(1), 70.0, 60.0), Some(node(4)));
+        let overlap = world.hit_test_candidates(document(1), 70.0, 60.0);
+        assert_eq!(overlap.first().copied(), Some(node(4)));
+        assert!(overlap.contains(&node(5)));
+    }
+
+    #[test]
+    fn set_theme_marks_render_not_style_when_only_palette_roles_change() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                background: Some(SemanticColorRole::Accent),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            world.extract_nodes(&[node(1)])[0].style.background,
+            Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
+        );
+
+        let mut theme = MutationQueue::new();
+        theme.set_theme(ThemeMode::Light);
+        world.commit(theme).unwrap();
+        let work = world.take_system_work();
+        assert!(work.style.is_empty());
+        assert!(work.layout.is_empty());
+        assert_eq!(work.render_extraction, vec![node(1)]);
+        assert_eq!(
+            world.extract_nodes(&work.render_extraction)[0]
+                .style
+                .background,
+            Some(
+                nana_ui_core::SemanticPalette::light()
+                    .accent
+                    .as_rgba_array()
+            )
+        );
     }
 
     #[test]
