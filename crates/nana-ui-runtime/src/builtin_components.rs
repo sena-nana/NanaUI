@@ -4,20 +4,20 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     ButtonKind, CardKind, CommandPaletteItem, DrawerSide, Icon, LengthSpec, SplitAxis,
-    SplitPaneModel, StatusTone, SwitchControlPosition, ValidationIntent,
+    SplitPaneModel, StatusTone, SwitchControlPosition, TreeNode, ValidationIntent,
 };
 
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, Button, CalendarHeatmap, Card, Checkbox, CommandPalette,
     ConfirmDialog, ContextMenu, ContextMenuItem, Dialog, Dock, DockNode, Drawer, Dropdown,
     DropdownOption, EmptyState, ExtensionRegistrar, FormField, FrameworkError, GraphCanvas,
-    GraphModel, IconButton, ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue,
-    LevelMeter, ListItem, ListItemSlots, ModalSurface, NativeMarkdown, Popover, Progress, QrCode,
-    RangeField, SearchDropdown, SearchDropdownOption, SegmentedControl, Select, SettingsCard,
-    SettingsRow, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, Skeleton, Spinner,
-    SplitPane, StatusBadge, Switch, Tabs, Text, TextArea, TextInput, TextInputState, Thumbnail,
-    ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage,
-    ValueEmphasis, Workspace, XYPad, XYPadValue,
+    GraphModel, HostedTextarea, IconButton, ImageViewer, ImageViewerContent, InteractiveCard,
+    LabeledValue, LevelMeter, ListItem, ListItemSlots, ModalSurface, NativeMarkdown, Popover,
+    Progress, QrCode, RangeField, SearchDropdown, SearchDropdownOption, SegmentedControl, Select,
+    SettingsCard, SettingsRow, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
+    Skeleton, Spinner, SplitPane, StatusBadge, Switch, Tabs, Text, TextArea, TextInput,
+    TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension,
+    ValidationMessage, ValueEmphasis, Workspace, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 
@@ -48,6 +48,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<Thumbnail>()?;
         registrar.register_component::<TextInput>()?;
         registrar.register_component::<TextArea>()?;
+        registrar.register_component::<HostedTextarea>()?;
         registrar.register_component::<RangeField>()?;
         registrar.register_component::<Progress>()?;
         registrar.register_component::<Spinner>()?;
@@ -254,16 +255,35 @@ impl RegisterableComponent for TextArea {
     const TYPE_ID: &'static str = "nana.textarea";
     const TAGS: &'static [&'static str] = &["textarea"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let placeholder = if spec.placeholder.is_empty() {
-            spec.hint
-        } else {
-            spec.placeholder
-        };
+        let placeholder = textarea_placeholder(spec);
         let mut component = TextArea::new("")
             .placeholder(Arc::<str>::from(placeholder))
             .disabled(spec.disabled)
             .invalid(spec.invalid);
-        if let Some(nana_ui_core::LengthSpec::Px(height)) = spec.layout.height {
+        if let Some(language) = highlight_language_from_spec(spec) {
+            component = component.highlight(language);
+        }
+        if let Some(LengthSpec::Px(height)) = spec.layout.height {
+            component = component.height(height);
+        }
+        if !spec.label.is_empty() {
+            component = component.label(Arc::<str>::from(spec.label));
+        }
+        component.state = TextInputState::new(spec.value);
+        component
+    }
+}
+
+impl RegisterableComponent for HostedTextarea {
+    const TYPE_ID: &'static str = "nana.hosted-textarea";
+    const TAGS: &'static [&'static str] = &["hosted-textarea"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let language = highlight_language_from_spec(spec).unwrap_or("");
+        let mut component = HostedTextarea::new("", language)
+            .placeholder(Arc::<str>::from(textarea_placeholder(spec)))
+            .disabled(spec.disabled)
+            .invalid(spec.invalid);
+        if let Some(LengthSpec::Px(height)) = spec.layout.height {
             component = component.height(height);
         }
         if !spec.label.is_empty() {
@@ -290,11 +310,18 @@ impl RegisterableComponent for RangeField {
             0.1
         };
         let value = (spec.number as f64).clamp(min, max);
-        RangeField::new(value, min, max, step)
+        let mut component = RangeField::new(value, min, max, step)
             .unwrap_or_else(|_| RangeField::new(0.0, 0.0, 1.0, 0.1).expect("default range"))
             .disabled(spec.disabled)
             .invalid(spec.invalid)
-            .size(spec.size)
+            .size(spec.size);
+        if !spec.label.is_empty() {
+            component = component.label(Arc::<str>::from(spec.label));
+        }
+        if let Some(unit) = spec.attr("unit").filter(|value| !value.is_empty()) {
+            component = component.unit(Arc::<str>::from(unit));
+        }
+        component
     }
 }
 
@@ -383,7 +410,14 @@ impl RegisterableComponent for Dialog {
     const TYPE_ID: &'static str = "nana.dialog";
     const TAGS: &'static [&'static str] = &["dialog", "modal"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Dialog::new(spec.display_label())
+        let mut component = Dialog::new(spec.display_label());
+        if !spec.hint.is_empty() {
+            component = component.description(Arc::<str>::from(spec.hint));
+        }
+        if let Some(body) = spec.slot("body") {
+            component.slots_mut().body = Some(body);
+        }
+        component
     }
 }
 
@@ -432,12 +466,17 @@ impl RegisterableComponent for Tabs {
     const TYPE_ID: &'static str = "nana.tabs";
     const TAGS: &'static [&'static str] = &["tabs", "tablist"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Tabs::new(if spec.value.is_empty() {
+        let mut component = Tabs::new(if spec.value.is_empty() {
             spec.display_label()
         } else {
             spec.value
         })
         .size(spec.size)
+        .fill(flag_attr(spec, &["fill"]));
+        if !spec.label.is_empty() {
+            component = component.label(Arc::<str>::from(spec.label));
+        }
+        component
     }
 }
 
@@ -445,7 +484,18 @@ impl RegisterableComponent for SegmentedControl {
     const TYPE_ID: &'static str = "nana.segmented";
     const TAGS: &'static [&'static str] = &["segmented", "segmented-control"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        SegmentedControl::new().size(spec.size)
+        let mut component = if spec.type_id.as_str() == "nana.tabs" {
+            SegmentedControl::tabs()
+        } else {
+            SegmentedControl::new()
+        };
+        component = component
+            .size(spec.size)
+            .fill(flag_attr(spec, &["fill"]));
+        if !spec.label.is_empty() {
+            component = component.label(Arc::<str>::from(spec.label));
+        }
+        component
     }
 }
 
@@ -772,7 +822,16 @@ impl RegisterableComponent for TreeView {
     const TYPE_ID: &'static str = "nana.tree-view";
     const TAGS: &'static [&'static str] = &["tree-view"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        TreeView::new(Vec::new()).size(spec.size)
+        let nodes = spec
+            .options
+            .iter()
+            .map(|option| {
+                TreeNode::leaf(Arc::<str>::from(option.value), option.label)
+                    .disabled(option.disabled)
+                    .selected(option.value == spec.value && !spec.value.is_empty())
+            })
+            .collect::<Vec<_>>();
+        TreeView::new(nodes).size(spec.size)
     }
 }
 
@@ -952,6 +1011,22 @@ impl RegisterableComponent for SettingsCard {
         };
         SettingsCard::new(title)
     }
+}
+
+fn textarea_placeholder<'a>(spec: &'a SemanticSpec<'_>) -> &'a str {
+    if spec.placeholder.is_empty() {
+        spec.hint
+    } else {
+        spec.placeholder
+    }
+}
+
+fn highlight_language_from_spec<'a>(spec: &'a SemanticSpec<'_>) -> Option<&'a str> {
+    spec.attr("language")
+        .or_else(|| spec.attr("lang"))
+        .or_else(|| spec.attr("syntax"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn truthy_attr(value: &str) -> bool {

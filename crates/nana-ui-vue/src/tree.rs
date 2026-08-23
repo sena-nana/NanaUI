@@ -28,11 +28,11 @@ use nana_ui_runtime::{
     ComponentTypeId, ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode,
     Entity, GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint, GraphModel, GraphNode,
     GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    HOST_TEXTURE_RENDERER, HighlightRequest, HostedTextarea as RuntimeHostedTextarea,
-    ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
+    HOST_TEXTURE_RENDERER, HighlightRequest, ImeComposition, InteractionState,
+    LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
     NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
-    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
-    SelectionChrome, SemanticOption, SemanticSpec, SettingsPage as RuntimeSettingsPage,
+    SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption, SemanticSpec,
+    SettingsPage as RuntimeSettingsPage,
     SidebarFrame as RuntimeSidebarFrame, SplitPane as RuntimeSplitPane, StableNodeId, TextContent,
     TextInputState, TreeView as RuntimeTreeView, UiMutation, UiWorld,
     Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
@@ -2653,6 +2653,12 @@ fn resolve_widget_component_type(
     {
         return Some(id.clone());
     }
+    if widget.kind == crate::WidgetKind::Textarea
+        && crate::widget_map::highlight_language(&widget.props).is_some()
+        && let Some(id) = context.resolve_component_tag("hosted-textarea")
+    {
+        return Some(id.clone());
+    }
     if widget.kind == crate::WidgetKind::Select {
         if crate::widget_map::is_search_dropdown(&widget.props)
             && let Some(id) = context.resolve_component_tag("search-dropdown")
@@ -2677,13 +2683,13 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
     if widget.kind == crate::WidgetKind::Chip && widget.props.role.eq_ignore_ascii_case("tab") {
         return false;
     }
-    if widget.kind == crate::WidgetKind::Textarea
-        && crate::widget_map::highlight_language(&widget.props).is_some()
+    if widget.kind == crate::WidgetKind::CommandPalette
+        && host_command_palette_items(&widget.props).is_some()
     {
         return false;
     }
-    if widget.kind == crate::WidgetKind::CommandPalette
-        && host_command_palette_items(&widget.props).is_some()
+    if widget.kind == crate::WidgetKind::TreeView
+        && (widget.props.options.is_empty() || host_tree_nodes(&widget.props).is_some())
     {
         return false;
     }
@@ -2728,6 +2734,9 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
             | crate::WidgetKind::ContextMenu
             | crate::WidgetKind::CommandPalette
             | crate::WidgetKind::Select
+            | crate::WidgetKind::Segmented
+            | crate::WidgetKind::Tabs
+            | crate::WidgetKind::TreeView
     )
 }
 
@@ -2798,6 +2807,9 @@ fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> 
             if missing("cancellable") && crate::widget_map::progress_cancellable(&widget.props) {
                 extras.push(("cancellable".into(), "true".into()));
             }
+        }
+        crate::WidgetKind::Range if missing("unit") && !widget.props.unit.is_empty() => {
+            extras.push(("unit".into(), widget.props.unit.clone()));
         }
         crate::WidgetKind::ActionMenuItem => {
             if missing("danger") && crate::widget_map::action_menu_item_danger(&widget.props) {
@@ -2896,6 +2908,11 @@ fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> 
             if missing("searchable") && context_menu_searchable(&widget.props) {
                 extras.push(("searchable".into(), "true".into()));
             }
+        }
+        crate::WidgetKind::Tabs | crate::WidgetKind::Segmented
+            if missing("fill") && widget.props.fill =>
+        {
+            extras.push(("fill".into(), "true".into()));
         }
         _ => {}
     }
@@ -3024,7 +3041,7 @@ fn bind_semantic_slots(
                     .and_then(StableNodeId::new),
             );
         }
-        crate::WidgetKind::Drawer => {
+        crate::WidgetKind::Drawer | crate::WidgetKind::Dialog => {
             push(&mut slots, "body", data_slot("body"));
             push(
                 &mut slots,
@@ -3265,6 +3282,31 @@ fn try_bind_registered_component(
             {
                 mutations.set_standard_visual(id, None);
             }
+            if matches!(
+                widget.kind,
+                crate::WidgetKind::Segmented | crate::WidgetKind::Tabs
+            ) {
+                let chrome = if widget.kind == crate::WidgetKind::Tabs {
+                    SelectionChrome::Tabs
+                } else {
+                    SelectionChrome::Segmented
+                };
+                for (child, option) in widget.children.iter().zip(widget.props.options.iter()) {
+                    let Some(child_id) = StableNodeId::new(*child) else {
+                        continue;
+                    };
+                    project_segmented_option(
+                        child_id,
+                        option,
+                        option.value == widget.props.value,
+                        widget.props.size,
+                        chrome,
+                        widget.kind == crate::WidgetKind::Tabs && widget.props.fill,
+                        context.world(),
+                        mutations,
+                    );
+                }
+            }
             Some(true)
         }
         Ok(ComponentBindKind::Layout) | Err(_) => None,
@@ -3296,66 +3338,6 @@ fn project_migrating_component(
         return true;
     }
     match effective_kind(widget) {
-        crate::WidgetKind::Textarea => {
-            let Some(language) = crate::widget_map::highlight_language(&widget.props) else {
-                return false;
-            };
-            let mut state = world
-                .text_input(id)
-                .cloned()
-                .unwrap_or_else(|| TextInputState::new(&widget.props.value));
-            if state.value != widget.props.value {
-                state.replace_value(&widget.props.value);
-            }
-            let placeholder = if widget.props.placeholder.is_empty() {
-                widget.props.hint.as_str()
-            } else {
-                widget.props.placeholder.as_str()
-            };
-            let mut component = RuntimeHostedTextarea::new("", language)
-                .placeholder(Arc::<str>::from(placeholder))
-                .disabled(widget.props.disabled)
-                .invalid(widget.props.invalid);
-            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
-                component = component.height(height);
-            }
-            if !widget.props.label.is_empty() {
-                component = component.label(Arc::<str>::from(widget.props.label.as_str()));
-            }
-            component.state = state;
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Segmented | crate::WidgetKind::Tabs => {
-            let mut control = if widget.kind == crate::WidgetKind::Tabs {
-                RuntimeSegmentedControl::tabs()
-                    .size(widget.props.size)
-                    .fill(widget.props.fill)
-            } else {
-                RuntimeSegmentedControl::new().size(widget.props.size)
-            };
-            if !widget.props.label.is_empty() {
-                control = control.label(Arc::<str>::from(widget.props.label.as_str()));
-            }
-            let chrome = control.chrome_value();
-            control.project(id, world, mutations);
-            for (child, option) in widget.children.iter().zip(widget.props.options.iter()) {
-                let Some(child_id) = StableNodeId::new(*child) else {
-                    continue;
-                };
-                project_segmented_option(
-                    child_id,
-                    option,
-                    option.value == widget.props.value,
-                    widget.props.size,
-                    chrome,
-                    widget.kind == crate::WidgetKind::Tabs && widget.props.fill,
-                    world,
-                    mutations,
-                );
-            }
-            true
-        }
         crate::WidgetKind::Column | crate::WidgetKind::Box if is_sidebar_frame_body(widget) => {
             RuntimeSidebarFrame::scroll_body(widget.props.layout.clone())
                 .project(id, world, mutations);
@@ -6872,6 +6854,185 @@ mod tests {
             doc.runtime.standard_visual(drawer_id),
             Some(nana_ui_runtime::StandardVisual::ModalFrame {
                 kind: nana_ui_runtime::ModalSurfaceKind::Drawer(nana_ui_core::DrawerSide::Left),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn highlighted_textarea_binds_language_and_restores_input() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let area = doc.create_element("nana-textarea");
+        doc.insert(area, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps {
+            value: "fn main() {}".into(),
+            placeholder: "code".into(),
+            label: "Editor".into(),
+            ..Default::default()
+        };
+        props.layout.height = Some(nana_ui_core::LengthSpec::Px(120.0));
+        props.attrs.insert("language".into(), "rs".into());
+        bridge.register(area.0, crate::WidgetKind::Textarea, props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let area_id = StableNodeId::try_from(area).unwrap();
+        assert_eq!(
+            doc.runtime
+                .component_type(area_id)
+                .map(ComponentTypeId::as_str),
+            Some("nana.hosted-textarea")
+        );
+        assert_eq!(
+            doc.runtime
+                .highlight_request(area_id)
+                .map(|request| (request.presenter.as_ref(), request.language.as_ref())),
+            Some((nana_ui_runtime::HIGHLIGHT_PRESENTER, "rs"))
+        );
+        assert_eq!(
+            doc.runtime
+                .text_input(area_id)
+                .map(|state| state.value.as_str()),
+            Some("fn main() {}")
+        );
+        assert!(matches!(
+            doc.runtime.standard_visual(area_id),
+            Some(nana_ui_runtime::StandardVisual::TextInput {
+                placeholder,
+                invalid: false,
+                ..
+            }) if placeholder.as_ref() == "code"
+        ));
+        assert_eq!(
+            doc.runtime
+                .node_style(area_id)
+                .and_then(|style| style.layout.height),
+            Some(nana_ui_core::LengthSpec::Px(
+                120.0_f32.max(nana_ui_core::ControlSize::Medium.height()),
+            ))
+        );
+    }
+
+    #[test]
+    fn segmented_and_tabs_bind_parent_and_project_child_options() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let tabs = doc.create_element("nana-tabs");
+        let tab_a = doc.create_element("nana-tabs__item");
+        let tab_b = doc.create_element("nana-tabs__item");
+        let segmented = doc.create_element("nana-segmented");
+        let seg_a = doc.create_element("nana-segmented__item");
+        doc.insert(tabs, doc.mount_root(), None);
+        doc.insert(tab_a, tabs, None);
+        doc.insert(tab_b, tabs, None);
+        doc.insert(segmented, doc.mount_root(), None);
+        doc.insert(seg_a, segmented, None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            tabs.0,
+            crate::WidgetKind::Tabs,
+            crate::WidgetProps {
+                label: "Editor".into(),
+                value: "preview".into(),
+                fill: true,
+                options: vec![
+                    crate::SelectOptionProp {
+                        value: "code".into(),
+                        label: "Code".into(),
+                        disabled: false,
+                    },
+                    crate::SelectOptionProp {
+                        value: "preview".into(),
+                        label: "Preview".into(),
+                        disabled: false,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            tab_a.0,
+            crate::WidgetKind::Chip,
+            crate::WidgetProps {
+                role: "tab".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            tab_b.0,
+            crate::WidgetKind::Chip,
+            crate::WidgetProps {
+                role: "tab".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(tab_a.0, tabs.0, None);
+        bridge.insert_child(tab_b.0, tabs.0, None);
+        bridge.register(
+            segmented.0,
+            crate::WidgetKind::Segmented,
+            crate::WidgetProps {
+                label: "Theme".into(),
+                value: "dark".into(),
+                options: vec![crate::SelectOptionProp {
+                    value: "dark".into(),
+                    label: "Dark".into(),
+                    disabled: false,
+                }],
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            seg_a.0,
+            crate::WidgetKind::Chip,
+            crate::WidgetProps {
+                role: "tab".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(seg_a.0, segmented.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let tabs_id = StableNodeId::try_from(tabs).unwrap();
+        let tab_b_id = StableNodeId::try_from(tab_b).unwrap();
+        let segmented_id = StableNodeId::try_from(segmented).unwrap();
+        let seg_a_id = StableNodeId::try_from(seg_a).unwrap();
+        assert_eq!(
+            doc.runtime
+                .component_type(tabs_id)
+                .map(ComponentTypeId::as_str),
+            Some("nana.tabs")
+        );
+        assert_eq!(
+            doc.runtime.accessibility(tabs_id).map(|state| state.role),
+            Some(AccessibilityRole::TabList)
+        );
+        assert_eq!(
+            doc.runtime.accessibility(tabs_id).and_then(|state| state.label.clone()),
+            Some(Arc::<str>::from("Editor"))
+        );
+        assert!(matches!(
+            doc.runtime.standard_visual(tab_b_id),
+            Some(nana_ui_runtime::StandardVisual::SelectionOption {
+                selected: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            doc.runtime
+                .component_type(segmented_id)
+                .map(ComponentTypeId::as_str),
+            Some("nana.segmented")
+        );
+        assert_eq!(
+            doc.runtime
+                .accessibility(segmented_id)
+                .and_then(|state| state.label.clone()),
+            Some(Arc::<str>::from("Theme"))
+        );
+        assert!(matches!(
+            doc.runtime.standard_visual(seg_a_id),
+            Some(nana_ui_runtime::StandardVisual::SelectionOption {
+                selected: true,
                 ..
             })
         ));
