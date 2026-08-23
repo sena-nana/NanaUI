@@ -19,35 +19,29 @@ use nana_ui_runtime::AccessibilityUpdate;
 #[cfg(not(feature = "scene-view"))]
 use nana_ui_runtime::MeasureTextShaper;
 use nana_ui_runtime::{
-    AccessibilityDelta, AccessibilityRole, AccessibilityState, ActionMenu as RuntimeActionMenu,
+    AccessibilityDelta, AccessibilityRole, AccessibilityState,
     ActionMenuItem as RuntimeActionMenuItem, AppContext, AppShell as RuntimeAppShell,
-    AppTitleBar as RuntimeAppTitleBar, Button as RuntimeButton,
-    CalendarHeatmap as RuntimeCalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions,
-    CalendarLevelStrategy, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
+    AppTitleBar as RuntimeAppTitleBar, CalendarHeatmap as RuntimeCalendarHeatmap,
+    CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy, Card as RuntimeCard,
     CommandPalette as RuntimeCommandPalette, ComponentBindKind, ComponentTypeId, ComponentView,
-    ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
-    ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode, Dialog as RuntimeDialog,
+    ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode,
     Dock as RuntimeDock, DockAxis, DockNode, Drawer as RuntimeDrawer,
     EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
     GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
     GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
     HOST_TEXTURE_RENDERER, HighlightRequest, HostedTextarea as RuntimeHostedTextarea,
-    IconButton as RuntimeIconButton, ImageViewer as RuntimeImageViewer, ImageViewerContent,
-    ImeComposition, InteractionState, InteractiveCard as RuntimeInteractiveCard,
+    ImageViewer as RuntimeImageViewer, ImageViewerContent, ImeComposition, InteractionState,
     LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox, LayoutViewport,
     LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem, ListItemSlots, ModalSurface,
     MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
-    Popover as RuntimePopover, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
-    RangeField as RuntimeRangeField, SegmentedControl as RuntimeSegmentedControl,
-    SegmentedOption as RuntimeSegmentedOption, Select as RuntimeSelect,
-    SelectOption as RuntimeSelectOption, SelectionChrome, SemanticSpec,
+    Progress as RuntimeProgress, QrCode as RuntimeQrCode,
+    SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
+    Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome, SemanticSpec,
     SettingsCard as RuntimeSettingsCard, SettingsPage as RuntimeSettingsPage,
     SettingsRow as RuntimeSettingsRow, SidebarFrame as RuntimeSidebarFrame,
-    SidebarRow as RuntimeSidebarRow, Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner,
-    SplitPane as RuntimeSplitPane, StableNodeId, StatusBadge as RuntimeStatusBadge,
-    Switch as RuntimeSwitch, TextArea as RuntimeTextArea, TextContent,
-    TextInput as RuntimeTextInput, TextInputState, Toast as RuntimeToast,
-    Tooltip as RuntimeTooltip, TreeView as RuntimeTreeView, UiMutation, UiWorld,
+    SidebarRow as RuntimeSidebarRow, SplitPane as RuntimeSplitPane, StableNodeId,
+    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextContent, TextInputState,
+    Toast as RuntimeToast, TreeView as RuntimeTreeView, UiMutation, UiWorld,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
@@ -2661,12 +2655,48 @@ fn resolve_widget_component_type(
     {
         return Some(id.clone());
     }
+    if widget.kind == crate::WidgetKind::Dialog
+        && vue_confirm_dialog(&widget.props)
+        && let Some(id) = context.resolve_component_tag("confirm-dialog")
+    {
+        return Some(id.clone());
+    }
     let tag = if widget.props.element_tag.is_empty() {
         widget.kind.as_str()
     } else {
         widget.props.element_tag.as_str()
     };
     context.resolve_component_tag(tag).cloned()
+}
+
+fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
+    if widget.kind == crate::WidgetKind::Chip && widget.props.role.eq_ignore_ascii_case("tab") {
+        return false;
+    }
+    if widget.kind == crate::WidgetKind::Textarea
+        && crate::widget_map::highlight_language(&widget.props).is_some()
+    {
+        return false;
+    }
+    matches!(
+        widget.kind,
+        crate::WidgetKind::Column
+            | crate::WidgetKind::Box
+            | crate::WidgetKind::Row
+            | crate::WidgetKind::Button
+            | crate::WidgetKind::Chip
+            | crate::WidgetKind::Input
+            | crate::WidgetKind::Textarea
+            | crate::WidgetKind::Checkbox
+            | crate::WidgetKind::Range
+            | crate::WidgetKind::Spinner
+            | crate::WidgetKind::InteractiveCard
+            | crate::WidgetKind::Skeleton
+            | crate::WidgetKind::Tooltip
+            | crate::WidgetKind::ActionMenu
+            | crate::WidgetKind::Dialog
+            | crate::WidgetKind::Popover
+    )
 }
 
 fn is_shell_composer_kind(kind: crate::WidgetKind) -> bool {
@@ -2709,18 +2739,14 @@ fn try_bind_registered_component(
     mutations: &mut MutationQueue,
 ) -> Option<bool> {
     let type_id = resolve_widget_component_type(widget, snapshot, context)?;
-    let layout_kind = matches!(
-        widget.kind,
-        crate::WidgetKind::Column | crate::WidgetKind::Box | crate::WidgetKind::Row
-    );
-    if !layout_kind {
+    // Empty from_semantic stubs; WidgetKind slot arms own dock/shell projection.
+    if shell_kind_from_ident(type_id.as_str()).is_some() {
+        return None;
+    }
+    if !can_bind_from_semantic(widget) {
         if context.world().component_type(id) != Some(&type_id) {
             mutations.set_component_type(id, Some(type_id));
         }
-        return None;
-    }
-    // Empty from_semantic stubs; WidgetKind slot arms own dock/shell projection.
-    if shell_kind_from_ident(type_id.as_str()).is_some() {
         return None;
     }
     let layout = Arc::new(widget.props.layout.clone());
@@ -2730,34 +2756,69 @@ fn try_bind_registered_component(
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
+    let is_icon_button = type_id.as_str() == "nana.icon-button";
+    let button_kind = if widget.kind == crate::WidgetKind::Chip {
+        if widget.props.active || widget.props.toggled {
+            nana_ui_core::ButtonKind::Selected
+        } else {
+            nana_ui_core::ButtonKind::Subtle
+        }
+    } else {
+        widget.props.button_kind
+    };
+    let label = if is_icon_button && !widget.props.hint.is_empty() {
+        widget.props.hint.as_str()
+    } else {
+        widget.props.label.as_str()
+    };
     let spec = SemanticSpec {
-        label: widget.props.label.as_str(),
+        label,
         value: widget.props.value.as_str(),
         hint: widget.props.hint.as_str(),
         placeholder: widget.props.placeholder.as_str(),
-        disabled: widget.props.disabled,
+        disabled: widget.props.disabled
+            || (widget.kind == crate::WidgetKind::Checkbox && widget.props.loading),
         loading: widget.props.loading,
-        invalid: widget.props.invalid,
+        invalid: widget.props.invalid
+            || (widget.kind == crate::WidgetKind::Dialog && vue_confirm_danger(&widget.props)),
         active: widget.props.active,
         toggled: widget.props.toggled,
         read_only: widget.props.read_only,
         secure: widget.props.secure,
-        button_kind: widget.props.button_kind,
+        button_kind,
         size: widget.props.size,
         icon: widget_icon(widget, snapshot),
         min: widget.props.min,
         max: widget.props.max,
         step: widget.props.step,
-        number: if widget.kind == crate::WidgetKind::Progress {
-            widget.props.progress
-        } else {
-            widget.props.number
-        },
+        number: widget.props.number,
         attrs: &attr_pairs,
         ..SemanticSpec::from_parts(&type_id, &layout)
     };
+    let existing_input = matches!(
+        widget.kind,
+        crate::WidgetKind::Input | crate::WidgetKind::Textarea
+    )
+    .then(|| context.world().text_input(id).cloned())
+    .flatten();
     match context.bind_semantic(id, &spec, mutations) {
-        Ok(ComponentBindKind::Projected) => Some(true),
+        Ok(ComponentBindKind::Projected) => {
+            if let Some(mut state) = existing_input {
+                if state.value != widget.props.value {
+                    state.replace_value(&widget.props.value);
+                }
+                mutations.set_text_input(id, Some(state));
+            }
+            if widget.kind == crate::WidgetKind::Popover {
+                retain_projected_children(widget, id, context.world(), mutations);
+            }
+            if widget.kind == crate::WidgetKind::Tooltip
+                && context.world().standard_visual(id).is_some()
+            {
+                mutations.set_standard_visual(id, None);
+            }
+            Some(true)
+        }
         Ok(ComponentBindKind::Layout) | Err(_) => None,
     }
 }
@@ -2787,52 +2848,10 @@ fn project_migrating_component(
         return true;
     }
     match effective_kind(widget) {
-        crate::WidgetKind::Button => {
-            if let Some(icon) = widget_icon(widget, snapshot) {
-                let label = if widget.props.hint.is_empty() {
-                    widget.props.display_label()
-                } else {
-                    widget.props.hint.as_str()
-                };
-                let mut component = RuntimeIconButton::new(icon, Arc::<str>::from(label))
-                    .kind(widget.props.button_kind)
-                    .size(widget.props.size)
-                    .selected(widget.props.active)
-                    .disabled(widget.props.disabled);
-                if !widget.props.hint.is_empty() {
-                    component = component.tooltip(
-                        Arc::<str>::from(widget.props.hint.as_str()),
-                        nana_ui_core::TooltipConfig::default(),
-                    );
-                }
-                component.project(id, world, mutations);
-            } else {
-                RuntimeButton::new(widget.props.display_label())
-                    .layout(Arc::new(widget.props.layout.clone()))
-                    .kind(widget.props.button_kind)
-                    .size(widget.props.size)
-                    .disabled(widget.props.disabled)
-                    .loading(widget.props.loading)
-                    .invalid(widget.props.invalid)
-                    .project(id, world, mutations);
-            }
-            true
-        }
-        crate::WidgetKind::Chip if !widget.props.role.eq_ignore_ascii_case("tab") => {
-            let kind = if widget.props.active || widget.props.toggled {
-                nana_ui_core::ButtonKind::Selected
-            } else {
-                nana_ui_core::ButtonKind::Subtle
+        crate::WidgetKind::Textarea => {
+            let Some(language) = crate::widget_map::highlight_language(&widget.props) else {
+                return false;
             };
-            RuntimeButton::new(widget.props.display_label())
-                .layout(Arc::new(widget.props.layout.clone()))
-                .kind(kind)
-                .size(widget.props.size)
-                .disabled(widget.props.disabled)
-                .project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Input => {
             let mut state = world
                 .text_input(id)
                 .cloned()
@@ -2845,62 +2864,18 @@ fn project_migrating_component(
             } else {
                 widget.props.placeholder.as_str()
             };
-            let mut component = RuntimeTextInput::new("")
+            let mut component = RuntimeHostedTextarea::new("", language)
                 .placeholder(Arc::<str>::from(placeholder))
-                .layout(Arc::new(widget.props.layout.clone()))
-                .size(widget.props.size)
                 .disabled(widget.props.disabled)
-                .loading(widget.props.loading)
-                .read_only(widget.props.read_only)
-                .secure(widget.props.secure)
                 .invalid(widget.props.invalid);
-            component.state = state;
+            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
+                component = component.height(height);
+            }
             if !widget.props.label.is_empty() {
                 component = component.label(Arc::<str>::from(widget.props.label.as_str()));
             }
+            component.state = state;
             component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Textarea => {
-            let mut state = world
-                .text_input(id)
-                .cloned()
-                .unwrap_or_else(|| TextInputState::new(&widget.props.value));
-            if state.value != widget.props.value {
-                state.replace_value(&widget.props.value);
-            }
-            let placeholder = if widget.props.placeholder.is_empty() {
-                widget.props.hint.as_str()
-            } else {
-                widget.props.placeholder.as_str()
-            };
-            if let Some(language) = crate::widget_map::highlight_language(&widget.props) {
-                let mut component = RuntimeHostedTextarea::new("", language)
-                    .placeholder(Arc::<str>::from(placeholder))
-                    .disabled(widget.props.disabled)
-                    .invalid(widget.props.invalid);
-                if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
-                    component = component.height(height);
-                }
-                if !widget.props.label.is_empty() {
-                    component = component.label(Arc::<str>::from(widget.props.label.as_str()));
-                }
-                component.state = state;
-                component.project(id, world, mutations);
-            } else {
-                let mut component = RuntimeTextArea::new("")
-                    .placeholder(Arc::<str>::from(placeholder))
-                    .disabled(widget.props.disabled)
-                    .invalid(widget.props.invalid);
-                if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
-                    component = component.height(height);
-                }
-                if !widget.props.label.is_empty() {
-                    component = component.label(Arc::<str>::from(widget.props.label.as_str()));
-                }
-                component.state = state;
-                component.project(id, world, mutations);
-            }
             true
         }
         crate::WidgetKind::Select => {
@@ -2988,30 +2963,6 @@ fn project_migrating_component(
             }
             true
         }
-        crate::WidgetKind::Dialog => {
-            if vue_confirm_dialog(&widget.props) {
-                let message = if !widget.props.hint.is_empty() {
-                    widget.props.hint.as_str()
-                } else {
-                    widget.props.value.as_str()
-                };
-                let mut component =
-                    RuntimeConfirmDialog::new(widget.props.display_label(), message);
-                component.danger = vue_confirm_danger(&widget.props);
-                component.busy = widget.props.loading;
-                component.project(id, world, mutations);
-            } else {
-                let mut component = RuntimeDialog::new(widget.props.display_label());
-                if !widget.props.hint.is_empty() {
-                    component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
-                }
-                if let Some(body) = widget.children.first().copied().and_then(StableNodeId::new) {
-                    component.slots.body = Some(body);
-                }
-                component.project(id, world, mutations);
-            }
-            true
-        }
         crate::WidgetKind::Drawer => {
             let mut component = RuntimeDrawer::new(widget.props.display_label())
                 .side(vue_drawer_side(&widget.props));
@@ -3022,14 +2973,6 @@ fn project_migrating_component(
                 component.slots_mut().body = Some(body);
             }
             component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Popover => {
-            RuntimePopover::new()
-                .trigger(widget.props.display_label())
-                .open(widget.props.active || widget.props.toggled)
-                .project(id, world, mutations);
-            retain_projected_children(widget, id, world, mutations);
             true
         }
         crate::WidgetKind::ContextMenu => {
@@ -3089,25 +3032,6 @@ fn project_migrating_component(
                 component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
             }
             component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Tooltip => {
-            let label = if !widget.props.display_label().is_empty() {
-                widget.props.display_label()
-            } else {
-                widget.props.hint.as_str()
-            };
-            RuntimeTooltip::new(label).project(id, world, mutations);
-            if world.standard_visual(id).is_some() {
-                mutations.set_standard_visual(id, None);
-            }
-            true
-        }
-        crate::WidgetKind::ActionMenu => {
-            RuntimeActionMenu::new()
-                .trigger(widget.props.display_label())
-                .open(widget.props.active || widget.props.toggled)
-                .project(id, world, mutations);
             true
         }
         crate::WidgetKind::ActionMenuItem => {
@@ -3173,13 +3097,6 @@ fn project_migrating_component(
             RuntimeLabeledValue::new(label, payload).project(id, world, mutations);
             true
         }
-        crate::WidgetKind::Checkbox => {
-            RuntimeCheckbox::new(widget.props.display_label(), widget.props.toggled)
-                .disabled(widget.props.disabled || widget.props.loading)
-                .invalid(widget.props.invalid)
-                .project(id, world, mutations);
-            true
-        }
         crate::WidgetKind::Switch => {
             let mut component =
                 RuntimeSwitch::new(widget.props.display_label(), widget.props.toggled)
@@ -3241,40 +3158,6 @@ fn project_migrating_component(
                 .selected(widget.props.active)
                 .disabled(widget.props.disabled)
                 .project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Range => {
-            let minimum = f64::from(widget.props.min);
-            let supplied_maximum = f64::from(widget.props.max);
-            let supplied_step = f64::from(widget.props.step);
-            let malformed = !minimum.is_finite()
-                || !supplied_maximum.is_finite()
-                || supplied_maximum <= minimum
-                || !supplied_step.is_finite()
-                || supplied_step <= 0.0;
-            let minimum = if minimum.is_finite() { minimum } else { 0.0 };
-            let maximum = if supplied_maximum.is_finite() && supplied_maximum > minimum {
-                supplied_maximum
-            } else {
-                minimum + 1.0
-            };
-            let step = if supplied_step.is_finite() && supplied_step > 0.0 {
-                supplied_step
-            } else {
-                1.0
-            };
-            let value = f64::from(widget.props.number).clamp(minimum, maximum);
-            let mut component = RuntimeRangeField::new(value, minimum, maximum, step)
-                .expect("normalized Vue range contract is valid")
-                .disabled(widget.props.disabled)
-                .invalid(widget.props.invalid || malformed);
-            if !widget.props.label.is_empty() {
-                component = component.label(Arc::<str>::from(widget.props.label.as_str()));
-            }
-            if !widget.props.unit.is_empty() {
-                component = component.unit(Arc::<str>::from(widget.props.unit.as_str()));
-            }
-            component.project(id, world, mutations);
             true
         }
         crate::WidgetKind::StatusBadge => {
@@ -3378,10 +3261,6 @@ fn project_migrating_component(
             component.project(id, world, mutations);
             true
         }
-        crate::WidgetKind::Spinner => {
-            RuntimeSpinner::new(widget.props.display_label()).project(id, world, mutations);
-            true
-        }
         crate::WidgetKind::FormField => {
             let mut component =
                 RuntimeFormField::new(widget.props.display_label()).size(widget.props.size);
@@ -3398,13 +3277,6 @@ fn project_migrating_component(
                 component = component.control_child(control);
             }
             component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::InteractiveCard => {
-            RuntimeInteractiveCard::new()
-                .selected(widget.props.active)
-                .disabled(widget.props.disabled)
-                .project(id, world, mutations);
             true
         }
         crate::WidgetKind::Column | crate::WidgetKind::Box if is_sidebar_frame_body(widget) => {
@@ -3540,19 +3412,6 @@ fn project_migrating_component(
                 component.title = Arc::from("");
             }
             component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Skeleton => {
-            let width = widget
-                .props
-                .layout
-                .width
-                .unwrap_or(nana_ui_core::LengthSpec::Fill);
-            let height = match widget.props.layout.height {
-                Some(nana_ui_core::LengthSpec::Px(h)) if h.is_finite() && h > 0.0 => h,
-                _ => 16.0,
-            };
-            RuntimeSkeleton::new(width, height).project(id, world, mutations);
             true
         }
         crate::WidgetKind::LevelMeter => {
