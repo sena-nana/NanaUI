@@ -751,14 +751,6 @@ pub(crate) fn status_tone_from_props(props: &WidgetProps) -> nana_ui_core::Statu
     nana_ui_core::StatusTone::Neutral
 }
 
-pub(crate) fn parse_validation_intent(raw: &str) -> Option<nana_ui_core::ValidationIntent> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "danger" | "error" => Some(nana_ui_core::ValidationIntent::Danger),
-        "warning" | "warn" => Some(nana_ui_core::ValidationIntent::Warning),
-        _ => None,
-    }
-}
-
 pub(crate) fn parse_toast_tone(raw: &str) -> Option<nana_ui_core::ToastTone> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "info" => Some(nana_ui_core::ToastTone::Info),
@@ -876,16 +868,6 @@ pub(crate) fn xy_pad_ranges(props: &WidgetProps) -> ((f32, f32), (f32, f32)) {
         .and_then(|raw| raw.trim().parse().ok())
         .unwrap_or(fallback.1);
     ((x_min, x_max), (y_min, y_max))
-}
-
-pub(crate) fn validation_intent_from_props(props: &WidgetProps) -> nana_ui_core::ValidationIntent {
-    if props.invalid {
-        return nana_ui_core::ValidationIntent::Danger;
-    }
-    match attr_value(props, &["intent", "data-intent"]).and_then(parse_validation_intent) {
-        Some(nana_ui_core::ValidationIntent::Danger) => nana_ui_core::ValidationIntent::Danger,
-        _ => nana_ui_core::ValidationIntent::Warning,
-    }
 }
 
 #[cfg(test)]
