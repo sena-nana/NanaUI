@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use nana_ui_core::{Icon, LengthSpec, SplitAxis, SplitPaneModel, StatusTone, ValidationIntent};
+use nana_ui_core::{
+    ButtonKind, CardKind, Icon, LengthSpec, SplitAxis, SplitPaneModel, StatusTone,
+    SwitchControlPosition, ValidationIntent,
+};
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::{
@@ -146,11 +149,16 @@ impl RegisterableComponent for Switch {
     const TYPE_ID: &'static str = "nana.switch";
     const TAGS: &'static [&'static str] = &["switch", "toggle"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Switch::new(spec.display_label(), spec.toggled)
+        let mut component = Switch::new(spec.display_label(), spec.toggled)
             .disabled(spec.disabled)
             .loading(spec.loading)
             .invalid(spec.invalid)
             .size(spec.size)
+            .control_position(parse_control_position(spec.attr("control-position")));
+        if !spec.hint.is_empty() {
+            component = component.hint(Arc::<str>::from(spec.hint));
+        }
+        component
     }
 }
 
@@ -158,11 +166,19 @@ impl RegisterableComponent for Card {
     const TYPE_ID: &'static str = "nana.card";
     const TAGS: &'static [&'static str] = &["card"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut card = Card::new().kind(nana_ui_core::CardKind::Surface);
-        if !spec.display_label().is_empty() {
-            card = card.title(Arc::<str>::from(spec.display_label()));
+        let mut card = Card::new()
+            .kind(parse_card_kind(spec.attr("card-kind")))
+            .loading(spec.loading);
+        if !spec.label.is_empty() {
+            card = card.title(Arc::<str>::from(spec.label));
         }
-        card.loading(spec.loading)
+        if let Some(LengthSpec::Px(padding)) = spec.layout.padding_left {
+            card = card.padding(padding);
+        }
+        if let Some(LengthSpec::Px(height)) = spec.layout.height {
+            card = card.height(height);
+        }
+        card
     }
 }
 
@@ -275,7 +291,11 @@ impl RegisterableComponent for Progress {
     const TYPE_ID: &'static str = "nana.progress";
     const TAGS: &'static [&'static str] = &["progress"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Progress::new(spec.number as f64, spec.max.max(1.0) as f64)
+        let mut component = Progress::new(spec.number as f64, spec.max.max(1.0) as f64);
+        if !spec.display_label().is_empty() {
+            component = component.label(Arc::<str>::from(spec.display_label()));
+        }
+        component.cancellable(spec.attr("cancellable").is_some_and(truthy_attr))
     }
 }
 
@@ -291,7 +311,8 @@ impl RegisterableComponent for StatusBadge {
     const TYPE_ID: &'static str = "nana.status-badge";
     const TAGS: &'static [&'static str] = &["status", "status-badge", "statusbadge"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        StatusBadge::new(spec.display_label(), StatusTone::Neutral)
+        StatusBadge::new(spec.display_label(), parse_status_tone(spec.attr("tone")))
+            .compact(spec.attr("compact").is_some_and(truthy_attr))
     }
 }
 
@@ -300,7 +321,12 @@ impl RegisterableComponent for ValidationMessage {
     const TAGS: &'static [&'static str] =
         &["validation", "validation-message", "validationmessage"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        ValidationMessage::new(spec.display_label(), ValidationIntent::Danger)
+        let message = if spec.hint.is_empty() {
+            spec.display_label()
+        } else {
+            spec.hint
+        };
+        ValidationMessage::new(message, validation_intent_from_spec(spec))
     }
 }
 
@@ -431,7 +457,11 @@ impl RegisterableComponent for Toast {
     const TYPE_ID: &'static str = "nana.toast";
     const TAGS: &'static [&'static str] = &["toast"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Toast::new(spec.display_label(), ToastTone::Info)
+        let mut component = Toast::new(spec.display_label(), parse_toast_tone(spec.attr("tone")));
+        if !spec.hint.is_empty() {
+            component = component.description(Arc::<str>::from(spec.hint));
+        }
+        component.dismissible(spec.attr("dismissible").is_some_and(truthy_attr))
     }
 }
 
@@ -449,11 +479,15 @@ impl RegisterableComponent for ActionMenuItem {
     const TYPE_ID: &'static str = "nana.action-menu-item";
     const TAGS: &'static [&'static str] = &["action-menu-item"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        ActionMenuItem::new(spec.display_label())
+        let mut component = ActionMenuItem::new(spec.display_label())
             .active(spec.active)
-            .danger(spec.invalid)
+            .danger(action_menu_item_danger(spec))
             .disabled(spec.disabled)
-            .size(spec.size)
+            .size(spec.size);
+        if !spec.hint.is_empty() {
+            component = component.hint(Arc::<str>::from(spec.hint));
+        }
+        component
     }
 }
 
@@ -529,7 +563,14 @@ impl RegisterableComponent for LevelMeter {
     const TYPE_ID: &'static str = "nana.level-meter";
     const TAGS: &'static [&'static str] = &["level-meter", "level"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        LevelMeter::new(spec.number)
+        let mut component = LevelMeter::new(spec.number).tone(parse_status_tone(spec.attr("tone")));
+        if let Some(LengthSpec::Px(height)) = spec.layout.height
+            && height.is_finite()
+            && height > 0.0
+        {
+            component = component.height(height);
+        }
+        component
     }
 }
 
@@ -561,12 +602,24 @@ impl RegisterableComponent for ImageViewer {
     const TYPE_ID: &'static str = "nana.image-viewer";
     const TAGS: &'static [&'static str] = &["image-viewer"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let content = if spec.value.is_empty() {
+        let slot = spec
+            .attr("src")
+            .or_else(|| spec.attr("data-src"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or(spec.value);
+        let content = if slot.is_empty() {
             ImageViewerContent::None
         } else {
-            ImageViewerContent::host_texture(spec.value)
+            ImageViewerContent::host_texture(slot)
         };
-        ImageViewer::new(content)
+        let mut component = ImageViewer::new(content);
+        if !spec.display_label().is_empty() {
+            component = component.name(Arc::<str>::from(spec.display_label()));
+        }
+        if !spec.hint.is_empty() {
+            component = component.metadata(Arc::<str>::from(spec.hint));
+        }
+        component
     }
 }
 
@@ -646,6 +699,73 @@ impl RegisterableComponent for SidebarRow {
             .size(spec.size)
             .state(state)
     }
+}
+
+fn truthy_attr(value: &str) -> bool {
+    let value = value.trim();
+    !(value.eq_ignore_ascii_case("false") || value == "0")
+}
+
+fn parse_control_position(raw: Option<&str>) -> SwitchControlPosition {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "start" | "left" => SwitchControlPosition::Start,
+        _ => SwitchControlPosition::End,
+    }
+}
+
+fn parse_card_kind(raw: Option<&str>) -> CardKind {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "outlined" | "outline" => CardKind::Outlined,
+        "raised" | "elevated" => CardKind::Raised,
+        "flat" => CardKind::Flat,
+        "selected" => CardKind::Selected,
+        _ => CardKind::Surface,
+    }
+}
+
+fn parse_status_tone(raw: Option<&str>) -> StatusTone {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "info" => StatusTone::Info,
+        "success" => StatusTone::Success,
+        "warning" | "warn" => StatusTone::Warning,
+        "danger" | "error" => StatusTone::Danger,
+        _ => StatusTone::Neutral,
+    }
+}
+
+fn parse_toast_tone(raw: Option<&str>) -> ToastTone {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "success" => ToastTone::Success,
+        "warning" | "warn" => ToastTone::Warning,
+        "danger" | "error" => ToastTone::Danger,
+        _ => ToastTone::Info,
+    }
+}
+
+fn parse_validation_intent(raw: Option<&str>) -> ValidationIntent {
+    match raw.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "danger" | "error" => ValidationIntent::Danger,
+        _ => ValidationIntent::Warning,
+    }
+}
+
+fn validation_intent_from_spec(spec: &SemanticSpec<'_>) -> ValidationIntent {
+    if spec.invalid {
+        ValidationIntent::Danger
+    } else {
+        parse_validation_intent(spec.attr("intent").or_else(|| spec.attr("data-intent")))
+    }
+}
+
+fn action_menu_item_danger(spec: &SemanticSpec<'_>) -> bool {
+    spec.invalid
+        || spec.button_kind == ButtonKind::Danger
+        || spec.attr("danger").is_some_and(truthy_attr)
+        || spec
+            .attr("intent")
+            .or_else(|| spec.attr("data-intent"))
+            .or_else(|| spec.attr("data-variant"))
+            .is_some_and(|value| value.eq_ignore_ascii_case("danger"))
 }
 
 fn qr_placeholder() -> QrCode {

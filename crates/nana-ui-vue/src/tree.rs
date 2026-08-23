@@ -19,31 +19,27 @@ use nana_ui_runtime::AccessibilityUpdate;
 #[cfg(not(feature = "scene-view"))]
 use nana_ui_runtime::MeasureTextShaper;
 use nana_ui_runtime::{
-    AccessibilityDelta, AccessibilityRole, AccessibilityState,
-    ActionMenuItem as RuntimeActionMenuItem, AppContext, AppShell as RuntimeAppShell,
-    AppTitleBar as RuntimeAppTitleBar, CalendarHeatmap as RuntimeCalendarHeatmap,
-    CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy, Card as RuntimeCard,
-    CommandPalette as RuntimeCommandPalette, ComponentBindKind, ComponentTypeId, ComponentView,
-    ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode,
-    Dock as RuntimeDock, DockAxis, DockNode, Drawer as RuntimeDrawer,
-    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
-    GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint,
-    GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    HOST_TEXTURE_RENDERER, HighlightRequest, HostedTextarea as RuntimeHostedTextarea,
-    ImageViewer as RuntimeImageViewer, ImageViewerContent, ImeComposition, InteractionState,
+    AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
+    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar,
+    CalendarHeatmap as RuntimeCalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions,
+    CalendarLevelStrategy, CommandPalette as RuntimeCommandPalette, ComponentBindKind,
+    ComponentTypeId, ComponentView, ContextMenu as RuntimeContextMenu,
+    ContextMenuItem as RuntimeContextMenuItem, CustomRenderNode, Dock as RuntimeDock, DockAxis,
+    DockNode, Drawer as RuntimeDrawer, EmptyState as RuntimeEmptyState, Entity,
+    FormField as RuntimeFormField, GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint,
+    GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection,
+    GraphSize, GraphViewport, HOST_TEXTURE_RENDERER, HighlightRequest,
+    HostedTextarea as RuntimeHostedTextarea, ImeComposition, InteractionState,
     LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox, LayoutViewport,
-    LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem, ListItemSlots, ModalSurface,
-    MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
-    Progress as RuntimeProgress, QrCode as RuntimeQrCode,
+    ListItem as RuntimeListItem, ListItemSlots, ModalSurface, MutationQueue,
+    NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle, QrCode as RuntimeQrCode,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome, SemanticSpec,
     SettingsCard as RuntimeSettingsCard, SettingsPage as RuntimeSettingsPage,
     SettingsRow as RuntimeSettingsRow, SidebarFrame as RuntimeSidebarFrame,
-    SidebarRow as RuntimeSidebarRow, SplitPane as RuntimeSplitPane, StableNodeId,
-    StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch, TextContent, TextInputState,
-    Toast as RuntimeToast, TreeView as RuntimeTreeView, UiMutation, UiWorld,
-    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
-    WorkspaceRegionSlot, XYPad as RuntimeXYPad,
+    SidebarRow as RuntimeSidebarRow, SplitPane as RuntimeSplitPane, StableNodeId, TextContent,
+    TextInputState, TreeView as RuntimeTreeView, UiMutation, UiWorld, ValueEmphasis,
+    Workspace as RuntimeWorkspace, WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
 use nana_ui_scene::{RuntimeDocument, UiScene};
 
@@ -2694,9 +2690,131 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
             | crate::WidgetKind::Skeleton
             | crate::WidgetKind::Tooltip
             | crate::WidgetKind::ActionMenu
+            | crate::WidgetKind::ActionMenuItem
             | crate::WidgetKind::Dialog
             | crate::WidgetKind::Popover
+            | crate::WidgetKind::Switch
+            | crate::WidgetKind::Card
+            | crate::WidgetKind::Progress
+            | crate::WidgetKind::StatusBadge
+            | crate::WidgetKind::ValidationMessage
+            | crate::WidgetKind::Toast
+            | crate::WidgetKind::LevelMeter
+            | crate::WidgetKind::ImageViewer
     )
+}
+
+fn semantic_numeric_fields(widget: &crate::SemanticWidget) -> (f32, f32) {
+    match widget.kind {
+        crate::WidgetKind::Progress => (widget.props.progress, widget.props.progress_max),
+        crate::WidgetKind::LevelMeter => (
+            crate::widget_map::level_meter_value(&widget.props),
+            widget.props.max,
+        ),
+        _ => (widget.props.number, widget.props.max),
+    }
+}
+
+fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> {
+    let mut extras = Vec::new();
+    let missing = |name: &str| {
+        !widget
+            .props
+            .attrs
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case(name))
+    };
+    match widget.kind {
+        crate::WidgetKind::Switch if missing("control-position") => extras.push((
+            "control-position".into(),
+            match widget.props.control_position {
+                nana_ui_core::SwitchControlPosition::Start => "start",
+                nana_ui_core::SwitchControlPosition::End => "end",
+            }
+            .into(),
+        )),
+        crate::WidgetKind::Card if missing("card-kind") => extras.push((
+            "card-kind".into(),
+            match widget.props.card_kind {
+                nana_ui_core::CardKind::Surface => "surface",
+                nana_ui_core::CardKind::Outlined => "outlined",
+                nana_ui_core::CardKind::Raised => "raised",
+                nana_ui_core::CardKind::Flat => "flat",
+                nana_ui_core::CardKind::Selected => "selected",
+            }
+            .into(),
+        )),
+        crate::WidgetKind::StatusBadge => {
+            if missing("compact") && crate::widget_map::class_has_compact(&widget.props) {
+                extras.push(("compact".into(), "true".into()));
+            }
+            if missing("tone") {
+                extras.push((
+                    "tone".into(),
+                    status_tone_attr(crate::widget_map::status_tone_from_props(&widget.props))
+                        .into(),
+                ));
+            }
+        }
+        crate::WidgetKind::Toast => {
+            if missing("tone") {
+                extras.push((
+                    "tone".into(),
+                    toast_tone_attr(crate::widget_map::toast_tone_from_props(&widget.props)).into(),
+                ));
+            }
+            if missing("dismissible") && crate::widget_map::toast_dismissible(&widget.props) {
+                extras.push(("dismissible".into(), "true".into()));
+            }
+        }
+        crate::WidgetKind::Progress => {
+            if missing("cancellable") && crate::widget_map::progress_cancellable(&widget.props) {
+                extras.push(("cancellable".into(), "true".into()));
+            }
+        }
+        crate::WidgetKind::ActionMenuItem => {
+            if missing("danger") && crate::widget_map::action_menu_item_danger(&widget.props) {
+                extras.push(("danger".into(), "true".into()));
+            }
+        }
+        crate::WidgetKind::LevelMeter if missing("tone") => extras.push((
+            "tone".into(),
+            status_tone_attr(crate::widget_map::status_tone_from_props(&widget.props)).into(),
+        )),
+        crate::WidgetKind::ImageViewer if missing("src") => {
+            if let Some(src) = widget
+                .props
+                .native_props
+                .get("src")
+                .map(host_value_text)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+            {
+                extras.push(("src".into(), src));
+            }
+        }
+        _ => {}
+    }
+    extras
+}
+
+fn status_tone_attr(tone: nana_ui_core::StatusTone) -> &'static str {
+    match tone {
+        nana_ui_core::StatusTone::Neutral => "neutral",
+        nana_ui_core::StatusTone::Info => "info",
+        nana_ui_core::StatusTone::Success => "success",
+        nana_ui_core::StatusTone::Warning => "warning",
+        nana_ui_core::StatusTone::Danger => "danger",
+    }
+}
+
+fn toast_tone_attr(tone: nana_ui_core::ToastTone) -> &'static str {
+    match tone {
+        nana_ui_core::ToastTone::Info => "info",
+        nana_ui_core::ToastTone::Success => "success",
+        nana_ui_core::ToastTone::Warning => "warning",
+        nana_ui_core::ToastTone::Danger => "danger",
+    }
 }
 
 fn is_shell_composer_kind(kind: crate::WidgetKind) -> bool {
@@ -2750,12 +2868,19 @@ fn try_bind_registered_component(
         return None;
     }
     let layout = Arc::new(widget.props.layout.clone());
+    let extra_attrs = bind_attr_overrides(widget);
     let attr_pairs: Vec<(&str, &str)> = widget
         .props
         .attrs
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
+        .chain(
+            extra_attrs
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )
         .collect();
+    let (number, max) = semantic_numeric_fields(widget);
     let is_icon_button = type_id.as_str() == "nana.icon-button";
     let button_kind = if widget.kind == crate::WidgetKind::Chip {
         if widget.props.active || widget.props.toggled {
@@ -2789,9 +2914,9 @@ fn try_bind_registered_component(
         size: widget.props.size,
         icon: widget_icon(widget, snapshot),
         min: widget.props.min,
-        max: widget.props.max,
+        max,
         step: widget.props.step,
-        number: widget.props.number,
+        number,
         attrs: &attr_pairs,
         ..SemanticSpec::from_parts(&type_id, &layout)
     };
@@ -3022,30 +3147,6 @@ fn project_migrating_component(
                 .project(id, world, mutations);
             true
         }
-        crate::WidgetKind::Toast => {
-            let mut component = RuntimeToast::new(
-                widget.props.display_label(),
-                crate::widget_map::toast_tone_from_props(&widget.props),
-            )
-            .dismissible(crate::widget_map::toast_dismissible(&widget.props));
-            if !widget.props.hint.is_empty() {
-                component = component.description(Arc::<str>::from(widget.props.hint.as_str()));
-            }
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::ActionMenuItem => {
-            let mut component = RuntimeActionMenuItem::new(widget.props.display_label())
-                .active(widget.props.active)
-                .danger(crate::widget_map::action_menu_item_danger(&widget.props))
-                .disabled(widget.props.disabled)
-                .size(widget.props.size);
-            if !widget.props.hint.is_empty() {
-                component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
-            }
-            component.project(id, world, mutations);
-            true
-        }
         crate::WidgetKind::XYPad => {
             let ((x_min, x_max), (y_min, y_max)) = crate::widget_map::xy_pad_ranges(&widget.props);
             let mut component = RuntimeXYPad::new(crate::widget_map::xy_pad_value(&widget.props))
@@ -3097,36 +3198,6 @@ fn project_migrating_component(
             RuntimeLabeledValue::new(label, payload).project(id, world, mutations);
             true
         }
-        crate::WidgetKind::Switch => {
-            let mut component =
-                RuntimeSwitch::new(widget.props.display_label(), widget.props.toggled)
-                    .control_position(widget.props.control_position)
-                    .size(widget.props.size)
-                    .disabled(widget.props.disabled)
-                    .loading(widget.props.loading)
-                    .invalid(widget.props.invalid);
-            if !widget.props.hint.is_empty() {
-                component = component.hint(Arc::<str>::from(widget.props.hint.as_str()));
-            }
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Card => {
-            let mut component = RuntimeCard::new()
-                .kind(widget.props.card_kind)
-                .loading(widget.props.loading);
-            if !widget.props.label.is_empty() {
-                component = component.title(Arc::<str>::from(widget.props.label.as_str()));
-            }
-            if let Some(nana_ui_core::LengthSpec::Px(padding)) = widget.props.layout.padding_left {
-                component = component.padding(padding);
-            }
-            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height {
-                component = component.height(height);
-            }
-            component.project(id, world, mutations);
-            true
-        }
         crate::WidgetKind::ListItem => {
             let slot = |name: &str| {
                 widget.children.iter().find_map(|child| {
@@ -3158,28 +3229,6 @@ fn project_migrating_component(
                 .selected(widget.props.active)
                 .disabled(widget.props.disabled)
                 .project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::StatusBadge => {
-            RuntimeStatusBadge::new(
-                widget.props.display_label(),
-                crate::widget_map::status_tone_from_props(&widget.props),
-            )
-            .compact(crate::widget_map::class_has_compact(&widget.props))
-            .project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::ValidationMessage => {
-            let message = if !widget.props.hint.is_empty() {
-                widget.props.hint.as_str()
-            } else {
-                widget.props.display_label()
-            };
-            RuntimeValidationMessage::new(
-                message,
-                crate::widget_map::validation_intent_from_props(&widget.props),
-            )
-            .project(id, world, mutations);
             true
         }
         crate::WidgetKind::EmptyState => {
@@ -3245,20 +3294,6 @@ fn project_migrating_component(
                     mutations,
                 );
             }
-            true
-        }
-        crate::WidgetKind::Progress => {
-            let mut component = RuntimeProgress::new(
-                f64::from(widget.props.progress),
-                f64::from(widget.props.progress_max.max(1.0)),
-            );
-            let label = widget.props.display_label();
-            if !label.is_empty() {
-                component = component.label(Arc::<str>::from(label));
-            }
-            component =
-                component.cancellable(crate::widget_map::progress_cancellable(&widget.props));
-            component.project(id, world, mutations);
             true
         }
         crate::WidgetKind::FormField => {
@@ -3414,19 +3449,6 @@ fn project_migrating_component(
             component.project(id, world, mutations);
             true
         }
-        crate::WidgetKind::LevelMeter => {
-            let mut component =
-                RuntimeLevelMeter::new(crate::widget_map::level_meter_value(&widget.props))
-                    .tone(crate::widget_map::status_tone_from_props(&widget.props));
-            if let Some(nana_ui_core::LengthSpec::Px(height)) = widget.props.layout.height
-                && height.is_finite()
-                && height > 0.0
-            {
-                component = component.height(height);
-            }
-            component.project(id, world, mutations);
-            true
-        }
         crate::WidgetKind::CommandPalette => {
             let title = widget.props.display_label();
             let placeholder = if widget.props.placeholder.is_empty() {
@@ -3465,19 +3487,6 @@ fn project_migrating_component(
             let label = widget.props.display_label();
             if !label.is_empty() {
                 component = component.label(Arc::<str>::from(label));
-            }
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::ImageViewer => {
-            let content = image_viewer_content(&widget.props);
-            let mut component = RuntimeImageViewer::new(content);
-            let name = widget.props.display_label();
-            if !name.is_empty() {
-                component = component.name(Arc::<str>::from(name));
-            }
-            if !widget.props.hint.is_empty() {
-                component = component.metadata(Arc::<str>::from(widget.props.hint.as_str()));
             }
             component.project(id, world, mutations);
             true
@@ -4008,37 +4017,6 @@ fn tree_node_from_host(
             nana_ui_core::TreeNode::leaf(Arc::<str>::from(text.as_str()), text.clone()),
         ),
         _ => None,
-    }
-}
-
-fn image_viewer_content(props: &crate::WidgetProps) -> ImageViewerContent {
-    let slot = props
-        .native_props
-        .get("src")
-        .map(host_value_text)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            crate::widget_map::attr_value(props, &["src", "data-src"])
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-        .or_else(|| {
-            props
-                .native_props
-                .get("value")
-                .map(host_value_text)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
-        .or_else(|| {
-            let value = props.value.trim();
-            (!value.is_empty()).then(|| value.to_string())
-        });
-    match slot {
-        Some(slot) => ImageViewerContent::host_texture(slot),
-        None => ImageViewerContent::None,
     }
 }
 
