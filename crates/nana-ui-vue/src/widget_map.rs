@@ -637,17 +637,6 @@ fn tag_or_class_contains(props: &WidgetProps, needles: &[&str]) -> bool {
     })
 }
 
-pub(crate) fn form_field_support(props: &WidgetProps) -> (Option<&str>, Option<&str>) {
-    if props.hint.is_empty() {
-        return (None, None);
-    }
-    if props.invalid {
-        (None, Some(props.hint.as_str()))
-    } else {
-        (Some(props.hint.as_str()), None)
-    }
-}
-
 pub(crate) fn level_meter_value(props: &WidgetProps) -> f32 {
     if props.progress.is_finite() && props.progress != 0.0 {
         props.progress
@@ -1129,15 +1118,6 @@ mod tests {
             resolve_kind_from_hints("output", None, None, None),
             Some(WidgetKind::Text)
         );
-    }
-
-    #[test]
-    fn form_field_support_promotes_hint_to_error_when_invalid() {
-        let mut props = WidgetProps::default();
-        props.hint = "Required".into();
-        assert_eq!(form_field_support(&props), (Some("Required"), None));
-        props.invalid = true;
-        assert_eq!(form_field_support(&props), (None, Some("Required")));
     }
 
     #[test]

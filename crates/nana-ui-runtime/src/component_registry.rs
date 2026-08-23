@@ -7,10 +7,7 @@
 //! This is **not** the Vue JS host factory table (`nana_ui_vue::NativeComponentRegistry`).
 //! Register layout/hit/Scene components here via [`crate::ExtensionRegistrar::register_component`].
 
-use std::any::TypeId;
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::Arc;
+use std::{any::TypeId, collections::HashMap, fmt, sync::Arc};
 
 use bevy_ecs::component::Component;
 use nana_ui_core::{ButtonKind, ControlSize, Icon, LayoutStyle};
@@ -76,6 +73,8 @@ pub struct SemanticSpec<'a> {
     pub options: &'a [SemanticOption<'a>],
     /// Extra Vue/host attributes. Plugins read these instead of extending this struct.
     pub attrs: &'a [(&'a str, &'a str)],
+    /// Named child slots (`leading`, `body`, `control`, …). Not HostValue.
+    pub slots: &'a [(&'a str, StableNodeId)],
 }
 
 impl<'a> SemanticSpec<'a> {
@@ -103,6 +102,7 @@ impl<'a> SemanticSpec<'a> {
             number: 0.0,
             options: &[],
             attrs: &[],
+            slots: &[],
         }
     }
 
@@ -110,6 +110,12 @@ impl<'a> SemanticSpec<'a> {
         self.attrs
             .iter()
             .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(*value))
+    }
+
+    pub fn slot(&self, name: &str) -> Option<StableNodeId> {
+        self.slots
+            .iter()
+            .find_map(|(key, id)| key.eq_ignore_ascii_case(name).then_some(*id))
     }
 
     pub fn display_label(&self) -> &str {
@@ -309,5 +315,24 @@ mod tests {
     fn tags_normalize_nana_prefix() {
         assert_eq!(normalize_tag("nana-button"), "button");
         assert_eq!(normalize_tag("Button"), "button");
+    }
+
+    #[test]
+    fn slot_matches_case_insensitive_name() {
+        let type_id = ComponentTypeId::new("nana.list-item").unwrap();
+        let layout = std::sync::Arc::new(LayoutStyle::default());
+        let leading = StableNodeId::new(7).unwrap();
+        let slots = [("Leading", leading)];
+        let spec = SemanticSpec {
+            slots: &slots,
+            ..SemanticSpec::from_parts(&type_id, &layout)
+        };
+        assert_eq!(spec.slot("leading"), Some(leading));
+        assert_eq!(spec.slot("LEADING"), Some(leading));
+        assert_eq!(spec.slot("content"), None);
+        assert_eq!(
+            SemanticSpec::from_parts(&type_id, &layout).slot("leading"),
+            None
+        );
     }
 }
