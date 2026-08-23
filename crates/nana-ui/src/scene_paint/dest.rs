@@ -2,9 +2,54 @@
 
 use std::num::NonZeroU64;
 
+use super::clip::FragmentClip;
+
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
-const GROUP_UNIFORM_SIZE: u64 = 16;
+const GROUP_UNIFORM_SIZE: u64 = 64;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct GroupSlot {
+    pub opacity: f32,
+    pub clip: FragmentClip,
+}
+
+impl GroupSlot {
+    pub fn opacity(opacity: f32) -> Self {
+        Self {
+            opacity,
+            clip: FragmentClip::PASS,
+        }
+    }
+
+    pub fn clip(clip: FragmentClip) -> Self {
+        Self {
+            opacity: 1.0,
+            clip,
+        }
+    }
+}
+
+fn pack_group_slot(slot: &GroupSlot) -> [u8; GROUP_UNIFORM_SIZE as usize] {
+    let mut bytes = [0u8; GROUP_UNIFORM_SIZE as usize];
+    let fields = [
+        (0, slot.opacity),
+        (16, slot.clip.rect[0]),
+        (20, slot.clip.rect[1]),
+        (24, slot.clip.rect[2]),
+        (28, slot.clip.rect[3]),
+        (32, slot.clip.inv_abcd[0]),
+        (36, slot.clip.inv_abcd[1]),
+        (40, slot.clip.inv_abcd[2]),
+        (44, slot.clip.inv_abcd[3]),
+        (48, slot.clip.inv_ef[0]),
+        (52, slot.clip.inv_ef[1]),
+    ];
+    for (offset, value) in fields {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct DestPassCounts {
@@ -228,8 +273,10 @@ impl DestTarget {
         });
         let group_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui.scene.group.shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
-                "shader/layer.wgsl"
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(concat!(
+                include_str!("shader/color.wgsl"),
+                "\n",
+                include_str!("shader/layer.wgsl"),
             ))),
         });
         let group_pipeline_layout =
@@ -294,22 +341,21 @@ impl DestTarget {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layers: usize,
-        opacities: &[f32],
+        slots: &[GroupSlot],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         while self.group_layers.len() < layers {
             self.push_group_layer(device);
         }
-        let needed = (opacities.len() as u64).max(1);
+        let needed = (slots.len() as u64).max(1);
         if needed > self.group_uniform_slots {
             self.resize_group_uniforms(device, needed);
         }
-        for (slot, opacity) in opacities.iter().copied().enumerate() {
-            let mut bytes = [0u8; GROUP_UNIFORM_SIZE as usize];
-            bytes[..4].copy_from_slice(&opacity.to_le_bytes());
+        for (index, slot) in slots.iter().enumerate() {
+            let bytes = pack_group_slot(slot);
             queue.write_buffer(
                 &self.group_uniforms,
-                slot as u64 * GROUP_UNIFORM_STRIDE,
+                index as u64 * GROUP_UNIFORM_STRIDE,
                 &bytes,
             );
             if let Some(work) = gpu_work {

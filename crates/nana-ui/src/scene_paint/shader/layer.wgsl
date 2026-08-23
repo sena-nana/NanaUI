@@ -8,6 +8,10 @@ struct LayerUniforms {
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
+    clip_rect: vec4<f32>,
+    clip_inv_abcd: vec4<f32>,
+    clip_inv_ef: vec2<f32>,
+    _pad3: vec2<f32>,
 }
 
 @group(0) @binding(2)
@@ -33,5 +37,14 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Clip inverse is stored in dest pixels (`FragmentClip::for_physical_pixels`).
+    if !inside_transformed_rect(
+        input.position.xy,
+        layer.clip_rect,
+        layer.clip_inv_abcd,
+        layer.clip_inv_ef
+    ) {
+        discard;
+    }
     return textureSample(source, source_sampler, input.uv) * layer.opacity;
 }

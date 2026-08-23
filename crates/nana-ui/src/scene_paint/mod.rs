@@ -39,10 +39,11 @@ pub(crate) use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use clip::{
-    LogicalRect, fragment_clip, intersect_clips, local_rect, paint_affine, paint_origin,
-    physical_bounds, physical_scissor, transformed_aabb,
+    FragmentClip, LogicalRect, extra_fragment_clips, fragment_clip, intersect_clips, local_rect,
+    paint_affine, paint_origin, physical_bounds, physical_scissor, rotated_fragment_clips,
+    transformed_aabb,
 };
-use dest::{DestPassCounts, DestTarget};
+use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use mesh::{MeshPipeline, MeshRange};
 use quad::QuadPipeline;
@@ -238,7 +239,7 @@ impl SceneWgpuPainter {
         let mut group_depth = 0usize;
         let mut group_slots = 0u32;
         let mut max_group_depth = 0usize;
-        let mut group_opacities = Vec::new();
+        let mut group_slots_uniforms = Vec::new();
         for operation in operations.iter() {
             let id = match operation {
                 RenderOperation::PrepareExternal(_) => continue,
@@ -253,7 +254,7 @@ impl SceneWgpuPainter {
                 &mut group_depth,
                 &mut group_slots,
                 &mut max_group_depth,
-                &mut group_opacities,
+                &mut group_slots_uniforms,
                 scene.opacity_groups(primitive.node),
             );
             let Some(clip) = intersect_clips(viewport_clip, &primitive.clips, origin) else {
@@ -265,6 +266,7 @@ impl SceneWgpuPainter {
             let frag_clip = fragment_clip(&primitive.clips, origin);
             let affine = paint_affine(primitive.transform.0, origin);
             let bounds = local_rect(primitive.bounds);
+            let command_start = commands.len();
             match &primitive.kind {
                 ScenePrimitiveKind::Quad {
                     background,
@@ -481,6 +483,16 @@ impl SceneWgpuPainter {
                     }
                 }
             }
+            wrap_drawn_with_clip_dests(
+                &mut commands,
+                command_start,
+                &mut group_depth,
+                &mut group_slots,
+                &mut max_group_depth,
+                &mut group_slots_uniforms,
+                &clip_dests_for(&primitive.kind, &primitive.clips, origin),
+                scale,
+            );
         }
         sync_opacity_groups(
             &mut commands,
@@ -488,7 +500,7 @@ impl SceneWgpuPainter {
             &mut group_depth,
             &mut group_slots,
             &mut max_group_depth,
-            &mut group_opacities,
+            &mut group_slots_uniforms,
             Vec::new(),
         );
         let batch = batch_started.elapsed();
@@ -533,7 +545,7 @@ impl SceneWgpuPainter {
                 &self.device,
                 &self.queue,
                 max_group_depth,
-                &group_opacities,
+                &group_slots_uniforms,
                 Some(&gpu_work),
             );
         }
@@ -637,13 +649,62 @@ impl SceneWgpuPainter {
     }
 }
 
+fn clip_dests_for(
+    kind: &ScenePrimitiveKind,
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: [f32; 2],
+) -> Vec<FragmentClip> {
+    // Custom GPU nodes only have AABB scissor. Wrap every rotated parallelogram
+    // so SceneGpuRenderer need not implement fragment clip. Built-in primitives
+    // already stamp the innermost clip into vertex attrs.
+    let keep_innermost = matches!(
+        kind,
+        ScenePrimitiveKind::Custom(custom) if custom.renderer.as_ref() != "nana.host-texture"
+    );
+    if keep_innermost {
+        rotated_fragment_clips(clips, origin)
+    } else {
+        extra_fragment_clips(clips, origin)
+    }
+}
+
+fn wrap_drawn_with_clip_dests(
+    commands: &mut Vec<DrawCommand>,
+    start: usize,
+    depth: &mut usize,
+    slots: &mut u32,
+    max_depth: &mut usize,
+    uniforms: &mut Vec<GroupSlot>,
+    clips: &[FragmentClip],
+    scale: f32,
+) {
+    if clips.is_empty() || commands.len() == start {
+        return;
+    }
+    let drawn: Vec<_> = commands.drain(start..).collect();
+    for clip in clips {
+        let layer = *depth;
+        let slot = *slots;
+        *slots = slots.saturating_add(1);
+        *depth = depth.saturating_add(1);
+        *max_depth = (*max_depth).max(*depth);
+        uniforms.push(GroupSlot::clip(clip.for_physical_pixels(scale)));
+        commands.push(DrawCommand::PushGroup { layer, slot });
+    }
+    commands.extend(drawn);
+    for _ in clips {
+        *depth = depth.saturating_sub(1);
+        commands.push(DrawCommand::PopGroup);
+    }
+}
+
 fn sync_opacity_groups(
     commands: &mut Vec<DrawCommand>,
     stack: &mut Vec<nana_ui_scene::OpacityGroup>,
     depth: &mut usize,
     slots: &mut u32,
     max_depth: &mut usize,
-    opacities: &mut Vec<f32>,
+    uniforms: &mut Vec<GroupSlot>,
     needed: Vec<nana_ui_scene::OpacityGroup>,
 ) {
     let common = stack
@@ -652,7 +713,7 @@ fn sync_opacity_groups(
         .take_while(|(open, want)| open.node == want.node)
         .count();
     while stack.len() > common {
-        pop_opacity_group(commands, stack, depth, slots, opacities);
+        pop_opacity_group(commands, stack, depth, slots, uniforms);
     }
     for group in needed.into_iter().skip(common) {
         let layer = *depth;
@@ -660,7 +721,7 @@ fn sync_opacity_groups(
         *slots = slots.saturating_add(1);
         *depth = depth.saturating_add(1);
         *max_depth = (*max_depth).max(*depth);
-        opacities.push(group.opacity);
+        uniforms.push(GroupSlot::opacity(group.opacity));
         commands.push(DrawCommand::PushGroup { layer, slot });
         stack.push(group);
     }
@@ -671,13 +732,13 @@ fn pop_opacity_group(
     stack: &mut Vec<nana_ui_scene::OpacityGroup>,
     depth: &mut usize,
     slots: &mut u32,
-    opacities: &mut Vec<f32>,
+    uniforms: &mut Vec<GroupSlot>,
 ) {
     stack.pop();
     *depth = depth.saturating_sub(1);
     if matches!(commands.last(), Some(DrawCommand::PushGroup { .. })) {
         commands.pop();
-        opacities.pop();
+        uniforms.pop();
         *slots = slots.saturating_sub(1);
         return;
     }
@@ -913,6 +974,131 @@ mod tests {
 
     use super::*;
     use crate::HostTextureRegistry;
+
+    #[derive(Debug)]
+    struct FillClipRenderer {
+        pipeline: wgpu::RenderPipeline,
+    }
+
+    impl FillClipRenderer {
+        fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("nana-ui.test.fill.shader"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
+                    r#"
+                    @vertex
+                    fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+                        var positions = array<vec2<f32>, 3>(
+                            vec2<f32>(-1.0, -1.0),
+                            vec2<f32>(3.0, -1.0),
+                            vec2<f32>(-1.0, 3.0),
+                        );
+                        return vec4<f32>(positions[index], 0.0, 1.0);
+                    }
+
+                    @fragment
+                    fn fs_main() -> @location(0) vec4<f32> {
+                        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+                    }
+                    "#,
+                )),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("nana-ui.test.fill.pipeline"),
+                bind_group_layouts: &[],
+                immediate_size: 0,
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("nana-ui.test.fill.pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            Self { pipeline }
+        }
+    }
+
+    impl SceneGpuRenderer for FillClipRenderer {
+        fn prepare(&self, _node: &SceneGpuNode, _context: SceneGpuPrepareContext<'_>) {}
+
+        fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>) {
+            if context.bounds.width == 0 || context.bounds.height == 0 {
+                return;
+            }
+            let mut pass = context
+                .encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("nana-ui.test.fill"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: context.target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            self.draw_in_pass(
+                node,
+                &mut pass,
+                SceneGpuPassContext {
+                    device: context.device,
+                    queue: context.queue,
+                    bounds: context.bounds,
+                    clip: context.clip,
+                    dest_size: [
+                        context.clip.x.saturating_add(context.clip.width).max(1),
+                        context.clip.y.saturating_add(context.clip.height).max(1),
+                    ],
+                    gpu_work: context.gpu_work,
+                },
+            );
+        }
+
+        fn draw_in_pass(
+            &self,
+            _node: &SceneGpuNode,
+            pass: &mut wgpu::RenderPass<'_>,
+            context: SceneGpuPassContext<'_>,
+        ) -> bool {
+            if context.clip.width == 0 || context.clip.height == 0 {
+                return false;
+            }
+            pass.set_pipeline(&self.pipeline);
+            pass.set_scissor_rect(
+                context.clip.x,
+                context.clip.y,
+                context.clip.width,
+                context.clip.height,
+            );
+            pass.draw(0..3, 0..1);
+            true
+        }
+    }
 
     #[test]
     fn empty_scene_validates() {
@@ -1321,6 +1507,239 @@ mod tests {
         );
         drop(view);
         drop(texture);
+    }
+
+    #[test]
+    fn nested_rotated_clips_reject_quad_inside_inner_outside_outer() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let mut inner = overflow_parent(3, &[4], 0.0, 0.0, 64.0, 64.0, None);
+        inner.parent = Some(StableNodeId::new(2).unwrap());
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 8.0, 8.0, 16.0, 16.0, [0.0, 0.0, 1.0, 1.0]),
+                rotated_overflow_parent(2, &[3], 16.0, 16.0, 32.0, 32.0),
+                inner,
+                colored_quad_child(4, 3, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        let child = scene
+            .primitives()
+            .find(|primitive| {
+                matches!(
+                    primitive.kind,
+                    ScenePrimitiveKind::Quad {
+                        background: Some([1.0, 0.0, 0.0, 1.0]),
+                        ..
+                    }
+                )
+            })
+            .expect("overflowing child quad");
+        assert!(
+            super::clip::rotated_fragment_clips(
+                &child.clips,
+                super::clip::paint_origin([0.0, 0.0], [0.0, 0.0])
+            )
+            .len()
+                >= 2,
+            "child must carry two 45° parallelograms, got {:?}",
+            child.clips
+        );
+        let (probe_x, probe_y) = nested_rotated_overflow_probe(&child.clips);
+
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui nested rotated clip"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("encoded frame records dest passes");
+        assert!(
+            counts.group >= 1,
+            "two rotated clips must dest-composite the extra parallelogram, got {counts:?}"
+        );
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let probe = pixel(&pixels, 64, probe_x, probe_y);
+        let inside = pixel(&pixels, 64, 32, 32);
+        assert!(
+            !is_red_slot(probe),
+            "nested extra clip must reject inner-inside/outer-outside, pixel ({probe_x},{probe_y})={probe:?}"
+        );
+        assert!(
+            is_red_slot(inside),
+            "intersection of both 45° clips must still paint, got {inside:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn rotated_clip_does_not_paint_custom_in_aabb_outside_rect() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 8.0, 8.0, 16.0, 16.0, [0.0, 0.0, 1.0, 1.0]),
+                rotated_overflow_parent(2, &[3], 16.0, 16.0, 32.0, 32.0),
+                custom_render_child(3, 2, 0.0, 0.0, 64.0, 64.0, "test.fill"),
+            ],
+            [],
+        );
+        let mut renderers = SceneGpuRendererRegistry::new();
+        renderers.insert("test.fill", Arc::new(FillClipRenderer::new(&device, format)));
+        let (probe_x, probe_y) = aabb_outside_rotated_overflow_probe();
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rotated clip custom"),
+        });
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &view,
+                viewport,
+                None,
+                Some(&renderers),
+            )
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("encoded frame records dest passes");
+        assert!(
+            counts.group >= 1,
+            "rotated Custom must dest-wrap fragment clip, got {counts:?}"
+        );
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let sibling = pixel(&pixels, 64, probe_x, probe_y);
+        let inside = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_blue_slot(sibling),
+            "Custom AABB scissor must not leak rotated overflow, pixel ({probe_x},{probe_y})={sibling:?}"
+        );
+        assert!(
+            is_red_slot(inside),
+            "rotated clip interior must still paint Custom, got {inside:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn axis_aligned_clips_do_not_dest_wrap() {
+        let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let aligned = [ClipRegion {
+            bounds: SceneRect {
+                x: 10.0,
+                y: 10.0,
+                width: 20.0,
+                height: 20.0,
+            },
+            transform: AffineTransform::IDENTITY,
+        }];
+        let rotated = {
+            let k = std::f32::consts::FRAC_1_SQRT_2;
+            [ClipRegion {
+                bounds: SceneRect {
+                    x: 16.0,
+                    y: 16.0,
+                    width: 32.0,
+                    height: 32.0,
+                },
+                transform: AffineTransform(
+                    PaintTransform {
+                        a: k,
+                        b: k,
+                        c: -k,
+                        d: k,
+                        ..PaintTransform::default()
+                    }
+                    .around_center(16.0, 16.0, 32.0, 32.0),
+                ),
+            }]
+        };
+        let custom = ScenePrimitiveKind::Custom(CustomRenderNode::new("test.fill", "slot", 1));
+        let quad = ScenePrimitiveKind::Quad {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            border_color: None,
+            border_width: 0.0,
+            corner_radius: 0.0,
+            shadow: None,
+        };
+        assert!(clip_dests_for(&custom, &aligned, origin).is_empty());
+        assert!(clip_dests_for(&quad, &aligned, origin).is_empty());
+        assert_eq!(clip_dests_for(&custom, &rotated, origin).len(), 1);
+        assert!(
+            clip_dests_for(&quad, &rotated, origin).is_empty(),
+            "single rotated clip stays in Quad vertex attrs"
+        );
+        assert_eq!(
+            super::clip::fragment_clip(&aligned, origin),
+            super::clip::FragmentClip::PASS
+        );
+
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                overflow_parent(1, &[2], 0.0, 0.0, 64.0, 64.0, None),
+                colored_quad_child(2, 1, 8.0, 8.0, 48.0, 48.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let target = test_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui axis-aligned clip no dest wrap"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &target, viewport, None, None)
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("encoded frame records dest passes");
+        assert_eq!(
+            counts.group, 0,
+            "axis-aligned overflow must stay PASS fragment_clip, got {counts:?}"
+        );
+        assert_eq!(
+            counts.msaa, 1,
+            "axis-aligned clip must not force dest-group interleave, got {counts:?}"
+        );
+        queue.submit([encoder.finish()]);
     }
 
     #[test]
@@ -1878,6 +2297,36 @@ mod tests {
         commit_scene(&mut context)
     }
 
+    fn nested_rotated_overflow_probe(clips: &[ClipRegion]) -> (u32, u32) {
+        let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let aabb = super::clip::intersect_clips(
+            super::clip::LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
+            clips,
+            origin,
+        )
+        .unwrap();
+        let rotated = super::clip::rotated_fragment_clips(clips, origin);
+        let inner = *rotated.last().expect("nested probe needs a rotated clip");
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                if px >= aabb.x
+                    && py >= aabb.y
+                    && px < aabb.x + aabb.width
+                    && py < aabb.y + aabb.height
+                    && super::clip::point_in_fragment_clip(px, py, inner)
+                    && !super::clip::point_in_fragment_clips(px, py, &rotated)
+                {
+                    return (x, y);
+                }
+            }
+        }
+        panic!(
+            "nested clips must include a pixel inside the inner parallelogram but outside the outer"
+        );
+    }
+
     fn aabb_outside_rotated_overflow_probe() -> (u32, u32) {
         let k = std::f32::consts::FRAC_1_SQRT_2;
         let clips = [ClipRegion {
@@ -1932,6 +2381,32 @@ mod tests {
         height: f32,
     ) -> ExtractedNode {
         let k = std::f32::consts::FRAC_1_SQRT_2;
+        overflow_parent(
+            value,
+            children,
+            x,
+            y,
+            width,
+            height,
+            Some(PaintTransform {
+                a: k,
+                b: k,
+                c: -k,
+                d: k,
+                ..PaintTransform::default()
+            }),
+        )
+    }
+
+    fn overflow_parent(
+        value: u64,
+        children: &[u64],
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        transform: Option<PaintTransform>,
+    ) -> ExtractedNode {
         ExtractedNode {
             id: StableNodeId::new(value).unwrap(),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),
@@ -1954,13 +2429,7 @@ mod tests {
                 layout: Arc::new(nana_ui_core::LayoutStyle {
                     overflow_x: OverflowSpec::Hidden,
                     overflow_y: OverflowSpec::Hidden,
-                    transform: Some(PaintTransform {
-                        a: k,
-                        b: k,
-                        c: -k,
-                        d: k,
-                        ..PaintTransform::default()
-                    }),
+                    transform,
                     ..nana_ui_core::LayoutStyle::default()
                 }),
                 ..NodeStyle::default()
@@ -2070,6 +2539,20 @@ mod tests {
             standard_visual_foreground: None,
             custom_render: None,
         }
+    }
+
+    fn custom_render_child(
+        value: u64,
+        parent: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        renderer: &str,
+    ) -> ExtractedNode {
+        let mut node = host_texture_child(value, parent, x, y, width, height, "slot");
+        node.custom_render = Some(CustomRenderNode::new(renderer, "slot", 1));
+        node
     }
 
     fn host_texture_child(
