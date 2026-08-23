@@ -11,7 +11,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     AppearanceEvent, ButtonKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
-    RuntimeInputAdapter, WorkspaceAction,
+    RuntimeInputAdapter, WorkspaceAction, WorkspaceModel,
 };
 use nana_ui_platform::InputEvent;
 
@@ -309,7 +309,9 @@ impl GallerySettingsRuntime {
         let _ = context.update_component(self.appearance, |section, _| {
             section.theme = state.theme;
             section.appearance = state.appearance;
-            section.platform_hint = Some(Arc::from(nana_ui::hosted_platform_material_support().hint()));
+            section.platform_hint = Some(Arc::from(
+                nana_ui::hosted_platform_material_support().hint(),
+            ));
             section.material_status = Some(Arc::from(state.material_outcome.status_label()));
         });
         let _ = context.update_component(self.about, |section, _| {
@@ -407,11 +409,26 @@ impl GallerySettingsRuntime {
         }
     }
 
+    pub(super) fn workspace_model(&self) -> Option<WorkspaceModel> {
+        self.document
+            .context()
+            .read(self.shell, |shell| shell.model.clone())
+            .ok()
+    }
+
+    pub(super) fn workspace_is_resizing(&self) -> bool {
+        self.document
+            .context()
+            .read(self.shell, |shell| shell.model.is_resizing())
+            .unwrap_or(false)
+    }
+
     pub(super) fn take_host_messages(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
         self.note_pointer(event);
         let mut messages = take_pending(&self.pending);
-        messages.extend(self.chrome.workspace_resize_messages(&self.document, event));
-        messages.extend(self.chrome.title_bar_chrome_messages(&self.document, event));
+        if !self.workspace_is_resizing() {
+            messages.extend(self.chrome.title_bar_chrome_messages(&self.document, event));
+        }
         #[cfg(test)]
         {
             self.last_window_chrome_events = messages
@@ -433,14 +450,12 @@ impl GallerySettingsRuntime {
         let _ =
             RuntimeInputAdapter::default().dispatch(self.document.context_mut(), document, &event);
         let mut messages = take_pending(&self.pending);
-        messages.extend(
-            self.chrome
-                .workspace_resize_messages(&self.document, &event),
-        );
-        messages.extend(
-            self.chrome
-                .title_bar_chrome_messages(&self.document, &event),
-        );
+        if !self.workspace_is_resizing() {
+            messages.extend(
+                self.chrome
+                    .title_bar_chrome_messages(&self.document, &event),
+            );
+        }
         #[cfg(test)]
         {
             self.last_window_chrome_events = messages

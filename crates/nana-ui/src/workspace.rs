@@ -115,6 +115,12 @@ impl WorkspaceController {
         self.model.restore_layout_json(value)
     }
 
+    /// Replace the live model. Used by hosts that keep a parallel controller
+    /// while product input mutates `DesktopShell.model`.
+    pub fn adopt_model(&mut self, model: nana_ui_core::WorkspaceModel) {
+        self.model = model;
+    }
+
     pub fn geometry(
         &self,
         logical_width: f32,

@@ -4,12 +4,8 @@ use nana_ui::runtime::{
     AlignSpec, AppContext, ComponentView, DesktopShell, Entity, FlexDirection, FrameworkError,
     IconButton, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind, NodeStyle,
     RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, Workspace,
-    WorkspaceResizeHandle,
 };
-use nana_ui::{
-    ButtonKind, ControlSize, Icon, LogicalPoint, RegionId, ThemeMode, TitleBarDragTracker,
-    WorkspaceAction,
-};
+use nana_ui::{ButtonKind, ControlSize, Icon, LogicalPoint, ThemeMode, TitleBarDragTracker};
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
 use super::GalleryMessage;
@@ -42,8 +38,6 @@ pub enum RuntimeSceneInput {
 #[derive(Default)]
 pub(super) struct RuntimeChrome {
     pub last_pointer: LogicalPoint,
-    pub resize_region: Option<RegionId>,
-    pub hovered_resize: Option<RegionId>,
     title_bar: TitleBarDragTracker,
 }
 
@@ -53,95 +47,11 @@ impl RuntimeChrome {
         document: &RuntimeDocument,
         event: &InputEvent,
     ) -> Vec<GalleryMessage> {
-        if let InputEvent::Pointer { phase, x, y, .. } = event {
-            let resizing = self.resize_region.is_some();
-            let grabbing_resize =
-                *phase == PointerPhase::Down && self.resize_handle_at(document, *x, *y).is_some();
-            if resizing || grabbing_resize {
-                return Vec::new();
-            }
-        }
         self.title_bar
             .events(document.context(), document.document(), event)
             .into_iter()
             .map(GalleryMessage::WindowChrome)
             .collect()
-    }
-
-    pub(super) fn workspace_resize_messages(
-        &mut self,
-        document: &RuntimeDocument,
-        event: &InputEvent,
-    ) -> Vec<GalleryMessage> {
-        match event {
-            InputEvent::Pointer {
-                phase: PointerPhase::Down,
-                button: 0,
-                is_primary: true,
-                x,
-                y,
-                ..
-            } => {
-                if let Some(region) = self.resize_handle_at(document, *x, *y) {
-                    self.resize_region = Some(region.clone());
-                    vec![
-                        GalleryMessage::Workspace(WorkspaceAction::ResizeStart(region.clone())),
-                        GalleryMessage::Workspace(WorkspaceAction::ResizeMove { x: *x, y: *y }),
-                    ]
-                } else {
-                    Vec::new()
-                }
-            }
-            InputEvent::Pointer {
-                phase: PointerPhase::Move,
-                x,
-                y,
-                ..
-            } => {
-                if self.resize_region.is_some() {
-                    vec![GalleryMessage::Workspace(WorkspaceAction::ResizeMove {
-                        x: *x,
-                        y: *y,
-                    })]
-                } else {
-                    let hovered = self.resize_handle_at(document, *x, *y);
-                    if hovered == self.hovered_resize {
-                        Vec::new()
-                    } else {
-                        self.hovered_resize = hovered.clone();
-                        vec![GalleryMessage::Workspace(WorkspaceAction::ResizeHover(
-                            hovered,
-                        ))]
-                    }
-                }
-            }
-            InputEvent::Pointer {
-                phase: PointerPhase::Up | PointerPhase::Cancel,
-                button: 0,
-                ..
-            } if self.resize_region.is_some() => {
-                self.resize_region = None;
-                vec![GalleryMessage::Workspace(WorkspaceAction::ResizeEnd)]
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    pub(super) fn resize_handle_at(
-        &self,
-        document: &RuntimeDocument,
-        x: f32,
-        y: f32,
-    ) -> Option<RegionId> {
-        let document_id = document.document();
-        let context = document.context();
-        let target = context.pointer_target(document_id, x, y)?;
-        context
-            .read(
-                Entity::<WorkspaceResizeHandle>::from_stable_id(target),
-                |handle| handle.region.clone(),
-            )
-            .ok()
     }
 }
 

@@ -1113,6 +1113,26 @@ impl GalleryApp {
         self.sync_dock_windows();
     }
 
+    fn absorb_runtime_workspace(&mut self) {
+        if self.state.settings_open {
+            if let Some(model) = self
+                .state
+                .settings_runtime
+                .as_ref()
+                .and_then(runtime_settings::GallerySettingsRuntime::workspace_model)
+            {
+                self.state.settings_workspace.adopt_model(model);
+            }
+        } else if let Some(model) = self
+            .state
+            .gallery_runtime
+            .as_ref()
+            .and_then(runtime_gallery::GalleryRuntime::workspace_model)
+        {
+            self.state.workspace.adopt_model(model);
+        }
+    }
+
     fn drain_primary_input(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
         let mut messages = if self.state.settings_open {
             self.state
@@ -1235,6 +1255,7 @@ impl RuntimeProgram for GalleryApp {
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         if id == WindowId::PRIMARY {
             let messages = self.drain_primary_input(event);
+            self.absorb_runtime_workspace();
             let mut update = self.apply_all(messages);
             if !self.state.settings_open {
                 self.persist_primary_dock();

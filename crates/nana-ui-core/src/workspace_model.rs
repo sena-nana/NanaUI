@@ -23,7 +23,7 @@ pub enum WorkspaceMutation {
     AdvanceAnimations,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct ResizeState {
     region: RegionId,
     axis: ResizeAxis,
@@ -32,13 +32,13 @@ struct ResizeState {
     start_extent: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum ResizeAxis {
     Horizontal,
     Vertical,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct RegionTransition {
     started_at: Duration,
     from_extent: f32,
@@ -63,7 +63,7 @@ impl RegionTransition {
 
 /// Owns persisted region layout, resize interaction, viewport facts and
 /// collapse transitions without depending on a window or renderer backend.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceModel {
     layout: WorkspaceLayout,
     transitions: HashMap<RegionId, RegionTransition>,
@@ -269,6 +269,10 @@ impl WorkspaceModel {
                 .resizing
                 .as_ref()
                 .is_some_and(|state| &state.region == region)
+    }
+
+    pub fn is_resizing(&self) -> bool {
+        self.resizing.is_some()
     }
 
     fn set_region_collapsed(&mut self, region: RegionId, collapsed: bool) -> bool {

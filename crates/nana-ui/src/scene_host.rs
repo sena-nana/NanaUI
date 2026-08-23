@@ -1199,6 +1199,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 context
                     .split_handle_near(document_id, cursor.0, cursor.1)
                     .or_else(|| context.dock_handle_near(document_id, cursor.0, cursor.1))
+                    .or_else(|| context.workspace_handle_near(document_id, cursor.0, cursor.1))
                     .and_then(|handle| context.world().layout_box(handle))
             })
             .map(|bounds| {

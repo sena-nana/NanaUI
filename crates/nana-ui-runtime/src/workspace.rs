@@ -1,19 +1,22 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use nana_ui_core::{
     AlignSpec, FlexDirection, LengthSpec, OverflowSpec, PositionSpec, RESIZE_HANDLE_SIZE, RegionId,
     RegionPlacement, RegionRole, RegionScope, RegionState, SemanticColorRole, UI_METRICS,
-    WorkspaceLayout, WorkspaceModel,
+    WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
 };
 
 use crate::view_components::{List, project_common};
 use crate::{
-    AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
-    InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, DesktopShell, DocumentId,
+    Entity, FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId,
+    TextContent, UiWorld,
 };
 
 const REGION_SEPARATOR_PX: f32 = 1.0;
+const HANDLE_HIT_SLOP: f32 = 6.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RegionEdges {
@@ -106,6 +109,7 @@ pub struct Workspace {
     pub primary_column: Option<StableNodeId>,
     pub primary_row: Option<StableNodeId>,
     pub editor_stack: Option<StableNodeId>,
+    pub model: WorkspaceModel,
 }
 
 impl Workspace {
@@ -150,6 +154,7 @@ impl Workspace {
             primary_column: None,
             primary_row: None,
             editor_stack: None,
+            model: model.clone(),
         }
     }
 
@@ -171,6 +176,15 @@ impl Workspace {
         self.primary_column = primary_column;
         self.primary_row = primary_row;
         self.editor_stack = editor_stack;
+    }
+
+    pub fn apply(&mut self, mutation: WorkspaceMutation, now: Duration) -> bool {
+        if !self.model.update(mutation, now) {
+            return false;
+        }
+        let model = self.model.clone();
+        self.refresh_from_model(&model);
+        true
     }
 
     pub fn slot(mut self, id: RegionId, content: StableNodeId) -> Self {
@@ -413,7 +427,7 @@ impl Workspace {
             {
                 mutations.insert(region, handle, None);
             }
-            let highlighted = self.hovered_resize.as_ref() == Some(state.id());
+            let highlighted = self.model.resize_highlighted(state.id());
             if world.text(handle) != Some("") {
                 mutations.set_text(
                     handle,
@@ -887,47 +901,283 @@ impl AppContext {
             .node(workspace.stable_id())
             .map(|node| node.document)
             .ok_or(FrameworkError::MissingView(workspace.stable_id()))?;
-        let (mut middle, mut primary_column, mut primary_row, mut editor_stack) =
-            self.read(workspace, |workspace| {
-                (
-                    workspace.middle,
-                    workspace.primary_column,
-                    workspace.primary_row,
-                    workspace.editor_stack,
-                )
-            })?;
+        let snapshot = self.read(workspace, |workspace| {
+            (
+                workspace.middle,
+                workspace.primary_column,
+                workspace.primary_row,
+                workspace.editor_stack,
+                workspace.handles.clone(),
+                workspace.layout.clone(),
+                workspace.slots.clone(),
+            )
+        })?;
+        let (
+            mut middle,
+            mut primary_column,
+            mut primary_row,
+            mut editor_stack,
+            mut handles,
+            layout,
+            slots,
+        ) = snapshot;
+        let mut chrome_changed = false;
         if middle.is_none() {
             middle = Some(
                 self.create_detached_component(document, Workspace::middle_track())?
                     .stable_id(),
             );
+            chrome_changed = true;
         }
         if primary_column.is_none() {
             primary_column = Some(
                 self.create_detached_component(document, Workspace::primary_stack())?
                     .stable_id(),
             );
+            chrome_changed = true;
         }
         if primary_row.is_none() {
             primary_row = Some(
                 self.create_detached_component(document, Workspace::primary_track())?
                     .stable_id(),
             );
+            chrome_changed = true;
         }
         if editor_stack.is_none() {
             editor_stack = Some(
                 self.create_detached_component(document, Workspace::editor_stack())?
                     .stable_id(),
             );
+            chrome_changed = true;
         }
-        self.update_component(workspace, |workspace, _| {
-            workspace.middle = middle;
-            workspace.primary_column = primary_column;
-            workspace.primary_row = primary_row;
-            workspace.editor_stack = editor_stack;
-        })?;
-        Ok(true)
+        let mut handles_changed = false;
+        for slot in &slots {
+            let Some(state) = layout.region(&slot.id) else {
+                continue;
+            };
+            if !wants_resize_handle(state) {
+                continue;
+            }
+            let existing = handles
+                .get(&slot.id)
+                .copied()
+                .filter(|id| self.world().contains(*id));
+            if existing.is_some() {
+                continue;
+            }
+            let handle = create_workspace_handle(self, document, slot.id.clone())?;
+            handles.insert(slot.id.clone(), handle);
+            handles_changed = true;
+        }
+        if chrome_changed || handles_changed {
+            self.update_component(workspace, |workspace, _| {
+                workspace.middle = middle;
+                workspace.primary_column = primary_column;
+                workspace.primary_row = primary_row;
+                workspace.editor_stack = editor_stack;
+                workspace.handles = handles;
+            })?;
+        }
+        Ok(chrome_changed || handles_changed)
     }
+
+    pub fn is_workspace_resize_handle(&self, id: StableNodeId) -> bool {
+        self.workspace_handle_id(id).is_some()
+    }
+
+    /// Handle under the pointer, including a few pixels of slop around the 8px bar.
+    pub fn workspace_handle_near(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Option<StableNodeId> {
+        if let Some(target) = self.pointer_target(document, x, y)
+            && let Some(handle) = self.workspace_handle_id(target)
+        {
+            return Some(handle);
+        }
+        self.world()
+            .document_order(document)
+            .into_iter()
+            .find(|&id| {
+                self.workspace_handle_id(id).is_some()
+                    && self
+                        .world()
+                        .layout_box(id)
+                        .is_some_and(|bounds| point_near_box(bounds, x, y, HANDLE_HIT_SLOP))
+            })
+    }
+
+    pub fn begin_workspace_resize(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+        now: Duration,
+    ) -> Result<bool, FrameworkError> {
+        let Some(handle) = self.workspace_handle_id(target) else {
+            return Ok(false);
+        };
+        let Some(workspace) = self.workspace_for_handle(handle) else {
+            return Ok(false);
+        };
+        let Some(region) = self.handle_region(handle) else {
+            return Ok(false);
+        };
+        let changed = self.update_component(workspace, |workspace, cx| {
+            let started = workspace.apply(WorkspaceMutation::ResizeStart(region), now);
+            let moved = workspace.apply(WorkspaceMutation::ResizeMove { x, y }, now);
+            if started || moved {
+                cx.mutations().request_focus(document, Some(handle));
+                cx.mutations().capture_pointer(pointer_id, handle);
+            }
+            started || moved
+        })?;
+        if changed {
+            write_back_shell_model(self, workspace)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn update_workspace_resize(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+        now: Duration,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(handle) = self.workspace_handle_id(target) else {
+            return Ok(false);
+        };
+        let Some(workspace) = self.workspace_for_handle(handle) else {
+            return Ok(false);
+        };
+        let changed = self.update_component(workspace, |workspace, _| {
+            workspace.apply(WorkspaceMutation::ResizeMove { x, y }, now)
+        })?;
+        if changed {
+            write_back_shell_model(self, workspace)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn end_workspace_resize(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        now: Duration,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(handle) = self.workspace_handle_id(target) else {
+            return Ok(false);
+        };
+        let Some(workspace) = self.workspace_for_handle(handle) else {
+            return Ok(false);
+        };
+        let changed = self.update_component(workspace, |workspace, cx| {
+            let changed = workspace.apply(WorkspaceMutation::ResizeEnd, now);
+            cx.mutations().release_pointer(pointer_id, handle);
+            changed
+        })?;
+        if changed {
+            write_back_shell_model(self, workspace)?;
+        }
+        Ok(changed)
+    }
+
+    fn workspace_handle_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+        self.read(Entity::<WorkspaceResizeHandle>::from_stable_id(id), |_| ())
+            .ok()
+            .map(|_| id)
+    }
+
+    fn handle_region(&self, handle: StableNodeId) -> Option<RegionId> {
+        self.read(
+            Entity::<WorkspaceResizeHandle>::from_stable_id(handle),
+            |handle| handle.region.clone(),
+        )
+        .ok()
+    }
+
+    fn workspace_for_handle(&self, handle: StableNodeId) -> Option<Entity<Workspace>> {
+        let mut current = Some(handle);
+        while let Some(id) = current {
+            if self
+                .read(Entity::<Workspace>::from_stable_id(id), |_| ())
+                .is_ok()
+            {
+                let entity = Entity::<Workspace>::from_stable_id(id);
+                let owns = self
+                    .read(entity, |workspace| {
+                        workspace.handles.values().any(|&id| id == handle)
+                    })
+                    .ok()
+                    .unwrap_or(false);
+                if owns {
+                    return Some(entity);
+                }
+            }
+            current = self.world().node(id).and_then(|node| node.parent);
+        }
+        None
+    }
+}
+
+fn wants_resize_handle(state: &RegionState) -> bool {
+    state.resizable_value() && !state.disabled_value() && state.fill_priority_value() == 0
+}
+
+fn point_near_box(bounds: crate::LayoutBox, x: f32, y: f32, slop: f32) -> bool {
+    x >= bounds.x - slop
+        && y >= bounds.y - slop
+        && x <= bounds.x + bounds.width + slop
+        && y <= bounds.y + bounds.height + slop
+}
+
+fn create_workspace_handle(
+    context: &mut AppContext,
+    document: DocumentId,
+    region: RegionId,
+) -> Result<StableNodeId, FrameworkError> {
+    Ok(context
+        .create_detached_component(document, WorkspaceResizeHandle::new(region))?
+        .stable_id())
+}
+
+fn write_back_shell_model(
+    context: &mut AppContext,
+    workspace: Entity<Workspace>,
+) -> Result<(), FrameworkError> {
+    let Some(parent) = context
+        .world()
+        .node(workspace.stable_id())
+        .and_then(|node| node.parent)
+    else {
+        return Ok(());
+    };
+    if context
+        .read(Entity::<DesktopShell>::from_stable_id(parent), |_| ())
+        .is_err()
+    {
+        return Ok(());
+    }
+    let model = context.read(workspace, |workspace| workspace.model.clone())?;
+    context.update_component(
+        Entity::<DesktopShell>::from_stable_id(parent),
+        |shell, _| {
+            shell.model = model;
+        },
+    )?;
+    Ok(())
 }
 
 fn handle_accessibility(region: &RegionId) -> AccessibilityState {
@@ -1451,6 +1701,134 @@ mod tests {
         assert_eq!(
             inspector_style.padding_left,
             Some(LengthSpec::Px(REGION_SEPARATOR_PX))
+        );
+    }
+
+    #[test]
+    fn assemble_creates_resize_handles_for_resizable_regions() {
+        let mut context = AppContext::new();
+        let resources = surface(&mut context);
+        let primary = surface(&mut context);
+        let inspector = surface(&mut context);
+        let model = WorkspaceModel::with_layout(five_region_layout());
+        let entity = mount(
+            &mut context,
+            Workspace::from_model(
+                &model,
+                [
+                    WorkspaceRegionSlot::new(RegionId::Resources, resources),
+                    WorkspaceRegionSlot::new(RegionId::Primary, primary),
+                    WorkspaceRegionSlot::new(RegionId::Inspector, inspector),
+                ],
+            ),
+        );
+        assert!(context.assemble_workspace(entity).unwrap());
+        let handles = context
+            .read(entity, |workspace| workspace.handles.clone())
+            .unwrap();
+        let resources_handle = *handles.get(&RegionId::Resources).expect("resources handle");
+        let inspector_handle = *handles.get(&RegionId::Inspector).expect("inspector handle");
+        assert!(handles.get(&RegionId::Primary).is_none());
+        assert!(
+            context
+                .world()
+                .node(resources)
+                .unwrap()
+                .children
+                .contains(&resources_handle)
+        );
+        assert!(
+            context
+                .world()
+                .node(inspector)
+                .unwrap()
+                .children
+                .contains(&inspector_handle)
+        );
+        assert_eq!(
+            context.world().node(resources_handle).unwrap().kind,
+            NodeKind::Element {
+                tag: "workspace-resize-handle".into(),
+            }
+        );
+        assert!(!context.assemble_workspace(entity).unwrap());
+    }
+
+    #[test]
+    fn pointer_drag_resizes_resources_and_keeps_size_after_assemble() {
+        let mut context = AppContext::new();
+        let resources = surface(&mut context);
+        let primary = surface(&mut context);
+        let model = WorkspaceModel::with_layout(five_region_layout());
+        let entity = mount(
+            &mut context,
+            Workspace::from_model(
+                &model,
+                [
+                    WorkspaceRegionSlot::new(RegionId::Resources, resources),
+                    WorkspaceRegionSlot::new(RegionId::Primary, primary),
+                ],
+            ),
+        );
+        context.assemble_workspace(entity).unwrap();
+        let handle = context
+            .read(entity, |workspace| {
+                workspace.handles.get(&RegionId::Resources).copied()
+            })
+            .unwrap()
+            .expect("resources handle");
+        context
+            .commit_mutations({
+                let mut mutations = crate::MutationQueue::new();
+                mutations.write_layout(
+                    handle,
+                    crate::LayoutBox {
+                        x: 196.0,
+                        y: 0.0,
+                        width: RESIZE_HANDLE_SIZE,
+                        height: 200.0,
+                    },
+                );
+                mutations
+            })
+            .unwrap();
+        context.rebuild_hit_test(document());
+
+        assert_eq!(
+            context.workspace_handle_near(document(), 200.0, 20.0),
+            Some(handle)
+        );
+        assert!(
+            context
+                .begin_workspace_resize(document(), 1, handle, 200.0, 20.0, Duration::ZERO)
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_workspace_resize(document(), 1, 240.0, 20.0, Duration::ZERO)
+                .unwrap()
+        );
+        assert!(
+            context
+                .end_workspace_resize(document(), 1, Duration::ZERO)
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .read(entity, |workspace| workspace
+                    .region_extent(&RegionId::Resources))
+                .unwrap(),
+            240.0
+        );
+        assert!(context.world().pointer_capture(document(), 1).is_none());
+
+        context.assemble_workspace(entity).unwrap();
+        assert_eq!(
+            context
+                .read(entity, |workspace| workspace
+                    .region_extent(&RegionId::Resources))
+                .unwrap(),
+            240.0
         );
     }
 }
