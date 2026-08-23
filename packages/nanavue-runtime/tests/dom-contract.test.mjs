@@ -32,11 +32,13 @@ function makeTreeHost() {
   const body = alloc("element", "body");
   nodes.get(html).children.push(body);
   nodes.get(body).parent = html;
+  const calls = [];
 
   return {
     html,
     body,
     alloc,
+    calls,
     insert(child, parent, anchor) {
       const c = nodes.get(child);
       const p = nodes.get(parent);
@@ -60,6 +62,7 @@ function makeTreeHost() {
       return false;
     },
     call(name, args) {
+      calls.push([name, args]);
       const a0 = args?.[0];
       const a1 = args?.[1];
       switch (name) {
@@ -198,7 +201,13 @@ describe("wrapNode source contract", () => {
     assert.match(rendererSrc, /defineProperty\(node,\s*"parentElement"/);
     assert.match(rendererSrc, /defineProperty\(node,\s*"firstChild"/);
     assert.match(rendererSrc, /defineProperty\(node,\s*"childNodes"/);
-    assert.match(rendererSrc, /hostCall\("contains"/);
+    assert.match(rendererSrc, /treeFlushGeneration/);
+    assert.match(rendererSrc, /parentIdOf/);
+    assert.match(rendererSrc, /isConnectedNode/);
+    assert.doesNotMatch(
+      rendererSrc,
+      /defineProperty\(node,\s*"isConnected"[\s\S]{0,400}querySelector\(\s*["']html["']/,
+    );
   });
 });
 
@@ -272,5 +281,24 @@ describe("wrapNode DOM contract", () => {
     assert.equal(containsTarget(outsideEl), false);
     assert.equal(containsTarget(wrapNode(inside, "element", null)), true);
     assert.equal(wrapNode(inside, "element", null), insideEl);
+  });
+
+  test("isConnected walks cached parent chain to html without querySelector", () => {
+    const outer = host.alloc("element", "div");
+    host.insert(outer, host.body, null);
+    const inner = host.alloc("element", "span");
+    host.insert(inner, outer, null);
+    const stray = host.alloc("element", "div");
+
+    const callsBefore = host.calls ? host.calls.length : 0;
+    const innerEl = wrapNode(inner, "element", "span");
+    const strayEl = wrapNode(stray, "element", "div");
+    assert.equal(innerEl.isConnected, true);
+    assert.equal(wrapNode(host.body, "element", "body").isConnected, true);
+    assert.equal(wrapNode(host.html, "element", "html").isConnected, true);
+    assert.equal(strayEl.isConnected, false);
+
+    const names = (host.calls || []).slice(callsBefore).map((c) => c[0]);
+    assert.equal(names.includes("querySelector"), false);
   });
 });

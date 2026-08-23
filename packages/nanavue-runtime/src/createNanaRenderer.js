@@ -18,6 +18,11 @@ export { hostCall } from "./layoutMetrics.js";
 const listeners = new Map();
 /** Stable host-node identity so parentNode/nextSibling/=== comparisons stay useful. */
 const nodeCache = new Map();
+/** Epoch for parent/child cache. Bumped only on hierarchy invalidation, never on style flush. */
+let treeFlushGeneration = 0;
+/** nid → live style store; flushed once per frame, not per setProperty. */
+const pendingStyleStores = new Map();
+let styleFlushScheduled = false;
 
 function contextForWindow(windowId) {
   const id = Number(windowId || 0);
@@ -494,6 +499,177 @@ function syncClassList(el, classValue) {
   el.classList.__replace(classValue == null ? "" : String(classValue));
 }
 
+function parentCacheFresh(node) {
+  return !!node && node.__parentGen === treeFlushGeneration && node.__parentId !== undefined;
+}
+
+function childrenCacheFresh(node) {
+  return !!node && node.__childrenGen === treeFlushGeneration && Array.isArray(node.__childIds);
+}
+
+function refillParent(node) {
+  let pid = null;
+  try {
+    const raw = hostCall("parentNode", [node.__nid]);
+    pid = raw == null ? null : Number(raw);
+  } catch (_err) {
+    pid = null;
+  }
+  node.__parentId = pid;
+  node.__parentGen = treeFlushGeneration;
+  return pid;
+}
+
+function refillChildren(node) {
+  let ids = [];
+  try {
+    ids = hostCall("childNodes", [node.__nid]) || [];
+  } catch (_err) {
+    ids = [];
+  }
+  node.__childIds = Array.from(ids, (id) => Number(id));
+  node.__childrenGen = treeFlushGeneration;
+  for (const cid of node.__childIds) {
+    const child = nodeCache.get(cid);
+    if (!child) continue;
+    child.__parentId = node.__nid;
+    child.__parentGen = treeFlushGeneration;
+  }
+  return node.__childIds;
+}
+
+function parentIdOf(node) {
+  if (parentCacheFresh(node)) return node.__parentId;
+  return refillParent(node);
+}
+
+function childIdsOf(node) {
+  if (childrenCacheFresh(node)) return node.__childIds;
+  return refillChildren(node);
+}
+
+function nodeTagName(node) {
+  return String((node && (node.tag || node.tagName)) || "").toLowerCase();
+}
+
+function markCreatedNode(node) {
+  if (!node) return node;
+  node.__parentId = null;
+  node.__parentGen = treeFlushGeneration;
+  node.__childIds = [];
+  node.__childrenGen = treeFlushGeneration;
+  return node;
+}
+
+function clearChildrenCache(node) {
+  if (!node || typeof node !== "object") return;
+  node.__childIds = [];
+  node.__childrenGen = treeFlushGeneration;
+}
+
+function invalidateChildrenCache(node) {
+  if (!node || typeof node !== "object") return;
+  node.__childIds = undefined;
+  node.__childrenGen = -1;
+}
+
+function unlinkChild(child) {
+  if (!child || typeof child !== "object") return;
+  if (parentCacheFresh(child) && child.__parentId != null) {
+    const prev = nodeCache.get(child.__parentId);
+    if (prev && childrenCacheFresh(prev)) {
+      const i = prev.__childIds.indexOf(child.__nid);
+      if (i >= 0) prev.__childIds.splice(i, 1);
+    }
+  }
+  child.__parentId = null;
+  child.__parentGen = treeFlushGeneration;
+}
+
+function linkChild(parent, child, anchor) {
+  if (!parent || !child) return;
+  unlinkChild(child);
+  child.__parentId = parent.__nid;
+  child.__parentGen = treeFlushGeneration;
+  if (!childrenCacheFresh(parent)) return;
+  const kids = parent.__childIds;
+  const cid = child.__nid;
+  const existing = kids.indexOf(cid);
+  if (existing >= 0) kids.splice(existing, 1);
+  const aid = nodeId(anchor);
+  const at = aid != null ? kids.indexOf(aid) : -1;
+  if (at >= 0) kids.splice(at, 0, cid);
+  else kids.push(cid);
+}
+
+function siblingNode(node, delta) {
+  const nid = nodeId(node);
+  if (nid == null) return null;
+  const parentId = parentIdOf(node);
+  if (parentId == null) return null;
+  const parent = wrapById(parentId);
+  if (!parent) return null;
+  const kids = childIdsOf(parent);
+  const i = kids.indexOf(nid);
+  if (i < 0) return null;
+  const sid = kids[i + delta];
+  return sid == null ? null : wrapById(sid);
+}
+
+function isConnectedNode(node) {
+  let cur = node;
+  const seen = new Set();
+  while (cur && Number.isFinite(Number(cur.__nid))) {
+    const nid = Number(cur.__nid);
+    if (seen.has(nid)) return false;
+    seen.add(nid);
+    const tag = nodeTagName(cur);
+    if (tag === "html" || tag === "#document") return true;
+    const pid = parentIdOf(cur);
+    if (pid == null) return tag === "body";
+    cur = wrapById(pid);
+  }
+  return false;
+}
+
+function flushPendingStyles() {
+  if (!pendingStyleStores.size) return;
+  const batch = [...pendingStyleStores.entries()];
+  pendingStyleStores.clear();
+  for (const [nid, store] of batch) {
+    try {
+      hostCall("patchProp", [nid, "style", { ...store }]);
+    } catch (_err) {}
+  }
+}
+
+function queueStyleFlush(nid, store) {
+  pendingStyleStores.set(nid, store);
+  if (styleFlushScheduled) return;
+  styleFlushScheduled = true;
+  const run = () => {
+    styleFlushScheduled = false;
+    flushPendingStyles();
+  };
+  if (typeof queueMicrotask === "function") queueMicrotask(run);
+  else Promise.resolve().then(run);
+}
+
+/** Commit batched style patches. Does not invalidate wrapNode parent/child cache. */
+export function flushHostFrame() {
+  flushPendingStyles();
+  styleFlushScheduled = false;
+}
+
+function installFlushHooks() {
+  globalThis.__nanaFlushHostFrame = flushHostFrame;
+  const prevNotify = globalThis.__nanaNotifyLayout;
+  globalThis.__nanaNotifyLayout = function nanaNotifyLayoutAndFlush() {
+    flushHostFrame();
+    if (typeof prevNotify === "function") return prevNotify.apply(this, arguments);
+  };
+}
+
 /** Resolve kind/tag from host when wrapping an id without local metadata. */
 function wrapById(id) {
   const nid = Number(id);
@@ -660,21 +836,33 @@ export function wrapNode(id, kind, tag) {
       return this.getAttribute(name) != null;
     },
     appendChild(child) {
+      const c = child && typeof child === "object" ? child : wrapById(nodeId(child));
       try {
-        hostCall("insert", [nodeId(child), nid, null]);
+        hostCall("insert", [nodeId(c), nid, null]);
       } catch (_err) {}
+      linkChild(this, c, null);
       return child;
     },
     removeChild(child) {
+      const c = child && typeof child === "object" ? child : wrapById(nodeId(child));
+      unlinkChild(c);
       try {
-        hostCall("remove", [nodeId(child)]);
+        hostCall("remove", [nodeId(c)]);
       } catch (_err) {}
       return child;
     },
     insertBefore(child, anchor) {
+      const c = child && typeof child === "object" ? child : wrapById(nodeId(child));
+      const a =
+        anchor && typeof anchor === "object"
+          ? anchor
+          : anchor != null
+            ? wrapById(nodeId(anchor))
+            : null;
       try {
-        hostCall("insert", [nodeId(child), nid, nodeId(anchor)]);
+        hostCall("insert", [nodeId(c), nid, nodeId(a)]);
       } catch (_err) {}
+      linkChild(this, c, a);
       return child;
     },
     querySelector(sel) {
@@ -716,15 +904,21 @@ export function wrapNode(id, kind, tag) {
       }
     },
     contains(other) {
-      // DOM Node.contains — required by LiliaUI overlays (click-outside).
+      // DOM Node.contains — walk cached parent chain (hostCall only on miss).
       const otherId = nodeId(other);
       if (otherId == null) return false;
       if (otherId === nid) return true;
-      try {
-        return hostCall("contains", [nid, otherId]) === true;
-      } catch (_err) {
-        return false;
+      let cur = wrapById(otherId);
+      const seen = new Set();
+      while (cur && Number.isFinite(Number(cur.__nid))) {
+        const pid = parentIdOf(cur);
+        if (pid == null) return false;
+        if (pid === nid) return true;
+        if (seen.has(pid)) return false;
+        seen.add(pid);
+        cur = wrapById(pid);
       }
+      return false;
     },
     scrollIntoView(arg) {
       scrollNodeIntoView(nid, arg);
@@ -742,17 +936,14 @@ export function wrapNode(id, kind, tag) {
   if (proto) {
     Object.setPrototypeOf(node, proto);
   }
-  // Live tree navigation — always reflect Rust NanaTreeDocument (not a JS shadow).
+  // Live tree navigation — JS parent/child cache from insert/remove; hostCall on miss
+  // or after hierarchy invalidation (insertStaticContent), never on style flush.
   Object.defineProperty(node, "parentNode", {
     configurable: true,
     enumerable: true,
     get() {
-      try {
-        const pid = hostCall("parentNode", [nid]);
-        return pid == null ? null : wrapById(pid);
-      } catch (_err) {
-        return null;
-      }
+      const pid = parentIdOf(this);
+      return pid == null ? null : wrapById(pid);
     },
   });
   Object.defineProperty(node, "parentElement", {
@@ -767,12 +958,7 @@ export function wrapNode(id, kind, tag) {
     configurable: true,
     enumerable: true,
     get() {
-      try {
-        const ids = hostCall("childNodes", [nid]) || [];
-        return Array.from(ids, (cid) => wrapById(cid));
-      } catch (_err) {
-        return [];
-      }
+      return childIdsOf(this).map((cid) => wrapById(cid));
     },
   });
   Object.defineProperty(node, "children", {
@@ -786,33 +972,37 @@ export function wrapNode(id, kind, tag) {
     configurable: true,
     enumerable: true,
     get() {
-      try {
-        const cid = hostCall("firstChild", [nid]);
-        return cid == null ? null : wrapById(cid);
-      } catch (_err) {
-        return null;
-      }
+      const kids = childIdsOf(this);
+      return kids.length ? wrapById(kids[0]) : null;
     },
   });
   Object.defineProperty(node, "lastChild", {
     configurable: true,
     enumerable: true,
     get() {
-      const kids = this.childNodes;
-      return kids.length ? kids[kids.length - 1] : null;
+      const kids = childIdsOf(this);
+      return kids.length ? wrapById(kids[kids.length - 1]) : null;
+    },
+  });
+  Object.defineProperty(node, "nextSibling", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return siblingNode(this, 1);
+    },
+  });
+  Object.defineProperty(node, "previousSibling", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return siblingNode(this, -1);
     },
   });
   Object.defineProperty(node, "isConnected", {
     configurable: true,
     enumerable: true,
     get() {
-      try {
-        const html = withNanaWindowContext(windowId, () => hostCall("querySelector", ["html"]));
-        if (html == null) return false;
-        return hostCall("contains", [html, nid]) === true;
-      } catch (_err) {
-        return false;
-      }
+      return isConnectedNode(this);
     },
   });
   // Vue patchProp(domProps) + Lucide/templates may set these directly.
@@ -824,6 +1014,7 @@ export function wrapNode(id, kind, tag) {
       const s = v == null ? "" : String(v);
       for (const child of Array.from(this.childNodes || [])) releaseNodeResources(child);
       this.attributes.innerHTML = s;
+      clearChildrenCache(this);
       try {
         hostCall("patchProp", [nid, "innerHTML", s]);
       } catch (_err) {
@@ -842,6 +1033,7 @@ export function wrapNode(id, kind, tag) {
       const s = v == null ? "" : String(v);
       for (const child of Array.from(this.childNodes || [])) releaseNodeResources(child);
       this.attributes.textContent = s;
+      if (node.__kind !== "text") clearChildrenCache(this);
       try {
         if (node.__kind === "text") hostCall("setText", [nid, s]);
         else hostCall("patchProp", [nid, "textContent", s]);
@@ -876,14 +1068,6 @@ export function wrapNode(id, kind, tag) {
   return node;
 }
 
-function linkChild(_parent, _child, _anchor) {
-  // Tree links live in Rust NanaTreeDocument; wrapNode getters read via host.
-}
-
-function unlinkChild(_child) {
-  // Detach is host `remove`; keep wrapNode cache for DOM identity.
-}
-
 function parseCssText(cssText) {
   const store = Object.create(null);
   for (const decl of String(cssText || "").split(";")) {
@@ -898,23 +1082,19 @@ function parseCssText(cssText) {
 
 function createStyleProxy(nid) {
   const store = Object.create(null);
-  const flush = () => {
-    try {
-      hostCall("patchProp", [nid, "style", { ...store }]);
-    } catch (_err) {}
-  };
+  const markDirty = () => queueStyleFlush(nid, store);
   return new Proxy(store, {
     get(target, prop) {
       if (prop === "setProperty") {
         return (name, value) => {
           target[name] = value;
-          flush();
+          markDirty();
         };
       }
       if (prop === "removeProperty") {
         return (name) => {
           delete target[name];
-          flush();
+          markDirty();
         };
       }
       if (prop === "cssText") {
@@ -928,11 +1108,11 @@ function createStyleProxy(nid) {
       if (prop === "cssText") {
         for (const k of Object.keys(target)) delete target[k];
         Object.assign(target, parseCssText(value));
-        flush();
+        markDirty();
         return true;
       }
       target[prop] = value;
-      flush();
+      markDirty();
       return true;
     },
   });
@@ -1172,7 +1352,7 @@ function bindImageSource(el, nid, source) {
  */
 export function createWidget(kind, props) {
   const id = hostCall("createWidget", [String(kind), props && typeof props === "object" ? { ...props } : {}]);
-  return wrapNode(id, "element", `nana-${String(kind).replace(/^nana-/i, "")}`);
+  return markCreatedNode(wrapNode(id, "element", `nana-${String(kind).replace(/^nana-/i, "")}`));
 }
 
 export const hostOps = {
@@ -1290,6 +1470,7 @@ export const hostOps = {
         const text = next == null ? "" : String(next);
         for (const child of Array.from((el && el.childNodes) || [])) releaseNodeResources(child);
         if (el) el.attributes[propKey] = text;
+        clearChildrenCache(el);
         hostCall("patchProp", [nid, propKey, text]);
         return;
       }
@@ -1363,12 +1544,12 @@ export const hostOps = {
     if (lower.startsWith("nana-") && lower !== "nana-gpu") {
       const kind = lower.slice("nana-".length);
       const id = hostCall("createWidget", [kind, seed || {}]);
-      const node = wrapNode(id, "element", tagName);
+      const node = markCreatedNode(wrapNode(id, "element", tagName));
       node.__isSVG = false;
       return node;
     }
     const id = hostCall("createElement", [tagName, ns, is, seed]);
-    const node = wrapNode(id, "element", tagName);
+    const node = markCreatedNode(wrapNode(id, "element", tagName));
     node.__isSVG = ns === "svg" || SVG_TAGS.has(lower);
     if (ns) node.__namespace = ns;
     if (is) {
@@ -1397,24 +1578,27 @@ export const hostOps = {
     return node;
   },
   createText(text) {
-    return wrapNode(hostCall("createText", [String(text)]), "text", null);
+    return markCreatedNode(wrapNode(hostCall("createText", [String(text)]), "text", null));
   },
   createComment(text) {
-    return wrapNode(hostCall("createComment", [String(text ?? "")]), "comment", null);
+    return markCreatedNode(wrapNode(hostCall("createComment", [String(text ?? "")]), "comment", null));
   },
   setText(node, text) {
     hostCall("setText", [nodeId(node), String(text)]);
   },
   setElementText(el, text) {
+    const n = el && typeof el === "object" ? el : wrapById(nodeId(el));
+    for (const child of Array.from((n && n.childNodes) || [])) releaseNodeResources(child);
+    clearChildrenCache(n);
     hostCall("setElementText", [nodeId(el), String(text)]);
   },
   parentNode(node) {
-    const id = hostCall("parentNode", [nodeId(node)]);
-    return id == null ? null : wrapById(id);
+    const n = node && typeof node === "object" ? node : wrapById(nodeId(node));
+    return n ? n.parentNode : null;
   },
   nextSibling(node) {
-    const id = hostCall("nextSibling", [nodeId(node)]);
-    return id == null ? null : wrapById(id);
+    const n = node && typeof node === "object" ? node : wrapById(nodeId(node));
+    return n ? siblingNode(n, 1) : null;
   },
   querySelector(sel) {
     const raw = String(sel ?? "");
@@ -1451,6 +1635,7 @@ export const hostOps = {
     ]);
     const first = wrapNode(pair[0], "element", null);
     const last = wrapNode(pair[1], "element", null);
+    invalidateChildrenCache(parent && typeof parent === "object" ? parent : wrapById(nodeId(parent)));
     return [first, last];
   },
   setScopeId(el, id) {
@@ -1634,6 +1819,7 @@ export function installEventBridge() {
 }
 
 installEventBridge();
+installFlushHooks();
 
 const nanaWindowHandles = new Map();
 
