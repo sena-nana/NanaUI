@@ -374,11 +374,24 @@ impl RegisterableComponent for Select {
     const TYPE_ID: &'static str = "nana.select";
     const TAGS: &'static [&'static str] = &["select"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Select::new((!spec.value.is_empty()).then_some(spec.value))
+        let placeholder = if spec.placeholder.is_empty() {
+            spec.hint
+        } else {
+            spec.placeholder
+        };
+        let mut component = Select::new((!spec.value.is_empty()).then_some(spec.value))
+            .options(spec.options.iter().map(|option| {
+                crate::SelectOption::new(option.value, option.label).disabled(option.disabled)
+            }))
             .size(spec.size)
             .disabled(spec.disabled)
             .loading(spec.loading)
             .invalid(spec.invalid)
+            .opened(spec.active || spec.toggled);
+        if !placeholder.is_empty() {
+            component = component.placeholder(Arc::<str>::from(placeholder));
+        }
+        component
     }
 }
 

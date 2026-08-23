@@ -42,6 +42,14 @@ impl fmt::Display for ComponentTypeId {
     }
 }
 
+/// Choice-control option. Application owns identity; this is display/disable only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticOption<'a> {
+    pub value: &'a str,
+    pub label: &'a str,
+    pub disabled: bool,
+}
+
 /// Narrow L1/L2 property bag. Not application business state.
 #[derive(Debug, Clone)]
 pub struct SemanticSpec<'a> {
@@ -65,6 +73,7 @@ pub struct SemanticSpec<'a> {
     pub max: f32,
     pub step: f32,
     pub number: f32,
+    pub options: &'a [SemanticOption<'a>],
     /// Extra Vue/host attributes. Plugins read these instead of extending this struct.
     pub attrs: &'a [(&'a str, &'a str)],
 }
@@ -92,6 +101,7 @@ impl<'a> SemanticSpec<'a> {
             max: 1.0,
             step: 0.1,
             number: 0.0,
+            options: &[],
             attrs: &[],
         }
     }

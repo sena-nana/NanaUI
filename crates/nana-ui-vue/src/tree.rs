@@ -34,12 +34,12 @@ use nana_ui_runtime::{
     ListItem as RuntimeListItem, ListItemSlots, ModalSurface, MutationQueue,
     NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
-    Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome, SemanticSpec,
-    SettingsCard as RuntimeSettingsCard, SettingsPage as RuntimeSettingsPage,
-    SettingsRow as RuntimeSettingsRow, SidebarFrame as RuntimeSidebarFrame,
-    SidebarRow as RuntimeSidebarRow, SplitPane as RuntimeSplitPane, StableNodeId, TextContent,
-    TextInputState, TreeView as RuntimeTreeView, UiMutation, UiWorld, ValueEmphasis,
-    Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
+    SelectionChrome, SemanticOption, SemanticSpec, SettingsCard as RuntimeSettingsCard,
+    SettingsPage as RuntimeSettingsPage, SettingsRow as RuntimeSettingsRow,
+    SidebarFrame as RuntimeSidebarFrame, SidebarRow as RuntimeSidebarRow,
+    SplitPane as RuntimeSplitPane, StableNodeId, TextContent, TextInputState,
+    TreeView as RuntimeTreeView, UiMutation, UiWorld, ValueEmphasis, Workspace as RuntimeWorkspace,
+    WorkspaceRegionSlot,
 };
 use nana_ui_scene::{RuntimeDocument, UiScene};
 
@@ -2674,6 +2674,10 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
     {
         return false;
     }
+    if widget.kind == crate::WidgetKind::Select {
+        return !crate::widget_map::is_search_dropdown(&widget.props)
+            && !crate::widget_map::is_dropdown_field(&widget.props);
+    }
     matches!(
         widget.kind,
         crate::WidgetKind::Column
@@ -2883,6 +2887,16 @@ fn try_bind_registered_component(
         )
         .collect();
     let (number, max) = semantic_numeric_fields(widget);
+    let option_list: Vec<SemanticOption<'_>> = widget
+        .props
+        .options
+        .iter()
+        .map(|option| SemanticOption {
+            value: option.value.as_str(),
+            label: option.label.as_str(),
+            disabled: option.disabled,
+        })
+        .collect();
     let is_icon_button = type_id.as_str() == "nana.icon-button";
     let button_kind = if widget.kind == crate::WidgetKind::Chip {
         if widget.props.active || widget.props.toggled {
@@ -2919,6 +2933,7 @@ fn try_bind_registered_component(
         max,
         step: widget.props.step,
         number,
+        options: &option_list,
         attrs: &attr_pairs,
         ..SemanticSpec::from_parts(&type_id, &layout)
     };
@@ -3072,21 +3087,7 @@ fn project_migrating_component(
                 }
                 component.project(id, world, mutations);
             } else {
-                let value = (!widget.props.value.is_empty()).then_some(widget.props.value.as_str());
-                let mut component = RuntimeSelect::new(value)
-                    .options(widget.props.options.iter().map(|option| {
-                        RuntimeSelectOption::new(option.value.as_str(), option.label.as_str())
-                            .disabled(option.disabled)
-                    }))
-                    .size(widget.props.size)
-                    .disabled(widget.props.disabled)
-                    .loading(widget.props.loading)
-                    .invalid(widget.props.invalid)
-                    .opened(widget.props.active || widget.props.toggled);
-                if !placeholder.is_empty() {
-                    component = component.placeholder(Arc::<str>::from(placeholder));
-                }
-                component.project(id, world, mutations);
+                return false;
             }
             true
         }
