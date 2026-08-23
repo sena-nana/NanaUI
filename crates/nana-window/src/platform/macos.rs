@@ -37,3 +37,18 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
 pub(crate) fn clear<W: HasWindowHandle + ?Sized>(window: &W) {
     let _ = clear_vibrancy(window);
 }
+
+pub(crate) fn set_application_icon_png(png: &[u8]) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(png);
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image));
+}

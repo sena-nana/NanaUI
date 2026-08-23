@@ -18,7 +18,7 @@ use crate::{
     CompositionInput, DocumentId, KeyboardInput, NodeHandle, PointerInput, SemanticSnapshot,
     VueHost, WheelInput, WindowLifecycleEvent, compose_vue_artifact,
 };
-use nana_ui_platform::ImeEvent;
+use nana_ui_platform::{ImeEvent, WindowIcon};
 
 /// Stable JS/native identity for one Vue window. Zero is the primary window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,6 +58,7 @@ pub struct VueWindowOptions {
     pub modal: bool,
     pub parent: Option<VueWindowId>,
     pub role: VueWindowRole,
+    pub icon: Option<WindowIcon>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -104,6 +105,7 @@ impl Default for VueWindowOptions {
             modal: false,
             parent: None,
             role: VueWindowRole::Main,
+            icon: None,
         }
     }
 }
@@ -195,6 +197,13 @@ pub enum VueWindowCommand {
     SetAlwaysOnTop {
         id: VueWindowId,
         always_on_top: bool,
+    },
+    SetIcon {
+        id: VueWindowId,
+        icon: Option<WindowIcon>,
+    },
+    SetApplicationIcon {
+        icon: Option<WindowIcon>,
     },
 }
 
@@ -666,7 +675,14 @@ impl VueRuntime {
         {
             let state = Arc::clone(&self.state);
             api.register("windowCreate", move |args| {
-                let options = VueWindowOptions::from_host_value(args.first());
+                let mut options = VueWindowOptions::from_host_value(args.first());
+                if let Some(icon) = optional_icon(
+                    args.first()
+                        .and_then(HostValue::as_object)
+                        .and_then(|map| map.get("icon")),
+                )? {
+                    options.icon = Some(icon);
+                }
                 let (id, mount_root) = state
                     .lock()
                     .map_err(state_poisoned)?
@@ -786,6 +802,34 @@ impl VueRuntime {
                 push_flag_command(&state, args, |id, always_on_top| {
                     VueWindowCommand::SetAlwaysOnTop { id, always_on_top }
                 })
+            });
+        }
+        {
+            let state = Arc::clone(&self.state);
+            api.register("windowSetIcon", move |args| {
+                let id = window_id_arg(args.first())?;
+                let icon = optional_icon(args.get(1))?;
+                let mut state = state.lock().map_err(state_poisoned)?;
+                let entry = state
+                    .windows
+                    .get_mut(&id)
+                    .ok_or_else(|| JsException::new(format!("unknown Vue window {}", id.0)))?;
+                entry.options.icon.clone_from(&icon);
+                state
+                    .commands
+                    .push_back(VueWindowCommand::SetIcon { id, icon });
+                Ok(HostValue::Null)
+            });
+        }
+        {
+            let state = Arc::clone(&self.state);
+            api.register("windowSetApplicationIcon", move |args| {
+                let icon = optional_icon(args.first())?;
+                let mut state = state.lock().map_err(state_poisoned)?;
+                state
+                    .commands
+                    .push_back(VueWindowCommand::SetApplicationIcon { icon });
+                Ok(HostValue::Null)
             });
         }
         {
@@ -949,6 +993,7 @@ impl VueRuntime {
                         modal: options.modal,
                         parent: options.parent.map(|parent| WindowId(parent.0)),
                         system_caption: !options.frameless,
+                        icon: options.icon,
                     },
                 },
                 VueWindowCommand::Close(id) => WindowCommand::Close(WindowId(id.0)),
@@ -991,6 +1036,13 @@ impl VueRuntime {
                         id: WindowId(id.0),
                         always_on_top,
                     }
+                }
+                VueWindowCommand::SetIcon { id, icon } => WindowCommand::SetIcon {
+                    id: WindowId(id.0),
+                    icon,
+                },
+                VueWindowCommand::SetApplicationIcon { icon } => {
+                    WindowCommand::SetApplicationIcon { icon }
                 }
             })
             .collect()
@@ -1342,6 +1394,63 @@ fn bool_value(value: Option<&HostValue>, fallback: bool) -> bool {
     value.and_then(HostValue::as_bool).unwrap_or(fallback)
 }
 
+fn optional_icon(value: Option<&HostValue>) -> Result<Option<WindowIcon>, JsException> {
+    match value {
+        None | Some(HostValue::Null) | Some(HostValue::Undefined) => Ok(None),
+        Some(value) => parse_window_icon(value).map(Some),
+    }
+}
+
+fn parse_window_icon(value: &HostValue) -> Result<WindowIcon, JsException> {
+    let Some(map) = value.as_object() else {
+        return Err(JsException::new("window icon must be an object"));
+    };
+    if let Some(png) = map.get("png").and_then(host_bytes) {
+        return nana_app_icon::window_icon_from_png(&png).map_err(JsException::new);
+    }
+    let width = map
+        .get("width")
+        .and_then(HostValue::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value as u32)
+        .ok_or_else(|| JsException::new("window icon width is required"))?;
+    let height = map
+        .get("height")
+        .and_then(HostValue::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value as u32)
+        .ok_or_else(|| JsException::new("window icon height is required"))?;
+    let rgba = map
+        .get("rgba")
+        .and_then(host_bytes)
+        .ok_or_else(|| JsException::new("window icon rgba or png is required"))?;
+    WindowIcon::from_rgba(rgba, width, height).map_err(|error| JsException::new(error.to_string()))
+}
+
+fn host_bytes(value: &HostValue) -> Option<Vec<u8>> {
+    if let Some(bytes) = value.as_bytes() {
+        return Some(bytes.to_vec());
+    }
+    if let Some(text) = value.as_str() {
+        let payload = text
+            .rsplit_once(',')
+            .map(|(_, data)| data)
+            .unwrap_or(text)
+            .trim();
+        return base64::Engine::decode(&base64::engine::general_purpose::STANDARD, payload).ok();
+    }
+    value.as_array().and_then(|items| {
+        items
+            .iter()
+            .map(|item| {
+                item.as_f64()
+                    .filter(|value| value.is_finite() && (0.0..256.0).contains(value))
+                    .map(|value| value as u8)
+            })
+            .collect()
+    })
+}
+
 fn geometry_value(geometry: &VueWindowGeometry) -> HostValue {
     HostValue::Object(
         [
@@ -1485,6 +1594,51 @@ mod tests {
                 if options.title == "Tool"
                     && options.role == VueWindowRole::Tool
                     && options.frameless
+        ));
+    }
+
+    #[test]
+    fn create_accepts_rgba_window_icon() {
+        let runtime = VueRuntime::default();
+        let api = runtime.host_api_registry();
+        api.call(
+            "windowCreate",
+            &[HostValue::Object(
+                [
+                    ("title".into(), HostValue::String("Icon".into())),
+                    (
+                        "icon".into(),
+                        HostValue::Object(
+                            [
+                                ("width".into(), HostValue::Number(1.0)),
+                                ("height".into(), HostValue::Number(1.0)),
+                                (
+                                    "rgba".into(),
+                                    HostValue::Array(vec![
+                                        HostValue::Number(73.0),
+                                        HostValue::Number(145.0),
+                                        HostValue::Number(215.0),
+                                        HostValue::Number(255.0),
+                                    ]),
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        ),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )],
+        )
+        .expect("create window with icon");
+        let commands = runtime.drain_runtime_window_commands();
+        assert!(matches!(
+            commands.as_slice(),
+            [nana_ui_platform::WindowCommand::Open { settings, .. }]
+                if settings.icon.as_ref().is_some_and(|icon| {
+                    icon.width == 1 && icon.rgba == [73, 145, 215, 255]
+                })
         ));
     }
 

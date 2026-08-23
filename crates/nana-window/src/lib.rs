@@ -13,3 +13,10 @@ pub use material::{
     PlatformMaterialSupport, apply_hosted_system_material, apply_system_material,
     clear_system_material, hosted_platform_material_support, platform_material_support,
 };
+
+/// macOS Dock / application icon from PNG bytes. No-op on other platforms.
+///
+/// winit's window icon is ignored on macOS; this talks to `NSApplication`.
+pub fn set_application_icon_png(png: &[u8]) {
+    platform::set_application_icon_png(png);
+}

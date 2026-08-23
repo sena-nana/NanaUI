@@ -1496,6 +1496,7 @@ fn runtime_dock_window_commands(
                     modal: false,
                     parent: None,
                     system_caption: true,
+                    icon: None,
                 },
             },
             DockWorkspaceEvent::CloseFloating(id) => {

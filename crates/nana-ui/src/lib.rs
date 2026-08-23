@@ -150,6 +150,8 @@ pub use layout::{
     WorkspaceLayout, WorkspaceLayoutError,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
+#[cfg(feature = "hosted")]
+pub use nana_app_icon::{default_window_icon, window_icon_from_png};
 pub use nana_text::NanaTextShaper;
 #[cfg(feature = "gpu")]
 pub use nana_ui_core::GpuWorkObservation;
@@ -160,7 +162,10 @@ pub use nana_ui_core::{
 };
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
 #[cfg(feature = "hosted")]
-pub use nana_ui_platform::ImeEvent;
+pub use nana_ui_platform::{
+    ImeEvent, WindowIcon, WindowIconError, clear_registered_application_icon,
+    register_application_icon,
+};
 /// Compatibility re-export of Runtime `TextArea`. Prefer [`runtime::TextArea`].
 pub use nana_ui_runtime::TextArea as Textarea;
 /// Compatibility widget surface. New applications should import from [`runtime`].

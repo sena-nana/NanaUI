@@ -45,6 +45,7 @@ impl Smoke {
             modal: false,
             parent: (number > 1).then_some(WindowId::PRIMARY),
             system_caption: true,
+            icon: None,
         }
     }
 

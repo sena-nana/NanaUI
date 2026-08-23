@@ -58,6 +58,8 @@ const fn should_clear_no_redirection_bitmap(requested: MaterialEffect) -> bool {
     matches!(requested, MaterialEffect::Solid)
 }
 
+pub(crate) fn set_application_icon_png(_png: &[u8]) {}
+
 fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;

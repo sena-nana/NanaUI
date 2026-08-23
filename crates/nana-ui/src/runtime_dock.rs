@@ -86,6 +86,7 @@ fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> Windo
         modal: false,
         parent: None,
         system_caption: false,
+        icon: None,
     }
 }
 
