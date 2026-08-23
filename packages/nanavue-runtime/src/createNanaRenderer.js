@@ -1003,7 +1003,7 @@ export function wrapNode(id, kind, tag) {
       const s = v == null ? "" : String(v);
       for (const child of Array.from(this.childNodes || [])) releaseNodeResources(child);
       this.attributes.innerHTML = s;
-      clearChildrenCache(this);
+      invalidateChildrenCache(this);
       try {
         hostCall("patchProp", [nid, "innerHTML", s]);
       } catch (_err) {
@@ -1022,7 +1022,7 @@ export function wrapNode(id, kind, tag) {
       const s = v == null ? "" : String(v);
       for (const child of Array.from(this.childNodes || [])) releaseNodeResources(child);
       this.attributes.textContent = s;
-      if (node.__kind !== "text") clearChildrenCache(this);
+      if (node.__kind !== "text") invalidateChildrenCache(this);
       try {
         if (node.__kind === "text") hostCall("setText", [nid, s]);
         else hostCall("patchProp", [nid, "textContent", s]);
@@ -1459,7 +1459,7 @@ export const hostOps = {
         const text = next == null ? "" : String(next);
         for (const child of Array.from((el && el.childNodes) || [])) releaseNodeResources(child);
         if (el) el.attributes[propKey] = text;
-        clearChildrenCache(el);
+        invalidateChildrenCache(el);
         hostCall("patchProp", [nid, propKey, text]);
         return;
       }
@@ -1578,7 +1578,7 @@ export const hostOps = {
   setElementText(el, text) {
     const n = el && typeof el === "object" ? el : wrapById(nodeId(el));
     for (const child of Array.from((n && n.childNodes) || [])) releaseNodeResources(child);
-    clearChildrenCache(n);
+    invalidateChildrenCache(n);
     hostCall("setElementText", [nodeId(el), String(text)]);
   },
   parentNode(node) {
