@@ -706,6 +706,55 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
     true
 }
 
+/// True if any rule's selector matches `ctx` (subject + combinators).
+pub fn stylesheet_matches(rules: &[StyleRule], ctx: &MatchContext<'_>) -> bool {
+    rules
+        .iter()
+        .any(|rule| rule.selectors.iter().any(|sel| selector_matches(sel, ctx)))
+}
+
+/// Cheap reject: if no rule subject *could* match this element's tag/id/classes,
+/// skip building a full [`MatchContext`]. Combinators / attrs / pseudos still
+/// require [`stylesheet_matches`].
+pub fn stylesheet_may_match_subject(
+    rules: &[StyleRule],
+    tag: &str,
+    id: &str,
+    classes: &[String],
+) -> bool {
+    rules.iter().any(|rule| {
+        rule.selectors
+            .iter()
+            .any(|sel| compound_subject_may_match(&sel.subject, tag, id, classes))
+    })
+}
+
+fn compound_subject_may_match(
+    compound: &CompoundSelector,
+    tag: &str,
+    id: &str,
+    classes: &[String],
+) -> bool {
+    if let Some(want) = compound.type_name.as_deref()
+        && want != "*"
+        && !want.eq_ignore_ascii_case(tag)
+    {
+        return false;
+    }
+    if let Some(want) = compound.id.as_deref()
+        && !want.is_empty()
+        && want != id
+    {
+        return false;
+    }
+    for class in &compound.classes {
+        if !classes.iter().any(|have| have == class) {
+            return false;
+        }
+    }
+    true
+}
+
 fn selector_matches(sel: &Selector, ctx: &MatchContext<'_>) -> bool {
     if !compound_matches_ctx(&sel.subject, ctx) {
         return false;
@@ -2608,5 +2657,54 @@ mod tests {
         assert_eq!(layout.gap, Some(LengthSpec::Px(3.0)));
         assert_eq!(layout.width, Some(LengthSpec::Px(2.0)));
         assert_eq!(layout.padding, Some(LengthSpec::Px(4.0)));
+    }
+
+    #[test]
+    fn stylesheet_matches_and_subject_index_reject_unrelated() {
+        let rules = parse_stylesheet(".foo { gap: 1px; } span.bar { width: 2px; }", 0);
+        let empty = BTreeMap::new();
+        let foo = vec!["foo".into()];
+        let bar = vec!["bar".into()];
+        let none = Vec::<String>::new();
+        assert!(stylesheet_matches(
+            &rules,
+            &ctx("div", "", &foo, &empty, &[])
+        ));
+        assert!(!stylesheet_matches(
+            &rules,
+            &ctx("div", "", &none, &empty, &[])
+        ));
+        assert!(stylesheet_matches(
+            &rules,
+            &ctx("span", "", &bar, &empty, &[])
+        ));
+        assert!(!stylesheet_matches(
+            &rules,
+            &ctx("div", "", &bar, &empty, &[])
+        ));
+
+        assert!(stylesheet_may_match_subject(&rules, "div", "", &foo));
+        assert!(!stylesheet_may_match_subject(&rules, "div", "", &none));
+        assert!(!stylesheet_may_match_subject(&rules, "div", "", &bar));
+        assert!(stylesheet_may_match_subject(&rules, "span", "", &bar));
+
+        let star = parse_stylesheet("* { gap: 1px; }", 0);
+        assert!(stylesheet_may_match_subject(&star, "section", "", &none));
+        assert!(stylesheet_matches(
+            &star,
+            &ctx("section", "", &none, &empty, &[])
+        ));
+
+        let root = parse_stylesheet(":root { gap: 2px; }", 0);
+        assert!(stylesheet_may_match_subject(&root, "html", "", &none));
+        assert!(stylesheet_matches(
+            &root,
+            &ctx("html", "", &none, &empty, &[])
+        ));
+        let parent = [node("html", "", &none, &empty)];
+        assert!(!stylesheet_matches(
+            &root,
+            &ctx("div", "", &none, &empty, &parent)
+        ));
     }
 }

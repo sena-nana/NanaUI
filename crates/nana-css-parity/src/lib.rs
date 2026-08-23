@@ -1,6 +1,7 @@
 //! CSS layout parity harness（测试专用）。
 //!
-//! - Nana：`LayoutStyle` → [`nana_ui_vue::measure_layout`]
+//! - Nana：`LayoutStyle` → [`nana_ui_vue::measure_layout`]（适配
+//!   [`nana_ui_runtime::RuntimeLayoutEngine::layout_style_tree`] 共享算法）
 //! - 参照：可选 `webview-ref`（wry/WKWebView）或 fixture 内嵌 `expected` 盒
 //! - **不**进入 `nana-ui` 默认依赖 / 产品运行时
 

@@ -1209,20 +1209,6 @@ impl VueHost {
             self.report_commit_rejections(&mut doc);
         }
         self.flush_runtime_scene(logical_width, logical_height)?;
-        if !self
-            .shared_runtime_document()
-            .get()
-            .scene()
-            .primitives()
-            .any(|primitive| primitive.bounds.width > 1.0 || primitive.bounds.height > 1.0)
-        {
-            {
-                let mut bridge = self.bridge.lock().expect("vue bridge");
-                let mut doc = self.document.lock().expect("vue doc");
-                bridge.resolve_document_layout(&mut doc);
-            }
-            self.flush_runtime_scene(logical_width, logical_height)?;
-        }
         let shared = self.shared_runtime_document();
         let document_id = shared.get().document();
         let records: Vec<(u64, nana_ui_scene::SceneRect)> = {

@@ -5,12 +5,10 @@
 //! focus, style, interaction, and layout live in `nana_ui_runtime::UiWorld`;
 //! this module retains only Vue compatibility metadata.
 //!
-//! Vue mixed-tree layout writers are Style-Model [`crate::measure_layout`]
-//! (pre-paint / first insert) and Runtime writeback after paint.
-//! [`LayoutBoxStore`] is the JS paint projection. Those boxes are adapted into
-//! `UiWorld` for Scene extraction and hit-test. A Scene/`run_runtime` host also
-//! flushes the same [`RuntimeDocument`], so `RuntimeLayoutEngine` writes the
-//! frame the host paints.
+//! Product Vue frames flush the same [`RuntimeDocument`] text+layout as L3.
+//! [`crate::measure_layout`] adapts a style tree onto that engine for css-parity
+//! and must not WriteLayout over flushed engine boxes.
+//! [`LayoutBoxStore`] is the JS paint projection, not layout authority.
 
 use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -36,7 +34,7 @@ use nana_ui_runtime::{
     HOST_TEXTURE_RENDERER, HighlightRequest, HostedTextarea as RuntimeHostedTextarea,
     IconButton as RuntimeIconButton, ImageViewer as RuntimeImageViewer, ImageViewerContent,
     ImeComposition, InteractionState, InteractiveCard as RuntimeInteractiveCard,
-    LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox,
+    LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox, LayoutViewport,
     LevelMeter as RuntimeLevelMeter, ListItem as RuntimeListItem, ListItemSlots, ModalSurface,
     MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
     Popover as RuntimePopover, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
@@ -2211,14 +2209,23 @@ impl NanaTreeDocument {
         })
     }
 
-    /// Replace layout cache with measured / Scene-written boxes.
-    ///
-    /// Prefer calling this with [`LayoutBoxStore::snapshot`] after Scene paints;
-    /// Style-Model `measure_layout` is the headless / pre-paint fallback.
-    ///
-    /// Always keeps html/body covering the viewport so hit-tests still have a
-    /// root surface when the forest is sparse.
+    pub fn has_engine_layout_box(&self, node: NodeHandle) -> bool {
+        self.layout_box(node)
+            .is_some_and(|box_| box_.width > 0.0 || box_.height > 0.0)
+    }
+
+    /// Tests only: WriteLayout explicit boxes after an engine flush.
+    pub fn inject_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
+        self.write_layout_boxes(boxes, true);
+    }
+
+    /// Flush the engine, then WriteLayout only nodes with no Runtime box.
     pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
+        self.write_layout_boxes(boxes, false);
+    }
+
+    fn write_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)], overwrite: bool) {
+        self.flush_runtime_systems();
         let w = self.logical_width.max(1.0);
         let h = self.logical_height.max(1.0);
         let mut mutations = MutationQueue::new();
@@ -2236,6 +2243,12 @@ impl NanaTreeDocument {
         }
         for &(handle, box_) in boxes {
             if handle.0 == self.html_root.0 || handle.0 == self.mount_root.0 {
+                continue;
+            }
+            if box_.width <= 0.0 && box_.height <= 0.0 {
+                continue;
+            }
+            if !overwrite && self.has_engine_layout_box(handle) {
                 continue;
             }
             if let Ok(id) = StableNodeId::try_from(handle)
@@ -2256,7 +2269,7 @@ impl NanaTreeDocument {
         if !mutations.is_empty() || !self.pending.is_empty() {
             self.commit_extra(mutations).ok();
         }
-        self.flush_runtime_systems();
+        self.flush_runtime_extract();
     }
 
     pub fn snapshot_boxes(&self) -> BoxSnapshot {
@@ -2554,25 +2567,29 @@ impl NanaTreeDocument {
     }
 
     fn flush_runtime_systems(&mut self) {
-        let mut deferred_layout = Vec::new();
+        let viewport =
+            LayoutViewport::new(self.logical_width.max(1.0), self.logical_height.max(1.0));
+        #[cfg(feature = "scene-view")]
+        let mut shaper = nana_ui::NanaTextShaper::default();
+        #[cfg(not(feature = "scene-view"))]
+        let mut shaper = MeasureTextShaper;
+        let update = self
+            .runtime
+            .runtime_document_mut()
+            .flush(viewport, &mut shaper)
+            .expect("vue runtime frame");
+        self.record_accessibility_delta(update.accessibility);
+    }
+
+    fn flush_runtime_extract(&mut self) {
         let update = self
             .runtime
             .runtime_document_mut()
             .flush_with(|context, work| {
                 context.world_mut().reconcile_focus(&work.focus_ime);
-                #[cfg(feature = "scene-view")]
-                context
-                    .shape_text(&work.text, &mut nana_ui::NanaTextShaper::default())
-                    .expect("Nana shaping produces finite metrics");
-                #[cfg(not(feature = "scene-view"))]
-                context
-                    .shape_text(&work.text, &mut MeasureTextShaper)
-                    .expect("measure shaping produces finite metrics");
-                deferred_layout.extend(work.layout.iter().copied());
                 Ok(())
             })
-            .expect("vue runtime frame");
-        self.context_mut().defer_layout(&deferred_layout);
+            .expect("vue extract frame");
         self.record_accessibility_delta(update.accessibility);
     }
 
@@ -6182,7 +6199,7 @@ mod tests {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let node = doc.create_element("input");
         doc.insert(node, doc.mount_root(), None);
-        doc.apply_layout_boxes(&[(
+        doc.inject_layout_boxes(&[(
             node,
             LayoutBox {
                 handle: node,
@@ -6199,7 +6216,7 @@ mod tests {
         assert!(initial.updated.iter().any(|entry| entry.id.get() == node.0));
         assert!(doc.take_accessibility_update().is_none());
 
-        doc.apply_layout_boxes(&[(
+        doc.inject_layout_boxes(&[(
             node,
             LayoutBox {
                 handle: node,
@@ -6345,26 +6362,29 @@ mod tests {
         doc.sync_semantic_styles(&bridge.snapshot());
         bridge.resolve_document_layout(&mut doc);
 
-        let measured = doc.layout_box(input).expect("Vue measure writes a box");
-        assert_eq!(
-            measured.height, 0.0,
-            "CSS auto height is 0 before Runtime layout"
-        );
-
-        let work = doc.context_mut().take_system_work();
-        assert!(
-            !work.layout.is_empty(),
-            "Vue flush must leave LAYOUT for Scene RuntimeLayoutEngine"
-        );
-
-        let document = doc.runtime_document().document();
-        doc.context_mut()
-            .layout_document(document, nana_ui_runtime::LayoutViewport::new(400.0, 200.0))
-            .unwrap();
         let laid_out = doc.layout_box(input).expect("runtime layout box");
         assert!(
             laid_out.width > 0.0 && laid_out.height >= nana_ui_core::ControlSize::Medium.height(),
-            "TextInput min_height must become a hittable box, got {laid_out:?}"
+            "Vue flush must run RuntimeLayoutEngine so TextInput is hittable, got {laid_out:?}"
+        );
+        let engine_height = laid_out.height;
+        let engine_width = laid_out.width;
+        doc.apply_layout_boxes(&[(
+            input,
+            LayoutBox {
+                handle: input,
+                x: 0.0,
+                y: 0.0,
+                width: engine_width.min(12.0),
+                height: 8.0,
+            },
+        )]);
+        let kept = doc
+            .layout_box(input)
+            .expect("engine box after measure dump");
+        assert!(
+            kept.height >= engine_height && kept.width >= engine_width,
+            "apply_layout_boxes of measure results must not shrink engine geometry, got {kept:?}"
         );
     }
 
@@ -9907,7 +9927,10 @@ mod tests {
         assert!(doc.text_content(child).unwrap().contains("hello"));
 
         doc.flush_host_frame();
-        assert_eq!(doc.runtime_generation(), generation + 1);
+        assert!(
+            doc.runtime_generation() > generation,
+            "one host flush must commit the batched ops (layout writeback may add a generation)"
+        );
         assert_eq!(doc.children_of(parent), vec![child]);
         let parent_id = StableNodeId::try_from(parent).unwrap();
         assert!(doc.world().has_event(parent_id, "click"));
