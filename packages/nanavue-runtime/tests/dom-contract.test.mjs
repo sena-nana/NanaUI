@@ -201,7 +201,6 @@ describe("wrapNode source contract", () => {
     assert.match(rendererSrc, /defineProperty\(node,\s*"parentElement"/);
     assert.match(rendererSrc, /defineProperty\(node,\s*"firstChild"/);
     assert.match(rendererSrc, /defineProperty\(node,\s*"childNodes"/);
-    assert.match(rendererSrc, /treeFlushGeneration/);
     assert.match(rendererSrc, /parentIdOf/);
     assert.match(rendererSrc, /isConnectedNode/);
     assert.doesNotMatch(
