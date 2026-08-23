@@ -336,7 +336,8 @@ pub(crate) fn select_geometry(
     source: &NodeStyle,
     palette: &SemanticPalette,
 ) -> ComponentGeometry {
-    let padding = source.layout.resolved_padding_against(Some(bounds.width));
+    let fonts = source.layout.font_size_context(16.0);
+    let padding = source.layout.resolved_padding_against_fonts(Some(bounds.width), fonts);
     let border = source.layout.resolved_border_width();
     let content = LayoutBox {
         x: bounds.x + border + padding.left,

@@ -548,10 +548,11 @@ impl UiScene {
             };
         let text_input_clips =
             if matches!(node.standard_visual, Some(StandardVisual::TextInput { .. })) {
+                let fonts = node.source_style.layout.font_size_context(16.0);
                 let padding = node
                     .source_style
                     .layout
-                    .resolved_padding_against(Some(bounds.width));
+                    .resolved_padding_against_fonts(Some(bounds.width), fonts);
                 let border = node.source_style.layout.resolved_border_width();
                 let mut text_input_clips = clips.clone();
                 text_input_clips.push(ClipRegion {
@@ -673,7 +674,8 @@ impl UiScene {
                     && !component_owns_text
                     && !self.parent_already_paints_text(&node)
             }) {
-                let padding = style.resolved_padding_against(Some(bounds.width));
+                let fonts = style.font_size_context(16.0);
+                let padding = style.resolved_padding_against_fonts(Some(bounds.width), fonts);
                 let border = style.resolved_border_width();
                 let leading_visual = match node.standard_visual {
                     Some(StandardVisual::Checkbox { .. }) => 24.0,
@@ -3760,6 +3762,115 @@ mod tests {
                 end: 2,
                 color: [0.2, 0.6, 1.0, 1.0],
             }]
+        );
+    }
+
+    #[test]
+    fn generic_text_em_padding_uses_computed_font_size() {
+        let mut labeled = node(1, None, &[]);
+        labeled.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+        };
+        labeled.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                font_size: Some(32.0),
+                padding: Some(nana_ui_core::LengthSpec::Em(1.0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        labeled.text = Some(TextContent {
+            value: "hello".into(),
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([labeled], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 2,
+            })
+            .expect("generic text");
+        assert_eq!(
+            primitive.bounds,
+            SceneRect {
+                x: 32.0,
+                y: 32.0,
+                width: 136.0,
+                height: 16.0,
+            },
+            "1em padding at font-size 32px must inset text 32px, not 16px"
+        );
+    }
+
+    #[test]
+    fn text_input_clip_em_padding_uses_computed_font_size() {
+        let mut input = node(1, None, &[]);
+        input.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+        };
+        input.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                font_size: Some(32.0),
+                padding: Some(nana_ui_core::LengthSpec::Em(1.0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 32.0,
+                    y: 32.0,
+                    width: 136.0,
+                    height: 16.0,
+                },
+                content: Arc::from("hi"),
+                color: Some([1.0; 4]),
+                font_size: 32.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            preedit: Vec::new(),
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        let text = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 2,
+            })
+            .expect("text input text");
+        assert_eq!(text.clips.len(), 1);
+        assert_eq!(
+            text.clips[0].bounds,
+            SceneRect {
+                x: 32.0,
+                y: 32.0,
+                width: 136.0,
+                height: 16.0,
+            },
+            "1em padding at font-size 32px must clip the field 32px inset, not 16px"
         );
     }
 
