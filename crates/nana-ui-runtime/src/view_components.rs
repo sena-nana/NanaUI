@@ -271,10 +271,6 @@ impl Button {
                         background: Some(nana_ui_core::SemanticColorRole::Active),
                         ..SemanticPaint::default()
                     },
-                    focused: SemanticPaint {
-                        border: Some(nana_ui_core::SemanticColorRole::Accent),
-                        ..SemanticPaint::default()
-                    },
                     disabled: SemanticPaint {
                         foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                         background: Some(nana_ui_core::SemanticColorRole::Subtle),
@@ -519,10 +515,7 @@ impl IconButton {
                     background: Some(nana_ui_core::SemanticColorRole::Active),
                     ..SemanticPaint::default()
                 },
-                focused: SemanticPaint {
-                    border: Some(nana_ui_core::SemanticColorRole::Accent),
-                    ..SemanticPaint::default()
-                },
+                focused: SemanticPaint::default(),
                 disabled: SemanticPaint {
                     foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                     ..SemanticPaint::default()
