@@ -1,7 +1,5 @@
 use std::convert::Infallible;
-use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use nana_ui::runtime::{
@@ -41,8 +39,6 @@ struct DemoProgram {
     version: Entity<Text>,
     theme_button: Entity<Button>,
     textures: HostTextureRegistry,
-    refresh: Arc<AtomicBool>,
-    toggle_theme: Arc<AtomicBool>,
     startup: StartupProbe,
 }
 
@@ -53,8 +49,6 @@ impl DemoProgram {
         scene: SharedScene,
         startup: StartupProbe,
     ) -> Result<Self, FrameworkError> {
-        let refresh = Arc::new(AtomicBool::new(false));
-        let toggle_theme = Arc::new(AtomicBool::new(false));
         let document_id = DocumentId::new(1).expect("hosted gpu document");
         let mut document = RuntimeDocument::new(document_id);
         let root = document
@@ -83,17 +77,15 @@ impl DemoProgram {
         document.context_mut().append_child(root, version)?;
         document.context_mut().append_child(root, refresh_button)?;
 
-        let pending_refresh = Arc::clone(&refresh);
         document
             .context_mut()
-            .on(refresh_button, move |_button, _event: &Activate, _cx| {
-                pending_refresh.store(true, Ordering::SeqCst);
+            .on(refresh_button, move |_button, _event: &Activate, cx| {
+                cx.dispatch_program(Message::Refresh);
             })?;
-        let pending_theme = Arc::clone(&toggle_theme);
         document
             .context_mut()
-            .on(theme_button, move |_button, _event: &Activate, _cx| {
-                pending_theme.store(true, Ordering::SeqCst);
+            .on(theme_button, move |_button, _event: &Activate, cx| {
+                cx.dispatch_program(Message::ToggleTheme);
             })?;
 
         let textures = HostTextureRegistry::new();
@@ -114,8 +106,6 @@ impl DemoProgram {
             version,
             theme_button,
             textures,
-            refresh,
-            toggle_theme,
             startup,
         })
     }
@@ -275,22 +265,9 @@ impl RuntimeProgram for DemoProgram {
         &mut self,
         id: WindowId,
         _event: &nana_ui_platform::InputEvent,
-        context: &RuntimeProgramContext<Self::Message>,
+        _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        let mut changed = false;
-        if self.refresh.swap(false, Ordering::SeqCst) {
-            self.apply(Message::Refresh, context);
-            changed = true;
-        }
-        if self.toggle_theme.swap(false, Ordering::SeqCst) {
-            self.apply(Message::ToggleTheme, context);
-            changed = true;
-        }
-        Ok(if changed {
-            RuntimeProgramUpdate::redraw_all()
-        } else {
-            RuntimeProgramUpdate::redraw(id)
-        })
+        Ok(RuntimeProgramUpdate::redraw(id))
     }
 
     fn window_frame_presented(

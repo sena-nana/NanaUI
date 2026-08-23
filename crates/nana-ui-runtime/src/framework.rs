@@ -253,8 +253,16 @@ impl<V: View> Entity<V> {
 }
 
 type BoxedEvent = (StableNodeId, TypeId, Box<dyn Any + Send>);
-type ErasedEventHandler =
-    Box<dyn FnMut(&mut dyn Any, &dyn Any, &mut MutationQueue, &mut VecDeque<BoxedEvent>) + Send>;
+type ProgramMessage = Box<dyn Any + Send>;
+type ErasedEventHandler = Box<
+    dyn FnMut(
+            &mut dyn Any,
+            &dyn Any,
+            &mut MutationQueue,
+            &mut VecDeque<BoxedEvent>,
+            &mut Vec<ProgramMessage>,
+        ) + Send,
+>;
 struct EventHandler {
     observer: StableNodeId,
     callback: ErasedEventHandler,
@@ -383,6 +391,7 @@ pub struct ViewContext<'a, V: View> {
     entity: Entity<V>,
     mutations: &'a mut MutationQueue,
     events: &'a mut VecDeque<BoxedEvent>,
+    program_messages: &'a mut Vec<ProgramMessage>,
 }
 
 impl<V: View> ViewContext<'_, V> {
@@ -397,6 +406,12 @@ impl<V: View> ViewContext<'_, V> {
     pub fn emit<E: Send + 'static>(&mut self, event: E) {
         self.events
             .push_back((self.entity.id, TypeId::of::<E>(), Box::new(event)));
+    }
+
+    /// Queue a `RuntimeProgram::Message` for the Scene host to `update` after
+    /// the current view-event delivery, in the same input or wake turn.
+    pub fn dispatch_program<M: Send + 'static>(&mut self, message: M) {
+        self.program_messages.push(Box::new(message));
     }
 }
 
@@ -588,6 +603,7 @@ pub struct AppContext {
     layout_cache: crate::RetainedLayoutCache,
     /// Nodes recomputed by the last layout pass (relayout + shape scope).
     last_layout_scope: Vec<StableNodeId>,
+    program_messages: Vec<ProgramMessage>,
 }
 
 /// Application-owned mapping between visible data keys and retained component
@@ -726,6 +742,7 @@ impl AppContext {
             profiling: false,
             layout_cache: crate::RetainedLayoutCache::default(),
             last_layout_scope: Vec::new(),
+            program_messages: Vec::new(),
         };
         context
             .install(&crate::builtin_components::NanaBuiltinComponents)
@@ -742,6 +759,12 @@ impl AppContext {
 
     pub fn world(&self) -> &UiWorld {
         &self.world
+    }
+
+    /// Messages queued by [`ViewContext::dispatch_program`] since the last take.
+    /// The Scene host drains these into `RuntimeProgram::update`.
+    pub fn take_program_messages(&mut self) -> Vec<Box<dyn Any + Send>> {
+        std::mem::take(&mut self.program_messages)
     }
 
     pub fn resolve_component_tag(&self, tag: &str) -> Option<&ComponentTypeId> {
@@ -5448,15 +5471,24 @@ impl AppContext {
         let mut staged = component.clone();
         let mut mutations = MutationQueue::new();
         let mut events = VecDeque::new();
+        let mut program_messages = std::mem::take(&mut self.program_messages);
         let result = update(
             &mut staged,
             &mut ViewContext {
                 entity,
                 mutations: &mut mutations,
                 events: &mut events,
+                program_messages: &mut program_messages,
             },
         );
-        let delivered = self.deliver_events(entity.id, &mut staged, &mut mutations, &mut events);
+        let delivered = self.deliver_events(
+            entity.id,
+            &mut staged,
+            &mut mutations,
+            &mut events,
+            &mut program_messages,
+        );
+        self.program_messages = program_messages;
         if delivered.is_ok() {
             staged.project(entity.id, &self.world, &mut mutations);
         }
@@ -5496,15 +5528,24 @@ impl AppContext {
             .expect("view type was checked before update");
         let mut mutations = MutationQueue::new();
         let mut events = VecDeque::new();
+        let mut program_messages = std::mem::take(&mut self.program_messages);
         let result = update(
             view,
             &mut ViewContext {
                 entity,
                 mutations: &mut mutations,
                 events: &mut events,
+                program_messages: &mut program_messages,
             },
         );
-        let delivered = self.deliver_events(entity.id, view, &mut mutations, &mut events);
+        let delivered = self.deliver_events(
+            entity.id,
+            view,
+            &mut mutations,
+            &mut events,
+            &mut program_messages,
+        );
+        self.program_messages = program_messages;
         if delivered.is_ok() {
             project(view, &self.world, &mut mutations);
         }
@@ -5613,7 +5654,8 @@ impl AppContext {
         let erased = move |view: &mut dyn Any,
                            event: &dyn Any,
                            mutations: &mut MutationQueue,
-                           events: &mut VecDeque<BoxedEvent>| {
+                           events: &mut VecDeque<BoxedEvent>,
+                           program_messages: &mut Vec<ProgramMessage>| {
             let view = view
                 .downcast_mut::<V>()
                 .expect("handler is registered for the entity view type");
@@ -5627,6 +5669,7 @@ impl AppContext {
                     entity,
                     mutations,
                     events,
+                    program_messages,
                 },
             );
         };
@@ -5656,7 +5699,8 @@ impl AppContext {
         let erased = move |view: &mut dyn Any,
                            event: &dyn Any,
                            mutations: &mut MutationQueue,
-                           events: &mut VecDeque<BoxedEvent>| {
+                           events: &mut VecDeque<BoxedEvent>,
+                           program_messages: &mut Vec<ProgramMessage>| {
             let view = view
                 .downcast_mut::<V>()
                 .expect("observer handler is registered for its view type");
@@ -5670,6 +5714,7 @@ impl AppContext {
                     entity: observer,
                     mutations,
                     events,
+                    program_messages,
                 },
             );
         };
@@ -5833,6 +5878,7 @@ impl AppContext {
         view: &mut dyn Any,
         mutations: &mut MutationQueue,
         events: &mut VecDeque<BoxedEvent>,
+        program_messages: &mut Vec<ProgramMessage>,
     ) -> Result<(), FrameworkError> {
         let mut delivered = 0;
         while let Some((emitter, event_type, event)) = events.pop_front() {
@@ -5846,13 +5892,19 @@ impl AppContext {
             };
             for handler in &mut handlers {
                 if handler.observer == id {
-                    (handler.callback)(view, event.as_ref(), mutations, events);
+                    (handler.callback)(view, event.as_ref(), mutations, events, program_messages);
                     continue;
                 }
                 let Some(mut observer) = self.views.remove(&handler.observer) else {
                     continue;
                 };
-                (handler.callback)(observer.as_mut(), event.as_ref(), mutations, events);
+                (handler.callback)(
+                    observer.as_mut(),
+                    event.as_ref(),
+                    mutations,
+                    events,
+                    program_messages,
+                );
                 self.views.insert(handler.observer, observer);
             }
             self.event_handlers.insert(key, handlers);
@@ -6019,6 +6071,25 @@ mod tests {
             .unwrap();
         assert!(context.world().contains(title_id));
         assert!(!context.world().contains(save_id));
+    }
+
+    #[test]
+    fn sidebar_row_activate_queues_a_program_message() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let row = context
+            .create_component(document, SidebarRow::new("舞台"))
+            .unwrap();
+        context
+            .on(row, |_row, _event: &Activate, cx| {
+                cx.dispatch_program("stage");
+            })
+            .unwrap();
+        assert!(context.activate_sidebar_row(row).unwrap());
+        let queued = context.take_program_messages();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].downcast_ref::<&str>().copied(), Some("stage"));
+        assert!(context.take_program_messages().is_empty());
     }
 
     #[test]

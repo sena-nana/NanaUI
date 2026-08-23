@@ -973,6 +973,28 @@ impl AppContext {
         Ok(changed)
     }
 
+    /// Replace the primary and inspector region content on an assembled shell.
+    ///
+    /// Chrome is reused. Previous region content is parked, not destroyed.
+    pub fn set_desktop_slots(
+        &mut self,
+        shell: Entity<DesktopShell>,
+        primary: Option<StableNodeId>,
+        inspector: Option<StableNodeId>,
+    ) -> Result<bool, FrameworkError> {
+        let changed = self.read(shell, |desktop| {
+            desktop.primary != primary || desktop.inspector != inspector
+        })?;
+        if changed {
+            self.update_component(shell, |desktop, _| {
+                desktop.primary = primary;
+                desktop.inspector = inspector;
+            })?;
+        }
+        let assembled = self.assemble_desktop_shell(shell)?;
+        Ok(changed || assembled)
+    }
+
     /// Mount title bar, workspace regions, and overlay host on `shell`.
     ///
     /// Created chrome is reused on the next call. Host content nodes are
@@ -1017,6 +1039,10 @@ impl AppContext {
             snapshot.navigation_frame,
         )?;
 
+        let chrome_changed = snapshot.title_bar != title_bar
+            || snapshot.workspace != Some(workspace_id)
+            || snapshot.overlay != Some(overlay_id)
+            || snapshot.navigation_frame != navigation_frame;
         let mut assembled = snapshot;
         assembled.title_bar = title_bar;
         assembled.workspace = Some(workspace_id);
@@ -1025,13 +1051,14 @@ impl AppContext {
         let slots = region_slots(self, &assembled, resources);
         let next_used = used_ids(&assembled, &slots);
         park_unused(self, shell.stable_id(), &previous_used, &next_used)?;
-
-        self.update_component(shell, |desktop, _| {
-            desktop.title_bar = title_bar;
-            desktop.workspace = Some(workspace_id);
-            desktop.overlay = Some(overlay_id);
-            desktop.navigation_frame = navigation_frame;
-        })?;
+        if chrome_changed {
+            self.update_component(shell, |desktop, _| {
+                desktop.title_bar = title_bar;
+                desktop.workspace = Some(workspace_id);
+                desktop.overlay = Some(overlay_id);
+                desktop.navigation_frame = navigation_frame;
+            })?;
+        }
         let mut shell_children = Vec::new();
         if let Some(title_bar) = title_bar {
             shell_children.push(title_bar);
@@ -1041,14 +1068,17 @@ impl AppContext {
         let mut changed = reconcile_ids(self, shell.stable_id(), &shell_children)?;
 
         let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
+        let slots_changed = self.read(workspace, |workspace| workspace.slots != slots)?;
         self.update_component(workspace, |workspace, _| {
             workspace.refresh_from_model(&assembled.model);
             workspace.slots = slots;
         })?;
         changed |= self.assemble_workspace(workspace)?;
         changed |= reconcile_ids(self, overlay_id, &assembled.overlays)?;
-        self.update_component(shell, |_, _| {})?;
-        Ok(changed)
+        if changed || chrome_changed {
+            self.update_component(shell, |_, _| {})?;
+        }
+        Ok(changed || chrome_changed || slots_changed)
     }
 }
 
@@ -1899,7 +1929,7 @@ fn finite_positive(value: f32, fallback: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::{
-        AppContext, Card, DocumentId, Entity, IconButton, LayoutViewport, SidebarFrame,
+        AppContext, Card, DocumentId, Entity, IconButton, LayoutViewport, MountState, SidebarFrame,
         StableNodeId, Text, TextHorizontalAlignment, UiWorld,
     };
     use nana_ui_core::{
@@ -3251,6 +3281,71 @@ mod tests {
         assert_eq!(
             context.world().node(shell.stable_id()).unwrap().children[0],
             title.stable_id()
+        );
+    }
+
+    #[test]
+    fn set_desktop_slots_parks_previous_inspector_and_remounts_it() {
+        let mut context = AppContext::new();
+        let navigation = context
+            .create_detached_component(document(), SidebarFrame::new())
+            .unwrap();
+        let primary = context
+            .create_detached_component(document(), Text::new("primary"))
+            .unwrap();
+        let first = context
+            .create_detached_component(document(), Text::new("inspector-a"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document(), Text::new("inspector-b"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .navigation(navigation.stable_id())
+                .primary(primary.stable_id())
+                .inspector(first.stable_id()),
+        );
+        assert!(context.world().is_mounted(first.stable_id()));
+
+        assert!(
+            context
+                .set_desktop_slots(shell, Some(primary.stable_id()), Some(second.stable_id()),)
+                .unwrap()
+        );
+        assert!(context.world().is_mounted(second.stable_id()));
+        assert!(!context.world().is_mounted(first.stable_id()));
+        assert_eq!(
+            context.world().mount_state(first.stable_id()),
+            Some(MountState::Parked)
+        );
+        assert!(
+            !context
+                .world()
+                .document_order(document())
+                .contains(&first.stable_id())
+        );
+
+        assert!(
+            context
+                .set_desktop_slots(shell, Some(primary.stable_id()), Some(first.stable_id()),)
+                .unwrap()
+        );
+        assert!(context.world().is_mounted(first.stable_id()));
+        assert_eq!(
+            context.world().mount_state(second.stable_id()),
+            Some(MountState::Parked)
+        );
+        assert!(
+            context
+                .world()
+                .document_order(document())
+                .contains(&first.stable_id())
+        );
+        assert!(
+            !context
+                .set_desktop_slots(shell, Some(primary.stable_id()), Some(first.stable_id()),)
+                .unwrap()
         );
     }
 
