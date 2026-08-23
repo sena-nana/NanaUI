@@ -15,7 +15,9 @@ use crate::PhysicalRect;
 const SHAPE_CACHE_CAP: usize = 512;
 const ATLAS_ROW_ALIGN: u32 = 64;
 
-const AFFINE_GLYPH_SHADER: &str = r#"
+const AFFINE_GLYPH_SHADER: &str = concat!(
+    include_str!("shader/color.wgsl"),
+    r#"
 struct Globals {
     transform: mat4x4<f32>,
 }
@@ -33,12 +35,19 @@ struct VsIn {
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) clip_rect: vec4<f32>,
+    @location(4) clip_inv_abcd: vec4<f32>,
+    @location(5) clip_inv_ef: vec2<f32>,
 }
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) world_pos: vec2<f32>,
+    @location(3) clip_rect: vec4<f32>,
+    @location(4) clip_inv_abcd: vec4<f32>,
+    @location(5) clip_inv_ef: vec2<f32>,
 }
 
 @vertex
@@ -47,15 +56,28 @@ fn vs_main(input: VsIn) -> VsOut {
     out.position = globals.transform * vec4<f32>(input.position, 0.0, 1.0);
     out.uv = input.uv;
     out.color = input.color;
+    out.world_pos = input.position;
+    out.clip_rect = input.clip_rect;
+    out.clip_inv_abcd = input.clip_inv_abcd;
+    out.clip_inv_ef = input.clip_inv_ef;
     return out;
 }
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
+    if !inside_transformed_rect(
+        input.world_pos,
+        input.clip_rect,
+        input.clip_inv_abcd,
+        input.clip_inv_ef
+    ) {
+        discard;
+    }
     let sampled = textureSample(atlas, atlas_sampler, input.uv);
     return vec4<f32>(sampled.rgb * input.color.rgb, sampled.a * input.color.a);
 }
-"#;
+"#
+);
 
 pub(super) struct TextPipeline {
     font_system: FontSystem,
@@ -105,6 +127,9 @@ struct GlyphVertex {
     position: [f32; 2],
     uv: [f32; 2],
     color: [f32; 4],
+    clip_rect: [f32; 4],
+    clip_inv_abcd: [f32; 4],
+    clip_inv_ef: [f32; 2],
 }
 
 struct PackedGlyph {
@@ -283,6 +308,7 @@ impl TextPipeline {
         spans: &[SceneTextSpan],
         letter_spacing: f32,
         affine: [f32; 6],
+        fragment_clip: clip::FragmentClip,
         opacity: f32,
     ) -> Option<PreparedText> {
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -380,7 +406,13 @@ impl TextPipeline {
             measure(buffer).1
         };
         let aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
-        if clip::is_translation(affine) {
+        if fragment_clip == clip::FragmentClip::REJECT {
+            return None;
+        }
+        // Cryoglyph TextBounds is an AABB. Rotated overflow must go through
+        // the affine atlas path so fragment_clip can discard parallelogram
+        // exteriors; translation-only axis-aligned clips keep the AABB path.
+        if clip::is_translation(affine) && fragment_clip == clip::FragmentClip::PASS {
             self.prepare_cryoglyph(
                 device,
                 queue,
@@ -393,7 +425,16 @@ impl TextPipeline {
                 default_color,
             )
         } else {
-            self.prepare_affine_glyphs(device, queue, &key, aligned, scale, affine, default_color)
+            self.prepare_affine_glyphs(
+                device,
+                queue,
+                &key,
+                aligned,
+                scale,
+                affine,
+                fragment_clip,
+                default_color,
+            )
         }
     }
 
@@ -484,6 +525,7 @@ impl TextPipeline {
         aligned: [f32; 2],
         scale: f32,
         affine: [f32; 6],
+        fragment_clip: clip::FragmentClip,
         default_color: [f32; 4],
     ) -> Option<PreparedText> {
         let buffer = self.shape_cache.entries.get(key).expect("shaped above");
@@ -533,7 +575,8 @@ impl TextPipeline {
             return None;
         }
         let (atlas_w, atlas_h, atlas) = pack_glyph_atlas(&mut packed);
-        let vertices = affine_glyph_vertices(&packed, affine, scale, atlas_w, atlas_h);
+        let vertices =
+            affine_glyph_vertices(&packed, affine, scale, atlas_w, atlas_h, fragment_clip);
         if vertices.is_empty() {
             return None;
         }
@@ -729,6 +772,9 @@ impl AffineGlyphPipeline {
                         0 => Float32x2,
                         1 => Float32x2,
                         2 => Float32x4,
+                        3 => Float32x4,
+                        4 => Float32x4,
+                        5 => Float32x2,
                     ),
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -940,9 +986,11 @@ fn affine_glyph_vertices(
     scale: f32,
     atlas_w: u32,
     atlas_h: u32,
+    fragment_clip: clip::FragmentClip,
 ) -> Vec<GlyphVertex> {
     let atlas_w = atlas_w.max(1) as f32;
     let atlas_h = atlas_h.max(1) as f32;
+    let clip = fragment_clip.for_physical_pixels(scale);
     let mut vertices = Vec::with_capacity(glyphs.len() * 6);
     for glyph in glyphs {
         let [tl, tr, bl, br] = transform_glyph_quad(
@@ -970,6 +1018,9 @@ fn affine_glyph_vertices(
                 position: [x * scale, y * scale],
                 uv,
                 color,
+                clip_rect: clip.rect,
+                clip_inv_abcd: clip.inv_abcd,
+                clip_inv_ef: clip.inv_ef,
             });
         }
     }
@@ -1064,8 +1115,24 @@ mod tests {
         let identity = clip::IDENTITY_AFFINE;
         // x' = -y + 40, y' = x keeps a 90° rotation on-screen.
         let rot90 = [0.0, 1.0, -1.0, 0.0, 40.0, 0.0];
-        let identity_pixels = paint_text(&device, &queue, &mut pipeline, bounds, clip, identity);
-        let rotated_pixels = paint_text(&device, &queue, &mut pipeline, bounds, clip, rot90);
+        let identity_pixels = paint_text(
+            &device,
+            &queue,
+            &mut pipeline,
+            bounds,
+            clip,
+            identity,
+            clip::FragmentClip::PASS,
+        );
+        let rotated_pixels = paint_text(
+            &device,
+            &queue,
+            &mut pipeline,
+            bounds,
+            clip,
+            rot90,
+            clip::FragmentClip::PASS,
+        );
         let identity_ink = ink_aabb(&identity_pixels, 64, 64).expect("unrotated text must paint");
         let rotated_ink = ink_aabb(&rotated_pixels, 64, 64).expect("rotated text must paint");
         assert_ne!(
@@ -1086,6 +1153,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rotated_clip_discards_affine_glyph_in_aabb_outside_rect() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut pipeline = TextPipeline::new(&device, &queue, format);
+        let bounds = LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0);
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let clips = [nana_ui_scene::ClipRegion {
+            bounds: nana_ui_scene::SceneRect {
+                x: 16.0,
+                y: 16.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            transform: nana_ui_scene::AffineTransform(
+                nana_ui_core::PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    ..nana_ui_core::PaintTransform::default()
+                }
+                .around_center(16.0, 16.0, 32.0, 32.0),
+            ),
+        }];
+        let origin = clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let aabb = clip::intersect_clips(
+            LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
+            &clips,
+            origin,
+        )
+        .unwrap();
+        let frag = clip::fragment_clip(&clips, origin);
+        let unclipped = paint_block(
+            &device,
+            &queue,
+            &mut pipeline,
+            bounds,
+            LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0),
+            clip::IDENTITY_AFFINE,
+            clip::FragmentClip::PASS,
+        );
+        let clipped = paint_block(
+            &device,
+            &queue,
+            &mut pipeline,
+            bounds,
+            aabb,
+            clip::IDENTITY_AFFINE,
+            frag,
+        );
+        let mut probe = None;
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                if px >= aabb.x
+                    && py >= aabb.y
+                    && px < aabb.x + aabb.width
+                    && py < aabb.y + aabb.height
+                    && !clip::point_in_fragment_clip(px, py, frag)
+                    && inked(pixel(&unclipped, 64, x, y))
+                {
+                    probe = Some((x, y));
+                    break;
+                }
+            }
+            if probe.is_some() {
+                break;
+            }
+        }
+        let (probe_x, probe_y) =
+            probe.expect("unclipped glyphs must ink a pixel in AABB-outside-rotated-rect");
+        let probe_clipped = pixel(&clipped, 64, probe_x, probe_y);
+        let mut inside = false;
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                if clip::point_in_fragment_clip(px, py, frag) && inked(pixel(&clipped, 64, x, y)) {
+                    inside = true;
+                    break;
+                }
+            }
+            if inside {
+                break;
+            }
+        }
+        assert!(
+            !inked(probe_clipped),
+            "affine glyphs must discard AABB-outside-rotated-rect, pixel ({probe_x},{probe_y})={probe_clipped:?}"
+        );
+        assert!(inside, "rotated clip interior must still paint the glyph");
+    }
+
     fn paint_text(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1093,6 +1255,7 @@ mod tests {
         bounds: LogicalRect,
         clip: LogicalRect,
         affine: [f32; 6],
+        fragment_clip: clip::FragmentClip,
     ) -> Vec<u8> {
         pipeline.begin_frame(queue, [64, 64]);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1120,6 +1283,7 @@ mod tests {
                 &[],
                 0.0,
                 affine,
+                fragment_clip,
                 1.0,
             )
             .expect("text must prepare");
@@ -1168,6 +1332,106 @@ mod tests {
             );
         }
         readback_rgba(device, queue, encoder, &texture, 64, 64)
+    }
+
+    fn paint_block(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        bounds: LogicalRect,
+        clip: LogicalRect,
+        affine: [f32; 6],
+        fragment_clip: clip::FragmentClip,
+    ) -> Vec<u8> {
+        pipeline.begin_frame(queue, [64, 64]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui text clip prepare"),
+        });
+        let prepared = pipeline
+            .prepare(
+                device,
+                queue,
+                &mut encoder,
+                bounds,
+                clip,
+                1.0,
+                "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",
+                Some([1.0, 1.0, 1.0, 1.0]),
+                16.0,
+                None,
+                None,
+                None,
+                true,
+                false,
+                TextShaping::Auto,
+                TextHorizontalAlignment::Start,
+                TextVerticalAlignment::Top,
+                &[],
+                0.0,
+                affine,
+                fragment_clip,
+                1.0,
+            )
+            .expect("block text must prepare");
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("nana-ui text clip target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("nana-ui text clip pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pipeline.draw(
+                &mut pass,
+                &prepared,
+                PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 64,
+                    height: 64,
+                },
+                None,
+            );
+        }
+        readback_rgba(device, queue, encoder, &texture, 64, 64)
+    }
+
+    fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * width + x) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    }
+
+    fn inked(color: [u8; 4]) -> bool {
+        u16::from(color[0]) + u16::from(color[1]) + u16::from(color[2]) > 24
     }
 
     fn ink_aabb(pixels: &[u8], width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {

@@ -37,6 +37,7 @@ impl HostTexturePipeline {
         opacity: f32,
         corner_radius: f32,
         rounded_clip: LogicalRect,
+        fragment_clip: super::clip::FragmentClip,
         physical_size: [u32; 2],
         scale_factor: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -52,7 +53,12 @@ impl HostTexturePipeline {
                     rounded_clip.y,
                     rounded_clip.width,
                     rounded_clip.height,
-                )),
+                ))
+                .with_fragment_clip(
+                    fragment_clip.rect,
+                    fragment_clip.inv_abcd,
+                    fragment_clip.inv_ef,
+                ),
         );
         primitive.prepare(
             &mut self.pipeline,
