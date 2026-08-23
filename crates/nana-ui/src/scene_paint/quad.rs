@@ -21,6 +21,8 @@ struct SolidInstance {
     shadow_blur_radius: f32,
     shadow_spread_radius: f32,
     snap: u32,
+    affine_abcd: [f32; 4],
+    affine_ef: [f32; 2],
 }
 
 #[repr(C)]
@@ -116,6 +118,7 @@ impl QuadPipeline {
         &mut self,
         bounds: LogicalRect,
         clip: LogicalRect,
+        affine: [f32; 6],
         background: Option<[f32; 4]>,
         border_color: Option<[f32; 4]>,
         border_width: f32,
@@ -123,17 +126,30 @@ impl QuadPipeline {
         shadow: Option<ComponentElevation>,
         opacity: f32,
     ) -> Option<u32> {
-        let bounds = bounds.intersection(clip)?;
+        let world = super::clip::transformed_aabb(bounds, affine);
+        let _ = world.intersection(clip)?;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
         }
+        // Translation-only: bake e,f into position so the existing 1px snap
+        // path matches prior identity pixels. Rotation/scale stay in affine.
+        let translation = super::clip::is_translation(affine);
+        let (position, instance_affine, snap) = if translation {
+            (
+                [bounds.x + affine[4], bounds.y + affine[5]],
+                super::clip::IDENTITY_AFFINE,
+                1,
+            )
+        } else {
+            ([bounds.x, bounds.y], affine, 0)
+        };
         let index = self.pending.len() as u32;
         self.pending.push(SolidInstance {
             color: pack_linear(with_opacity(
                 background.unwrap_or([0.0, 0.0, 0.0, 0.0]),
                 opacity,
             )),
-            position: [bounds.x, bounds.y],
+            position,
             size: [bounds.width, bounds.height],
             border_color: pack_linear(with_opacity(
                 border_color.unwrap_or([0.0, 0.0, 0.0, 0.0]),
@@ -150,7 +166,14 @@ impl QuadPipeline {
             shadow_offset: [0.0, shadow.map(|shadow| shadow.offset_y).unwrap_or(0.0)],
             shadow_blur_radius: shadow.map(|shadow| shadow.blur_radius).unwrap_or(0.0),
             shadow_spread_radius: shadow.map(|shadow| shadow.spread_radius).unwrap_or(0.0),
-            snap: 1,
+            snap,
+            affine_abcd: [
+                instance_affine[0],
+                instance_affine[1],
+                instance_affine[2],
+                instance_affine[3],
+            ],
+            affine_ef: [instance_affine[4], instance_affine[5]],
         });
         Some(index)
     }
@@ -251,6 +274,8 @@ fn solid_pipeline(
                     8 => Float32,
                     9 => Float32,
                     10 => Uint32,
+                    11 => Float32x4,
+                    12 => Float32x2,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),

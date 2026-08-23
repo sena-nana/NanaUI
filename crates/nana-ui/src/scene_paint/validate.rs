@@ -1,7 +1,8 @@
 //! Scene validation shared by [`super::SceneWgpuPainter`].
 //!
-//! Unknown custom GPU nodes and transforms the product painter cannot
-//! reproduce are rejected instead of being silently skipped.
+//! Unknown custom GPU nodes and missing host textures are rejected instead
+//! of being silently skipped. Affine transforms, letter-spacing, and named
+//! fonts are painted, not fail-closed.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -17,9 +18,6 @@ use crate::{HostTextureBinding, HostTextureRegistry};
 pub enum ScenePaintError {
     InvalidRenderGraph,
     CustomPrimitive(PrimitiveId),
-    UnsupportedTransform(PrimitiveId),
-    UnsupportedClipTransform(PrimitiveId),
-    UnsupportedTextStyle(PrimitiveId),
     UnsupportedCustomRenderer(PrimitiveId),
     MissingCustomResource(PrimitiveId),
     MissingNode(StableNodeId),
@@ -32,24 +30,6 @@ impl fmt::Display for ScenePaintError {
             Self::CustomPrimitive(id) => write!(
                 formatter,
                 "scene primitive {}:{} requires a registered custom renderer",
-                id.node.get(),
-                id.slot
-            ),
-            Self::UnsupportedTransform(id) => write!(
-                formatter,
-                "scene primitive {}:{} uses an affine transform unsupported by the Scene painter",
-                id.node.get(),
-                id.slot
-            ),
-            Self::UnsupportedClipTransform(id) => write!(
-                formatter,
-                "scene primitive {}:{} uses a transformed clip unsupported by the Scene painter",
-                id.node.get(),
-                id.slot
-            ),
-            Self::UnsupportedTextStyle(id) => write!(
-                formatter,
-                "scene primitive {}:{} uses text styling unsupported by the Scene painter",
                 id.node.get(),
                 id.slot
             ),
@@ -141,25 +121,6 @@ pub(crate) fn validate_scene(
                 return Err(ScenePaintError::UnsupportedCustomRenderer(primitive.id));
             }
         }
-        if !is_translation(primitive.transform.0) {
-            return Err(ScenePaintError::UnsupportedTransform(primitive.id));
-        }
-        if primitive
-            .clips
-            .iter()
-            .any(|clip| !is_translation(clip.transform.0))
-        {
-            return Err(ScenePaintError::UnsupportedClipTransform(primitive.id));
-        }
-        if let ScenePrimitiveKind::Text {
-            family,
-            letter_spacing,
-            ..
-        } = &primitive.kind
-            && (*letter_spacing != 0.0 || !supported_family(family.as_deref()))
-        {
-            return Err(ScenePaintError::UnsupportedTextStyle(primitive.id));
-        }
     }
     Ok(graph
         .passes
@@ -168,21 +129,6 @@ pub(crate) fn validate_scene(
         .filter(|operation| !matches!(operation, RenderOperation::PrepareExternal(_)))
         .collect::<Vec<_>>()
         .into())
-}
-
-fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
-    a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
-}
-
-fn supported_family(family: Option<&str>) -> bool {
-    family.is_none_or(|family| {
-        let family = family.trim().to_ascii_lowercase();
-        family.is_empty()
-            || family == "sans-serif"
-            || family == "system-ui"
-            || family == "monospace"
-            || family.contains("mono")
-    })
 }
 
 #[cfg(test)]
@@ -489,5 +435,72 @@ mod tests {
         let (scene, _) = button_scene();
         let operations = validate_scene(&scene, None, None).unwrap();
         assert!(!operations.is_empty());
+    }
+
+    #[test]
+    fn validate_scene_accepts_rotation_and_letter_spacing() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(document, RuntimeButton::new("标题"))
+            .unwrap();
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            button.stable_id(),
+            LayoutBox {
+                x: 8.0,
+                y: 8.0,
+                width: 120.0,
+                height: 32.0,
+            },
+        );
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        Arc::make_mut(&mut style.layout).transform = Some(nana_ui_core::PaintTransform {
+            a: 0.0,
+            b: 1.0,
+            c: -1.0,
+            d: 0.0,
+            e: 0.0,
+            f: 0.0,
+        });
+        Arc::make_mut(&mut style.layout).letter_spacing = Some(0.5);
+        Arc::make_mut(&mut style.layout).font_family = Some("Noto Sans SC".into());
+        mutations.set_style(button.stable_id(), style);
+        context.commit_mutations(mutations).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            context.world().extract_nodes(&work.render_extraction),
+            work.render_removals,
+        );
+
+        let operations = validate_scene(&scene, None, None).unwrap();
+        assert!(!operations.is_empty());
+        let mut saw_rotation = false;
+        let mut saw_tracking = false;
+        let mut saw_named_font = false;
+        for primitive in scene.primitives() {
+            let [a, b, c, d, _, _] = primitive.transform.0;
+            if a != 1.0 || b != 0.0 || c != 0.0 || d != 1.0 {
+                saw_rotation = true;
+            }
+            if let ScenePrimitiveKind::Text {
+                letter_spacing,
+                family,
+                ..
+            } = &primitive.kind
+            {
+                if *letter_spacing != 0.0 {
+                    saw_tracking = true;
+                }
+                if family.as_deref() == Some("Noto Sans SC") {
+                    saw_named_font = true;
+                }
+            }
+        }
+        assert!(saw_rotation, "scene must keep the 90° paint affine");
+        assert!(saw_tracking, "scene must keep 0.5px letter-spacing");
+        assert!(saw_named_font, "scene must keep the named Noto family");
     }
 }

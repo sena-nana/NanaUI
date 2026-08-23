@@ -17,8 +17,12 @@ var source_sampler: sampler;
 struct LayerUniform {
     // opacity, corner radius (logical px), width, height
     params: vec4<f32>,
-    // x is 1 for an opaque source and 0 for premultiplied alpha.
+    // opaque flag, scale factor, dest width, dest height
     source: vec4<f32>,
+    // CSS matrix a, b, c, d
+    affine: vec4<f32>,
+    // e, f, bounds.x, bounds.y
+    origin: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -31,15 +35,33 @@ struct VertexOutput {
 
 @vertex
 fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
+    var units = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 1.0),
     );
-    let raw_uv = positions[index] * 0.5 + vec2<f32>(0.5);
+    let uv = units[index];
+    let local = vec2<f32>(
+        layer.origin.z + uv.x * layer.params.z,
+        layer.origin.w + uv.y * layer.params.w,
+    );
+    let world = vec2<f32>(
+        layer.affine.x * local.x + layer.affine.z * local.y + layer.origin.x,
+        layer.affine.y * local.x + layer.affine.w * local.y + layer.origin.y,
+    );
+    let physical = world * layer.source.y;
+    let dest = vec2<f32>(max(layer.source.z, 1.0), max(layer.source.w, 1.0));
     var output: VertexOutput;
-    output.position = vec4<f32>(positions[index], 0.0, 1.0);
-    output.uv = vec2<f32>(raw_uv.x, 1.0 - raw_uv.y);
+    output.position = vec4<f32>(
+        2.0 * physical.x / dest.x - 1.0,
+        1.0 - 2.0 * physical.y / dest.y,
+        0.0,
+        1.0,
+    );
+    output.uv = uv;
     return output;
 }
 
@@ -455,7 +477,9 @@ impl GpuTexturePrimitive {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: LogicalRect,
+        affine: [f32; 6],
         scale_factor: f32,
+        dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let texture = self.layer.texture.snapshot();
@@ -480,7 +504,8 @@ impl GpuTexturePrimitive {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let layer_uniform_value = make_layer_uniform(&self.layer, bounds);
+            let layer_uniform_value =
+                make_layer_uniform(&self.layer, bounds, affine, scale_factor, dest_size);
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
             queue.write_buffer(&layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
@@ -519,7 +544,8 @@ impl GpuTexturePrimitive {
                 },
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
-            let layer_uniform_value = make_layer_uniform(&self.layer, bounds);
+            let layer_uniform_value =
+                make_layer_uniform(&self.layer, bounds, affine, scale_factor, dest_size);
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
             queue.write_buffer(&prepared.layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
@@ -544,14 +570,13 @@ impl GpuTexturePrimitive {
         let Some(texture) = pipeline.textures.get(&key) else {
             return;
         };
-        let layer_bounds = texture.clip.map_or(texture.slot.physical, |clip| {
-            intersect_physical(texture.slot.physical, clip)
-        });
-        let bounds = intersect_physical(layer_bounds, clip_bounds);
-        if bounds.width == 0 || bounds.height == 0 {
+        let layer_bounds = texture
+            .clip
+            .map_or(clip_bounds, |clip| intersect_physical(clip_bounds, clip));
+        if layer_bounds.width == 0 || layer_bounds.height == 0 {
             return;
         }
-        encode_host_texture(pipeline, texture, pass, bounds, dest_size, gpu_work);
+        encode_host_texture(pipeline, texture, pass, layer_bounds, dest_size, gpu_work);
     }
 }
 
@@ -564,11 +589,19 @@ fn encode_host_texture(
     gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
 ) {
     let viewport = texture.viewport;
-    pass.set_viewport(viewport[0], viewport[1], viewport[2], viewport[3], 0.0, 1.0);
+    let _ = viewport;
+    pass.set_viewport(
+        0.0,
+        0.0,
+        dest_size[0].max(1) as f32,
+        dest_size[1].max(1) as f32,
+        0.0,
+        1.0,
+    );
     pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
     pass.set_pipeline(&pipeline.pipeline);
     pass.set_bind_group(0, &texture.bind_group, &[]);
-    pass.draw(0..3, 0..1);
+    pass.draw(0..6, 0..1);
     pass.set_viewport(
         0.0,
         0.0,
@@ -622,7 +655,7 @@ impl GpuTexturePipeline {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -735,9 +768,22 @@ impl TextureKey {
 struct LayerUniform {
     params: [f32; 4],
     source: [f32; 4],
+    affine: [f32; 4],
+    origin: [f32; 4],
 }
 
-fn make_layer_uniform(layer: &HostTextureLayer, bounds: LogicalRect) -> LayerUniform {
+fn make_layer_uniform(
+    layer: &HostTextureLayer,
+    bounds: LogicalRect,
+    affine: [f32; 6],
+    scale_factor: f32,
+    dest_size: [u32; 2],
+) -> LayerUniform {
+    let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
     LayerUniform {
         params: [
             layer.opacity,
@@ -751,10 +797,12 @@ fn make_layer_uniform(layer: &HostTextureLayer, bounds: LogicalRect) -> LayerUni
             } else {
                 0.0
             },
-            0.0,
-            0.0,
-            0.0,
+            scale,
+            dest_size[0].max(1) as f32,
+            dest_size[1].max(1) as f32,
         ],
+        affine: [affine[0], affine[1], affine[2], affine[3]],
+        origin: [affine[4], affine[5], bounds.x, bounds.y],
     }
 }
 
@@ -921,14 +969,32 @@ mod tests {
         assert_eq!(registry.revision(), revision);
 
         let bounds = LogicalRect::new(0.0, 0.0, 320.0, 180.0);
-        let premultiplied_uniform =
-            make_layer_uniform(&HostTextureLayer::from_binding(premultiplied), bounds);
+        let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let premultiplied_uniform = make_layer_uniform(
+            &HostTextureLayer::from_binding(premultiplied.clone()),
+            bounds,
+            identity,
+            1.0,
+            [320, 180],
+        );
         let opaque_uniform = make_layer_uniform(
             &HostTextureLayer::from_binding(opaque),
             LogicalRect::new(0.0, 0.0, 320.0, 180.0),
+            identity,
+            1.0,
+            [320, 180],
         );
         assert_eq!(premultiplied_uniform.source[0], 0.0);
         assert_eq!(opaque_uniform.source[0], 1.0);
+
+        let rounded = make_layer_uniform(
+            &HostTextureLayer::from_binding(premultiplied).with_corner_radius(8.0),
+            bounds,
+            identity,
+            1.0,
+            [320, 180],
+        );
+        assert_eq!(rounded.params[1], 8.0);
     }
 
     #[test]

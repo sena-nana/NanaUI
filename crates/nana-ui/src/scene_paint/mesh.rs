@@ -172,6 +172,7 @@ impl MeshPipeline {
     pub(super) fn push_icon(
         &mut self,
         bounds: LogicalRect,
+        affine: [f32; 6],
         icon: Icon,
         color: [f32; 4],
         opacity: f32,
@@ -192,13 +193,13 @@ impl MeshPipeline {
             color_bits: color.map(f32::to_bits),
         };
         let start = self.pending_indices.len() as u32;
+        let vertex_base = self.pending_vertices.len();
         if let Some(cached) = self.icon_cache.entries.get(&key) {
-            let base = self.pending_vertices.len() as u32;
+            let base = vertex_base as u32;
             self.pending_vertices.extend_from_slice(&cached.vertices);
             self.pending_indices
                 .extend(cached.indices.iter().map(|index| index + base));
         } else {
-            let vertex_base = self.pending_vertices.len();
             tessellate_icon(
                 &mut self.fill,
                 &mut self.stroke,
@@ -222,6 +223,7 @@ impl MeshPipeline {
             );
         }
         let index_count = self.pending_indices.len() as u32 - start;
+        apply_affine_to_vertices(&mut self.pending_vertices, vertex_base, affine);
         (index_count > 0).then_some(MeshRange {
             first_index: start,
             index_count,
@@ -231,6 +233,7 @@ impl MeshPipeline {
     pub(super) fn push_stroke(
         &mut self,
         points: &[[f32; 2]],
+        affine: [f32; 6],
         width: f32,
         color: [f32; 4],
         opacity: f32,
@@ -245,6 +248,7 @@ impl MeshPipeline {
         }
         builder.end(false);
         let start = self.pending_indices.len() as u32;
+        let vertex_base = self.pending_vertices.len();
         stroke_path(
             &mut self.stroke,
             &mut self.pending_vertices,
@@ -253,6 +257,7 @@ impl MeshPipeline {
             width,
             pack_linear(with_opacity(color, opacity)),
         );
+        apply_affine_to_vertices(&mut self.pending_vertices, vertex_base, affine);
         let index_count = self.pending_indices.len() as u32 - start;
         (index_count > 0).then_some(MeshRange {
             first_index: start,
@@ -263,6 +268,7 @@ impl MeshPipeline {
     pub(super) fn push_spinner(
         &mut self,
         bounds: LogicalRect,
+        affine: [f32; 6],
         phase: u8,
         color: [f32; 4],
         opacity: f32,
@@ -277,6 +283,7 @@ impl MeshPipeline {
             bounds.y + bounds.height / 2.0,
         ];
         let start = self.pending_indices.len() as u32;
+        let vertex_base = self.pending_vertices.len();
         for index in 0..8_u8 {
             let angle = f32::from(index) * std::f32::consts::FRAC_PI_4;
             let from = point(
@@ -304,6 +311,7 @@ impl MeshPipeline {
                 pack_linear(tick_color),
             );
         }
+        apply_affine_to_vertices(&mut self.pending_vertices, vertex_base, affine);
         let index_count = self.pending_indices.len() as u32 - start;
         (index_count > 0).then_some(MeshRange {
             first_index: start,
@@ -620,6 +628,16 @@ fn fill_path(
         &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| vertex.position()),
     );
     append_geometry(vertices, indices, &geometry, color);
+}
+
+fn apply_affine_to_vertices(vertices: &mut [MeshVertex], start: usize, affine: [f32; 6]) {
+    if affine == super::clip::IDENTITY_AFFINE {
+        return;
+    }
+    for vertex in &mut vertices[start..] {
+        vertex.position =
+            super::clip::transform_point(affine, vertex.position[0], vertex.position[1]);
+    }
 }
 
 fn append_geometry(

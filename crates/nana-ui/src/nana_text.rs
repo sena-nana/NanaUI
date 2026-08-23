@@ -55,9 +55,8 @@ impl TextShaper for NanaTextShaper {
     ) -> TextMetrics {
         let buffer = self.shape_buffer(&text.value, style, constraints);
         let (width, height, _) = measure(&buffer);
-        let tracking = style.letter_spacing * text.value.chars().count().saturating_sub(1) as f32;
         TextMetrics {
-            width: (width + tracking).max(0.0),
+            width: width.max(0.0),
             height,
         }
     }
@@ -81,9 +80,8 @@ impl TextShaper for NanaTextShaper {
         let buffer = self.shape_buffer(&text.value, style, constraints);
         record_shaped_glyphs(&buffer, style, glyphs);
         let (width, height, _) = measure(&buffer);
-        let tracking = style.letter_spacing * text.value.chars().count().saturating_sub(1) as f32;
         TextMetrics {
-            width: (width + tracking).max(0.0),
+            width: width.max(0.0),
             height,
         }
     }
@@ -110,9 +108,7 @@ impl TextShaper for NanaTextShaper {
             },
         );
         let graphemes = text.value[..byte_offset].graphemes(true).count();
-        grapheme_x(&buffer, 0, graphemes).map_or(0.0, |x| {
-            x + style.letter_spacing * graphemes.saturating_sub(1) as f32
-        })
+        grapheme_x(&buffer, 0, graphemes).unwrap_or(0.0)
     }
 
     fn text_position(
@@ -236,12 +232,26 @@ impl NanaTextShaper {
 }
 
 fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
-    Attrs::new()
+    let mut attrs = Attrs::new()
         .family(resolve_family(style.font_family.as_deref()))
-        .weight(font_weight(style.font_weight))
+        .weight(font_weight(style.font_weight));
+    if style.letter_spacing != 0.0 {
+        attrs = attrs.letter_spacing(letter_spacing_em(style.letter_spacing, style.font_size));
+    }
+    attrs
 }
 
-fn resolve_family(family: Option<&str>) -> Family<'_> {
+pub(crate) fn letter_spacing_em(letter_spacing_px: f32, font_size: f32) -> f32 {
+    if !letter_spacing_px.is_finite() || letter_spacing_px == 0.0 {
+        0.0
+    } else if font_size.abs() < f32::MIN_POSITIVE {
+        0.0
+    } else {
+        letter_spacing_px / font_size
+    }
+}
+
+pub(crate) fn resolve_family(family: Option<&str>) -> Family<'_> {
     let trimmed = family.map(str::trim).unwrap_or("");
     if trimmed.is_empty() {
         return Family::SansSerif;
@@ -278,10 +288,9 @@ fn single_char(text: &str) -> Option<char> {
     }
 }
 
-fn metrics_from_advance(advance: f32, style: &ComputedStyle, char_count: usize) -> TextMetrics {
-    let tracking = style.letter_spacing * char_count.saturating_sub(1) as f32;
+fn metrics_from_advance(advance: f32, style: &ComputedStyle, _char_count: usize) -> TextMetrics {
     TextMetrics {
-        width: (advance + tracking).max(0.0),
+        width: advance.max(0.0),
         height: resolved_line_height(style),
     }
 }
@@ -539,6 +548,41 @@ mod tests {
             TextShapeConstraints::default(),
         );
         assert_positive_finite(unknown);
+    }
+
+    #[test]
+    fn letter_spacing_widens_shaped_metrics() {
+        let text = TextContent {
+            value: "标题文字".into(),
+        };
+        let tight = NanaTextShaper::default().shape(
+            node(),
+            &text,
+            &ComputedStyle {
+                font_size: 16.0,
+                font_family: Some("Noto Sans SC".into()),
+                ..ComputedStyle::default()
+            },
+            TextShapeConstraints::default(),
+        );
+        let tracked = NanaTextShaper::default().shape(
+            node(),
+            &text,
+            &ComputedStyle {
+                font_size: 16.0,
+                font_family: Some("Noto Sans SC".into()),
+                letter_spacing: 0.5,
+                ..ComputedStyle::default()
+            },
+            TextShapeConstraints::default(),
+        );
+        assert!(tight.width.is_finite() && tight.width > 0.0);
+        assert!(
+            tracked.width > tight.width,
+            "0.5px tracking must be visible in layout width, tight={} tracked={}",
+            tight.width,
+            tracked.width
+        );
     }
 
     #[test]

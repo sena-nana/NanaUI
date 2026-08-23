@@ -19,6 +19,7 @@ struct GlyphKey {
     font_size_bits: u32,
     font_weight: u16,
     font_family: Option<Arc<str>>,
+    letter_spacing_bits: u32,
 }
 
 impl GlyphKey {
@@ -28,6 +29,7 @@ impl GlyphKey {
             font_size_bits: style.font_size.to_bits(),
             font_weight: style.font_weight.unwrap_or(0),
             font_family: style.font_family.clone(),
+            letter_spacing_bits: style.letter_spacing.to_bits(),
         }
     }
 }
@@ -149,5 +151,25 @@ mod tests {
         let (hits, misses) = cache.take_counters().expect("cache was consulted");
         assert_eq!(hits, 1);
         assert_eq!(misses, 1);
+    }
+
+    #[test]
+    fn letter_spacing_is_part_of_the_glyph_key() {
+        let mut cache = GlyphCache::with_cap(8);
+        let tight = ComputedStyle {
+            font_size: 16.0,
+            letter_spacing: 0.0,
+            ..ComputedStyle::default()
+        };
+        let tracked = ComputedStyle {
+            font_size: 16.0,
+            letter_spacing: 0.5,
+            ..ComputedStyle::default()
+        };
+        cache.insert('a', &tight, 8.0);
+        assert!(cache.peek('a', &tracked).is_none());
+        cache.insert('a', &tracked, 8.5);
+        assert_eq!(cache.peek('a', &tight), Some(8.0));
+        assert_eq!(cache.peek('a', &tracked), Some(8.5));
     }
 }
