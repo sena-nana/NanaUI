@@ -21,6 +21,9 @@ pub use canvas::{
 };
 use fetch::{FetchCompletion, FetchRuntime};
 
+/// Fallback gap between host frames while rAF is pending. `pump_frame` consumes
+/// pending rAF for the current host frame; this interval is `next_wakeup`, not a
+/// spin inside the drain loop.
 const RAF_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub use nana_ui_platform::{
@@ -56,6 +59,9 @@ pub struct WebApiState {
     storage: HashMap<String, BTreeMap<String, String>>,
     pending_raf: BTreeSet<u64>,
     raf_deadline: Option<Instant>,
+    /// True between [`Self::begin_host_frame`] and [`Self::end_host_frame`].
+    /// Nested rAF scheduled during a host frame waits for the next wakeup.
+    host_frame_open: bool,
     timeouts: BTreeMap<u64, Instant>,
     intervals: BTreeMap<u64, (Instant, Duration)>,
     document_dataset: BTreeMap<String, String>,
@@ -93,6 +99,7 @@ impl WebApiState {
             storage: HashMap::new(),
             pending_raf: BTreeSet::new(),
             raf_deadline: None,
+            host_frame_open: false,
             timeouts: BTreeMap::new(),
             intervals: BTreeMap::new(),
             document_dataset: BTreeMap::new(),
@@ -182,6 +189,45 @@ impl WebApiState {
         &self.location_path
     }
 
+    /// Mark pending rAF due for this host frame so `pump_frame` follows the host
+    /// rather than a wall-clock 16ms spin.
+    pub fn begin_host_frame(&mut self, now: Instant) {
+        self.host_frame_open = true;
+        if !self.pending_raf.is_empty() {
+            self.raf_deadline = Some(now);
+        }
+    }
+
+    /// Close the host frame. Nested rAF waits until `next_wakeup` (~16ms).
+    pub fn end_host_frame(&mut self, now: Instant) {
+        self.host_frame_open = false;
+        if self.pending_raf.is_empty() {
+            self.raf_deadline = None;
+            return;
+        }
+        if self.raf_deadline.is_none_or(|deadline| deadline <= now) {
+            self.raf_deadline = Some(now + RAF_FRAME_INTERVAL);
+        }
+    }
+
+    pub fn schedule_raf(&mut self, id: u64) {
+        self.pending_raf.insert(id);
+        if self.raf_deadline.is_none() {
+            self.raf_deadline = Some(if self.host_frame_open {
+                Instant::now() + RAF_FRAME_INTERVAL
+            } else {
+                Instant::now()
+            });
+        }
+    }
+
+    pub fn cancel_raf(&mut self, id: u64) {
+        self.pending_raf.remove(&id);
+        if self.pending_raf.is_empty() {
+            self.raf_deadline = None;
+        }
+    }
+
     /// Due raf ids + timeout ids + interval ids that should fire.
     pub fn due_timers(&mut self, now: Instant) -> DueTimers {
         let raf = if self.raf_deadline.is_some_and(|deadline| deadline <= now) {
@@ -230,8 +276,9 @@ impl WebApiState {
             .collect()
     }
 
-    /// Earliest useful host wakeup. There is no polling when idle; an active
-    /// background fetch uses a short bounded wake until its completion arrives.
+    /// Earliest useful host wakeup. Idle (no rAF, timer, or fetch) is `None`.
+    /// Pending rAF uses a stable deadline; an in-flight fetch uses a short
+    /// bounded wake until its completion arrives.
     pub fn next_wakeup(&self, now: Instant) -> Option<Instant> {
         let raf = self.raf_deadline;
         let timer = self
@@ -442,11 +489,7 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
         let state = Arc::clone(&state);
         api.register("rafSchedule", move |args| {
             let id = arg_u64(args, 0)?;
-            let mut state = lock(&state)?;
-            state.pending_raf.insert(id);
-            state
-                .raf_deadline
-                .get_or_insert_with(|| Instant::now() + RAF_FRAME_INTERVAL);
+            lock(&state)?.schedule_raf(id);
             Ok(HostValue::Null)
         });
     }
@@ -454,11 +497,7 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
         let state = Arc::clone(&state);
         api.register("rafCancel", move |args| {
             let id = arg_u64(args, 0)?;
-            let mut state = lock(&state)?;
-            state.pending_raf.remove(&id);
-            if state.pending_raf.is_empty() {
-                state.raf_deadline = None;
-            }
+            lock(&state)?.cancel_raf(id);
             Ok(HostValue::Null)
         });
     }
@@ -793,7 +832,6 @@ mod tests {
             &[HostValue::Number(2.0), HostValue::Number(0.0)],
         )
         .unwrap();
-        std::thread::sleep(Duration::from_millis(18));
         let due = state.lock().unwrap().due_timers(Instant::now());
         assert!(due.raf.contains(&1));
         assert!(due.timeouts.contains(&2));
@@ -825,20 +863,37 @@ mod tests {
     #[test]
     fn nested_raf_requires_second_due_pass() {
         // Vue Transition nextFrame schedules rAF#2 inside rAF#1 callback.
-        // Mimic: first due_timers clears pending; a new schedule appears after.
+        // Mimic a host frame: first due_timers clears pending; a nested
+        // schedule waits for the next wakeup instead of spinning.
         let state = shared_web_api_state();
         let mut api = HostApiRegistry::new();
         register_web_api_host_ops(&mut api, Arc::clone(&state));
         api.call("rafSchedule", &[HostValue::Number(1.0)]).unwrap();
-        std::thread::sleep(Duration::from_millis(18));
-        let due1 = state.lock().unwrap().due_timers(Instant::now());
+        let now = Instant::now();
+        state.lock().unwrap().begin_host_frame(now);
+        let due1 = state.lock().unwrap().due_timers(now);
         assert_eq!(due1.raf, vec![1]);
-        assert!(state.lock().unwrap().due_timers(Instant::now()).is_empty());
-        // Nested schedule (as Transition's second rAF).
+        assert!(state.lock().unwrap().due_timers(now).is_empty());
         api.call("rafSchedule", &[HostValue::Number(2.0)]).unwrap();
-        std::thread::sleep(Duration::from_millis(18));
-        let due2 = state.lock().unwrap().due_timers(Instant::now());
+        assert!(
+            state.lock().unwrap().due_timers(now).is_empty(),
+            "nested rAF must not drain in the same host frame"
+        );
+        state.lock().unwrap().end_host_frame(now);
+        let wakeup = state
+            .lock()
+            .unwrap()
+            .next_wakeup(now)
+            .expect("nested rAF wakeup");
+        assert!(wakeup > now);
+        let due2 = state.lock().unwrap().due_timers(wakeup);
         assert_eq!(due2.raf, vec![2]);
+    }
+
+    #[test]
+    fn idle_next_wakeup_is_none() {
+        let state = WebApiState::new();
+        assert!(state.next_wakeup(Instant::now()).is_none());
     }
 
     #[test]

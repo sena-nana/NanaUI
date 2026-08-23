@@ -57,3 +57,11 @@ uses archived `--from-report` fixtures. Live compile against `engine/iced` or
 paint path. WGPU stays the host GPU API.
 
 The product path has left Iced. This was an archive decision, not a paint todo.
+
+## Remaining platform debt
+
+Desktop still pins the [iced-rs winit fork](https://github.com/iced-rs/winit)
+(`rev = 05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed`) via workspace
+`[patch.crates-io]` and `nana-ui`'s optional `winit` dep. That is leftover
+window / event-loop platform debt, not an Iced renderer, widget tree, or
+Android Iced dependency. Replacing it with upstream winit is still open.
