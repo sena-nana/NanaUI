@@ -6,8 +6,8 @@ mod macos;
 mod windows;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) use fallback::{apply, clear};
+pub(crate) use fallback::{apply, clear, set_application_icon_png};
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{apply, clear};
+pub(crate) use macos::{apply, clear, set_application_icon_png};
 #[cfg(target_os = "windows")]
-pub(crate) use windows::{apply, clear};
+pub(crate) use windows::{apply, clear, set_application_icon_png};

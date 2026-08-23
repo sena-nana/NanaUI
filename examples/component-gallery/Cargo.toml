@@ -6,6 +6,9 @@ rust-version = "1.92"
 publish = false
 default-run = "component-gallery"
 
+[build-dependencies]
+nana-app-icon = { workspace = true, features = ["embed"] }
+
 [lib]
 name = "component_gallery"
 path = "src/lib.rs"

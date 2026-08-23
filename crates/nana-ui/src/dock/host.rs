@@ -36,6 +36,7 @@ pub fn hosted_dock_update(update: DockUpdate, title: impl Into<String>) -> Runti
                     parent: None,
                     // Match the main window: client-drawn chrome, not OS caption.
                     system_caption: false,
+                    icon: None,
                 },
             },
             DockHostEffect::CloseFloating(surface) => WindowCommand::Close(WindowId::from(surface)),

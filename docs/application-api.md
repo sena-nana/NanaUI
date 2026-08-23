@@ -13,6 +13,15 @@ L1 / L2 / L3 是三种输入合同，不是三套运行时。
 
 业务状态、鉴权、配置盘、Region 内容由应用拥有。NanaUI 只提供通用控件与合同。
 
+## 窗口与应用图标
+
+任务栏 / exe / Dock 图标是应用身份，不是 UI `Icon` 字形。未设置时用默认几何标记。
+
+- Rust：`register_application_icon` 或 `WindowSettings::icon` / `WindowCommand::SetIcon`
+- JS：`Nana.windows.setApplicationIcon(icon)`，`create({ icon })`，`handle.setIcon(icon)`；`icon` 为 `{ png }` 或 `{ width, height, rgba }`
+- Windows exe：`build.rs` 里 `nana_app_icon::embed_windows()` 或 `embed_windows_from(ico)`
+- macOS Dock：`nana-window::set_application_icon_png`；`.app` 用 `nana-package-app`
+
 ## L3 最小路径
 
 ```rust

@@ -11,11 +11,14 @@ use std::time::{Duration, Instant};
 use nana_ui_core::AppearanceSettings;
 use nana_ui_platform::{
     ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType, TextInputPurpose,
-    TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId,
+    TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon, WindowId,
+    clear_registered_application_icon, register_application_icon,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
 };
+#[cfg(target_os = "macos")]
+use nana_window::set_application_icon_png;
 use nana_window::{
     Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
     clear_system_material, prepare_client_chrome, suppress_system_caption,
@@ -222,6 +225,7 @@ fn initialize<Program: RuntimeProgram>(
             .create_window(scene_window_attributes(&settings).with_visible(false))
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
+    apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
     if !settings.system_caption {
         let _ = prepare_client_chrome(window.as_ref());
         if settings.transparent {
@@ -854,6 +858,33 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     window.set_window_level(window_level(always_on_top));
                 }
             }
+            RoutedWindowCommand::SetIcon(id) => {
+                let WindowCommand::SetIcon { icon, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    apply_scene_window_icon(
+                        window.as_ref(),
+                        icon.as_ref(),
+                        id == WindowId::PRIMARY,
+                    );
+                }
+            }
+            RoutedWindowCommand::SetApplicationIcon => {
+                let WindowCommand::SetApplicationIcon { icon } = command else {
+                    return;
+                };
+                match icon {
+                    Some(icon) => register_application_icon(icon),
+                    None => clear_registered_application_icon(),
+                }
+                for id in self.known_window_ids() {
+                    if let Some(window) = self.window(id) {
+                        apply_scene_window_icon(window.as_ref(), None, id == WindowId::PRIMARY);
+                    }
+                }
+                apply_application_icon(&nana_app_icon::resolved_application_icon(None));
+            }
             RoutedWindowCommand::Drag(id) => {
                 if let Some(window) = self.window(id) {
                     drag_scene_window(window.as_ref());
@@ -890,6 +921,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             event_loop
                 .create_window(attributes)
                 .map_err(|error| error.to_string())?,
+        );
+        apply_scene_window_icon(
+            window.as_ref(),
+            settings.icon.as_ref(),
+            id == WindowId::PRIMARY,
         );
         if !settings.system_caption {
             let _ = prepare_client_chrome(window.as_ref());
@@ -1878,8 +1914,54 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
     if let Some((x, y)) = settings.initial_position {
         attributes = attributes.with_position(winit::dpi::LogicalPosition::new(x, y));
     }
+    if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
+        attributes = attributes.with_window_icon(Some(icon.clone()));
+        #[cfg(target_os = "windows")]
+        {
+            attributes = attributes.with_taskbar_icon(Some(icon));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = icon;
+        }
+    }
 
     apply_scene_window_chrome(attributes, settings)
+}
+
+fn resolved_scene_icon(per_window: Option<&WindowIcon>) -> WindowIcon {
+    nana_app_icon::resolved_application_icon(per_window)
+}
+
+fn winit_icon(icon: &WindowIcon) -> Option<winit::window::Icon> {
+    winit::window::Icon::from_rgba(icon.rgba.clone(), icon.width, icon.height).ok()
+}
+
+fn apply_scene_window_icon(
+    window: &winit::window::Window,
+    per_window: Option<&WindowIcon>,
+    apply_app_icon: bool,
+) {
+    let icon = resolved_scene_icon(per_window);
+    if let Some(winit_icon) = winit_icon(&icon) {
+        window.set_window_icon(Some(winit_icon.clone()));
+        #[cfg(target_os = "windows")]
+        window.set_taskbar_icon(Some(winit_icon));
+        #[cfg(not(target_os = "windows"))]
+        let _ = winit_icon;
+    }
+    if apply_app_icon {
+        apply_application_icon(&icon);
+    }
+}
+
+fn apply_application_icon(icon: &WindowIcon) {
+    #[cfg(target_os = "macos")]
+    if let Ok(png) = nana_app_icon::encode_png(icon.width, icon.height, &icon.rgba) {
+        set_application_icon_png(&png);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = icon;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1983,6 +2065,8 @@ enum RoutedWindowCommand {
     SetMinimized(WindowId),
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
+    SetIcon(WindowId),
+    SetApplicationIcon,
     Drag(WindowId),
     Ignore,
 }
@@ -2012,6 +2096,8 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         WindowCommand::SetAlwaysOnTop { id, .. } if known(*id) => {
             RoutedWindowCommand::SetAlwaysOnTop(*id)
         }
+        WindowCommand::SetIcon { id, .. } if known(*id) => RoutedWindowCommand::SetIcon(*id),
+        WindowCommand::SetApplicationIcon { .. } => RoutedWindowCommand::SetApplicationIcon,
         WindowCommand::Drag(id) if known(*id) => RoutedWindowCommand::Drag(*id),
         _ => RoutedWindowCommand::Ignore,
     }
@@ -3138,6 +3224,20 @@ mod tests {
                 &known
             ),
             RoutedWindowCommand::SetAlwaysOnTop(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetIcon {
+                    id: tool,
+                    icon: None,
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetIcon(tool)
+        );
+        assert_eq!(
+            route_window_command(&WindowCommand::SetApplicationIcon { icon: None }, &known),
+            RoutedWindowCommand::SetApplicationIcon
         );
         assert_eq!(
             route_window_command(&WindowCommand::Drag(tool), &known),

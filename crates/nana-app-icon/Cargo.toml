@@ -1,0 +1,27 @@
+[package]
+name = "nana-app-icon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Default application mark, PNG/ICO/ICNS encoding, and Windows PE icon embed"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = ["runtime"]
+runtime = ["dep:nana-ui-platform", "dep:image"]
+embed = ["dep:embed-resource"]
+
+[lib]
+name = "nana_app_icon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nana-package-app"
+path = "src/bin/nana-package-app.rs"
+
+[dependencies]
+nana-ui-platform = { workspace = true, optional = true, default-features = false }
+image = { workspace = true, optional = true }
+flate2 = "1.1"
+embed-resource = { version = "3.0", optional = true }

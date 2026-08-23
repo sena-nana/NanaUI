@@ -234,6 +234,7 @@ impl Fixture {
                     modal: false,
                     parent: Some(WindowId::PRIMARY),
                     system_caption: true,
+                    icon: None,
                 },
             }],
             exit: false,

@@ -30,6 +30,8 @@ nana-ui-scene.workspace = true
 nana-js-engine.workspace = true
 nana-ui-web-api.workspace = true
 nana-ui-platform.workspace = true
+nana-app-icon = { workspace = true, features = ["runtime"] }
+base64.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 nana-ui = { path = "../nana-ui", optional = true, default-features = false }

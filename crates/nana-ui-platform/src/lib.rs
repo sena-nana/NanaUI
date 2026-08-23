@@ -21,8 +21,9 @@ pub use fetch::{
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
 pub use window::{
-    TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId,
-    WindowRole, WindowSettings,
+    TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon,
+    WindowIconError, WindowId, WindowRole, WindowSettings, clear_registered_application_icon,
+    register_application_icon, resolve_window_icon,
 };
 
 /// Experimental Android host capability flags. They are intentionally absent

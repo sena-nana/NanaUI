@@ -1727,6 +1727,9 @@ function createWindowHandle(descriptor) {
     setAlwaysOnTop(alwaysOnTop) {
       hostCall("windowSetAlwaysOnTop", [id, !!alwaysOnTop]);
     },
+    setIcon(icon) {
+      hostCall("windowSetIcon", [id, icon ?? null]);
+    },
     geometry() {
       return hostCall("windowGeometry", [id]) || {};
     },
@@ -1824,6 +1827,9 @@ globalThis.Nana.windows = {
   list() {
     const descriptors = hostCall("windowList", []) || [];
     return Array.from(descriptors, createWindowHandle);
+  },
+  setApplicationIcon(icon) {
+    hostCall("windowSetApplicationIcon", [icon ?? null]);
   },
 };
 

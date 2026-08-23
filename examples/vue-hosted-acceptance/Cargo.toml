@@ -6,6 +6,9 @@ rust-version = "1.92"
 publish = false
 description = "Windowed V8 acceptance app for pure Vue and Vue/Runtime composition"
 
+[build-dependencies]
+nana-app-icon = { workspace = true, features = ["embed"] }
+
 [features]
 default = ["engine-v8"]
 engine-v8 = []

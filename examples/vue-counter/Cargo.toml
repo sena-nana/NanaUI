@@ -6,6 +6,9 @@ rust-version = "1.92"
 publish = false
 description = "Vue Counter/Todo JS probe + optional Runtime/UiScene window"
 
+[build-dependencies]
+nana-app-icon = { workspace = true, features = ["embed"] }
+
 [[bin]]
 name = "vue-counter"
 path = "src/main.rs"

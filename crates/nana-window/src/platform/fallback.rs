@@ -18,3 +18,5 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
 }
 
 pub(crate) fn clear<W: HasWindowHandle + ?Sized>(_window: &W) {}
+
+pub(crate) fn set_application_icon_png(_png: &[u8]) {}
