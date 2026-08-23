@@ -57,7 +57,6 @@ impl IconCache {
     }
 }
 
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct MeshVertex {

@@ -42,7 +42,6 @@ pub struct DockSurfaceLayout {
     pub splits: Vec<DockSplitLayout>,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DockViewItem {
     Existing(DockId),
@@ -127,5 +126,3 @@ impl DockViewNode {
         }
     }
 }
-
-

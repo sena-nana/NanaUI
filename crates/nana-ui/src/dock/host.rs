@@ -79,5 +79,3 @@ fn merge_dock_redraw(left: RuntimeRedraw, right: RuntimeRedraw) -> RuntimeRedraw
         _ => RuntimeRedraw::All,
     }
 }
-
-

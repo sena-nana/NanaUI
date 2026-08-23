@@ -1712,8 +1712,7 @@ mod tests {
 
     #[test]
     fn non_ascii_comments_and_content_survive_parsing() {
-        let with_comments =
-            "/* 深色主题 */ .card { color: red; content: \"按钮文字\" } /* 杂项 */";
+        let with_comments = "/* 深色主题 */ .card { color: red; content: \"按钮文字\" } /* 杂项 */";
         let without = " .card { color: red; content: \"按钮文字\" }  ";
         let commented = parse_stylesheet(with_comments, 0);
         let plain = parse_stylesheet(without, 0);
