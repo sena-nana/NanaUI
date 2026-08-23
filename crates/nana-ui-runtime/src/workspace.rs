@@ -366,13 +366,14 @@ impl Workspace {
         mutations: &mut MutationQueue,
     ) {
         let overlay = self.region_overlay(state);
-        let style = region_style(
+        let region = region_style(
             state,
             self.region_extent(state.id()),
             overlay,
             edges,
             self.workspace_corners,
         );
+        let style = overlay_region_style(world.node_style(content), region);
         project_common(
             content,
             world,
@@ -699,6 +700,30 @@ fn track_host_style(direction: FlexDirection, fill: bool) -> NodeStyle {
         layout.min_height = Some(LengthSpec::Px(0.0));
     }
     style
+}
+
+fn keep_if_unset<T: Copy>(slot: &mut Option<T>, kept: Option<T>) {
+    if slot.is_none() {
+        *slot = kept;
+    }
+}
+
+/// Region chrome owns size, overflow, and flex. Content such as SidebarFrame
+/// keeps padding, gap, and direction unless the region set those edges.
+fn overlay_region_style(existing: Option<&NodeStyle>, mut region: NodeStyle) -> NodeStyle {
+    let Some(existing) = existing else {
+        return region;
+    };
+    let layout = Arc::make_mut(&mut region.layout);
+    let kept = &*existing.layout;
+    keep_if_unset(&mut layout.direction, kept.direction);
+    keep_if_unset(&mut layout.gap, kept.gap);
+    keep_if_unset(&mut layout.padding, kept.padding);
+    keep_if_unset(&mut layout.padding_top, kept.padding_top);
+    keep_if_unset(&mut layout.padding_right, kept.padding_right);
+    keep_if_unset(&mut layout.padding_bottom, kept.padding_bottom);
+    keep_if_unset(&mut layout.padding_left, kept.padding_left);
+    region
 }
 
 fn region_style(
