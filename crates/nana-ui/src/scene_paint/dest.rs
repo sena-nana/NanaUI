@@ -35,6 +35,7 @@ pub(super) struct DestTarget {
     group_bind_layout: wgpu::BindGroupLayout,
     group_sampler: wgpu::Sampler,
     group_uniforms: wgpu::Buffer,
+    group_uniform_slots: u64,
 }
 
 impl DestTarget {
@@ -276,6 +277,7 @@ impl DestTarget {
             group_bind_layout,
             group_sampler,
             group_uniforms,
+            group_uniform_slots: GROUP_UNIFORM_SLOTS,
         }
     }
 
@@ -298,8 +300,11 @@ impl DestTarget {
         while self.group_layers.len() < layers {
             self.push_group_layer(device);
         }
-        let count = opacities.len().min(GROUP_UNIFORM_SLOTS as usize);
-        for (slot, opacity) in opacities.iter().copied().take(count).enumerate() {
+        let needed = (opacities.len() as u64).max(1);
+        if needed > self.group_uniform_slots {
+            self.resize_group_uniforms(device, needed);
+        }
+        for (slot, opacity) in opacities.iter().copied().enumerate() {
             let mut bytes = [0u8; GROUP_UNIFORM_SIZE as usize];
             bytes[..4].copy_from_slice(&opacity.to_le_bytes());
             queue.write_buffer(
@@ -310,6 +315,23 @@ impl DestTarget {
             if let Some(work) = gpu_work {
                 work.record_upload(bytes.len());
             }
+        }
+    }
+
+    fn resize_group_uniforms(&mut self, device: &wgpu::Device, slots: u64) {
+        let slots = slots.max(1);
+        self.group_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.group.uniforms"),
+            size: GROUP_UNIFORM_STRIDE * slots,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.group_uniform_slots = slots;
+        let layers = std::mem::take(&mut self.group_layers);
+        let count = layers.len();
+        drop(layers);
+        for _ in 0..count {
+            self.push_group_layer(device);
         }
     }
 
@@ -391,6 +413,8 @@ impl DestTarget {
         slot: u32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
+        let max_slot = self.group_uniform_slots.saturating_sub(1) as u32;
+        let slot = slot.min(max_slot);
         let offset = (slot as u64 * GROUP_UNIFORM_STRIDE) as u32;
         pass.set_pipeline(&self.group_pipeline);
         pass.set_bind_group(0, &self.group_layers[layer].bind_group, &[offset]);
