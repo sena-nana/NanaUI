@@ -275,9 +275,9 @@ pub trait RuntimeProgram: Sized + 'static {
     fn document(&self, id: WindowId) -> Option<&RuntimeDocument>;
     fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument>;
 
-    /// Apply a host-level message. View `dispatch_program` values of this type
-    /// coalesce to the latest and run on the next frame, not inside pointer
-    /// handling. Keep this as state application; the host owns scheduling.
+    /// Apply a host-level message. `dispatch_program` coalesces to the latest
+    /// and runs on the next frame. Keep this cheap; fill content in
+    /// [`Self::bind_window`] after present.
     fn update(
         &mut self,
         message: Self::Message,
@@ -329,6 +329,15 @@ pub trait RuntimeProgram: Sized + 'static {
     /// Release resources retired by [`Self::prepare_window_frame`] only after
     /// the host has submitted and presented this window's frame.
     fn window_frame_presented(
+        &mut self,
+        _id: WindowId,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
+    /// Fill content after the host presented a frame that applied [`Self::update`].
+    fn bind_window(
         &mut self,
         _id: WindowId,
         _context: &RuntimeProgramContext<Self::Message>,

@@ -133,6 +133,7 @@ struct SceneReady<Program: RuntimeProgram> {
     settings: RuntimeWindowSettings,
     ime_requests: HashMap<WindowId, TextInputRequest>,
     chrome: HashMap<WindowId, WindowChromeSession>,
+    bind_after_present: HashSet<WindowId>,
 }
 
 struct WindowChromeSession {
@@ -326,6 +327,7 @@ fn initialize<Program: RuntimeProgram>(
         settings,
         ime_requests: HashMap::new(),
         chrome: HashMap::new(),
+        bind_after_present: HashSet::new(),
     };
     ready.prepare_window_chrome(WindowId::PRIMARY, ready.geometry.maximized);
     let update = ready.program.window_event(
@@ -367,6 +369,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn process_message(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
+        self.bind_after_present.insert(WindowId::PRIMARY);
         let update = self.program.update(message, &self.context());
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
@@ -595,6 +598,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             if queued.is_empty() {
                 break;
             }
+            self.bind_after_present.insert(id);
             for boxed in queued {
                 let Ok(message) = boxed.downcast::<Program::Message>() else {
                     continue;
@@ -779,9 +783,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .record_submit(submit_started.elapsed());
         self.graphics.present(frame);
         self.apply_ime_request(id);
-        let update = self
+        let mut update = self
             .program
             .window_frame_presented(id, &self.context_for(id));
+        if self.bind_after_present.remove(&id) {
+            update = update.merge(self.program.bind_window(id, &self.context_for(id)));
+        }
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
         #[cfg(not(target_os = "android"))]
