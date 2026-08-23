@@ -3067,6 +3067,17 @@ mod tests {
                 .children
                 .contains(&middle)
         );
+        let nav_layout = &context
+            .world()
+            .node_style(navigation.stable_id())
+            .unwrap()
+            .layout;
+        assert_eq!(nav_layout.padding_left, Some(LengthSpec::Px(12.0)));
+        assert_eq!(nav_layout.padding_right, Some(LengthSpec::Px(8.0)));
+        assert_eq!(nav_layout.padding_top, Some(LengthSpec::Px(10.0)));
+        assert_eq!(nav_layout.padding_bottom, Some(LengthSpec::Px(10.0)));
+        assert_eq!(nav_layout.gap, Some(LengthSpec::Px(14.0)));
+        assert_eq!(nav_layout.width, Some(LengthSpec::Px(260.0)));
     }
 
     #[test]
