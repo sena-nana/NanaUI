@@ -1341,8 +1341,9 @@ impl VueHost {
     ///
     /// Nested drain: 0ms timeouts (ResizeObserver) still flush in-loop.
     /// rAF follows this host frame once; nested rAF (Vue `<Transition>`
-    /// `nextFrame` is double-rAF) waits for `next_wakeup` (~16ms) instead of
-    /// spinning a fake 16ms deadline inside the same pump.
+    /// `nextFrame` is double-rAF, used by after-leave / Dialog/Drawer) waits
+    /// for `next_wakeup` (~16ms) instead of spinning a fake 16ms deadline
+    /// inside the same pump.
     pub fn pump_frame<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
