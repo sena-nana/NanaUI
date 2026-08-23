@@ -120,6 +120,8 @@ pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [
     ]
 }
 
+/// Transformed AABB scissor. Rotated clips overdraw; rounded HostTexture clip
+/// is the sibling Quad SDF, not this intersection.
 pub(super) fn intersect_clips(
     viewport: LogicalRect,
     clips: &[nana_ui_scene::ClipRegion],

@@ -36,6 +36,7 @@ impl HostTexturePipeline {
         clip: PhysicalRect,
         opacity: f32,
         corner_radius: f32,
+        rounded_clip: LogicalRect,
         physical_size: [u32; 2],
         scale_factor: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -45,7 +46,13 @@ impl HostTexturePipeline {
             slot,
             HostTextureLayer::from_binding(binding)
                 .with_opacity(opacity)
-                .with_corner_radius(corner_radius),
+                .with_corner_radius(corner_radius)
+                .with_clip(crate::geometry::LogicalRect::new(
+                    rounded_clip.x,
+                    rounded_clip.y,
+                    rounded_clip.width,
+                    rounded_clip.height,
+                )),
         );
         primitive.prepare(
             &mut self.pipeline,
