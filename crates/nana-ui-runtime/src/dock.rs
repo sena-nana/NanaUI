@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, OverflowSpec, PositionSpec,
     SemanticColorRole,
@@ -32,7 +34,8 @@ const TITLE_SIZE: f32 = 11.0;
 const TITLE_WEIGHT: u16 = 600;
 const TAB_OVERLAY_THICKNESS: f32 = 4.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DockAxis {
     Horizontal,
     Vertical,
@@ -428,6 +431,201 @@ impl DockWorkspace {
     pub fn set_split_ratio(&mut self, surface: &str, path: &[usize], ratio: f32) -> bool {
         self.surface_root_mut(surface)
             .is_some_and(|root| root.set_split_ratio_at(path, ratio))
+    }
+
+    /// Persist the product tree using historical `DockLayout` JSON field names.
+    ///
+    /// Host slot contents and [`Self::primary`] are not stored. `locked` and
+    /// per-surface `monitor` are persist extras for the host adapter; this
+    /// product tree emits `locked: false` and `monitor: null`.
+    pub fn layout_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&DockWorkspacePersist::from(self))
+    }
+
+    /// Restore a product tree from historical `DockLayout` JSON.
+    ///
+    /// Host slot contents and [`Self::primary`] are not in the JSON. Use
+    /// [`Self::restore_layout_json`] to keep the current primary.
+    pub fn from_layout_json(value: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str::<DockWorkspacePersist>(value).map(Self::from)
+    }
+
+    /// Replace the tree from JSON while keeping [`Self::primary`].
+    pub fn restore_layout_json(&mut self, value: &str) -> Result<(), serde_json::Error> {
+        let primary = self.primary.clone();
+        *self = Self::from_layout_json(value)?;
+        self.primary = primary;
+        Ok(())
+    }
+}
+
+const DOCK_WORKSPACE_LAYOUT_VERSION: u8 = 1;
+
+/// JSON projection of [`DockWorkspace`].
+///
+/// Field names match historical host-adapter `DockLayout` JSON (`version`,
+/// tagged `kind` nodes, numeric `surface`, `bounds`, `monitor`, `hidden`,
+/// `locked`). Live slot contents and [`DockWorkspace::primary`] are not
+/// persisted. `locked` and `monitor` are persist extras for the host adapter;
+/// [`DockWorkspace::from_layout_json`] does not apply them to live state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DockWorkspacePersist {
+    pub version: u8,
+    pub main: DockNodePersist,
+    #[serde(default)]
+    pub floating: Vec<DockFloatingPersist>,
+    #[serde(default)]
+    pub hidden: Vec<String>,
+    #[serde(default)]
+    pub locked: bool,
+}
+
+/// Persisted recursive dock tree. Same tagged `kind` as historical `DockLayout`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DockNodePersist {
+    Item {
+        id: String,
+    },
+    Tabs {
+        tabs: Vec<String>,
+        active: String,
+    },
+    Split {
+        axis: DockAxis,
+        ratio: f32,
+        first: Box<DockNodePersist>,
+        second: Box<DockNodePersist>,
+    },
+}
+
+/// Persisted floating surface. `surface` is the historical numeric identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DockFloatingPersist {
+    pub surface: u64,
+    pub root: DockNodePersist,
+    pub bounds: DockBoundsPersist,
+    #[serde(default)]
+    pub monitor: Option<String>,
+}
+
+/// Persisted floating bounds. Same fields as historical `DockLayout` JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DockBoundsPersist {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl DockWorkspacePersist {
+    pub fn from_workspace(workspace: &DockWorkspace) -> Self {
+        Self::from(workspace)
+    }
+
+    pub fn into_workspace(self) -> DockWorkspace {
+        DockWorkspace::from(self)
+    }
+}
+
+impl From<&DockWorkspace> for DockWorkspacePersist {
+    fn from(workspace: &DockWorkspace) -> Self {
+        Self {
+            version: DOCK_WORKSPACE_LAYOUT_VERSION,
+            main: DockNodePersist::from(&workspace.main),
+            floating: workspace
+                .floating
+                .iter()
+                .map(DockFloatingPersist::from)
+                .collect(),
+            hidden: workspace.hidden.iter().map(|id| id.to_string()).collect(),
+            locked: false,
+        }
+    }
+}
+
+impl From<DockWorkspacePersist> for DockWorkspace {
+    fn from(persist: DockWorkspacePersist) -> Self {
+        let mut next_surface = 1_u64;
+        let floating = persist
+            .floating
+            .into_iter()
+            .map(|item| {
+                next_surface = next_surface.max(item.surface.saturating_add(1));
+                let mut root = DockNode::from(item.root);
+                root.clamp_ratios();
+                DockFloatingSurface {
+                    id: Arc::from(item.surface.to_string()),
+                    root,
+                    x: item.bounds.x,
+                    y: item.bounds.y,
+                    width: item.bounds.width,
+                    height: item.bounds.height,
+                }
+            })
+            .collect();
+        let mut workspace = DockWorkspace::new(DockNode::from(persist.main));
+        workspace.floating = floating;
+        workspace.hidden = persist.hidden.into_iter().map(Arc::from).collect();
+        workspace.next_surface = next_surface;
+        workspace
+    }
+}
+
+impl From<&DockNode> for DockNodePersist {
+    fn from(node: &DockNode) -> Self {
+        match node {
+            DockNode::Item { id, .. } => Self::Item { id: id.to_string() },
+            DockNode::Tabs { tabs, active, .. } => Self::Tabs {
+                tabs: tabs.iter().map(|id| id.to_string()).collect(),
+                active: active.to_string(),
+            },
+            DockNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => Self::Split {
+                axis: *axis,
+                ratio: *ratio,
+                first: Box::new(Self::from(first.as_ref())),
+                second: Box::new(Self::from(second.as_ref())),
+            },
+        }
+    }
+}
+
+impl From<DockNodePersist> for DockNode {
+    fn from(node: DockNodePersist) -> Self {
+        match node {
+            DockNodePersist::Item { id } => Self::item(id, None),
+            DockNodePersist::Tabs { tabs, active } => {
+                let contents = tabs.iter().map(|id| (id.clone(), None)).collect::<Vec<_>>();
+                Self::tabs(tabs, active, contents)
+            }
+            DockNodePersist::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => Self::split(axis, ratio, Self::from(*first), Self::from(*second)),
+        }
+    }
+}
+
+impl From<&DockFloatingSurface> for DockFloatingPersist {
+    fn from(surface: &DockFloatingSurface) -> Self {
+        Self {
+            surface: dock_surface_window_key(&surface.id),
+            root: DockNodePersist::from(&surface.root),
+            bounds: DockBoundsPersist {
+                x: surface.x,
+                y: surface.y,
+                width: surface.width,
+                height: surface.height,
+            },
+            monitor: None,
+        }
     }
 }
 
@@ -3315,6 +3513,107 @@ fn reconcile_ids(
 mod tests {
     use super::*;
     use crate::{DocumentId, LayoutBox, MutationQueue, Text};
+
+    #[test]
+    fn dock_workspace_layout_json_uses_historical_layout_fields() {
+        let mut workspace = DockWorkspace::new(DockNode::split(
+            DockAxis::Horizontal,
+            0.25,
+            DockNode::tabs(
+                ["scenes", "sources"],
+                "scenes",
+                [("scenes", None), ("sources", None)],
+            ),
+            DockNode::item("editor", Some(StableNodeId::new(7).expect("content id"))),
+        ));
+        workspace.hidden.push(Arc::from("controls"));
+        workspace.floating.push(DockFloatingSurface {
+            id: Arc::from("1"),
+            root: DockNode::item("mixer", None),
+            x: 40.0,
+            y: 50.0,
+            width: 360.0,
+            height: 280.0,
+        });
+        let json = workspace.layout_json().expect("workspace serializes");
+        assert!(json.contains("\"version\":1"));
+        assert!(json.contains("\"kind\":\"split\""));
+        assert!(json.contains("\"axis\":\"horizontal\""));
+        assert!(json.contains("\"kind\":\"tabs\""));
+        assert!(json.contains("\"surface\":1"));
+        assert!(json.contains("\"bounds\""));
+        assert!(json.contains("\"hidden\":[\"controls\"]"));
+        assert!(!json.contains("content"));
+        assert!(!json.contains("primary"));
+        assert!(!json.contains("next_surface"));
+
+        let restored = DockWorkspace::from_layout_json(&json).expect("workspace restores");
+        assert!(restored.main.contains("editor"));
+        assert!(restored.main.contains("scenes"));
+        match &restored.main {
+            DockNode::Split { first, .. } => match first.as_ref() {
+                DockNode::Tabs { contents, .. } => {
+                    assert!(contents.iter().all(|(_, content)| content.is_none()));
+                }
+                other => panic!("expected tabs, got {other:?}"),
+            },
+            other => panic!("expected split, got {other:?}"),
+        }
+        match &restored.main {
+            DockNode::Split { second, .. } => match second.as_ref() {
+                DockNode::Item { content, .. } => assert_eq!(*content, None),
+                other => panic!("expected item, got {other:?}"),
+            },
+            other => panic!("expected split, got {other:?}"),
+        }
+        assert_eq!(
+            restored
+                .hidden
+                .iter()
+                .map(|id| id.as_ref())
+                .collect::<Vec<_>>(),
+            ["controls"]
+        );
+        assert_eq!(restored.floating.len(), 1);
+        assert_eq!(restored.floating[0].id.as_ref(), "1");
+        assert_eq!(restored.floating[0].x, 40.0);
+        assert_eq!(restored.floating[0].width, 360.0);
+        let again = restored.layout_json().expect("second serialize");
+        assert_eq!(json, again);
+    }
+
+    #[test]
+    fn dock_workspace_layout_json_parses_historical_adapter_document() {
+        let json = r#"{"version":1,"main":{"kind":"tabs","tabs":["a","b"],"active":"b"},"floating":[{"surface":2,"root":{"kind":"item","id":"c"},"bounds":{"x":1.0,"y":2.0,"width":3.0,"height":4.0},"monitor":"m"}],"hidden":["d"],"locked":true}"#;
+        let mut workspace = DockWorkspace::new(DockNode::item("keep", None)).primary("keep");
+        workspace
+            .restore_layout_json(json)
+            .expect("historical json restores");
+        assert_eq!(workspace.primary.as_deref(), Some("keep"));
+        match &workspace.main {
+            DockNode::Tabs { tabs, active, .. } => {
+                assert_eq!(
+                    tabs.iter().map(|id| id.as_ref()).collect::<Vec<_>>(),
+                    ["a", "b"]
+                );
+                assert_eq!(active.as_ref(), "b");
+            }
+            other => panic!("expected tabs, got {other:?}"),
+        }
+        assert_eq!(workspace.floating[0].id.as_ref(), "2");
+        assert_eq!(workspace.floating[0].y, 2.0);
+        assert_eq!(workspace.hidden[0].as_ref(), "d");
+        let encoded = workspace.layout_json().expect("product re-encode");
+        assert!(encoded.contains("\"locked\":false"));
+        assert!(!encoded.contains("\"monitor\":\"m\""));
+    }
+
+    #[test]
+    fn dock_workspace_from_layout_json_clamps_split_ratio() {
+        let json = r#"{"version":1,"main":{"kind":"split","axis":"vertical","ratio":4.0,"first":{"kind":"item","id":"top"},"second":{"kind":"item","id":"bottom"}}}"#;
+        let workspace = DockWorkspace::from_layout_json(json).expect("loads");
+        assert_eq!(workspace.main.split_ratio_at(&[]), Some(MAX_SPLIT_RATIO));
+    }
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()

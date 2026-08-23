@@ -1,5 +1,9 @@
-//! Serde dock model: identities, trees, persisted layout, mutations, errors.
+//! Adapter dock model: identities, trees, persist conversion, mutations, errors.
+//!
+//! JSON persist is a projection of Runtime [`nana_ui_runtime::DockWorkspace`]
+//! using historical [`DockLayout`] field names.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -239,16 +243,17 @@ pub struct FloatingDock {
     pub monitor: Option<String>,
 }
 
-/// Versioned persisted dock state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Adapter copy of the persisted dock tree.
+///
+/// JSON is the Runtime [`nana_ui_runtime::DockWorkspace`] projection
+/// (historical field names). Live product state is
+/// [`nana_ui_runtime::DockWorkspace`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct DockLayout {
     pub version: u8,
     pub main: DockNode,
-    #[serde(default)]
     pub floating: Vec<FloatingDock>,
-    #[serde(default)]
     pub hidden: Vec<DockId>,
-    #[serde(default)]
     pub locked: bool,
 }
 
@@ -261,6 +266,165 @@ impl DockLayout {
             hidden: Vec::new(),
             locked: false,
         }
+    }
+
+    pub(super) fn to_workspace(&self, primary: Option<&str>) -> nana_ui_runtime::DockWorkspace {
+        let mut workspace = nana_ui_runtime::DockWorkspace::new(runtime_dock_node(&self.main));
+        if let Some(primary) = primary {
+            workspace = workspace.primary(primary);
+        }
+        workspace.hidden = self
+            .hidden
+            .iter()
+            .map(|id| Arc::<str>::from(id.as_str()))
+            .collect();
+        workspace.floating = self
+            .floating
+            .iter()
+            .map(|floating| nana_ui_runtime::DockFloatingSurface {
+                id: Arc::<str>::from(floating.surface.0.to_string()),
+                root: runtime_dock_node(&floating.root),
+                x: floating.bounds.x,
+                y: floating.bounds.y,
+                width: floating.bounds.width,
+                height: floating.bounds.height,
+            })
+            .collect();
+        workspace
+    }
+
+    pub(super) fn from_workspace(workspace: &nana_ui_runtime::DockWorkspace) -> Self {
+        Self {
+            version: DOCK_LAYOUT_VERSION,
+            main: adapter_dock_node(&workspace.main),
+            floating: workspace
+                .floating
+                .iter()
+                .map(|surface| FloatingDock {
+                    surface: DockSurfaceId(nana_ui_runtime::dock_surface_window_key(&surface.id)),
+                    root: adapter_dock_node(&surface.root),
+                    bounds: DockBounds::new(surface.x, surface.y, surface.width, surface.height),
+                    monitor: None,
+                })
+                .collect(),
+            hidden: workspace
+                .hidden
+                .iter()
+                .map(|id| DockId::new(id.as_ref()))
+                .collect(),
+            locked: false,
+        }
+    }
+}
+
+impl Serialize for DockLayout {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        persist_from_layout(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DockLayout {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(layout_from_persist(
+            nana_ui_runtime::DockWorkspacePersist::deserialize(deserializer)?,
+        ))
+    }
+}
+
+pub(super) fn persist_from_layout(layout: &DockLayout) -> nana_ui_runtime::DockWorkspacePersist {
+    let workspace = layout.to_workspace(None);
+    let mut persist = nana_ui_runtime::DockWorkspacePersist::from_workspace(&workspace);
+    persist.version = layout.version;
+    persist.locked = layout.locked;
+    for floating in &layout.floating {
+        if let Some(item) = persist
+            .floating
+            .iter_mut()
+            .find(|item| item.surface == floating.surface.0)
+        {
+            item.monitor = floating.monitor.clone();
+        }
+    }
+    persist
+}
+
+pub(super) fn layout_from_persist(persist: nana_ui_runtime::DockWorkspacePersist) -> DockLayout {
+    let version = persist.version;
+    let locked = persist.locked;
+    let monitors: Vec<(u64, Option<String>)> = persist
+        .floating
+        .iter()
+        .map(|item| (item.surface, item.monitor.clone()))
+        .collect();
+    let workspace = persist.into_workspace();
+    let mut layout = DockLayout::from_workspace(&workspace);
+    layout.version = version;
+    layout.locked = locked;
+    for floating in &mut layout.floating {
+        if let Some((_, monitor)) = monitors
+            .iter()
+            .find(|(surface, _)| *surface == floating.surface.0)
+        {
+            floating.monitor = monitor.clone();
+        }
+    }
+    layout
+}
+
+fn runtime_dock_axis(axis: DockAxis) -> nana_ui_runtime::DockAxis {
+    match axis {
+        DockAxis::Horizontal => nana_ui_runtime::DockAxis::Horizontal,
+        DockAxis::Vertical => nana_ui_runtime::DockAxis::Vertical,
+    }
+}
+
+fn adapter_dock_axis(axis: nana_ui_runtime::DockAxis) -> DockAxis {
+    match axis {
+        nana_ui_runtime::DockAxis::Horizontal => DockAxis::Horizontal,
+        nana_ui_runtime::DockAxis::Vertical => DockAxis::Vertical,
+    }
+}
+
+fn runtime_dock_node(node: &DockNode) -> nana_ui_runtime::DockNode {
+    match node {
+        DockNode::Item { id } => nana_ui_runtime::DockNode::item(id.as_str(), None),
+        DockNode::Tabs { tabs, active } => nana_ui_runtime::DockNode::tabs(
+            tabs.iter().map(|id| id.as_str().to_owned()),
+            active.as_str().to_owned(),
+            tabs.iter().map(|id| (id.as_str().to_owned(), None)),
+        ),
+        DockNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => nana_ui_runtime::DockNode::split(
+            runtime_dock_axis(*axis),
+            *ratio,
+            runtime_dock_node(first),
+            runtime_dock_node(second),
+        ),
+    }
+}
+
+fn adapter_dock_node(node: &nana_ui_runtime::DockNode) -> DockNode {
+    match node {
+        nana_ui_runtime::DockNode::Item { id, .. } => DockNode::item(id.as_ref()),
+        nana_ui_runtime::DockNode::Tabs { tabs, active, .. } => DockNode::tabs(
+            tabs.iter().map(|id| DockId::new(id.as_ref())),
+            DockId::new(active.as_ref()),
+        ),
+        nana_ui_runtime::DockNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => DockNode::split(
+            adapter_dock_axis(*axis),
+            *ratio,
+            adapter_dock_node(first),
+            adapter_dock_node(second),
+        ),
     }
 }
 
@@ -535,7 +699,7 @@ pub enum DockHostEffect {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DockUpdate {
-    /// The persisted [`DockLayout`] changed and consumers should save it.
+    /// The persisted dock tree changed and consumers should save it.
     /// Transient pointer, preview, focus and measured geometry updates remain false.
     pub changed: bool,
     pub effects: Vec<DockHostEffect>,

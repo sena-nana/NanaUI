@@ -8,7 +8,9 @@
 //! [`DockController`] and [`DockAction`] are public here as `nana_ui::dock::*`,
 //! not at the crate root.
 //!
-//! Remaining adapter-only APIs (not product dock): [`DockLayout`] serde,
+//! Persist JSON is a projection of Runtime [`crate::DockWorkspace`] (historical
+//! `DockLayout` field names). [`DockController::layout_json`] / restore convert
+//! through that tree. Remaining adapter-only APIs (not product dock):
 //! [`DockItemSpec`] size limits, monitor clamp, drag/dwell, hosted window
 //! effects, and [`DockAction`] → [`DockMutation`] conversion.
 

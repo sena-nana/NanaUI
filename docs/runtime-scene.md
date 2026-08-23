@@ -91,15 +91,18 @@ hover 与 absolute-delta resize 则统一由 `SplitPaneModel` / `SplitPaneMutati
 `SplitPaneController` 只负责把 host point/key event 转成该 mutation。
 Dock insertion dwell 也使用 controller-owned monotonic `Duration` epoch；pending target 不保存
 host `Instant`，frame subscription 发出明确的 `AdvanceDragDwell`，不能再借 hover 消息伪装
-时间推进。`DockUpdate.changed` 只表示需持久化的 `DockLayout` 变化；dwell/focus/preview 与
+时间推进。`DockUpdate.changed` 只表示需持久化的 dock 树（`DockWorkspace` 投影）变化；dwell/focus/preview 与
 measured surface geometry 是瞬时状态，由产生该 mutation 的 input/frame host 请求重绘，不能
 借 `changed` 触发配置写入。
 产品 Dock 权威是 Runtime `DockWorkspace`。Split 比例只有一套公式：
 `dock_split_ratio_from_pointer` / `dock_nudge_split_ratio` /
 `dock_split_child_lengths`（`nana-ui-runtime`）。`nana_ui::dock::DockController`
 是 host adapter：指针/dwell/frame → `DockMutation`，几何只经 `surface_layout`，
-内部 resize 调用上述 Runtime 公式，不再自算 ratio-per-pixel。`DockLayout` 仍是
-adapter 的 serde/monitor/item-spec 投影，不是第二条 live dock。旧 `DockAction` 的
+内部 resize 调用上述 Runtime 公式，不再自算 ratio-per-pixel。持久化 JSON 是
+`DockWorkspace` 的投影（字段名沿用既有 `DockLayout` JSON）。
+`DockController::layout_json` / restore 经该产品树转换，不另存一套 split
+算法。`DockLayout` 仍是 adapter 的 live tree 加上 monitor clamp / item-spec，
+不是第二条 live dock。旧 `DockAction` 的
 host `Point`、widget/subscription/view 曾是 Iced compatibility adapter，HEAD 不再作为产品路径。三套 Workspace/Split/Dock
 曾共用但现已无消费者的 `ResizeDrag` 已删除，避免保留第二条 resize 规则。
 `DockController::surface_layout` 是 adapter 的确定性几何出口：同一份
