@@ -13,12 +13,11 @@ use nana_ui::runtime::{
     SemanticColorRole, SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow,
     SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge,
     Switch, TabOption, Tabs, TabsEvent, TextArea, TextChanged, TextInput, Thumbnail, Toast,
-    ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage,
-    View, XYPad, XYPadEvent,
+    ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
 };
 use nana_ui::{
     ButtonKind, CardKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
-    RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent, WorkspaceAction,
+    RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent, WorkspaceAction, WorkspaceModel,
 };
 use nana_ui_platform::InputEvent;
 
@@ -561,13 +560,28 @@ impl GalleryRuntime {
         }
     }
 
+    pub(super) fn workspace_model(&self) -> Option<WorkspaceModel> {
+        self.document
+            .context()
+            .read(self.shell, |shell| shell.model.clone())
+            .ok()
+    }
+
+    pub(super) fn workspace_is_resizing(&self) -> bool {
+        self.document
+            .context()
+            .read(self.shell, |shell| shell.model.is_resizing())
+            .unwrap_or(false)
+    }
+
     pub(super) fn take_host_messages(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
         self.note_pointer(event);
         let extra = self.host_pointer_messages(event);
         let mut messages = take_pending(&self.pending);
         messages.extend(extra);
-        messages.extend(self.chrome.workspace_resize_messages(&self.document, event));
-        messages.extend(self.chrome.title_bar_chrome_messages(&self.document, event));
+        if !self.workspace_is_resizing() {
+            messages.extend(self.chrome.title_bar_chrome_messages(&self.document, event));
+        }
         messages
     }
 
@@ -581,14 +595,12 @@ impl GalleryRuntime {
             RuntimeInputAdapter::default().dispatch(self.document.context_mut(), document, &event);
         let mut messages = take_pending(&self.pending);
         messages.extend(extra);
-        messages.extend(
-            self.chrome
-                .workspace_resize_messages(&self.document, &event),
-        );
-        messages.extend(
-            self.chrome
-                .title_bar_chrome_messages(&self.document, &event),
-        );
+        if !self.workspace_is_resizing() {
+            messages.extend(
+                self.chrome
+                    .title_bar_chrome_messages(&self.document, &event),
+            );
+        }
         messages
     }
 
@@ -1407,8 +1419,7 @@ fn mount_controls(
         styled_text("列表", SemanticColorRole::Muted, 12.0, 400),
     )?;
     context.append_child(list_panel, list_title)?;
-    let thumb_row =
-        context.create_detached_component(document_id, HostStack::leading_row(8.0))?;
+    let thumb_row = context.create_detached_component(document_id, HostStack::leading_row(8.0))?;
     for thumb in [
         Thumbnail::empty(),
         Thumbnail::loading(),
@@ -1419,9 +1430,9 @@ fn mount_controls(
         context.append_child(thumb_row, node)?;
     }
     context.append_child(list_panel, thumb_row)?;
-    let thumb_lead =
-        context.create_detached_component(document_id, Thumbnail::empty())?;
-    let thumb_label = context.create_detached_component(document_id, list_label_text("缩略图项"))?;
+    let thumb_lead = context.create_detached_component(document_id, Thumbnail::empty())?;
+    let thumb_label =
+        context.create_detached_component(document_id, list_label_text("缩略图项"))?;
     let thumb_item = context.create_detached_component(
         document_id,
         ListItem::new("缩略图项").slots(ListItemSlots {

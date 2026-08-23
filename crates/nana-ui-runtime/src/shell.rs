@@ -3087,6 +3087,81 @@ mod tests {
     }
 
     #[test]
+    fn desktop_shell_keeps_dragged_sidebar_size_after_assemble() {
+        let mut context = AppContext::new();
+        let navigation = context
+            .create_detached_component(document(), SidebarFrame::new())
+            .unwrap();
+        let primary = context
+            .create_detached_component(document(), Text::new("primary"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .navigation(navigation.stable_id())
+                .primary(primary.stable_id()),
+        );
+        let workspace_id = context
+            .read(shell, |shell| shell.workspace)
+            .unwrap()
+            .expect("workspace");
+        let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
+        let handle = context
+            .read(workspace, |workspace| {
+                workspace.handles.get(&RegionId::Resources).copied()
+            })
+            .unwrap()
+            .expect("resources handle");
+        assert!(
+            context
+                .begin_workspace_resize(
+                    document(),
+                    1,
+                    handle,
+                    260.0,
+                    20.0,
+                    std::time::Duration::ZERO
+                )
+                .unwrap()
+        );
+        assert!(
+            context
+                .update_workspace_resize(document(), 1, 320.0, 20.0, std::time::Duration::ZERO)
+                .unwrap()
+        );
+        assert!(
+            context
+                .end_workspace_resize(document(), 1, std::time::Duration::ZERO)
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .read(shell, |shell| shell
+                    .model
+                    .region_extent(&RegionId::Resources))
+                .unwrap(),
+            320.0
+        );
+        context.assemble_desktop_shell(shell).unwrap();
+        assert_eq!(
+            context
+                .read(workspace, |workspace| workspace
+                    .region_extent(&RegionId::Resources))
+                .unwrap(),
+            320.0
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(navigation.stable_id())
+                .unwrap()
+                .layout
+                .width,
+            Some(LengthSpec::Px(320.0))
+        );
+    }
+
+    #[test]
     fn desktop_shell_omits_missing_inspector_and_bottom() {
         let mut context = AppContext::new();
         let navigation = context

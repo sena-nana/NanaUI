@@ -167,6 +167,13 @@ impl RuntimeInputAdapter {
                             || context.update_graph_canvas_pointer(document, *pointer_id, *x, *y)?
                             || context.update_split_resize(document, *pointer_id, *x, *y)?
                             || context.update_dock_split_resize(document, *pointer_id, *x, *y)?
+                            || context.update_workspace_resize(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                now,
+                            )?
                             || context.update_dock_item_drag(document, *pointer_id, *x, *y)?
                             || target
                                 .map(|target| context.hover_graph_canvas(target, *x, *y))
@@ -186,10 +193,13 @@ impl RuntimeInputAdapter {
                         context.dismiss_detached_menus(target)?;
                         let split_handle = context.split_handle_near(document, *x, *y);
                         let dock_handle = context.dock_handle_near(document, *x, *y);
+                        let workspace_handle = context.workspace_handle_near(document, *x, *y);
                         let dock_source = target
                             .filter(|id| context.is_dock_item_source(*id))
                             .or_else(|| context.dock_tab_strip_near(document, *x, *y));
-                        if let Some(target) = dock_handle.or(split_handle).or(target) {
+                        if let Some(target) =
+                            dock_handle.or(split_handle).or(workspace_handle).or(target)
+                        {
                             if let Some(focus) = nearest_focusable(context, target) {
                                 context.focus_node(document, focus)?;
                             }
@@ -217,6 +227,15 @@ impl RuntimeInputAdapter {
                                     target,
                                     *x,
                                     *y,
+                                )?;
+                            } else if context.is_workspace_resize_handle(target) && *button == 0 {
+                                context.begin_workspace_resize(
+                                    document,
+                                    *pointer_id,
+                                    target,
+                                    *x,
+                                    *y,
+                                    now,
                                 )?;
                             } else if *button == 0 {
                                 if let Some(source) = dock_source {
@@ -264,6 +283,7 @@ impl RuntimeInputAdapter {
                             )?
                             || context.end_split_resize(document, *pointer_id, false)?
                             || context.end_dock_split_resize(document, *pointer_id, false)?
+                            || context.end_workspace_resize(document, *pointer_id, now)?
                             || context.end_dock_item_drag(document, *pointer_id, *x, *y, false)?
                         {
                             context.release_pointer(document, *pointer_id);
@@ -294,6 +314,7 @@ impl RuntimeInputAdapter {
                         let split = context.end_split_resize(document, *pointer_id, true)?;
                         let dock_split =
                             context.end_dock_split_resize(document, *pointer_id, true)?;
+                        let workspace = context.end_workspace_resize(document, *pointer_id, now)?;
                         let dock_item =
                             context.end_dock_item_drag(document, *pointer_id, *x, *y, true)?;
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
@@ -304,6 +325,7 @@ impl RuntimeInputAdapter {
                             || graph
                             || split
                             || dock_split
+                            || workspace
                             || dock_item
                             || calendar
                             || pressed
