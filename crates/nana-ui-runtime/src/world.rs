@@ -1617,8 +1617,7 @@ impl UiWorld {
                 ..crate::TextShapeConstraints::default()
             };
         }
-        let fonts = source.layout.font_size_context(16.0);
-        let padding = source.layout.resolved_padding_against_fonts(Some(layout.width), fonts);
+        let padding = source.layout.resolved_padding_against(Some(layout.width));
         let border = source.layout.resolved_border_width();
         let leading_visual = match self.world.get::<StandardVisual>(self.entities[&id]) {
             Some(StandardVisual::Checkbox { .. }) => 24.0,
@@ -2993,8 +2992,7 @@ impl UiWorld {
     ) -> Option<crate::ComponentGeometry> {
         let bounds = *self.world.get::<LayoutBox>(self.entities[&id])?;
         let source = self.world.get::<NodeStyle>(self.entities[&id])?;
-        let fonts = source.layout.font_size_context(16.0);
-        let padding = source.layout.resolved_padding_against_fonts(Some(bounds.width), fonts);
+        let padding = source.layout.resolved_padding_against(Some(bounds.width));
         let border = source.layout.resolved_border_width();
         let content = LayoutBox {
             x: bounds.x + border + padding.left,

@@ -1152,9 +1152,9 @@ impl LayoutStyle {
     }
 
     /// Resolve padding; `%` / calc 相对包含块宽度 `percent_base`。
-    /// `em`/`rem` 使用 [`FontSizeContext::default`]（16px）。
+    /// `em`/`rem` 用本节点 [`Self::font_size_context`]（缺省 16px）。
     pub fn resolved_padding_against(&self, percent_base: Option<f32>) -> PaddingSpec {
-        self.resolved_padding_against_fonts(percent_base, FontSizeContext::default())
+        self.resolved_padding_against_fonts(percent_base, self.font_size_context(16.0))
     }
 
     /// 同 [`Self::resolved_padding_against`]，携带显式 `em`/`rem` 字号上下文。
@@ -1827,6 +1827,12 @@ mod tests {
         let pad = layout.resolved_padding_against(None);
         assert_eq!(pad.left, 16.0);
         assert_eq!(pad.top, 16.0);
+        let with_font = LayoutStyle {
+            font_size: Some(32.0),
+            padding: Some(LengthSpec::Em(1.0)),
+            ..LayoutStyle::default()
+        };
+        assert_eq!(with_font.resolved_padding_against(None).left, 32.0);
         let pad32 = layout.resolved_padding_against_fonts(None, FontSizeContext::new(16.0, 32.0));
         assert_eq!(pad32.left, 32.0);
         assert_eq!(pad32.top, 32.0);

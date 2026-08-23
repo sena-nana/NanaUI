@@ -548,11 +548,10 @@ impl UiScene {
             };
         let text_input_clips =
             if matches!(node.standard_visual, Some(StandardVisual::TextInput { .. })) {
-                let fonts = node.source_style.layout.font_size_context(16.0);
                 let padding = node
                     .source_style
                     .layout
-                    .resolved_padding_against_fonts(Some(bounds.width), fonts);
+                    .resolved_padding_against(Some(bounds.width));
                 let border = node.source_style.layout.resolved_border_width();
                 let mut text_input_clips = clips.clone();
                 text_input_clips.push(ClipRegion {
@@ -674,8 +673,7 @@ impl UiScene {
                     && !component_owns_text
                     && !self.parent_already_paints_text(&node)
             }) {
-                let fonts = style.font_size_context(16.0);
-                let padding = style.resolved_padding_against_fonts(Some(bounds.width), fonts);
+                let padding = style.resolved_padding_against(Some(bounds.width));
                 let border = style.resolved_border_width();
                 let leading_visual = match node.standard_visual {
                     Some(StandardVisual::Checkbox { .. }) => 24.0,
