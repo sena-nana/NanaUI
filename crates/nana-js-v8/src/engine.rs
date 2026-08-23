@@ -2246,24 +2246,24 @@ mod tests {
     #[test]
     fn navigator_clipboard_write_read_via_shim_and_memory_host() {
         with_serial_v8_tests(|| {
-        use nana_ui_web_api::{
-            MemoryClipboard, WEB_API_SHIM_JS, register_web_api_host_ops_with_clipboard,
-            shared_clipboard, shared_web_api_state,
-        };
-        use std::sync::Arc;
+            use nana_ui_web_api::{
+                MemoryClipboard, WEB_API_SHIM_JS, register_web_api_host_ops_with_clipboard,
+                shared_clipboard, shared_web_api_state,
+            };
+            use std::sync::Arc;
 
-        let clipboard = shared_clipboard(MemoryClipboard::new());
-        let mut api = HostApiRegistry::new();
-        register_web_api_host_ops_with_clipboard(
-            &mut api,
-            shared_web_api_state(),
-            Arc::clone(&clipboard),
-        );
+            let clipboard = shared_clipboard(MemoryClipboard::new());
+            let mut api = HostApiRegistry::new();
+            register_web_api_host_ops_with_clipboard(
+                &mut api,
+                shared_web_api_state(),
+                Arc::clone(&clipboard),
+            );
 
-        let mut engine = V8Engine::new();
-        engine.register_host_api(&api).unwrap();
-        let source = format!(
-            "{WEB_API_SHIM_JS}\n\
+            let mut engine = V8Engine::new();
+            engine.register_host_api(&api).unwrap();
+            let source = format!(
+                "{WEB_API_SHIM_JS}\n\
              globalThis.__clip = {{ done: false, value: null, err: null }};\n\
              globalThis.__nanaClipboardProbe = {{\n\
                start: function () {{\n\
@@ -2280,54 +2280,54 @@ mod tests {
                }},\n\
                status: function () {{ return globalThis.__clip; }}\n\
              }};\n"
-        );
-        engine
-            .initialize(RuntimeArtifact::from_source("clipboard-probe.js", source))
-            .unwrap();
-        let start = engine
-            .resolve_function("__nanaClipboardProbe.start")
-            .unwrap();
-        let status = engine
-            .resolve_function("__nanaClipboardProbe.status")
-            .unwrap();
-        engine.invoke(start, &[]).unwrap();
-        for _ in 0..32 {
-            engine.run_microtasks().unwrap();
-            let snap = engine.invoke(status, &[]).unwrap();
-            let obj = snap.as_object().expect("status object");
-            if obj.get("done").and_then(HostValue::as_bool) == Some(true) {
-                assert_eq!(
-                    obj.get("err").and_then(|v| match v {
-                        HostValue::Null | HostValue::Undefined => None,
-                        other => Some(other.to_json_string()),
-                    }),
-                    None,
-                    "clipboard promise rejected: {obj:?}"
-                );
-                assert_eq!(
-                    obj.get("value").and_then(HostValue::as_str),
-                    Some("nana-v8-clipboard")
-                );
-                engine.shutdown();
-                return;
+            );
+            engine
+                .initialize(RuntimeArtifact::from_source("clipboard-probe.js", source))
+                .unwrap();
+            let start = engine
+                .resolve_function("__nanaClipboardProbe.start")
+                .unwrap();
+            let status = engine
+                .resolve_function("__nanaClipboardProbe.status")
+                .unwrap();
+            engine.invoke(start, &[]).unwrap();
+            for _ in 0..32 {
+                engine.run_microtasks().unwrap();
+                let snap = engine.invoke(status, &[]).unwrap();
+                let obj = snap.as_object().expect("status object");
+                if obj.get("done").and_then(HostValue::as_bool) == Some(true) {
+                    assert_eq!(
+                        obj.get("err").and_then(|v| match v {
+                            HostValue::Null | HostValue::Undefined => None,
+                            other => Some(other.to_json_string()),
+                        }),
+                        None,
+                        "clipboard promise rejected: {obj:?}"
+                    );
+                    assert_eq!(
+                        obj.get("value").and_then(HostValue::as_str),
+                        Some("nana-v8-clipboard")
+                    );
+                    engine.shutdown();
+                    return;
+                }
             }
-        }
-        panic!("navigator.clipboard promise did not settle");
+            panic!("navigator.clipboard promise did not settle");
         });
     }
 
     #[test]
     fn buffered_fetch_classes_enforce_body_and_abort_contracts() {
         with_serial_v8_tests(|| {
-        use nana_ui_vue::VueHost;
+            use nana_ui_vue::VueHost;
 
-        let mut host = VueHost::with_viewport(320, 200, 1.0);
-        let mut engine = V8Engine::new();
-        host.initialize_with_web_api(
-            &mut engine,
-            RuntimeArtifact::from_source(
-                "fetch-contract.js",
-                r#"
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "fetch-contract.js",
+                    r#"
                 globalThis.__nanaFetchContractResult = null;
                 globalThis.__nanaFetchContract = {
                   read: () => globalThis.__nanaFetchContractResult,
@@ -2378,74 +2378,74 @@ mod tests {
                   };
                 })();
                 "#,
-            ),
-        )
-        .unwrap();
-        let read = engine.resolve_function("__nanaFetchContract.read").unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        let result = loop {
-            engine.run_microtasks().unwrap();
-            let value = engine.invoke(read, &[]).unwrap();
-            if let HostValue::Object(_) = value {
-                break value;
-            }
-            assert!(std::time::Instant::now() < deadline);
-        };
-        let result = result.as_object().unwrap();
-        assert_eq!(
-            result.get("header").and_then(HostValue::as_str),
-            Some("one, two")
-        );
-        assert_eq!(
-            result.get("requestBodyUsed").and_then(HostValue::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            result.get("requestSecondRead").and_then(HostValue::as_str),
-            Some("TypeError")
-        );
-        assert_eq!(
-            result.get("status").and_then(HostValue::as_f64),
-            Some(418.0)
-        );
-        assert_eq!(result.get("ok").and_then(HostValue::as_bool), Some(false));
-        assert_eq!(
-            result.get("responseBodyUsed").and_then(HostValue::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            result.get("jsonOk").and_then(HostValue::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            result.get("copyText").and_then(HostValue::as_str),
-            Some("{\"ok\":true}")
-        );
-        assert_eq!(
-            result.get("unsupported").and_then(HostValue::as_str),
-            Some("TypeError")
-        );
-        assert_eq!(
-            result.get("aborted").and_then(HostValue::as_str),
-            Some("AbortError")
-        );
-        engine.shutdown();
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaFetchContract.read").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            let result = loop {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(std::time::Instant::now() < deadline);
+            };
+            let result = result.as_object().unwrap();
+            assert_eq!(
+                result.get("header").and_then(HostValue::as_str),
+                Some("one, two")
+            );
+            assert_eq!(
+                result.get("requestBodyUsed").and_then(HostValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                result.get("requestSecondRead").and_then(HostValue::as_str),
+                Some("TypeError")
+            );
+            assert_eq!(
+                result.get("status").and_then(HostValue::as_f64),
+                Some(418.0)
+            );
+            assert_eq!(result.get("ok").and_then(HostValue::as_bool), Some(false));
+            assert_eq!(
+                result.get("responseBodyUsed").and_then(HostValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                result.get("jsonOk").and_then(HostValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                result.get("copyText").and_then(HostValue::as_str),
+                Some("{\"ok\":true}")
+            );
+            assert_eq!(
+                result.get("unsupported").and_then(HostValue::as_str),
+                Some("TypeError")
+            );
+            assert_eq!(
+                result.get("aborted").and_then(HostValue::as_str),
+                Some("AbortError")
+            );
+            engine.shutdown();
         });
     }
 
     #[test]
     fn object_array_options_are_not_stringified_to_object_object() {
         with_serial_v8_tests(|| {
-        let mut engine = V8Engine::new();
-        let mut api = HostApiRegistry::new();
-        api.register("capture", |args| {
-            Ok(args.first().cloned().unwrap_or(HostValue::Null))
-        });
-        engine.register_host_api(&api).unwrap();
-        engine
-            .initialize(RuntimeArtifact::from_source(
-                "opts.js",
-                r#"
+            let mut engine = V8Engine::new();
+            let mut api = HostApiRegistry::new();
+            api.register("capture", |args| {
+                Ok(args.first().cloned().unwrap_or(HostValue::Null))
+            });
+            engine.register_host_api(&api).unwrap();
+            engine
+                .initialize(RuntimeArtifact::from_source(
+                    "opts.js",
+                    r#"
                 globalThis.__nanaProbe = {
                   run: () => globalThis.__nanaHost.call('capture', [[
                     { value: 'language', label: '按编程语言' },
@@ -2453,87 +2453,87 @@ mod tests {
                   ]])
                 };
                 "#,
-            ))
-            .unwrap();
-        let run = engine.resolve_function("__nanaProbe.run").unwrap();
-        let result = engine.invoke(run, &[]).unwrap();
-        let HostValue::Array(items) = result else {
-            panic!("expected array, got {result:?}");
-        };
-        assert_eq!(items.len(), 2);
-        let HostValue::Object(first) = &items[0] else {
-            panic!("expected object option, got {:?}", items[0]);
-        };
-        assert_eq!(
-            first.get("value").and_then(HostValue::as_str),
-            Some("language")
-        );
-        assert_eq!(
-            first.get("label").and_then(HostValue::as_str),
-            Some("按编程语言")
-        );
-        engine.shutdown();
+                ))
+                .unwrap();
+            let run = engine.resolve_function("__nanaProbe.run").unwrap();
+            let result = engine.invoke(run, &[]).unwrap();
+            let HostValue::Array(items) = result else {
+                panic!("expected array, got {result:?}");
+            };
+            assert_eq!(items.len(), 2);
+            let HostValue::Object(first) = &items[0] else {
+                panic!("expected object option, got {:?}", items[0]);
+            };
+            assert_eq!(
+                first.get("value").and_then(HostValue::as_str),
+                Some("language")
+            );
+            assert_eq!(
+                first.get("label").and_then(HostValue::as_str),
+                Some("按编程语言")
+            );
+            engine.shutdown();
         });
     }
 
     #[test]
     fn runs_phase3_counter_on_real_rust_dom() {
         with_serial_v8_tests(|| {
-        use nana_js_engine::probe::vue_phase3_artifact;
-        use nana_ui_vue::VueHost;
+            use nana_js_engine::probe::vue_phase3_artifact;
+            use nana_ui_vue::VueHost;
 
-        let mut host = VueHost::with_viewport(800, 600, 1.0);
-        let mut engine = V8Engine::new();
-        host.attach_engine(&mut engine).unwrap();
-        engine.initialize(vue_phase3_artifact()).unwrap();
-        host.bind_event_bridge(&mut engine).unwrap();
-        let run = engine.resolve_function("__nanaVue.runCounter").unwrap();
-        let result = engine.invoke(run, &[]).unwrap();
-        engine.run_microtasks().unwrap();
-        host.resolve_layout();
+            let mut host = VueHost::with_viewport(800, 600, 1.0);
+            let mut engine = V8Engine::new();
+            host.attach_engine(&mut engine).unwrap();
+            engine.initialize(vue_phase3_artifact()).unwrap();
+            host.bind_event_bridge(&mut engine).unwrap();
+            let run = engine.resolve_function("__nanaVue.runCounter").unwrap();
+            let result = engine.invoke(run, &[]).unwrap();
+            engine.run_microtasks().unwrap();
+            host.resolve_layout();
 
-        let object = result.as_object().expect("object");
-        assert_eq!(object.get("ok").and_then(HostValue::as_bool), Some(true));
+            let object = result.as_object().expect("object");
+            assert_eq!(object.get("ok").and_then(HostValue::as_bool), Some(true));
 
-        let btn = {
-            let doc = host.document();
-            let guard = doc.lock().unwrap();
-            guard
-                .snapshot_boxes()
-                .event_targets
-                .iter()
-                .find(|(_, e)| e == "click")
-                .map(|(id, _)| nana_ui_vue::NodeHandle(*id))
-                .and_then(|h| guard.layout_box(h))
-                .expect("button box")
-        };
-        assert!(
-            host.pointer_click(
-                &mut engine,
-                btn.x + btn.width / 2.0,
-                btn.y + btn.height / 2.0
-            )
-            .unwrap()
-        );
-        host.resolve_layout();
-        let texts = host.document().lock().unwrap().snapshot_boxes().texts;
-        assert!(
-            texts.iter().any(|(_, t)| t == "1"),
-            "expected count text 1 after click, got {texts:?}"
-        );
-        engine.shutdown();
+            let btn = {
+                let doc = host.document();
+                let guard = doc.lock().unwrap();
+                guard
+                    .snapshot_boxes()
+                    .event_targets
+                    .iter()
+                    .find(|(_, e)| e == "click")
+                    .map(|(id, _)| nana_ui_vue::NodeHandle(*id))
+                    .and_then(|h| guard.layout_box(h))
+                    .expect("button box")
+            };
+            assert!(
+                host.pointer_click(
+                    &mut engine,
+                    btn.x + btn.width / 2.0,
+                    btn.y + btn.height / 2.0
+                )
+                .unwrap()
+            );
+            host.resolve_layout();
+            let texts = host.document().lock().unwrap().snapshot_boxes().texts;
+            assert!(
+                texts.iter().any(|(_, t)| t == "1"),
+                "expected count text 1 after click, got {texts:?}"
+            );
+            engine.shutdown();
         });
     }
 
     #[test]
     fn template_inner_html_parses_fragment_for_sanitize() {
         with_serial_v8_tests(|| {
-        use nana_js_engine::RuntimeArtifact;
-        use nana_ui_vue::VueHost;
+            use nana_js_engine::RuntimeArtifact;
+            use nana_ui_vue::VueHost;
 
-        let mut host = VueHost::with_viewport(320, 200, 1.0);
-        let mut engine = V8Engine::new();
-        host.initialize_with_web_api(
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
             &mut engine,
             RuntimeArtifact::from_source(
                 "template-parse.js",
@@ -2582,76 +2582,76 @@ mod tests {
         )
         .unwrap();
 
-        let run = engine.resolve_function("__nanaProbe.run").unwrap();
-        let result = engine.invoke(run, &[]).unwrap();
-        let obj = result.as_object().expect("probe object");
-        assert_eq!(
-            obj.get("tagCount").and_then(HostValue::as_f64),
-            Some(4.0),
-            "expected p/br/a/script (comment skipped)"
-        );
-        assert_eq!(
-            obj.get("commentSkipped").and_then(HostValue::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            obj.get("pText").and_then(HostValue::as_str),
-            Some("Hi there")
-        );
-        assert_eq!(
-            obj.get("strongTag").and_then(HostValue::as_str),
-            Some("STRONG")
-        );
-        assert_eq!(
-            obj.get("href").and_then(HostValue::as_str),
-            Some("https://x.test")
-        );
-        let after = obj
-            .get("afterRemove")
-            .and_then(HostValue::as_str)
-            .unwrap_or("");
-        assert!(
-            after.contains("<p>") && after.contains("<strong>there</strong>"),
-            "serialize after remove: {after}"
-        );
-        assert!(
-            !after.to_ascii_lowercase().contains("<script"),
-            "script must be gone: {after}"
-        );
-        assert_eq!(
-            obj.get("contentText").and_then(HostValue::as_str),
-            Some("Hi therex")
-        );
-        assert_eq!(
-            obj.get("unwrapped").and_then(HostValue::as_str),
-            Some("keep<em>me</em>")
-        );
-        engine.shutdown();
+            let run = engine.resolve_function("__nanaProbe.run").unwrap();
+            let result = engine.invoke(run, &[]).unwrap();
+            let obj = result.as_object().expect("probe object");
+            assert_eq!(
+                obj.get("tagCount").and_then(HostValue::as_f64),
+                Some(4.0),
+                "expected p/br/a/script (comment skipped)"
+            );
+            assert_eq!(
+                obj.get("commentSkipped").and_then(HostValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                obj.get("pText").and_then(HostValue::as_str),
+                Some("Hi there")
+            );
+            assert_eq!(
+                obj.get("strongTag").and_then(HostValue::as_str),
+                Some("STRONG")
+            );
+            assert_eq!(
+                obj.get("href").and_then(HostValue::as_str),
+                Some("https://x.test")
+            );
+            let after = obj
+                .get("afterRemove")
+                .and_then(HostValue::as_str)
+                .unwrap_or("");
+            assert!(
+                after.contains("<p>") && after.contains("<strong>there</strong>"),
+                "serialize after remove: {after}"
+            );
+            assert!(
+                !after.to_ascii_lowercase().contains("<script"),
+                "script must be gone: {after}"
+            );
+            assert_eq!(
+                obj.get("contentText").and_then(HostValue::as_str),
+                Some("Hi therex")
+            );
+            assert_eq!(
+                obj.get("unwrapped").and_then(HostValue::as_str),
+                Some("keep<em>me</em>")
+            );
+            engine.shutdown();
         });
     }
 
     #[test]
     fn vue_host_merges_application_api_without_tauri_globals() {
         with_serial_v8_tests(|| {
-        use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
-        use nana_ui_vue::VueHost;
+            use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
+            use nana_ui_vue::VueHost;
 
-        let mut host = VueHost::with_viewport(320, 200, 1.0);
-        let mut application_api = HostApiRegistry::new();
-        application_api.register("loadRepositories", |args| {
-            Ok(HostValue::String(
-                args.first()
-                    .and_then(HostValue::as_str)
-                    .unwrap_or("anonymous")
-                    .to_string(),
-            ))
-        });
-        let mut engine = V8Engine::new();
-        host.initialize_with_web_api_and_host_api(
-            &mut engine,
-            RuntimeArtifact::from_source(
-                "application-api-probe.js",
-                r#"
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut application_api = HostApiRegistry::new();
+            application_api.register("loadRepositories", |args| {
+                Ok(HostValue::String(
+                    args.first()
+                        .and_then(HostValue::as_str)
+                        .unwrap_or("anonymous")
+                        .to_string(),
+                ))
+            });
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api_and_host_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "application-api-probe.js",
+                    r#"
                   globalThis.__nanaApplicationProbe = {
                     run() {
                       return {
@@ -2664,84 +2664,86 @@ mod tests {
                     }
                   };
                 "#,
-            ),
-            &application_api,
-        )
-        .unwrap();
-
-        let run = engine
-            .resolve_function("__nanaApplicationProbe.run")
-            .unwrap();
-        let result = engine.invoke(run, &[]).unwrap();
-        let result = result.as_object().expect("application result");
-        assert_eq!(
-            result.get("value").and_then(HostValue::as_str),
-            Some("octocat")
-        );
-        assert_eq!(
-            result.get("hasTauri").and_then(HostValue::as_bool),
-            Some(false)
-        );
-        engine.shutdown();
-
-        let mut collision = HostApiRegistry::new();
-        collision.register("createElement", |_| Ok(HostValue::Null));
-        let mut engine = V8Engine::new();
-        let error = host
-            .initialize_with_web_api_and_host_api(
-                &mut engine,
-                RuntimeArtifact::from_source("collision.js", ""),
-                &collision,
+                ),
+                &application_api,
             )
-            .unwrap_err();
-        assert_eq!(error.message, "duplicate host API name `createElement`");
+            .unwrap();
+
+            let run = engine
+                .resolve_function("__nanaApplicationProbe.run")
+                .unwrap();
+            let result = engine.invoke(run, &[]).unwrap();
+            let result = result.as_object().expect("application result");
+            assert_eq!(
+                result.get("value").and_then(HostValue::as_str),
+                Some("octocat")
+            );
+            assert_eq!(
+                result.get("hasTauri").and_then(HostValue::as_bool),
+                Some(false)
+            );
+            engine.shutdown();
+
+            let mut collision = HostApiRegistry::new();
+            collision.register("createElement", |_| Ok(HostValue::Null));
+            let mut engine = V8Engine::new();
+            let error = host
+                .initialize_with_web_api_and_host_api(
+                    &mut engine,
+                    RuntimeArtifact::from_source("collision.js", ""),
+                    &collision,
+                )
+                .unwrap_err();
+            assert_eq!(error.message, "duplicate host API name `createElement`");
         });
     }
 
     #[test]
     fn resize_observer_reads_layout_box_and_notifies_on_layout_pump() {
         with_serial_v8_tests(|| {
-        use nana_ui_web_api::{WEB_API_SHIM_JS, register_web_api_host_ops, shared_web_api_state};
-        use std::collections::HashMap;
-        use std::sync::{Arc, Mutex};
+            use nana_ui_web_api::{
+                WEB_API_SHIM_JS, register_web_api_host_ops, shared_web_api_state,
+            };
+            use std::collections::HashMap;
+            use std::sync::{Arc, Mutex};
 
-        let sizes = Arc::new(Mutex::new(HashMap::<u64, (f64, f64)>::new()));
-        sizes.lock().unwrap().insert(7, (320.0, 48.0));
+            let sizes = Arc::new(Mutex::new(HashMap::<u64, (f64, f64)>::new()));
+            sizes.lock().unwrap().insert(7, (320.0, 48.0));
 
-        let mut api = HostApiRegistry::new();
-        register_web_api_host_ops(&mut api, shared_web_api_state());
-        {
-            let sizes = Arc::clone(&sizes);
-            api.register("layoutBox", move |args| {
-                let nid = args.first().and_then(HostValue::as_f64).unwrap_or(0.0) as u64;
-                let (w, h) = sizes
-                    .lock()
-                    .unwrap()
-                    .get(&nid)
-                    .copied()
-                    .unwrap_or((0.0, 0.0));
-                Ok(HostValue::Object(
-                    [
-                        ("x".into(), HostValue::Number(0.0)),
-                        ("y".into(), HostValue::Number(0.0)),
-                        ("width".into(), HostValue::Number(w)),
-                        ("height".into(), HostValue::Number(h)),
-                        ("top".into(), HostValue::Number(0.0)),
-                        ("left".into(), HostValue::Number(0.0)),
-                        ("bottom".into(), HostValue::Number(h)),
-                        ("right".into(), HostValue::Number(w)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ))
-            });
-        }
+            let mut api = HostApiRegistry::new();
+            register_web_api_host_ops(&mut api, shared_web_api_state());
+            {
+                let sizes = Arc::clone(&sizes);
+                api.register("layoutBox", move |args| {
+                    let nid = args.first().and_then(HostValue::as_f64).unwrap_or(0.0) as u64;
+                    let (w, h) = sizes
+                        .lock()
+                        .unwrap()
+                        .get(&nid)
+                        .copied()
+                        .unwrap_or((0.0, 0.0));
+                    Ok(HostValue::Object(
+                        [
+                            ("x".into(), HostValue::Number(0.0)),
+                            ("y".into(), HostValue::Number(0.0)),
+                            ("width".into(), HostValue::Number(w)),
+                            ("height".into(), HostValue::Number(h)),
+                            ("top".into(), HostValue::Number(0.0)),
+                            ("left".into(), HostValue::Number(0.0)),
+                            ("bottom".into(), HostValue::Number(h)),
+                            ("right".into(), HostValue::Number(w)),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    ))
+                });
+            }
 
-        let mut engine = V8Engine::new();
-        engine.register_host_api(&api).unwrap();
-        let source = format!(
-            "{WEB_API_SHIM_JS}\n{}",
-            r#"
+            let mut engine = V8Engine::new();
+            engine.register_host_api(&api).unwrap();
+            let source = format!(
+                "{WEB_API_SHIM_JS}\n{}",
+                r#"
             globalThis.__roSeen = [];
             globalThis.__roSkipCalled = false;
             (function () {
@@ -2773,71 +2775,72 @@ mod tests {
               },
             };
             "#
-        );
-        engine
-            .initialize(RuntimeArtifact::from_source("resize-observer.js", source))
-            .unwrap();
-        engine.run_microtasks().unwrap();
+            );
+            engine
+                .initialize(RuntimeArtifact::from_source("resize-observer.js", source))
+                .unwrap();
+            engine.run_microtasks().unwrap();
 
-        let snap = engine.resolve_function("__roProbe.snapshot").unwrap();
-        let first = engine.invoke(snap, &[]).unwrap();
-        let first_obj = first.as_object().expect("snapshot object");
-        assert_eq!(
-            first_obj.get("skipCalled").and_then(HostValue::as_bool),
-            Some(false),
-            "targets without layoutBox/__nid must be skipped"
-        );
-        let HostValue::Array(seen) = first_obj.get("seen").cloned().unwrap_or(HostValue::Null)
-        else {
-            panic!("expected seen array");
-        };
-        assert_eq!(seen.len(), 1, "initial observe should deliver once");
-        let HostValue::Object(entry) = &seen[0] else {
-            panic!("expected entry object");
-        };
-        assert_eq!(entry.get("w").and_then(HostValue::as_f64), Some(320.0));
-        assert_eq!(entry.get("h").and_then(HostValue::as_f64), Some(48.0));
-        assert_eq!(entry.get("bw").and_then(HostValue::as_f64), Some(320.0));
-        assert_eq!(entry.get("bh").and_then(HostValue::as_f64), Some(48.0));
-        assert_ne!(entry.get("w").and_then(HostValue::as_f64), Some(220.0));
-        assert_ne!(entry.get("h").and_then(HostValue::as_f64), Some(640.0));
+            let snap = engine.resolve_function("__roProbe.snapshot").unwrap();
+            let first = engine.invoke(snap, &[]).unwrap();
+            let first_obj = first.as_object().expect("snapshot object");
+            assert_eq!(
+                first_obj.get("skipCalled").and_then(HostValue::as_bool),
+                Some(false),
+                "targets without layoutBox/__nid must be skipped"
+            );
+            let HostValue::Array(seen) = first_obj.get("seen").cloned().unwrap_or(HostValue::Null)
+            else {
+                panic!("expected seen array");
+            };
+            assert_eq!(seen.len(), 1, "initial observe should deliver once");
+            let HostValue::Object(entry) = &seen[0] else {
+                panic!("expected entry object");
+            };
+            assert_eq!(entry.get("w").and_then(HostValue::as_f64), Some(320.0));
+            assert_eq!(entry.get("h").and_then(HostValue::as_f64), Some(48.0));
+            assert_eq!(entry.get("bw").and_then(HostValue::as_f64), Some(320.0));
+            assert_eq!(entry.get("bh").and_then(HostValue::as_f64), Some(48.0));
+            assert_ne!(entry.get("w").and_then(HostValue::as_f64), Some(220.0));
+            assert_ne!(entry.get("h").and_then(HostValue::as_f64), Some(640.0));
 
-        sizes.lock().unwrap().insert(7, (400.0, 120.0));
-        let notify = engine.resolve_function("__roProbe.notify").unwrap();
-        engine.invoke(notify, &[]).unwrap();
-        engine.run_microtasks().unwrap();
+            sizes.lock().unwrap().insert(7, (400.0, 120.0));
+            let notify = engine.resolve_function("__roProbe.notify").unwrap();
+            engine.invoke(notify, &[]).unwrap();
+            engine.run_microtasks().unwrap();
 
-        let second = engine.invoke(snap, &[]).unwrap();
-        let second_obj = second.as_object().expect("snapshot object");
-        let HostValue::Array(seen2) = second_obj.get("seen").cloned().unwrap_or(HostValue::Null)
-        else {
-            panic!("expected seen array after notify");
-        };
-        assert_eq!(
-            seen2.len(),
-            2,
-            "layout notify must redeliver on size change"
-        );
-        let HostValue::Object(entry2) = &seen2[1] else {
-            panic!("expected second entry");
-        };
-        assert_eq!(entry2.get("w").and_then(HostValue::as_f64), Some(400.0));
-        assert_eq!(entry2.get("h").and_then(HostValue::as_f64), Some(120.0));
+            let second = engine.invoke(snap, &[]).unwrap();
+            let second_obj = second.as_object().expect("snapshot object");
+            let HostValue::Array(seen2) =
+                second_obj.get("seen").cloned().unwrap_or(HostValue::Null)
+            else {
+                panic!("expected seen array after notify");
+            };
+            assert_eq!(
+                seen2.len(),
+                2,
+                "layout notify must redeliver on size change"
+            );
+            let HostValue::Object(entry2) = &seen2[1] else {
+                panic!("expected second entry");
+            };
+            assert_eq!(entry2.get("w").and_then(HostValue::as_f64), Some(400.0));
+            assert_eq!(entry2.get("h").and_then(HostValue::as_f64), Some(120.0));
 
-        engine.shutdown();
+            engine.shutdown();
         });
     }
 
     #[test]
     fn vue_host_pumps_window_lifecycle_events() {
         with_serial_v8_tests(|| {
-        use nana_js_engine::RuntimeArtifact;
-        use nana_ui_vue::{VueHost, WindowLifecycleEvent};
-        use nana_ui_web_api::WEB_API_SHIM_JS;
+            use nana_js_engine::RuntimeArtifact;
+            use nana_ui_vue::{VueHost, WindowLifecycleEvent};
+            use nana_ui_web_api::WEB_API_SHIM_JS;
 
-        let source = format!(
-            "{WEB_API_SHIM_JS}\n{}",
-            r#"
+            let source = format!(
+                "{WEB_API_SHIM_JS}\n{}",
+                r#"
             globalThis.__nanaFireEvent = function () { return true; };
             globalThis.__lifecycleLog = [];
             window.addEventListener("focus", function () {
@@ -2867,92 +2870,92 @@ mod tests {
               };
             };
             "#
-        );
+            );
 
-        let mut host = VueHost::with_viewport(800, 600, 1.0);
-        let mut engine = V8Engine::new();
-        host.initialize_with_web_api(
-            &mut engine,
-            RuntimeArtifact::from_source("lifecycle-pump.js", source),
-        )
-        .expect("shim + probe");
-        host.bind_event_bridge(&mut engine).expect("bind");
-
-        assert!(
-            host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
-                .expect("blur"),
-            "blur must reach shim"
-        );
-        assert!(
-            host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Focus)
-                .expect("focus")
-        );
-        assert!(
-            host.pump_lifecycle(
+            let mut host = VueHost::with_viewport(800, 600, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
                 &mut engine,
-                WindowLifecycleEvent::Resize {
-                    width: 1024.0,
-                    height: 768.0,
-                },
+                RuntimeArtifact::from_source("lifecycle-pump.js", source),
             )
-            .expect("resize")
-        );
-        assert!(
-            host.pump_lifecycle(
-                &mut engine,
-                WindowLifecycleEvent::VisibilityChange { hidden: true },
-            )
-            .expect("visibility hidden")
-        );
-        assert!(
-            host.pump_lifecycle(
-                &mut engine,
-                WindowLifecycleEvent::VisibilityChange { hidden: false },
-            )
-            .expect("visibility visible")
-        );
+            .expect("shim + probe");
+            host.bind_event_bridge(&mut engine).expect("bind");
 
-        let probe = engine
-            .resolve_function("__lifecycleSnapshot")
-            .expect("__lifecycleSnapshot");
-        let result = engine.invoke(probe, &[]).expect("snapshot");
-        let obj = result.as_object().expect("object");
-        let HostValue::Array(log) = obj.get("log").cloned().unwrap_or(HostValue::Null) else {
-            panic!("expected log array");
-        };
-        let entries: Vec<String> = log
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-        assert!(
-            entries.iter().any(|e| e.starts_with("blur:")),
-            "expected blur entry, got {entries:?}"
-        );
-        assert!(
-            entries.iter().any(|e| e.starts_with("focus:")),
-            "expected focus entry, got {entries:?}"
-        );
-        assert!(
-            entries.iter().any(|e| e == "resize:1024x768"),
-            "expected resize entry, got {entries:?}"
-        );
-        assert!(
-            entries.iter().any(|e| e == "visibility:hidden:true"),
-            "expected hidden visibility, got {entries:?}"
-        );
-        assert!(
-            entries.iter().any(|e| e == "visibility:visible:false"),
-            "expected visible again, got {entries:?}"
-        );
-        assert_eq!(obj.get("focused").and_then(HostValue::as_bool), Some(true));
-        assert_eq!(
-            obj.get("visibility").and_then(HostValue::as_str),
-            Some("visible")
-        );
-        assert_eq!(obj.get("w").and_then(HostValue::as_f64), Some(1024.0));
-        assert_eq!(obj.get("h").and_then(HostValue::as_f64), Some(768.0));
+            assert!(
+                host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+                    .expect("blur"),
+                "blur must reach shim"
+            );
+            assert!(
+                host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Focus)
+                    .expect("focus")
+            );
+            assert!(
+                host.pump_lifecycle(
+                    &mut engine,
+                    WindowLifecycleEvent::Resize {
+                        width: 1024.0,
+                        height: 768.0,
+                    },
+                )
+                .expect("resize")
+            );
+            assert!(
+                host.pump_lifecycle(
+                    &mut engine,
+                    WindowLifecycleEvent::VisibilityChange { hidden: true },
+                )
+                .expect("visibility hidden")
+            );
+            assert!(
+                host.pump_lifecycle(
+                    &mut engine,
+                    WindowLifecycleEvent::VisibilityChange { hidden: false },
+                )
+                .expect("visibility visible")
+            );
 
-        engine.shutdown();
+            let probe = engine
+                .resolve_function("__lifecycleSnapshot")
+                .expect("__lifecycleSnapshot");
+            let result = engine.invoke(probe, &[]).expect("snapshot");
+            let obj = result.as_object().expect("object");
+            let HostValue::Array(log) = obj.get("log").cloned().unwrap_or(HostValue::Null) else {
+                panic!("expected log array");
+            };
+            let entries: Vec<String> = log
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            assert!(
+                entries.iter().any(|e| e.starts_with("blur:")),
+                "expected blur entry, got {entries:?}"
+            );
+            assert!(
+                entries.iter().any(|e| e.starts_with("focus:")),
+                "expected focus entry, got {entries:?}"
+            );
+            assert!(
+                entries.iter().any(|e| e == "resize:1024x768"),
+                "expected resize entry, got {entries:?}"
+            );
+            assert!(
+                entries.iter().any(|e| e == "visibility:hidden:true"),
+                "expected hidden visibility, got {entries:?}"
+            );
+            assert!(
+                entries.iter().any(|e| e == "visibility:visible:false"),
+                "expected visible again, got {entries:?}"
+            );
+            assert_eq!(obj.get("focused").and_then(HostValue::as_bool), Some(true));
+            assert_eq!(
+                obj.get("visibility").and_then(HostValue::as_str),
+                Some("visible")
+            );
+            assert_eq!(obj.get("w").and_then(HostValue::as_f64), Some(1024.0));
+            assert_eq!(obj.get("h").and_then(HostValue::as_f64), Some(768.0));
+
+            engine.shutdown();
         });
     }
 }

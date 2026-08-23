@@ -630,8 +630,6 @@ impl std::fmt::Display for DockError {
 
 impl std::error::Error for DockError {}
 
-
-
 pub(super) fn clamp_ratio(ratio: f32) -> f32 {
     finite(ratio, 0.5).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO)
 }

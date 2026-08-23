@@ -56,8 +56,7 @@ fn redraw_for_runtime_dock_effects(effects: &[DockWorkspaceEvent]) -> RuntimeRed
             DockWorkspaceEvent::OpenFloating(_) | DockWorkspaceEvent::CloseFloating(_) => {
                 RuntimeRedraw::All
             }
-            DockWorkspaceEvent::MoveFloating { id, .. }
-            | DockWorkspaceEvent::FocusFloating(id) => {
+            DockWorkspaceEvent::MoveFloating { id, .. } | DockWorkspaceEvent::FocusFloating(id) => {
                 RuntimeRedraw::Window(dock_workspace_window_id(id))
             }
         };

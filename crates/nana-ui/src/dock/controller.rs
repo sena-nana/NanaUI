@@ -4,20 +4,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use crate::geometry::TITLE_BAR_HEIGHT as WINDOW_TITLE_BAR_HEIGHT;
+#[cfg(feature = "hosted")]
+use crate::runtime_host::RuntimeProgramUpdate;
 use nana_ui_core::LogicalPoint;
-#[cfg(all(test, feature = "hosted"))]
-use nana_ui_platform::WindowGeometry;
 #[cfg(feature = "hosted")]
 use nana_ui_platform::WindowEvent;
 #[cfg(all(test, feature = "hosted"))]
+use nana_ui_platform::WindowGeometry;
+#[cfg(all(test, feature = "hosted"))]
 use nana_ui_platform::{WindowCommand, WindowId};
-#[cfg(feature = "hosted")]
-use crate::runtime_host::RuntimeProgramUpdate;
 
-use super::model::*;
-use super::view::*;
 #[cfg(feature = "hosted")]
 use super::host::hosted_dock_update;
+use super::model::*;
+use super::view::*;
 
 #[derive(Debug, Clone)]
 struct ActiveResize {
@@ -4756,4 +4756,3 @@ mod tests {
         );
     }
 }
-
