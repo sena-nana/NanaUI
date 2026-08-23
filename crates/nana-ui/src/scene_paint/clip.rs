@@ -70,6 +70,100 @@ pub(super) fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
     a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
 }
 
+fn near_zero(value: f32) -> bool {
+    value.abs() <= 1e-6
+}
+
+/// True when a transformed rect stays axis-aligned (scale, translation, 90°).
+/// GPU scissor matches the painted parallelogram in that case.
+pub(super) fn is_axis_aligned([a, b, c, d, _, _]: [f32; 6]) -> bool {
+    (near_zero(b) && near_zero(c)) || (near_zero(a) && near_zero(d))
+}
+
+/// Inverse of CSS/Canvas `matrix(a, b, c, d, e, f)`.
+pub(super) fn invert_affine([a, b, c, d, e, f]: [f32; 6]) -> Option<[f32; 6]> {
+    let det = a * d - b * c;
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let ia = d * inv_det;
+    let ib = -b * inv_det;
+    let ic = -c * inv_det;
+    let id = a * inv_det;
+    Some([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
+}
+
+/// Inverse-affine point-in-rect for the innermost non-axis-aligned clip.
+/// Axis-aligned clips stay on the GPU scissor (exact). Nested extra rotated
+/// clips are not represented; shader clip uses this one parallelogram.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct FragmentClip {
+    pub rect: [f32; 4],
+    pub inv_abcd: [f32; 4],
+    pub inv_ef: [f32; 2],
+}
+
+impl FragmentClip {
+    /// Identity inverse + a rect that contains any paint-space coordinate.
+    pub const PASS: Self = Self {
+        rect: [-1.0e7, -1.0e7, 2.0e7, 2.0e7],
+        inv_abcd: [1.0, 0.0, 0.0, 1.0],
+        inv_ef: [0.0, 0.0],
+    };
+
+    /// Degenerate clip: no fragment is inside.
+    pub const REJECT: Self = Self {
+        rect: [0.0, 0.0, -1.0, -1.0],
+        inv_abcd: [1.0, 0.0, 0.0, 1.0],
+        inv_ef: [0.0, 0.0],
+    };
+
+    fn from_local(bounds: SceneRect, inverse: [f32; 6]) -> Self {
+        Self {
+            rect: [bounds.x, bounds.y, bounds.width, bounds.height],
+            inv_abcd: [inverse[0], inverse[1], inverse[2], inverse[3]],
+            inv_ef: [inverse[4], inverse[5]],
+        }
+    }
+}
+
+pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2]) -> FragmentClip {
+    clips
+        .iter()
+        .rev()
+        .find_map(|clip| {
+            let affine = paint_affine(clip.transform.0, origin);
+            if is_axis_aligned(affine) {
+                return None;
+            }
+            Some(match invert_affine(affine) {
+                Some(inverse) => FragmentClip::from_local(clip.bounds, inverse),
+                None => FragmentClip::REJECT,
+            })
+        })
+        .unwrap_or(FragmentClip::PASS)
+}
+
+pub(super) fn point_in_fragment_clip(x: f32, y: f32, clip: FragmentClip) -> bool {
+    let [local_x, local_y] = transform_point(
+        [
+            clip.inv_abcd[0],
+            clip.inv_abcd[1],
+            clip.inv_abcd[2],
+            clip.inv_abcd[3],
+            clip.inv_ef[0],
+            clip.inv_ef[1],
+        ],
+        x,
+        y,
+    );
+    local_x >= clip.rect[0]
+        && local_y >= clip.rect[1]
+        && local_x <= clip.rect[0] + clip.rect[2]
+        && local_y <= clip.rect[1] + clip.rect[3]
+}
+
 pub(super) fn local_rect(bounds: SceneRect) -> LogicalRect {
     LogicalRect {
         x: bounds.x,
@@ -120,8 +214,12 @@ pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [
     ]
 }
 
-/// Transformed AABB scissor. Rotated clips overdraw; rounded HostTexture clip
-/// is the sibling Quad SDF, not this intersection.
+/// Transformed AABB scissor for GPU `set_scissor_rect`.
+///
+/// Rotated/sheared clips still contribute their AABB here as a coarse reject.
+/// Quad and Mesh fragment shaders clip to [`fragment_clip`]. Nested extra
+/// rotated clips, text glyphs, HostTexture, and custom nodes stay AABB-only.
+/// Rounded HostTexture clip is the sibling Quad SDF, not this intersection.
 pub(super) fn intersect_clips(
     viewport: LogicalRect,
     clips: &[nana_ui_scene::ClipRegion],
@@ -331,5 +429,85 @@ mod tests {
         assert_eq!(scissor.y, 30);
         assert_eq!(scissor.width, 152);
         assert_eq!(scissor.height, 77);
+    }
+
+    #[test]
+    fn invert_affine_roundtrips_and_rejects_singular() {
+        let original = [2.0, 0.5, -0.25, 3.0, 4.0, -6.0];
+        let inverse = invert_affine(original).unwrap();
+        let [x, y] = transform_point(original, 7.0, 11.0);
+        let [rx, ry] = transform_point(inverse, x, y);
+        assert!((rx - 7.0).abs() < 1e-5 && (ry - 11.0).abs() < 1e-5);
+        assert_eq!(invert_affine(IDENTITY_AFFINE), Some(IDENTITY_AFFINE));
+        assert!(invert_affine([1.0, 0.0, 2.0, 0.0, 3.0, 4.0]).is_none());
+    }
+
+    #[test]
+    fn axis_aligned_includes_scale_and_right_angles() {
+        assert!(is_axis_aligned(IDENTITY_AFFINE));
+        assert!(is_axis_aligned([2.0, 0.0, 0.0, 0.5, 3.0, 4.0]));
+        assert!(is_axis_aligned([0.0, 1.0, -1.0, 0.0, 0.0, 0.0]));
+        assert!(!is_axis_aligned([0.707, 0.707, -0.707, 0.707, 0.0, 0.0]));
+        assert!(!is_axis_aligned([1.0, 0.0, 0.5, 1.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn fragment_clip_rejects_aabb_corner_outside_rotated_rect() {
+        let viewport = LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]);
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let clips = [ClipRegion {
+            bounds: SceneRect {
+                x: 16.0,
+                y: 16.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            transform: AffineTransform(
+                nana_ui_core::PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    e: 0.0,
+                    f: 0.0,
+                }
+                .around_center(16.0, 16.0, 32.0, 32.0),
+            ),
+        }];
+        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let aabb = intersect_clips(viewport, &clips, origin).unwrap();
+        let clip = fragment_clip(&clips, origin);
+        assert!(point_in_fragment_clip(32.0, 32.0, clip));
+
+        let corner_x = aabb.x + 1.0;
+        let corner_y = aabb.y + 1.0;
+        assert!(
+            corner_x >= aabb.x
+                && corner_y >= aabb.y
+                && corner_x <= aabb.x + aabb.width
+                && corner_y <= aabb.y + aabb.height,
+            "probe must sit in the transformed AABB scissor"
+        );
+        assert!(
+            !point_in_fragment_clip(corner_x, corner_y, clip),
+            "AABB corner {corner_x},{corner_y} must stay outside the rotated rect"
+        );
+    }
+
+    #[test]
+    fn fragment_clip_passes_when_every_clip_is_axis_aligned() {
+        let clips = [ClipRegion {
+            bounds: SceneRect {
+                x: 10.0,
+                y: 10.0,
+                width: 20.0,
+                height: 20.0,
+            },
+            transform: AffineTransform::IDENTITY,
+        }];
+        assert_eq!(
+            fragment_clip(&clips, paint_origin([0.0, 0.0], [0.0, 0.0])),
+            FragmentClip::PASS
+        );
     }
 }

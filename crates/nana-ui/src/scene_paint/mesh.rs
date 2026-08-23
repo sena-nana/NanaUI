@@ -1,19 +1,24 @@
-use std::collections::{HashMap, VecDeque};
-use std::mem;
+use std::{
+    collections::{HashMap, VecDeque},
+    mem,
+};
 
 use bytemuck::{Pod, Zeroable};
-use lyon::math::{Box2D, Point, point};
-use lyon::path::{Path, Winding, builder::BorderRadii};
-use lyon::tessellation::{
-    BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
-    StrokeVertex, VertexBuffers,
+use lyon::{
+    math::{point, Box2D, Point},
+    path::{builder::BorderRadii, Path, Winding},
+    tessellation::{
+        BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
+        StrokeVertex, VertexBuffers,
+    },
 };
-use nana_ui_scene::{IconPathCommand, IconShape, icon_geometry};
+use nana_ui_scene::{icon_geometry, IconPathCommand, IconShape};
 
-use super::clip::LogicalRect;
-use super::color::{orthographic_scaled, pack_linear, with_opacity};
-use crate::PhysicalRect;
-use crate::icons::Icon;
+use super::{
+    clip::{FragmentClip, LogicalRect},
+    color::{orthographic_scaled, pack_linear, with_opacity},
+};
+use crate::{icons::Icon, PhysicalRect};
 
 const INITIAL_VERTICES: usize = 1_024;
 const INITIAL_INDICES: usize = 2_048;
@@ -62,6 +67,21 @@ impl IconCache {
 struct MeshVertex {
     position: [f32; 2],
     color: [f32; 4],
+    clip_rect: [f32; 4],
+    clip_inv_abcd: [f32; 4],
+    clip_inv_ef: [f32; 2],
+}
+
+impl MeshVertex {
+    fn new(position: [f32; 2], color: [f32; 4]) -> Self {
+        Self {
+            position,
+            color,
+            clip_rect: FragmentClip::PASS.rect,
+            clip_inv_abcd: FragmentClip::PASS.inv_abcd,
+            clip_inv_ef: FragmentClip::PASS.inv_ef,
+        }
+    }
 }
 
 #[repr(C)]
@@ -176,6 +196,7 @@ impl MeshPipeline {
         icon: Icon,
         color: [f32; 4],
         opacity: f32,
+        fragment_clip: FragmentClip,
     ) -> Option<MeshRange> {
         let scale = bounds.width.min(bounds.height) / 24.0;
         if scale <= 0.0 {
@@ -224,6 +245,7 @@ impl MeshPipeline {
         }
         let index_count = self.pending_indices.len() as u32 - start;
         apply_affine_to_vertices(&mut self.pending_vertices, vertex_base, affine);
+        stamp_fragment_clip(&mut self.pending_vertices, vertex_base, fragment_clip);
         (index_count > 0).then_some(MeshRange {
             first_index: start,
             index_count,
@@ -237,6 +259,7 @@ impl MeshPipeline {
         width: f32,
         color: [f32; 4],
         opacity: f32,
+        fragment_clip: FragmentClip,
     ) -> Option<MeshRange> {
         if points.len() < 2 || width <= 0.0 {
             return None;
@@ -258,6 +281,7 @@ impl MeshPipeline {
             pack_linear(with_opacity(color, opacity)),
         );
         apply_affine_to_vertices(&mut self.pending_vertices, vertex_base, affine);
+        stamp_fragment_clip(&mut self.pending_vertices, vertex_base, fragment_clip);
         let index_count = self.pending_indices.len() as u32 - start;
         (index_count > 0).then_some(MeshRange {
             first_index: start,
@@ -272,6 +296,7 @@ impl MeshPipeline {
         phase: u8,
         color: [f32; 4],
         opacity: f32,
+        fragment_clip: FragmentClip,
     ) -> Option<MeshRange> {
         let scale = bounds.width.min(bounds.height) / 24.0;
         if scale <= 0.0 {
@@ -312,6 +337,7 @@ impl MeshPipeline {
             );
         }
         apply_affine_to_vertices(&mut self.pending_vertices, vertex_base, affine);
+        stamp_fragment_clip(&mut self.pending_vertices, vertex_base, fragment_clip);
         let index_count = self.pending_indices.len() as u32 - start;
         (index_count > 0).then_some(MeshRange {
             first_index: start,
@@ -427,6 +453,9 @@ fn mesh_pipeline(
                 attributes: &wgpu::vertex_attr_array!(
                     0 => Float32x2,
                     1 => Float32x4,
+                    2 => Float32x4,
+                    3 => Float32x4,
+                    4 => Float32x2,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -640,6 +669,14 @@ fn apply_affine_to_vertices(vertices: &mut [MeshVertex], start: usize, affine: [
     }
 }
 
+fn stamp_fragment_clip(vertices: &mut [MeshVertex], start: usize, clip: FragmentClip) {
+    for vertex in &mut vertices[start..] {
+        vertex.clip_rect = clip.rect;
+        vertex.clip_inv_abcd = clip.inv_abcd;
+        vertex.clip_inv_ef = clip.inv_ef;
+    }
+}
+
 fn append_geometry(
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
@@ -647,9 +684,11 @@ fn append_geometry(
     color: [f32; 4],
 ) {
     let base = vertices.len() as u32;
-    vertices.extend(geometry.vertices.iter().map(|position| MeshVertex {
-        position: [position.x, position.y],
-        color,
-    }));
+    vertices.extend(
+        geometry
+            .vertices
+            .iter()
+            .map(|position| MeshVertex::new([position.x, position.y], color)),
+    );
     indices.extend(geometry.indices.iter().map(|index| base + *index));
 }
