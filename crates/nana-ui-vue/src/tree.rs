@@ -24,9 +24,8 @@ use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
     AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, CalendarHeatmapDatum,
     CalendarHeatmapOptions, CalendarLevelStrategy, ComponentBindKind, ComponentTypeId,
-    ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode, Entity, GraphEdge,
-    GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
-    GraphSelection, GraphSize, GraphViewport, HOST_TEXTURE_RENDERER, HighlightRequest,
+    ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode, Entity,
+    HOST_TEXTURE_RENDERER, HighlightRequest,
     ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
     NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
     SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption, SemanticSpec,
@@ -3626,9 +3625,15 @@ fn enqueue_bound_assembly(
                 .push((id, dock_from_widget_bound(widget, snapshot, context, id)));
         }
         crate::WidgetKind::SettingsPage => {
-            let Some(model) = settings_model_from_props(&widget.props) else {
-                return;
-            };
+            let model = settings_model_from_props(&widget.props).unwrap_or_else(|| {
+                let label = widget.props.display_label();
+                let label = if label.is_empty() { "Settings" } else { label };
+                nana_ui_core::SettingsModel::new(
+                    "settings",
+                    [nana_ui_core::SettingsTab::new("settings", label)],
+                )
+                .expect("fallback settings model has one tab")
+            });
             let mut state = nana_ui_core::SettingsState::new(&model);
             if let Some(tab) = settings_active_tab(&widget.props) {
                 state.select(&model, &tab);
@@ -3864,59 +3869,6 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::NativeMarkdown => AccessibilityRole::Document,
         crate::WidgetKind::GraphCanvas => AccessibilityRole::Generic,
         _ => AccessibilityRole::Generic,
-    }
-}
-
-#[allow(dead_code)]
-fn host_command_palette_items(
-    props: &crate::WidgetProps,
-) -> Option<Vec<nana_ui_core::CommandPaletteItem>> {
-    let value = props
-        .native_props
-        .get("options")
-        .or_else(|| props.native_props.get("items"))?;
-    let items = host_array(value)
-        .into_iter()
-        .filter_map(command_palette_item_from_host)
-        .collect::<Vec<_>>();
-    (!items.is_empty()).then_some(items)
-}
-
-fn command_palette_item_from_host(
-    value: &nana_js_engine::HostValue,
-) -> Option<nana_ui_core::CommandPaletteItem> {
-    match value {
-        nana_js_engine::HostValue::Object(map) => {
-            let action = host_map_text(map, &["value", "action", "id", "key"]);
-            let label = host_map_text(map, &["label", "title", "text"]);
-            if action.is_empty() && label.is_empty() {
-                return None;
-            }
-            let identity = if action.is_empty() {
-                label.clone()
-            } else {
-                action
-            };
-            let caption = if label.is_empty() {
-                identity.clone()
-            } else {
-                label
-            };
-            let mut item = nana_ui_core::CommandPaletteItem::new(identity, caption);
-            let category = host_map_text(map, &["category", "group"]);
-            if !category.is_empty() {
-                item = item.category(category);
-            }
-            let shortcut = host_map_text(map, &["shortcut", "keys"]);
-            if !shortcut.is_empty() {
-                item = item.shortcut(shortcut);
-            }
-            Some(item)
-        }
-        nana_js_engine::HostValue::String(text) if !text.is_empty() => Some(
-            nana_ui_core::CommandPaletteItem::new(text.as_str(), text.clone()),
-        ),
-        _ => None,
     }
 }
 
@@ -4268,18 +4220,12 @@ fn apply_calendar_template(template: &str, replacements: &[(&str, String)]) -> S
 }
 
 fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsModel> {
-    let settings = props
-        .native_props
-        .get("settings")
-        .or_else(|| props.native_props.get("model"))?;
-    let nana_js_engine::HostValue::Object(map) = settings else {
-        return None;
-    };
-    let mut tabs = settings_tabs_from_host(host_map_value(map, &["tabs", "items"])?);
+    let map = settings_host_map(props)?;
+    let mut tabs = settings_tabs_from_host(host_map_value(&map, &["tabs", "items"])?);
     if tabs.is_empty() {
         return None;
     }
-    let full_page = settings_full_page_keys(map);
+    let full_page = settings_full_page_keys(&map);
     if !full_page.is_empty() {
         tabs = tabs
             .into_iter()
@@ -4294,7 +4240,7 @@ fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core:
             })
             .collect();
     }
-    let default_tab = host_map_text(map, &["defaultTab", "default_tab", "default-tab"]);
+    let default_tab = host_map_text(&map, &["defaultTab", "default_tab", "default-tab"]);
     let default_tab =
         if default_tab.is_empty() || tabs.iter().all(|tab| tab.id().as_str() != default_tab) {
             tabs[0].id().as_str().to_string()
@@ -4303,7 +4249,7 @@ fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core:
         };
     let mut model = nana_ui_core::SettingsModel::new(default_tab, tabs).ok()?;
     if let Some(nana_js_engine::HostValue::Object(aliases)) =
-        host_map_value(map, &["aliases", "alias"])
+        host_map_value(&map, &["aliases", "alias"])
     {
         for (alias, target) in aliases {
             let target = host_value_text(target);
@@ -4315,9 +4261,33 @@ fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core:
             }
         }
     }
-    let hide_header = host_map_truthy(map, &["hideHeader", "hide_header", "hide-header"])
+    let hide_header = host_map_truthy(&map, &["hideHeader", "hide_header", "hide-header"])
         || settings_hide_header_from_props(props);
     Some(model.hide_header(hide_header))
+}
+
+fn settings_host_map(
+    props: &crate::WidgetProps,
+) -> Option<BTreeMap<String, nana_js_engine::HostValue>> {
+    if let Some(value) = props
+        .native_props
+        .get("settings")
+        .or_else(|| props.native_props.get("model"))
+    {
+        return match value {
+            nana_js_engine::HostValue::Object(map) => Some(map.clone()),
+            nana_js_engine::HostValue::String(json) => settings_object_from_json(json),
+            _ => None,
+        };
+    }
+    crate::widget_map::attr_value(props, &["settings", "model"]).and_then(settings_object_from_json)
+}
+
+fn settings_object_from_json(json: &str) -> Option<BTreeMap<String, nana_js_engine::HostValue>> {
+    match nana_js_engine::HostValue::from_json_str(json).ok()? {
+        nana_js_engine::HostValue::Object(map) => Some(map),
+        _ => None,
+    }
 }
 
 fn settings_tabs_from_host(value: &nana_js_engine::HostValue) -> Vec<nana_ui_core::SettingsTab> {
@@ -4535,270 +4505,6 @@ fn native_prop_text(props: &crate::WidgetProps, keys: &[&str]) -> Option<String>
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty())
     })
-}
-
-#[allow(dead_code)]
-fn graph_model_from_props(props: &crate::WidgetProps) -> GraphModel {
-    let model = props.native_props.get("model");
-    let nodes_value = model
-        .and_then(host_object_field("nodes"))
-        .or_else(|| props.native_props.get("nodes"));
-    let edges_value = model
-        .and_then(host_object_field("edges"))
-        .or_else(|| props.native_props.get("edges"));
-    let nodes = nodes_value
-        .map(host_array)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(graph_node_from_host)
-        .collect::<Vec<_>>();
-    let edges = edges_value
-        .map(host_array)
-        .unwrap_or_default()
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, value)| graph_edge_from_host(index, value))
-        .collect::<Vec<_>>();
-    GraphModel::new(nodes.clone(), edges)
-        .or_else(|_| GraphModel::new(nodes, Vec::new()))
-        .unwrap_or_else(|_| GraphModel::empty())
-}
-
-#[allow(dead_code)]
-fn graph_viewport_from_props(props: &crate::WidgetProps) -> Option<GraphViewport> {
-    let model = props.native_props.get("model");
-    let value = props
-        .native_props
-        .get("viewport")
-        .or_else(|| model.and_then(host_object_field("viewport")))?;
-    graph_viewport_from_host(value)
-}
-
-fn graph_viewport_from_host(value: &nana_js_engine::HostValue) -> Option<GraphViewport> {
-    let nana_js_engine::HostValue::Object(map) = value else {
-        return None;
-    };
-    let zoom = host_map_number(map, &["zoom"]).unwrap_or(1.0);
-    let offset = map
-        .get("offset")
-        .and_then(graph_point_from_host)
-        .unwrap_or_else(|| {
-            GraphPoint::new(
-                host_map_number(map, &["offsetX", "offset_x", "offset-x", "x"]).unwrap_or(0.0),
-                host_map_number(map, &["offsetY", "offset_y", "offset-y", "y"]).unwrap_or(0.0),
-            )
-        });
-    Some(GraphViewport::new(offset, zoom))
-}
-
-fn graph_point_from_host(value: &nana_js_engine::HostValue) -> Option<GraphPoint> {
-    match value {
-        nana_js_engine::HostValue::Object(map) => {
-            let x = host_map_number(map, &["x", "offsetX", "offset_x", "offset-x"])?;
-            let y = host_map_number(map, &["y", "offsetY", "offset_y", "offset-y"])?;
-            x.is_finite()
-                .then_some(y)
-                .filter(|y| y.is_finite())
-                .map(|y| GraphPoint::new(x, y))
-        }
-        nana_js_engine::HostValue::Array(items) if items.len() >= 2 => Some(GraphPoint::new(
-            host_value_number(&items[0])?,
-            host_value_number(&items[1])?,
-        )),
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-fn graph_selection_from_props(props: &crate::WidgetProps) -> Option<GraphSelection> {
-    let model = props.native_props.get("model");
-    let value = props
-        .native_props
-        .get("selection")
-        .or_else(|| model.and_then(host_object_field("selection")))?;
-    graph_selection_from_host(value)
-}
-
-fn graph_selection_from_host(value: &nana_js_engine::HostValue) -> Option<GraphSelection> {
-    let nana_js_engine::HostValue::Object(map) = value else {
-        return None;
-    };
-    let kind = host_map_text(map, &["kind", "type"]).to_ascii_lowercase();
-    let node = host_map_text(map, &["node", "nodeId", "node-id", "node_id"]);
-    let port = host_map_text(map, &["port", "portId", "port-id", "port_id"]);
-    let edge = host_map_text(map, &["edge", "edgeId", "edge-id", "edge_id"]);
-    let id = host_map_text(map, &["id", "key"]);
-    if kind == "port" || (!port.is_empty() && (!node.is_empty() || !id.is_empty())) {
-        let node = if node.is_empty() { id } else { node };
-        if node.is_empty() || port.is_empty() {
-            return None;
-        }
-        return Some(GraphSelection::Port {
-            node: node.into(),
-            port: port.into(),
-        });
-    }
-    if kind == "edge" || !edge.is_empty() {
-        let edge = if edge.is_empty() { id } else { edge };
-        if edge.is_empty() {
-            return None;
-        }
-        return Some(GraphSelection::Edge(edge.into()));
-    }
-    if kind == "node" || !node.is_empty() || !id.is_empty() {
-        let node = if node.is_empty() { id } else { node };
-        if node.is_empty() {
-            return None;
-        }
-        return Some(GraphSelection::Node(node.into()));
-    }
-    None
-}
-
-fn host_object_field(
-    name: &'static str,
-) -> impl Fn(&nana_js_engine::HostValue) -> Option<&nana_js_engine::HostValue> {
-    move |value| match value {
-        nana_js_engine::HostValue::Object(map) => map.get(name),
-        _ => None,
-    }
-}
-
-const DEFAULT_GRAPH_NODE_WIDTH: f32 = 160.0;
-const DEFAULT_GRAPH_NODE_HEIGHT: f32 = 80.0;
-
-fn graph_node_from_host(value: &nana_js_engine::HostValue) -> Option<GraphNode> {
-    let nana_js_engine::HostValue::Object(map) = value else {
-        return None;
-    };
-    let label = host_map_text(map, &["title", "label", "name"]);
-    let id = host_map_text(map, &["id", "key"]);
-    if id.is_empty() && label.is_empty() {
-        return None;
-    }
-    let identity = if id.is_empty() { label.clone() } else { id };
-    let caption = if label.is_empty() {
-        identity.clone()
-    } else {
-        label
-    };
-    let x = map.get("x").and_then(host_value_number).unwrap_or(0.0);
-    let y = map.get("y").and_then(host_value_number).unwrap_or(0.0);
-    let width = map
-        .get("width")
-        .and_then(host_value_number)
-        .filter(|width| width.is_finite() && *width > 0.0)
-        .unwrap_or(DEFAULT_GRAPH_NODE_WIDTH);
-    let height = map
-        .get("height")
-        .and_then(host_value_number)
-        .filter(|height| height.is_finite() && *height > 0.0)
-        .unwrap_or(DEFAULT_GRAPH_NODE_HEIGHT);
-    if !x.is_finite() || !y.is_finite() {
-        return None;
-    }
-    let mut node = GraphNode::new(
-        identity,
-        caption,
-        GraphPoint::new(x, y),
-        GraphSize::new(width, height),
-    );
-    if let Some(ports) = map.get("ports") {
-        for port in host_array(ports)
-            .into_iter()
-            .filter_map(graph_port_from_host)
-        {
-            node = node.with_port(port);
-        }
-    }
-    Some(node)
-}
-
-fn graph_port_from_host(value: &nana_js_engine::HostValue) -> Option<GraphPort> {
-    let nana_js_engine::HostValue::Object(map) = value else {
-        return None;
-    };
-    let id = host_map_text(map, &["id", "key"]);
-    if id.is_empty() {
-        return None;
-    }
-    let label = host_map_text(map, &["label", "title", "name"]);
-    let caption = if label.is_empty() { id.clone() } else { label };
-    let kind = parse_graph_port_kind(&host_map_text(map, &["kind", "type"]));
-    let side = parse_graph_port_side(&host_map_text(map, &["side"]), kind);
-    Some(GraphPort::new(id, caption, kind, side))
-}
-
-fn graph_edge_from_host(index: usize, value: &nana_js_engine::HostValue) -> Option<GraphEdge> {
-    let nana_js_engine::HostValue::Object(map) = value else {
-        return None;
-    };
-    let source = graph_endpoint_from_map(map, "source", "from", "source-port", "source_port")?;
-    let target = graph_endpoint_from_map(map, "target", "to", "target-port", "target_port")?;
-    let mut id = host_map_text(map, &["id", "key"]);
-    if id.is_empty() {
-        id = format!(
-            "e{index}-{}:{}-{}:{}",
-            source.node, source.port, target.node, target.port
-        );
-    }
-    let mut edge = GraphEdge::new(id, source, target);
-    let label = host_map_text(map, &["label", "title"]);
-    if !label.is_empty() {
-        edge = edge.with_label(label);
-    }
-    Some(edge)
-}
-
-fn graph_endpoint_from_map(
-    map: &BTreeMap<String, nana_js_engine::HostValue>,
-    primary: &str,
-    alias: &str,
-    port_key: &str,
-    port_alias: &str,
-) -> Option<GraphEndpoint> {
-    if let Some(value) = map.get(primary).or_else(|| map.get(alias)) {
-        match value {
-            nana_js_engine::HostValue::Object(endpoint) => {
-                let node = host_map_text(endpoint, &["node", "id"]);
-                let port = host_map_text(endpoint, &["port", "id"]);
-                if node.is_empty() || port.is_empty() {
-                    return None;
-                }
-                return Some(GraphEndpoint::new(node, port));
-            }
-            other => {
-                let node = host_value_text(other);
-                let port = host_map_text(map, &[port_key, port_alias, "port"]);
-                if node.is_empty() || port.is_empty() {
-                    return None;
-                }
-                return Some(GraphEndpoint::new(node, port));
-            }
-        }
-    }
-    None
-}
-
-fn parse_graph_port_kind(raw: &str) -> GraphPortKind {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "input" | "in" => GraphPortKind::Input,
-        "bidirectional" | "both" | "inout" => GraphPortKind::Bidirectional,
-        _ => GraphPortKind::Output,
-    }
-}
-
-fn parse_graph_port_side(raw: &str, kind: GraphPortKind) -> GraphPortSide {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "top" => GraphPortSide::Top,
-        "right" => GraphPortSide::Right,
-        "bottom" => GraphPortSide::Bottom,
-        "left" => GraphPortSide::Left,
-        _ => match kind {
-            GraphPortKind::Input => GraphPortSide::Left,
-            GraphPortKind::Output | GraphPortKind::Bidirectional => GraphPortSide::Right,
-        },
-    }
 }
 
 fn host_value_number(value: &nana_js_engine::HostValue) -> Option<f32> {
@@ -8117,6 +7823,65 @@ mod tests {
             Some("appearance"),
             None,
         );
+        let assembly = settings_page_assembly(&doc, page);
+        let scroll = assembly
+            .scroll
+            .expect("assemble_settings_page mounts scroll");
+        let body = assembly.body.expect("assemble_settings_page mounts body");
+        let title = assembly.title.expect("assemble_settings_page mounts title");
+        assert_eq!(doc.runtime.node(page).unwrap().children, vec![scroll]);
+        assert_eq!(
+            doc.runtime.node(scroll).unwrap().kind,
+            NodeKind::Element {
+                tag: "scroll".into(),
+            }
+        );
+        assert!(
+            doc.runtime
+                .node_style(scroll)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert_eq!(doc.runtime.node(scroll).unwrap().children, vec![body]);
+        assert_eq!(
+            doc.runtime.node(body).unwrap().children,
+            vec![title, content]
+        );
+        assert_eq!(doc.runtime.text(title), Some("外观"));
+    }
+
+    #[test]
+    fn settings_page_attrs_json_assembles_scroll_body_title() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let page = doc.create_element("nana-settings-page");
+        let content = doc.create_element("div");
+        doc.insert(page, doc.mount_root(), None);
+        doc.insert(content, page, None);
+        let mut props = crate::WidgetProps::default();
+        props.attrs.insert(
+            "settings".into(),
+            r#"{"tabs":[{"id":"appearance","label":"外观"}],"defaultTab":"appearance"}"#.into(),
+        );
+        props.attrs.insert("tab".into(), "appearance".into());
+        assert!(
+            props.native_props.get("settings").is_none()
+                && props.native_props.get("model").is_none(),
+            "attrs-only settings must not supply native_props"
+        );
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(page.0, crate::WidgetKind::SettingsPage, props);
+        bridge.register(
+            content.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps::default(),
+        );
+        bridge.insert_child(content.0, page.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let page = StableNodeId::try_from(page).unwrap();
+        let content = StableNodeId::try_from(content).unwrap();
         let assembly = settings_page_assembly(&doc, page);
         let scroll = assembly
             .scroll
