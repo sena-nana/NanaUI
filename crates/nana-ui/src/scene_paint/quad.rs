@@ -1,8 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use nana_ui_runtime::ComponentElevation;
 
-use super::clip::LogicalRect;
-use super::color::{orthographic, pack_linear, with_opacity};
+use super::{
+    clip::LogicalRect,
+    color::{orthographic, pack_linear, with_opacity},
+};
 use crate::PhysicalRect;
 
 const INITIAL_INSTANCES: usize = 256;
@@ -23,6 +25,9 @@ struct SolidInstance {
     snap: u32,
     affine_abcd: [f32; 4],
     affine_ef: [f32; 2],
+    clip_rect: [f32; 4],
+    clip_inv_abcd: [f32; 4],
+    clip_inv_ef: [f32; 2],
 }
 
 #[repr(C)]
@@ -118,6 +123,7 @@ impl QuadPipeline {
         &mut self,
         bounds: LogicalRect,
         clip: LogicalRect,
+        fragment_clip: super::clip::FragmentClip,
         affine: [f32; 6],
         background: Option<[f32; 4]>,
         border_color: Option<[f32; 4]>,
@@ -174,6 +180,9 @@ impl QuadPipeline {
                 instance_affine[3],
             ],
             affine_ef: [instance_affine[4], instance_affine[5]],
+            clip_rect: fragment_clip.rect,
+            clip_inv_abcd: fragment_clip.inv_abcd,
+            clip_inv_ef: fragment_clip.inv_ef,
         });
         Some(index)
     }
@@ -276,6 +285,9 @@ fn solid_pipeline(
                     10 => Uint32,
                     11 => Float32x4,
                     12 => Float32x2,
+                    13 => Float32x4,
+                    14 => Float32x4,
+                    15 => Float32x2,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),

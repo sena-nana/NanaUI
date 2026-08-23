@@ -39,8 +39,8 @@ pub(crate) use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use clip::{
-    LogicalRect, intersect_clips, local_rect, paint_affine, paint_origin, physical_bounds,
-    physical_scissor, transformed_aabb,
+    LogicalRect, fragment_clip, intersect_clips, local_rect, paint_affine, paint_origin,
+    physical_bounds, physical_scissor, transformed_aabb,
 };
 use dest::{DestPassCounts, DestTarget};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
@@ -262,6 +262,7 @@ impl SceneWgpuPainter {
             let Some(scissor) = physical_scissor(clip, scale, dest_physical) else {
                 continue;
             };
+            let frag_clip = fragment_clip(&primitive.clips, origin);
             let affine = paint_affine(primitive.transform.0, origin);
             let bounds = local_rect(primitive.bounds);
             match &primitive.kind {
@@ -275,6 +276,7 @@ impl SceneWgpuPainter {
                     if let Some(index) = self.quads.push(
                         bounds,
                         clip,
+                        frag_clip,
                         affine,
                         *background,
                         *border_color,
@@ -299,6 +301,7 @@ impl SceneWgpuPainter {
                         if let Some(index) = self.quads.push(
                             item_bounds,
                             clip,
+                            frag_clip,
                             affine,
                             *background,
                             *border_color,
@@ -359,6 +362,7 @@ impl SceneWgpuPainter {
                         *icon,
                         color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                         primitive.opacity,
+                        frag_clip,
                     ) {
                         commands.push(DrawCommand::Mesh { range, scissor });
                     }
@@ -370,6 +374,7 @@ impl SceneWgpuPainter {
                         *phase,
                         color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                         primitive.opacity,
+                        frag_clip,
                     ) {
                         commands.push(DrawCommand::Mesh { range, scissor });
                     }
@@ -379,10 +384,14 @@ impl SceneWgpuPainter {
                     width,
                     color,
                 } => {
-                    if let Some(range) =
-                        self.meshes
-                            .push_stroke(points, affine, *width, *color, primitive.opacity)
-                    {
+                    if let Some(range) = self.meshes.push_stroke(
+                        points,
+                        affine,
+                        *width,
+                        *color,
+                        primitive.opacity,
+                        frag_clip,
+                    ) {
                         commands.push(DrawCommand::Mesh { range, scissor });
                     }
                 }
@@ -892,13 +901,13 @@ fn restore_dest_viewport(pass: &mut wgpu::RenderPass<'_>, dest_physical: [u32; 2
 mod tests {
     use std::sync::Arc;
 
-    use nana_ui_core::{ButtonKind, LengthSpec, SemanticColorRole};
+    use nana_ui_core::{ButtonKind, LengthSpec, OverflowSpec, PaintTransform, SemanticColorRole};
     use nana_ui_runtime::{
         AppContext, Button as RuntimeButton, ComponentGeometry, ComputedStyle, CustomRenderNode,
         DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue, NodeKind, NodeStyle,
         StableNodeId,
     };
-    use nana_ui_scene::{ScenePrimitiveKind, UiScene};
+    use nana_ui_scene::{AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, UiScene};
 
     use super::*;
     use crate::HostTextureRegistry;
@@ -1164,6 +1173,101 @@ mod tests {
             is_green_slot(right),
             "new primitive must be encoded after in-place apply_delta, got {right:?}"
         );
+    }
+
+    #[test]
+    fn rotated_clip_does_not_paint_sibling_in_aabb_outside_rect() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 8.0, 8.0, 16.0, 16.0, [0.0, 0.0, 1.0, 1.0]),
+                rotated_overflow_parent(2, &[3], 16.0, 16.0, 32.0, 32.0),
+                colored_quad_child(3, 2, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let clips = [ClipRegion {
+            bounds: SceneRect {
+                x: 16.0,
+                y: 16.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            transform: AffineTransform(
+                PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    ..PaintTransform::default()
+                }
+                .around_center(16.0, 16.0, 32.0, 32.0),
+            ),
+        }];
+        let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let aabb = super::clip::intersect_clips(
+            super::clip::LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
+            &clips,
+            origin,
+        )
+        .unwrap();
+        let frag = super::clip::fragment_clip(&clips, origin);
+        let mut probe = None;
+        for y in 8..24 {
+            for x in 8..24 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                if px >= aabb.x
+                    && py >= aabb.y
+                    && px < aabb.x + aabb.width
+                    && py < aabb.y + aabb.height
+                    && !super::clip::point_in_fragment_clip(px, py, frag)
+                {
+                    probe = Some((x, y));
+                    break;
+                }
+            }
+            if probe.is_some() {
+                break;
+            }
+        }
+        let (probe_x, probe_y) = probe.expect(
+            "sibling must overlap a pixel inside the rotated AABB but outside the parallelogram",
+        );
+
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rotated clip sibling"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let sibling = pixel(&pixels, 64, probe_x, probe_y);
+        let inside = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_blue_slot(sibling),
+            "rotated overflow must not cover sibling in AABB-outside-rect, pixel ({probe_x},{probe_y})={sibling:?}"
+        );
+        assert!(
+            is_red_slot(inside),
+            "rotated clip interior must still paint the overflowing child, got {inside:?}"
+        );
+        drop(texture);
     }
 
     #[test]
@@ -1719,6 +1823,63 @@ mod tests {
         write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
         context.commit_mutations(layout).unwrap();
         commit_scene(&mut context)
+    }
+
+    fn rotated_overflow_parent(
+        value: u64,
+        children: &[u64],
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> ExtractedNode {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        ExtractedNode {
+            id: StableNodeId::new(value).unwrap(),
+            kind: Arc::new(NodeKind::Element { tag: "div".into() }),
+            parent: None,
+            children: Arc::new(
+                children
+                    .iter()
+                    .copied()
+                    .map(|child| StableNodeId::new(child).unwrap())
+                    .collect(),
+            ),
+            layout: LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+            scroll_offset: nana_ui_runtime::ScrollOffset::default(),
+            source_style: NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    overflow_x: OverflowSpec::Hidden,
+                    overflow_y: OverflowSpec::Hidden,
+                    transform: Some(PaintTransform {
+                        a: k,
+                        b: k,
+                        c: -k,
+                        d: k,
+                        ..PaintTransform::default()
+                    }),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+            style: Arc::new(ComputedStyle::default()),
+            text: None,
+            text_metrics: None,
+            z_index: 0,
+            focused: false,
+            ime: None,
+            text_input: None,
+            text_spans: Vec::new(),
+            standard_visual: None,
+            component_geometry: None,
+            standard_visual_foreground: None,
+            custom_render: None,
+        }
     }
 
     fn translucent_parent(

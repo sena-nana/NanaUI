@@ -14,6 +14,9 @@ struct SolidVertexInput {
     @location(10) snap: u32,
     @location(11) affine_abcd: vec4<f32>,
     @location(12) affine_ef: vec2<f32>,
+    @location(13) clip_rect: vec4<f32>,
+    @location(14) clip_inv_abcd: vec4<f32>,
+    @location(15) clip_inv_ef: vec2<f32>,
 }
 
 struct SolidVertexOutput {
@@ -29,6 +32,10 @@ struct SolidVertexOutput {
     @location(8) shadow_blur_radius: f32,
     @location(9) shadow_spread_radius: f32,
     @location(10) local_pos: vec2<f32>,
+    @location(11) world_pos: vec2<f32>,
+    @location(12) clip_rect: vec4<f32>,
+    @location(13) clip_inv_abcd: vec4<f32>,
+    @location(14) clip_inv_ef: vec2<f32>,
 }
 
 fn apply_affine(abcd: vec4<f32>, ef: vec2<f32>, p: vec2<f32>) -> vec2<f32> {
@@ -72,6 +79,10 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.shadow_blur_radius = input.shadow_blur_radius * globals.scale;
     out.shadow_spread_radius = input.shadow_spread_radius * globals.scale;
     out.local_pos = local;
+    out.world_pos = world;
+    out.clip_rect = input.clip_rect;
+    out.clip_inv_abcd = input.clip_inv_abcd;
+    out.clip_inv_ef = input.clip_inv_ef;
 
     return out;
 }
@@ -80,6 +91,15 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 fn solid_fs_main(
     input: SolidVertexOutput
 ) -> @location(0) vec4<f32> {
+    if !inside_transformed_rect(
+        input.world_pos,
+        input.clip_rect,
+        input.clip_inv_abcd,
+        input.clip_inv_ef
+    ) {
+        discard;
+    }
+
     var mixed_color: vec4<f32> = input.color;
 
     var dist = rounded_box_sdf(
