@@ -12,6 +12,8 @@ struct SolidVertexInput {
     @location(8) shadow_blur_radius: f32,
     @location(9) shadow_spread_radius: f32,
     @location(10) snap: u32,
+    @location(11) affine_abcd: vec4<f32>,
+    @location(12) affine_ef: vec2<f32>,
 }
 
 struct SolidVertexOutput {
@@ -26,6 +28,14 @@ struct SolidVertexOutput {
     @location(7) shadow_offset: vec2<f32>,
     @location(8) shadow_blur_radius: f32,
     @location(9) shadow_spread_radius: f32,
+    @location(10) local_pos: vec2<f32>,
+}
+
+fn apply_affine(abcd: vec4<f32>, ef: vec2<f32>, p: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        abcd.x * p.x + abcd.z * p.y + ef.x,
+        abcd.y * p.x + abcd.w * p.y + ef.y
+    );
 }
 
 @vertex
@@ -45,15 +55,12 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     }
 
     let border_radius = min(input.border_radius, vec4(min(input.scale.x, input.scale.y) / 2.0));
+    let unit = vertex_position(input.vertex_index);
+    let local = pos + pos_snap - vec2<f32>(0.5, 0.5) + unit * (scale + scale_snap + 1.0);
+    let logical = local / globals.scale;
+    let world = apply_affine(input.affine_abcd, input.affine_ef, logical);
 
-    var transform: mat4x4<f32> = mat4x4<f32>(
-        vec4<f32>(scale.x + scale_snap.x + 1.0, 0.0, 0.0, 0.0),
-        vec4<f32>(0.0, scale.y + scale_snap.y + 1.0, 0.0, 0.0),
-        vec4<f32>(0.0, 0.0, 1.0, 0.0),
-        vec4<f32>(pos + pos_snap - vec2<f32>(0.5, 0.5), 0.0, 1.0)
-    );
-
-    out.position = globals.transform * transform * vec4<f32>(vertex_position(input.vertex_index), 0.0, 1.0);
+    out.position = globals.transform * vec4<f32>(world * globals.scale, 0.0, 1.0);
     out.color = premultiply(input.color);
     out.border_color = premultiply(input.border_color);
     out.pos = input.pos * globals.scale + pos_snap;
@@ -64,6 +71,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.shadow_offset = input.shadow_offset * globals.scale;
     out.shadow_blur_radius = input.shadow_blur_radius * globals.scale;
     out.shadow_spread_radius = input.shadow_spread_radius * globals.scale;
+    out.local_pos = local;
 
     return out;
 }
@@ -75,7 +83,7 @@ fn solid_fs_main(
     var mixed_color: vec4<f32> = input.color;
 
     var dist = rounded_box_sdf(
-        -(input.position.xy - input.pos - input.scale * 0.5) * 2.0,
+        -(input.local_pos - input.pos - input.scale * 0.5) * 2.0,
         input.scale,
         input.border_radius * 2.0
     ) / 2.0;
@@ -96,7 +104,7 @@ fn solid_fs_main(
         let shadow_size = max(input.scale + vec2(input.shadow_spread_radius * 2.0), vec2(0.0));
         let shadow_radius = max(input.border_radius + vec4(input.shadow_spread_radius), vec4(0.0));
         var shadow_dist: f32 = rounded_box_sdf(
-            -(input.position.xy - input.pos - input.shadow_offset - input.scale/2.0) * 2.0,
+            -(input.local_pos - input.pos - input.shadow_offset - input.scale/2.0) * 2.0,
             shadow_size,
             shadow_radius * 2.0
         ) / 2.0;

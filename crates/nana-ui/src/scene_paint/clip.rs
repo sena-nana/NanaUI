@@ -53,17 +53,64 @@ impl LogicalRect {
     }
 }
 
+pub(super) const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// CSS/Canvas `matrix(a, b, c, d, e, f)`: `x' = ax + cy + e`, `y' = bx + dy + f`.
+pub(super) fn transform_point([a, b, c, d, e, f]: [f32; 6], x: f32, y: f32) -> [f32; 2] {
+    [a * x + c * y + e, b * x + d * y + f]
+}
+
+/// Scene origin is a post-translation of every primitive and clip.
+pub(super) fn paint_affine(transform: [f32; 6], origin: [f32; 2]) -> [f32; 6] {
+    let [a, b, c, d, e, f] = transform;
+    [a, b, c, d, e + origin[0], f + origin[1]]
+}
+
+pub(super) fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
+    a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
+}
+
+pub(super) fn local_rect(bounds: SceneRect) -> LogicalRect {
+    LogicalRect {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+    }
+}
+
+/// Axis-aligned bounds of a rectangle after the affine is applied.
+pub(super) fn transformed_aabb(bounds: LogicalRect, transform: [f32; 6]) -> LogicalRect {
+    let corners = [
+        transform_point(transform, bounds.x, bounds.y),
+        transform_point(transform, bounds.x + bounds.width, bounds.y),
+        transform_point(transform, bounds.x, bounds.y + bounds.height),
+        transform_point(transform, bounds.x + bounds.width, bounds.y + bounds.height),
+    ];
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for [x, y] in corners {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    LogicalRect {
+        x: min_x,
+        y: min_y,
+        width: (max_x - min_x).max(0.0),
+        height: (max_y - min_y).max(0.0),
+    }
+}
+
 pub(super) fn translated_rect(
     bounds: SceneRect,
     transform: [f32; 6],
     origin: [f32; 2],
 ) -> LogicalRect {
-    LogicalRect {
-        x: origin[0] + bounds.x + transform[4],
-        y: origin[1] + bounds.y + transform[5],
-        width: bounds.width,
-        height: bounds.height,
-    }
+    transformed_aabb(local_rect(bounds), paint_affine(transform, origin))
 }
 
 pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [f32; 2] {
@@ -246,6 +293,32 @@ mod tests {
         assert_eq!(visible.y, 10.0);
         assert_eq!(visible.width, 20.0);
         assert_eq!(visible.height, 10.0);
+    }
+
+    #[test]
+    fn rotated_rect_aabb_covers_transformed_corners() {
+        let bounds = LogicalRect::from_xywh(10.0, 20.0, 8.0, 4.0);
+        let identity = transformed_aabb(bounds, IDENTITY_AFFINE);
+        assert_eq!(identity, bounds);
+
+        // 90° around origin: (x, y) -> (-y, x)
+        let rotated = transformed_aabb(bounds, [0.0, 1.0, -1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(rotated.x, -24.0);
+        assert_eq!(rotated.y, 10.0);
+        assert_eq!(rotated.width, 4.0);
+        assert_eq!(rotated.height, 8.0);
+    }
+
+    #[test]
+    fn paint_affine_adds_scene_origin_to_translation() {
+        assert_eq!(
+            paint_affine([1.0, 0.0, 0.0, 1.0, 4.0, 6.0], [-40.0, -20.0]),
+            [1.0, 0.0, 0.0, 1.0, -36.0, -14.0]
+        );
+        assert_eq!(
+            transform_point([0.0, 1.0, -1.0, 0.0, 5.0, 7.0], 3.0, 4.0),
+            [1.0, 10.0]
+        );
     }
 
     #[test]

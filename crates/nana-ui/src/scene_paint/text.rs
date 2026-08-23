@@ -1,14 +1,13 @@
-use cosmic_text::{
-    Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
-};
+use cosmic_text::{Align, Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::SceneTextSpan;
 use std::collections::{HashMap, VecDeque};
 
-use super::clip::LogicalRect;
+use super::clip::{self, LogicalRect};
 use super::color::{to_rgba8, with_opacity};
 use crate::PhysicalRect;
+use crate::nana_text::{letter_spacing_em, resolve_family};
 
 const SHAPE_CACHE_CAP: usize = 512;
 
@@ -79,6 +78,7 @@ struct ShapeKey {
     wrap: bool,
     ellipsis: bool,
     shaping: u8,
+    letter_spacing_bits: u32,
     width_bits: u32,
     height_bits: u32,
     align: u8,
@@ -172,6 +172,8 @@ impl TextPipeline {
         horizontal: TextHorizontalAlignment,
         vertical: TextVerticalAlignment,
         spans: &[SceneTextSpan],
+        letter_spacing: f32,
+        affine: [f32; 6],
         opacity: f32,
     ) -> Option<PreparedText> {
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -195,7 +197,7 @@ impl TextPipeline {
         let physical_width = bounds.width.max(0.0) * scale;
         let physical_height = bounds.height.max(line_height) * scale;
         let default_color = with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), opacity);
-        let attrs = text_attrs(family, weight);
+        let attrs = text_attrs(family, weight, letter_spacing, size);
         let shaping = match shaping {
             TextShaping::Auto if content.is_ascii() => Shaping::Basic,
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
@@ -219,6 +221,7 @@ impl TextPipeline {
                 Shaping::Basic => 0,
                 Shaping::Advanced => 1,
             },
+            letter_spacing_bits: letter_spacing.to_bits(),
             width_bits: physical_width.to_bits(),
             height_bits: physical_height.to_bits(),
             align: match horizontal {
@@ -265,16 +268,10 @@ impl TextPipeline {
         }
         let buffer = self.shape_cache.entries.get(&key).expect("shaped above");
         let (_, laid_out_height) = measure(buffer);
-        let [left, top] = text_box_origin(
-            LogicalRect {
-                x: bounds.x * scale,
-                y: bounds.y * scale,
-                width: physical_width,
-                height: physical_height,
-            },
-            vertical,
-            laid_out_height,
-        );
+        let aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
+        let [world_x, world_y] = clip::transform_point(affine, aligned[0], aligned[1]);
+        let left = world_x * scale;
+        let top = world_y * scale;
         let text_bounds = cryoglyph::TextBounds {
             left: (clip.x * scale).round() as i32,
             top: (clip.y * scale).round() as i32,
@@ -405,26 +402,31 @@ fn text_box_origin(
     [bounds.x, top]
 }
 
-fn text_attrs(family: Option<&str>, weight: Option<u16>) -> Attrs<'static> {
-    let family = family.unwrap_or_default().to_ascii_lowercase();
-    let family = if family.contains("mono") {
-        Family::Monospace
-    } else {
-        Family::SansSerif
-    };
-    Attrs::new()
-        .family(family)
-        .weight(match weight.unwrap_or(400) {
-            0..=149 => Weight::THIN,
-            150..=249 => Weight::EXTRA_LIGHT,
-            250..=349 => Weight::LIGHT,
-            350..=449 => Weight::NORMAL,
-            450..=549 => Weight::MEDIUM,
-            550..=649 => Weight::SEMIBOLD,
-            650..=749 => Weight::BOLD,
-            750..=849 => Weight::EXTRA_BOLD,
-            _ => Weight::BLACK,
-        })
+fn text_attrs<'a>(
+    family: Option<&'a str>,
+    weight: Option<u16>,
+    letter_spacing: f32,
+    font_size: f32,
+) -> Attrs<'a> {
+    let mut attrs =
+        Attrs::new()
+            .family(resolve_family(family))
+            .weight(match weight.unwrap_or(400) {
+                0..=199 => cosmic_text::Weight::THIN,
+                200..=299 => cosmic_text::Weight::EXTRA_LIGHT,
+                300..=349 => cosmic_text::Weight::LIGHT,
+                350..=449 => cosmic_text::Weight::NORMAL,
+                450..=549 => cosmic_text::Weight::MEDIUM,
+                550..=649 => cosmic_text::Weight::SEMIBOLD,
+                650..=749 => cosmic_text::Weight::BOLD,
+                750..=849 => cosmic_text::Weight::EXTRA_BOLD,
+                _ => cosmic_text::Weight::BLACK,
+            });
+    let tracking = letter_spacing_em(letter_spacing, font_size);
+    if tracking != 0.0 {
+        attrs = attrs.letter_spacing(tracking);
+    }
+    attrs
 }
 
 fn rgba8_color(color: [f32; 4]) -> Color {

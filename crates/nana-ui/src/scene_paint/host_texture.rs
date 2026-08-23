@@ -1,5 +1,6 @@
-use super::clip::LogicalRect;
+use super::clip::{self, LogicalRect, physical_scissor};
 use crate::gpu_texture::{GpuTexturePipeline, GpuTexturePrimitive, HostTextureLayer};
+use crate::gpu_view::intersect_physical;
 use crate::{HostTextureBinding, PhysicalRect};
 
 pub(super) struct HostTexturePipeline {
@@ -31,25 +32,40 @@ impl HostTexturePipeline {
         node: u64,
         slot: u8,
         bounds: LogicalRect,
+        affine: [f32; 6],
         clip: PhysicalRect,
         opacity: f32,
-        _physical_size: [u32; 2],
+        corner_radius: f32,
+        physical_size: [u32; 2],
         scale_factor: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> PreparedHostTexture {
         let primitive = GpuTexturePrimitive::from_scene(
             node,
             slot,
-            HostTextureLayer::from_binding(binding).with_opacity(opacity),
+            HostTextureLayer::from_binding(binding)
+                .with_opacity(opacity)
+                .with_corner_radius(corner_radius),
         );
         primitive.prepare(
             &mut self.pipeline,
             device,
             queue,
             crate::geometry::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
+            affine,
             scale_factor,
+            physical_size,
             gpu_work,
         );
+        let world = clip::transformed_aabb(bounds, affine);
+        let clip = physical_scissor(world, scale_factor, physical_size)
+            .map(|world| intersect_physical(world, clip))
+            .unwrap_or(PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            });
         PreparedHostTexture { primitive, clip }
     }
 

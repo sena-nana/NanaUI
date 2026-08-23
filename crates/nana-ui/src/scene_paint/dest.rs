@@ -5,12 +5,14 @@ pub(super) struct DestPassCounts {
     pub color: u32,
     pub msaa: u32,
     pub blit: u32,
+    pub msaa_allocated: bool,
 }
 
 pub(super) struct DestTarget {
     pub width: u32,
     pub height: u32,
-    msaa: wgpu::TextureView,
+    pub msaa_allocated: bool,
+    msaa: Option<wgpu::TextureView>,
     color_view: wgpu::TextureView,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
@@ -24,14 +26,21 @@ impl DestTarget {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        want_msaa: bool,
     ) {
-        if current
-            .as_ref()
-            .is_some_and(|target| target.width == width && target.height == height)
-        {
+        if current.as_ref().is_some_and(|target| {
+            target.width == width && target.height == height && target.msaa_allocated == want_msaa
+        }) {
             return;
         }
-        *current = Some(Self::new(device, pipeline_cache, format, width, height));
+        *current = Some(Self::new(
+            device,
+            pipeline_cache,
+            format,
+            width,
+            height,
+            want_msaa,
+        ));
     }
 
     fn new(
@@ -40,25 +49,28 @@ impl DestTarget {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        want_msaa: bool,
     ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
-        let msaa = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("nana-ui.scene.dest.msaa"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 4,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let msaa = want_msaa.then(|| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("nana-ui.scene.dest.msaa"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 4,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        });
         let color = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nana-ui.scene.dest.color"),
             size: wgpu::Extent3d {
@@ -154,6 +166,7 @@ impl DestTarget {
         Self {
             width,
             height,
+            msaa_allocated: want_msaa,
             msaa,
             color_view,
             blit_pipeline,
@@ -200,7 +213,7 @@ impl DestTarget {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("nana-ui.scene.dest.msaa"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.msaa,
+                view: self.msaa.as_ref().expect("UI-only dest allocates 4x MSAA"),
                 depth_slice: None,
                 resolve_target: Some(&self.color_view),
                 ops: wgpu::Operations {

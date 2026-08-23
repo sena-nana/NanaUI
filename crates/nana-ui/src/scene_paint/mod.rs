@@ -34,7 +34,8 @@ pub(crate) use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use clip::{
-    LogicalRect, intersect_clips, paint_origin, physical_bounds, physical_scissor, translated_rect,
+    LogicalRect, intersect_clips, local_rect, paint_affine, paint_origin, physical_bounds,
+    physical_scissor, transformed_aabb,
 };
 use dest::{DestPassCounts, DestTarget};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
@@ -237,7 +238,8 @@ impl SceneWgpuPainter {
             let Some(scissor) = physical_scissor(clip, scale, dest_physical) else {
                 continue;
             };
-            let bounds = translated_rect(primitive.bounds, primitive.transform.0, origin);
+            let affine = paint_affine(primitive.transform.0, origin);
+            let bounds = local_rect(primitive.bounds);
             match &primitive.kind {
                 ScenePrimitiveKind::Quad {
                     background,
@@ -249,6 +251,7 @@ impl SceneWgpuPainter {
                     if let Some(index) = self.quads.push(
                         bounds,
                         clip,
+                        affine,
                         *background,
                         *border_color,
                         *border_width,
@@ -268,10 +271,11 @@ impl SceneWgpuPainter {
                     shadow,
                 } => {
                     for item in batch {
-                        let item_bounds = translated_rect(*item, primitive.transform.0, origin);
+                        let item_bounds = local_rect(*item);
                         if let Some(index) = self.quads.push(
                             item_bounds,
                             clip,
+                            affine,
                             *background,
                             *border_color,
                             *border_width,
@@ -296,7 +300,7 @@ impl SceneWgpuPainter {
                     horizontal_alignment,
                     vertical_alignment,
                     spans,
-                    letter_spacing: _,
+                    letter_spacing,
                 } => {
                     if let Some(prepared) = self.text.prepare(
                         &self.device,
@@ -317,6 +321,8 @@ impl SceneWgpuPainter {
                         *horizontal_alignment,
                         *vertical_alignment,
                         spans,
+                        *letter_spacing,
+                        affine,
                         primitive.opacity,
                     ) {
                         commands.push(DrawCommand::Text { prepared, scissor });
@@ -325,6 +331,7 @@ impl SceneWgpuPainter {
                 ScenePrimitiveKind::Icon { icon, color } => {
                     if let Some(range) = self.meshes.push_icon(
                         bounds,
+                        affine,
                         *icon,
                         color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                         primitive.opacity,
@@ -335,6 +342,7 @@ impl SceneWgpuPainter {
                 ScenePrimitiveKind::Spinner { phase, color } => {
                     if let Some(range) = self.meshes.push_spinner(
                         bounds,
+                        affine,
                         *phase,
                         color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                         primitive.opacity,
@@ -347,18 +355,9 @@ impl SceneWgpuPainter {
                     width,
                     color,
                 } => {
-                    let mapped = points
-                        .iter()
-                        .map(|point| {
-                            [
-                                origin[0] + point[0] + primitive.transform.0[4],
-                                origin[1] + point[1] + primitive.transform.0[5],
-                            ]
-                        })
-                        .collect::<Vec<_>>();
                     if let Some(range) =
                         self.meshes
-                            .push_stroke(&mapped, *width, *color, primitive.opacity)
+                            .push_stroke(points, affine, *width, *color, primitive.opacity)
                     {
                         commands.push(DrawCommand::Mesh { range, scissor });
                     }
@@ -384,6 +383,18 @@ impl SceneWgpuPainter {
                             binding.height as f32,
                             custom.fit,
                         );
+                        let corner_radius = scene
+                            .primitive(nana_ui_scene::PrimitiveId {
+                                node: primitive.id.node,
+                                slot: 0,
+                            })
+                            .and_then(|quad| match &quad.kind {
+                                ScenePrimitiveKind::Quad { corner_radius, .. } => {
+                                    Some(*corner_radius)
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(0.0);
                         commands.push(DrawCommand::HostTexture(self.host_textures.prepare(
                             &self.device,
                             &self.queue,
@@ -391,8 +402,10 @@ impl SceneWgpuPainter {
                             primitive.id.node.get(),
                             primitive.id.slot,
                             LogicalRect::from_xywh(dest.x, dest.y, dest.width, dest.height),
+                            affine,
                             scissor,
                             primitive.opacity,
+                            corner_radius,
                             dest_physical,
                             scale,
                             Some(&gpu_work),
@@ -414,7 +427,7 @@ impl SceneWgpuPainter {
                                 device: &self.device,
                                 queue: &self.queue,
                                 target_format: self.format,
-                                bounds: bounds.to_core(),
+                                bounds: transformed_aabb(bounds, affine).to_core(),
                                 scale_factor: scale,
                                 gpu_work: Some(&gpu_work),
                             },
@@ -422,7 +435,11 @@ impl SceneWgpuPainter {
                         commands.push(DrawCommand::Custom {
                             node,
                             renderer,
-                            bounds: physical_bounds(bounds, scale, scissor),
+                            bounds: physical_bounds(
+                                transformed_aabb(bounds, affine),
+                                scale,
+                                scissor,
+                            ),
                             clip: scissor,
                         });
                     }
@@ -449,6 +466,12 @@ impl SceneWgpuPainter {
         let gpu_upload = upload_started.elapsed();
 
         let encode_started = Instant::now();
+        let gpu_interleaved = commands.iter().any(|command| {
+            matches!(
+                command,
+                DrawCommand::HostTexture(_) | DrawCommand::Custom { .. }
+            )
+        });
         DestTarget::ensure(
             &mut self.dest,
             &self.device,
@@ -456,6 +479,7 @@ impl SceneWgpuPainter {
             self.format,
             dest_physical[0],
             dest_physical[1],
+            !gpu_interleaved,
         );
         let dest = self.dest.as_ref().expect("dest target");
         let clear = wgpu::Color {
@@ -464,19 +488,16 @@ impl SceneWgpuPainter {
             b: viewport.clear_color[2] as f64,
             a: viewport.clear_color[3] as f64,
         };
-        let gpu_interleaved = commands.iter().any(|command| {
-            matches!(
-                command,
-                DrawCommand::HostTexture(_) | DrawCommand::Custom { .. }
-            )
-        });
         let sample_count = if gpu_interleaved { 1 } else { 4 };
         let initial_load = if viewport.clear {
             wgpu::LoadOp::Clear(clear)
         } else {
             wgpu::LoadOp::Load
         };
-        let mut dest_passes = DestPassCounts::default();
+        let mut dest_passes = DestPassCounts {
+            msaa_allocated: dest.msaa_allocated,
+            ..DestPassCounts::default()
+        };
         if gpu_interleaved {
             encode_ordered(
                 &EncodeOrdered {
@@ -702,6 +723,8 @@ fn restore_dest_viewport(pass: &mut wgpu::RenderPass<'_>, dest_physical: [u32; 2
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use nana_ui_core::{ButtonKind, LengthSpec, SemanticColorRole};
     use nana_ui_runtime::{
         AppContext, Button as RuntimeButton, ComponentGeometry, ComputedStyle, CustomRenderNode,
@@ -1141,6 +1164,10 @@ mod tests {
             counts.msaa, 1,
             "pure UI may keep 4x MSAA for Quad/Mesh, got {counts:?}"
         );
+        assert!(
+            counts.msaa_allocated,
+            "pure UI dest must allocate 4x MSAA, got {counts:?}"
+        );
         assert_eq!(
             counts.color, 1,
             "Text must paint after MSAA resolve with Load, got {counts:?}"
@@ -1150,6 +1177,110 @@ mod tests {
             "dest→window blit is one extra pass, got {counts:?}"
         );
         queue.submit([encoder.finish()]);
+    }
+
+    #[test]
+    fn paint_accepts_rotation_and_letter_spacing() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                RuntimeButton::new("Hi")
+                    .kind(ButtonKind::Selected)
+                    .layout(square_button_layout()),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        style.layout = square_button_layout();
+        Arc::make_mut(&mut style.layout).transform = Some(nana_ui_core::PaintTransform {
+            a: 0.0,
+            b: 1.0,
+            c: -1.0,
+            d: 0.0,
+            e: 0.0,
+            f: 0.0,
+        });
+        Arc::make_mut(&mut style.layout).letter_spacing = Some(0.5);
+        Arc::make_mut(&mut style.layout).font_family = Some("Noto Sans SC".into());
+        layout.set_style(button.stable_id(), style);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        validate_scene(&scene, None, None).expect("rotation and tracking must validate");
+        let target = test_target(&device, format, 64, 64);
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui affine tracking paint"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &target, viewport, None, None)
+            .expect("supported affine and tracking must paint");
+        queue.submit([encoder.finish()]);
+    }
+
+    #[test]
+    fn letter_spacing_changes_painted_pixels() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let tight = labeled_selected_button_scene();
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(
+                document,
+                RuntimeButton::new("Hi")
+                    .kind(ButtonKind::Selected)
+                    .layout(square_button_layout()),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        style.layout = square_button_layout();
+        Arc::make_mut(&mut style.layout).letter_spacing = Some(8.0);
+        layout.set_style(button.stable_id(), style);
+        context.commit_mutations(layout).unwrap();
+        let tracked = commit_scene(&mut context);
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let paint = |painter: &mut SceneWgpuPainter, scene: &UiScene| -> Vec<u8> {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nana-ui tracking paint"),
+            });
+            painter
+                .paint(scene, &mut encoder, &view, viewport, None, None)
+                .unwrap();
+            readback_rgba(&device, &queue, encoder, &texture, 64, 64)
+        };
+        let first = paint(&mut painter, &tight);
+        let second = paint(&mut painter, &tracked);
+        assert_ne!(
+            first, second,
+            "8px letter-spacing must change painted pixels versus default tracking"
+        );
+        drop(texture);
     }
 
     fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry) {
@@ -1307,9 +1438,9 @@ mod tests {
     ) -> ExtractedNode {
         ExtractedNode {
             id: StableNodeId::new(value).unwrap(),
-            kind: std::sync::Arc::new(NodeKind::Element { tag: "div".into() }),
+            kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: None,
-            children: std::sync::Arc::new(Vec::new()),
+            children: Arc::new(Vec::new()),
             layout: LayoutBox {
                 x,
                 y,
@@ -1318,13 +1449,13 @@ mod tests {
             },
             scroll_offset: nana_ui_runtime::ScrollOffset::default(),
             source_style: NodeStyle {
-                layout: std::sync::Arc::new(nana_ui_core::LayoutStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
                     background: Some(color),
                     ..nana_ui_core::LayoutStyle::default()
                 }),
                 ..NodeStyle::default()
             },
-            style: std::sync::Arc::new(ComputedStyle {
+            style: Arc::new(ComputedStyle {
                 background: Some(color),
                 ..ComputedStyle::default()
             }),
@@ -1386,8 +1517,8 @@ mod tests {
         );
     }
 
-    fn square_button_layout() -> std::sync::Arc<nana_ui_core::LayoutStyle> {
-        std::sync::Arc::new(nana_ui_core::LayoutStyle {
+    fn square_button_layout() -> Arc<nana_ui_core::LayoutStyle> {
+        Arc::new(nana_ui_core::LayoutStyle {
             border_radius: Some(0.0),
             border_width: Some(0.0),
             padding_left: Some(LengthSpec::Px(0.0)),
@@ -1445,6 +1576,10 @@ mod tests {
         assert_eq!(
             counts.msaa, 0,
             "mixed GPU frames must not open an MSAA pass, got {counts:?}"
+        );
+        assert!(
+            !counts.msaa_allocated,
+            "mixed GPU frames must not allocate unused 4x MSAA, got {counts:?}"
         );
         assert_eq!(
             counts.blit, 1,
