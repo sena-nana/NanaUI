@@ -32,14 +32,14 @@ use nana_ui_runtime::{
     HostedTextarea as RuntimeHostedTextarea, ImeComposition, InteractionState,
     LabeledValue as RuntimeLabeledValue, LayoutBox as RuntimeLayoutBox, LayoutViewport,
     ListItem as RuntimeListItem, ListItemSlots, ModalSurface, MutationQueue,
-    NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle, QrCode as RuntimeQrCode,
+    NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     Select as RuntimeSelect, SelectOption as RuntimeSelectOption, SelectionChrome, SemanticSpec,
     SettingsCard as RuntimeSettingsCard, SettingsPage as RuntimeSettingsPage,
     SettingsRow as RuntimeSettingsRow, SidebarFrame as RuntimeSidebarFrame,
     SidebarRow as RuntimeSidebarRow, SplitPane as RuntimeSplitPane, StableNodeId, TextContent,
     TextInputState, TreeView as RuntimeTreeView, UiMutation, UiWorld, ValueEmphasis,
-    Workspace as RuntimeWorkspace, WorkspaceRegionSlot, XYPad as RuntimeXYPad,
+    Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
 };
 use nana_ui_scene::{RuntimeDocument, UiScene};
 
@@ -2701,6 +2701,8 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
             | crate::WidgetKind::Toast
             | crate::WidgetKind::LevelMeter
             | crate::WidgetKind::ImageViewer
+            | crate::WidgetKind::XYPad
+            | crate::WidgetKind::QrCode
     )
 }
 
@@ -3145,57 +3147,6 @@ fn project_migrating_component(
                 .searchable(searchable)
                 .open(widget.props.active || widget.props.toggled)
                 .project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::XYPad => {
-            let ((x_min, x_max), (y_min, y_max)) = crate::widget_map::xy_pad_ranges(&widget.props);
-            let mut component = RuntimeXYPad::new(crate::widget_map::xy_pad_value(&widget.props))
-                .x_range(x_min, x_max)
-                .y_range(y_min, y_max)
-                .size(widget.props.size)
-                .disabled(widget.props.disabled)
-                .loading(widget.props.loading)
-                .invalid(widget.props.invalid);
-            if widget.props.step.is_finite() && widget.props.step > 0.0 {
-                component = component.step(widget.props.step);
-            }
-            let label = widget.props.display_label();
-            if !label.is_empty() {
-                component = component.label(Arc::<str>::from(label));
-            }
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::QrCode => {
-            let label = if widget.props.display_label().is_empty() {
-                "QR code"
-            } else {
-                widget.props.display_label()
-            };
-            let size = match widget.props.layout.width {
-                Some(nana_ui_core::LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => px,
-                _ => RuntimeQrCode::DEFAULT_SIZE,
-            };
-            if let Some((modules, width)) = qr_modules_from_props(&widget.props)
-                && let Ok(component) = RuntimeQrCode::from_modules(modules, width, size)
-            {
-                component
-                    .label(Arc::<str>::from(label))
-                    .project(id, world, mutations);
-                return true;
-            }
-            let payload =
-                crate::widget_map::attr_value(&widget.props, &["payload", "data-payload", "value"])
-                    .unwrap_or(widget.props.value.as_str());
-            if !payload.is_empty()
-                && let Ok(component) = RuntimeQrCode::encode(payload, size)
-            {
-                component
-                    .label(Arc::<str>::from(label))
-                    .project(id, world, mutations);
-                return true;
-            }
-            RuntimeLabeledValue::new(label, payload).project(id, world, mutations);
             true
         }
         crate::WidgetKind::ListItem => {
@@ -3643,47 +3594,6 @@ fn project_migrating_component(
             false
         }
     }
-}
-
-fn qr_modules_from_props(props: &crate::WidgetProps) -> Option<(Arc<[bool]>, usize)> {
-    let raw = crate::widget_map::attr_value(props, &["modules", "data-modules"])?;
-    let width_hint = crate::widget_map::attr_value(
-        props,
-        &["module-width", "modules-width", "data-module-width"],
-    )
-    .and_then(|raw| raw.trim().parse().ok());
-    parse_qr_module_matrix(raw, width_hint)
-}
-
-fn parse_qr_module_matrix(raw: &str, width_hint: Option<usize>) -> Option<(Arc<[bool]>, usize)> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let cells: Vec<bool> = if trimmed.chars().all(|c| c == '0' || c == '1') {
-        trimmed.chars().map(|c| c == '1').collect()
-    } else {
-        trimmed
-            .split(['[', ']', ',', ';', ' ', '\n', '\t', '\r'])
-            .filter(|part| !part.is_empty())
-            .map(|part| match part {
-                "1" | "true" | "TRUE" => Some(true),
-                "0" | "false" | "FALSE" => Some(false),
-                _ => None,
-            })
-            .collect::<Option<_>>()?
-    };
-    if cells.is_empty() {
-        return None;
-    }
-    let width = width_hint.or_else(|| {
-        let root = (cells.len() as f64).sqrt() as usize;
-        (root > 0 && root.saturating_mul(root) == cells.len()).then_some(root)
-    })?;
-    if width == 0 || width.checked_mul(width) != Some(cells.len()) {
-        return None;
-    }
-    Some((Arc::<[bool]>::from(cells), width))
 }
 
 fn vue_confirm_dialog(props: &crate::WidgetProps) -> bool {

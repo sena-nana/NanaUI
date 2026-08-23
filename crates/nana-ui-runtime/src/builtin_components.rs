@@ -507,11 +507,26 @@ impl RegisterableComponent for XYPad {
     const TYPE_ID: &'static str = "nana.xy-pad";
     const TAGS: &'static [&'static str] = &["xy-pad", "xypad"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        XYPad::new(XYPadValue::new(spec.number, 0.0))
-            .x_range(spec.min, spec.max)
-            .y_range(spec.min, spec.max)
+        let x = attr_f32(spec, &["x", "data-x"]).unwrap_or(spec.number);
+        let y = attr_f32(spec, &["y", "data-y"]).unwrap_or(0.0);
+        let x_min = attr_f32(spec, &["x-min", "xmin", "data-x-min"]).unwrap_or(spec.min);
+        let x_max = attr_f32(spec, &["x-max", "xmax", "data-x-max"]).unwrap_or(spec.max);
+        let y_min = attr_f32(spec, &["y-min", "ymin", "data-y-min"]).unwrap_or(spec.min);
+        let y_max = attr_f32(spec, &["y-max", "ymax", "data-y-max"]).unwrap_or(spec.max);
+        let mut component = XYPad::new(XYPadValue::new(x, y))
+            .x_range(x_min, x_max)
+            .y_range(y_min, y_max)
             .size(spec.size)
             .disabled(spec.disabled)
+            .loading(spec.loading)
+            .invalid(spec.invalid);
+        if spec.step.is_finite() && spec.step > 0.0 {
+            component = component.step(spec.step);
+        }
+        if !spec.display_label().is_empty() {
+            component = component.label(Arc::<str>::from(spec.display_label()));
+        }
+        component
     }
 }
 
@@ -519,11 +534,31 @@ impl RegisterableComponent for QrCode {
     const TYPE_ID: &'static str = "nana.qr-code";
     const TAGS: &'static [&'static str] = &["qr-code", "qr"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        if spec.value.is_empty() {
-            qr_placeholder()
+        let size = match spec.layout.width {
+            Some(LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => px,
+            _ => QrCode::DEFAULT_SIZE,
+        };
+        let label = if spec.display_label().is_empty() {
+            "QR code"
         } else {
-            QrCode::encode(spec.value, QrCode::DEFAULT_SIZE).unwrap_or_else(|_| qr_placeholder())
+            spec.display_label()
+        };
+        if let Some((modules, width)) = qr_modules_from_spec(spec)
+            && let Ok(component) = QrCode::from_modules(modules, width, size)
+        {
+            return component.label(Arc::<str>::from(label));
         }
+        let payload = spec
+            .attr("payload")
+            .or_else(|| spec.attr("data-payload"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or(spec.value);
+        if !payload.is_empty()
+            && let Ok(component) = QrCode::encode(payload, size)
+        {
+            return component.label(Arc::<str>::from(label));
+        }
+        qr_placeholder().label(Arc::<str>::from(label))
     }
 }
 
@@ -766,6 +801,54 @@ fn action_menu_item_danger(spec: &SemanticSpec<'_>) -> bool {
             .or_else(|| spec.attr("data-intent"))
             .or_else(|| spec.attr("data-variant"))
             .is_some_and(|value| value.eq_ignore_ascii_case("danger"))
+}
+
+fn attr_f32(spec: &SemanticSpec<'_>, names: &[&str]) -> Option<f32> {
+    names
+        .iter()
+        .find_map(|name| spec.attr(name))
+        .and_then(|raw| raw.trim().parse().ok())
+}
+
+fn qr_modules_from_spec(spec: &SemanticSpec<'_>) -> Option<(Arc<[bool]>, usize)> {
+    let raw = spec.attr("modules").or_else(|| spec.attr("data-modules"))?;
+    let width_hint = spec
+        .attr("module-width")
+        .or_else(|| spec.attr("modules-width"))
+        .or_else(|| spec.attr("data-module-width"))
+        .and_then(|raw| raw.trim().parse().ok());
+    parse_qr_module_matrix(raw, width_hint)
+}
+
+fn parse_qr_module_matrix(raw: &str, width_hint: Option<usize>) -> Option<(Arc<[bool]>, usize)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let cells: Vec<bool> = if trimmed.chars().all(|c| c == '0' || c == '1') {
+        trimmed.chars().map(|c| c == '1').collect()
+    } else {
+        trimmed
+            .split(['[', ']', ',', ';', ' ', '\n', '\t', '\r'])
+            .filter(|part| !part.is_empty())
+            .map(|part| match part {
+                "1" | "true" | "TRUE" => Some(true),
+                "0" | "false" | "FALSE" => Some(false),
+                _ => None,
+            })
+            .collect::<Option<_>>()?
+    };
+    if cells.is_empty() {
+        return None;
+    }
+    let width = width_hint.or_else(|| {
+        let root = (cells.len() as f64).sqrt() as usize;
+        (root > 0 && root.saturating_mul(root) == cells.len()).then_some(root)
+    })?;
+    if width == 0 || width.checked_mul(width) != Some(cells.len()) {
+        return None;
+    }
+    Some((Arc::<[bool]>::from(cells), width))
 }
 
 fn qr_placeholder() -> QrCode {

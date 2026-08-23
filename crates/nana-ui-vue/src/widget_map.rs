@@ -843,33 +843,6 @@ pub(crate) fn action_menu_item_danger(props: &WidgetProps) -> bool {
     })
 }
 
-pub(crate) fn xy_pad_value(props: &WidgetProps) -> nana_ui_core::XYPadValue {
-    let x = attr_value(props, &["x", "data-x"])
-        .and_then(|raw| raw.trim().parse().ok())
-        .unwrap_or(props.number);
-    let y = attr_value(props, &["y", "data-y"])
-        .and_then(|raw| raw.trim().parse().ok())
-        .unwrap_or(0.0);
-    nana_ui_core::XYPadValue::new(x, y)
-}
-
-pub(crate) fn xy_pad_ranges(props: &WidgetProps) -> ((f32, f32), (f32, f32)) {
-    let fallback = (props.min, props.max);
-    let x_min = attr_value(props, &["x-min", "xmin", "data-x-min"])
-        .and_then(|raw| raw.trim().parse().ok())
-        .unwrap_or(fallback.0);
-    let x_max = attr_value(props, &["x-max", "xmax", "data-x-max"])
-        .and_then(|raw| raw.trim().parse().ok())
-        .unwrap_or(fallback.1);
-    let y_min = attr_value(props, &["y-min", "ymin", "data-y-min"])
-        .and_then(|raw| raw.trim().parse().ok())
-        .unwrap_or(fallback.0);
-    let y_max = attr_value(props, &["y-max", "ymax", "data-y-max"])
-        .and_then(|raw| raw.trim().parse().ok())
-        .unwrap_or(fallback.1);
-    ((x_min, x_max), (y_min, y_max))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
