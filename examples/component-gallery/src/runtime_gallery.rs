@@ -819,6 +819,8 @@ impl GalleryState {
         }
     }
 
+    /// Copy live Runtime `Dock.root` into product [`DockWorkspace`]. Same tree,
+    /// not a second split-ratio authority.
     pub(super) fn persist_runtime_dock_workspace(&mut self, runtime: &GalleryRuntime) {
         let Ok((root, hidden, locked)) = runtime
             .document

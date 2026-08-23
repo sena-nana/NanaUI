@@ -28,7 +28,7 @@ TTF 后由 `ui_font_sources()` 统一注册；标题使用 0.2px 字距，
 所有文本使用同一字号：小号控件、辅助文本、标题和展示文字继续保留各自的语义
 层级。
 
-共享控件样式位于 `crates/nana-ui/src/widgets.rs`。输入框采用 13px 文本、默认
+共享控件视觉来自主题令牌与 Runtime 组件，不是独立的 widget 样式表。输入框采用 13px 文本、默认
 6px 控件圆角和 32px 中档高度，hover 与 focused 使用 1px `border-strong`
 （深色更亮、浅色更暗），不改变字段背景；opened 状态使用 1px `border-soft`；
 invalid 状态优先使用 `danger`，聚焦或打开时保持 2px 错误边框。复选框为 16px、4px 圆角，开关为

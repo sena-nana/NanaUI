@@ -7,7 +7,8 @@
 //! Crate-root widget re-exports are a compatibility surface, not the extension
 //! contract. L1/L2 Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
 //!
-//! [`WorkspaceController`] owns workspace region layout and interaction.
+//! [`WorkspaceController`] is a host adapter (Instant→Duration, pointer →
+//! [`WorkspaceMutation`]). Product region state is [`WorkspaceModel`].
 
 #[cfg(feature = "hosted")]
 mod accessibility;
@@ -17,7 +18,8 @@ pub mod components;
 #[cfg(feature = "gpu")]
 mod default_gpu_view;
 pub mod dialog;
-/// NanaStudio DockController path. Product dock is Runtime [`DockWorkspace`].
+/// Host adapter (`nana_ui::dock::*`): pointer/dwell/frame → [`dock::DockMutation`].
+/// Product dock is Runtime [`DockWorkspace`], re-exported at crate root.
 pub mod dock;
 pub mod geometry;
 #[cfg(feature = "gpu")]
@@ -189,7 +191,7 @@ pub use nana_ui_runtime::{
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
-/// Product dock from Runtime. Controller types live under [`dock`].
+/// Product dock from Runtime. `nana_ui::dock::*` is the host adapter, not a second dock.
 pub use nana_ui_runtime::{
     Dock, DockFloatingSurface, DockPanel, DockSurfaceSpec, DockWorkspace, DockWorkspaceEvent,
 };

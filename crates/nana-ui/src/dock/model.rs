@@ -9,10 +9,10 @@ use nana_ui_core::LogicalPoint;
 use nana_ui_platform::WindowId;
 
 pub(super) const DOCK_LAYOUT_VERSION: u8 = 1;
-pub(super) const DIVIDER_HIT_SIZE: f32 = 8.0;
+pub(super) const DIVIDER_HIT_SIZE: f32 = nana_ui_runtime::DOCK_DIVIDER_HIT_SIZE;
 pub(super) const TITLE_BAR_HEIGHT: f32 = 28.0;
-pub(super) const MIN_SPLIT_RATIO: f32 = 0.05;
-pub(super) const MAX_SPLIT_RATIO: f32 = 0.95;
+pub(super) const MIN_SPLIT_RATIO: f32 = nana_ui_runtime::MIN_SPLIT_RATIO;
+pub(super) const MAX_SPLIT_RATIO: f32 = nana_ui_runtime::MAX_SPLIT_RATIO;
 pub(super) const DRAG_INSERT_HOVER_DELAY: Duration = Duration::from_millis(80);
 pub(super) const DRAG_CARD_WIDTH: f32 = 280.0;
 pub(super) const DRAG_CARD_HEIGHT: f32 = 180.0;
@@ -361,7 +361,10 @@ pub enum DockAction {
     Reset,
 }
 
-/// Backend-neutral Dock state mutation. Host adapters convert [`DockAction`] into this contract.
+/// Host-adapter dock mutation. Product dock state is Runtime [`crate::DockWorkspace`].
+///
+/// Pointer/dwell/frame hosts convert into this contract; split ratios are
+/// reduced with Runtime `dock_split_ratio_from_pointer`, not a second formula.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DockMutation {
     ActivateTab(DockId),
@@ -631,7 +634,7 @@ impl std::fmt::Display for DockError {
 impl std::error::Error for DockError {}
 
 pub(super) fn clamp_ratio(ratio: f32) -> f32 {
-    finite(ratio, 0.5).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO)
+    nana_ui_runtime::clamp_ratio(ratio)
 }
 
 pub(super) fn finite(value: f32, fallback: f32) -> f32 {

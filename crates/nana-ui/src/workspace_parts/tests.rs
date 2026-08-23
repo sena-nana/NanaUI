@@ -1,5 +1,6 @@
 use super::{
-    RegionEdges, WorkspaceAction, WorkspaceController, primary_edges, resize_handle_translation,
+    RegionEdges, WorkspaceAction, WorkspaceController, WorkspaceMutation, primary_edges,
+    resize_handle_translation,
 };
 use crate::geometry::RESIZE_HANDLE_SIZE;
 use crate::layout::{RegionId, RegionPlacement, RegionRole, RegionState, WorkspaceLayout};
@@ -142,6 +143,23 @@ fn controller_rejects_non_resizable_and_collapsed_regions() {
 
     assert!(controller.update(WorkspaceAction::ToggleRegion(RegionId::Resources)));
     assert!(!controller.update(WorkspaceAction::ResizeStart(RegionId::Resources)));
+}
+
+#[test]
+fn update_mutation_is_the_region_state_entry() {
+    let mut via_action = WorkspaceController::new();
+    let mut via_mutation = WorkspaceController::new();
+    assert!(via_action.update(WorkspaceAction::SetRegionCollapsed(
+        RegionId::Resources,
+        true
+    )));
+    assert!(
+        via_mutation.update_mutation(WorkspaceMutation::SetRegionCollapsed(
+            RegionId::Resources,
+            true
+        ))
+    );
+    assert_eq!(via_action.model().layout(), via_mutation.model().layout());
 }
 
 #[test]

@@ -17,10 +17,14 @@ use crate::{
 };
 
 pub(crate) const DOCK_TITLE_BAR_HEIGHT: f32 = 28.0;
-pub(crate) const DOCK_DIVIDER_HIT_SIZE: f32 = 8.0;
-pub(crate) const MIN_SPLIT_RATIO: f32 = 0.05;
-pub(crate) const MAX_SPLIT_RATIO: f32 = 0.95;
-pub(crate) const DOCK_SPLIT_KEYBOARD_STEP: f32 = MIN_SPLIT_RATIO;
+/// Splitter hit-target thickness. Host adapters must not invent a second divider size.
+pub const DOCK_DIVIDER_HIT_SIZE: f32 = 8.0;
+/// Inclusive lower clamp for a split's first-child share.
+pub const MIN_SPLIT_RATIO: f32 = 0.05;
+/// Inclusive upper clamp for a split's first-child share.
+pub const MAX_SPLIT_RATIO: f32 = 0.95;
+/// One keyboard/nudge step; matches [`MIN_SPLIT_RATIO`] so product and host adapters share a step.
+pub const DOCK_SPLIT_KEYBOARD_STEP: f32 = MIN_SPLIT_RATIO;
 
 const HANDLE_INDICATOR: f32 = 2.0;
 const TITLE_PADDING_X: f32 = 6.0;
@@ -135,12 +139,50 @@ impl DockNode {
         reorder_dock_tab(self, dragged_id, target_id, before)
     }
 
-    #[cfg(test)]
-    fn split_ratio(&self) -> Option<f32> {
-        match self {
-            Self::Split { ratio, .. } => Some(*ratio),
+    /// First-child share at `path` (`[]` is this node when it is a split).
+    pub fn split_ratio_at(&self, path: &[usize]) -> Option<f32> {
+        if path.is_empty() {
+            return match self {
+                Self::Split { ratio, .. } => Some(*ratio),
+                _ => None,
+            };
+        }
+        let Self::Split { first, second, .. } = self else {
+            return None;
+        };
+        match path[0] {
+            0 => first.split_ratio_at(&path[1..]),
+            1 => second.split_ratio_at(&path[1..]),
             _ => None,
         }
+    }
+
+    /// Write a clamped first-child share at `path`. Returns whether the stored ratio changed.
+    pub fn set_split_ratio_at(&mut self, path: &[usize], ratio: f32) -> bool {
+        if path.is_empty() {
+            let Self::Split { ratio: current, .. } = self else {
+                return false;
+            };
+            let ratio = clamp_ratio(ratio);
+            if (*current - ratio).abs() <= f32::EPSILON {
+                return false;
+            }
+            *current = ratio;
+            return true;
+        }
+        let Self::Split { first, second, .. } = self else {
+            return false;
+        };
+        match path[0] {
+            0 => first.set_split_ratio_at(&path[1..], ratio),
+            1 => second.set_split_ratio_at(&path[1..], ratio),
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn split_ratio(&self) -> Option<f32> {
+        self.split_ratio_at(&[])
     }
 }
 
@@ -208,7 +250,12 @@ pub enum DockWorkspaceEvent {
     FocusFloating(Arc<str>),
 }
 
-/// Main tree plus floating surfaces. [`Dock`] remains one in-tree surface.
+/// Product dock authority: main tree, floating surfaces, hide set, primary id.
+///
+/// Split ratios are mutated with [`Self::set_split_ratio`] or live pointer
+/// resize (`dock_split_ratio_from_pointer`). [`Dock`] is one in-tree surface
+/// projection of this workspace; `nana_ui::dock::DockController` is a host
+/// adapter, not a second live dock.
 ///
 /// Hosts should create one `Entity<Dock>` per [`DockSurfaceSpec`] on the
 /// `RuntimeDocument` that owns that window, then call [`AppContext::assemble_dock`].
@@ -364,6 +411,24 @@ impl DockWorkspace {
         self.next_surface = self.next_surface.saturating_add(1);
         id
     }
+
+    /// Mutable tree for `surface` (`MAIN_SURFACE_ID` is `main`).
+    pub fn surface_root_mut(&mut self, surface: &str) -> Option<&mut DockNode> {
+        if surface == MAIN_SURFACE_ID {
+            Some(&mut self.main)
+        } else {
+            self.floating
+                .iter_mut()
+                .find(|item| item.id.as_ref() == surface)
+                .map(|item| &mut item.root)
+        }
+    }
+
+    /// Product split-ratio mutation. Host adapters must not apply a second formula.
+    pub fn set_split_ratio(&mut self, surface: &str, path: &[usize], ratio: f32) -> bool {
+        self.surface_root_mut(surface)
+            .is_some_and(|root| root.set_split_ratio_at(path, ratio))
+    }
 }
 
 fn collect_ids(node: &DockNode, output: &mut Vec<Arc<str>>) {
@@ -410,6 +475,39 @@ fn effective_active(tabs: &[Arc<str>], active: &Arc<str>) -> Arc<str> {
 
 pub fn clamp_ratio(ratio: f32) -> f32 {
     finite(ratio, 0.5).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO)
+}
+
+/// Length remaining for both children after the divider. Never negative.
+pub fn dock_split_available(extent: f32) -> f32 {
+    (extent - DOCK_DIVIDER_HIT_SIZE).max(0.0)
+}
+
+/// First-child and second-child lengths for a split of `extent` at `ratio`.
+pub fn dock_split_child_lengths(ratio: f32, extent: f32) -> (f32, f32) {
+    let available = dock_split_available(extent);
+    let first = available * clamp_ratio(ratio);
+    (first, (available - first).max(0.0))
+}
+
+/// Pointer resize: initial ratio plus absolute scalar delta over available length.
+///
+/// `available` is the split extent minus [`DOCK_DIVIDER_HIT_SIZE`]. This is the
+/// only live split-ratio formula; `nana_ui::dock::DockController` must call it.
+pub fn dock_split_ratio_from_pointer(
+    start_ratio: f32,
+    start: f32,
+    position: f32,
+    available: f32,
+) -> f32 {
+    clamp_ratio(start_ratio + (position - start) / available.max(1.0))
+}
+
+/// Keyboard/nudge: [`DOCK_SPLIT_KEYBOARD_STEP`] per unit `steps`.
+pub fn dock_nudge_split_ratio(ratio: f32, steps: f32) -> f32 {
+    if !steps.is_finite() || steps == 0.0 {
+        return clamp_ratio(ratio);
+    }
+    clamp_ratio(ratio + steps * DOCK_SPLIT_KEYBOARD_STEP)
 }
 
 fn finite(value: f32, fallback: f32) -> f32 {
@@ -2196,7 +2294,7 @@ impl AppContext {
             return Ok(false);
         }
         let start = start.unwrap_or(position);
-        let ratio = clamp_ratio(start_ratio + (position - start) / extent.max(1.0));
+        let ratio = dock_split_ratio_from_pointer(start_ratio, start, position, extent);
         self.update_component(dock, |dock, _| {
             set_split_ratio_for_first_ids(&mut dock.root, &first_ids, ratio)
         })
@@ -2262,7 +2360,7 @@ impl AppContext {
         if !direction.is_finite() || direction == 0.0 {
             return Ok(false);
         }
-        let next = clamp_ratio(ratio + direction * DOCK_SPLIT_KEYBOARD_STEP);
+        let next = dock_nudge_split_ratio(ratio, direction);
         let changed = self.update_component(dock, |dock, _| {
             set_split_ratio_for_first_ids(&mut dock.root, &first_ids, next)
         })?;
@@ -3849,7 +3947,35 @@ mod tests {
             })
             .unwrap();
         assert!((ratio - clamp_ratio(0.4 + 40.0 / (400.0 - DOCK_DIVIDER_HIT_SIZE))).abs() < 0.001);
+        assert_eq!(
+            ratio,
+            dock_split_ratio_from_pointer(0.4, 160.0, 200.0, 400.0 - DOCK_DIVIDER_HIT_SIZE)
+        );
         assert!(context.world().pointer_capture(document(), 1).is_none());
+    }
+
+    #[test]
+    fn split_ratio_helpers_are_the_live_formula() {
+        let available = 400.0 - DOCK_DIVIDER_HIT_SIZE;
+        assert!(
+            (dock_split_ratio_from_pointer(0.4, 160.0, 200.0, available)
+                - clamp_ratio(0.4 + 40.0 / available))
+            .abs()
+                < f32::EPSILON
+        );
+        assert!((dock_nudge_split_ratio(0.4, 1.0) - clamp_ratio(0.45)).abs() < 1e-6);
+        let (first, second) = dock_split_child_lengths(0.4, 400.0);
+        assert!((first - available * 0.4).abs() < f32::EPSILON);
+        assert!((second - (available - first)).abs() < f32::EPSILON);
+        let mut workspace = DockWorkspace::new(DockNode::split(
+            DockAxis::Horizontal,
+            0.4,
+            DockNode::item("inspector", None),
+            DockNode::item("console", None),
+        ));
+        assert!(workspace.set_split_ratio(MAIN_SURFACE_ID, &[], 0.7));
+        assert_eq!(workspace.main.split_ratio_at(&[]), Some(clamp_ratio(0.7)));
+        assert!(!workspace.set_split_ratio(MAIN_SURFACE_ID, &[], 0.7));
     }
 
     #[test]
