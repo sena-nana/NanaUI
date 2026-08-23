@@ -1,15 +1,16 @@
-# NanaUI 应用 API
+# 应用 API
 
-产品路径是同一套权威：`UiWorld` → `UiScene` → `SceneWgpuPainter`。
-L1 / L2 / L3 是三种输入合同，不是三套运行时。
+这是查入口用的。第一次写应用请先看 [开始](start.md)。
 
-## 选哪一层
+新应用从 `nana_ui::runtime` 进：`AppContext`、`create_component`、`on`，宿主用 `RuntimeProgram` + `run_runtime`。画出来的权威是同一条：保留树 → 场景 → 画进宿主窗口。
 
-| 层 | 入口 | 用途 |
-|----|------|------|
-| L1 | JS `createNanaApp()` + DOM/CSS 子集 + 应用 `HostApiRegistry` | Vue SFC / 网页习惯源码，经 Nana Vite 构建 |
-| L2 | `@nanaui/nanavue-components`（`nana-*` 语义 props） | 跳过 CSS，直接语义控件；与 L1 同树 |
-| L3 | `nana_ui::runtime`（`AppContext` / `create_component` / `on`） | Rust 保留树；宿主用 `RuntimeProgram` + `run_runtime` |
+已经有 Vue 界面时，再用兼容路径落到同一棵树上，见 [Vue](vue.md)。不要把 Vue 当新应用的起点。
+
+| 你在写 | 入口 |
+| --- | --- |
+| 新的桌面界面 | `nana_ui::runtime` |
+| Vue 组件（兼容） | `@nanaui/nanavue-components` 的 `nana-*` |
+| Vue 普通标签 + CSS 子集（兼容） | `createNanaApp()` |
 
 业务状态、鉴权、配置盘、Region 内容由应用拥有。NanaUI 只提供通用控件与合同。
 
@@ -76,4 +77,4 @@ host op 进 `PendingHostOps`，`flush_host_frame` 才 commit。
 - 完整浏览器、Tauri、裸 `@vue/runtime-dom` 产物、WebView 产品路径。
 - 第二套 Device/Queue、CPU 回读伪装零拷贝、控件拿窗口句柄。
 
-细则：[`architecture.md`](architecture.md)、[`runtime-scene.md`](runtime-scene.md)、[`capabilities.md`](capabilities.md)。
+细则：[`architecture.md`](architecture.md)、[`runtime-scene.md`](runtime-scene.md)、[`vue.md`](vue.md)。

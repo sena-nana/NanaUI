@@ -2,8 +2,8 @@
 """Shared Scenario schema helpers and runner report envelope.
 
 #8: Nana work-counter / catalog / hotspot + CI fail-closed.
-#12: Iced/GPUI observation (not product renderers, not #8 pass/fail).
-``relative_gate_enforceable`` stays False. See docs/performance-contract.md.
+#12: cross-toolkit observation (not product renderers, not #8 pass/fail).
+``relative_gate_enforceable`` stays False. See perf/README.md.
 """
 
 from __future__ import annotations
@@ -2812,9 +2812,8 @@ def extract_iced(
             mapping_notes=[
                 f"Mapped onto Gallery ui-benchmark `{name}`.",
                 "Gallery lists still layout every item (legacy full-layout). This is a reference, not virtualization.",
-                "Current ui-benchmark paints through SceneWgpuPainter; historical numbers in "
-                "docs/performance-baseline.md were taken on the Iced Gallery path. "
-                "same-scenario StaticTree uses archived iced scenario-bench fixtures, not this Gallery wrap.",
+                "Current ui-benchmark paints through SceneWgpuPainter. "
+                "same-scenario StaticTree uses archived scenario-bench fixtures, not this Gallery wrap.",
             ],
             metrics={
                 "cpu_frame_ms": percentile_fields(case.get("cpu_total_ms")),

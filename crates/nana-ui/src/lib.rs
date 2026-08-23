@@ -3,6 +3,7 @@
 //! Product retained/render contracts live in `nana-ui-runtime` and `nana-ui-scene`.
 //! New L3 applications should use [`runtime`] (`AppContext`, `mount`,
 //! `ComponentView`, `register_component`). See
+//! [`docs/start.md`](../../../docs/start.md),
 //! [`docs/application-api.md`](../../../docs/application-api.md).
 //! Crate-root widget re-exports are a compatibility surface, not the extension
 //! contract. L1/L2 Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.

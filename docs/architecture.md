@@ -7,59 +7,46 @@
 系统窗口材质与必须依赖原生句柄的 macOS 标题区交互桥接属于 `nana-window`；
 Gallery 页面、状态、快照与基准属于 Demo crate。
 
-**产品 UI 前端采用 Vue-first。** 应用只使用 Vue+JS 与 NanaUI 内置接口即可构建完整
-窗口 UI 和小游戏；Nana Runtime 是 retained state 权威，UiScene 是 renderer-neutral
-render state 权威。桌面产品路径是：
+**第一路径是原生界面。** 应用用 `nana_ui::runtime` 和公开控件搭树，由宿主打开窗口、
+注入图形设备。Nana Runtime（`UiWorld`）是保留状态的权威，UiScene 是与绘制后端无关
+的绘制状态权威。桌面产品路径是：
 
 ```text
-Vue/JS L1/L2 → Runtime/UiScene → RuntimeProgram → run_runtime → SceneWgpuPainter
+nana_ui::runtime（L3）→ UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 ```
 
-`VueHostedRuntime` / `VueRuntimeProgram` 实现 `RuntimeProgram`，由 `run_runtime`
-进入 Nana-owned winit + `SceneWgpuPainter`，不返回 `iced::Element` 树。桌面仍钉
-iced-rs winit fork（平台窗口债务，见 [`iced-engine.md`](iced-engine.md)），不是
-Iced 绘制路径。
-`scene-view` 接入同一 Scene/Runtime 适配，不是 Iced widget 编程模型。
-`VueHostedProgram` 是 `VueRuntimeProgram` 的类型别名。Rust 可以控制语义树，
-也可以注册高性能 Runtime 组件，但所有供 Vue 使用的原生能力必须以 `nana-*`
-Vue 组件或稳定 JS 接口暴露，并与普通 Vue 节点处于同一布局、事件和合成树。
+Vue / JavaScript（L1 / L2）是兼容路径，落到同一棵 `UiWorld` / `UiScene` 上，不是
+另一套窗口。`VueHostedRuntime` / `VueRuntimeProgram` 同样实现 `RuntimeProgram`，
+由 `run_runtime` 进入同一套 winit + `SceneWgpuPainter`。供 Vue 使用的原生能力必须
+以 `nana-*` 组件或稳定 JS 接口暴露，并与普通节点处于同一布局、事件和合成树。
+
 内建与第三方控件走 Runtime `ComponentRegistry`（`register_component` /
 `ComponentTypeId`）；`NativeComponentRegistry` 只服务 JS host 原生组件描述符。
-Vue、业务 JS、多窗口文档及这些组件的 JS 桥共享一个 V8 isolate/context，而非
-把 Vue 限定为状态与命令桥。L1 不引入真实 WebView、Blitz DOM/CSS 或第二套
-wgpu。应用 API 入口见 [`application-api.md`](application-api.md)。
-仓内 `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是
-`nana-*` 编译依赖或当前绘制后端。禁止把 GPUI 接成第三条产品绘制路径。
-Android 实验宿主走 Runtime / UiScene / `SceneWgpuPainter`，不是产品路径。
+Vue、业务 JS、多窗口文档及这些组件的 JS 桥共享一个 V8 isolate/context。
+不引入真实 WebView 或第二套 wgpu。应用 API 见 [`application-api.md`](application-api.md)，
+保留树与 Scene 见 [`runtime-scene.md`](runtime-scene.md)。Android 是实验路径，见
+[`android.md`](android.md)。
 
-**三层兼容（桥接合同，非 `nana-ui` 公共依赖）**：
+**三种输入，同一棵树**：
 
 三层都写入同一 **Style Model = Tokens + Semantics + Layout**（见
-`nana_ui_core::style_model`），再进入同一 `UiWorld` 和 `UiScene`。`nana-ui`
-以 Runtime view 适配标准控件，并由 `SceneWgpuPainter` 绘制；不能将其描述为
-长期 framework contract，也不能再把 Iced widget Tree 当成应用编程模型。
+`nana_ui_core::style_model`），再进入同一 `UiWorld` 和 `UiScene`。它们是三种输入
+合同，不是三个运行时或三套渲染实现。
+
 L1 不是「CSS→仅 ThemeTokens」：布局进 Layout，已知 class 进 Semantics，主题档位进
-Tokens；任意业务 CSS 色值不得污染正式 token。
+Tokens；任意业务 CSS 色值不得污染正式 token。L1 与 L2 的 `MessageBridge` 只保留
+compatibility semantic props；`NanaTreeDocument` 的 create / insert / remove / text /
+focus / layout 全部写入 `UiWorld`，不再维护第二份权威树。paint 前 Style Model
+measure 与 paint 后 `LayoutBoxStore` 是两个 geometry phase：产品几何权威在
+Runtime/UiScene，`LayoutBoxStore` 只为该窗口 JS 查询保存 paint-phase geometry。
 
-L1/L2/L3 是三种输入合同，不是三个运行时模式或三套渲染实现。L1 与 L2 的
-`MessageBridge` 只保留 compatibility semantic props；`NanaTreeDocument` 的 create /
-insert / remove / text / focus / layout 全部写入 `UiWorld`，不再维护第二份权威树或几何
-cache。paint 前 Style Model measure 与 paint 后 `LayoutBoxStore` 是两个
-geometry phase：产品几何权威在 Runtime/UiScene，`LayoutBoxStore` 只为该窗口 JS
-查询保存 paint-phase geometry。Vue host op / `gpu_slots` / `event_flags` /
-滚动投影不变量见 [`runtime-scene.md`](runtime-scene.md)。
-组件从归档 Iced 参照到 `SceneWgpuPainter` 的逐项支持状态、公共查询合同与晋级门禁见
-[`component-migration.md`](component-migration.md)。
+| 层 | 优先级 | 含义 | 住在哪 |
+|----|--------|------|--------|
+| L3 | 第一路径 | Rust 原生入口；`AppContext` / 公开控件 | `nana-ui` / `nana-ui-core` |
+| L2 | Vue 兼容 | `nana-*` 语义组件，可与 L1 同树 | `nanavue-components` + MessageBridge |
+| L1 | Vue 兼容 | Vue 3 + JS + DOM/CSS 子集 → Style Model | `nana-ui-vue` / `nanavue-runtime` / `nana-ui-web-api` |
 
-| 层 | 含义 | 住在哪 |
-|----|------|--------|
-| L1 | WebView 中常见 Vue 3 + JS 源码：经 Nana Vite 入口构建，DOM/CSS/Web API 子集→Style Model | `nana-ui-vue` / `nanavue-runtime` / `nana-ui-web-api` |
-| L2 | Vue 直接使用 Nana 组件接口（语义 props→同一 Model，可跳过 CSS） | `nanavue-components` + MessageBridge |
-| L3 | Rust 原生入口；同一 Runtime/UiScene，由 `SceneWgpuPainter` 绘制 | `nana-ui` / `nana-ui-core` / Gallery |
-
-设计上支持混合显示，尤其是 **L1+L2 同树**。权威细则见
-[`vue-nana-renderer-system.md`](vue-nana-renderer-system.md)。
-兼容性阶段目标与 Todo：[`compatibility-roadmap.md`](compatibility-roadmap.md)。
+L1+L2 可同树混合，最终仍进 L3 那棵 Runtime 树。细则见 [`vue.md`](vue.md)。
 
 L1 不创建真实 WebView，不提供 Tauri invoke/插件/窗口/事件/存储协议，也不承诺
 普通 `@vue/runtime-dom` 产物直接运行。`nana-ui` 不提供 `browser`/Wry 产品
@@ -125,8 +112,7 @@ drag/minimize/toggle-maximize/close 语义动作。产品路径上 Scene host
 窗口关闭后不会自动接管其他窗口；重建窗口时由应用调用 `bind`，旧 ID 的迟到结果
 会因目标不匹配被丢弃。
 
-Scene host 通过 `update` 消费相同的语义动作，并同步实际 Winit Window 状态；
-窗口所有权不交给 Iced，也不执行 Iced 窗口 Task。
+Scene host 通过 `update` 消费相同的语义动作，并同步实际 Winit Window 状态。
 
 平台按键进入 `RuntimeInputAdapter` 与 `RuntimeProgram::input_event`；焦点控件以
 Runtime stable ID 标识。按键重复事实显式保留，快捷键含义与 handler 继续由应用
@@ -261,9 +247,8 @@ Region 折叠目标会立即写入 `WorkspaceLayout`，保证序列化与设置�
 
 ## WGPU 边界
 
-桌面产品绘制由 `SceneWgpuPainter` 把 `UiScene` 画进宿主 Surface。仓内
-`engine/iced` 迁移快照已移除，不是 `nana-*` 编译依赖或当前 renderer；谱系见
-[`iced-engine.md`](iced-engine.md)。WGPU 主版本为 `30.0.0`。
+桌面产品绘制由 `SceneWgpuPainter` 把 `UiScene` 画进宿主 Surface。WGPU 主版本为
+`30.0.0`，依赖图中只有一个主版本。实时画面如何进树见 [`gpu.md`](gpu.md)。
 `GpuView` 是 Scene 图内的 custom renderer；`RenderSlot` 负责逻辑/物理像素换算
 与裁剪。绘制路径切换本身不等于 GPU、快照或跨平台已验收。
 

@@ -1,4 +1,4 @@
-//! 盘点用例 ID 注册表（与 `docs/css-layout-parity.md` / 缺口盘点 §5 对齐）。
+//! 盘点用例 ID 注册表（与 `docs/layout.md` 中的布局子集对齐）。
 
 /// 优先覆盖的用例 ID（盘点 T-F / T-S / T-L / T-B / T-V / T-W）。
 pub const PRIORITY_CASE_IDS: &[&str] = &[

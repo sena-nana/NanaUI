@@ -3,7 +3,7 @@
 Vue `createRenderer` host runtime for NanaUI — **L1**（`createElement` + CSS 子集）与
 **L2**（`createWidget` / `nana-*`）共用同一 `MessageBridge` 森林。
 
-系统文档：[`docs/vue-nana-renderer-system.md`](../../docs/vue-nana-renderer-system.md)。
+系统文档：[`docs/vue.md`](../../docs/vue.md)。
 
 Style Model 路径：
 
@@ -11,9 +11,9 @@ Style Model 路径：
 2. `css_map` → Layout；`widget_map` → Semantics；主题档位 → Tokens（非任意 CSS→token）
 3. Runtime / UiScene → `run_runtime` → `SceneWgpuPainter`（桌面产品绘制）
 
-`scene-view` 接入同一 Scene/Runtime 适配，不是 Iced widget 树。CustomContent / CPU 简化 paint 已移除。
+`scene-view` 接入同一 Scene / Runtime 适配。CustomContent / CPU 简化 paint 已移除。
 
-应用入口见 [`docs/application-api.md`](../../docs/application-api.md)。
+应用入口见 [`docs/start.md`](../../docs/start.md)。
 
 ## 扩展控件走哪条路
 

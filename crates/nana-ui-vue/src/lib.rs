@@ -37,7 +37,7 @@
 //! Retained geometry lives in UiWorld/UiScene. `LayoutBoxStore` is a
 //! diagnostic layout snapshot after paint. `measure` is the pre-paint fallback +
 //! `nana-css-parity` harness. There is no separate synthetic layout branch. See
-//! [`docs/css-layout-engine-boundary.md`](../../../docs/css-layout-engine-boundary.md).
+//! [`docs/layout.md`](../../../docs/layout.md).
 //!
 //! This crate is the **L1/L2 adapter** (not the paint core):
 //! - `css_map` → Layout (`LayoutStyle`) — **neutral** declaration parse
@@ -61,8 +61,8 @@
 //!      └────────► nana-ui-web-api     ← L1 Web API 兼容（非 WebView）
 //! ```
 //!
-//! See [`docs/application-api.md`](../../../docs/application-api.md) and
-//! [`docs/vue-nana-renderer-system.md`](../../../docs/vue-nana-renderer-system.md).
+//! See [`docs/start.md`](../../../docs/start.md) and
+//! [`docs/vue.md`](../../../docs/vue.md).
 //!
 //! Unique retained authority is UiWorld/UiScene. Feature `scene-view` enables the
 //! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves.

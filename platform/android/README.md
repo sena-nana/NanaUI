@@ -43,7 +43,7 @@ cargo test -p nana-android-host --lib --locked
 
 - `engine-v8` (default on host) — desktop smoke. Android ARM64 cross-check links
   V8 when `RUSTY_V8_ARCHIVE` is set (GitHub Actions `Package V8`); otherwise
-  `--no-default-features` (`docs/android-arm64.md`).
+  `--no-default-features` (`docs/android.md`).
 - **`AndroidShellStub`** sizes Primary viewport from the same `nana-ui-core` geometry as desktop
   `DesktopShell`. `VueHost` resolves layout in that viewport. Frame presentation is wgpu chrome
   fill plus a NanaUI Runtime control-slot strip; this is not DesktopShell.
@@ -96,4 +96,4 @@ adb logcat -s nana-android-host
 # tap slot Input, then: adb shell input keyevent KEYCODE_H …
 ```
 
-Headless `-gpu swiftshader_indirect` boots but hit a goldfish Vulkan hang on this host — use `-gpu host` for wgpu evidence. Details: `docs/android-arm64.md`.
+Headless `-gpu swiftshader_indirect` boots but hit a goldfish Vulkan hang on this host — use `-gpu host` for wgpu evidence. Details: `docs/android.md`.

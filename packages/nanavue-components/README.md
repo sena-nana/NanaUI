@@ -4,7 +4,7 @@
 **可跳过 CSS 解析**。可与 L1 `createElement` 同树混合。
 
 架构：**变体/组合** — 可见 UI 落到 Nana 布局原语 + 基础控件；Vue 自造组件用组合与变体表达。CustomContent paint **已移除**。详见 [`SEMANTICS.md`](./SEMANTICS.md) 与
-[`docs/vue-nana-renderer-system.md`](../../docs/vue-nana-renderer-system.md) §0。
+[`docs/vue.md`](../../docs/vue.md)。
 
 ## Bridges (`src/appearance.js`)
 

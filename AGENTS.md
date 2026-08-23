@@ -4,10 +4,9 @@
 
 - NanaUI 的产品保留/渲染合同是 Runtime（`nana-ui-runtime`）与 UiScene
   （`nana-ui-scene`）。产品路径：`UiWorld` → `ExtractedNode` → `UiScene` →
-  `SceneWgpuPainter`。宿主拥有 Window、Surface、Device 与 Queue。仓内
-  `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是 `nana-*`
-  编译依赖，不是应用编程模型，也不是当前绘制后端。Vue + JS 是一等 L1/L2
-  消费方；不要把 WebView 当作产品 UI 路径。消费应用业务仍在框架外。
+  `SceneWgpuPainter`。宿主拥有 Window、Surface、Device 与 Queue。Vue + JS
+  是一等 L1/L2 消费方；不要把 WebView 当作产品 UI 路径。消费应用业务仍在
+  框架外。
 - `crates/nana-ui` 负责主题、控件、Shell、Workspace 和 GPU 内容插槽；
   `crates/nana-window` 独立负责平台窗口材质，普通控件不得访问窗口句柄。
 - 消费应用拥有业务状态、配置存储和 Region 内容；NanaUI 只提供通用状态与合同。

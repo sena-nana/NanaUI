@@ -18,14 +18,12 @@ description: Select and report functional validation for NanaUI changes. Use whe
   shared-context changes.
 - **Window:** Check the outcome contract and affected targets; require real platform evidence for
   native effects.
-- **Performance:** Issue #8 [`performance-contract.md`](../../../docs/performance-contract.md):
+- **Performance:** Issue #8 [`perf/README.md`](../../../perf/README.md):
   Nana work-counter / catalog / hotspot gates. Runtime/Scene benches and
   [`validate-runtime-performance.py`](../../../scripts/validate-runtime-performance.py)
-  are the #8 semantic gates. Iced/GPUI runners are Issue
+  are the #8 semantic gates. Cross-toolkit runners are Issue
   [#12](https://github.com/sena-nana/NanaUI/issues/12) observation, not #8
   pass/fail. Weekly GHA is **not** a fixed machine.
-  [`performance-baseline.md`](../../../docs/performance-baseline.md) is legacy
-  Iced Gallery only.
 - **Compatibility:** Review exports, serialized fields, manifests, lockfiles and consumers when
   public boundaries change.
 
@@ -73,21 +71,10 @@ python3 perf/contract.py --evaluate-invariants target/performance/issue8
 python3 perf/runners/nana/run.py --print-plan --scenario static-tree-5k
 python3 perf/runners/nana/run.py --print-plan --scenario gpu-scene-ui
 python3 perf/runners/nana/run.py --scenario gpu-scene-ui-live2d   # expected exit 2
-python3 perf/runners/iced/run.py --scenario gpu-scene-ui         # expected exit 2; #12 observation
 python3 perf/runners/nana/run.py --scenario mutation-paint-only --output target/performance/issue8/nana-mutation-paint-only.json
-python3 perf/runners/iced/run.py --scenario static-tree-100 --from-report docs/performance/2026-08-14-issue7-phase0-iced.json
-python3 perf/runners/iced/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase0-iced.json   # expected exit 2
 python3 perf/runners/nana/run.py --scenario hover --from-report perf/fixtures/nana-runtime-static-tree.json
 python3 perf/runners/nana/run.py --scenario mutation-paint-only --from-report perf/fixtures/nana-runtime-static-tree.json
 python3 perf/runners/nana/run.py --scenario static-tree-100 --from-report perf/fixtures/nana-runtime-static-tree.json
-python3 perf/runners/iced/run.py --scenario static-tree-100 --from-report perf/fixtures/iced-scenario-static-tree-100.json
-python3 perf/runners/nana/run.py --scenario hover --from-report docs/performance/2026-08-14-issue7-phase3-runtime.json   # expected exit 2: phase3 has no 10k hover; current nana-runtime-benchmark bench_full includes 10k hover
-python3 perf/runners/gpui/run.py --scenario static-tree-100 --from-report perf/fixtures/gpui-scenario-static-tree-100.json
-python3 perf/runners/iced/run.py --print-plan --scenario static-tree-100
-python3 perf/runners/gpui/run.py --scenario gpu-scene-ui       # expected exit 2
-python3 perf/contract.py --evaluate-relative \
-  perf/fixtures/iced-scenario-static-tree-100.json \
-  perf/fixtures/gpui-scenario-static-tree-100.json
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --output target/performance/runtime.json
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --output target/performance/framework.json
 cargo run --release --locked -p nana-ui-vue --features benchmark --bin nana-vue-runtime-benchmark -- --output target/performance/vue.json
@@ -99,9 +86,9 @@ python3 scripts/validate-runtime-performance.py \
   --scene target/performance/scene.json
 ```
 
-Relative Iced/GPUI multipliers are not #8 acceptance; see
-[`performance-contract.md`](../../../docs/performance-contract.md). Do not invent
-reference timings. Native RHI same-RenderPlan A/B is **NO-GO** (#7 Gate B).
+Relative cross-toolkit multipliers are not #8 acceptance; see
+[`perf/README.md`](../../../perf/README.md). Do not invent
+reference timings. Native RHI same-RenderPlan A/B is **NO-GO**.
 
 Report exact commands and results, separating regressions from environment or untested-platform
 limits. Performance regressions that trip an in-force gate need a recorded

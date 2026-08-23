@@ -1,20 +1,18 @@
 ---
 name: nanaui-gpu-integration
-description: Maintain NanaUI's host-owned WGPU integration. Inject SceneWgpuPainter into the host GPU context; Iced is a removed historical migration snapshot, not the product renderer. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, SceneWgpuPainter, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, WGPU dependencies, or NanaShader and Live2D HostTexture-slot boundaries.
+description: Maintain NanaUI's host-owned WGPU integration. Inject SceneWgpuPainter into the host GPU context. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, SceneWgpuPainter, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, WGPU dependencies, or NanaShader and Live2D HostTexture-slot boundaries.
 ---
 
 # NanaUI GPU Integration
 
 ## Rules
 
-- Read [`rendering-integration.md`](../../../docs/rendering-integration.md) before changing the
+- Read [`gpu.md`](../../../docs/gpu.md) before changing the
   rendering boundary.
 - Inspect manifests, lockfile, and dependency graph before dependency work; keep one WGPU major
   version across shared types.
 - Keep Window, Surface, Device, Queue, and frame scheduling host-owned. Inject
-  `SceneWgpuPainter` into that GPU context. `engine/iced` and
-  `engine/gpui-scenario-bench` have been removed; they are not `nana-*`
-  compile dependencies or product renderers. Do not add GPUI as a third paint path.
+  `SceneWgpuPainter` into that GPU context.
 - Preserve `GpuView` Inline join (`draw_in_pass`) and `HostTexture`
   identity/generation-based invalidation. Remove unused resources and redraw
   only on real state or content changes. Paint HostTexture in document order
