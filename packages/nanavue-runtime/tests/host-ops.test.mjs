@@ -108,6 +108,16 @@ function installMockHost() {
       if (name === "insertStaticContent") {
         const start = nextId++;
         children.set(start, []);
+        const parent = args[1];
+        const anchor = args[2];
+        if (parent != null) {
+          parents.set(start, parent);
+          const kids = children.get(parent) || [];
+          const at = anchor != null ? kids.indexOf(anchor) : -1;
+          if (at >= 0) kids.splice(at, 0, start);
+          else kids.push(start);
+          children.set(parent, kids);
+        }
         return [start, start];
       }
       if (name === "querySelector" || name === "querySelectorAll" || name === "closest") {
@@ -127,6 +137,7 @@ describe("hostOps Vue RendererOptions contract", () => {
   let wrapNode;
   let nodeId;
   let createNanaApp;
+  let flushHostFrame;
 
   beforeEach(async () => {
     prevHost = globalThis.__nanaHost;
@@ -137,6 +148,7 @@ describe("hostOps Vue RendererOptions contract", () => {
     wrapNode = mod.wrapNode;
     nodeId = mod.nodeId;
     createNanaApp = mod.createNanaApp;
+    flushHostFrame = mod.flushHostFrame;
   });
 
   afterEach(() => {
@@ -177,6 +189,107 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.equal(a.contains(b), false);
     hostOps.remove(a);
     assert.equal(hostOps.parentNode(a), null);
+  });
+
+  test("wrapNode parent/child cache survives flushHostFrame", () => {
+    const TREE_READS = new Set([
+      "parentNode",
+      "childNodes",
+      "firstChild",
+      "lastChild",
+      "nextSibling",
+      "querySelector",
+      "contains",
+    ]);
+    const treeReads = () => calls.filter(([name]) => TREE_READS.has(name));
+
+    const parent = hostOps.createElement("div");
+    const a = hostOps.createElement("span");
+    const b = hostOps.createElement("span");
+    hostOps.insert(a, parent, null);
+    hostOps.insert(b, parent, a);
+    const afterInsert = treeReads().length;
+
+    assert.equal(a.parentNode, parent);
+    assert.equal(b.parentNode, parent);
+    assert.equal(parent.firstChild, b);
+    assert.equal(parent.lastChild, a);
+    assert.deepEqual(
+      parent.childNodes.map((n) => n.__nid),
+      [nodeId(b), nodeId(a)],
+    );
+    assert.equal(b.nextSibling, a);
+    assert.equal(a.previousSibling, b);
+    assert.equal(parent.contains(a), true);
+    assert.equal(a.isConnected, false);
+    assert.equal(treeReads().length, afterInsert, "insert cache must serve tree getters");
+
+    flushHostFrame();
+    assert.equal(a.parentNode, parent);
+    assert.equal(parent.firstChild, b);
+    assert.equal(parent.childNodes.length, 2);
+    assert.equal(b.nextSibling, a);
+    assert.equal(
+      treeReads().length,
+      afterInsert,
+      "style flush must not force parentNode/childNodes hostCalls",
+    );
+  });
+
+  test("insertStaticContent invalidates children cache and refills from host", () => {
+    const TREE_READS = new Set(["parentNode", "childNodes", "firstChild", "lastChild"]);
+    const treeReads = () => calls.filter(([name]) => TREE_READS.has(name));
+
+    const parent = hostOps.createElement("div");
+    const a = hostOps.createElement("span");
+    hostOps.insert(a, parent, null);
+    assert.equal(parent.childNodes.length, 1);
+    const afterInsert = treeReads().length;
+
+    const [start] = hostOps.insertStaticContent("hi", parent, null);
+    assert.ok(start);
+    const afterStatic = treeReads().length;
+    assert.equal(afterStatic, afterInsert, "static insert must not read tree; it invalidates");
+
+    assert.equal(parent.childNodes.length, 2);
+    assert.equal(
+      treeReads().some(([name]) => name === "childNodes"),
+      true,
+      "invalidated children cache must refill from host",
+    );
+    const afterRefill = treeReads().length;
+    assert.equal(parent.childNodes.length, 2);
+    assert.equal(parent.firstChild, a);
+    assert.equal(treeReads().length, afterRefill, "refilled cache must serve subsequent getters");
+  });
+
+  test("style setProperty batches until flushHostFrame", async () => {
+    const el = hostOps.createElement("div");
+    const stylePatches = () =>
+      calls.filter(([name, args]) => name === "patchProp" && args[1] === "style");
+    const before = stylePatches().length;
+    el.style.setProperty("color", "red");
+    el.style.setProperty("gap", "8px");
+    el.style.display = "flex";
+    assert.equal(stylePatches().length, before, "setProperty must not hostCall per property");
+    assert.equal(el.style.color, "red");
+    assert.equal(el.style.gap, "8px");
+
+    flushHostFrame();
+    assert.equal(stylePatches().length, before + 1);
+    assert.deepEqual(attrs.get(nodeId(el)).style, {
+      color: "red",
+      gap: "8px",
+      display: "flex",
+    });
+
+    el.style.removeProperty("gap");
+    el.style.setProperty("color", "blue");
+    assert.equal(stylePatches().length, before + 1);
+    await Promise.resolve();
+    assert.equal(stylePatches().length, before + 2);
+    assert.equal(attrs.get(nodeId(el)).style.color, "blue");
+    assert.equal(attrs.get(nodeId(el)).style.gap, undefined);
   });
 
   test("removing a subtree releases renderer-owned image and Canvas resources", () => {
