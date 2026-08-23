@@ -22,19 +22,16 @@ use nana_ui_runtime::AccessibilityUpdate;
 use nana_ui_runtime::MeasureTextShaper;
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
-    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar,
-    CalendarHeatmap as RuntimeCalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions,
-    CalendarLevelStrategy, CommandPalette as RuntimeCommandPalette, ComponentBindKind,
-    ComponentTypeId, ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode,
-    Entity, GraphCanvas as RuntimeGraphCanvas, GraphEdge, GraphEndpoint, GraphModel, GraphNode,
-    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    HOST_TEXTURE_RENDERER, HighlightRequest, ImeComposition, InteractionState,
-    LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
+    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, CalendarHeatmapDatum,
+    CalendarHeatmapOptions, CalendarLevelStrategy, ComponentBindKind, ComponentTypeId,
+    ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode, Entity, GraphEdge,
+    GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
+    GraphSelection, GraphSize, GraphViewport, HOST_TEXTURE_RENDERER, HighlightRequest,
+    ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
     NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
     SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption, SemanticSpec,
-    SettingsPage as RuntimeSettingsPage,
-    SidebarFrame as RuntimeSidebarFrame, SplitPane as RuntimeSplitPane, StableNodeId, TextContent,
-    TextInputState, TreeView as RuntimeTreeView, UiMutation, UiWorld,
+    SettingsPage as RuntimeSettingsPage, SidebarFrame as RuntimeSidebarFrame,
+    SplitPane as RuntimeSplitPane, StableNodeId, TextContent, TextInputState, UiMutation, UiWorld,
     Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
 };
 use nana_ui_scene::{RuntimeDocument, UiScene};
@@ -2683,18 +2680,8 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
     if widget.kind == crate::WidgetKind::Chip && widget.props.role.eq_ignore_ascii_case("tab") {
         return false;
     }
-    if widget.kind == crate::WidgetKind::CommandPalette
-        && host_command_palette_items(&widget.props).is_some()
-    {
-        return false;
-    }
-    if widget.kind == crate::WidgetKind::TreeView
-        && (widget.props.options.is_empty() || host_tree_nodes(&widget.props).is_some())
-    {
-        return false;
-    }
     matches!(
-        widget.kind,
+        effective_kind(widget),
         crate::WidgetKind::Column
             | crate::WidgetKind::Box
             | crate::WidgetKind::Row
@@ -2737,6 +2724,14 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
             | crate::WidgetKind::Segmented
             | crate::WidgetKind::Tabs
             | crate::WidgetKind::TreeView
+            | crate::WidgetKind::CalendarHeatmap
+            | crate::WidgetKind::NativeMarkdown
+            | crate::WidgetKind::GraphCanvas
+            | crate::WidgetKind::Workspace
+            | crate::WidgetKind::Dock
+            | crate::WidgetKind::SplitPane
+            | crate::WidgetKind::AppShell
+            | crate::WidgetKind::SettingsPage
     )
 }
 
@@ -2916,6 +2911,149 @@ fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> 
         }
         _ => {}
     }
+    extras.extend(bind_native_json_attrs(widget));
+    extras
+}
+
+fn stringify_host_attr(value: &nana_js_engine::HostValue) -> String {
+    match value {
+        nana_js_engine::HostValue::String(text) => text.clone(),
+        nana_js_engine::HostValue::Number(number) if number.is_finite() => {
+            if number.fract() == 0.0 {
+                format!("{}", *number as i64)
+            } else {
+                number.to_string()
+            }
+        }
+        nana_js_engine::HostValue::Bool(flag) => flag.to_string(),
+        nana_js_engine::HostValue::Array(_) | nana_js_engine::HostValue::Object(_) => {
+            value.to_json_string()
+        }
+        _ => value.to_json_string(),
+    }
+}
+
+fn bind_native_json_attrs(widget: &crate::SemanticWidget) -> Vec<(String, String)> {
+    let mut extras = Vec::new();
+    let missing = |name: &str, extras: &[(String, String)]| {
+        !widget
+            .props
+            .attrs
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case(name))
+            && !extras
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case(name))
+    };
+    let push = |extras: &mut Vec<(String, String)>, key: &str, host_keys: &[&str]| {
+        if !missing(key, extras) {
+            return;
+        }
+        for host in host_keys {
+            if let Some(value) = widget.props.native_props.get(*host) {
+                extras.push((key.to_string(), stringify_host_attr(value)));
+                return;
+            }
+        }
+    };
+    let push_json = |extras: &mut Vec<(String, String)>, key: &str, host_keys: &[&str]| {
+        if !missing(key, extras) {
+            return;
+        }
+        for host in host_keys {
+            if let Some(value) = widget.props.native_props.get(*host)
+                && matches!(
+                    value,
+                    nana_js_engine::HostValue::Array(_) | nana_js_engine::HostValue::Object(_)
+                )
+            {
+                extras.push((key.to_string(), value.to_json_string()));
+                return;
+            }
+        }
+    };
+    match effective_kind(widget) {
+        crate::WidgetKind::CommandPalette => {
+            push_json(&mut extras, "items", &["items", "options"]);
+        }
+        crate::WidgetKind::TreeView => {
+            push_json(&mut extras, "tree", &["tree"]);
+            push_json(&mut extras, "nodes", &["nodes"]);
+            push_json(&mut extras, "options", &["options"]);
+        }
+        crate::WidgetKind::CalendarHeatmap => {
+            push_json(&mut extras, "data", &["data", "value"]);
+            push(&mut extras, "options", &["options"]);
+        }
+        crate::WidgetKind::NativeMarkdown => {
+            if widget.props.value.trim().is_empty() {
+                let source = markdown_source_from_props(&widget.props);
+                if !source.trim().is_empty() && missing("source", &extras) {
+                    extras.push(("source".into(), source));
+                }
+            }
+            push(
+                &mut extras,
+                "mermaid-renderer",
+                &["mermaid-renderer", "mermaidrenderer"],
+            );
+            push(
+                &mut extras,
+                "math-renderer",
+                &["math-renderer", "mathrenderer"],
+            );
+        }
+        crate::WidgetKind::GraphCanvas => {
+            if widget.props.native_props.get("model").is_some() {
+                push(&mut extras, "model", &["model"]);
+            } else {
+                let nodes = widget.props.native_props.get("nodes");
+                let edges = widget.props.native_props.get("edges");
+                if (nodes.is_some() || edges.is_some()) && missing("model", &extras) {
+                    let mut map = BTreeMap::new();
+                    if let Some(nodes) = nodes {
+                        map.insert("nodes".into(), nodes.clone());
+                    }
+                    if let Some(edges) = edges {
+                        map.insert("edges".into(), edges.clone());
+                    }
+                    extras.push((
+                        "model".into(),
+                        nana_js_engine::HostValue::Object(map).to_json_string(),
+                    ));
+                }
+            }
+            push(&mut extras, "nodes", &["nodes"]);
+            push(&mut extras, "edges", &["edges"]);
+            push(&mut extras, "viewport", &["viewport"]);
+            push(&mut extras, "selection", &["selection"]);
+        }
+        crate::WidgetKind::Dock => {
+            push_json(&mut extras, "root", &["root"]);
+            push_json(&mut extras, "layout", &["layout"]);
+        }
+        crate::WidgetKind::SplitPane => {
+            push(&mut extras, "axis", &["axis"]);
+            push(&mut extras, "size", &["size"]);
+            push(
+                &mut extras,
+                "default-size",
+                &["default-size", "defaultsize"],
+            );
+            push(&mut extras, "min", &["min"]);
+            push(&mut extras, "max", &["max"]);
+        }
+        crate::WidgetKind::SettingsPage => {
+            push_json(&mut extras, "settings", &["settings", "model"]);
+            push(&mut extras, "tab", &["tab", "value"]);
+            push(
+                &mut extras,
+                "hide-header",
+                &["hide-header", "hideheader", "hideHeader"],
+            );
+        }
+        _ => {}
+    }
     extras
 }
 
@@ -2973,18 +3111,19 @@ fn effective_kind(widget: &crate::SemanticWidget) -> crate::WidgetKind {
 fn bind_semantic_slots(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
-) -> Vec<(&'static str, StableNodeId)> {
+) -> Vec<(String, StableNodeId)> {
     let mut slots = Vec::new();
-    let push = |slots: &mut Vec<(&'static str, StableNodeId)>,
-                name: &'static str,
-                id: Option<StableNodeId>| {
+    let push = |slots: &mut Vec<(String, StableNodeId)>, name: &str, id: Option<StableNodeId>| {
         let Some(id) = id else {
             return;
         };
-        if slots.iter().any(|(existing, _)| *existing == name) {
+        if slots
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        {
             return;
         }
-        slots.push((name, id));
+        slots.push((name.to_string(), id));
     };
     let data_slot = |name: &str| {
         widget.children.iter().find_map(|child| {
@@ -2994,11 +3133,11 @@ fn bind_semantic_slots(
                 .flatten()
         })
     };
-    let assigned = |slots: &[(&'static str, StableNodeId)], id: StableNodeId| {
+    let assigned = |slots: &[(String, StableNodeId)], id: StableNodeId| {
         slots.iter().any(|(_, existing)| *existing == id)
     };
 
-    match widget.kind {
+    match effective_kind(widget) {
         crate::WidgetKind::ListItem | crate::WidgetKind::SidebarRow => {
             push(
                 &mut slots,
@@ -3085,6 +3224,67 @@ fn bind_semantic_slots(
             });
             push(&mut slots, "title", title);
         }
+        crate::WidgetKind::AppShell => {
+            let (title_bar, body, overlay) = app_shell_slots(widget, snapshot);
+            push(&mut slots, "title-bar", title_bar);
+            push(&mut slots, "body", body);
+            push(&mut slots, "overlay", overlay);
+        }
+        crate::WidgetKind::SplitPane => {
+            let children = element_child_widgets(widget, snapshot);
+            let handle = data_slot("handle")
+                .or_else(|| data_slot("split-handle"))
+                .or_else(|| {
+                    children
+                        .iter()
+                        .find(|child| is_split_handle_child(child))
+                        .and_then(|child| StableNodeId::new(child.id))
+                })
+                .or_else(|| {
+                    (children.len() >= 3)
+                        .then(|| StableNodeId::new(children[2].id))
+                        .flatten()
+                });
+            let panes = children
+                .iter()
+                .filter(|child| Some(child.id) != handle.map(StableNodeId::get))
+                .filter_map(|child| StableNodeId::new(child.id))
+                .collect::<Vec<_>>();
+            push(&mut slots, "first", data_slot("first").or(panes.first().copied()));
+            push(
+                &mut slots,
+                "second",
+                data_slot("second").or(panes.get(1).copied()),
+            );
+            push(&mut slots, "handle", handle);
+        }
+        crate::WidgetKind::Workspace => {
+            for slot in workspace_slots_from_widget(widget, snapshot) {
+                if let Some(content) = slot.content {
+                    push(&mut slots, slot.id.as_str(), Some(content));
+                }
+            }
+        }
+        crate::WidgetKind::Dock => {
+            for (index, child) in element_child_widgets(widget, snapshot)
+                .into_iter()
+                .enumerate()
+            {
+                let Some(id) = StableNodeId::new(child.id) else {
+                    continue;
+                };
+                push(&mut slots, &dock_item_id(child, index), Some(id));
+            }
+        }
+        crate::WidgetKind::SettingsPage => {
+            push(&mut slots, "content", data_slot("content"));
+            push(&mut slots, "body", data_slot("body"));
+            push(
+                &mut slots,
+                "content",
+                settings_page_content_child(widget, snapshot),
+            );
+        }
         _ => {
             for &child in &widget.children {
                 let Some(child) = snapshot.get(child) else {
@@ -3096,7 +3296,8 @@ fn bind_semantic_slots(
                 let Some(raw) = child.props.attrs.get("data-slot") else {
                     continue;
                 };
-                let name = match raw.trim().to_ascii_lowercase().as_str() {
+                let raw_lower = raw.trim().to_ascii_lowercase();
+                let name = match raw_lower.as_str() {
                     "leading" | "list-item-leading" => "leading",
                     "content" | "list-item-content" => "content",
                     "trailing" | "list-item-trailing" => "trailing",
@@ -3110,7 +3311,12 @@ fn bind_semantic_slots(
                     "label" => "label",
                     "hint" => "hint",
                     "title" => "title",
-                    _ => continue,
+                    "title-bar" | "titlebar" | "title_bar" | "app-title-bar" => "title-bar",
+                    "overlay" => "overlay",
+                    "first" => "first",
+                    "second" => "second",
+                    "handle" | "split-handle" => "handle",
+                    other => other,
                 };
                 push(&mut slots, name, Some(id));
             }
@@ -3161,12 +3367,9 @@ fn try_bind_registered_component(
     id: StableNodeId,
     context: &AppContext,
     mutations: &mut MutationQueue,
+    pending: &mut PendingAssembly,
 ) -> Option<bool> {
     let type_id = resolve_widget_component_type(widget, snapshot, context)?;
-    // Empty from_semantic stubs; WidgetKind slot arms own dock/shell projection.
-    if shell_kind_from_ident(type_id.as_str()).is_some() {
-        return None;
-    }
     if !can_bind_from_semantic(widget) {
         if context.world().component_type(id) != Some(&type_id) {
             mutations.set_component_type(id, Some(type_id));
@@ -3204,18 +3407,34 @@ fn try_bind_registered_component(
         )
         .collect();
     let slot_pairs = bind_semantic_slots(widget, snapshot);
+    let slot_refs: Vec<(&str, StableNodeId)> = slot_pairs
+        .iter()
+        .map(|(name, id)| (name.as_str(), *id))
+        .collect();
     let (owned_label, owned_hint) = bind_semantic_copy(widget, snapshot);
     let (number, max) = semantic_numeric_fields(widget);
-    let option_list: Vec<SemanticOption<'_>> = widget
-        .props
-        .options
-        .iter()
-        .map(|option| SemanticOption {
-            value: option.value.as_str(),
-            label: option.label.as_str(),
-            disabled: option.disabled,
-        })
-        .collect();
+    let tree_child_options = tree_child_bind_options(widget, snapshot);
+    let option_list: Vec<SemanticOption<'_>> = if !widget.props.options.is_empty() {
+        widget
+            .props
+            .options
+            .iter()
+            .map(|option| SemanticOption {
+                value: option.value.as_str(),
+                label: option.label.as_str(),
+                disabled: option.disabled,
+            })
+            .collect()
+    } else {
+        tree_child_options
+            .iter()
+            .map(|(value, label, disabled)| SemanticOption {
+                value: value.as_str(),
+                label: label.as_str(),
+                disabled: *disabled,
+            })
+            .collect()
+    };
     let is_icon_button = type_id.as_str() == "nana.icon-button";
     let button_kind = if widget.kind == crate::WidgetKind::Chip {
         if widget.props.active || widget.props.toggled {
@@ -3257,7 +3476,7 @@ fn try_bind_registered_component(
         number,
         options: &option_list,
         attrs: &attr_pairs,
-        slots: &slot_pairs,
+        slots: &slot_refs,
         ..SemanticSpec::from_parts(&type_id, &layout)
     };
     let existing_input = matches!(
@@ -3307,9 +3526,126 @@ fn try_bind_registered_component(
                     );
                 }
             }
+            enqueue_bound_assembly(widget, snapshot, id, context, mutations, pending);
             Some(true)
         }
         Ok(ComponentBindKind::Layout) | Err(_) => None,
+    }
+}
+
+fn tree_child_bind_options(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Vec<(String, String, bool)> {
+    if effective_kind(widget) != crate::WidgetKind::TreeView
+        || !widget.props.options.is_empty()
+        || host_tree_nodes(&widget.props).is_some()
+    {
+        return Vec::new();
+    }
+    element_child_widgets(widget, snapshot)
+        .into_iter()
+        .map(|child| {
+            let id = if !child.props.value.is_empty() {
+                child.props.value.clone()
+            } else if !child.props.element_id.is_empty() {
+                child.props.element_id.clone()
+            } else {
+                child.props.display_label().to_string()
+            };
+            (id, child.props.display_label().to_string(), child.props.disabled)
+        })
+        .collect()
+}
+
+fn enqueue_bound_assembly(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+    id: StableNodeId,
+    context: &AppContext,
+    mutations: &mut MutationQueue,
+    pending: &mut PendingAssembly,
+) {
+    let world = context.world();
+    match effective_kind(widget) {
+        crate::WidgetKind::NativeMarkdown => {
+            let markdown =
+                RuntimeNativeMarkdown::from_source(&markdown_source_from_props(&widget.props));
+            let request = markdown_renderer_request(&markdown, &widget.props);
+            if world.highlight_request(id) != request.as_ref() {
+                mutations.set_highlight_request(id, request);
+            }
+            pending.markdowns.push((id, markdown));
+        }
+        crate::WidgetKind::AppShell => {
+            let title = widget.props.display_label();
+            let (title_bar, body, overlay) = app_shell_slots(widget, snapshot);
+            if let Some(title_bar) = title_bar {
+                let bar_title = if title.is_empty() {
+                    snapshot
+                        .get(title_bar.get())
+                        .map(|child| child.props.display_label().to_string())
+                        .unwrap_or_default()
+                } else {
+                    title.to_string()
+                };
+                let bar = RuntimeAppTitleBar::new(bar_title);
+                if !snapshot
+                    .get(title_bar.get())
+                    .is_some_and(is_title_bar_child)
+                {
+                    bar.project(title_bar, world, mutations);
+                    pending.title_bars.push((title_bar, bar));
+                }
+            }
+            let mut component = RuntimeAppShell::new();
+            if let Some(title_bar) = title_bar {
+                component = component.title_bar(title_bar);
+            }
+            if let Some(body) = body {
+                component = component.body(body);
+            }
+            if let Some(overlay) = overlay {
+                component = component.overlay(overlay);
+            }
+            pending.app_shells.push((id, component));
+        }
+        crate::WidgetKind::SplitPane => {
+            pending
+                .split_panes
+                .push((id, split_pane_from_widget(widget, snapshot, context, id)));
+        }
+        crate::WidgetKind::Workspace => {
+            pending
+                .workspaces
+                .push((id, workspace_from_widget(widget, snapshot, context, id)));
+        }
+        crate::WidgetKind::Dock => {
+            pending
+                .docks
+                .push((id, dock_from_widget_bound(widget, snapshot, context, id)));
+        }
+        crate::WidgetKind::SettingsPage => {
+            let Some(model) = settings_model_from_props(&widget.props) else {
+                return;
+            };
+            let mut state = nana_ui_core::SettingsState::new(&model);
+            if let Some(tab) = settings_active_tab(&widget.props) {
+                state.select(&model, &tab);
+            }
+            let mut component = RuntimeSettingsPage::new(model, state);
+            if let Some(content) = settings_page_content_child(widget, snapshot) {
+                component = component.content(content);
+            }
+            if let Ok(existing) = context.read(
+                Entity::<RuntimeSettingsPage>::from_stable_id(id),
+                Clone::clone,
+            ) {
+                component.assembly = existing.assembly;
+            }
+            pending.settings_pages.push((id, component));
+        }
+        _ => {}
     }
 }
 
@@ -3333,7 +3669,8 @@ fn project_migrating_component(
         return true;
     }
     if !is_sidebar_frame_body(widget)
-        && try_bind_registered_component(widget, snapshot, id, context, mutations) == Some(true)
+        && try_bind_registered_component(widget, snapshot, id, context, mutations, pending)
+            == Some(true)
     {
         return true;
     }
@@ -3341,155 +3678,6 @@ fn project_migrating_component(
         crate::WidgetKind::Column | crate::WidgetKind::Box if is_sidebar_frame_body(widget) => {
             RuntimeSidebarFrame::scroll_body(widget.props.layout.clone())
                 .project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::CommandPalette => {
-            let Some(items) = host_command_palette_items(&widget.props) else {
-                return false;
-            };
-            let title = widget.props.display_label();
-            let placeholder = if widget.props.placeholder.is_empty() {
-                widget.props.hint.as_str()
-            } else {
-                widget.props.placeholder.as_str()
-            };
-            let query = if !widget.props.value.is_empty() {
-                widget.props.value.clone()
-            } else {
-                crate::widget_map::attr_value(&widget.props, &["query", "data-query"])
-                    .map(str::to_string)
-                    .unwrap_or_default()
-            };
-            let mut component = RuntimeCommandPalette::new(title, items);
-            if !placeholder.is_empty() {
-                component = component.placeholder(Arc::<str>::from(placeholder));
-            }
-            if !query.is_empty() {
-                component = component.query(query);
-            }
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::TreeView => {
-            RuntimeTreeView::new(tree_nodes_from_widget(widget, snapshot))
-                .size(widget.props.size)
-                .project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::CalendarHeatmap => {
-            let mut component =
-                RuntimeCalendarHeatmap::<()>::new(calendar_data_from_props(&widget.props))
-                    .options(calendar_options_from_props(&widget.props));
-            let label = widget.props.display_label();
-            if !label.is_empty() {
-                component = component.label(Arc::<str>::from(label));
-            }
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::NativeMarkdown => {
-            let markdown =
-                RuntimeNativeMarkdown::from_source(&markdown_source_from_props(&widget.props));
-            markdown.project(id, world, mutations);
-            let request = markdown_renderer_request(&markdown, &widget.props);
-            if world.highlight_request(id) != request.as_ref() {
-                mutations.set_highlight_request(id, request);
-            }
-            pending.markdowns.push((id, markdown));
-            true
-        }
-        crate::WidgetKind::GraphCanvas => {
-            let mut component =
-                RuntimeGraphCanvas::new("main", graph_model_from_props(&widget.props));
-            if let Some(viewport) = graph_viewport_from_props(&widget.props) {
-                component = component.viewport(viewport);
-            }
-            if let Some(selection) = graph_selection_from_props(&widget.props) {
-                component = component.selection(Some(selection));
-            }
-            let label = widget.props.display_label();
-            if !label.is_empty() {
-                component = component.label(Arc::<str>::from(label));
-            }
-            if widget.props.disabled {
-                component = component.disabled(true);
-            }
-            component.project(id, world, mutations);
-            true
-        }
-        crate::WidgetKind::Workspace => {
-            let component = workspace_from_widget(widget, snapshot, context, id);
-            component.project(id, world, mutations);
-            pending.workspaces.push((id, component));
-            true
-        }
-        crate::WidgetKind::Dock => {
-            let component = dock_from_widget_bound(widget, snapshot, context, id);
-            component.project(id, world, mutations);
-            pending.docks.push((id, component));
-            true
-        }
-        crate::WidgetKind::SplitPane => {
-            let component = split_pane_from_widget(widget, snapshot, context, id);
-            component.project(id, world, mutations);
-            pending.split_panes.push((id, component));
-            true
-        }
-        crate::WidgetKind::AppShell => {
-            let title = widget.props.display_label();
-            let (title_bar, body, overlay) = app_shell_slots(widget, snapshot);
-            if let Some(title_bar) = title_bar {
-                let bar_title = if title.is_empty() {
-                    snapshot
-                        .get(title_bar.get())
-                        .map(|child| child.props.display_label().to_string())
-                        .unwrap_or_default()
-                } else {
-                    title.to_string()
-                };
-                let bar = RuntimeAppTitleBar::new(bar_title);
-                bar.project(title_bar, world, mutations);
-                if !snapshot
-                    .get(title_bar.get())
-                    .is_some_and(is_title_bar_child)
-                {
-                    pending.title_bars.push((title_bar, bar));
-                }
-            }
-            let mut component = RuntimeAppShell::new();
-            if let Some(title_bar) = title_bar {
-                component = component.title_bar(title_bar);
-            }
-            if let Some(body) = body {
-                component = component.body(body);
-            }
-            if let Some(overlay) = overlay {
-                component = component.overlay(overlay);
-            }
-            component.project(id, world, mutations);
-            pending.app_shells.push((id, component));
-            true
-        }
-        crate::WidgetKind::SettingsPage => {
-            let Some(model) = settings_model_from_props(&widget.props) else {
-                return false;
-            };
-            let mut state = nana_ui_core::SettingsState::new(&model);
-            if let Some(tab) = settings_active_tab(&widget.props) {
-                state.select(&model, &tab);
-            }
-            let mut component = RuntimeSettingsPage::new(model, state);
-            if let Some(content) = settings_page_content_child(widget, snapshot) {
-                component = component.content(content);
-            }
-            if let Ok(existing) = context.read(
-                Entity::<RuntimeSettingsPage>::from_stable_id(id),
-                Clone::clone,
-            ) {
-                component.assembly = existing.assembly;
-            }
-            component.project(id, world, mutations);
-            pending.settings_pages.push((id, component));
             true
         }
         _ => {
@@ -3679,6 +3867,7 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
     }
 }
 
+#[allow(dead_code)]
 fn host_command_palette_items(
     props: &crate::WidgetProps,
 ) -> Option<Vec<nana_ui_core::CommandPaletteItem>> {
@@ -3731,6 +3920,7 @@ fn command_palette_item_from_host(
     }
 }
 
+#[allow(dead_code)]
 fn tree_nodes_from_widget(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
@@ -4347,6 +4537,7 @@ fn native_prop_text(props: &crate::WidgetProps, keys: &[&str]) -> Option<String>
     })
 }
 
+#[allow(dead_code)]
 fn graph_model_from_props(props: &crate::WidgetProps) -> GraphModel {
     let model = props.native_props.get("model");
     let nodes_value = model
@@ -4373,6 +4564,7 @@ fn graph_model_from_props(props: &crate::WidgetProps) -> GraphModel {
         .unwrap_or_else(|_| GraphModel::empty())
 }
 
+#[allow(dead_code)]
 fn graph_viewport_from_props(props: &crate::WidgetProps) -> Option<GraphViewport> {
     let model = props.native_props.get("model");
     let value = props
@@ -4417,6 +4609,7 @@ fn graph_point_from_host(value: &nana_js_engine::HostValue) -> Option<GraphPoint
     }
 }
 
+#[allow(dead_code)]
 fn graph_selection_from_props(props: &crate::WidgetProps) -> Option<GraphSelection> {
     let model = props.native_props.get("model");
     let value = props
@@ -7288,6 +7481,88 @@ mod tests {
             Some(nana_ui_runtime::StandardVisual::NativeMarkdown { text, .. })
                 if text.contains("Title")
         ));
+    }
+
+    #[test]
+    fn command_palette_host_items_keep_category() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let palette = doc.create_element("nana-command-palette");
+        doc.insert(palette, doc.mount_root(), None);
+        let mut props = crate::WidgetProps {
+            label: "Go to".into(),
+            ..Default::default()
+        };
+        props.apply_prop(
+            "items",
+            &nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+                [
+                    ("value".into(), nana_js_engine::HostValue::string("open")),
+                    ("label".into(), nana_js_engine::HostValue::string("Open file")),
+                    (
+                        "category".into(),
+                        nana_js_engine::HostValue::string("Workspace"),
+                    ),
+                    ("shortcut".into(), nana_js_engine::HostValue::string("Ctrl+P")),
+                ]
+                .into_iter()
+                .collect(),
+            )]),
+        );
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(palette.0, crate::WidgetKind::CommandPalette, props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let palette_id = StableNodeId::try_from(palette).unwrap();
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(palette_id),
+                Some(nana_ui_runtime::StandardVisual::CommandPalette { rows, .. })
+                    if rows.iter().any(|row| {
+                        row.label.as_ref() == "Open file"
+                            && row.category.as_deref() == Some("Workspace")
+                            && row.shortcut.as_deref() == Some("Ctrl+P")
+                    })
+            ),
+            "host command palette items must keep category and shortcut"
+        );
+    }
+
+    #[test]
+    fn markdown_source_from_native_props_projects_and_assembles() {
+        let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+        let markdown = doc.create_element("nana-markdown");
+        doc.insert(markdown, doc.mount_root(), None);
+        let mut props = crate::WidgetProps::default();
+        props.apply_prop(
+            "source",
+            &nana_js_engine::HostValue::string("# Native\n\n```mermaid\nflowchart LR\nA-->B\n```"),
+        );
+        props.apply_prop(
+            "mermaidRenderer",
+            &nana_js_engine::HostValue::string("app-mermaid"),
+        );
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(markdown.0, crate::WidgetKind::NativeMarkdown, props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let markdown_id = StableNodeId::try_from(markdown).unwrap();
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(markdown_id),
+                Some(nana_ui_runtime::StandardVisual::NativeMarkdown { text, .. })
+                    if text.contains("Native") && text.contains("flowchart LR")
+            ),
+            "empty value must still bind markdown source from native_props"
+        );
+        let children = doc.runtime.node(markdown_id).unwrap().children;
+        assert!(
+            children.iter().any(|child| {
+                doc.runtime
+                    .highlight_request(*child)
+                    .is_some_and(|request| {
+                        request.presenter.as_ref() == RuntimeNativeMarkdown::MERMAID_PRESENTER
+                    })
+            }),
+            "pending markdown assemble must still attach mermaid fence highlight"
+        );
     }
 
     #[test]
