@@ -365,6 +365,7 @@ fn subtree_unchanged(
     size: Size,
     containing: Size,
     child_style: &nana_ui_core::LayoutStyle,
+    child_fonts: FontSizeContext,
     scope: Option<&ScopeContext<'_>>,
 ) -> bool {
     let Some(scope) = scope else {
@@ -376,8 +377,11 @@ fn subtree_unchanged(
     let Some(cached) = scope.retained.boxes.get(&child) else {
         return false;
     };
-    let (relative_x, relative_y) =
-        child_style.relative_offset_against(Some(containing.width), Some(containing.height));
+    let (relative_x, relative_y) = child_style.relative_offset_against_fonts(
+        Some(containing.width),
+        Some(containing.height),
+        child_fonts,
+    );
     cached.x == origin.x + relative_x
         && cached.y == origin.y + relative_y
         && cached.width == size.width
@@ -469,7 +473,7 @@ fn intrinsic_size_scoped(
     }
     let fonts = fonts_of(style, parent_font_px);
     let child_font_px = fonts.element_px;
-    let padding = style.resolved_padding_against(Some(available.width));
+    let padding = style.resolved_padding_against_fonts(Some(available.width), fonts);
     let border = style.resolved_border_width();
     let chrome = Size::new(
         padding.left + padding.right + border * 2.0,
@@ -503,8 +507,8 @@ fn intrinsic_size_scoped(
         )?);
     }
     let parent_box = gap_containing_block(style, content_available);
-    let gap = style.main_gap_against(direction, parent_box);
-    let cross_gap = style.cross_gap_against(direction, parent_box);
+    let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
+    let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     let wrap = style.flex_wrap;
     let wrapping = match direction {
         FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
@@ -537,6 +541,7 @@ fn intrinsic_size_scoped(
             &flow_children,
             content_available.width,
             gap,
+            child_font_px,
             nodes,
         )
     } else if wrapping {
@@ -601,9 +606,10 @@ fn intrinsic_size_scoped(
         fonts,
     )
     .unwrap_or(default_width)
-    .max(style.resolved_min_width(
+    .max(style.resolved_min_width_fonts(
         Some(available.width),
         Some((viewport.width, viewport.height)),
+        fonts,
     ));
     let mut height = resolve_axis(
         demote_fill_spec_if_indefinite(style.height, available.height),
@@ -612,9 +618,10 @@ fn intrinsic_size_scoped(
         fonts,
     )
     .unwrap_or(default_height)
-    .max(style.resolved_min_height(
+    .max(style.resolved_min_height_fonts(
         Some(available.height),
         Some((viewport.width, viewport.height)),
+        fonts,
     ));
     if matches!(style.box_sizing, BoxSizing::ContentBox) {
         if style.width.is_some_and(LengthSpec::is_definite_declared) {
@@ -624,15 +631,17 @@ fn intrinsic_size_scoped(
             height += chrome.height;
         }
     }
-    if let Some(max) = style.resolved_max_width(
+    if let Some(max) = style.resolved_max_width_fonts(
         Some(available.width),
         Some((viewport.width, viewport.height)),
+        fonts,
     ) {
         width = width.min(max);
     }
-    if let Some(max) = style.resolved_max_height(
+    if let Some(max) = style.resolved_max_height_fonts(
         Some(available.height),
         Some((viewport.width, viewport.height)),
+        fonts,
     ) {
         height = height.min(max);
     }
@@ -708,9 +717,13 @@ fn place_node_scoped(
         );
         return Ok(());
     }
-    let child_font_px = fonts_of(style, parent_font_px).element_px;
-    let (relative_x, relative_y) =
-        style.relative_offset_against(Some(containing.width), Some(containing.height));
+    let fonts = fonts_of(style, parent_font_px);
+    let child_font_px = fonts.element_px;
+    let (relative_x, relative_y) = style.relative_offset_against_fonts(
+        Some(containing.width),
+        Some(containing.height),
+        fonts,
+    );
     let origin = Point {
         x: origin.x + relative_x,
         y: origin.y + relative_y,
@@ -741,7 +754,7 @@ fn place_node_scoped(
         return Ok(());
     }
 
-    let padding = style.resolved_padding_against(Some(size.width));
+    let padding = style.resolved_padding_against_fonts(Some(size.width), fonts);
     let border = style.resolved_border_width();
     let content_origin = Point {
         x: origin.x + border + padding.left,
@@ -780,8 +793,8 @@ fn place_node_scoped(
         }
     }
     let parent_box = gap_containing_block(style, content);
-    let gap = style.main_gap_against(direction, parent_box);
-    let cross_gap = style.cross_gap_against(direction, parent_box);
+    let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
+    let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     let mut child_sizes = Vec::with_capacity(flow.len());
     for child in &flow {
         child_sizes.push(intrinsic_size_scoped(
@@ -874,12 +887,25 @@ fn place_node_scoped(
             .map(|(child, size)| {
                 let margin = nodes
                     .style(*child)
-                    .map(|style| style.resolved_margin_against(Some(content.width)))
+                    .map(|style| {
+                        style.resolved_margin_against_fonts(
+                            Some(content.width),
+                            fonts_of(style.as_ref(), child_font_px),
+                        )
+                    })
                     .unwrap_or_default();
                 cross_extent(*size, direction) + cross_margin(margin, direction)
             })
             .fold(0.0, f32::max);
-        let occupied = main_occupied(&line_flow, &line_sizes, direction, content, gap, nodes);
+        let occupied = main_occupied(
+            &line_flow,
+            &line_sizes,
+            direction,
+            content,
+            gap,
+            child_font_px,
+            nodes,
+        );
         let (mut cursor, effective_gap) = justify_offsets(
             justify,
             main_extent(content, direction),
@@ -892,7 +918,8 @@ fn place_node_scoped(
                 continue;
             };
             let child_style = child_style.as_ref();
-            let margin = child_style.resolved_margin_against(Some(content.width));
+            let child_fonts = fonts_of(child_style, child_font_px);
+            let margin = child_style.resolved_margin_against_fonts(Some(content.width), child_fonts);
             let align = child_style.resolved_align_self(style.align_items);
             let cross_available =
                 cross_extent(content, direction) - cross_margin(margin, direction);
@@ -928,7 +955,15 @@ fn place_node_scoped(
                     y: content_origin.y + main_start,
                 },
             };
-            if !subtree_unchanged(child, child_origin, child_size, content, child_style, scope) {
+            if !subtree_unchanged(
+                child,
+                child_origin,
+                child_size,
+                content,
+                child_style,
+                child_fonts,
+                scope,
+            ) {
                 place_node_scoped(
                     child,
                     child_origin,
@@ -993,16 +1028,22 @@ fn place_node_scoped(
             child_size.height = (base.height - top - bottom).max(0.0);
         }
         let vp = Some((viewport.width, viewport.height));
-        child_size.width = child_size
-            .width
-            .max(child_style.resolved_min_width(Some(base.width), vp));
-        if let Some(max) = child_style.resolved_max_width(Some(base.width), vp) {
+        let child_fonts = fonts_of(child_style, child_font_px);
+        child_size.width = child_size.width.max(child_style.resolved_min_width_fonts(
+            Some(base.width),
+            vp,
+            child_fonts,
+        ));
+        if let Some(max) = child_style.resolved_max_width_fonts(Some(base.width), vp, child_fonts) {
             child_size.width = child_size.width.min(max);
         }
-        child_size.height = child_size
-            .height
-            .max(child_style.resolved_min_height(Some(base.height), vp));
-        if let Some(max) = child_style.resolved_max_height(Some(base.height), vp) {
+        child_size.height = child_size.height.max(child_style.resolved_min_height_fonts(
+            Some(base.height),
+            vp,
+            child_fonts,
+        ));
+        if let Some(max) = child_style.resolved_max_height_fonts(Some(base.height), vp, child_fonts)
+        {
             child_size.height = child_size.height.min(max);
         }
         let child_origin = Point {
@@ -1015,7 +1056,15 @@ fn place_node_scoped(
                     bottom.map_or(0.0, |value| base.height - value - child_size.height)
                 }),
         };
-        if !subtree_unchanged(child, child_origin, child_size, base, child_style, scope) {
+        if !subtree_unchanged(
+            child,
+            child_origin,
+            child_size,
+            base,
+            child_style,
+            child_fonts,
+            scope,
+        ) {
             place_node_scoped(
                 child,
                 child_origin,
@@ -1242,7 +1291,15 @@ fn place_modal_slot(
     let Some(child_style) = nodes.get(id)?.map(|node| node.style.clone()) else {
         return Ok(());
     };
-    if subtree_unchanged(id, origin, size, containing, child_style.as_ref(), scope) {
+    if subtree_unchanged(
+        id,
+        origin,
+        size,
+        containing,
+        child_style.as_ref(),
+        fonts_of(child_style.as_ref(), parent_font_px),
+        scope,
+    ) {
         return Ok(());
     }
     place_node_scoped(
@@ -1304,13 +1361,11 @@ fn packing_main_size(
     let spec = style
         .child_main_length(direction)
         .or_else(|| track.map(GridTrack::as_row_main_length));
-    match resolve_child_main(
-        spec,
-        content_main,
-        viewport,
-        fonts_of(style, parent_font_px),
-    ) {
-        Some(value) => content_box_main_border_size(style, direction, Some(content_main), value),
+    let fonts = fonts_of(style, parent_font_px);
+    match resolve_child_main(spec, content_main, viewport, fonts) {
+        Some(value) => {
+            content_box_main_border_size(style, direction, Some(content_main), value, fonts)
+        }
         None if style.grows() || matches!(spec, Some(LengthSpec::Fill)) => content_main,
         None => main_extent(intrinsic, direction),
     }
@@ -1347,11 +1402,12 @@ fn content_box_main_border_size(
     direction: FlexDirection,
     margin_percent_base: Option<f32>,
     content_main: f32,
+    fonts: FontSizeContext,
 ) -> f32 {
     if !matches!(style.box_sizing, BoxSizing::ContentBox) {
         return content_main;
     }
-    let pad = style.resolved_padding_against(margin_percent_base);
+    let pad = style.resolved_padding_against_fonts(margin_percent_base, fonts);
     let border = style.resolved_border_width();
     content_main
         + match direction {
@@ -1379,7 +1435,10 @@ fn pack_wrap_lines(
         let Some(style) = nodes.style(*child) else {
             continue;
         };
-        let margin = style.resolved_margin_against(Some(content_main));
+        let margin = style.resolved_margin_against_fonts(
+            Some(content_main),
+            fonts_of(style.as_ref(), parent_font_px),
+        );
         let main = packing_main_size(
             style.as_ref(),
             sizes[index],
@@ -1454,7 +1513,10 @@ fn wrap_intrinsic_size(
             let Some(style) = nodes.style(children[index]) else {
                 continue;
             };
-            let margin = style.resolved_margin_against(Some(available.width));
+            let margin = style.resolved_margin_against_fonts(
+                Some(available.width),
+                fonts_of(style.as_ref(), parent_font_px),
+            );
             let main = packing_main_size(
                 style.as_ref(),
                 sizes[index],
@@ -1485,6 +1547,7 @@ fn wrap_intrinsic_size(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn grid_intrinsic_size(
     direction: FlexDirection,
     tracks: &[f32],
@@ -1492,6 +1555,7 @@ fn grid_intrinsic_size(
     children: &[StableNodeId],
     content_width: f32,
     gap: f32,
+    parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
 ) -> Size {
     let gaps = gap * tracks.len().saturating_sub(1) as f32;
@@ -1500,7 +1564,12 @@ fn grid_intrinsic_size(
     for (index, child) in children.iter().enumerate() {
         let margin = nodes
             .style(*child)
-            .map(|style| style.resolved_margin_against(Some(content_width)))
+            .map(|style| {
+                style.resolved_margin_against_fonts(
+                    Some(content_width),
+                    fonts_of(style.as_ref(), parent_font_px),
+                )
+            })
             .unwrap_or_default();
         let size = child_sizes.get(index).copied().unwrap_or_default();
         cross = cross.max(cross_extent(size, direction) + cross_margin(margin, direction));
@@ -1635,7 +1704,12 @@ fn apply_grid_main_sizes(
     for child in children {
         let margin = nodes
             .style(*child)
-            .map(|style| style.resolved_margin_against(Some(content.width)))
+            .map(|style| {
+                style.resolved_margin_against_fonts(
+                    Some(content.width),
+                    fonts_of(style.as_ref(), parent_font_px),
+                )
+            })
             .unwrap_or_default();
         margins.push(margin);
     }
@@ -1706,17 +1780,18 @@ fn distribute_flex_main(
             fixed_or_fill.push(Some(main_extent(sizes[index], direction)));
             continue;
         };
-        let margin = style.resolved_margin_against(Some(content.width));
+        let fonts = fonts_of(style.as_ref(), parent_font_px);
+        let margin = style.resolved_margin_against_fonts(Some(content.width), fonts);
         let (margin_main, min_main, max_main) = match direction {
             FlexDirection::Row => (
                 margin.left + margin.right,
-                style.resolved_min_width(Some(content.width), vp),
-                style.resolved_max_width(Some(content.width), vp),
+                style.resolved_min_width_fonts(Some(content.width), vp, fonts),
+                style.resolved_max_width_fonts(Some(content.width), vp, fonts),
             ),
             FlexDirection::Column => (
                 margin.top + margin.bottom,
-                style.resolved_min_height(Some(content_main), vp),
-                style.resolved_max_height(Some(content_main), vp),
+                style.resolved_min_height_fonts(Some(content_main), vp, fonts),
+                style.resolved_max_height_fonts(Some(content_main), vp, fonts),
             ),
         };
         margin_mains.push(margin_main);
@@ -1735,12 +1810,7 @@ fn distribute_flex_main(
         // their boxes. Fixtures that need shrink set `flex-shrink` explicitly
         // (T-F18/F19).
         shrinks.push(style.flex_shrink.unwrap_or(0.0).max(0.0));
-        match resolve_child_main(
-            main,
-            content_main,
-            viewport,
-            fonts_of(style.as_ref(), parent_font_px),
-        ) {
+        match resolve_child_main(main, content_main, viewport, fonts) {
             Some(value) => {
                 let mut value = value.max(min_main);
                 if let Some(max) = max_main {
@@ -1751,6 +1821,7 @@ fn distribute_flex_main(
                     direction,
                     Some(content.width),
                     value,
+                    fonts,
                 );
                 fixed_or_fill.push(Some(value));
             }
@@ -1767,6 +1838,7 @@ fn distribute_flex_main(
                         direction,
                         Some(content.width),
                         value,
+                        fonts,
                     );
                     fixed_or_fill.push(Some(value));
                 } else {
@@ -1954,12 +2026,16 @@ fn main_occupied(
     direction: FlexDirection,
     content: Size,
     gap: f32,
+    parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
 ) -> f32 {
     let mut occupied = 0.0;
     for (id, size) in children.iter().zip(sizes) {
         let margin = match nodes.style(*id) {
-            Some(style) => style.resolved_margin_against(Some(content.width)),
+            Some(style) => style.resolved_margin_against_fonts(
+                Some(content.width),
+                fonts_of(style.as_ref(), parent_font_px),
+            ),
             None => Default::default(),
         };
         occupied += main_extent(*size, direction)
@@ -3135,6 +3211,78 @@ mod tests {
         assert_eq!(
             boxes["child"].width, 64.0,
             "2em against parent font-size 32px must be 64px, not 32px"
+        );
+    }
+
+    #[test]
+    fn child_em_padding_uses_parent_computed_font_size() {
+        let tree = StyleLayoutNode {
+            id: "parent".into(),
+            style: LayoutStyle {
+                font_size: Some(32.0),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "child".into(),
+                style: LayoutStyle {
+                    padding: Some(LengthSpec::Em(1.0)),
+                    ..LayoutStyle::default()
+                },
+                children: vec![StyleLayoutNode {
+                    id: "inner".into(),
+                    style: LayoutStyle {
+                        width: Some(LengthSpec::Px(10.0)),
+                        height: Some(LengthSpec::Px(10.0)),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                }],
+            }],
+        };
+        let boxes = RuntimeLayoutEngine
+            .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            boxes["inner"].x, 32.0,
+            "1em padding against inherited 32px font-size must inset content 32px, not 16px"
+        );
+        assert_eq!(boxes["inner"].y, 32.0);
+        assert_eq!(
+            boxes["child"].width, 74.0,
+            "1em padding on both sides must add 64px to the 10px content box"
+        );
+        assert_eq!(boxes["child"].height, 74.0);
+    }
+
+    #[test]
+    fn child_em_min_height_uses_parent_computed_font_size() {
+        let tree = StyleLayoutNode {
+            id: "parent".into(),
+            style: LayoutStyle {
+                font_size: Some(32.0),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "child".into(),
+                style: LayoutStyle {
+                    min_height: Some(LengthSpec::Em(2.0)),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+            }],
+        };
+        let boxes = RuntimeLayoutEngine
+            .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            boxes["child"].height, 64.0,
+            "2em min-height against parent font-size 32px must be 64px, not 32px"
         );
     }
 }

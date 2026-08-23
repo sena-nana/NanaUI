@@ -653,12 +653,23 @@ impl LengthSpec {
     }
 
     /// 非负长度（width/height/padding/min-size）；`None` 若无法解析。
+    /// `em`/`rem` 使用 [`FontSizeContext::default`]（16px）。
     pub fn resolve_non_negative(
         self,
         percent_base: Option<f32>,
         viewport: Option<(f32, f32)>,
     ) -> Option<f32> {
-        self.resolve_with(percent_base, viewport)
+        self.resolve_non_negative_fonts(percent_base, viewport, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolve_non_negative`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolve_non_negative_fonts(
+        self,
+        percent_base: Option<f32>,
+        viewport: Option<(f32, f32)>,
+        fonts: FontSizeContext,
+    ) -> Option<f32> {
+        self.resolve_with_fonts(percent_base, viewport, fonts)
             .map(|v| v.max(0.0))
     }
 
@@ -1042,9 +1053,18 @@ impl LayoutStyle {
 
     /// `row-gap` / uniform `gap`，`%` 相对 `percent_base`（通常为 CB 高度，缺省回退宽度）。
     pub fn resolved_row_gap_against(&self, percent_base: Option<f32>) -> f32 {
+        self.resolved_row_gap_against_fonts(percent_base, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_row_gap_against`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_row_gap_against_fonts(
+        &self,
+        percent_base: Option<f32>,
+        fonts: FontSizeContext,
+    ) -> f32 {
         self.row_gap
             .or(self.gap)
-            .and_then(|s| s.resolve_px(percent_base))
+            .and_then(|s| s.resolve_with_fonts(percent_base, None, fonts))
             .unwrap_or(0.0)
             .max(0.0)
     }
@@ -1056,9 +1076,18 @@ impl LayoutStyle {
 
     /// `column-gap` / uniform `gap`，`%` 相对包含块宽度。
     pub fn resolved_column_gap_against(&self, percent_base: Option<f32>) -> f32 {
+        self.resolved_column_gap_against_fonts(percent_base, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_column_gap_against`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_column_gap_against_fonts(
+        &self,
+        percent_base: Option<f32>,
+        fonts: FontSizeContext,
+    ) -> f32 {
         self.column_gap
             .or(self.gap)
-            .and_then(|s| s.resolve_px(percent_base))
+            .and_then(|s| s.resolve_with_fonts(percent_base, None, fonts))
             .unwrap_or(0.0)
             .max(0.0)
     }
@@ -1070,11 +1099,20 @@ impl LayoutStyle {
 
     /// 主轴 gap，携带 CB 供 `%` 解析（column-gap→宽；row-gap→高，缺省回退宽）。
     pub fn main_gap_against(&self, direction: FlexDirection, cb: ParentBox) -> f32 {
+        self.main_gap_against_fonts(direction, cb, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::main_gap_against`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn main_gap_against_fonts(
+        &self,
+        direction: FlexDirection,
+        cb: ParentBox,
+        fonts: FontSizeContext,
+    ) -> f32 {
         match direction {
-            FlexDirection::Row => self.resolved_column_gap_against(cb.width),
-            FlexDirection::Column => {
-                self.resolved_row_gap_against(definite_length(cb.height).or(cb.width))
-            }
+            FlexDirection::Row => self.resolved_column_gap_against_fonts(cb.width, fonts),
+            FlexDirection::Column => self
+                .resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts),
         }
     }
 
@@ -1086,11 +1124,20 @@ impl LayoutStyle {
     /// 交叉轴 gap，携带 CB 供 `%` 解析。
     /// Row 的 row-gap `%`：定高优先，否则回退宽度（wrap 自动高常见路径）。
     pub fn cross_gap_against(&self, direction: FlexDirection, cb: ParentBox) -> f32 {
+        self.cross_gap_against_fonts(direction, cb, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::cross_gap_against`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn cross_gap_against_fonts(
+        &self,
+        direction: FlexDirection,
+        cb: ParentBox,
+        fonts: FontSizeContext,
+    ) -> f32 {
         match direction {
-            FlexDirection::Row => {
-                self.resolved_row_gap_against(definite_length(cb.height).or(cb.width))
-            }
-            FlexDirection::Column => self.resolved_column_gap_against(cb.width),
+            FlexDirection::Row => self
+                .resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts),
+            FlexDirection::Column => self.resolved_column_gap_against_fonts(cb.width, fonts),
         }
     }
 
@@ -1105,7 +1152,17 @@ impl LayoutStyle {
     }
 
     /// Resolve padding; `%` / calc 相对包含块宽度 `percent_base`。
+    /// `em`/`rem` 使用 [`FontSizeContext::default`]（16px）。
     pub fn resolved_padding_against(&self, percent_base: Option<f32>) -> PaddingSpec {
+        self.resolved_padding_against_fonts(percent_base, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_padding_against`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_padding_against_fonts(
+        &self,
+        percent_base: Option<f32>,
+        fonts: FontSizeContext,
+    ) -> PaddingSpec {
         resolve_box_edge_specs(
             self.padding,
             self.padding_top,
@@ -1113,6 +1170,7 @@ impl LayoutStyle {
             self.padding_bottom,
             self.padding_left,
             percent_base,
+            fonts,
         )
     }
 
@@ -1124,6 +1182,15 @@ impl LayoutStyle {
     /// Resolve margin; `%` / calc 相对包含块宽度 `percent_base`（含上下边）。
     /// CSS 允许负 margin；不钳制到 0。
     pub fn resolved_margin_against(&self, percent_base: Option<f32>) -> PaddingSpec {
+        self.resolved_margin_against_fonts(percent_base, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_margin_against`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_margin_against_fonts(
+        &self,
+        percent_base: Option<f32>,
+        fonts: FontSizeContext,
+    ) -> PaddingSpec {
         resolve_box_edge_specs_signed(
             self.margin,
             self.margin_top,
@@ -1131,6 +1198,7 @@ impl LayoutStyle {
             self.margin_bottom,
             self.margin_left,
             percent_base,
+            fonts,
         )
     }
 
@@ -1140,7 +1208,17 @@ impl LayoutStyle {
         percent_base: Option<f32>,
         viewport: Option<(f32, f32)>,
     ) -> f32 {
-        resolve_min_size(self.min_width, percent_base, viewport)
+        self.resolved_min_width_fonts(percent_base, viewport, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_min_width`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_min_width_fonts(
+        &self,
+        percent_base: Option<f32>,
+        viewport: Option<(f32, f32)>,
+        fonts: FontSizeContext,
+    ) -> f32 {
+        resolve_min_size(self.min_width, percent_base, viewport, fonts)
     }
 
     /// `max-width` → 有限非负 px；`Fill`/`Auto`/`Shrink` 或无法解析 → `None`（不钳制）。
@@ -1149,7 +1227,17 @@ impl LayoutStyle {
         percent_base: Option<f32>,
         viewport: Option<(f32, f32)>,
     ) -> Option<f32> {
-        resolve_max_size(self.max_width, percent_base, viewport)
+        self.resolved_max_width_fonts(percent_base, viewport, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_max_width`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_max_width_fonts(
+        &self,
+        percent_base: Option<f32>,
+        viewport: Option<(f32, f32)>,
+        fonts: FontSizeContext,
+    ) -> Option<f32> {
+        resolve_max_size(self.max_width, percent_base, viewport, fonts)
     }
 
     /// `min-height` → 非负 px；无法解析时 0。
@@ -1158,7 +1246,17 @@ impl LayoutStyle {
         percent_base: Option<f32>,
         viewport: Option<(f32, f32)>,
     ) -> f32 {
-        resolve_min_size(self.min_height, percent_base, viewport)
+        self.resolved_min_height_fonts(percent_base, viewport, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_min_height`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_min_height_fonts(
+        &self,
+        percent_base: Option<f32>,
+        viewport: Option<(f32, f32)>,
+        fonts: FontSizeContext,
+    ) -> f32 {
+        resolve_min_size(self.min_height, percent_base, viewport, fonts)
     }
 
     /// `max-height` → 有限非负 px；无有限上限 → `None`。
@@ -1167,7 +1265,17 @@ impl LayoutStyle {
         percent_base: Option<f32>,
         viewport: Option<(f32, f32)>,
     ) -> Option<f32> {
-        resolve_max_size(self.max_height, percent_base, viewport)
+        self.resolved_max_height_fonts(percent_base, viewport, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::resolved_max_height`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn resolved_max_height_fonts(
+        &self,
+        percent_base: Option<f32>,
+        viewport: Option<(f32, f32)>,
+        fonts: FontSizeContext,
+    ) -> Option<f32> {
+        resolve_max_size(self.max_height, percent_base, viewport, fonts)
     }
 
     /// `min-width: 0` / `0px` / `0%` 等零值。
@@ -1184,24 +1292,34 @@ impl LayoutStyle {
 
     /// `relative` inset；`%` 相对 containing block 宽/高。优先 `left`/`top`。
     pub fn relative_offset_against(&self, base_w: Option<f32>, base_h: Option<f32>) -> (f32, f32) {
+        self.relative_offset_against_fonts(base_w, base_h, FontSizeContext::default())
+    }
+
+    /// 同 [`Self::relative_offset_against`]，携带显式 `em`/`rem` 字号上下文。
+    pub fn relative_offset_against_fonts(
+        &self,
+        base_w: Option<f32>,
+        base_h: Option<f32>,
+        fonts: FontSizeContext,
+    ) -> (f32, f32) {
         if !self.position.applies_relative_offset() {
             return (0.0, 0.0);
         }
         let dx = self
             .offset_left
-            .and_then(|l| l.resolve_px(base_w))
+            .and_then(|l| l.resolve_with_fonts(base_w, None, fonts))
             .or_else(|| {
                 self.offset_right
-                    .and_then(|r| r.resolve_px(base_w))
+                    .and_then(|r| r.resolve_with_fonts(base_w, None, fonts))
                     .map(|v| -v)
             })
             .unwrap_or(0.0);
         let dy = self
             .offset_top
-            .and_then(|t| t.resolve_px(base_h))
+            .and_then(|t| t.resolve_with_fonts(base_h, None, fonts))
             .or_else(|| {
                 self.offset_bottom
-                    .and_then(|b| b.resolve_px(base_h))
+                    .and_then(|b| b.resolve_with_fonts(base_h, None, fonts))
                     .map(|v| -v)
             })
             .unwrap_or(0.0);
@@ -1415,18 +1533,26 @@ fn definite_length(v: Option<f32>) -> Option<f32> {
     v.filter(|n| *n > 0.0)
 }
 
-fn resolve_edge_length(spec: Option<LengthSpec>, percent_base: Option<f32>) -> Option<f32> {
+fn resolve_edge_length(
+    spec: Option<LengthSpec>,
+    percent_base: Option<f32>,
+    fonts: FontSizeContext,
+) -> Option<f32> {
     spec.and_then(|s| match s {
         LengthSpec::Fill | LengthSpec::Shrink | LengthSpec::Auto => None,
-        other => other.resolve_non_negative(percent_base, None),
+        other => other.resolve_non_negative_fonts(percent_base, None, fonts),
     })
 }
 
 /// Margin 边长：允许负值（CSS Values / Box Model）。
-fn resolve_edge_length_signed(spec: Option<LengthSpec>, percent_base: Option<f32>) -> Option<f32> {
+fn resolve_edge_length_signed(
+    spec: Option<LengthSpec>,
+    percent_base: Option<f32>,
+    fonts: FontSizeContext,
+) -> Option<f32> {
     spec.and_then(|s| match s {
         LengthSpec::Fill | LengthSpec::Shrink | LengthSpec::Auto => None,
-        other => other.resolve_with(percent_base, None),
+        other => other.resolve_with_fonts(percent_base, None, fonts),
     })
 }
 
@@ -1434,11 +1560,12 @@ fn resolve_min_size(
     spec: Option<LengthSpec>,
     percent_base: Option<f32>,
     viewport: Option<(f32, f32)>,
+    fonts: FontSizeContext,
 ) -> f32 {
     match spec {
         None | Some(LengthSpec::Auto) | Some(LengthSpec::Shrink) | Some(LengthSpec::Fill) => 0.0,
         Some(other) => other
-            .resolve_non_negative(percent_base, viewport)
+            .resolve_non_negative_fonts(percent_base, viewport, fonts)
             .unwrap_or(0.0),
     }
 }
@@ -1447,11 +1574,12 @@ fn resolve_max_size(
     spec: Option<LengthSpec>,
     percent_base: Option<f32>,
     viewport: Option<(f32, f32)>,
+    fonts: FontSizeContext,
 ) -> Option<f32> {
     match spec? {
         LengthSpec::Fill | LengthSpec::Auto | LengthSpec::Shrink => None,
         other => other
-            .resolve_non_negative(percent_base, viewport)
+            .resolve_non_negative_fonts(percent_base, viewport, fonts)
             .filter(|v| v.is_finite()),
     }
 }
@@ -1463,17 +1591,20 @@ fn resolve_box_edge_specs(
     bottom: Option<LengthSpec>,
     left: Option<LengthSpec>,
     percent_base: Option<f32>,
+    fonts: FontSizeContext,
 ) -> PaddingSpec {
-    let u = resolve_edge_length(uniform, percent_base).unwrap_or(0.0);
+    let u = resolve_edge_length(uniform, percent_base, fonts).unwrap_or(0.0);
     PaddingSpec {
-        top: resolve_edge_length(top, percent_base).unwrap_or(u).max(0.0),
-        right: resolve_edge_length(right, percent_base)
+        top: resolve_edge_length(top, percent_base, fonts)
             .unwrap_or(u)
             .max(0.0),
-        bottom: resolve_edge_length(bottom, percent_base)
+        right: resolve_edge_length(right, percent_base, fonts)
             .unwrap_or(u)
             .max(0.0),
-        left: resolve_edge_length(left, percent_base)
+        bottom: resolve_edge_length(bottom, percent_base, fonts)
+            .unwrap_or(u)
+            .max(0.0),
+        left: resolve_edge_length(left, percent_base, fonts)
             .unwrap_or(u)
             .max(0.0),
     }
@@ -1486,19 +1617,22 @@ fn resolve_box_edge_specs_signed(
     bottom: Option<LengthSpec>,
     left: Option<LengthSpec>,
     percent_base: Option<f32>,
+    fonts: FontSizeContext,
 ) -> PaddingSpec {
-    let u = resolve_edge_length_signed(uniform, percent_base).unwrap_or(0.0);
+    let u = resolve_edge_length_signed(uniform, percent_base, fonts).unwrap_or(0.0);
     PaddingSpec {
-        top: resolve_edge_length_signed(top, percent_base).unwrap_or(u),
-        right: resolve_edge_length_signed(right, percent_base).unwrap_or(u),
-        bottom: resolve_edge_length_signed(bottom, percent_base).unwrap_or(u),
-        left: resolve_edge_length_signed(left, percent_base).unwrap_or(u),
+        top: resolve_edge_length_signed(top, percent_base, fonts).unwrap_or(u),
+        right: resolve_edge_length_signed(right, percent_base, fonts).unwrap_or(u),
+        bottom: resolve_edge_length_signed(bottom, percent_base, fonts).unwrap_or(u),
+        left: resolve_edge_length_signed(left, percent_base, fonts).unwrap_or(u),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BoxSizing, FlexDirection, LayoutStyle, LengthSpec, OverflowSpec, ParentBox};
+    use super::{
+        BoxSizing, FlexDirection, FontSizeContext, LayoutStyle, LengthSpec, OverflowSpec, ParentBox,
+    };
 
     #[test]
     fn scrollable_overflow_is_also_a_paint_clip() {
@@ -1672,6 +1806,20 @@ mod tests {
         assert_eq!(margin.top, 10.0);
         assert_eq!(margin.left, 8.0);
         assert!(layout.resolved_padding().is_zero());
+    }
+
+    #[test]
+    fn padding_em_default_api_stays_16px_fonts_uses_element_px() {
+        let layout = LayoutStyle {
+            padding: Some(LengthSpec::Em(1.0)),
+            ..LayoutStyle::default()
+        };
+        let pad = layout.resolved_padding_against(None);
+        assert_eq!(pad.left, 16.0);
+        assert_eq!(pad.top, 16.0);
+        let pad32 = layout.resolved_padding_against_fonts(None, FontSizeContext::new(16.0, 32.0));
+        assert_eq!(pad32.left, 32.0);
+        assert_eq!(pad32.top, 32.0);
     }
 
     #[test]
