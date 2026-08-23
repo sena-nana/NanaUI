@@ -1,6 +1,10 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use wgpu;
 
@@ -15,14 +19,16 @@ var source: texture_2d<f32>;
 var source_sampler: sampler;
 
 struct LayerUniform {
-    // opacity, corner radius (logical px), width, height
+    // opacity, corner radius (logical px), dest width, dest height
     params: vec4<f32>,
-    // opaque flag, scale factor, dest width, dest height
+    // opaque flag, scale factor, dest tex width, dest tex height
     source: vec4<f32>,
     // CSS matrix a, b, c, d
     affine: vec4<f32>,
-    // e, f, bounds.x, bounds.y
+    // e, f, dest.x, dest.y
     origin: vec4<f32>,
+    // rounded clip in the same pre-affine logical space as dest (sibling Quad)
+    clip: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -31,6 +37,15 @@ var<uniform> layer: LayerUniform;
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) local: vec2<f32>,
+}
+
+// Same SDF as scene quad solids so HostTexture and the sibling Quad share a clip.
+fn rounded_box_sdf(p: vec2<f32>, size: vec2<f32>, corners: vec4<f32>) -> f32 {
+    var box_half = select(corners.yz, corners.xw, p.x > 0.0);
+    var corner = select(box_half.y, box_half.x, p.y > 0.0);
+    var q = abs(p) - size + corner;
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner;
 }
 
 @vertex
@@ -62,20 +77,33 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
         1.0,
     );
     output.uv = uv;
+    output.local = local;
     return output;
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let radius = min(layer.params.y, min(layer.params.z, layer.params.w) * 0.5);
-    let centered = abs(input.uv * layer.params.zw - layer.params.zw * 0.5);
-    let corner = centered - (layer.params.zw * 0.5 - vec2<f32>(radius));
-    let distance = length(max(corner, vec2<f32>(0.0)))
-        + min(max(corner.x, corner.y), 0.0) - radius;
-    let coverage = select(1.0, clamp(0.5 - distance / max(fwidth(distance), 0.0001), 0.0, 1.0), radius > 0.0);
     let sampled = textureSample(source, source_sampler, input.uv);
     let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
-    return vec4<f32>(sampled.rgb, source_alpha) * layer.params.x * coverage;
+    let color = vec4<f32>(sampled.rgb, source_alpha) * layer.params.x;
+    let has_clip = layer.clip.z > 0.0 && layer.clip.w > 0.0;
+    let box_pos = select(layer.origin.zw, layer.clip.xy, has_clip);
+    let box_size = select(layer.params.zw, layer.clip.zw, has_clip);
+    let radius = min(layer.params.y, min(box_size.x, box_size.y) * 0.5);
+    if radius <= 0.0 {
+        return color;
+    }
+    let scale = max(layer.source.y, 0.0001);
+    let pos = box_pos * scale;
+    let size = box_size * scale;
+    let local_pos = input.local * scale;
+    let scaled_radius = radius * scale;
+    let dist = rounded_box_sdf(
+        -(local_pos - pos - size * 0.5) * 2.0,
+        size,
+        vec4<f32>(scaled_radius * 2.0)
+    ) / 2.0;
+    return color * clamp(0.5 - dist, 0.0, 1.0);
 }
 "#;
 
@@ -414,8 +442,9 @@ impl HostTextureLayer {
     }
 
     pub fn with_clip(mut self, clip: LogicalRect) -> Self {
-        // Clip rectangles use the same window-logical coordinate space as the
-        // Scene bounds and are intersected with the parent clip at draw.
+        // Pre-affine logical clip, same space as Scene bounds / the sibling
+        // Quad. Combined with `corner_radius` this is the rounded clip; the
+        // AABB is still scissored at draw.
         self.clip = Some(clip);
         self
     }
@@ -770,6 +799,7 @@ struct LayerUniform {
     source: [f32; 4],
     affine: [f32; 4],
     origin: [f32; 4],
+    clip: [f32; 4],
 }
 
 fn make_layer_uniform(
@@ -784,6 +814,7 @@ fn make_layer_uniform(
     } else {
         1.0
     };
+    let clip = layer.clip.unwrap_or(bounds);
     LayerUniform {
         params: [
             layer.opacity,
@@ -803,6 +834,7 @@ fn make_layer_uniform(
         ],
         affine: [affine[0], affine[1], affine[2], affine[3]],
         origin: [affine[4], affine[5], bounds.x, bounds.y],
+        clip: [clip.x, clip.y, clip.width.max(0.0), clip.height.max(0.0)],
     }
 }
 
@@ -848,9 +880,7 @@ fn finite_opacity(opacity: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use std::thread;
+    use std::{collections::HashMap, sync::Arc, thread};
 
     use pollster::block_on;
     use wgpu;
@@ -988,13 +1018,31 @@ mod tests {
         assert_eq!(opaque_uniform.source[0], 1.0);
 
         let rounded = make_layer_uniform(
-            &HostTextureLayer::from_binding(premultiplied).with_corner_radius(8.0),
+            &HostTextureLayer::from_binding(premultiplied.clone()).with_corner_radius(8.0),
             bounds,
             identity,
             1.0,
             [320, 180],
         );
         assert_eq!(rounded.params[1], 8.0);
+        assert_eq!(rounded.clip, [0.0, 0.0, 320.0, 180.0]);
+
+        let contain_dest = LogicalRect::new(0.0, 40.0, 320.0, 100.0);
+        let rounded_clip = make_layer_uniform(
+            &HostTextureLayer::from_binding(premultiplied)
+                .with_corner_radius(32.0)
+                .with_clip(bounds),
+            contain_dest,
+            identity,
+            1.0,
+            [320, 180],
+        );
+        assert_eq!(rounded_clip.params[1], 32.0);
+        assert_eq!(rounded_clip.params[2], 320.0);
+        assert_eq!(rounded_clip.params[3], 100.0);
+        assert_eq!(rounded_clip.origin[2], 0.0);
+        assert_eq!(rounded_clip.origin[3], 40.0);
+        assert_eq!(rounded_clip.clip, [0.0, 0.0, 320.0, 180.0]);
     }
 
     #[test]

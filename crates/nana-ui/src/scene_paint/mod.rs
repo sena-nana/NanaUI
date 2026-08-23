@@ -13,19 +13,23 @@ mod quad;
 mod text;
 mod validate;
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Instant,
+};
 
 use nana_ui_core::GpuWorkObservation;
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
 
-use crate::gpu_work::{GpuStageTimings, GpuWorkSink};
-use crate::scene_gpu::{
-    SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext,
-    SceneGpuRenderer, SceneGpuRendererRegistry,
+use crate::{
+    HostTextureRegistry, PhysicalRect,
+    gpu_work::{GpuStageTimings, GpuWorkSink},
+    scene_gpu::{
+        SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext,
+        SceneGpuRenderer, SceneGpuRendererRegistry,
+    },
 };
-use crate::{HostTextureRegistry, PhysicalRect};
 
 /// How many distinct scene instances keep a validated operation stream.
 const VALIDATED_SCENE_CACHE: usize = 8;
@@ -383,18 +387,18 @@ impl SceneWgpuPainter {
                             binding.height as f32,
                             custom.fit,
                         );
-                        let corner_radius = scene
+                        let (rounded_clip, corner_radius) = scene
                             .primitive(nana_ui_scene::PrimitiveId {
                                 node: primitive.id.node,
                                 slot: 0,
                             })
                             .and_then(|quad| match &quad.kind {
                                 ScenePrimitiveKind::Quad { corner_radius, .. } => {
-                                    Some(*corner_radius)
+                                    Some((local_rect(quad.bounds), *corner_radius))
                                 }
                                 _ => None,
                             })
-                            .unwrap_or(0.0);
+                            .unwrap_or((bounds, 0.0));
                         commands.push(DrawCommand::HostTexture(self.host_textures.prepare(
                             &self.device,
                             &self.queue,
@@ -406,6 +410,7 @@ impl SceneWgpuPainter {
                             scissor,
                             primitive.opacity,
                             corner_radius,
+                            rounded_clip,
                             dest_physical,
                             scale,
                             Some(&gpu_work),
@@ -1281,6 +1286,64 @@ mod tests {
             "8px letter-spacing must change painted pixels versus default tracking"
         );
         drop(texture);
+    }
+
+    #[test]
+    fn host_texture_rounded_clip_matches_sibling_quad_not_fitted_dest() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let preview = context
+            .create_component(
+                document,
+                GpuTextureView::new("layer")
+                    .with_corner_radius(32.0)
+                    .contain(),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, preview.stable_id(), 0.0, 0.0, 64.0, 64.0);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        let view = solid_texture_view(&device, &queue, format, 64, 32, wgpu::Color::GREEN);
+        let registry = register_host_texture("layer", &view, 64, 32);
+        let (target, target_view) = test_copy_target(&device, format, 64, 64);
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui host texture rounded clip"),
+        });
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target_view,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+        let center = pixel(&pixels, 64, 32, 32);
+        let dest_corner = pixel(&pixels, 64, 2, 18);
+        assert!(
+            is_green_slot(center),
+            "contain dest center must stay inside the sibling Quad circle, got {center:?}"
+        );
+        assert!(
+            dest_corner[1] < 40,
+            "letterboxed dest corner is outside the 32px node circle and must not round the dest, got {dest_corner:?}"
+        );
+        drop(view);
     }
 
     fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry) {
