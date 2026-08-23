@@ -63,14 +63,22 @@ impl RuntimeLayoutEngine {
         let mut intrinsic = HashMap::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
         for root in roots {
-            let root_size =
-                intrinsic_size(root, available, None, viewport, &mut nodes, &mut intrinsic)?;
+            let root_size = intrinsic_size(
+                root,
+                available,
+                None,
+                viewport,
+                ROOT_FONT_PX,
+                &mut nodes,
+                &mut intrinsic,
+            )?;
             place_node(
                 root,
                 Point::ZERO,
                 root_size,
                 available,
                 viewport,
+                ROOT_FONT_PX,
                 &mut nodes,
                 &mut intrinsic,
                 &mut output,
@@ -140,6 +148,7 @@ impl RuntimeLayoutEngine {
                 available,
                 None,
                 viewport,
+                ROOT_FONT_PX,
                 &mut nodes,
                 &mut intrinsic,
                 scope_ref,
@@ -150,6 +159,7 @@ impl RuntimeLayoutEngine {
                 root_size,
                 available,
                 viewport,
+                ROOT_FONT_PX,
                 &mut nodes,
                 &mut intrinsic,
                 &mut output,
@@ -407,6 +417,7 @@ fn intrinsic_size(
     available: Size,
     parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut IntrinsicCache,
 ) -> Result<Size, UiWorldError> {
@@ -415,6 +426,7 @@ fn intrinsic_size(
         available,
         parent_direction,
         viewport,
+        parent_font_px,
         nodes,
         cache,
         None,
@@ -427,6 +439,7 @@ fn intrinsic_size_scoped(
     available: Size,
     parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut IntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
@@ -454,6 +467,8 @@ fn intrinsic_size_scoped(
     if style.omits_box() {
         return Ok(Size::default());
     }
+    let fonts = fonts_of(style, parent_font_px);
+    let child_font_px = fonts.element_px;
     let padding = style.resolved_padding_against(Some(available.width));
     let border = style.resolved_border_width();
     let chrome = Size::new(
@@ -481,6 +496,7 @@ fn intrinsic_size_scoped(
             content_available,
             Some(direction),
             viewport,
+            child_font_px,
             nodes,
             cache,
             scope,
@@ -507,6 +523,7 @@ fn intrinsic_size_scoped(
             content_available,
             direction == FlexDirection::Column,
             viewport,
+            child_font_px,
             nodes,
             cache,
             scope,
@@ -533,6 +550,7 @@ fn intrinsic_size_scoped(
             cross_gap,
             grid_tracks,
             viewport,
+            child_font_px,
             nodes,
         )
     } else {
@@ -576,7 +594,6 @@ fn intrinsic_size_scoped(
         content.width + chrome.width
     };
     let default_height = content.height + chrome.height;
-    let fonts = fonts_of(style);
     let mut width = resolve_axis(
         demote_fill_spec_if_indefinite(style.width, available.width),
         available.width,
@@ -631,12 +648,22 @@ fn place_node(
     size: Size,
     containing: Size,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
 ) -> Result<(), UiWorldError> {
     place_node_scoped(
-        id, origin, size, containing, viewport, nodes, intrinsic, output, None,
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        parent_font_px,
+        nodes,
+        intrinsic,
+        output,
+        None,
     )
 }
 
@@ -647,6 +674,7 @@ fn place_node_scoped(
     size: Size,
     containing: Size,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
@@ -680,6 +708,7 @@ fn place_node_scoped(
         );
         return Ok(());
     }
+    let child_font_px = fonts_of(style, parent_font_px).element_px;
     let (relative_x, relative_y) =
         style.relative_offset_against(Some(containing.width), Some(containing.height));
     let origin = Point {
@@ -698,7 +727,16 @@ fn place_node_scoped(
 
     if let Some(modal) = modal.as_ref() {
         place_modal_children(
-            id, origin, size, modal, viewport, nodes, intrinsic, output, scope,
+            id,
+            origin,
+            size,
+            modal,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            output,
+            scope,
         )?;
         return Ok(());
     }
@@ -751,6 +789,7 @@ fn place_node_scoped(
             content,
             Some(direction),
             viewport,
+            child_font_px,
             nodes,
             intrinsic,
             scope,
@@ -780,6 +819,7 @@ fn place_node_scoped(
             gap,
             grid_tracks,
             viewport,
+            child_font_px,
             nodes,
         )
     } else {
@@ -811,6 +851,7 @@ fn place_node_scoped(
                 gap,
                 tracks,
                 viewport,
+                child_font_px,
                 nodes,
                 intrinsic,
                 scope,
@@ -823,6 +864,7 @@ fn place_node_scoped(
                 content,
                 gap,
                 viewport,
+                child_font_px,
                 nodes,
             );
         }
@@ -893,6 +935,7 @@ fn place_node_scoped(
                     child_size,
                     content,
                     viewport,
+                    child_font_px,
                     nodes,
                     intrinsic,
                     output,
@@ -921,8 +964,16 @@ fn place_node_scoped(
         } else {
             content_origin
         };
-        let mut child_size =
-            intrinsic_size_scoped(child, base, None, viewport, nodes, intrinsic, scope)?;
+        let mut child_size = intrinsic_size_scoped(
+            child,
+            base,
+            None,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            scope,
+        )?;
         let left = LayoutStyle::resolve_inset(child_style.offset_left, base.width);
         let right = LayoutStyle::resolve_inset(child_style.offset_right, base.width);
         let top = LayoutStyle::resolve_inset(child_style.offset_top, base.height);
@@ -971,6 +1022,7 @@ fn place_node_scoped(
                 child_size,
                 base,
                 viewport,
+                child_font_px,
                 nodes,
                 intrinsic,
                 output,
@@ -988,6 +1040,7 @@ fn place_modal_children(
     size: Size,
     modal: &crate::ModalLayoutInput,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
@@ -1035,6 +1088,7 @@ fn place_modal_children(
                         body_available,
                         Some(FlexDirection::Column),
                         viewport,
+                        parent_font_px,
                         nodes,
                         intrinsic,
                         scope,
@@ -1074,6 +1128,7 @@ fn place_modal_children(
                 Size::new(body.width, slot_height),
                 Size::new(body.width, slot_height),
                 viewport,
+                parent_font_px,
                 nodes,
                 intrinsic,
                 output,
@@ -1093,6 +1148,7 @@ fn place_modal_children(
                 Size::new(close.width, close.height),
                 Size::new(close.width, close.height),
                 viewport,
+                parent_font_px,
                 nodes,
                 intrinsic,
                 output,
@@ -1118,6 +1174,7 @@ fn place_modal_children(
             Size::new(body.width, crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
             Some(FlexDirection::Row),
             viewport,
+            parent_font_px,
             nodes,
             intrinsic,
             scope,
@@ -1138,6 +1195,7 @@ fn place_modal_children(
             action_size,
             Size::new(body.width, chrome.footer_height),
             viewport,
+            parent_font_px,
             nodes,
             intrinsic,
             output,
@@ -1157,6 +1215,7 @@ fn place_modal_children(
                 Size::new(width, chrome.footer_height),
                 Size::new(width, chrome.footer_height),
                 viewport,
+                parent_font_px,
                 nodes,
                 intrinsic,
                 output,
@@ -1174,6 +1233,7 @@ fn place_modal_slot(
     size: Size,
     containing: Size,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
@@ -1186,7 +1246,16 @@ fn place_modal_slot(
         return Ok(());
     }
     place_node_scoped(
-        id, origin, size, containing, viewport, nodes, intrinsic, output, scope,
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        parent_font_px,
+        nodes,
+        intrinsic,
+        output,
+        scope,
     )
 }
 
@@ -1222,26 +1291,37 @@ fn demote_fill_spec(spec: Option<LengthSpec>) -> Option<LengthSpec> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn packing_main_size(
     style: &LayoutStyle,
     intrinsic: Size,
     direction: FlexDirection,
     content_main: f32,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     track: Option<GridTrack>,
 ) -> f32 {
     let spec = style
         .child_main_length(direction)
         .or_else(|| track.map(GridTrack::as_row_main_length));
-    match resolve_child_main(spec, content_main, viewport, fonts_of(style)) {
+    match resolve_child_main(
+        spec,
+        content_main,
+        viewport,
+        fonts_of(style, parent_font_px),
+    ) {
         Some(value) => content_box_main_border_size(style, direction, Some(content_main), value),
         None if style.grows() || matches!(spec, Some(LengthSpec::Fill)) => content_main,
         None => main_extent(intrinsic, direction),
     }
 }
 
-fn fonts_of(style: &LayoutStyle) -> FontSizeContext {
-    FontSizeContext::new(16.0, style.font_size.unwrap_or(16.0))
+/// CSS initial `medium` ≈ 16px. Root `rem` and the em base when no ancestor
+/// set `font-size`.
+const ROOT_FONT_PX: f32 = 16.0;
+
+fn fonts_of(style: &LayoutStyle, parent_font_px: f32) -> FontSizeContext {
+    FontSizeContext::new(ROOT_FONT_PX, style.font_size.unwrap_or(parent_font_px))
 }
 
 fn resolve_child_main(
@@ -1280,6 +1360,7 @@ fn content_box_main_border_size(
         }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pack_wrap_lines(
     children: &[StableNodeId],
     sizes: &[Size],
@@ -1288,6 +1369,7 @@ fn pack_wrap_lines(
     gap: f32,
     grid_tracks: Option<&[GridTrack]>,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
 ) -> Vec<Vec<usize>> {
     let mut lines = Vec::new();
@@ -1304,6 +1386,7 @@ fn pack_wrap_lines(
             direction,
             content_main,
             viewport,
+            parent_font_px,
             grid_tracks.and_then(|tracks| tracks.get(index).copied()),
         );
         let outer =
@@ -1333,6 +1416,7 @@ fn pack_wrap_lines(
     lines
 }
 
+#[allow(clippy::too_many_arguments)]
 fn wrap_intrinsic_size(
     direction: FlexDirection,
     wrap: FlexWrap,
@@ -1343,6 +1427,7 @@ fn wrap_intrinsic_size(
     cross_gap: f32,
     grid_tracks: Option<&[GridTrack]>,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
 ) -> Size {
     let content_main = main_extent(available, direction);
@@ -1354,6 +1439,7 @@ fn wrap_intrinsic_size(
         gap,
         grid_tracks,
         viewport,
+        parent_font_px,
         nodes,
     );
     if matches!(wrap, FlexWrap::WrapReverse) {
@@ -1375,6 +1461,7 @@ fn wrap_intrinsic_size(
                 direction,
                 content_main,
                 viewport,
+                parent_font_px,
                 grid_tracks.and_then(|tracks| tracks.get(index).copied()),
             );
             let outer_main =
@@ -1431,6 +1518,7 @@ fn auto_track_contributions(
     content: Size,
     column_main: bool,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut IntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
@@ -1463,9 +1551,12 @@ fn auto_track_contributions(
         } else {
             content.width
         };
-        if let Some(px) =
-            resolve_child_main(axis_spec, percent_base, viewport, fonts_of(style.as_ref()))
-        {
+        if let Some(px) = resolve_child_main(
+            axis_spec,
+            percent_base,
+            viewport,
+            fonts_of(style.as_ref(), parent_font_px),
+        ) {
             sizes[index] = px.max(0.0);
             continue;
         }
@@ -1479,6 +1570,7 @@ fn auto_track_contributions(
             available,
             Some(direction),
             viewport,
+            parent_font_px,
             nodes,
             cache,
             scope,
@@ -1499,6 +1591,7 @@ fn intrinsic_size_demoted(
     available: Size,
     parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut IntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
@@ -1513,6 +1606,7 @@ fn intrinsic_size_demoted(
         available,
         parent_direction,
         viewport,
+        parent_font_px,
         nodes,
         cache,
         scope,
@@ -1528,6 +1622,7 @@ fn apply_grid_main_sizes(
     gap: f32,
     tracks: &[GridTrack],
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut IntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
@@ -1557,6 +1652,7 @@ fn apply_grid_main_sizes(
         content,
         direction == FlexDirection::Column,
         viewport,
+        parent_font_px,
         nodes,
         intrinsic,
         scope,
@@ -1576,6 +1672,7 @@ fn apply_grid_main_sizes(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn distribute_flex_main(
     children: &[StableNodeId],
     sizes: &mut [Size],
@@ -1583,6 +1680,7 @@ fn distribute_flex_main(
     content: Size,
     gap: f32,
     viewport: LayoutViewport,
+    parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
 ) {
     let n = children.len();
@@ -1637,7 +1735,12 @@ fn distribute_flex_main(
         // their boxes. Fixtures that need shrink set `flex-shrink` explicitly
         // (T-F18/F19).
         shrinks.push(style.flex_shrink.unwrap_or(0.0).max(0.0));
-        match resolve_child_main(main, content_main, viewport, fonts_of(style.as_ref())) {
+        match resolve_child_main(
+            main,
+            content_main,
+            viewport,
+            fonts_of(style.as_ref(), parent_font_px),
+        ) {
             Some(value) => {
                 let mut value = value.max(min_main);
                 if let Some(max) = max_main {
@@ -3002,5 +3105,36 @@ mod tests {
             .into_iter()
             .collect::<HashMap<_, _>>();
         assert!((boxes["b"].x - 62.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn child_em_width_uses_parent_computed_font_size() {
+        let tree = StyleLayoutNode {
+            id: "parent".into(),
+            style: LayoutStyle {
+                font_size: Some(32.0),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                direction: Some(FlexDirection::Row),
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "child".into(),
+                style: LayoutStyle {
+                    width: Some(LengthSpec::Em(2.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+            }],
+        };
+        let boxes = RuntimeLayoutEngine
+            .layout_style_tree(&tree, LayoutViewport::new(200.0, 80.0))
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            boxes["child"].width, 64.0,
+            "2em against parent font-size 32px must be 64px, not 32px"
+        );
     }
 }
