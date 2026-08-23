@@ -1617,7 +1617,8 @@ impl UiWorld {
                 ..crate::TextShapeConstraints::default()
             };
         }
-        let padding = source.layout.resolved_padding_against(Some(layout.width));
+        let fonts = source.layout.font_size_context(16.0);
+        let padding = source.layout.resolved_padding_against_fonts(Some(layout.width), fonts);
         let border = source.layout.resolved_border_width();
         let leading_visual = match self.world.get::<StandardVisual>(self.entities[&id]) {
             Some(StandardVisual::Checkbox { .. }) => 24.0,
@@ -2992,7 +2993,8 @@ impl UiWorld {
     ) -> Option<crate::ComponentGeometry> {
         let bounds = *self.world.get::<LayoutBox>(self.entities[&id])?;
         let source = self.world.get::<NodeStyle>(self.entities[&id])?;
-        let padding = source.layout.resolved_padding_against(Some(bounds.width));
+        let fonts = source.layout.font_size_context(16.0);
+        let padding = source.layout.resolved_padding_against_fonts(Some(bounds.width), fonts);
         let border = source.layout.resolved_border_width();
         let content = LayoutBox {
             x: bounds.x + border + padding.left,
@@ -8845,6 +8847,100 @@ mod tests {
         assert!(after_shape.layout.contains(&node(1)));
         assert!(after_shape.layout.contains(&node(2)));
         assert!(after_shape.layout.contains(&node(3)));
+    }
+
+    #[test]
+    fn em_padding_wrap_and_card_content_use_computed_font_size() {
+        #[derive(Default)]
+        struct ConstraintProbe {
+            constraints: Vec<crate::TextShapeConstraints>,
+        }
+
+        impl TextShaper for ConstraintProbe {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                constraints: crate::TextShapeConstraints,
+            ) -> TextMetrics {
+                self.constraints.push(constraints);
+                TextMetrics::default()
+            }
+        }
+
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Text);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "card".into(),
+            },
+        );
+        let layout = Arc::new(LayoutStyle {
+            font_size: Some(32.0),
+            padding: Some(LengthSpec::Em(1.0)),
+            ..LayoutStyle::default()
+        });
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::clone(&layout),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout,
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text(
+            node(1),
+            TextContent {
+                value: "wrap".into(),
+            },
+        );
+        queue.set_standard_visual(
+            node(2),
+            Some(StandardVisual::Card {
+                title: None,
+                kind: nana_ui_core::CardKind::Surface,
+                loading: false,
+                loading_phase: 0.0,
+            }),
+        );
+        let box_200 = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+        };
+        queue.write_layout(node(1), box_200);
+        queue.write_layout(node(2), box_200);
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1), node(2)]).unwrap();
+
+        let mut probe = ConstraintProbe::default();
+        world.shape_text(&[node(1)], &mut probe).unwrap();
+        assert_eq!(
+            probe.constraints.last().map(|constraints| constraints.max_width),
+            Some(Some(136.0)),
+            "1em padding at font-size 32px must wrap at 200-32-32, not 200-16-16"
+        );
+
+        let crate::ComponentGeometry::Card { content, .. } =
+            world.component_geometry(node(2)).expect("card geometry")
+        else {
+            panic!("expected card geometry");
+        };
+        assert_eq!(content.x, 32.0);
+        assert_eq!(content.y, 32.0);
+        assert_eq!(content.width, 136.0);
+        assert_eq!(content.height, 16.0);
     }
 
     #[test]
