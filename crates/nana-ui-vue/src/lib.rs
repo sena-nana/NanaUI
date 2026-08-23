@@ -1339,9 +1339,10 @@ impl VueHost {
     /// After layout resolves, invokes optional `__nanaNotifyLayout` so
     /// `ResizeObserver` callbacks see fresh `layoutBox` geometry.
     ///
-    /// Nested drain: Vue runtime-dom `<Transition>` `nextFrame` is double-rAF
-    /// (leave/enter → `whenTransitionEnds` → `@after-leave`). One shot would
-    /// leave Transition-driven overlay presence hung.
+    /// Nested drain: 0ms timeouts (ResizeObserver) still flush in-loop.
+    /// rAF follows this host frame once; nested rAF (Vue `<Transition>`
+    /// `nextFrame` is double-rAF) waits for `next_wakeup` (~16ms) instead of
+    /// spinning a fake 16ms deadline inside the same pump.
     pub fn pump_frame<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -1373,7 +1374,15 @@ impl VueHost {
             fired += count;
             engine.run_microtasks()?;
         }
-        // Cap nested callbacks (Transition nextFrame + ResizeObserver rAF).
+        let frame_now = Instant::now();
+        {
+            let mut guard = self
+                .web_api
+                .lock()
+                .map_err(|_| JsEngineError::new("web-api state poisoned"))?;
+            guard.begin_host_frame(frame_now);
+        }
+        // Cap nested 0ms timeouts. rAF is one host frame, not this loop.
         const MAX_TIMER_PASSES: usize = 16;
         for _ in 0..MAX_TIMER_PASSES {
             let due = {
@@ -1396,6 +1405,13 @@ impl VueHost {
             }
             engine.run_microtasks()?;
         }
+        {
+            let mut guard = self
+                .web_api
+                .lock()
+                .map_err(|_| JsEngineError::new("web-api state poisoned"))?;
+            guard.end_host_frame(Instant::now());
+        }
         self.resolve_layout();
         if let Some(notify) = self.notify_layout {
             engine.invoke(notify, &[])?;
@@ -1404,7 +1420,7 @@ impl VueHost {
         Ok(fired)
     }
 
-    /// Earliest timer/fetch wake requested by the Web API state.
+    /// Earliest timer/rAF/fetch wake requested by the Web API state.
     /// Returns `None` when the runtime is idle.
     pub fn next_wakeup(&self) -> Option<Instant> {
         let web_wakeup = self
@@ -4973,5 +4989,100 @@ mod tests {
                 "sync_appearance_shared must not revert theme after setDocumentTheme"
             );
         }
+    }
+
+    #[test]
+    fn next_wakeup_is_none_when_idle() {
+        let host = VueHost::new();
+        assert!(host.next_wakeup().is_none());
+    }
+
+    #[test]
+    fn pump_frame_fires_pending_raf_on_host_frame() {
+        let mut host = VueHost::new();
+        let mut engine = RecordingEngine::default();
+        host.bind_event_bridge(&mut engine).unwrap();
+        host.web_api().lock().expect("web-api").schedule_raf(1);
+        assert!(
+            host.next_wakeup().is_some(),
+            "pending rAF must request a host wake"
+        );
+
+        let fired = host.pump_frame(&mut engine).unwrap();
+        assert!(
+            fired >= 1,
+            "host frame must drain rAF without waiting a fake 16ms"
+        );
+        assert!(
+            host.next_wakeup().is_none(),
+            "idle after drain must return None"
+        );
+    }
+
+    #[test]
+    fn pump_frame_nested_raf_follows_next_wakeup_not_busy_loop() {
+        struct RescheduleEngine {
+            web_api: SharedWebApiState,
+            drain_count: usize,
+        }
+        impl JsEngine for RescheduleEngine {
+            fn initialize(&mut self, _artifact: RuntimeArtifact) -> Result<(), JsEngineError> {
+                Ok(())
+            }
+            fn register_host_api(&mut self, _api: &HostApiRegistry) -> Result<(), JsEngineError> {
+                Ok(())
+            }
+            fn resolve_function(&mut self, _name: &str) -> Result<JsFunctionId, JsEngineError> {
+                Ok(JsFunctionId(1))
+            }
+            fn invoke(
+                &mut self,
+                _target: JsFunctionId,
+                args: &[HostValue],
+            ) -> Result<HostValue, JsEngineError> {
+                if let Some(HostValue::Object(payload)) = args.first()
+                    && let Some(HostValue::Array(raf)) = payload.get("raf")
+                    && !raf.is_empty()
+                {
+                    self.drain_count += 1;
+                    if self.drain_count == 1
+                        && let Ok(mut web) = self.web_api.lock()
+                    {
+                        web.schedule_raf(2);
+                    }
+                }
+                Ok(HostValue::Null)
+            }
+            fn run_microtasks(&mut self) -> Result<(), JsEngineError> {
+                Ok(())
+            }
+            fn interrupt(&mut self) {}
+            fn request_gc(&mut self) {}
+            fn shutdown(&mut self) {}
+        }
+
+        let mut host = VueHost::new();
+        let mut engine = RescheduleEngine {
+            web_api: host.web_api(),
+            drain_count: 0,
+        };
+        host.bind_event_bridge(&mut engine).unwrap();
+        host.web_api().lock().expect("web-api").schedule_raf(1);
+
+        let before = Instant::now();
+        let fired = host.pump_frame(&mut engine).unwrap();
+        assert_eq!(
+            engine.drain_count, 1,
+            "nested rAF must not drain in the same host frame"
+        );
+        assert!(fired >= 1);
+        let wakeup = host
+            .next_wakeup()
+            .expect("nested rAF must schedule the next host frame");
+        assert!(
+            wakeup >= before + std::time::Duration::from_millis(8),
+            "nested rAF must wait for next_wakeup (~16ms), not spin"
+        );
+        assert!(wakeup <= before + std::time::Duration::from_millis(50));
     }
 }

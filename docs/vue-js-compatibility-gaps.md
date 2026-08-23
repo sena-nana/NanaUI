@@ -17,7 +17,7 @@
 | `NUI-INPUT-01` | 代码完成/待硬件 | 混合树优先分发、`preventDefault`、局部/屏幕坐标、多键 mouse buttons、pointer capture、enter/leave、touch cancel 已接通；Windows `WM_POINTER` 已提供 pen、pressure、tangentialPressure、tilt、twist、主指针和可靠 cancel，并作为标准 JS PointerEvent 顶层字段暴露。外部文件拖放按最终命中节点产生 `dragenter`/`dragover`/`dragleave`/`drop`，同一次系统多选拖放在事件批次结束时聚合为一个 FileList-like `dataTransfer`。验收小游戏已直接使用 pointer capture 和笔字段驱动状态，仍需真实笔设备验收。 |
 | `NUI-IME-01` | 代码完成/待实机 | winit 桌面 IME 启停、候选区域、preedit/commit、多窗口焦点路由和去重已接通；中文候选框仍需 Windows 实机验收。 |
 | `NUI-WINDOW-01` | 代码完成/待透明验收 | `Nana.windows` 可创建窗口并控制 bounds、DPI、全屏、最小/最大化、置顶；晚创建窗口继承同一 WebGPU/Canvas GPU runtime、应用样式表和 Host API，关闭时释放窗口级状态。真实 Windows 双窗口已验证 Vue 内容、Canvas、WebGPU 和 Runtime 控件同时显示；Windows 原生 owner/disable 路径已验证模态期间父窗口禁用且关闭后恢复。验收窗口跨三个真实显示器移动时，HWND DPI 从 96 切换为 120，800×560 逻辑窗口相应变为 1000×700 物理像素。仍待透明窗口 Alpha 验收。 |
-| `NUI-COMPOSE-01` | 代码完成/待透明验收 | 普通控件、Canvas、WebGPU、HostTexture 与原生组件进入同一 Scene/WGPU 顺序、裁剪和命中树；完整常用 2D 仿射变换同步作用于绘制、overlay、命中、局部坐标及 Scene Operation/AccessKit 几何，父级 opacity（含 overlay）由复用离屏纹理整体合成。Windows 窗口已验证 Vue/Runtime/Canvas/WebGPU 交错显示，像素测试已覆盖旋转和重叠透明度；仅剩桌面透明窗口 Alpha 的实际合成证据。 |
+| `NUI-COMPOSE-01` | 代码完成/待透明验收 | 普通控件、Canvas、WebGPU、HostTexture 与原生组件进入同一 Scene/WGPU 顺序、裁剪和命中树；布局/命中/overlay 走常用 2D 仿射。SceneWgpuPainter 对 quad 与 host-texture 做 translation+affine；glyphs 仍轴对齐（只平移 origin）；clip 为变换后 AABB。父级 opacity（含 overlay）由复用离屏纹理整体合成。Windows 窗口已验证 Vue/Runtime/Canvas/WebGPU 交错显示，像素测试已覆盖旋转和重叠透明度。Windows 透明窗口 Alpha 仍未验收（swapchain PreMultiplied ≠ 桌面透出）；macOS Scene GPU Vibrancy 当前为 no-op（CAMetalLayer 盖住 visual-effect，报告 `NativeMaterialUnavailable`）。 |
 | `NUI-DIAG-01` | 已关闭 | V8 Inspector/CDP、异常/Promise rejection/Vue handler、隐私化 Host trace、资源/窗口/帧/Device Lost 诊断。详见 `vue-js-diagnostics.md`。 |
 
 ### 仍需关闭的 NanaUI 缺口
@@ -67,8 +67,9 @@ Vue 发出一个 `drop`，不依赖猜测性的毫秒延时。
 Live2D 模型与小游戏规则；它们应通过应用 Host API 或注册原生组件暴露给 Vue。
 
 兼容边界：NanaUI 不是完整浏览器。普通 Vue 节点支持 translate、非等比/负 scale、rotate、
-skew 和 matrix 的常用 2D 仿射组合，默认以节点中心为 transform origin，并同步绘制、overlay、
-逆变换输入命中与 `getBoundingClientRect`；自定义 `transform-origin` 尚不属于 CSS 子集，可用
+skew 和 matrix 的常用 2D 仿射组合，默认以节点中心为 transform origin，并同步 overlay、
+逆变换输入命中与 `getBoundingClientRect`。绘制侧：quad / host-texture 为 translation+affine，
+glyphs 仍轴对齐，clip 为 AABB。自定义 `transform-origin` 尚不属于 CSS 子集，可用
 显式平移矩阵或包装节点表达。WebGPU 暴露迁移 3D 内容所需的明确子集，而不是 Chromium 的
 完整 GPUWeb 实现；`mapAsync`、shader compilation info 和异步 pipeline 编译等未承诺能力会
 明确拒绝，不计为缺口；不提供 WebGL。
@@ -78,8 +79,9 @@ skew 和 matrix 的常用 2D 仿射组合，默认以节点中心为 transform o
 不伪装成已实现完整浏览器 `File`/沙箱文件系统。
 
 桌面 IME 候选框位置、真实笔输入和透明窗口仍需在对应硬件环境做交互验收；静态与
-行为测试只证明事件、状态和宿主调用链已经接通。rAF 使用注册时固定的约 16 ms deadline，
-避免事件循环重复查询时永远错过回调或退化为无上限忙循环。
+行为测试只证明事件、状态和宿主调用链已经接通。rAF 跟随宿主 `pump_frame`：当前
+帧排空已登记回调，嵌套 rAF 通过 `next_wakeup`（约 16 ms 的下一帧间隔）等待下一次
+宿主帧，空闲返回 `None`，不在 drain 循环里假睡 16 ms 或忙转。
 
 Fetch 使用每请求可取消的 DNS/transport 链；取消会关闭登记的 TCP socket，从而中断 TLS/HTTP
 等待。该实现依赖 ureq 的 unversioned transport 接口，因此 workspace 将 ureq 精确锁定到
@@ -502,6 +504,12 @@ Vue 控件、Canvas、宿主纹理和未来 WebGPU 内容尚未形成统一的�
 
 普通 Vue 控件可以正确覆盖在 Canvas、WebGPU、Live2D 或视频节点上，滚动、动画、裁剪
 和输入行为一致。
+
+**当前绘制边界（未关闭）**
+
+- Painter：quad / host-texture 已做 translation+affine；glyphs 仍轴对齐。
+- Clip：变换矩形的 AABB，不是旋转后的精确多边形裁剪。
+- Windows 透明窗口 Alpha 仍未验收；macOS Scene GPU Vibrancy 为 no-op。
 
 ### NUI-DIAG-01：JS 与渲染诊断
 

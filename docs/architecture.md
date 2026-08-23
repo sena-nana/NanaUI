@@ -16,7 +16,9 @@ Vue/JS L1/L2 → Runtime/UiScene → RuntimeProgram → run_runtime → SceneWgp
 ```
 
 `VueHostedRuntime` / `VueRuntimeProgram` 实现 `RuntimeProgram`，由 `run_runtime`
-进入 Nana-owned winit + `SceneWgpuPainter`，不返回 `iced::Element` 树。
+进入 Nana-owned winit + `SceneWgpuPainter`，不返回 `iced::Element` 树。桌面仍钉
+iced-rs winit fork（平台窗口债务，见 [`iced-engine.md`](iced-engine.md)），不是
+Iced 绘制路径。
 `scene-view` 接入同一 Scene/Runtime 适配，不是 Iced widget 编程模型。
 `VueHostedProgram` 是 `VueRuntimeProgram` 的类型别名。Rust 可以控制语义树，
 也可以注册高性能 Runtime 组件，但所有供 Vue 使用的原生能力必须以 `nana-*`
