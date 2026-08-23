@@ -976,6 +976,7 @@ impl AppContext {
     /// Replace the primary and inspector region content on an assembled shell.
     ///
     /// Chrome is reused. Previous region content is parked, not destroyed.
+    /// Unchanged slots return without assembling.
     pub fn set_desktop_slots(
         &mut self,
         shell: Entity<DesktopShell>,
@@ -985,14 +986,14 @@ impl AppContext {
         let changed = self.read(shell, |desktop| {
             desktop.primary != primary || desktop.inspector != inspector
         })?;
-        if changed {
-            self.update_component(shell, |desktop, _| {
-                desktop.primary = primary;
-                desktop.inspector = inspector;
-            })?;
+        if !changed {
+            return Ok(false);
         }
-        let assembled = self.assemble_desktop_shell(shell)?;
-        Ok(changed || assembled)
+        self.update_component(shell, |desktop, _| {
+            desktop.primary = primary;
+            desktop.inspector = inspector;
+        })?;
+        self.assemble_desktop_shell(shell)
     }
 
     /// Mount title bar, workspace regions, and overlay host on `shell`.
@@ -3341,6 +3342,52 @@ mod tests {
                 .world()
                 .document_order(document())
                 .contains(&first.stable_id())
+        );
+        assert!(
+            !context
+                .set_desktop_slots(shell, Some(primary.stable_id()), Some(first.stable_id()),)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn set_desktop_slots_repeated_inspector_swap_reuses_parked_trees() {
+        let mut context = AppContext::new();
+        let navigation = context
+            .create_detached_component(document(), SidebarFrame::new())
+            .unwrap();
+        let primary = context
+            .create_detached_component(document(), Text::new("primary"))
+            .unwrap();
+        let first = context
+            .create_detached_component(document(), Text::new("inspector-a"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document(), Text::new("inspector-b"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .navigation(navigation.stable_id())
+                .primary(primary.stable_id())
+                .inspector(first.stable_id()),
+        );
+        for round in 0..32 {
+            let inspector = if round % 2 == 0 {
+                second.stable_id()
+            } else {
+                first.stable_id()
+            };
+            assert!(
+                context
+                    .set_desktop_slots(shell, Some(primary.stable_id()), Some(inspector))
+                    .unwrap()
+            );
+        }
+        assert!(context.world().is_mounted(first.stable_id()));
+        assert_eq!(
+            context.world().mount_state(second.stable_id()),
+            Some(MountState::Parked)
         );
         assert!(
             !context
