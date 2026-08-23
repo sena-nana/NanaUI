@@ -339,6 +339,83 @@ mod tests {
     }
 
     #[test]
+    fn switching_inspector_slot_settles_within_frame_budget() {
+        use nana_ui_runtime::{DesktopShell, SidebarFrame, Text};
+
+        struct TestShaper;
+        impl nana_ui_runtime::TextShaper for TestShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &ComputedStyle,
+                constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                let intrinsic = text.value.len() as f32 * 8.0;
+                let width = constraints.max_width.unwrap_or(intrinsic).min(intrinsic);
+                TextMetrics {
+                    width,
+                    height: if constraints.wrap && width < intrinsic {
+                        36.0
+                    } else {
+                        18.0
+                    },
+                }
+            }
+        }
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let navigation = runtime
+            .context_mut()
+            .create_detached_component(document, SidebarFrame::new())
+            .unwrap();
+        let primary = runtime
+            .context_mut()
+            .create_detached_component(document, Text::new("stage"))
+            .unwrap();
+        let first = runtime
+            .context_mut()
+            .create_detached_component(document, Text::new("inspector-a"))
+            .unwrap();
+        let second = runtime
+            .context_mut()
+            .create_detached_component(document, Text::new("inspector-b"))
+            .unwrap();
+        let shell = runtime
+            .context_mut()
+            .create_component(
+                document,
+                DesktopShell::new()
+                    .navigation(navigation.stable_id())
+                    .primary(primary.stable_id())
+                    .inspector(first.stable_id()),
+            )
+            .unwrap();
+        runtime.context_mut().assemble_desktop_shell(shell).unwrap();
+        runtime
+            .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
+            .unwrap();
+        runtime
+            .context_mut()
+            .set_desktop_slots(shell, Some(primary.stable_id()), Some(second.stable_id()))
+            .unwrap();
+        let switched = runtime
+            .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
+            .unwrap();
+        assert!(switched.passes <= 8);
+        assert!(!switched.is_idle());
+        let idle = runtime
+            .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
+            .unwrap();
+        assert!(
+            idle.is_idle(),
+            "inspector switch left dirty work ({} passes)",
+            idle.passes
+        );
+    }
+
+    #[test]
     fn viewport_resize_and_wrapped_text_reflow_without_application_geometry() {
         let document = DocumentId::new(1).unwrap();
         let node = StableNodeId::new(7).unwrap();

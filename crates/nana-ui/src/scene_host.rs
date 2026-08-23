@@ -53,6 +53,7 @@ use crate::{
 };
 
 const GPU_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_PROGRAM_DISPATCHES: usize = 32;
 const TASK_QUEUE_CAPACITY: usize = 256;
 const TASK_WORKERS: usize = 4;
 
@@ -583,8 +584,38 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
+    fn drain_program_messages(&mut self, id: WindowId) -> RuntimeProgramUpdate {
+        let mut update = RuntimeProgramUpdate::default();
+        for _ in 0..MAX_PROGRAM_DISPATCHES {
+            let queued = self
+                .program
+                .document_mut(id)
+                .map(|document| document.context_mut().take_program_messages())
+                .unwrap_or_default();
+            if queued.is_empty() {
+                break;
+            }
+            for boxed in queued {
+                let Ok(message) = boxed.downcast::<Program::Message>() else {
+                    continue;
+                };
+                update = update.merge(self.program.update(*message, &self.context_for(id)));
+            }
+        }
+        update
+    }
+
+    fn drain_all_program_messages(&mut self) -> RuntimeProgramUpdate {
+        let mut update = RuntimeProgramUpdate::default();
+        for id in self.known_window_ids() {
+            update = update.merge(self.drain_program_messages(id));
+        }
+        update
+    }
+
     fn wake(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
-        let mut update = self.program.wake(now, &self.context());
+        let mut update = self.drain_all_program_messages();
+        update = update.merge(self.program.wake(now, &self.context()));
         for id in self.known_window_ids() {
             let frame = self
                 .program
@@ -610,6 +641,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
         }
+        update = update.merge(self.drain_all_program_messages());
         self.sync_appearance();
         self.apply_update(event_loop, update);
     }
@@ -1312,8 +1344,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
         };
         let chrome_action = self.title_bar_chrome_action(id, &input);
+        let view_update = self.drain_program_messages(id);
         // Runtime may already have consumed the event (prevent_default). Scene
-        // still delivers input_event so Gallery can drain Activate bindings and
+        // still delivers input_event so Gallery can drain leftover host input and
         // Vue can emit JS. Leftover winit handling stays gated by the caller.
         let program_input = self.program.input_event(id, &input, &self.context_for(id));
         if let Err(error) = &program_input {
@@ -1322,7 +1355,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 error: error.to_string(),
             });
         }
-        let update = scene_runtime_input_update(disposition, id, program_input);
+        let update = scene_runtime_input_update(disposition, id, program_input)
+            .merge(view_update)
+            .merge(self.drain_program_messages(id));
         let update = self.merge_title_bar_chrome(id, chrome_action, update);
         self.sync_appearance();
         self.apply_update(event_loop, update);
