@@ -43,8 +43,7 @@ use nana_ui::runtime::{
     TabOption as RuntimeTabOption, Tabs as RuntimeTabs, Text as RuntimeText,
     TextArea as RuntimeTextArea, TextHorizontalAlignment, TextInput as RuntimeTextInput,
     TextSelection, TextVerticalAlignment, Thumbnail as RuntimeThumbnail,
-    TimeSeriesChart as RuntimeTimeSeriesChart,
-    Toast as RuntimeToast, TreeView as RuntimeTreeView,
+    TimeSeriesChart as RuntimeTimeSeriesChart, Toast as RuntimeToast, TreeView as RuntimeTreeView,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
@@ -326,7 +325,11 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
         "pressed",
         "pressed feedback is distinct from hover",
     ),
-    f(Component::Button, "focused", "keyboard focus is visible"),
+    f(
+        Component::Button,
+        "focused",
+        "focused keeps idle chrome; hover and pressed use background",
+    ),
     f(
         Component::Button,
         "disabled",
@@ -627,7 +630,7 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
     f(
         Component::IconButton,
         "focused",
-        "keyboard focus is visible around the complete hit target",
+        "focused keeps idle chrome; hover and pressed use background",
     ),
     f(
         Component::IconButton,
@@ -4753,7 +4756,7 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
     match (fixture.component, fixture.state) {
         (Component::Button, _) => (
             "pass",
-            "Fresh isolated dark and light review confirms semantic kinds, three control sizes, interaction feedback, external focus, disabled and loading presentation, complete label geometry, hit behavior and accessibility",
+            "Fresh isolated dark and light review confirms semantic kinds, three control sizes, hover and pressed backgrounds without an accent focus ring, disabled and loading presentation, complete label geometry, hit behavior and accessibility",
         ),
         (Component::TextInput, _) => (
             "pass",
@@ -4858,7 +4861,7 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ),
         (Component::IconButton, "hover" | "pressed" | "focused" | "selected") => (
             "pass",
-            "Runtime uses distinct neutral hover and pressed layers, an external focus ring, and a persistent accent-selected treatment while preserving icon contrast in dark and light",
+            "Runtime uses distinct neutral hover and pressed layers without an accent focus ring, and a persistent accent-selected treatment while preserving icon contrast in dark and light",
         ),
         (Component::Switch, "hover" | "pressed" | "focused") => (
             "pass",

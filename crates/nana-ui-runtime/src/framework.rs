@@ -7773,11 +7773,12 @@ mod tests {
             .extract_nodes(&[button.stable_id()])
             .pop()
             .unwrap();
+        assert_eq!(focused.style.border_color, None);
         assert_eq!(
-            focused.style.border_color,
+            focused.style.background,
             Some(
                 nana_ui_core::SemanticPalette::light()
-                    .accent
+                    .accent_soft
                     .as_rgba_array()
             )
         );

@@ -1802,10 +1802,6 @@ fn window_control_style(danger: bool) -> NodeStyle {
             }),
             ..SemanticPaint::default()
         },
-        focused: SemanticPaint {
-            border: Some(SemanticColorRole::Accent),
-            ..SemanticPaint::default()
-        },
         ..InteractionStyle::default()
     };
     let layout = Arc::make_mut(&mut style.layout);
@@ -2377,6 +2373,16 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(
+            context
+                .world()
+                .node_style(close.stable_id())
+                .unwrap()
+                .interaction
+                .focused
+                .border,
+            None
+        );
     }
 
     #[test]

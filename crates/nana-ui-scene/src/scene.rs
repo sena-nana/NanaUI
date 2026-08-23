@@ -591,18 +591,12 @@ impl UiScene {
                         | StandardVisual::CommandPalette { .. }
                 )
             );
-            let component_focus_ring = node.focused
-                && matches!(
-                    node.standard_visual,
-                    Some(StandardVisual::Icon { .. } | StandardVisual::Switch { .. })
-                );
-            let surface_border_color = if component_focus_ring
-                || matches!(node.standard_visual, Some(StandardVisual::Switch { .. }))
-            {
-                None
-            } else {
-                node.style.border_color
-            };
+            let surface_border_color =
+                if matches!(node.standard_visual, Some(StandardVisual::Switch { .. })) {
+                    None
+                } else {
+                    node.style.border_color
+                };
             let (surface_background, surface_border_color, surface_border_width) =
                 match node.component_geometry.as_ref() {
                     Some(ComponentGeometry::Button {
@@ -2836,24 +2830,6 @@ impl UiScene {
                             color: node.standard_visual_foreground.or(node.style.color),
                         },
                     });
-                    if node.focused {
-                        self.insert_primitive(visual_quad(
-                            &visual_context,
-                            7,
-                            SceneRect {
-                                x: bounds.x - 3.0,
-                                y: bounds.y - 3.0,
-                                width: bounds.width + 6.0,
-                                height: bounds.height + 6.0,
-                            },
-                            VisualQuadStyle {
-                                background: None,
-                                border_color: node.style.border_color,
-                                border_width: 2.0,
-                                corner_radius: style.border_radius.unwrap_or(0.0).max(0.0) + 3.0,
-                            },
-                        ));
-                    }
                 }
                 Some(StandardVisual::Switch {
                     checked,
@@ -5135,6 +5111,43 @@ mod tests {
                 .bounds
                 .width,
             21.5
+        );
+    }
+
+    #[test]
+    fn focused_icon_does_not_paint_an_external_ring() {
+        let mut icon = node(1, None, &[]);
+        icon.layout = LayoutBox {
+            x: 10.0,
+            y: 20.0,
+            width: 28.0,
+            height: 28.0,
+        };
+        icon.focused = true;
+        icon.standard_visual = Some(StandardVisual::Icon {
+            icon: nana_ui_core::Icon::Settings,
+            size: 16.0,
+            tooltip: None,
+        });
+        style_mut(&mut icon).border_color = Some([0.2, 0.6, 1.0, 1.0]);
+        style_mut(&mut icon).background = Some([0.2, 0.2, 0.2, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([icon], []);
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 3
+                })
+                .is_some()
+        );
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 7
+                })
+                .is_none()
         );
     }
 

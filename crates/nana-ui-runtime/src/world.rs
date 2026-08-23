@@ -3099,7 +3099,6 @@ impl UiWorld {
                 label,
                 size,
                 loading,
-                invalid,
                 ..
             } => {
                 // Loading reserves 20px through symmetric intrinsic padding in
@@ -3151,15 +3150,7 @@ impl UiWorld {
                     } else {
                         0.0
                     },
-                    focus_ring: (self.focused.get(&self.component::<Identity>(id).document)
-                        == Some(&id))
-                    .then(|| {
-                        if *invalid {
-                            self.style_model.palette.danger.as_rgba_array()
-                        } else {
-                            self.style_model.palette.accent.as_rgba_array()
-                        }
-                    }),
+                    focus_ring: None,
                 })
             }
             StandardVisual::TextInput { size, invalid, .. } => {

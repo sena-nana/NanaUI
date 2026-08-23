@@ -1316,10 +1316,7 @@ fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
             background: Some(SemanticColorRole::Active),
             ..SemanticPaint::default()
         },
-        focused: SemanticPaint {
-            border: Some(SemanticColorRole::Accent),
-            ..SemanticPaint::default()
-        },
+        focused: SemanticPaint::default(),
         disabled: SemanticPaint {
             foreground: Some(SemanticColorRole::Faint),
             ..SemanticPaint::default()
@@ -2391,6 +2388,7 @@ mod tests {
             selected_style.layout.height,
             Some(LengthSpec::Px(ControlSize::Small.height()))
         );
+        assert_eq!(selected_style.interaction.focused.border, None);
 
         let disabled = context
             .create_component(
