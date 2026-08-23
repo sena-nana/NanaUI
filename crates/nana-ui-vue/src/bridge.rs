@@ -17,7 +17,7 @@
 //! Vue "custom components" are combinations and variants of those foundations —
 //! not a separate CPU paint channel. CustomContent has been removed.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use nana_ui_core::{
     AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon,
@@ -27,7 +27,7 @@ use nana_ui_core::{
 use crate::css_cascade::{
     MatchContext, MatchNode, StyleRule, StylesheetParseReport,
     collect_document_custom_properties_from_rules, parse_stylesheet_with_report,
-    rebuild_layout_style,
+    rebuild_layout_style, stylesheet_matches, stylesheet_may_match_subject,
 };
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
@@ -1901,11 +1901,10 @@ impl MessageBridge {
         }
     }
 
-    /// Parse and retain stylesheet rules, then re-apply cascade to all widgets.
+    /// Parse and retain stylesheet rules, then recascade matching subtrees.
     ///
-    /// Empty / fully-deferred sheets are a no-op (no dirty cascade). Non-empty
-    /// injects still require a full-tree reapply because new selectors may match
-    /// any node; per-rule declaration parse is not repeated (cached on rules).
+    /// Empty / fully-deferred sheets are a no-op. Non-empty injects dirty nodes
+    /// that match the new rules and their descendants. Unmatched subtrees stay.
     pub fn inject_stylesheet(&mut self, css: &str) {
         if css.trim().is_empty() {
             return;
@@ -1918,9 +1917,9 @@ impl MessageBridge {
         if let Some(last) = parsed.last() {
             self.next_rule_order = last.source_order.saturating_add(1);
         }
-        self.stylesheet_rules.extend(parsed);
+        self.stylesheet_rules.extend(parsed.iter().cloned());
         self.rebuild_stylesheet_vars();
-        self.reapply_layout_cascade_all();
+        self.reapply_layout_cascade_matching(&parsed);
     }
 
     /// Accumulated stylesheet skipped-content counters, so hosts can surface
@@ -1964,6 +1963,105 @@ impl MessageBridge {
             self.reapply_layout_for(id);
         }
         self.bump();
+    }
+
+    fn reapply_layout_cascade_matching(&mut self, new_rules: &[StyleRule]) {
+        if new_rules.is_empty() {
+            return;
+        }
+        let mut dirty = HashSet::new();
+        let ids: Vec<WidgetId> = self.widgets.keys().copied().collect();
+        for id in ids {
+            if self.widget_matches_rules(id, new_rules) {
+                self.collect_subtree_ids(id, &mut dirty);
+            }
+        }
+        if dirty.is_empty() {
+            return;
+        }
+        let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
+        ordered.sort_by_cached_key(|id| self.widget_depth(*id));
+        for id in ordered {
+            self.reapply_layout_for(id);
+        }
+        self.bump();
+    }
+
+    fn collect_subtree_ids(&self, id: WidgetId, out: &mut HashSet<WidgetId>) {
+        if !out.insert(id) {
+            return;
+        }
+        let children = self
+            .widgets
+            .get(&id)
+            .map(|w| w.children.clone())
+            .unwrap_or_default();
+        for child in children {
+            self.collect_subtree_ids(child, out);
+        }
+    }
+
+    fn widget_matches_rules(&self, id: WidgetId, rules: &[StyleRule]) -> bool {
+        if rules.is_empty() {
+            return false;
+        }
+        let Some(widget) = self.widgets.get(&id) else {
+            return false;
+        };
+        let tag = if widget.props.element_tag.is_empty() {
+            widget.kind.element_tag().to_string()
+        } else {
+            widget.props.element_tag.clone()
+        };
+        if !stylesheet_may_match_subject(
+            rules,
+            &tag,
+            widget.props.element_id.as_str(),
+            &widget.props.class_names,
+        ) {
+            return false;
+        }
+        let Some(ancestry) = self.match_ancestry(id) else {
+            return false;
+        };
+        let leaf_classes = widget.props.class_names.clone();
+        let leaf_attrs = widget.props.attrs.clone();
+        let leaf_id = widget.props.element_id.clone();
+        let (sibling_index, sibling_count) = self.sibling_position(id);
+        let (of_type_index, of_type_count) = self.of_type_position(id);
+        let prev_snaps = self.prev_sibling_snaps(id);
+        let ancestor_nodes: Vec<MatchNode<'_>> = ancestry
+            .iter()
+            .skip(1)
+            .map(|n| MatchNode {
+                tag: n.tag.as_str(),
+                id: n.id.as_str(),
+                classes: n.classes.as_slice(),
+                attrs: &n.attrs,
+            })
+            .collect();
+        let prev_nodes: Vec<MatchNode<'_>> = prev_snaps
+            .iter()
+            .map(|n| MatchNode {
+                tag: n.tag.as_str(),
+                id: n.id.as_str(),
+                classes: n.classes.as_slice(),
+                attrs: &n.attrs,
+            })
+            .collect();
+        let ctx = MatchContext {
+            tag: tag.as_str(),
+            id: leaf_id.as_str(),
+            classes: leaf_classes.as_slice(),
+            attrs: &leaf_attrs,
+            ancestors: ancestor_nodes.as_slice(),
+            preceding_siblings: prev_nodes.as_slice(),
+            sibling_index,
+            sibling_count,
+            of_type_index,
+            of_type_count,
+        };
+        stylesheet_matches(rules, &ctx)
     }
 
     fn widget_depth(&self, id: WidgetId) -> usize {
@@ -2835,20 +2933,16 @@ impl MessageBridge {
         }
     }
 
-    /// Resolve the pre-paint document geometry from the canonical semantic tree.
-    ///
-    /// Headless entry for first insert and for nodes Scene has not painted yet.
-    /// Painted Scene probe boxes stay authoritative for those nodes.
+    /// Flush RuntimeLayoutEngine. CSS measure is not written over engine boxes.
     pub(crate) fn resolve_document_layout(&mut self, doc: &mut crate::tree::NanaTreeDocument) {
         let (logical_w, logical_h) = doc.logical_size();
         self.reparent_orphans();
         self.sync_sidebar_footer_into_document(doc);
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
-        let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
-        doc.apply_layout_boxes(&boxes);
+        doc.flush_host_frame();
     }
 
-    /// Measure only nodes that still have no Runtime layout box.
+    /// Fill only nodes that still have no engine box after flush.
     pub(crate) fn resolve_missing_document_layout(
         &mut self,
         doc: &mut crate::tree::NanaTreeDocument,
@@ -2857,10 +2951,11 @@ impl MessageBridge {
         self.reparent_orphans();
         self.sync_sidebar_footer_into_document(doc);
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        doc.flush_host_frame();
         let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
         let missing: Vec<_> = boxes
             .into_iter()
-            .filter(|(handle, _)| doc.layout_box(*handle).is_none())
+            .filter(|(handle, _)| !doc.has_engine_layout_box(*handle))
             .collect();
         if !missing.is_empty() {
             doc.apply_layout_boxes(&missing);
@@ -4174,6 +4269,58 @@ mod tests {
         assert_eq!(bridge.theme(), ThemeMode::Dark);
         assert!(bridge.revision() > r0);
         assert_eq!(bridge.theme_label(), "dark");
+    }
+
+    #[test]
+    fn inject_stylesheet_recascades_matching_subtree_only() {
+        let mut bridge = MessageBridge::new();
+        let mut parent = WidgetProps::default();
+        parent.class_names = vec!["scope".into()];
+        parent.element_tag = "div".into();
+        bridge.register(1, WidgetKind::Column, parent);
+        let mut child = WidgetProps::default();
+        child.class_names = vec!["leaf".into()];
+        child.element_tag = "span".into();
+        bridge.register(2, WidgetKind::Row, child);
+        bridge.insert_child(2, 1, None);
+        let mut other = WidgetProps::default();
+        other.class_names = vec!["unrelated".into()];
+        other.element_tag = "div".into();
+        bridge.register(3, WidgetKind::Column, other);
+
+        bridge.inject_stylesheet(
+            r#"
+            .scope { --gap-size: 10px; }
+            .leaf { gap: var(--gap-size); }
+            .unrelated { gap: 40px; }
+            "#,
+        );
+        assert_eq!(
+            bridge.get(2).unwrap().props.layout.gap,
+            Some(LengthSpec::Px(10.0))
+        );
+        assert_eq!(
+            bridge.get(3).unwrap().props.layout.gap,
+            Some(LengthSpec::Px(40.0))
+        );
+
+        let r0 = bridge.revision();
+        bridge.inject_stylesheet(".nope { gap: 99px; color: red; }");
+        assert_eq!(bridge.revision(), r0);
+        assert_eq!(
+            bridge.get(3).unwrap().props.layout.gap,
+            Some(LengthSpec::Px(40.0))
+        );
+
+        bridge.inject_stylesheet(".scope { --gap-size: 24px; }");
+        assert_eq!(
+            bridge.get(2).unwrap().props.layout.gap,
+            Some(LengthSpec::Px(24.0))
+        );
+        assert_eq!(
+            bridge.get(3).unwrap().props.layout.gap,
+            Some(LengthSpec::Px(40.0))
+        );
     }
 
     #[test]

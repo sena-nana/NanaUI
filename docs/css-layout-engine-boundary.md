@@ -22,7 +22,9 @@ L4  shell_contract（非中立）     nana-* / 工具 class → 部分 LayoutSty
 L5  Scene/Runtime adapter        LayoutStyle / Semantics → UiWorld / UiScene
 ```
 
-现状：L0 已在 core；L1–L3 在 `nana-ui-vue`（`css_map` / `css_cascade` / `measure`）；
+现状：L0 已在 core；L1–L2 在 `nana-ui-vue`（`css_map` / `css_cascade`）；
+L3 measure 是 `LayoutNode` → [`RuntimeLayoutEngine::layout_style_tree`](../crates/nana-ui-runtime/src/layout_engine.rs)
+的薄适配（wrap / 1D grid / percent / calc / absolute / fixed 只实现一次）；
 L4 = `shell_contract`（`css_map::LayoutStyleCss::apply_class_layout_hints` 薄委托）；
 L5 = Scene host（`scene-view`）。历史 `iced_app` 是旧 Iced widget 适配，不再是产品绘制环。
 
@@ -31,11 +33,12 @@ L5 = Scene host（`scene-view`）。历史 `iced_app` 是旧 Iced widget 适配�
 | 数据 | SoT | 备注 |
 |------|-----|------|
 | Stylesheet → `LayoutStyle` | `MessageBridge` + `css_cascade` | `NanaTreeDocument::stylesheets` 仅诊断计数 |
-| 产品几何盒 | Runtime/UiScene → `LayoutBoxStore` | paint 后 JS 投影；权威在 Runtime |
-| 预绘制 / parity / hit-test 盒 | `MessageBridge::resolve_document_layout` → `measure_layout` | 无 paint 盒时回退；与 css-parity 共用算法 |
+| 产品几何盒 | Runtime `RuntimeLayoutEngine` / UiScene → `LayoutBoxStore` | paint 后 JS 投影；权威在 Runtime |
+| 预绘制 / parity / hit-test 盒 | `measure_layout` → `RuntimeLayoutEngine::layout_style_tree` | 同一算法；无 paint 盒时回退 |
 
-几何只保留两个阶段：paint 前 Style Model measure，paint 后 Runtime writeback。
-`NanaTreeDocument` 只缓存两者结果，不再拥有 `StyleIntent + resolve_now` 合成布局。
+产品 Vue 混合树与 L3 一样走 `RuntimeDocument::flush` 文本+布局，不再 defer layout
+或用 Vue `WriteLayout` 与引擎对打。`NanaTreeDocument` 只缓存结果，不再拥有
+`StyleIntent + resolve_now` 合成布局。
 
 迁移旧诊断 API 时，调用宿主 `resolveLayout` / `VueHost::resolve_layout` 获取同一
 Style Model 的预绘制盒；`BoxSnapshot` 不再暴露另一套合成背景结果。这样 API
@@ -65,7 +68,7 @@ Style Model 的预绘制盒；`BoxSnapshot` 不再暴露另一套合成背景结
 | 模块头标明 cascade SoT、measure 角色、shell 非中立 | ✅ |
 | `apply_class_layout_hints` → `shell_contract.rs`；`css_map` 中立 parse + 薄委托 | ✅ |
 | 删除 `StyleIntent` / `resolve_now` 合成几何；host `resolveLayout`、stylesheet、theme、viewport 统一走 `resolve_document_layout` | ✅ |
-| measure / Runtime 两阶段 SoT 写进 `measure.rs` / `tree.rs` / `box_layout` 头 | ✅ |
+| measure / Runtime 共用 `RuntimeLayoutEngine`（`layout_style_tree` 适配） | ✅ |
 | 共享盒助手留在 `nana-ui-core::box_layout`（content-box / inset / padding·margin·gap） | ✅（标明；未另抽 crate） |
 
 **仍属短期、勿抽 crate：**

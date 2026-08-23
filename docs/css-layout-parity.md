@@ -8,14 +8,14 @@
 
 同一套 HTML/CSS fixture：
 
-1. **Nana**：`inline style` / class hints → [`LayoutStyle`](../crates/nana-ui-core/src/box_layout.rs)（经 [`css_map`](../crates/nana-ui-vue/src/css_map.rs) parse）→ [`measure_layout`](../crates/nana-ui-vue/src/measure.rs) 得到 `(x,y,w,h)`
+1. **Nana**：`inline style` / class hints → [`LayoutStyle`](../crates/nana-ui-core/src/box_layout.rs)（经 [`css_map`](../crates/nana-ui-vue/src/css_map.rs) parse）→ [`measure_layout`](../crates/nana-ui-vue/src/measure.rs) 适配 [`RuntimeLayoutEngine::layout_style_tree`](../crates/nana-ui-runtime/src/layout_engine.rs) 得到 `(x,y,w,h)`
 2. **参照**：fixture 内嵌 `expected`（CSS 正确期望），或 `webview-ref` 下 WKWebView/`wry` 的 `getBoundingClientRect`
 3. **断言**：对应节点盒在容差内一致（默认 **±2px**，用例可覆盖）
 
-语义对齐 `LayoutStyle` 子集，**不是**完整 CSS 引擎；无 Blitz。夹具结论针对
-`measure_layout` 备用路径（Vue measure 边界，见
-[`css-layout-engine-boundary.md`](css-layout-engine-boundary.md)），不是 Runtime
-增量布局引擎的产品几何。产品保留/绘制是 Runtime / UiScene → `SceneWgpuPainter`。
+语义对齐 `LayoutStyle` 子集，**不是**完整 CSS 引擎。夹具打在共享
+`RuntimeLayoutEngine` 上（Vue `measure_layout` 只做 `LayoutNode` 适配，见
+[`css-layout-engine-boundary.md`](css-layout-engine-boundary.md)）。产品保留/绘制是
+Runtime / UiScene → `SceneWgpuPainter`。容差仍为 **±2px**；失败时修引擎，不放宽夹具。
 
 ## 如何跑
 
@@ -62,14 +62,14 @@ cargo run --release -p component-gallery --bin ui-snapshots --features snapshots
 |----|------|------|------|
 | T-F01 | 横排 gap | **pass** | |
 | T-F02 | 纵排 gap | **pass** | |
-| T-F03 | justify center | **pass** | `JustifySpec` + measure / iced |
+| T-F03 | justify center | **pass** | `JustifySpec` + shared engine |
 | T-F04 | space-between | **pass** | 原 P0-1 |
 | T-F05 | align-items center | **pass** | |
 | T-F06 | flex:1 行等分 | **pass** | |
 | T-F07 | flex:1 列等分 | **pass** | 原 P0-2：`child_main_length` |
 | T-F08 | 220px + flex:1 | **pass** | |
-| T-F09 | space-around | **pass** | measure + iced Fill 近似（端 1 / 间 2） |
-| T-F10 | space-evenly | **pass** | measure + iced n+1 Fill |
+| T-F09 | space-around | **pass** | 端 1 / 间 2 |
+| T-F10 | space-evenly | **pass** | n+1 等分 |
 | T-F11 | gap 双值 row | **pass** | `gap:8px 20px`；主轴=column-gap |
 | T-F12 | row/column-gap 长手 | **pass** | Column 主轴=row-gap |
 | T-F13 | row gap % | **pass** | `gap:10%` @200 → 间距 20；b@x60 |
@@ -83,9 +83,9 @@ cargo run --release -p component-gallery --bin ui-snapshots --features snapshots
 | T-F21 | row-reverse | **pass** | main-start 对调；a@160 b@110 |
 | T-F22 | flex `order` | **pass** | 升序（含负）再源序；b(-1)→c(0)→a(2) |
 | T-S01 | width 50% | **pass** | measure 带父盒 |
-| T-S02 | height 100% 链 | **pass** | measure Fill 链；iced 产品路径建议再回归 |
+| T-S02 | height 100% 链 | **pass** | Fill 链 |
 | T-S03 | min-height | **pass** | |
-| T-S04 | min-width:0 | **pass** | 几何盒；ellipsis 见 iced/`text-overflow` |
+| T-S04 | min-width:0 | **pass** | 几何盒；ellipsis 见 `text-overflow` |
 | T-S05 | px 精确 | **pass** | |
 | T-S06 | max-width 钳制 | **pass** | Fill 子项 clamp |
 | T-S07 | max-height 钳制 | **pass** | Fill 列子项 clamp |
@@ -127,7 +127,7 @@ cargo run --release -p component-gallery --bin ui-snapshots --features snapshots
 | T-L03 | settings row | **pass** | `.nana-settings-row` hints |
 | T-L04 | flex-basis 侧栏 | **pass** | `flex:0 0 220px` **无 width** → 220+580 |
 | T-B01 | padding 四值 | **pass** | |
-| T-B02 | margin 四值 | **pass** | measure 推进下一兄弟；iced 外层 padding |
+| T-B02 | margin 四值 | **pass** | 推进下一兄弟 |
 | T-B03 | margin 两值 | **pass** | 垂直/水平简写 |
 | T-B04 | padding 三值 | **pass** | top \| horizontal \| bottom |
 | T-B05 | margin 三值 | **pass** | top \| horizontal \| bottom |
@@ -140,13 +140,13 @@ cargo run --release -p component-gallery --bin ui-snapshots --features snapshots
 | T-B12 | logical margin → LTR | **pass** | `margin-*-start/end` ≡ T-B02 几何 |
 | T-V01 | display:none | **pass** | 不产出盒、不占位 |
 | T-V02 | visibility:hidden | **pass** | Nana：等同跳过（非 CSS 占位）；几何同 T-V01 |
-| T-W01 | flex-wrap | **pass** | measure 折行；iced borrowed/owned 多行拆分 |
+| T-W01 | flex-wrap | **pass** | 折行 |
 | T-W02 | wrap-reverse | **pass** | 行序反转；与 T-W01 同几何 |
 | T-W03 | wrap 双值 gap | **pass** | 行内 column-gap / 行间 row-gap |
 | T-W04 | wrap + 水平 margin | **pass** | 折行判断含 margin 左右 |
 | T-W05 | wrap 行间 gap% | **pass** | `gap:10% 12px`；auto 高→row-gap% 回退宽=20 |
 | T-W06 | wrap-reverse + gap% | **pass** | 同 T-W05 几何，行序 cd↑ / ab↓ |
-| T-W07 | column + flex-wrap | **pass** | 纵排折列；a/b@x0 c/d@x88；iced row-of-columns |
+| T-W07 | column + flex-wrap | **pass** | 纵排折列；a/b@x0 c/d@x88 |
 | T-W08 | column wrap-reverse | **pass** | 同 T-W07 几何，列序 cd@x0 / ab@x88 |
 | T-W09 | column-wrap + 垂直 margin | **pass** | outer=72 触发折列；b@x88（对称 T-W04） |
 | T-P01 | position:relative + inset | **pass** | |
@@ -166,14 +166,14 @@ cargo run --release -p component-gallery --bin ui-snapshots --features snapshots
 | T-P15 | fixed 脱流 + 视口 top/right | **pass** | 匿名盒；CB=viewport；不占流 |
 | T-P16 | fixed 百分比 inset 相对视口 | **pass** | `%` 相对 viewport，非祖先 |
 | T-P17 | fixed left+right / top+bottom | **pass** | 双侧 inset 定宽高相对视口 |
-| — | iced 流内 absolute | **skip** | 不绘制、不占流；浮层用 Overlay |
-| — | iced 流内 fixed | **pass** | 流内跳过；根 stack 视口层绘制（非 Overlay） |
+| — | 流内 absolute | **skip** | 脱流；浮层用 Overlay |
+| — | 流内 fixed | **pass** | 脱流；视口 CB（非 Overlay） |
 | — | sticky | **defer** | 声明缺口；优先 fixed 可用 |
 | — | `direction:rtl` / `writing-mode` 竖排逻辑映射 | **defer** | 逻辑盒属性仅默认 LTR↔physical；勿假翻轴 |
 | — | 完整 2D grid | **defer** | 仅轻量 template 轨（至 T-G24 + repeat(N)/max-content/%/`fit-content()`）；无 auto-flow 布局消费 / 跨轨 / 区域 |
-| — | iced Fixed `flex-shrink` | **pass** | 定主轴时 `resolve_flex_children_main_sizes` → Fixed 覆盖（T-F18/F19） |
+| — | Fixed `flex-shrink` | **pass** | 定主轴 shrink（T-F18/F19） |
 | — | `repeat(auto-fit/fill)` | **defer** | 解析为 [`GridTrackListUnsupported`](../crates/nana-ui-core/src/box_layout.rs)（`grid_*_unsupported`）；**勿**静默丢弃；仅固定次数 `repeat(N, …)` 展开。**Repo 证据页**作者面改为诚实 `repeat(2, minmax(240px, 1fr))`（T-G24），不以业务 class 特判假展开 |
-| — | `grid-auto-columns` / `rows` / `flow` | **defer** | **解析保留**；measure/iced **不**消费（隐式轨 / auto-placement） |
+| — | `grid-auto-columns` / `rows` / `flow` | **defer** | **解析保留**；引擎 **不**消费（隐式轨 / auto-placement） |
 | — | `:hover` / 复杂 `:not` / `:has` / `@media` / `!important` | **skip** | 选择器诚实跳过；`:first-child`/`:last-child`/`:root`/`:is`/`:where`/简单 `:not` 已支持 |
 | — | 兄弟组合器 `+` / `~` | **pass** | Selectors L4 §14.3–14.4；`MatchContext.preceding_siblings` |
 
@@ -181,7 +181,7 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 
 ## 收敛结论（2026-08-10）
 
-**判定**：在「iced row/column + `LayoutStyle` 子集、非完整 CSS 引擎」边界内，**未 defer 且可验收的布局 L1 缺口已基本穷尽**。
+**判定**：在「`RuntimeLayoutEngine` + `LayoutStyle` 子集、非完整 CSS 引擎」边界内，**未 defer 且可验收的布局 L1 缺口已基本穷尽**。
 `css-parity compare`：**pass≈96**（含 T-F20/F21/F22；Grid 轨 T-G21 若失败属并行轨，非本 Flex 交付）。
 
 ### 已支持矩阵（摘要）
@@ -300,12 +300,12 @@ Fixture 目录：[`crates/nana-css-parity/fixtures/`](../crates/nana-css-parity/
 
 ```text
 nana-ui / 消费应用     —— 禁止依赖 wry / WebView
-nana-ui-vue            —— LayoutStyle + measure_layout（公开测量 API）
+nana-ui-vue            —— LayoutStyle + measure_layout（适配 RuntimeLayoutEngine）
 nana-css-parity        —— 仅测试；feature webview-ref 可选
 ```
 
 - 产品绘制走 MessageBridge → Runtime/UiScene → `SceneWgpuPainter`。
-- `measure_layout` 供测试/诊断；不替代 Runtime layout。
+- `measure_layout` 供测试/诊断，调用同一 `RuntimeLayoutEngine`；产品帧走 `RuntimeDocument::flush`。
 - 新缺口：fixture `status: ignore` + `gap: P0-x|P1-x`，测试加 `#[ignore = "…"]`。
 
 ## 目录结构

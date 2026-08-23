@@ -52,7 +52,7 @@ pub use nana_ui_core::box_layout::{
     AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,
     GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
     LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
-    ViewportAxis, resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
+    ViewportAxis, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).

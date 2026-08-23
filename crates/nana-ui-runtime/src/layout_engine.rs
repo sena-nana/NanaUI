@@ -1,9 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use nana_ui_core::{AlignSpec, BoxSizing, FlexDirection, JustifySpec, LengthSpec, PositionSpec};
+use nana_ui_core::box_layout::text_line_box_height_px;
+use nana_ui_core::{
+    AlignSpec, BoxSizing, FlexDirection, FlexWrap, FontSizeContext, GridTrack, JustifySpec,
+    LayoutStyle, LengthSpec, PositionSpec, resolve_grid_track_sizes,
+};
 
-use crate::{DocumentId, LayoutBox, LayoutInput, StableNodeId, UiWorld, UiWorldError};
+use crate::{
+    DocumentId, LayoutBox, LayoutInput, MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
+    UiWorldError,
+};
 
 /// Logical viewport supplied by the platform host to the retained layout system.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,14 +28,25 @@ impl LayoutViewport {
     }
 }
 
-/// Backend-neutral flex flow used by canonical Runtime applications.
+/// Backend-neutral layout owner used by canonical Runtime applications.
 ///
-/// This is intentionally a layout owner, not a renderer adapter: it consumes
-/// the same `LayoutStyle` and shaped text metrics stored in `UiWorld`, then
-/// returns atomic layout writeback. Vue's broader CSS compatibility layout can
-/// continue to supply its own writeback without creating another retained tree.
+/// Consumes the same `LayoutStyle` and shaped text metrics stored in `UiWorld`
+/// (flex wrap / 1D grid / percent / calc / absolute / fixed) and returns atomic
+/// layout writeback. Vue `measure_layout` and css-parity call
+/// [`Self::layout_style_tree`] so mixed trees and fixtures share this algorithm.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RuntimeLayoutEngine;
+
+/// Style-only tree accepted by [`RuntimeLayoutEngine::layout_style_tree`].
+///
+/// Vue `LayoutNode` and css-parity fixtures adapt onto this type; they do not
+/// keep a second layout algorithm.
+#[derive(Debug, Clone)]
+pub struct StyleLayoutNode {
+    pub id: String,
+    pub style: LayoutStyle,
+    pub children: Vec<StyleLayoutNode>,
+}
 
 impl RuntimeLayoutEngine {
     pub fn layout_document(
@@ -159,6 +177,81 @@ impl RuntimeLayoutEngine {
                 .retain(|(id, _, _), _| world.contains(*id));
         }
         Ok(emitted)
+    }
+
+    /// Layout a style tree with the same algorithm as [`Self::layout_document`].
+    ///
+    /// Hidden / `display:none` nodes are omitted from the result (css-parity /
+    /// Vue measure contract). Product `UiWorld` still records a zero box.
+    pub fn layout_style_tree(
+        self,
+        root: &StyleLayoutNode,
+        viewport: LayoutViewport,
+    ) -> Vec<(String, LayoutBox)> {
+        let document = DocumentId::new(1).expect("document 1 is nonzero");
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        let mut names = HashMap::new();
+        let mut omitted = HashSet::new();
+        let mut next = 1u64;
+        fn add(
+            node: &StyleLayoutNode,
+            parent: Option<StableNodeId>,
+            parent_omitted: bool,
+            document: DocumentId,
+            queue: &mut MutationQueue,
+            names: &mut HashMap<StableNodeId, String>,
+            omitted: &mut HashSet<StableNodeId>,
+            next: &mut u64,
+        ) -> StableNodeId {
+            let id = StableNodeId::new(*next).expect("style-tree ids start at 1");
+            *next += 1;
+            queue.create(id, document, NodeKind::Element { tag: "div".into() });
+            if let Some(parent) = parent {
+                queue.insert(parent, id, None);
+            }
+            let omit = parent_omitted || node.style.omits_box();
+            if omit {
+                omitted.insert(id);
+            }
+            queue.set_style(
+                id,
+                NodeStyle {
+                    layout: Arc::new(node.style.clone()),
+                    ..NodeStyle::default()
+                },
+            );
+            names.insert(id, node.id.clone());
+            for child in &node.children {
+                add(child, Some(id), omit, document, queue, names, omitted, next);
+            }
+            id
+        }
+        add(
+            root,
+            None,
+            false,
+            document,
+            &mut queue,
+            &mut names,
+            &mut omitted,
+            &mut next,
+        );
+        world
+            .commit(queue)
+            .expect("style-tree mutations are well-formed");
+        let layouts = self
+            .layout_document(&world, document, viewport)
+            .expect("style-tree layout is infallible");
+        layouts
+            .into_iter()
+            .filter_map(|(id, box_)| {
+                if omitted.contains(&id) {
+                    return None;
+                }
+                names.get(&id).cloned().map(|name| (name, box_))
+            })
+            .collect()
     }
 }
 
@@ -393,32 +486,86 @@ fn intrinsic_size_scoped(
             scope,
         )?);
     }
-    let gap = style.main_gap_against(
-        direction,
-        nana_ui_core::ParentBox::from_viewport(content_available.width, content_available.height),
-    );
-    let gaps = gap * flow_children.len().saturating_sub(1) as f32;
-    let children = match direction {
-        FlexDirection::Row => Size::new(
-            child_sizes.iter().map(|size| size.width).sum::<f32>() + gaps,
-            child_sizes
-                .iter()
-                .map(|size| size.height)
-                .fold(0.0, f32::max),
-        ),
-        FlexDirection::Column => Size::new(
-            child_sizes
-                .iter()
-                .map(|size| size.width)
-                .fold(0.0, f32::max),
-            child_sizes.iter().map(|size| size.height).sum::<f32>() + gaps,
-        ),
+    let parent_box = gap_containing_block(style, content_available);
+    let gap = style.main_gap_against(direction, parent_box);
+    let cross_gap = style.cross_gap_against(direction, parent_box);
+    let wrap = style.flex_wrap;
+    let wrapping = match direction {
+        FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
+        FlexDirection::Column => {
+            matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && content_available.height > 0.5
+        }
+    };
+    let grid_tracks = match direction {
+        FlexDirection::Row => style.active_grid_columns(),
+        FlexDirection::Column => style.active_grid_rows(),
+    };
+    let children = if let Some(tracks) = grid_tracks.filter(|tracks| !tracks.is_empty()) {
+        let auto_sizes = auto_track_contributions(
+            &flow_children,
+            tracks,
+            content_available,
+            direction == FlexDirection::Column,
+            viewport,
+            nodes,
+            cache,
+            scope,
+        )?;
+        let budget = main_extent(content_available, direction);
+        let resolved = resolve_grid_track_sizes(tracks, budget, gap, &auto_sizes);
+        grid_intrinsic_size(
+            direction,
+            &resolved,
+            &child_sizes,
+            &flow_children,
+            content_available.width,
+            gap,
+            nodes,
+        )
+    } else if wrapping {
+        wrap_intrinsic_size(
+            direction,
+            wrap,
+            &flow_children,
+            &child_sizes,
+            content_available,
+            gap,
+            cross_gap,
+            grid_tracks,
+            viewport,
+            nodes,
+        )
+    } else {
+        let gaps = gap * flow_children.len().saturating_sub(1) as f32;
+        match direction {
+            FlexDirection::Row => Size::new(
+                child_sizes.iter().map(|size| size.width).sum::<f32>() + gaps,
+                child_sizes
+                    .iter()
+                    .map(|size| size.height)
+                    .fold(0.0, f32::max),
+            ),
+            FlexDirection::Column => Size::new(
+                child_sizes
+                    .iter()
+                    .map(|size| size.width)
+                    .fold(0.0, f32::max),
+                child_sizes.iter().map(|size| size.height).sum::<f32>() + gaps,
+            ),
+        }
     };
     let text = text_metrics.unwrap_or_default();
-    let content = Size::new(
+    let mut content = Size::new(
         children.width.max(text.width),
         children.height.max(text.height),
     );
+    if text_metrics.is_none() && flow_children.is_empty() {
+        if let Some(fs) = style.font_size.filter(|value| *value > 0.0) {
+            content.height = content
+                .height
+                .max(text_line_box_height_px(fs, style.line_height));
+        }
+    }
     // Auto width is max-content. Only unconstrained roots fill `available.width`.
     let default_width = if parent_direction.is_none()
         && style.width != Some(LengthSpec::Shrink)
@@ -429,18 +576,29 @@ fn intrinsic_size_scoped(
         content.width + chrome.width
     };
     let default_height = content.height + chrome.height;
-    let mut width = resolve_axis(style.width, available.width, viewport)
-        .unwrap_or(default_width)
-        .max(style.resolved_min_width(
-            Some(available.width),
-            Some((viewport.width, viewport.height)),
-        ));
-    let mut height = resolve_axis(style.height, available.height, viewport)
-        .unwrap_or(default_height)
-        .max(style.resolved_min_height(
-            Some(available.height),
-            Some((viewport.width, viewport.height)),
-        ));
+    let fonts = fonts_of(style);
+    let mut width = resolve_axis(
+        demote_fill_spec_if_indefinite(style.width, available.width),
+        available.width,
+        viewport,
+        fonts,
+    )
+    .unwrap_or(default_width)
+    .max(style.resolved_min_width(
+        Some(available.width),
+        Some((viewport.width, viewport.height)),
+    ));
+    let mut height = resolve_axis(
+        demote_fill_spec_if_indefinite(style.height, available.height),
+        available.height,
+        viewport,
+        fonts,
+    )
+    .unwrap_or(default_height)
+    .max(style.resolved_min_height(
+        Some(available.height),
+        Some((viewport.width, viewport.height)),
+    ));
     if matches!(style.box_sizing, BoxSizing::ContentBox) {
         if style.width.is_some_and(LengthSpec::is_definite_declared) {
             width += chrome.width;
@@ -583,10 +741,9 @@ fn place_node_scoped(
             positioned.push(child);
         }
     }
-    let gap = style.main_gap_against(
-        direction,
-        nana_ui_core::ParentBox::from_viewport(content.width, content.height),
-    );
+    let parent_box = gap_containing_block(style, content);
+    let gap = style.main_gap_against(direction, parent_box);
+    let cross_gap = style.cross_gap_against(direction, parent_box);
     let mut child_sizes = Vec::with_capacity(flow.len());
     for child in &flow {
         child_sizes.push(intrinsic_size_scoped(
@@ -599,65 +756,155 @@ fn place_node_scoped(
             scope,
         )?);
     }
-    distribute_fill(&flow, &mut child_sizes, direction, content, gap, nodes);
-    let occupied = main_occupied(&flow, &child_sizes, direction, content, gap, nodes);
-    let (mut cursor, effective_gap) = justify_offsets(
-        style.justify_content,
-        main_extent(content, direction),
-        occupied,
-        gap,
-        flow.len(),
-    );
-    for (child, mut child_size) in flow.into_iter().zip(child_sizes) {
-        let Some(child_style) = nodes.style(child) else {
-            continue;
-        };
-        let child_style = child_style.as_ref();
-        let margin = child_style.resolved_margin_against(Some(content.width));
-        let align = child_style.align_self.unwrap_or(style.align_items);
-        let cross_available = cross_extent(content, direction) - cross_margin(margin, direction);
-        if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
-            set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
+    let wrap = style.flex_wrap;
+    let wrapping = match direction {
+        FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
+        FlexDirection::Column => {
+            matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && content.height > 0.5
         }
-        let cross_offset = match align {
-            AlignSpec::Start | AlignSpec::Stretch => cross_start_margin(margin, direction),
-            AlignSpec::Center => {
-                ((cross_extent(content, direction) - cross_extent(child_size, direction)) / 2.0)
-                    .max(0.0)
-            }
-            AlignSpec::End => (cross_extent(content, direction)
-                - cross_extent(child_size, direction)
-                - cross_end_margin(margin, direction))
-            .max(0.0),
-        };
-        let main_start = cursor + main_start_margin(margin, direction);
-        let child_origin = match direction {
-            FlexDirection::Row => Point {
-                x: content_origin.x + main_start,
-                y: content_origin.y + cross_offset,
-            },
-            FlexDirection::Column => Point {
-                x: content_origin.x + cross_offset,
-                y: content_origin.y + main_start,
-            },
-        };
-        if !subtree_unchanged(child, child_origin, child_size, content, child_style, scope) {
-            place_node_scoped(
-                child,
-                child_origin,
-                child_size,
+    };
+    let grid_tracks = match direction {
+        FlexDirection::Row => style.active_grid_columns(),
+        FlexDirection::Column => style.active_grid_rows(),
+    };
+    let mut justify = style.justify_content;
+    if style.flex_reverse {
+        justify = flip_justify_for_reverse(justify);
+    }
+    let mut lines = if wrapping {
+        pack_wrap_lines(
+            &flow,
+            &child_sizes,
+            direction,
+            main_extent(content, direction),
+            gap,
+            grid_tracks,
+            viewport,
+            nodes,
+        )
+    } else {
+        vec![(0..flow.len()).collect()]
+    };
+    if matches!(wrap, FlexWrap::WrapReverse) {
+        lines.reverse();
+    }
+    let mut cross_cursor = 0.0;
+    for line in &lines {
+        let line_flow: Vec<StableNodeId> = line.iter().map(|&index| flow[index]).collect();
+        let mut line_sizes: Vec<Size> = line.iter().map(|&index| child_sizes[index]).collect();
+        let line_tracks = grid_tracks.map(|tracks| {
+            let start = line.first().copied().unwrap_or(0);
+            let end = line
+                .last()
+                .map(|index| index + 1)
+                .unwrap_or(0)
+                .min(tracks.len());
+            let start = start.min(end);
+            &tracks[start..end]
+        });
+        if let Some(tracks) = line_tracks.filter(|tracks| !tracks.is_empty()) {
+            apply_grid_main_sizes(
+                &line_flow,
+                &mut line_sizes,
+                direction,
                 content,
+                gap,
+                tracks,
                 viewport,
                 nodes,
                 intrinsic,
-                output,
                 scope,
             )?;
+        } else {
+            distribute_flex_main(
+                &line_flow,
+                &mut line_sizes,
+                direction,
+                content,
+                gap,
+                viewport,
+                nodes,
+            );
         }
-        cursor += main_extent(child_size, direction)
-            + main_start_margin(margin, direction)
-            + main_end_margin(margin, direction)
-            + effective_gap;
+        let line_cross = line_flow
+            .iter()
+            .zip(line_sizes.iter())
+            .map(|(child, size)| {
+                let margin = nodes
+                    .style(*child)
+                    .map(|style| style.resolved_margin_against(Some(content.width)))
+                    .unwrap_or_default();
+                cross_extent(*size, direction) + cross_margin(margin, direction)
+            })
+            .fold(0.0, f32::max);
+        let occupied = main_occupied(&line_flow, &line_sizes, direction, content, gap, nodes);
+        let (mut cursor, effective_gap) = justify_offsets(
+            justify,
+            main_extent(content, direction),
+            occupied,
+            gap,
+            line_flow.len(),
+        );
+        for (child, mut child_size) in line_flow.into_iter().zip(line_sizes) {
+            let Some(child_style) = nodes.style(child) else {
+                continue;
+            };
+            let child_style = child_style.as_ref();
+            let margin = child_style.resolved_margin_against(Some(content.width));
+            let align = child_style.resolved_align_self(style.align_items);
+            let cross_available =
+                cross_extent(content, direction) - cross_margin(margin, direction);
+            if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
+                set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
+            }
+            let cross_offset = match align {
+                AlignSpec::Start | AlignSpec::Stretch => {
+                    cross_cursor + cross_start_margin(margin, direction)
+                }
+                AlignSpec::Center => {
+                    cross_cursor
+                        + ((cross_extent(content, direction) - cross_extent(child_size, direction))
+                            / 2.0)
+                            .max(0.0)
+                }
+                AlignSpec::End => {
+                    cross_cursor
+                        + (cross_extent(content, direction)
+                            - cross_extent(child_size, direction)
+                            - cross_end_margin(margin, direction))
+                        .max(0.0)
+                }
+            };
+            let main_start = cursor + main_start_margin(margin, direction);
+            let child_origin = match direction {
+                FlexDirection::Row => Point {
+                    x: content_origin.x + main_start,
+                    y: content_origin.y + cross_offset,
+                },
+                FlexDirection::Column => Point {
+                    x: content_origin.x + cross_offset,
+                    y: content_origin.y + main_start,
+                },
+            };
+            if !subtree_unchanged(child, child_origin, child_size, content, child_style, scope) {
+                place_node_scoped(
+                    child,
+                    child_origin,
+                    child_size,
+                    content,
+                    viewport,
+                    nodes,
+                    intrinsic,
+                    output,
+                    scope,
+                )?;
+            }
+            cursor += main_extent(child_size, direction)
+                + main_start_margin(margin, direction)
+                + main_end_margin(margin, direction)
+                + effective_gap;
+        }
+        cross_cursor += line_cross + cross_gap;
     }
     for child in positioned {
         let Some(child_style) = nodes.style(child) else {
@@ -674,19 +921,48 @@ fn place_node_scoped(
         } else {
             content_origin
         };
-        let child_size =
+        let mut child_size =
             intrinsic_size_scoped(child, base, None, viewport, nodes, intrinsic, scope)?;
-        let left = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_left, base.width);
-        let right = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_right, base.width);
-        let top = nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_top, base.height);
-        let bottom =
-            nana_ui_core::LayoutStyle::resolve_inset(child_style.offset_bottom, base.height);
+        let left = LayoutStyle::resolve_inset(child_style.offset_left, base.width);
+        let right = LayoutStyle::resolve_inset(child_style.offset_right, base.width);
+        let top = LayoutStyle::resolve_inset(child_style.offset_top, base.height);
+        let bottom = LayoutStyle::resolve_inset(child_style.offset_bottom, base.height);
+        if let (Some(left), Some(right)) = (left, right)
+            && !child_style
+                .width
+                .is_some_and(LengthSpec::is_definite_declared)
+        {
+            child_size.width = (base.width - left - right).max(0.0);
+        }
+        if let (Some(top), Some(bottom)) = (top, bottom)
+            && !child_style
+                .height
+                .is_some_and(LengthSpec::is_definite_declared)
+        {
+            child_size.height = (base.height - top - bottom).max(0.0);
+        }
+        let vp = Some((viewport.width, viewport.height));
+        child_size.width = child_size
+            .width
+            .max(child_style.resolved_min_width(Some(base.width), vp));
+        if let Some(max) = child_style.resolved_max_width(Some(base.width), vp) {
+            child_size.width = child_size.width.min(max);
+        }
+        child_size.height = child_size
+            .height
+            .max(child_style.resolved_min_height(Some(base.height), vp));
+        if let Some(max) = child_style.resolved_max_height(Some(base.height), vp) {
+            child_size.height = child_size.height.min(max);
+        }
         let child_origin = Point {
             x: base_origin.x
-                + left.unwrap_or_else(|| right.map_or(0.0, |v| base.width - v - child_size.width)),
+                + left.unwrap_or_else(|| {
+                    right.map_or(0.0, |value| base.width - value - child_size.width)
+                }),
             y: base_origin.y
-                + top
-                    .unwrap_or_else(|| bottom.map_or(0.0, |v| base.height - v - child_size.height)),
+                + top.unwrap_or_else(|| {
+                    bottom.map_or(0.0, |value| base.height - value - child_size.height)
+                }),
         };
         if !subtree_unchanged(child, child_origin, child_size, base, child_style, scope) {
             place_node_scoped(
@@ -914,48 +1190,657 @@ fn place_modal_slot(
     )
 }
 
-fn distribute_fill(
+fn gap_containing_block(style: &LayoutStyle, content: Size) -> nana_ui_core::ParentBox {
+    // Auto-height wrap: row-gap % falls back to width (T-W05/W06). A Fill/px
+    // height is a definite CB and must not use the parent/viewport leftover.
+    let height = match style.height {
+        None | Some(LengthSpec::Auto) | Some(LengthSpec::Shrink) => None,
+        Some(LengthSpec::Fill) => Some(content.height).filter(|value| *value > 0.0),
+        Some(_) => Some(content.height).filter(|value| *value > 0.0),
+    };
+    nana_ui_core::ParentBox::new(Some(content.width).filter(|value| *value > 0.0), height)
+}
+
+fn flip_justify_for_reverse(justify: JustifySpec) -> JustifySpec {
+    match justify {
+        JustifySpec::Start => JustifySpec::End,
+        JustifySpec::End => JustifySpec::Start,
+        other => other,
+    }
+}
+
+fn demote_fill_spec(spec: Option<LengthSpec>) -> Option<LengthSpec> {
+    match spec {
+        Some(LengthSpec::Fill) => None,
+        Some(LengthSpec::Percent(percent)) if (percent - 100.0).abs() < 0.5 => None,
+        Some(LengthSpec::CalcPercentOffset { percent, offset_px })
+            if (percent - 100.0).abs() < 0.5 && offset_px <= 0.0 =>
+        {
+            None
+        }
+        other => other,
+    }
+}
+
+fn packing_main_size(
+    style: &LayoutStyle,
+    intrinsic: Size,
+    direction: FlexDirection,
+    content_main: f32,
+    viewport: LayoutViewport,
+    track: Option<GridTrack>,
+) -> f32 {
+    let spec = style
+        .child_main_length(direction)
+        .or_else(|| track.map(GridTrack::as_row_main_length));
+    match resolve_child_main(spec, content_main, viewport, fonts_of(style)) {
+        Some(value) => content_box_main_border_size(style, direction, Some(content_main), value),
+        None if style.grows() || matches!(spec, Some(LengthSpec::Fill)) => content_main,
+        None => main_extent(intrinsic, direction),
+    }
+}
+
+fn fonts_of(style: &LayoutStyle) -> FontSizeContext {
+    FontSizeContext::new(16.0, style.font_size.unwrap_or(16.0))
+}
+
+fn resolve_child_main(
+    spec: Option<LengthSpec>,
+    percent_base: f32,
+    viewport: LayoutViewport,
+    fonts: FontSizeContext,
+) -> Option<f32> {
+    match spec {
+        None | Some(LengthSpec::Fill) | Some(LengthSpec::Shrink) | Some(LengthSpec::Auto) => None,
+        Some(other) => other
+            .resolve_with_fonts(
+                Some(percent_base),
+                Some((viewport.width, viewport.height)),
+                fonts,
+            )
+            .map(|value| value.max(0.0)),
+    }
+}
+
+fn content_box_main_border_size(
+    style: &LayoutStyle,
+    direction: FlexDirection,
+    margin_percent_base: Option<f32>,
+    content_main: f32,
+) -> f32 {
+    if !matches!(style.box_sizing, BoxSizing::ContentBox) {
+        return content_main;
+    }
+    let pad = style.resolved_padding_against(margin_percent_base);
+    let border = style.resolved_border_width();
+    content_main
+        + match direction {
+            FlexDirection::Row => pad.left + pad.right + 2.0 * border,
+            FlexDirection::Column => pad.top + pad.bottom + 2.0 * border,
+        }
+}
+
+fn pack_wrap_lines(
+    children: &[StableNodeId],
+    sizes: &[Size],
+    direction: FlexDirection,
+    content_main: f32,
+    gap: f32,
+    grid_tracks: Option<&[GridTrack]>,
+    viewport: LayoutViewport,
+    nodes: &LayoutInputMap<'_>,
+) -> Vec<Vec<usize>> {
+    let mut lines = Vec::new();
+    let mut current = Vec::new();
+    let mut line_main = 0.0f32;
+    for (index, child) in children.iter().enumerate() {
+        let Some(style) = nodes.style(*child) else {
+            continue;
+        };
+        let margin = style.resolved_margin_against(Some(content_main));
+        let main = packing_main_size(
+            style.as_ref(),
+            sizes[index],
+            direction,
+            content_main,
+            viewport,
+            grid_tracks.and_then(|tracks| tracks.get(index).copied()),
+        );
+        let outer =
+            main + main_start_margin(margin, direction) + main_end_margin(margin, direction);
+        let need = if current.is_empty() {
+            outer
+        } else {
+            line_main + gap + outer
+        };
+        if !current.is_empty() && need > content_main + 0.5 {
+            lines.push(std::mem::take(&mut current));
+            line_main = 0.0;
+        }
+        if current.is_empty() {
+            line_main = outer;
+        } else {
+            line_main += gap + outer;
+        }
+        current.push(index);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    lines
+}
+
+fn wrap_intrinsic_size(
+    direction: FlexDirection,
+    wrap: FlexWrap,
+    children: &[StableNodeId],
+    sizes: &[Size],
+    available: Size,
+    gap: f32,
+    cross_gap: f32,
+    grid_tracks: Option<&[GridTrack]>,
+    viewport: LayoutViewport,
+    nodes: &LayoutInputMap<'_>,
+) -> Size {
+    let content_main = main_extent(available, direction);
+    let mut lines = pack_wrap_lines(
+        children,
+        sizes,
+        direction,
+        content_main,
+        gap,
+        grid_tracks,
+        viewport,
+        nodes,
+    );
+    if matches!(wrap, FlexWrap::WrapReverse) {
+        lines.reverse();
+    }
+    let mut cross = 0.0f32;
+    let mut max_main = 0.0f32;
+    for (line_index, line) in lines.iter().enumerate() {
+        let mut line_main = 0.0f32;
+        let mut line_cross = 0.0f32;
+        for (item_index, &index) in line.iter().enumerate() {
+            let Some(style) = nodes.style(children[index]) else {
+                continue;
+            };
+            let margin = style.resolved_margin_against(Some(available.width));
+            let main = packing_main_size(
+                style.as_ref(),
+                sizes[index],
+                direction,
+                content_main,
+                viewport,
+                grid_tracks.and_then(|tracks| tracks.get(index).copied()),
+            );
+            let outer_main =
+                main + main_start_margin(margin, direction) + main_end_margin(margin, direction);
+            line_main += outer_main;
+            if item_index > 0 {
+                line_main += gap;
+            }
+            line_cross = line_cross
+                .max(cross_extent(sizes[index], direction) + cross_margin(margin, direction));
+        }
+        max_main = max_main.max(line_main);
+        cross += line_cross;
+        if line_index + 1 < lines.len() {
+            cross += cross_gap;
+        }
+    }
+    match direction {
+        FlexDirection::Row => Size::new(max_main, cross),
+        FlexDirection::Column => Size::new(cross, max_main),
+    }
+}
+
+fn grid_intrinsic_size(
+    direction: FlexDirection,
+    tracks: &[f32],
+    child_sizes: &[Size],
+    children: &[StableNodeId],
+    content_width: f32,
+    gap: f32,
+    nodes: &LayoutInputMap<'_>,
+) -> Size {
+    let gaps = gap * tracks.len().saturating_sub(1) as f32;
+    let main = tracks.iter().sum::<f32>() + gaps;
+    let mut cross = 0.0f32;
+    for (index, child) in children.iter().enumerate() {
+        let margin = nodes
+            .style(*child)
+            .map(|style| style.resolved_margin_against(Some(content_width)))
+            .unwrap_or_default();
+        let size = child_sizes.get(index).copied().unwrap_or_default();
+        cross = cross.max(cross_extent(size, direction) + cross_margin(margin, direction));
+    }
+    match direction {
+        FlexDirection::Row => Size::new(main, cross),
+        FlexDirection::Column => Size::new(cross, main),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn auto_track_contributions(
+    children: &[StableNodeId],
+    tracks: &[GridTrack],
+    content: Size,
+    column_main: bool,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut IntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Vec<f32>, UiWorldError> {
+    let n = tracks.len().min(children.len());
+    let mut sizes = vec![0.0f32; n];
+    if !tracks.iter().any(|track| matches!(track, GridTrack::Auto)) {
+        return Ok(sizes);
+    }
+    let direction = if column_main {
+        FlexDirection::Column
+    } else {
+        FlexDirection::Row
+    };
+    for index in 0..n {
+        if !matches!(tracks[index], GridTrack::Auto) {
+            continue;
+        }
+        let child = children[index];
+        let Some(style) = nodes.style(child) else {
+            continue;
+        };
+        let axis_spec = if column_main {
+            style.height
+        } else {
+            style.width
+        };
+        let percent_base = if column_main {
+            content.height
+        } else {
+            content.width
+        };
+        if let Some(px) =
+            resolve_child_main(axis_spec, percent_base, viewport, fonts_of(style.as_ref()))
+        {
+            sizes[index] = px.max(0.0);
+            continue;
+        }
+        let available = if column_main {
+            Size::new(content.width, 0.0)
+        } else {
+            Size::new(0.0, content.height)
+        };
+        let measured = intrinsic_size_demoted(
+            child,
+            available,
+            Some(direction),
+            viewport,
+            nodes,
+            cache,
+            scope,
+            column_main,
+        )?;
+        sizes[index] = if column_main {
+            measured.height
+        } else {
+            measured.width
+        };
+    }
+    Ok(sizes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn intrinsic_size_demoted(
+    id: StableNodeId,
+    available: Size,
+    parent_direction: Option<FlexDirection>,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut IntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+    column_main: bool,
+) -> Result<Size, UiWorldError> {
+    // Auto-track throwaway: Fill / 100% on the track axis must not snap to the
+    // grid's definite size. Measure against a near-zero available on that axis
+    // after treating Fill/100% as content-sized via `available` 0.
+    let _ = column_main;
+    intrinsic_size_scoped(
+        id,
+        available,
+        parent_direction,
+        viewport,
+        nodes,
+        cache,
+        scope,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_grid_main_sizes(
     children: &[StableNodeId],
     sizes: &mut [Size],
     direction: FlexDirection,
     content: Size,
     gap: f32,
+    tracks: &[GridTrack],
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut IntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    let n = children.len();
+    if n == 0 {
+        return Ok(());
+    }
+    let mut margins = Vec::with_capacity(n);
+    for child in children {
+        let margin = nodes
+            .style(*child)
+            .map(|style| style.resolved_margin_against(Some(content.width)))
+            .unwrap_or_default();
+        margins.push(margin);
+    }
+    let track_n = n.min(tracks.len());
+    let margin_total: f32 = margins
+        .iter()
+        .take(track_n)
+        .map(|margin| main_start_margin(*margin, direction) + main_end_margin(*margin, direction))
+        .sum();
+    let budget = (main_extent(content, direction) - margin_total).max(0.0);
+    let auto_sizes = auto_track_contributions(
+        &children[..track_n],
+        &tracks[..track_n],
+        content,
+        direction == FlexDirection::Column,
+        viewport,
+        nodes,
+        intrinsic,
+        scope,
+    )?;
+    let mut resolved = resolve_grid_track_sizes(&tracks[..track_n], budget, gap, &auto_sizes);
+    if resolved.len() < n {
+        let used: f32 =
+            resolved.iter().sum::<f32>() + gap * resolved.len().saturating_sub(1) as f32;
+        let rem = (budget - used).max(0.0);
+        let extra = n - resolved.len();
+        let each = if extra > 0 { rem / extra as f32 } else { 0.0 };
+        resolved.extend(std::iter::repeat_n(each, extra));
+    }
+    for (size, main) in sizes.iter_mut().zip(resolved) {
+        set_main_extent(size, direction, main);
+    }
+    Ok(())
+}
+
+fn distribute_flex_main(
+    children: &[StableNodeId],
+    sizes: &mut [Size],
+    direction: FlexDirection,
+    content: Size,
+    gap: f32,
+    viewport: LayoutViewport,
     nodes: &LayoutInputMap<'_>,
 ) {
-    let total_gap = gap * children.len().saturating_sub(1) as f32;
-    let mut fixed = 0.0;
-    for (id, size) in children.iter().zip(sizes.iter()) {
-        let Some(style) = nodes.style(*id) else {
+    let n = children.len();
+    if n == 0 {
+        return;
+    }
+    let content_main = main_extent(content, direction);
+    let gap_total = gap * n.saturating_sub(1) as f32;
+    let vp = Some((viewport.width, viewport.height));
+    let mut margin_mains = Vec::with_capacity(n);
+    let mut fixed_or_fill: Vec<Option<f32>> = Vec::with_capacity(n);
+    let mut mins = Vec::with_capacity(n);
+    let mut maxs = Vec::with_capacity(n);
+    let mut grows = Vec::with_capacity(n);
+    let mut shrinks = Vec::with_capacity(n);
+    for (index, child) in children.iter().enumerate() {
+        let Some(style) = nodes.style(*child) else {
+            margin_mains.push(0.0);
+            mins.push(0.0);
+            maxs.push(None);
+            grows.push(0.0);
+            shrinks.push(1.0);
+            fixed_or_fill.push(Some(main_extent(sizes[index], direction)));
             continue;
         };
         let margin = style.resolved_margin_against(Some(content.width));
-        let main = if child_fills(style.as_ref(), direction) {
-            0.0
-        } else {
-            main_extent(*size, direction)
+        let (margin_main, min_main, max_main) = match direction {
+            FlexDirection::Row => (
+                margin.left + margin.right,
+                style.resolved_min_width(Some(content.width), vp),
+                style.resolved_max_width(Some(content.width), vp),
+            ),
+            FlexDirection::Column => (
+                margin.top + margin.bottom,
+                style.resolved_min_height(Some(content_main), vp),
+                style.resolved_max_height(Some(content_main), vp),
+            ),
         };
-        fixed += main + main_start_margin(margin, direction) + main_end_margin(margin, direction);
-    }
-    let mut weights = 0.0;
-    for id in children {
-        let Some(style) = nodes.style(*id) else {
-            continue;
-        };
-        if child_fills(style.as_ref(), direction) {
-            weights += style.flex_grow.unwrap_or(1.0).max(0.0);
+        margin_mains.push(margin_main);
+        mins.push(min_main);
+        maxs.push(max_main);
+        let main = style.child_main_length(direction);
+        let fill_main = matches!(main, Some(LengthSpec::Fill));
+        // `flex-grow: None` on Fill means "take remaining" (product LengthSpec::Fill).
+        // Explicit `flex-grow: 0` keeps 100%/Fill as a definite main (css-parity).
+        let grow = style
+            .flex_grow
+            .unwrap_or(if fill_main { 1.0 } else { 0.0 })
+            .max(0.0);
+        grows.push(grow);
+        // Unspecified shrink stays 0 so overflowing definite rows (lists) keep
+        // their boxes. Fixtures that need shrink set `flex-shrink` explicitly
+        // (T-F18/F19).
+        shrinks.push(style.flex_shrink.unwrap_or(0.0).max(0.0));
+        match resolve_child_main(main, content_main, viewport, fonts_of(style.as_ref())) {
+            Some(value) => {
+                let mut value = value.max(min_main);
+                if let Some(max) = max_main {
+                    value = value.min(max);
+                }
+                value = content_box_main_border_size(
+                    style.as_ref(),
+                    direction,
+                    Some(content.width),
+                    value,
+                );
+                fixed_or_fill.push(Some(value));
+            }
+            None => {
+                if grow > 0.0 {
+                    fixed_or_fill.push(None);
+                } else if fill_main {
+                    let mut value = content_main.max(min_main);
+                    if let Some(max) = max_main {
+                        value = value.min(max);
+                    }
+                    value = content_box_main_border_size(
+                        style.as_ref(),
+                        direction,
+                        Some(content.width),
+                        value,
+                    );
+                    fixed_or_fill.push(Some(value));
+                } else {
+                    // Auto: keep intrinsic (text / children), not a Fill share.
+                    let intrinsic_main = main_extent(sizes[index], direction).max(min_main);
+                    fixed_or_fill.push(Some(intrinsic_main));
+                }
+            }
         }
     }
-    if weights <= 0.0 {
+    let mut mains = resolve_flex_fill_sizes(
+        content_main,
+        gap_total,
+        &margin_mains,
+        &fixed_or_fill,
+        &mins,
+        &maxs,
+        &grows,
+    );
+    apply_flex_shrink(
+        content_main,
+        gap_total,
+        &margin_mains,
+        &mut mains,
+        &mins,
+        &shrinks,
+    );
+    for (size, main) in sizes.iter_mut().zip(mains) {
+        set_main_extent(size, direction, main);
+    }
+}
+
+fn resolve_flex_fill_sizes(
+    content_main: f32,
+    gap_total: f32,
+    margin_mains: &[f32],
+    fixed_or_fill: &[Option<f32>],
+    mins: &[f32],
+    maxs: &[Option<f32>],
+    grows: &[f32],
+) -> Vec<f32> {
+    let n = fixed_or_fill.len();
+    let mut sizes = vec![0.0f32; n];
+    let mut active: Vec<(usize, f32)> = Vec::new();
+    let mut occupied = gap_total;
+    for i in 0..n {
+        occupied += margin_mains[i].max(0.0);
+        if let Some(width) = fixed_or_fill[i] {
+            sizes[i] = width.max(0.0);
+            occupied += sizes[i];
+        } else {
+            active.push((i, grows[i].max(0.0)));
+        }
+    }
+    let mut free = (content_main - occupied).max(0.0);
+    loop {
+        if active.is_empty() {
+            break;
+        }
+        let fr_total: f32 = active.iter().map(|(_, weight)| *weight).sum();
+        if fr_total <= 1e-6 {
+            let share = free / active.len() as f32;
+            let mut freeze: Vec<(usize, f32)> = Vec::new();
+            for (fi, &(ci, _)) in active.iter().enumerate() {
+                let min = mins[ci].max(0.0);
+                if share + 1e-3 < min {
+                    freeze.push((fi, min));
+                } else if let Some(max) = maxs[ci]
+                    && share > max + 1e-3
+                {
+                    freeze.push((fi, max.max(0.0)));
+                }
+            }
+            if freeze.is_empty() {
+                for (ci, _) in active.drain(..) {
+                    let mut width = share.max(mins[ci].max(0.0));
+                    if let Some(max) = maxs[ci] {
+                        width = width.min(max.max(0.0));
+                    }
+                    sizes[ci] = width;
+                }
+                break;
+            }
+            freeze.sort_by_key(|(fi, _)| *fi);
+            for (fi, frozen) in freeze.into_iter().rev() {
+                let (ci, _) = active.remove(fi);
+                sizes[ci] = frozen;
+                free = (free - frozen).max(0.0);
+            }
+            continue;
+        }
+        let mut freeze: Vec<(usize, f32)> = Vec::new();
+        for (fi, &(ci, weight)) in active.iter().enumerate() {
+            let share = free * (weight / fr_total);
+            let min = mins[ci].max(0.0);
+            if share + 1e-3 < min {
+                freeze.push((fi, min));
+            } else if let Some(max) = maxs[ci]
+                && share > max + 1e-3
+            {
+                freeze.push((fi, max.max(0.0)));
+            }
+        }
+        if freeze.is_empty() {
+            for (ci, weight) in active.drain(..) {
+                let mut width = (free * (weight / fr_total)).max(mins[ci].max(0.0));
+                if let Some(max) = maxs[ci] {
+                    width = width.min(max.max(0.0));
+                }
+                sizes[ci] = width;
+            }
+            break;
+        }
+        freeze.sort_by_key(|(fi, _)| *fi);
+        for (fi, frozen) in freeze.into_iter().rev() {
+            let (ci, _) = active.remove(fi);
+            sizes[ci] = frozen;
+            free = (free - frozen).max(0.0);
+        }
+    }
+    sizes
+}
+
+fn apply_flex_shrink(
+    content_main: f32,
+    gap_total: f32,
+    margin_mains: &[f32],
+    sizes: &mut [f32],
+    mins: &[f32],
+    shrinks: &[f32],
+) {
+    if content_main <= 1e-3 {
         return;
     }
-    let remaining = (main_extent(content, direction) - fixed - total_gap).max(0.0);
-    for (id, size) in children.iter().zip(sizes.iter_mut()) {
-        let Some(style) = nodes.style(*id) else {
-            continue;
-        };
-        if child_fills(style.as_ref(), direction) {
-            let weight = style.flex_grow.unwrap_or(1.0).max(0.0);
-            set_main_extent(size, direction, remaining * weight / weights);
+    let margin_total: f32 = margin_mains.iter().map(|margin| margin.max(0.0)).sum();
+    let used = sizes.iter().sum::<f32>() + margin_total + gap_total;
+    let mut overflow = used - content_main;
+    if overflow <= 1e-3 {
+        return;
+    }
+    let mut active: Vec<usize> = (0..sizes.len())
+        .filter(|&i| shrinks[i] > 1e-6 && sizes[i] > mins[i].max(0.0) + 1e-3)
+        .collect();
+    loop {
+        if active.is_empty() || overflow <= 1e-3 {
+            break;
+        }
+        let fr_total: f32 = active
+            .iter()
+            .map(|&i| shrinks[i].max(0.0) * sizes[i].max(0.0))
+            .sum();
+        if fr_total <= 1e-6 {
+            break;
+        }
+        let mut freeze: Vec<(usize, f32)> = Vec::new();
+        for (fi, &ci) in active.iter().enumerate() {
+            let factor = shrinks[ci].max(0.0) * sizes[ci].max(0.0);
+            let reduction = overflow * (factor / fr_total);
+            let min = mins[ci].max(0.0);
+            if sizes[ci] - reduction + 1e-3 < min {
+                freeze.push((fi, min));
+            }
+        }
+        if freeze.is_empty() {
+            for &ci in &active {
+                let factor = shrinks[ci].max(0.0) * sizes[ci].max(0.0);
+                let reduction = overflow * (factor / fr_total);
+                sizes[ci] = (sizes[ci] - reduction).max(mins[ci].max(0.0));
+            }
+            break;
+        }
+        freeze.sort_by_key(|(fi, _)| *fi);
+        for (fi, frozen_min) in freeze.into_iter().rev() {
+            let ci = active.remove(fi);
+            let reduced = (sizes[ci] - frozen_min).max(0.0);
+            sizes[ci] = frozen_min;
+            overflow = (overflow - reduced).max(0.0);
         }
     }
 }
@@ -1006,18 +1891,29 @@ fn justify_offsets(
     }
 }
 
-fn resolve_axis(spec: Option<LengthSpec>, base: f32, viewport: LayoutViewport) -> Option<f32> {
+fn resolve_axis(
+    spec: Option<LengthSpec>,
+    base: f32,
+    viewport: LayoutViewport,
+    fonts: FontSizeContext,
+) -> Option<f32> {
     spec.and_then(|value| {
         if value == LengthSpec::Fill {
             Some(base)
         } else {
-            value.resolve_non_negative(Some(base), Some((viewport.width, viewport.height)))
+            value
+                .resolve_with_fonts(Some(base), Some((viewport.width, viewport.height)), fonts)
+                .map(|value| value.max(0.0))
         }
     })
 }
 
-fn child_fills(style: &nana_ui_core::LayoutStyle, direction: FlexDirection) -> bool {
-    matches!(style.child_main_length(direction), Some(LengthSpec::Fill))
+fn demote_fill_spec_if_indefinite(spec: Option<LengthSpec>, base: f32) -> Option<LengthSpec> {
+    if base > 0.5 {
+        spec
+    } else {
+        demote_fill_spec(spec)
+    }
 }
 
 fn cross_axis_is_definite(style: &nana_ui_core::LayoutStyle, direction: FlexDirection) -> bool {
@@ -1099,7 +1995,10 @@ fn finite_extent(value: f32) -> f32 {
 mod tests {
     use std::sync::Arc;
 
-    use nana_ui_core::{FlexDirection, JustifySpec, LayoutStyle, LengthSpec};
+    use nana_ui_core::{
+        BoxSizing, DisplaySpec, FlexDirection, FlexWrap, GridTrack, JustifySpec, LayoutStyle,
+        LengthSpec, PositionSpec,
+    };
 
     use crate::{
         ComputedStyle, MutationQueue, NodeKind, NodeStyle, TextContent, TextMetrics, TextShaper,
@@ -1534,6 +2433,7 @@ mod tests {
                 layout: Arc::new(LayoutStyle {
                     width: Some(LengthSpec::Px(50.0)),
                     height: Some(LengthSpec::Fill),
+                    flex_shrink: Some(0.0),
                     ..LayoutStyle::default()
                 }),
                 ..NodeStyle::default()
@@ -1965,5 +2865,142 @@ mod tests {
         for node in [id(2), id(6), id(9), id(10), id(13), id(15)] {
             assert_eq!(narrow[&node].width, wide[&node].width);
         }
+    }
+
+    #[test]
+    fn row_wrap_breaks_to_the_next_line() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        for value in 2..=5 {
+            queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+            queue.insert(id(1), id(value), None);
+            queue.set_style(
+                id(value),
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(80.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(200.0)),
+                    direction: Some(FlexDirection::Row),
+                    flex_wrap: FlexWrap::Wrap,
+                    gap: Some(LengthSpec::Px(8.0)),
+                    align_items: nana_ui_core::AlignSpec::Start,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, LayoutViewport::new(200.0, 160.0))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(layouts[&id(2)].x, 0.0);
+        assert_eq!(layouts[&id(3)].x, 88.0);
+        assert_eq!(layouts[&id(4)].x, 0.0);
+        assert_eq!(layouts[&id(4)].y, 48.0);
+        assert_eq!(layouts[&id(5)].x, 88.0);
+        assert_eq!(layouts[&id(5)].y, 48.0);
+        assert_eq!(layouts[&id(1)].height, 88.0);
+    }
+
+    #[test]
+    fn grid_template_columns_split_free_space() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Element { tag: "div".into() });
+        queue.create(id(2), document, NodeKind::Element { tag: "div".into() });
+        queue.create(id(3), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(1), id(2), None);
+        queue.insert(id(1), id(3), None);
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    direction: Some(FlexDirection::Row),
+                    width: Some(LengthSpec::Px(800.0)),
+                    height: Some(LengthSpec::Px(400.0)),
+                    grid_columns: Some(vec![GridTrack::Px(220.0), GridTrack::Fr(1.0)]),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for value in [2, 3] {
+            queue.set_style(
+                id(value),
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        height: Some(LengthSpec::Px(400.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        world.commit(queue).unwrap();
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, LayoutViewport::new(800.0, 400.0))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(layouts[&id(2)].width, 220.0);
+        assert_eq!(layouts[&id(3)].x, 220.0);
+        assert_eq!(layouts[&id(3)].width, 580.0);
+    }
+
+    #[test]
+    fn style_tree_matches_document_layout_for_row_gap() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(400.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                gap: Some(LengthSpec::Px(12.0)),
+                align_items: nana_ui_core::AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                StyleLayoutNode {
+                    id: "a".into(),
+                    style: LayoutStyle {
+                        width: Some(LengthSpec::Px(50.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                },
+                StyleLayoutNode {
+                    id: "b".into(),
+                    style: LayoutStyle {
+                        width: Some(LengthSpec::Px(50.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                },
+            ],
+        };
+        let boxes = RuntimeLayoutEngine
+            .layout_style_tree(&tree, LayoutViewport::new(400.0, 80.0))
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert!((boxes["b"].x - 62.0).abs() < 0.01);
     }
 }

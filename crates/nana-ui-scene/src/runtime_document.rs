@@ -82,6 +82,7 @@ impl RuntimeDocument {
         }
         let mut force_layout = viewport_changed;
         let update = self.flush_with(|context, work| {
+            context.world_mut().reconcile_focus(&work.focus_ime);
             context.shape_text(&work.text, shaper)?;
             if force_layout || !work.layout.is_empty() {
                 if force_layout {

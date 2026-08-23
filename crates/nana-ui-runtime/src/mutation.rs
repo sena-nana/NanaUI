@@ -46,6 +46,8 @@ pub enum UiMutation {
         id: StableNodeId,
         text: TextContent,
     },
+    /// Engine writeback (and tests). Product Vue frames must not use this to
+    /// fight [`crate::RuntimeLayoutEngine`]; mixed trees flush that engine.
     WriteLayout {
         id: StableNodeId,
         layout: LayoutBox,
@@ -180,6 +182,8 @@ impl MutationQueue {
         self.mutations.push(UiMutation::SetText { id, text });
     }
 
+    /// Publish a box computed by [`crate::RuntimeLayoutEngine`], or by a test.
+    /// Vue CSS measure is not a second product layout writer.
     pub fn write_layout(&mut self, id: StableNodeId, layout: LayoutBox) {
         self.mutations.push(UiMutation::WriteLayout { id, layout });
     }
