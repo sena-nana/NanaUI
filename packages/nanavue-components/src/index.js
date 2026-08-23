@@ -1,7 +1,7 @@
 /**
  * @nanaui/nanavue-components — **L2** Nana Vue adapters.
  * Semantic props → Style Model; skip CSS. Mix with L1 createElement via runtime.
- * See SEMANTICS.md and docs/vue-nana-renderer-system.md §0.
+ * See SEMANTICS.md and docs/vue.md.
  */
 
 export {

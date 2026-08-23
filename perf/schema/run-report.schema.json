@@ -17,7 +17,7 @@
     "timing_gate_enforceable": { "type": "boolean" },
     "relative_gate_enforceable": {
       "type": "boolean",
-      "description": "Must stay false. See docs/performance-contract.md."
+      "description": "Must stay false. See perf/README.md."
     },
     "scenario": { "type": "object" },
     "command": { "type": "array", "items": { "type": "string" } },

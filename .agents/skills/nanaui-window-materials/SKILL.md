@@ -7,7 +7,7 @@ description: Maintain NanaUI's platform-owned native window material boundary. U
 
 ## Rules
 
-- Read [`window-materials.md`](../../../docs/window-materials.md) before editing.
+- Read [`window.md`](../../../docs/window.md) before editing.
 - Keep raw handles and platform APIs in `nana-window`; ordinary UI consumes only the public
   outcome.
 - Clear an existing effect before reapplying it. Return the effect actually applied or an explicit

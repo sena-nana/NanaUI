@@ -23,7 +23,7 @@
       "op": "eq",
       "value": 0,
       "status": "required",
-      "note": "See docs/performance-contract.md §8.1 for the frames_after_idle definition. Missing stays not-evaluable, never 0."
+      "note": "See perf/README.md §8.1 for the frames_after_idle definition. Missing stays not-evaluable, never 0."
     }
   ],
   "notes": "§8.1 static_ui judged when frames_after_idle is present. static-tree-50k stays unsupported."

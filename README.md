@@ -1,160 +1,53 @@
 # NanaUI
 
-NanaUI 是 Nana 系列应用使用的 Rust 原生 UI 框架。产品保留与渲染合同是
-Runtime（`nana-ui-runtime`）和 UiScene（`nana-ui-scene`）。桌面绘制由
-`nana-ui` 的 `SceneWgpuPainter` 完成。仓内 `engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不是应用编程模型，也不是当前绘制后端。Android 实验宿主同样走
-Runtime / UiScene / `SceneWgpuPainter`，不是产品路径。Vue + JS 是一等 L1/L2
-消费方。不把 WebView 作为产品 UI 路径。宿主拥有 Window、Surface、Device 与
-Queue，并保持单一 WGPU 主版本。
+NanaUI 是给 Nana 系列应用准备的原生桌面界面框架。
 
-## 工作区框架
+它画的是真正的窗口，不是套进去的浏览器，也不是盖在游戏画面上的一层 HUD。按钮、面板、文字和角色、特效、实时视口走同一棵界面：一起排、一起挡、一起点，共用同一套图形设备，一次画完。
 
-`crates/nana-ui` 以 LiliaUI 的视觉层级和工作区交互为基线，提供：
+第一路径是这套原生界面本身。Vue 是兼容路径：已有的 Vue / JavaScript 可以落到同一棵树上，但它不是产品该怎么写的起点，更不是把网站嵌进窗口。
 
-- `WorkspaceController`：统一管理 Region 布局、折叠、可见性、尺寸约束、
-  分隔条拖动、双击复位、按需帧驱动的折叠过渡、窗口尺寸和 DPI；
-- `WorkspaceRegions` / `workspace_view`：按注册顺序接收任意 Region 内容，根据
-  role、placement 与 scope 编排起始区、主区、结束区和上下区域；
-- `WorkspaceSlots`：标准六区应用的便捷适配器，不限制框架的动态区域模型；
-- `WorkspaceLayout`：提供稳定/自定义 Region ID、响应式策略、JSON 持久化以及
-  逻辑/物理像素几何；
-- `SidebarFrame` / `SidebarSection` / `SidebarRow` / `SidebarFooter`：
-  提供可滚动主体、固定外槽、带高度与箭头过渡的分区折叠、层级导航与真实
-  Footer 操作；
-- `SettingsModel` / `SettingsState`：提供稳定设置 Tab、别名恢复、普通/full-page
-  页面和可序列化导航状态；
-- `AppearanceSettings` / `ThemeTokens`：提供可序列化的标准圆角设置，内部派生
-  四档圆角，并让宿主以 `UI_METRICS` 为默认值即时覆盖公共控件外观；
-- `settings_sidebar` / `settings_page` / `SettingsRow` / `SettingsCard`：
-  提供与 LiliaUI 一致的紧凑设置布局；
-- `app_shell` / `app_title_bar`：提供可复用的应用壳层；
-- light/dark 主题、LiliaUI 同源的 Noto Sans SC 400/500/600/700 字体、
-  基础控件、浮层和 WGPU 内容插槽。
+## 今天的桌面，被拆成了两个世界
 
-`examples/component-gallery` 是独立的标准 UI Demo crate。它以单个 220px
-`Resources` Region 承载控件、表面、反馈和工作区分类及固定设置 Footer；进入设置
-后，同一位置切换为设置分类。主题、面板显隐、尺寸复位、返回导航和所有组件操作
-都连接到 Demo 自己的 Rust 状态，`nana-ui` 不包含或导出 Gallery 展示模型。
+要做带角色、带特效、带实时画面的桌面产品，团队几乎总会被拆开。
 
-`ThemeMode`、`AppearanceSettings`、`SettingsState` 与 `WorkspaceLayout` 均可
-序列化。NanaUI 不选择配置目录或自行写盘，消费应用负责将这些状态组合进自己的
-配置文件。
+一边把网页嵌进窗口。写得快，但窗口里跑的是浏览器。实时画面是另一个进程、另一套合成、另一套命中。对不齐、点不中，也没有原生窗口该有的质感。
 
-消费应用接入 `run_runtime` 时应注册 `ui_font_sources()` 并将
-`ui_font(Normal)` 设为默认字体；仓库中的所有 Demo 和离屏 renderer 已执行该
-注册。字体文件由 LiliaUI 使用的同一组 Noto Sans SC WOFF2 无损转换为 TTF，
-许可见 `crates/nana-ui/assets/fonts/OFL.txt`。
+另一边用游戏引擎。画面是一等公民，角色和特效没有问题，可产品界面是后加的：浮在场景上，挡不住、裁不齐，很难按桌面软件的方式去用。
 
-## 按需构建
+两边都能做出「能看」的东西，但做不出同一种产品：打开是桌面软件，里面却住着活的画面。Nana 系列应用要的就是这一种。NanaUI 为此而存在。
 
-`nana-ui` 默认不启用可选 feature，只编译基础主题、Shell、Workspace、Sidebar、
-窗口合同、操作按钮和菜单。消费者显式启用实际使用的组件族：
+## 真正的竞争力
 
-```toml
-[dependencies]
-nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["controls", "surfaces"] }
-```
+**画面活在界面里，不是界面上的洞。**
 
-Cargo 不会根据消费代码中的 `use` 自动推断 feature。可选组件族包括
-`calendar`、`controls`、`feedback`、`image-viewer`、
-`overlays`、`popover`、`selects`、`settings-components`、`surfaces` 与
-`xy-pad`；`components` 一次启用全部组件。`gpu` 启用宿主纹理与自定义 WGPU
-View，`bundled-fonts` 才会把四个 Noto Sans SC 字体资源编入目标；需要完整库
-能力时可直接启用 `full`。
+角色可以站在面板后面，被侧栏裁掉一角，被对话框挡住，也可以成为可点的一层。特效、着色器、游戏视口和按钮、文字走同一套排版、裁剪和点击。该在上面的在上面，该被挡住的被挡住，点到哪里就是哪里。
 
-组件仍可从 crate 根导入以保持兼容，也可以通过
-`nana_ui::components::<family>` 使用稳定的职责子模块。Rust 原生静态链接不等同于
-Web 动态 `import()`：未启用的组件由 Cargo feature 在编译期排除，已启用但未引用
-的函数由 Release 链接裁剪。独立 Gallery crate 显式依赖完整组件集合，运行时只
-构造当前视图；日历模型与菜单数据分别在首次访问反馈页和首次打开菜单时初始化。
+网页套壳做不到：实时画面是另一套世界。游戏引擎做不到：界面是盖在画面上的膜。NanaUI 里没有「UI 层」和「画面层」——只有一棵界面，画面是其中的成员。
 
-运行 UI Gallery：
+**一份图形能力，一次画完。**
 
-```bash
-cargo run -p component-gallery
-```
+窗口和图形设备由应用自己掌握。界面和实时内容共用这一份能力，在同一轮合成里画完。不为界面另开一套设备，也不把画面拷出来再贴回去。看起来合在一起，是因为它本来就是一起画的。
 
-运行自定义 WGPU 内容插槽：
+对带 Live2D、实时视口或自定义着色的产品来说，这决定了能不能把「软件」和「画面」做成同一个东西，而不是两个窗口勉强叠在一起。
 
-```bash
-cargo run -p nana-ui --example gpu-view-demo --features bundled-fonts,gpu
-```
+**原生窗口，不是网页，也不是引擎 HUD。**
 
-运行由宿主掌握窗口与 WGPU 上下文的组合 Demo：
+用户看到的是桌面软件：标题栏、面板、点击和焦点都按窗口来。没有浏览器内核，没有地址栏，没有整窗网页。也没有把产品界面当成游戏 UI 去凑。框架负责把这一棵界面画进宿主窗口；业务状态、配置和每个区域里放什么，仍由应用自己拥有。
 
-```bash
-cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
-```
+## Vue 是兼容，不是第一路径
 
-`hosted-gpu-demo` 由宿主创建 `winit::Window`、事件循环、WGPU
-`Instance`、`Device`、`Queue` 与 `Surface`。`SceneWgpuPainter` 和宿主场景复用同一 GPU
-上下文，宿主纹理通过 `GpuTextureView` 直接进入 UI 合成，没有 CPU 回读、
-图片编码或第二套 Device。
+产品界面的第一路径是 NanaUI 自己的原生控件和布局。应用直接搭这棵树，实时画面作为树上的节点加入。
 
-## Vue + JavaScript 源码兼容
+Vue 用来兼容已经按网页习惯写好的界面：Vue 3 的一个子集可以进同一棵原生树，和按钮、实时画面一起排、一起点。它不是 WebView，也不能把现成网站原样丢进来跑。能用网页写法，是为了迁已有代码、接已有习惯，不是因为 NanaUI 靠浏览器来做产品。
 
-`nana-ui-vue` 提供的是 WebView 中常见 Vue 3 源码的 Nana 兼容子集，不是
-WebView 或 Tauri 运行时。消费应用以 Vite 编译 SFC、TypeScript 与 CSS，在自己的
-入口中从 `@nanaui/nanavue-runtime` 调用 `createNanaApp()`；产出的 IIFE 由
-V8 执行；stable identity、hierarchy、text、focus、layout 与 render
-extraction 进入同一 Nana Runtime/UiScene。桌面标准控件由 `SceneWgpuPainter`
-绘制。custom GPU node 已由同一 Scene frame graph 解析。
-Runtime/Scene 合同与退出门禁见
-[`docs/runtime-scene.md`](docs/runtime-scene.md)。
+主次不要反。先把原生界面和同窗画面做对；需要时再让 Vue 落到这棵树上。
 
-框架默认只注册 renderer、DOM 子集与 Web API。应用业务命令和鉴权由消费宿主
-通过 `HostApiRegistry` 提供，名称与框架 API 冲突时初始化直接失败。网络通过
-应用显式配置的 `FetchHost` 执行，`FetchPolicy` 默认拒绝所有 origin；兼容面是
-缓冲式 `fetch`、`Headers`、`Request`、`Response` 与 `AbortSignal`，不包含
-流式 body、cookie、cache、CORS、WebSocket 或 Tauri API。
+## 它在为什么样的产品准备
 
-最小消费入口和锁定构建见
-[`crates/nana-js-engine/fixtures/vue-sfc-compat`](crates/nana-js-engine/fixtures/vue-sfc-compat)。
-该夹具只用于源码兼容验收，不是外部 bundle loader 或 Demo CLI。
+NanaUI 面向同时需要桌面产品和同窗实时画面的应用：角色要站在界面里，特效要跟着面板走，游戏或预览视口要嵌在布局中，而不是另开一层。
 
-## 当前依赖基线
+如果你只是想把现有网站放进窗口，用浏览器。那不是 NanaUI 要解决的问题。
 
-- Iced：历史 `0.15.0-dev` 迁移快照已从仓库移除；谱系见
-  [`docs/iced-engine.md`](docs/iced-engine.md)；
-- WGPU：`30.0.0`，依赖图中只有一个 WGPU 主版本；
-- Cryoglyph：固定到
-  `sena-nana/cryoglyph` `3fe41b131eda1288d08df89ad5ba56de97713308`；
-- Rust edition：2024，最低 Rust `1.92`。
+## 文档
 
-Cryoglyph 使用完整 Git revision，`Cargo.lock` 记录解析后的依赖。GitHub Actions
-从独立 checkout 运行 `--locked` 测试与全目标检查，不依赖相邻仓库。
-
-## 验证
-
-```bash
-cargo fmt --all -- --check
-cargo check -p nana-ui --lib --no-default-features --locked
-cargo check -p component-gallery --bin component-gallery --locked
-cargo test --workspace --all-targets --locked
-cargo check --workspace --all-targets --locked
-cargo check -p nana-ui --all-targets --all-features --locked
-cargo check -p component-gallery --all-targets --all-features --locked
-cargo check -p vue-counter --all-targets --features windowed --locked
-cargo test -p nana-js-v8 --features engine --locked -- --test-threads=1
-(cd crates/nana-js-engine/fixtures/vue-sfc-compat && npm ci && npm run build)
-cargo check -p nana-css-parity --all-targets --features webview-ref --locked # macOS
-cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
-cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
-```
-
-V8 is the single product JS engine. Default-feature workspace Clippy and the public NanaUI /
-Gallery path both enforce zero warnings (`--no-deps -- -D warnings`).
-
-生成 Gallery 的 Workspace、组件状态与 dark/light 验收快照：
-
-```bash
-cargo run --release -p component-gallery --bin ui-snapshots \
-  --features snapshots --locked
-```
-
-PNG 输出到 `target/ui-snapshots`。快照工具会执行 GPU→CPU 读取；正式窗口、
-`GpuView` 和 `GpuTextureView` 渲染路径不会使用该流程。
-
-Issue #1 的实现与验收记录见
-[`docs/issue-1-acceptance.md`](docs/issue-1-acceptance.md)。本阶段没有修改
-NanaShader。
+使用说明和内部机制见 [`docs/README.md`](docs/README.md)。第一路径从 [开始](docs/start.md) 进；Vue 兼容见 [Vue](docs/vue.md)。

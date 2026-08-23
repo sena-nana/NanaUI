@@ -21,7 +21,7 @@ pub struct EngineBootReport {
 ///
 /// Used on host CI without a Surface. Android ARM64 links V8 when
 /// `RUSTY_V8_ARCHIVE` points at the GitHub Actions package
-/// (`docs/android-arm64.md`).
+/// (`docs/android.md`).
 pub fn smoke_engine_only() -> Result<EngineBootReport, String> {
     #[cfg(feature = "engine-v8")]
     {

@@ -1,9 +1,9 @@
 # Performance harness
 
-Shared Scenario schema and thin runners. See
-[`docs/performance-contract.md`](../docs/performance-contract.md): #8 DoD is Nana
-work-counter / catalog / hotspot + CI fail-closed. Iced/GPUI are
-[#12](https://github.com/sena-nana/NanaUI/issues/12) observation, not #8 pass/fail.
+Shared Scenario schema and thin runners. #8 DoD is Nana work-counter /
+catalog / hotspot + CI fail-closed. Cross-toolkit same-batch numbers are
+[#12](https://github.com/sena-nana/NanaUI/issues/12) observation, not #8
+pass/fail.
 
 ```text
 perf/
@@ -66,5 +66,5 @@ copies that catalog param; Nana writes `mounted − visible`. Compare windows vi
 `live_ui_entities`, not `window_ms`.
 
 `--evaluate-invariants` judges Nana runner envelopes. Exit codes,
-`invariants/` completeness vs `weekly/`, and gated ids:
-[`performance-contract.md`](../docs/performance-contract.md) §8.1.
+`invariants/` completeness vs `weekly/`, and gated ids are described
+below in §8.1.

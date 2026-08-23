@@ -1,4 +1,4 @@
 interface:
   display_name: "NanaUI Workspace UI"
-  short_description: "Build reusable Iced workspaces and controls"
+  short_description: "Build reusable NanaUI workspaces and controls"
   default_prompt: "Use $nanaui-workspace-ui to implement or review reusable NanaUI workspace and control behavior."

@@ -1,7 +1,7 @@
 # nanavue-components ↔ NanaUI 语义对照
 
 Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 布局原语与 Runtime 控件（`nana-ui-runtime` / `UiScene`）。  
-本包对应三层兼容中的 **L2**（可与 L1 HTML/CSS 降维同树混合）。见 [`docs/vue-nana-renderer-system.md`](../../docs/vue-nana-renderer-system.md) §0。
+本包对应三层兼容中的 **L2**（可与 L1 HTML/CSS 降维同树混合）。见 [`docs/vue.md`](../../docs/vue.md)。
 
 > **架构（变体 / 组合）**  
 > 所有可见 UI 最终都应落到 **NanaUI 基础能力**（布局原语 + 基础控件及其变体）。  
@@ -16,7 +16,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | Style Model | **Tokens + Semantics + Layout**；L1/L2/L3 同模型（见 `nana_ui_core::style_model`） |
 | L2（本包） | 语义 props → Semantics / Tokens；**跳过 CSS**；`createWidget` / `nana-*` |
 | L1（同树可混） | HTML·class·role·style → `css_map`（Layout）+ `widget_map`（Semantics） |
-| L3 | Runtime / `UiScene` 保留与绘制合同；`nana-ui` Scene host 是当前桌面绘制适配器（见 `docs/lilia-component-parity.md`） |
+| L3 | Runtime / `UiScene` 保留与绘制合同；`nana-ui` Scene host 是当前桌面绘制适配器（见 `docs/components.md`） |
 | 自定义 | **组合与逻辑**；不另起 paint 引擎。CustomContent **已移除** |
 | Token | 主题档位 → `ThemeMetrics` / 语义色；`nana-controls.css` 禁止独立 `#3867ff`；任意业务 CSS 色值不得污染正式 token |
 
@@ -176,4 +176,4 @@ FormField / InteractiveCard 承载子节点，不 Scene 路由。Skeleton / Leve
 | `NanaSettingsRow` / Card / Page | Settings 行/卡组合 |
 
 圆角尺度：语义控件几何由共享 `ThemeMetrics` / `UI_METRICS` 决定（Runtime 与 Scene host 共用）。详见
-[`docs/vue-nana-renderer-system.md`](../../docs/vue-nana-renderer-system.md)。
+[`docs/vue.md`](../../docs/vue.md)。

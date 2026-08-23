@@ -1,8 +1,10 @@
-# Nana Runtime / UiScene contract
+# Runtime 与 Scene
 
-本文定义 NanaUI 独立于已移除 Iced 迁移快照的稳定架构合同。阶段证据见
-`issue-7-phase-2.md` 至 `issue-7-phase-9.md`；本文只记录长期不变量。
-产品路径：`UiWorld` → `ExtractedNode` → `UiScene` → `SceneWgpuPainter`。
+界面真正被记住和画出来的地方。产品路径：
+
+`UiWorld` → `ExtractedNode` → `UiScene` → `SceneWgpuPainter`
+
+应用入口见 [开始](start.md) 和 [应用 API](application-api.md)。这篇讲这棵树内部怎么更新、怎么抽成画面、怎么交给宿主去画。
 
 ## Dependency direction
 
@@ -19,10 +21,8 @@ Nana public/application adapters
      SceneWgpuPainter（宿主 Window / Surface / Device / Queue）
 ```
 
-`nana-ui-runtime` 与 `nana-ui-scene` 不依赖 Iced、WGPU 或平台 GPU API。
-`engine/iced` 与 `engine/gpui-scenario-bench` 已从仓库移除，不得接回 `nana-*`。
-`scripts/check-engine-boundary.py` 禁止 Iced/GPUI 重新进入 workspace，并保持
-Runtime/Scene backend-neutral。
+`nana-ui-runtime` 与 `nana-ui-scene` 不依赖 WGPU 或平台 GPU API。
+`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
 
 ## Retained authority
 
@@ -52,8 +52,7 @@ scope 等 compatibility metadata；`event_flags` 权威是 `UiWorld` `EventListe
 
 Runtime 以 dirty component 产生确定性的 `SystemWork`，区分 style、text shaping、
 layout、input/hit-test、focus/IME、accessibility、render extraction 和 render
-removal。静止 world 返回空 work，不运行无关 system，也不要求持续 redraw。同场景
-Performance Contract、runner 与门禁见 [`performance-contract.md`](performance-contract.md)。canonical
+removal。静止 world 返回空 work，不运行无关 system，也不要求持续 redraw。canonical
 `RuntimeDocument::flush` 在一次 frame transaction 内调用 host text shaper，并由
 backend-neutral `RuntimeLayoutEngine` 根据 viewport、style 与 shaping metrics 写回 layout；
 应用不手写控件坐标。低层 `flush_with` 只保留给需要替换系统执行器的 backend。
@@ -102,9 +101,8 @@ measured surface geometry 是瞬时状态，由产生该 mutation 的 input/fram
 `DockWorkspace` 的投影（字段名沿用既有 `DockLayout` JSON）。
 `DockController::layout_json` / restore 经该产品树转换，不另存一套 split
 算法。`DockLayout` 仍是 adapter 的 live tree 加上 monitor clamp / item-spec，
-不是第二条 live dock。旧 `DockAction` 的
-host `Point`、widget/subscription/view 曾是 Iced compatibility adapter，HEAD 不再作为产品路径。三套 Workspace/Split/Dock
-曾共用但现已无消费者的 `ResizeDrag` 已删除，避免保留第二条 resize 规则。
+不是第二条 live dock。`DockAction` 不是产品路径。Workspace / Split / Dock
+不保留第二条 resize 规则。
 `DockController::surface_layout` 是 adapter 的确定性几何出口：同一份
 `DockLayout` 经 Runtime 子长度公式投影 active item content bounds、tab group 与带
 stable path 的 splitter hit bounds，并区分主窗口 28px dock chrome 与 floating
@@ -133,8 +131,8 @@ Platform 的 `fetch` / `clipboard` 是默认开启但可独立关闭的 capabili
 window/input/IME contract 不应因 TLS 或系统 clipboard toolchain 无法跨目标编译。
 
 `ComponentView` 在 closure event 全部交付后把最终 state 增量投影到 UiWorld。内建
-`Text`、`Button`、`TextInput`/`TextArea`、`Checkbox`、`Switch`、`Slider`、`TabList`/`Tab`、`ScrollView`、`List`、`Table`/`Row`/`Cell`、`OverlayHost`、`Dialog`、`Menu`/`MenuItem`、`Tooltip`、`SearchDropdown`、`CommandPalette` 与 typed events 不暴露 Iced；TextInput/TextArea/SearchDropdown/CommandPalette 共用 committed UTF-8 selection/IME state，SearchDropdown 仅在打开时持有编辑状态，CommandPalette 始终可编辑；accessibility 显式区分 multiline；ScrollView 只拥有配置，offset 与 measured `ScrollMetrics` 只存在 Runtime；
-字段未变化时不提交 mutation。它们是后续 component migration 的稳定入口，不代表现有完整组件 painter 已经迁移。
+`Text`、`Button`、`TextInput`/`TextArea`、`Checkbox`、`Switch`、`Slider`、`TabList`/`Tab`、`ScrollView`、`List`、`Table`/`Row`/`Cell`、`OverlayHost`、`Dialog`、`Menu`/`MenuItem`、`Tooltip`、`SearchDropdown`、`CommandPalette` 与 typed events 是 Runtime 合同。TextInput/TextArea/SearchDropdown/CommandPalette 共用 committed UTF-8 selection/IME state，SearchDropdown 仅在打开时持有编辑状态，CommandPalette 始终可编辑；accessibility 显式区分 multiline；ScrollView 只拥有配置，offset 与 measured `ScrollMetrics` 只存在 Runtime；
+字段未变化时不提交 mutation。控件目录见 [控件](components.md)。
 
 内建与插件控件共用 `AppContext` 上的 `ComponentRegistry`。`AppContext::new` 安装
 `NanaBuiltinComponents`（`nana.builtin`）；插件通过同一套
@@ -159,7 +157,7 @@ active 时非活跃直属 subtree 从 layout/input/render/accessibility 排除�
 组件文本的 content-box padding、line-height、wrap/ellipsis 和水平/垂直 anchor 是
 Runtime/Scene contract；backend 不得从 element tag 推测这些语义。
 
-Variable-height virtual list/table geometry 位于 `nana-ui-core`，不依赖 Iced。Fenwick 索引
+Variable-height virtual list/table geometry 位于 `nana-ui-core`。Fenwick 索引
 使二维 visible window、range extent 与单项 measurement/column update 保持 O(log n)；具体 item
 构建、滚动输入和 painter 由 component/backend 消费该窗口，不能在 core 复制 retained tree。scroll mutation 不重排 layout，只让后代 input/render 失效；scrollport clip 保持 viewport 坐标，后代 transform 叠加负 offset。
 keyed list/table materialization 共用 revision-fenced prepare/commit plan；`AppContext` 以单次
@@ -190,9 +188,9 @@ readback、Base64/图片编码或额外子窗口后伪装成共享合成。
 
 ## Scene host
 
-`RuntimeProgram` / `run_runtime` 是 Rust 应用的 canonical host contract：应用只提供
-`RuntimeDocument`、UiScene、平台事件处理与可选 HostTexture / SceneGpu renderer registry，不返回
-`iced::Element`。`run_runtime` 直接进入 `run_runtime_scene`（Nana-owned winit + `SceneWgpuPainter`）。
+`RuntimeProgram` / `run_runtime` 是 Rust 应用的宿主合同：应用只提供
+`RuntimeDocument`、UiScene、平台事件处理与可选 HostTexture / SceneGpu renderer registry。
+`run_runtime` 直接进入 `run_runtime_scene`（Nana-owned winit + `SceneWgpuPainter`）。
 该路径按 `winit::window::WindowId` 映射 `nana_ui_platform::WindowId`，主窗口留在同一个
 `HostedGpuContext`，辅助窗口用 `create_surface` 共享 Device/Queue。`WindowCommand::Open` /
 `Close` / `Focus` / `SetTitle` / `Move` / `SetBounds` / `SetFullscreen` / `SetMinimized` /
@@ -201,31 +199,6 @@ surface/AccessKit 并发送 `WindowEvent::Closed`。Runtime 先消费 IME，再�
 `WindowEvent::Ime` 交给 `RuntimeProgram::window_event`（程序不得再写入 Runtime）。
 每窗独立 IME request 与 AccessKit adapter，adapter 在首次 show 前创建。
 
-2026-08-17 本机 macOS 证据（`runtime-host-fixture` 经 `run_runtime`）：
-
-- `cargo build -p runtime-host-fixture --locked` 通过；进程 `./target/debug/runtime-host-fixture` pid 14136 保持运行。
-- `CGWindowListCopyWindowInfo` 同时看到 titled 窗口 `NanaUI fixture`（480×252）与
-  `NanaUI fixture tool`（360×212）。fixture 在 primary `Ready` 时发出
-  `WindowCommand::Open`，按钮 Activate 也会再发同一命令。
-- 本 agent 的 `osascript` / `AXIsProcessTrusted()` 为 false，`AXUIElement` 返回 -25211
-  （TCC 未授权辅助访问），因此本轮未从 System Events 或 Accessibility Inspector 读到
-  `AXTextField`/`AXButton`。fixture 主文档含 `TextInput` + `Button`，辅助文档含
-  `Button`，角色投影仍是 AccessKit `TextInput`/`Button`。
-- Windows/Linux 实机未跑，不记为通过。
-
-2026-08-18 本机 macOS 真窗口（TCC trusted；Windows/Linux 未跑）：
-
-- `runtime-host-fixture`：主窗 `AXList`「Editor」→ `AXTextField`「Name」（初值 `NanaUI`，`Focused=1`）+ tool 窗 `Notes`；`AXPress`「Float preview」后第三扇 `Preview` 同时在。VoiceOver 未稳定读焦点，**不记 VO 通过**。未做拼音 IME。
-- `vue-hosted-acceptance --input-probe`：`focusedUIElement` 为 `AXTextField`。本机将进程置前台后拼音 `nihao`+空格一次提交「你好」；预编辑时进程自有 layer-20 候选条（397×28，贴输入框），提交后消失，AXValue 与 `Hello, …` 同步为 `NanaUI你好`。
-- 同机点击焦点：`--input-probe` 只在挂载时 `focus()`。修后 TextField 盒 65×32；HID 点 Score 再点输入框后 `focusedUIElement` 回到 `AXTextField`/`NanaUI`。Windows/Linux 未跑。
-
-2026-08-18 本机 macOS VoiceOver 真窗口（TCC trusted；Windows/Linux 未跑）：
-
-- `vue-hosted-acceptance --input-probe` pid 55161。真 VO（VoiceOverStarter → `scrod` + 旁白字幕窗）。AppleScript last phrase 为 -1728，证据用 Control-Option-F4 读焦点、Control-Option-Shift-C 拷贝上一短语。
-- 读到 `NanaUI text field 有键盘焦点 …`。点 Score 后 VO-F4 读 `Score 95 button, 组`；Control-Option-Space 激活后 AX 标题 Score 95 → 97。未测 Open dialog。验收后已关旁白。未改产品代码。
-
-当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime/UiScene；`nana-ui-vue` 的
-`scene-view` / `hosted` feature 接入同一 Scene host，而不是 `iced::Element` 树。
-Android 不属于 NanaUI 当前产品范围；未来移动端必须由 Android 原生组件拥有平台
-生命周期、IME、accessibility 与原生控件，NanaUI 仅作为嵌入渲染内容参与混合合成，
-不直接调用 Android API。无法忠实表达的 affine/text/custom primitive 显式失败。
+当前 `nana-ui` 通过 `SceneWgpuPainter` 绘制 Runtime / UiScene；Vue 兼容路径的
+`scene-view` / `hosted` 接入同一 Scene host。Android 见 [`android.md`](android.md)。
+无法忠实表达的 affine / text / custom primitive 显式失败。
