@@ -413,7 +413,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         local_paint_commit_ms: summarize(&local_paint_commit),
         local_paint_schedule_ms: Some(summarize(&local_paint_schedule)),
         local_paint_systems_ms: Some(summarize(&local_paint_systems)),
-        local_paint_work_nodes: 1,
+        local_paint_work_nodes: render_work_nodes(&last_paint_work),
         idle_schedule_ms: summarize(&idle_schedule),
         frames_after_idle: Some(measure_frames_after_idle(nodes, document)),
         idle_animation_deadline_ms: Some(summarize(&idle_animation_deadline)),
@@ -422,7 +422,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         scheduled_animations: Some(nodes),
         due_animation_samples: Some(1),
         pointer_hover_transition_ms: summarize(&pointer_hover_transition),
-        pointer_hover_work_nodes: 2,
+        pointer_hover_work_nodes: render_work_nodes(&last_hover_work),
         initial_work: last_initial_work,
         local_paint_work: last_paint_work,
         pointer_hover_work: last_hover_work,
@@ -529,7 +529,7 @@ fn bench_construction(
         local_paint_commit_ms: summarize(&local_paint_commit),
         local_paint_schedule_ms: None,
         local_paint_systems_ms: None,
-        local_paint_work_nodes: 1,
+        local_paint_work_nodes: render_work_nodes(&last_paint_work),
         idle_schedule_ms: summarize(&idle_schedule),
         frames_after_idle: None,
         idle_animation_deadline_ms: None,
@@ -538,7 +538,7 @@ fn bench_construction(
         scheduled_animations: None,
         due_animation_samples: None,
         pointer_hover_transition_ms: summarize(&pointer_hover_transition),
-        pointer_hover_work_nodes: 2,
+        pointer_hover_work_nodes: render_work_nodes(&last_hover_work),
         initial_work: last_initial_work,
         local_paint_work: last_paint_work,
         pointer_hover_work: last_hover_work,
@@ -771,6 +771,12 @@ fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
         scheduled_animation_deadline_ms: summarize(&scheduled_deadline),
         sparse_animation_sample_ms: summarize(&sparse_sample),
     }
+}
+
+fn render_work_nodes(work: &Option<WorkSnapshot>) -> usize {
+    work.as_ref()
+        .map(|work| work.render_nodes_changed)
+        .unwrap_or(0)
 }
 
 fn work_snapshot(work: &SystemWork, world: &UiWorld) -> WorkSnapshot {

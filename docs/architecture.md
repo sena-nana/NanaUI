@@ -10,19 +10,21 @@
 应用 / Demo
     │
     ▼
-nana-ui                 应用适配器：run_runtime、控件再导出、SceneWgpuPainter
-    ├── nana-ui-runtime 保留树权威（UiWorld）。不依赖 WGPU
-    ├── nana-ui-scene   绘制图权威（UiScene）。不依赖 WGPU
-    ├── nana-ui-core    共享合同：Style Model、WorkspaceModel、几何
+nana-ui                 宿主适配器：run_runtime、控件再导出、SceneWgpuPainter
+    ├── nana-ui-runtime 保留树权威（UiWorld）、内建控件、Shell、Workspace、
+    │                   Dock、GPU 槽。不依赖 WGPU
+    ├── nana-ui-scene   绘制图权威（UiScene）。依赖 runtime，不依赖 WGPU
+    ├── nana-ui-core    共享合同：Style Model、主题令牌、WorkspaceModel、几何
     ├── nana-ui-platform  WindowId、输入、IME、剪贴板（与 winit 转换隔离）
-    └── nana-window     系统材质与标题栏拖拽；普通控件不得拿窗口句柄
+    └── nana-window     系统材质、标题栏拖拽 / 客户区 chrome / 缩放；
+                        普通控件不得拿窗口句柄
 
 Vue 兼容（可选）
     nana-ui-vue + nana-js-v8 + nanavue-runtime / nanavue-components
     写入同一棵 UiWorld，不是另一套窗口
 ```
 
-依赖方向：公开适配器 → runtime → scene → `SceneWgpuPainter`（注入宿主 Window / Surface / Device / Queue）。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
+依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`。`SceneWgpuPainter` 在 `nana-ui` 里注入宿主 Window / Surface / Device / Queue。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
 
 产品路径：
 
@@ -40,7 +42,7 @@ nana_ui::runtime → UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 | 业务状态、配置盘、Region / pane **内容** | 应用 |
 | 树、样式、未滚动布局、命中、焦点、IME、无障碍 | `UiWorld` |
 | 绘制图 | `UiScene` |
-| 系统材质 | `nana-window` |
+| 系统材质与标题栏 chrome | `nana-window` |
 | Workspace 尺寸 / 折叠 | `WorkspaceModel`（`WorkspaceController` 只做指针与时钟转换） |
 | Dock 树 | Runtime `DockWorkspace`（`nana_ui::dock::*` 是宿主适配器） |
 
@@ -50,7 +52,7 @@ GPU 主版本锁定 workspace `wgpu = "30.0.0"`，依赖图里只有一个主版
 
 Rust 控件、Vue `nana-*`、以及 Vue 的 HTML/CSS 子集，都写入同一 Style Model（Tokens + Semantics + Layout），再进入同一 `UiWorld`。它们是三种输入合同，不是三个运行时。
 
-Vue 的 DOM/CSS facade **不**复制树拓扑。host op 进待提交队列，`flush_host_frame` 才 commit。`event_flags` 权威是 `UiWorld` 的 `EventListeners`；GPU slot 权威是 Runtime `CustomRenderNode`。JS 查询用的盒子是绘制阶段投影，滚动不写回 Runtime `LayoutBox`。
+Vue 的 DOM/CSS facade **不**复制树拓扑。host op 进待提交队列，`flush_host_frame` 才 commit。`event_flags` 权威是 `UiWorld` 的 `EventListeners`；GPU slot 权威是 Runtime `CustomRenderNode`。JS 查询用的盒子是绘制阶段投影，滚动不写回 Runtime `LayoutBox`。`PendingHostOps` 镜像、`WidgetKind`、`ComponentSupport` 都不是第二套实例化 ABI。
 
 内建与插件控件走同一份 `ComponentRegistry` / `register_component`。`NativeComponentRegistry` 只服务 JS host 命令，不是这条 Runtime ABI。
 

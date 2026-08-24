@@ -1974,7 +1974,7 @@ def _extract_nana_paint_only(
     paint_work = counters_from_block(case.get("local_paint_work"))
     notes = [
         f"Mapped onto nana-runtime-benchmark local_paint_* at nodes={tree_nodes}.",
-        "local_paint_work_nodes is a stand-in, not a full Issue #8 work-counter set.",
+        "local_paint_work_nodes is render_nodes_changed from the local-paint drain.",
     ]
     if "layout_nodes" in paint_work:
         notes.append(

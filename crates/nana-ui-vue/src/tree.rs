@@ -687,6 +687,9 @@ pub struct NanaTreeDocument {
     pending_accessibility_generation: u64,
     accessibility_full_required: bool,
     commit_rejections: Vec<String>,
+    /// Facade nodes that currently expose a host-texture slot. Flush stamps
+    /// only these instead of scanning the whole Vue node map.
+    host_texture_nodes: HashSet<u64>,
     /// Shared slot registry handle. Device/Queue stay on the hosted renderer.
     #[cfg(feature = "scene-view")]
     host_textures: Option<nana_ui::HostTextureRegistry>,
@@ -792,6 +795,7 @@ impl NanaTreeDocument {
             pending_accessibility_generation: 0,
             accessibility_full_required: false,
             commit_rejections: Vec::new(),
+            host_texture_nodes: HashSet::new(),
             #[cfg(feature = "scene-view")]
             host_textures: None,
             #[cfg(test)]
@@ -907,15 +911,21 @@ impl NanaTreeDocument {
 
     /// Refresh `CustomRenderNode.revision` from the registered texture.
     fn stamp_host_texture_revisions(&mut self) {
-        let nodes: Vec<NodeHandle> = self
-            .nodes
-            .keys()
-            .copied()
-            .map(NodeHandle)
-            .filter(|handle| self.surface_host_texture_slot(*handle).is_some())
-            .collect();
-        for el in nodes {
-            self.sync_surface_custom_render(el);
+        let ids: Vec<u64> = self.host_texture_nodes.iter().copied().collect();
+        for id in ids {
+            if self.nodes.contains_key(&id) {
+                self.sync_surface_custom_render(NodeHandle(id));
+            } else {
+                self.host_texture_nodes.remove(&id);
+            }
+        }
+    }
+
+    fn index_host_texture_node(&mut self, el: NodeHandle) {
+        if self.surface_host_texture_slot(el).is_some() {
+            self.host_texture_nodes.insert(el.0);
+        } else {
+            self.host_texture_nodes.remove(&el.0);
         }
     }
 
@@ -2001,6 +2011,7 @@ impl NanaTreeDocument {
             return;
         }
         self.enqueue_insert(child.0, parent.0, anchor.map(|anchor| anchor.0));
+        self.index_host_texture_node(child);
         if self.surface_host_texture_slot(child).is_some() {
             self.sync_surface_custom_render(child);
         }
@@ -2054,6 +2065,7 @@ impl NanaTreeDocument {
             && (name.eq_ignore_ascii_case("data-nana-gpu")
                 || name.eq_ignore_ascii_case("data-nana-canvas"))
         {
+            self.index_host_texture_node(el);
             self.sync_surface_custom_render(el);
         }
     }
@@ -2081,6 +2093,7 @@ impl NanaTreeDocument {
             && (name.eq_ignore_ascii_case("data-nana-gpu")
                 || name.eq_ignore_ascii_case("data-nana-canvas"))
         {
+            self.index_host_texture_node(el);
             self.sync_surface_custom_render(el);
         }
     }
@@ -2603,6 +2616,7 @@ impl NanaTreeDocument {
             .despawn_subtree(StableNodeId::try_from(root).expect("known node is nonzero"));
         for id in ids {
             self.nodes.remove(&id);
+            self.host_texture_nodes.remove(&id);
             self.pending.parent.remove(&id);
             self.pending.children.remove(&id);
             self.pending.kinds.remove(&id);
@@ -9448,6 +9462,14 @@ mod tests {
             content.revision,
             nana_ui_runtime::pack_gpu_revision(generation, version + 1),
             "content updates must change CustomRenderNode.revision"
+        );
+
+        let world_generation = doc.world().generation();
+        doc.flush_host_frame();
+        assert_eq!(
+            doc.world().generation(),
+            world_generation,
+            "unchanged host-texture revision must not enqueue CustomRender mutations"
         );
     }
 

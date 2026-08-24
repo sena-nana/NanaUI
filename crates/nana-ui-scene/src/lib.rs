@@ -1,8 +1,8 @@
 //! Backend-neutral render scene and frame graph for NanaUI.
 //!
 //! The crate consumes Runtime extraction deltas. It owns no application state,
-//! window, GPU device, or renderer objects. `SceneWgpuPainter` is the product
-//! paint path.
+//! window, GPU device, or renderer objects. Product paint is `SceneWgpuPainter`
+//! in `nana-ui`, which consumes this crate's `UiScene`.
 
 mod graph;
 mod icon;
