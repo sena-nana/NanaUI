@@ -2157,7 +2157,7 @@ mod tests {
     }
 
     #[test]
-    fn assembled_title_bar_uses_iced_three_columns() {
+    fn assembled_title_bar_uses_three_columns() {
         let mut context = AppContext::new();
         let leading = context
             .create_component(

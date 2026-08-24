@@ -22,12 +22,12 @@
 
 | feature | 作用 |
 | --- | --- |
-| `hosted` | `run_runtime`、winit、AccessKit；隐含 `gpu` |
+| `hosted` | `run_runtime`、crates.io winit、AccessKit；隐含 `gpu` |
 | `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuView` |
 | `bundled-fonts` | 嵌入 Noto Sans SC |
 | `components` | 下面组件族的聚合 |
 | `full` | fonts + components + hosted + syntax-highlighting |
-| `calendar` / `charts` / `controls` / `feedback` / `graph-canvas` / `image-viewer` / `overlays` / `popover` / `qr-code` / `rich-text` / `math` / `diagrams` / `selects` / `settings-components` / `surfaces` / `xy-pad` | 按族裁剪 |
+| `calendar` / `charts` / `controls` / `feedback` / `graph-canvas` / `image-viewer` / `overlays` / `popover` / `qr-code` / `rich-text` / `math` / `diagrams` / `selects` / `settings-components` / `surfaces` / `xy-pad` | 适配器再导出。`math` / `diagrams` 是 `rich-text` 别名（mermaid / 公式由应用画） |
 | `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
 
 Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。

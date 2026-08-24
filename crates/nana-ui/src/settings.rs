@@ -2,13 +2,15 @@
 //!
 //! Leaf chrome (`SettingsRow`, `SettingsCard`) is implemented in Runtime.
 
-pub use nana_ui_core::AppearanceEvent;
 pub use nana_ui_core::settings::{
     AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
     SettingsTabId, WindowMaterialMode,
 };
+pub use nana_ui_core::AppearanceEvent;
+#[cfg(feature = "hosted")]
 use nana_window::MaterialEffect;
 
+#[cfg(feature = "hosted")]
 pub fn window_material_effect(mode: WindowMaterialMode) -> MaterialEffect {
     match mode {
         WindowMaterialMode::Solid => MaterialEffect::Solid,

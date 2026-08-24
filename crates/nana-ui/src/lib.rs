@@ -199,6 +199,7 @@ pub use nana_ui_runtime::{
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
+#[cfg(feature = "hosted")]
 pub use nana_window::{
     Appearance as WindowAppearance, FallbackColor, MaterialEffect, MaterialFallback,
     MaterialOutcome, PlatformMaterialSupport, apply_system_material, clear_system_material,
@@ -228,9 +229,11 @@ pub use scene_paint::{
     HostTextureSceneResolver, ScenePaintError, ScenePaintViewport, SceneWgpuPainter,
 };
 pub use selection::{SelectionMove, SingleSelection};
+#[cfg(feature = "hosted")]
+pub use settings::window_material_effect;
 pub use settings::{
     AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
-    SettingsTabId, WindowMaterialMode, window_material_effect,
+    SettingsTabId, WindowMaterialMode,
 };
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController};
 pub use theme::{
