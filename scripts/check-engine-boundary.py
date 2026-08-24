@@ -78,6 +78,12 @@ def main() -> int:
             "vendor/accesskit_winit is present; use crates.io accesskit_winit with crates.io winit"
         )
 
+    vendor_arboard = ROOT / "vendor" / "arboard"
+    if vendor_arboard.exists():
+        failures.append(
+            "vendor/arboard is present; Android does not compile arboard, use crates.io on desktop"
+        )
+
     root_metadata = metadata(ROOT / "Cargo.toml")
     forbidden = ICED_PACKAGES | GPUI_PACKAGES
     for package in root_metadata["packages"]:

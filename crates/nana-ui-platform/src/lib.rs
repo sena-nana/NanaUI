@@ -10,9 +10,11 @@ mod window;
 
 #[cfg(feature = "clipboard")]
 pub use clipboard::{
-    ClipboardHost, MemoryClipboard, OsClipboard, SharedClipboardHost, UnsupportedClipboard,
+    ClipboardHost, MemoryClipboard, SharedClipboardHost, UnsupportedClipboard,
     default_shared_clipboard, shared_clipboard,
 };
+#[cfg(all(feature = "clipboard", not(target_os = "android")))]
+pub use clipboard::OsClipboard;
 #[cfg(feature = "fetch")]
 pub use fetch::{
     FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
