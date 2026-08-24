@@ -1,0 +1,18 @@
+{
+  "id": "T-G33",
+  "title": "同名网格线 foo 2 / foo 取第二段 120px",
+  "status": "pass",
+  "viewport": [200, 40],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:[foo] 80px [foo] 120px [foo];width:200px;height:40px;gap:0",
+    "children": [
+      { "id": "cell", "style": "grid-column:foo 2 / foo;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 40 },
+    { "id": "cell", "x": 80, "y": 0, "w": 120, "h": 40 }
+  ]
+}

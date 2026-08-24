@@ -26,13 +26,13 @@ use fetch::{FetchCompletion, FetchRuntime};
 /// spin inside the drain loop.
 const RAF_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
+#[cfg(not(target_os = "android"))]
+pub use nana_ui_platform::OsClipboard;
 pub use nana_ui_platform::{
     ClipboardHost, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
     MemoryClipboard, NativeFetchHost, SharedClipboardHost, SharedFetchHost, UnsupportedClipboard,
     default_shared_clipboard, shared_clipboard, shared_fetch_host,
 };
-#[cfg(not(target_os = "android"))]
-pub use nana_ui_platform::OsClipboard;
 
 /// UTF-8 JS that installs window/document/localStorage/rAF/history/… on `globalThis`.
 pub const WEB_API_SHIM_JS: &str = include_str!("shim.js");
@@ -767,6 +767,8 @@ mod tests {
     fn shim_projects_layout_box_onto_element_metrics() {
         assert!(WEB_API_SHIM_JS.contains("installElementLayoutMetrics"));
         assert!(WEB_API_SHIM_JS.contains("offsetWidth"));
+        assert!(WEB_API_SHIM_JS.contains("offsetLeft"));
+        assert!(WEB_API_SHIM_JS.contains("clientWidth"));
         assert!(WEB_API_SHIM_JS.contains("clientHeight"));
         assert!(WEB_API_SHIM_JS.contains("scrollWidth"));
         assert!(WEB_API_SHIM_JS.contains("layoutBox"));

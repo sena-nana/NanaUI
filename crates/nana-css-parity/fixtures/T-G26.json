@@ -1,0 +1,24 @@
+{
+  "id": "T-G26",
+  "title": "auto-flow 折到第二行（4 项 2 列）",
+  "status": "pass",
+  "viewport": [100, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:50px 50px;width:100px;height:80px;gap:0;align-items:start;justify-items:start",
+    "children": [
+      { "id": "a", "style": "width:50px;height:20px" },
+      { "id": "b", "style": "width:50px;height:20px" },
+      { "id": "c", "style": "width:50px;height:20px" },
+      { "id": "d", "style": "width:50px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 100, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 50, "h": 20 },
+    { "id": "b", "x": 50, "y": 0, "w": 50, "h": 20 },
+    { "id": "c", "x": 0, "y": 20, "w": 50, "h": 20 },
+    { "id": "d", "x": 50, "y": 20, "w": 50, "h": 20 }
+  ]
+}

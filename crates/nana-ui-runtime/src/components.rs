@@ -725,6 +725,7 @@ pub struct TextShapeConstraints {
     pub wrap: bool,
     pub ellipsis: bool,
     pub shaping: TextShaping,
+    pub preserve_lines: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -891,6 +892,9 @@ impl TextShaper for MeasureTextShaper {
         constraints: TextShapeConstraints,
         glyphs: &mut crate::GlyphCache,
     ) -> TextMetrics {
+        if constraints.preserve_lines {
+            return measure_em_text(text, style, constraints);
+        }
         let em = style.font_size.max(1.0);
         let mut intrinsic = 0.0;
         for ch in text.value.chars() {
@@ -906,6 +910,20 @@ fn measure_em_text(
     constraints: TextShapeConstraints,
 ) -> TextMetrics {
     let em = style.font_size.max(1.0);
+    if constraints.preserve_lines {
+        let line_height = resolved_text_line_height(style).max(em);
+        let mut max_w = 0.0f32;
+        let mut lines = 0usize;
+        for line in text.value.split('\n') {
+            lines += 1;
+            let w = line.chars().count() as f32 * em;
+            max_w = max_w.max(w);
+        }
+        return TextMetrics {
+            width: max_w,
+            height: line_height * lines.max(1) as f32,
+        };
+    }
     em_metrics(text.value.chars().count() as f32 * em, em, constraints)
 }
 

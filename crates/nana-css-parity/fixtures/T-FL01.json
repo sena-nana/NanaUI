@@ -1,0 +1,22 @@
+{
+  "id": "T-FL01",
+  "title": "float:left/right + clear:both",
+  "status": "pass",
+  "viewport": [300, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:300px;height:80px",
+    "children": [
+      { "id": "left", "style": "float:left;width:80px;height:40px" },
+      { "id": "right", "style": "float:right;width:80px;height:40px" },
+      { "id": "after", "style": "clear:both;width:100px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 80 },
+    { "id": "left", "x": 0, "y": 0, "w": 80, "h": 40 },
+    { "id": "right", "x": 220, "y": 0, "w": 80, "h": 40 },
+    { "id": "after", "x": 0, "y": 40, "w": 100, "h": 20 }
+  ]
+}

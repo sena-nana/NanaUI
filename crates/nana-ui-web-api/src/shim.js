@@ -2312,8 +2312,9 @@
   /**
    * Project host `layoutBox` onto Element layout readables.
    * wrapNode / wrapHostNode set `__nid`; detached stubs without it read as 0.
-   * offsetWidth/Height, clientWidth/Height, scrollWidth/Height share one box
-   * (no border/padding split).
+   * offset* is the border box; client* is the padding box when the host
+   * sends clientWidth; scroll* uses scrollWidth when present.
+   * offsetLeft/Top are the real subset; offsetParent may be null without a node cache.
    */
   function layoutBoxSizeFromNid(nid) {
     if (nid == null || !Number.isFinite(Number(nid))) {
@@ -2331,24 +2332,101 @@
     }
   }
 
+  function readLayoutBoxFromNid(nid) {
+    if (nid == null || !Number.isFinite(Number(nid))) return null;
+    try {
+      const box = hostCall("layoutBox", [Number(nid)]);
+      if (!box || typeof box !== "object") return null;
+      return box;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function metricPx(value, fallback) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return Math.max(0, Math.round(n));
+    return fallback;
+  }
+
+  function offsetPx(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.round(n) : 0;
+  }
+
   function installElementLayoutMetrics(proto) {
     if (!proto || proto.__nanaLayoutMetricsInstalled) return;
-    function dim(axis) {
+    function sizeMetric(kind, axis) {
       return {
         configurable: true,
         enumerable: true,
         get: function () {
           const s = layoutBoxSizeFromNid(this.__nid);
-          return axis === "w" ? s.width : s.height;
+          const border = axis === "w" ? s.width : s.height;
+          if (kind === "offset") return border;
+          const box = readLayoutBoxFromNid(this.__nid);
+          if (!box) return border;
+          if (kind === "client") {
+            return metricPx(axis === "w" ? box.clientWidth : box.clientHeight, border);
+          }
+          return metricPx(axis === "w" ? box.scrollWidth : box.scrollHeight, border);
         },
       };
     }
-    Object.defineProperty(proto, "offsetWidth", dim("w"));
-    Object.defineProperty(proto, "offsetHeight", dim("h"));
-    Object.defineProperty(proto, "clientWidth", dim("w"));
-    Object.defineProperty(proto, "clientHeight", dim("h"));
-    Object.defineProperty(proto, "scrollWidth", dim("w"));
-    Object.defineProperty(proto, "scrollHeight", dim("h"));
+    Object.defineProperty(proto, "offsetWidth", sizeMetric("offset", "w"));
+    Object.defineProperty(proto, "offsetHeight", sizeMetric("offset", "h"));
+    Object.defineProperty(proto, "clientWidth", sizeMetric("client", "w"));
+    Object.defineProperty(proto, "clientHeight", sizeMetric("client", "h"));
+    Object.defineProperty(proto, "scrollWidth", sizeMetric("scroll", "w"));
+    Object.defineProperty(proto, "scrollHeight", sizeMetric("scroll", "h"));
+    Object.defineProperty(proto, "offsetLeft", {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        const box = readLayoutBoxFromNid(this.__nid);
+        return box ? offsetPx(box.offsetLeft) : 0;
+      },
+    });
+    Object.defineProperty(proto, "offsetTop", {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        const box = readLayoutBoxFromNid(this.__nid);
+        return box ? offsetPx(box.offsetTop) : 0;
+      },
+    });
+    Object.defineProperty(proto, "clientLeft", {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        const box = readLayoutBoxFromNid(this.__nid);
+        return box ? offsetPx(box.clientLeft ?? box.borderWidth) : 0;
+      },
+    });
+    Object.defineProperty(proto, "clientTop", {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        const box = readLayoutBoxFromNid(this.__nid);
+        return box ? offsetPx(box.clientTop ?? box.borderWidth) : 0;
+      },
+    });
+    Object.defineProperty(proto, "offsetParent", {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        // offsetLeft/Top are the real subset; offsetParent may be null without a node cache.
+        const box = readLayoutBoxFromNid(this.__nid);
+        const id = Number(box && box.offsetParent) || 0;
+        if (!id) return null;
+        const cache = globalThis.__nanaNodeCache;
+        if (cache && typeof cache.get === "function") {
+          const found = cache.get(id);
+          return found == null ? null : found;
+        }
+        return null;
+      },
+    });
     Object.defineProperty(proto, "scrollTop", {
       configurable: true,
       enumerable: true,

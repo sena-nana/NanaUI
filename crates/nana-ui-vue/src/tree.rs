@@ -22,10 +22,10 @@ use nana_ui_runtime::AccessibilityUpdate;
 use nana_ui_runtime::MeasureTextShaper;
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
-    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, ComponentBindKind, ComponentTypeId,
-    ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode, Entity,
-    HOST_TEXTURE_RENDERER, HighlightRequest,
-    ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
+    AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, ComponentBindKind,
+    ComponentTypeId, ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode,
+    Entity, HOST_TEXTURE_RENDERER, HighlightRequest, ImeComposition, InteractionState,
+    LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
     NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
     SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption, SemanticSpec,
     SettingsPage as RuntimeSettingsPage, SidebarFrame as RuntimeSidebarFrame,
@@ -278,12 +278,15 @@ impl LayoutBoxStore {
     }
 
     pub fn get(&self, handle: NodeHandle) -> Option<LayoutBox> {
-        self.view_box(handle).or_else(|| {
-            self.boxes
-                .lock()
-                .ok()
-                .and_then(|g| g.get(&handle.0).copied())
-        })
+        self.view_box(handle).or_else(|| self.source_box(handle))
+    }
+
+    /// Scene paint box, ignoring JS scroll / sticky overlays.
+    pub fn source_box(&self, handle: NodeHandle) -> Option<LayoutBox> {
+        self.boxes
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&handle.0).copied())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -353,6 +356,52 @@ pub fn get_layout_box_from(
     handle: NodeHandle,
 ) -> Option<LayoutBox> {
     store.get(handle).or_else(|| doc.layout_box(handle))
+}
+
+/// JS `scrollWidth` / `scrollHeight`: Runtime metrics, else descendant union.
+pub(crate) fn query_scroll_content_size(
+    store: &LayoutBoxStore,
+    doc: &NanaTreeDocument,
+    node: NodeHandle,
+    client_width: f32,
+    client_height: f32,
+) -> (f32, f32) {
+    if let Some(metrics) = doc.scroll_metrics(node) {
+        return (
+            metrics.content_width.max(client_width).max(0.0),
+            metrics.content_height.max(client_height).max(0.0),
+        );
+    }
+    let Some(viewport) = get_layout_box_from(store, doc, node) else {
+        return (client_width.max(0.0), client_height.max(0.0));
+    };
+    let (content_width, content_height) =
+        union_descendant_content(doc, node, viewport, |doc, child| {
+            get_layout_box_from(store, doc, child)
+        });
+    (
+        content_width.max(client_width),
+        content_height.max(client_height),
+    )
+}
+
+fn union_descendant_content(
+    doc: &NanaTreeDocument,
+    node: NodeHandle,
+    viewport: LayoutBox,
+    mut box_of: impl FnMut(&NanaTreeDocument, NodeHandle) -> Option<LayoutBox>,
+) -> (f32, f32) {
+    let mut content_width = viewport.width;
+    let mut content_height = viewport.height;
+    let mut stack = doc.children_of(node);
+    while let Some(child) = stack.pop() {
+        if let Some(box_) = box_of(doc, child) {
+            content_width = content_width.max(box_.x + box_.width - viewport.x);
+            content_height = content_height.max(box_.y + box_.height - viewport.y);
+        }
+        stack.extend(doc.children_of(child));
+    }
+    (content_width.max(0.0), content_height.max(0.0))
 }
 
 /// Document layout cache (pre-paint measure or last [`NanaTreeDocument::apply_layout_boxes`]).
@@ -790,6 +839,41 @@ impl NanaTreeDocument {
         self.nodes.contains_key(&node.0)
     }
 
+    /// Write cascaded `LayoutStyle` from the MessageBridge into Runtime
+    /// `NodeStyle` so `injectStylesheet` → `resolveLayout` uses the same
+    /// geometry as `layout_style_tree`.
+    ///
+    /// Steady-state cost: `Arc` pointer identity is O(1) and skips the fat
+    /// `LayoutStyle` `PartialEq`. Current Vue call sites still own a distinct
+    /// `LayoutStyle`, so unchanged widgets pay one `PartialEq` here — no dirty
+    /// bit / epoch skip, because a wrong fast path would drop a real write.
+    pub fn sync_widget_layouts<'a>(
+        &mut self,
+        layouts: impl IntoIterator<Item = (u64, &'a nana_ui_core::LayoutStyle)>,
+    ) {
+        let mut mutations = MutationQueue::new();
+        for (raw_id, layout) in layouts {
+            let Some(id) = StableNodeId::new(raw_id) else {
+                continue;
+            };
+            if !self.runtime.contains(id) && !self.nodes.contains_key(&raw_id) {
+                continue;
+            }
+            let current = self.runtime.node_style(id);
+            if current.is_some_and(|style| {
+                std::ptr::eq(style.layout.as_ref(), layout) || style.layout.as_ref() == layout
+            }) {
+                continue;
+            }
+            let mut style = current.cloned().unwrap_or_default();
+            style.layout = Arc::new(layout.clone());
+            mutations.set_style(id, style);
+        }
+        if !mutations.is_empty() {
+            self.commit_extra(mutations).ok();
+        }
+    }
+
     /// Commit queued Vue host ops, then drain Runtime systems.
     pub fn flush_host_frame(&mut self) {
         self.stamp_host_texture_revisions();
@@ -1017,6 +1101,12 @@ impl NanaTreeDocument {
             .ok()
             .and_then(|id| self.runtime.scroll_offset(id))
             .unwrap_or_default()
+    }
+
+    pub fn scroll_metrics(&self, node: NodeHandle) -> Option<nana_ui_runtime::ScrollMetrics> {
+        StableNodeId::try_from(node)
+            .ok()
+            .and_then(|id| self.runtime.scroll_metrics(id))
     }
 
     pub(crate) fn set_scroll_offset(
@@ -2939,9 +3029,7 @@ fn bind_native_json_attrs(widget: &crate::SemanticWidget) -> Vec<(String, String
             .attrs
             .keys()
             .any(|key| key.eq_ignore_ascii_case(name))
-            && !extras
-                .iter()
-                .any(|(key, _)| key.eq_ignore_ascii_case(name))
+            && !extras.iter().any(|(key, _)| key.eq_ignore_ascii_case(name))
     };
     let push = |extras: &mut Vec<(String, String)>, key: &str, host_keys: &[&str]| {
         if !missing(key, extras) {
@@ -3248,7 +3336,11 @@ fn bind_semantic_slots(
                 .filter(|child| Some(child.id) != handle.map(StableNodeId::get))
                 .filter_map(|child| StableNodeId::new(child.id))
                 .collect::<Vec<_>>();
-            push(&mut slots, "first", data_slot("first").or(panes.first().copied()));
+            push(
+                &mut slots,
+                "first",
+                data_slot("first").or(panes.first().copied()),
+            );
             push(
                 &mut slots,
                 "second",
@@ -3551,7 +3643,11 @@ fn tree_child_bind_options(
             } else {
                 child.props.display_label().to_string()
             };
-            (id, child.props.display_label().to_string(), child.props.disabled)
+            (
+                id,
+                child.props.display_label().to_string(),
+                child.props.disabled,
+            )
         })
         .collect()
 }
@@ -6599,15 +6695,14 @@ mod tests {
             Some(AccessibilityRole::TabList)
         );
         assert_eq!(
-            doc.runtime.accessibility(tabs_id).and_then(|state| state.label.clone()),
+            doc.runtime
+                .accessibility(tabs_id)
+                .and_then(|state| state.label.clone()),
             Some(Arc::<str>::from("Editor"))
         );
         assert!(matches!(
             doc.runtime.standard_visual(tab_b_id),
-            Some(nana_ui_runtime::StandardVisual::SelectionOption {
-                selected: true,
-                ..
-            })
+            Some(nana_ui_runtime::StandardVisual::SelectionOption { selected: true, .. })
         ));
         assert_eq!(
             doc.runtime
@@ -6623,10 +6718,7 @@ mod tests {
         );
         assert!(matches!(
             doc.runtime.standard_visual(seg_a_id),
-            Some(nana_ui_runtime::StandardVisual::SelectionOption {
-                selected: true,
-                ..
-            })
+            Some(nana_ui_runtime::StandardVisual::SelectionOption { selected: true, .. })
         ));
     }
 
@@ -6896,12 +6988,18 @@ mod tests {
             &nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
                 [
                     ("value".into(), nana_js_engine::HostValue::string("open")),
-                    ("label".into(), nana_js_engine::HostValue::string("Open file")),
+                    (
+                        "label".into(),
+                        nana_js_engine::HostValue::string("Open file"),
+                    ),
                     (
                         "category".into(),
                         nana_js_engine::HostValue::string("Workspace"),
                     ),
-                    ("shortcut".into(), nana_js_engine::HostValue::string("Ctrl+P")),
+                    (
+                        "shortcut".into(),
+                        nana_js_engine::HostValue::string("Ctrl+P"),
+                    ),
                 ]
                 .into_iter()
                 .collect(),

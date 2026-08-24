@@ -1,0 +1,20 @@
+{
+  "id": "T-G25",
+  "title": "grid-column span 2",
+  "status": "pass",
+  "viewport": [300, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:100px 100px 100px;width:300px;height:40px;gap:0;align-items:stretch",
+    "children": [
+      { "id": "a", "style": "grid-column:1 / span 2;height:40px" },
+      { "id": "b", "style": "height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 40 },
+    { "id": "a", "x": 0, "y": 0, "w": 200, "h": 40 },
+    { "id": "b", "x": 200, "y": 0, "w": 100, "h": 40 }
+  ]
+}

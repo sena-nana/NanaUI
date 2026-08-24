@@ -1,0 +1,20 @@
+{
+  "id": "T-FL02",
+  "title": "同侧两个 float:left 不重叠",
+  "status": "pass",
+  "viewport": [80, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:80px;height:80px",
+    "children": [
+      { "id": "a", "style": "float:left;width:60px;height:40px" },
+      { "id": "b", "style": "float:left;width:60px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 80, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 60, "h": 40 },
+    { "id": "b", "x": 0, "y": 40, "w": 60, "h": 40 }
+  ]
+}

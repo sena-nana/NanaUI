@@ -1079,7 +1079,11 @@ impl AppContext {
             .world
             .document_order(document)
             .into_iter()
-            .filter(|id| self.views.get(id).is_some_and(|view| view.is::<ScrollView>()))
+            .filter(|id| {
+                self.views
+                    .get(id)
+                    .is_some_and(|view| view.is::<ScrollView>())
+            })
             .filter_map(|id| {
                 let metrics = self.scroll_metrics_from_layout(id)?;
                 (self.world.scroll_metrics(id) != Some(metrics))
@@ -7836,7 +7840,13 @@ mod tests {
         let max_y = (metrics.content_height - metrics.viewport_height).max(0.0);
         assert!(
             context
-                .scroll_by(scroll, ScrollOffset { x: 0.0, y: max_y + 400.0 })
+                .scroll_by(
+                    scroll,
+                    ScrollOffset {
+                        x: 0.0,
+                        y: max_y + 400.0
+                    }
+                )
                 .unwrap()
         );
         let offset = context.world().scroll_offset(scroll.stable_id()).unwrap();

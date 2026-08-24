@@ -2282,7 +2282,8 @@ impl MessageBridge {
             of_type_count,
         };
 
-        // Layer order: kind default → stylesheet → class hints → prop → inline.
+        // Layer order: kind default → stylesheet → class hints → prop → inline
+        // → stylesheet !important → prop / inline !important.
         // When any author text layer or retained stylesheet exists, rebuild from
         // a clean base so prior stylesheet-computed fields do not stick after
         // selector/class changes. Document-root Fill is restored by public
@@ -2327,7 +2328,8 @@ impl MessageBridge {
         };
 
         // Author layers: stylesheet → class hints → prop style → class hints →
-        // inline → class hints. Layout sizing comes from those layers / public
+        // inline → class hints → stylesheet !important → prop !important →
+        // inline !important. Layout sizing comes from those layers / public
         // class contracts — not from id / data-region-id / kind whitelists.
         let mut layout = rebuild_layout_style(
             base,
@@ -2376,7 +2378,9 @@ impl MessageBridge {
         }
 
         if let Some(widget) = self.widgets.get_mut(&id) {
-            widget.props.layout = layout;
+            if widget.props.layout != layout {
+                widget.props.layout = layout;
+            }
             pin_svg_chart_min_height(&mut widget.props);
             widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
         }
@@ -2939,7 +2943,18 @@ impl MessageBridge {
         self.reparent_orphans();
         self.sync_sidebar_footer_into_document(doc);
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        self.sync_cascaded_layout_into_runtime(doc);
         doc.flush_host_frame();
+    }
+
+    fn sync_cascaded_layout_into_runtime(&self, doc: &mut crate::tree::NanaTreeDocument) {
+        // Compare in place; clone LayoutStyle only for nodes whose cascade
+        // actually changed. Never writes Runtime LayoutBox.
+        doc.sync_widget_layouts(
+            self.widgets
+                .iter()
+                .map(|(id, widget)| (*id, &widget.props.layout)),
+        );
     }
 
     /// Fill only nodes that still have no engine box after flush.
@@ -2951,6 +2966,7 @@ impl MessageBridge {
         self.reparent_orphans();
         self.sync_sidebar_footer_into_document(doc);
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        self.sync_cascaded_layout_into_runtime(doc);
         doc.flush_host_frame();
         let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
         let missing: Vec<_> = boxes
@@ -3420,13 +3436,18 @@ impl MessageBridge {
             }
         }
         // Rebuild LayoutStyle from stylesheet + class hints + inline/prop style.
+        // Layout props (width/height/…) use the same rebuild as class/style so
+        // stylesheet / prop / inline `!important` is not dropped by a one-property
+        // overlay. One write of LayoutStyle — never LayoutBox.
         let full_rebuild = matches!(
             key_n.as_str(),
-            "class" | "classname" | "style" | "id" | "data-region-id" | "hidden"
-        ) || key_n.starts_with("data-");
-        let layout_prop = matches!(
-            key_n.as_str(),
-            "gap"
+            "class"
+                | "classname"
+                | "style"
+                | "id"
+                | "data-region-id"
+                | "hidden"
+                | "gap"
                 | "padding"
                 | "width"
                 | "height"
@@ -3444,45 +3465,9 @@ impl MessageBridge {
                 | "overflowy"
                 | "grid-template-columns"
                 | "gridtemplatecolumns"
-        );
+        ) || key_n.starts_with("data-");
         if full_rebuild {
             self.reapply_layout_for(id);
-        } else if layout_prop {
-            // Incremental: apply the prop declaration, then re-apply class hints
-            // so public nana-* contracts still win over Vue layout props
-            // (same layer order as rebuild_layout_style).
-            if let Some(widget) = self.widgets.get_mut(&id) {
-                let css = widget.props.prop_style.clone();
-                let classes = widget.props.class_names.clone();
-                let cb_w = widget.props.containing_block_width;
-                let cb_h = widget.props.containing_block_height;
-                if !css.is_empty() {
-                    // Apply only the latest prop declaration for this key.
-                    let key_css = key_n.replace("flexdirection", "flex-direction");
-                    let key_css = key_css.replace("flexgrow", "flex-grow");
-                    let key_css = key_css.replace("minwidth", "min-width");
-                    let key_css = key_css.replace("justifycontent", "justify-content");
-                    let key_css = key_css.replace("overflowy", "overflow-y");
-                    let key_css = key_css.replace("gridtemplatecolumns", "grid-template-columns");
-                    if let Some((_, val)) = css
-                        .split(';')
-                        .rev()
-                        .map(str::trim)
-                        .filter_map(|decl| decl.split_once(':'))
-                        .find(|(key, _)| key.trim().eq_ignore_ascii_case(&key_css))
-                    {
-                        widget.props.layout.apply_css_property(
-                            key_css.trim(),
-                            val.trim(),
-                            cb_w,
-                            cb_h,
-                        );
-                    }
-                }
-                widget.props.layout.apply_class_layout_hints(&classes);
-                pin_svg_chart_min_height(&mut widget.props);
-                widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
-            }
         } else if let Some(widget) = self.widgets.get_mut(&id) {
             pin_svg_chart_min_height(&mut widget.props);
             widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
@@ -4905,6 +4890,101 @@ mod tests {
         let layout = &bridge.get(1).unwrap().props.layout;
         assert_eq!(layout.direction, Some(FlexDirection::Row));
         assert_eq!(layout.gap, Some(LengthSpec::Px(14.0)));
+    }
+
+    #[test]
+    fn incremental_layout_prop_preserves_stylesheet_important() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.class_names = vec!["sized".into(), "min-w-0".into()];
+        props.element_tag = "div".into();
+        bridge.register(1, WidgetKind::Column, props);
+        bridge.inject_stylesheet(
+            ".sized { width: 80px !important; height: 40px !important; min-width: 72px !important; }",
+        );
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.width,
+            Some(LengthSpec::Px(80.0))
+        );
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.height,
+            Some(LengthSpec::Px(40.0))
+        );
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.min_width,
+            Some(LengthSpec::Px(72.0)),
+            "stylesheet min-width !important must beat min-w-0 hint"
+        );
+
+        // Ordinary layout props must not drop the important tail.
+        bridge.patch_prop(1, "width", &HostValue::string("200px"));
+        bridge.patch_prop(1, "height", &HostValue::string("90px"));
+        bridge.patch_prop(1, "min-width", &HostValue::string("10px"));
+        let layout = &bridge.get(1).unwrap().props.layout;
+        assert_eq!(
+            layout.width,
+            Some(LengthSpec::Px(80.0)),
+            "stylesheet width !important must survive patchProp(width)"
+        );
+        assert_eq!(
+            layout.height,
+            Some(LengthSpec::Px(40.0)),
+            "stylesheet height !important must survive patchProp(height)"
+        );
+        assert_eq!(
+            layout.min_width,
+            Some(LengthSpec::Px(72.0)),
+            "stylesheet min-width !important must survive patchProp(min-width) and min-w-0"
+        );
+
+        // Prop important still beats stylesheet important after the same rebuild.
+        bridge.patch_prop(1, "width", &HostValue::string("200px !important"));
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.width,
+            Some(LengthSpec::Px(200.0)),
+            "prop !important must beat stylesheet !important"
+        );
+    }
+
+    #[test]
+    fn incremental_layout_prop_keeps_inline_important() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.class_names = vec!["titlebar".into()];
+        props.element_tag = "div".into();
+        bridge.register(1, WidgetKind::Row, props);
+        bridge.patch_prop(1, "style", &HostValue::string("height: 80px !important"));
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.height,
+            Some(LengthSpec::Px(80.0)),
+            "inline height !important must beat titlebar hint 36"
+        );
+
+        // A later width prop must re-run the important tail, not let the hint win.
+        bridge.patch_prop(1, "width", &HostValue::string("200px"));
+        let layout = &bridge.get(1).unwrap().props.layout;
+        assert_eq!(
+            layout.height,
+            Some(LengthSpec::Px(80.0)),
+            "inline height !important must survive patchProp(width) after titlebar hints"
+        );
+        assert_eq!(layout.width, Some(LengthSpec::Px(200.0)));
+    }
+
+    #[test]
+    fn inline_custom_prop_important_resolves_as_layout_length() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(1, WidgetKind::Column, WidgetProps::default());
+        bridge.patch_prop(
+            1,
+            "style",
+            &HostValue::string("--w: 80px !important; width: calc(var(--w) + 10px); height: 40px"),
+        );
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.width,
+            Some(LengthSpec::Px(90.0)),
+            "inline --w with !important must strip so calc(var(--w) + 10px) is 90"
+        );
     }
 
     #[test]

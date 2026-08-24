@@ -23,6 +23,7 @@ pub(crate) struct TextLayoutKey {
     letter_spacing_bits: u32,
     wrap: bool,
     ellipsis: bool,
+    preserve_lines: bool,
     shaping: u8,
     max_width_bits: Option<u32>,
     max_height_bits: Option<u32>,
@@ -46,6 +47,7 @@ impl TextLayoutKey {
             letter_spacing_bits: style.letter_spacing.to_bits(),
             wrap: constraints.wrap,
             ellipsis: constraints.ellipsis,
+            preserve_lines: constraints.preserve_lines,
             shaping: match constraints.shaping {
                 TextShaping::Auto => 0,
                 TextShaping::Advanced => 1,

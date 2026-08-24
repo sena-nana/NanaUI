@@ -52,7 +52,10 @@ pub fn apply_display_to_kind(kind: WidgetKind, layout: &LayoutStyle) -> WidgetKi
             DisplaySpec::Flex
             | DisplaySpec::InlineFlex
             | DisplaySpec::Grid
-            | DisplaySpec::InlineGrid,
+            | DisplaySpec::InlineGrid
+            | DisplaySpec::Contents
+            | DisplaySpec::Inline
+            | DisplaySpec::InlineBlock,
         ) => apply_direction_to_kind(kind, layout),
         None => apply_direction_to_kind(kind, layout),
     }

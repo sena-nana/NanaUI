@@ -1,20 +1,22 @@
 {
   "id": "T-G15",
-  "title": "同节点 columns+rows：1D 横向轨优先（非 2D）",
+  "title": "2D 行轨：未定高子项拉伸到第一行 80px",
   "status": "pass",
-  "viewport": [400, 220],
+  "viewport": [400, 200],
   "tolerance_px": 2,
   "tree": {
     "id": "body",
     "style": "display:grid;grid-template-rows:80px 1fr;grid-template-columns:100px 1fr;width:400px;height:200px;align-items:stretch;gap:0",
     "children": [
-      { "id": "a", "style": "height:200px" },
-      { "id": "b", "style": "height:200px" }
+      { "id": "a" },
+      { "id": "b" },
+      { "id": "c" }
     ]
   },
   "expected": [
     { "id": "body", "x": 0, "y": 0, "w": 400, "h": 200 },
-    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 200 },
-    { "id": "b", "x": 100, "y": 0, "w": 300, "h": 200 }
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 80 },
+    { "id": "b", "x": 100, "y": 0, "w": 300, "h": 80 },
+    { "id": "c", "x": 0, "y": 80, "w": 100, "h": 120 }
   ]
 }

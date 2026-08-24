@@ -52,6 +52,16 @@ function installMockHost() {
           left: b.x,
           bottom: b.y + b.height,
           right: b.x + b.width,
+          borderWidth: b.borderWidth,
+          clientWidth: b.clientWidth,
+          clientHeight: b.clientHeight,
+          scrollWidth: b.scrollWidth,
+          scrollHeight: b.scrollHeight,
+          offsetParent: b.offsetParent,
+          offsetLeft: b.offsetLeft,
+          offsetTop: b.offsetTop,
+          clientLeft: b.clientLeft ?? b.borderWidth,
+          clientTop: b.clientTop ?? b.borderWidth,
         };
       }
       if (name === "getScrollOffset") {
@@ -126,6 +136,42 @@ describe("layoutMetrics from layoutBox", () => {
     defineLayoutMetrics(empty, 99);
     assert.equal(empty.offsetWidth, 0);
     assert.equal(empty.clientHeight, 0);
+    assert.equal(empty.offsetLeft, 0);
+    assert.equal(empty.offsetParent, null);
+  });
+
+  test("defineLayoutMetrics splits client/scroll/offset from layoutBox", () => {
+    const parent = { __nid: 2 };
+    globalThis.__nanaNodeCache = new Map([[2, parent]]);
+    boxes.set(7, {
+      x: 30,
+      y: 50,
+      width: 80,
+      height: 40,
+      borderWidth: 4,
+      clientWidth: 72,
+      clientHeight: 32,
+      scrollWidth: 120,
+      scrollHeight: 32,
+      offsetParent: 2,
+      offsetLeft: 20,
+      offsetTop: 30,
+    });
+    const node = { __nid: 7 };
+    defineLayoutMetrics(node, 7);
+    assert.equal(node.offsetWidth, 80);
+    assert.equal(node.offsetHeight, 40);
+    assert.equal(node.clientWidth, 72);
+    assert.equal(node.clientHeight, 32);
+    assert.equal(node.scrollWidth, 120);
+    assert.equal(node.scrollHeight, 32);
+    assert.equal(node.offsetLeft, 20);
+    assert.equal(node.offsetTop, 30);
+    assert.equal(node.clientLeft, 4);
+    assert.equal(node.clientTop, 4);
+    assert.equal(node.offsetParent, parent);
+    delete globalThis.__nanaNodeCache;
+    assert.equal(node.offsetParent, null);
   });
 
   test("scrollNodeIntoView forwards host options", () => {
@@ -183,6 +229,15 @@ describe("shim Element.prototype layout metrics", () => {
             y: b.y,
             width: b.width,
             height: b.height,
+            clientWidth: b.clientWidth,
+            clientHeight: b.clientHeight,
+            scrollWidth: b.scrollWidth,
+            scrollHeight: b.scrollHeight,
+            offsetParent: b.offsetParent,
+            offsetLeft: b.offsetLeft,
+            offsetTop: b.offsetTop,
+            clientLeft: b.clientLeft ?? b.borderWidth,
+            clientTop: b.clientTop ?? b.borderWidth,
           };
         }
         if (name === "getScrollOffset") {
@@ -217,6 +272,8 @@ describe("shim Element.prototype layout metrics", () => {
     withNid.__nid = 3;
     assert.equal(withNid.offsetWidth, 220);
     assert.equal(withNid.clientHeight, 80);
+    assert.equal(withNid.offsetLeft, 0);
+    assert.equal(withNid.offsetParent, null);
     withNid.scrollTop = 55;
     assert.equal(withNid.scrollTop, 55);
     assert.equal(typeof withNid.scrollIntoView, "function");

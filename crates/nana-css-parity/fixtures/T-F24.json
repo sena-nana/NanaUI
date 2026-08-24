@@ -1,0 +1,22 @@
+{
+  "id": "T-F24",
+  "title": "align-content:space-between 多行 wrap",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;flex-wrap:wrap;align-content:space-between;align-items:flex-start;width:200px;height:120px;gap:0",
+    "children": [
+      { "id": "a", "style": "width:100px;height:20px" },
+      { "id": "b", "style": "width:100px;height:20px" },
+      { "id": "c", "style": "width:100px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 20 },
+    { "id": "b", "x": 100, "y": 0, "w": 100, "h": 20 },
+    { "id": "c", "x": 0, "y": 100, "w": 100, "h": 20 }
+  ]
+}

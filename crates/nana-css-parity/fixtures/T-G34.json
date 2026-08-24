@@ -1,0 +1,18 @@
+{
+  "id": "T-G34",
+  "title": "auto-fill 展开后 mid 2 取第二段 80px（空轨不收起）",
+  "status": "pass",
+  "viewport": [240, 40],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:repeat(auto-fill,[mid] 80px);width:240px;height:40px;gap:0",
+    "children": [
+      { "id": "cell", "style": "grid-column:mid 2 / mid;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 240, "h": 40 },
+    { "id": "cell", "x": 80, "y": 0, "w": 80, "h": 40 }
+  ]
+}

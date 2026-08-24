@@ -505,9 +505,7 @@ impl RegisterableComponent for SegmentedControl {
         } else {
             SegmentedControl::new()
         };
-        component = component
-            .size(spec.size)
-            .fill(flag_attr(spec, &["fill"]));
+        component = component.size(spec.size).fill(flag_attr(spec, &["fill"]));
         if !spec.label.is_empty() {
             component = component.label(Arc::<str>::from(spec.label));
         }
@@ -857,8 +855,8 @@ impl RegisterableComponent for CalendarHeatmap<()> {
     const TYPE_ID: &'static str = "nana.calendar-heatmap";
     const TAGS: &'static [&'static str] = &["calendar", "calendar-heatmap"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut component =
-            CalendarHeatmap::new(calendar_data_from_spec(spec)).options(calendar_options_from_spec(spec));
+        let mut component = CalendarHeatmap::new(calendar_data_from_spec(spec))
+            .options(calendar_options_from_spec(spec));
         if !spec.display_label().is_empty() {
             component = component.label(Arc::<str>::from(spec.display_label()));
         }
@@ -950,7 +948,8 @@ impl RegisterableComponent for SplitPane {
             .unwrap_or(240.0);
         let min = attr_f32(spec, &["min"]).unwrap_or(120.0);
         let max = attr_f32(spec, &["max"]).unwrap_or(800.0);
-        let mut model = SplitPaneModel::new(parse_split_axis(spec.attr("axis")), default_size, min, max);
+        let mut model =
+            SplitPaneModel::new(parse_split_axis(spec.attr("axis")), default_size, min, max);
         if let Some(size) = attr_f32(spec, &["size"])
             && (size - model.size()).abs() > f32::EPSILON
         {
@@ -1508,9 +1507,10 @@ fn tree_node_from_json(value: &serde_json::Value) -> Option<TreeNode<Arc<str>>> 
             }
             Some(node)
         }
-        serde_json::Value::String(text) if !text.is_empty() => {
-            Some(TreeNode::leaf(Arc::<str>::from(text.as_str()), text.clone()))
-        }
+        serde_json::Value::String(text) if !text.is_empty() => Some(TreeNode::leaf(
+            Arc::<str>::from(text.as_str()),
+            text.clone(),
+        )),
         _ => None,
     }
 }
@@ -1586,9 +1586,14 @@ fn calendar_options_from_json(value: &serde_json::Value) -> CalendarHeatmapOptio
     if let Some(width) = json_object_f32(value, &["labelWidth", "label_width", "label-width"]) {
         options.label_width = width;
     }
-    if let Some(height) =
-        json_object_f32(value, &["monthLabelHeight", "month_label_height", "month-label-height"])
-    {
+    if let Some(height) = json_object_f32(
+        value,
+        &[
+            "monthLabelHeight",
+            "month_label_height",
+            "month-label-height",
+        ],
+    ) {
         options.month_label_height = height;
     }
     if let Some(week) =
@@ -1596,15 +1601,19 @@ fn calendar_options_from_json(value: &serde_json::Value) -> CalendarHeatmapOptio
     {
         options = options.week_starts_on(week as i32);
     }
-    if let Some(labels) =
-        json_object_get(value, &["weekdayLabels", "weekday_labels", "weekday-labels"])
-            .and_then(calendar_weekday_labels_from_json)
+    if let Some(labels) = json_object_get(
+        value,
+        &["weekdayLabels", "weekday_labels", "weekday-labels"],
+    )
+    .and_then(calendar_weekday_labels_from_json)
     {
         options = options.weekday_labels(labels);
     }
-    if let Some(strategy) =
-        json_object_get(value, &["levelStrategy", "level_strategy", "level-strategy"])
-            .and_then(calendar_level_strategy_from_json)
+    if let Some(strategy) = json_object_get(
+        value,
+        &["levelStrategy", "level_strategy", "level-strategy"],
+    )
+    .and_then(calendar_level_strategy_from_json)
     {
         options = options.level_strategy(strategy);
     }
@@ -1701,7 +1710,9 @@ fn calendar_weekday_labels_from_json(value: &serde_json::Value) -> Option<Vec<(u
     (!labels.is_empty()).then_some(labels)
 }
 
-fn calendar_level_strategy_from_json(value: &serde_json::Value) -> Option<CalendarLevelStrategy<()>> {
+fn calendar_level_strategy_from_json(
+    value: &serde_json::Value,
+) -> Option<CalendarLevelStrategy<()>> {
     match value {
         serde_json::Value::Array(_) => {
             let thresholds = json_array(value)
@@ -1710,11 +1721,13 @@ fn calendar_level_strategy_from_json(value: &serde_json::Value) -> Option<Calend
                 .collect::<Vec<_>>();
             (!thresholds.is_empty()).then_some(CalendarLevelStrategy::Thresholds(thresholds))
         }
-        serde_json::Value::Number(number) => number.as_f64().map(|levels| {
-            CalendarLevelStrategy::Relative {
-                levels: (levels as u8).max(1),
-            }
-        }),
+        serde_json::Value::Number(number) => {
+            number
+                .as_f64()
+                .map(|levels| CalendarLevelStrategy::Relative {
+                    levels: (levels as u8).max(1),
+                })
+        }
         serde_json::Value::Object(_) => {
             let kind = json_object_text(value, &["type", "kind", "strategy"]).to_ascii_lowercase();
             if kind == "custom" {
@@ -1948,7 +1961,10 @@ fn graph_node_from_json(value: &serde_json::Value) -> Option<GraphNode> {
     }
     let mut node = GraphNode::new(identity, caption, position, size);
     if let Some(ports) = json_object_get(value, &["ports"]) {
-        for port in json_array(ports).into_iter().filter_map(graph_port_from_json) {
+        for port in json_array(ports)
+            .into_iter()
+            .filter_map(graph_port_from_json)
+        {
             node = node.with_port(port);
         }
     }
@@ -2046,7 +2062,13 @@ fn parse_graph_port_side(raw: &str, kind: GraphPortKind) -> GraphPortSide {
 }
 
 fn parse_split_axis(raw: Option<&str>) -> SplitAxis {
-    match raw.unwrap_or("").trim().trim_matches('"').to_ascii_lowercase().as_str() {
+    match raw
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"')
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "vertical" | "column" | "y" => SplitAxis::Vertical,
         _ => SplitAxis::Horizontal,
     }
@@ -2128,8 +2150,8 @@ fn dock_node_from_json(
                 || json_object_get(value, &["first"]).is_some()
                 || json_object_get(value, &["second"]).is_some()
             {
-                let first =
-                    json_object_get(value, &["first"]).and_then(|item| dock_node_from_json(item, contents))?;
+                let first = json_object_get(value, &["first"])
+                    .and_then(|item| dock_node_from_json(item, contents))?;
                 let second = json_object_get(value, &["second"])
                     .and_then(|item| dock_node_from_json(item, contents))?;
                 let axis = parse_dock_axis(&json_object_text(value, &["axis"]));
@@ -2154,7 +2176,10 @@ fn dock_node_from_json(
                         }
                         _ => continue,
                     };
-                    if tabs.iter().any(|existing: &Arc<str>| existing.as_ref() == id) {
+                    if tabs
+                        .iter()
+                        .any(|existing: &Arc<str>| existing.as_ref() == id)
+                    {
                         continue;
                     }
                     let content = content_for(&id);
@@ -2256,7 +2281,8 @@ fn settings_model_from_spec(spec: &SemanticSpec<'_>) -> Option<SettingsModel> {
             default_tab
         };
     let mut model = SettingsModel::new(default_tab, tabs).ok()?;
-    if let Some(aliases) = json_object_get(&settings, &["aliases", "alias"]).and_then(|value| value.as_object())
+    if let Some(aliases) =
+        json_object_get(&settings, &["aliases", "alias"]).and_then(|value| value.as_object())
     {
         for (alias, target) in aliases {
             let target = json_text(target);
@@ -2318,10 +2344,9 @@ fn settings_tab_from_json(value: &serde_json::Value) -> Option<SettingsTab> {
             let label = json_object_text(value, &["label", "title", "name"]);
             let label = if label.is_empty() { id.clone() } else { label };
             let mut tab = SettingsTab::new(id, label);
-            if let Some(icon) = Icon::parse_name(&json_object_text(
-                value,
-                &["icon", "iconName", "icon-name"],
-            )) {
+            if let Some(icon) =
+                Icon::parse_name(&json_object_text(value, &["icon", "iconName", "icon-name"]))
+            {
                 tab = tab.icon(icon);
             }
             Some(tab.full_page(json_object_truthy(
@@ -2452,14 +2477,8 @@ mod tests {
         let type_id = ComponentTypeId::new("nana.calendar-heatmap").unwrap();
         let layout = Arc::new(LayoutStyle::default());
         let attrs = [
-            (
-                "data",
-                r#"[{"date":"2026-06-01","value":4}]"#,
-            ),
-            (
-                "options",
-                r#"{"titleFormat":"{date}={value}"}"#,
-            ),
+            ("data", r#"[{"date":"2026-06-01","value":4}]"#),
+            ("options", r#"{"titleFormat":"{date}={value}"}"#),
         ];
         let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "");
         let calendar = CalendarHeatmap::<()>::from_semantic(&spec);
@@ -2496,9 +2515,7 @@ mod tests {
         let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "");
         let markdown = NativeMarkdown::from_semantic(&spec);
         assert!(
-            markdown
-                .plain_text()
-                .contains("Native"),
+            markdown.plain_text().contains("Native"),
             "source attr must parse when value is empty"
         );
     }

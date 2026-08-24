@@ -40,6 +40,8 @@ pub struct FixtureNode {
     pub class: Vec<String>,
     #[serde(default)]
     pub children: Vec<FixtureNode>,
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,7 +128,9 @@ pub fn fixture_to_layout_node(node: &FixtureNode) -> LayoutNode {
     // Percent resolved against parent during measure — do not bake with viewport here.
     style.apply_css_text(&node.style, None, None);
     let children = node.children.iter().map(fixture_to_layout_node).collect();
-    LayoutNode::with_children(node.id.clone(), style, children)
+    let mut layout_node = LayoutNode::with_children(node.id.clone(), style, children);
+    layout_node.text = node.text.clone();
+    layout_node
 }
 
 pub fn measure_nana(case: &FixtureCase) -> BTreeMap<String, MeasuredBox> {

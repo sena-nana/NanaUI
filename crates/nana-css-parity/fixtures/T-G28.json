@@ -1,0 +1,18 @@
+{
+  "id": "T-G28",
+  "title": "justify-self:end 网格格",
+  "status": "pass",
+  "viewport": [200, 40],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:200px;width:200px;height:40px",
+    "children": [
+      { "id": "child", "style": "width:50px;height:40px;justify-self:end" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 40 },
+    { "id": "child", "x": 150, "y": 0, "w": 50, "h": 40 }
+  ]
+}

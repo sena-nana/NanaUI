@@ -9,7 +9,9 @@
 //! `:root` / `:first-child` / `:last-child` / `:nth-child()` / `:nth-of-type()`
 //! (An+B, `odd`/`even`); simple `:not()` / `:is()` / `:where()`;
 //! author-layer `!important` (normal then important; specificity + source order
-//! within each); then prop style and inline style (see [`rebuild_layout_style`]).
+//! within each); then prop style and inline style; then stylesheet `!important`
+//! (beats prop/inline normals); then prop / inline `!important` so author-important
+//! inline beats stylesheet important (see [`rebuild_layout_style`]).
 //!
 //! After cascade, documented shell / utility classes are applied via
 //! [`crate::shell_contract`]（非中立；不在此模块扩展 class 特判）.
@@ -20,7 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::css_map::{LayoutStyle, LayoutStyleCss};
+use crate::css_map::{LayoutStyle, LayoutStyleCss, split_important_flag};
 
 /// One parsed declaration from a rule block (`property: value`, `!important` stripped).
 ///
@@ -354,9 +356,7 @@ pub fn apply_stylesheet_to_layout(
     percent_w: Option<f32>,
     percent_h: Option<f32>,
 ) {
-    for (_, _, entry) in matched_declaration_entries(rules, ctx) {
-        layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
-    }
+    apply_matched_stylesheet(layout, rules, ctx, percent_w, percent_h, false);
 }
 
 /// Matched declarations in cascade application order (later wins).
@@ -494,21 +494,6 @@ fn data_theme_constraint_from_compound(c: &CompoundSelector) -> Option<String> {
     None
 }
 
-/// Parse trailing `!important` (case-insensitive; whitespace around `!` / ident).
-///
-/// Returns `(value without flag, is_important)`.
-fn split_important_flag(value: &str) -> (String, bool) {
-    let trimmed = value.trim();
-    let Some(bang) = trimmed.rfind('!') else {
-        return (trimmed.to_string(), false);
-    };
-    let after = trimmed[bang + 1..].trim();
-    if after.eq_ignore_ascii_case("important") {
-        return (trimmed[..bang].trim_end().to_string(), true);
-    }
-    (trimmed.to_string(), false)
-}
-
 /// Custom properties from **element-scoped** rules matching `ctx` (cascade
 /// order; later wins).
 ///
@@ -583,14 +568,17 @@ fn compound_is_document_var_scope(c: &CompoundSelector) -> bool {
 
 /// Rebuild layout from `base` (typically kind defaults).
 ///
-/// Author layer order for **normal** prop/inline (stylesheet already applied
-/// its own normal+important two-pass via [`matched_declarations`]):
-/// stylesheet → class hints → prop style → class hints → inline style →
-/// class hints. Re-applying class hints after prop/inline keeps documented
-/// `nana-*` shell contracts from being wiped by Vue layout props or SFC
-/// `style` declarations. Inline (style attribute) wins over stylesheet
-/// **normal** within the author origin; stylesheet `!important` is not yet
-/// re-ordered against prop/inline (Track C scope: stylesheet cascade only).
+/// Author layer order:
+/// stylesheet (normal+important) → class hints → prop style → class hints →
+/// inline style → class hints → stylesheet **important** only → prop
+/// **important** → inline **important**.
+/// Re-applying class hints after prop/inline keeps documented `nana-*` shell
+/// contracts from being wiped by Vue layout props or SFC `style` declarations.
+/// Inline (style attribute) wins over stylesheet **normal**. Stylesheet
+/// `!important` beats prop/inline normals. Prop / inline `!important` is
+/// author-important on this same path: the flag is stripped so the value
+/// parses, then those declarations are written again after stylesheet
+/// important (inline important beats stylesheet important).
 pub fn rebuild_layout_style(
     mut layout: LayoutStyle,
     rules: &[StyleRule],
@@ -610,7 +598,44 @@ pub fn rebuild_layout_style(
         layout.apply_css_text(inline_style, percent_w, percent_h);
         layout.apply_class_layout_hints(ctx.classes);
     }
+    apply_matched_stylesheet(&mut layout, rules, ctx, percent_w, percent_h, true);
+    if !prop_style.trim().is_empty() {
+        apply_css_text_important_only(&mut layout, prop_style, percent_w, percent_h);
+    }
+    if !inline_style.trim().is_empty() {
+        apply_css_text_important_only(&mut layout, inline_style, percent_w, percent_h);
+    }
     layout
+}
+
+fn apply_matched_stylesheet(
+    layout: &mut LayoutStyle,
+    rules: &[StyleRule],
+    ctx: &MatchContext<'_>,
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+    important_only: bool,
+) {
+    for (_, _, entry) in matched_declaration_entries(rules, ctx) {
+        if !important_only || entry.important {
+            layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
+        }
+    }
+}
+
+/// Apply only declarations whose value carries `!important` (flag already stripped
+/// before [`LayoutStyleCss::apply_css_property`]).
+fn apply_css_text_important_only(
+    layout: &mut LayoutStyle,
+    style: &str,
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+) {
+    for entry in parse_declaration_entries(style) {
+        if entry.important {
+            layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
+        }
+    }
 }
 
 fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
@@ -1928,6 +1953,81 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_important_beats_inline_and_prop() {
+        let rules = parse_stylesheet(".box { width: 80px !important; height: 20px; }", 0);
+        let classes = vec!["box".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let layout = rebuild_layout_style(
+            LayoutStyle::default(),
+            &rules,
+            &m,
+            "width:160px",
+            "width:200px;height:40px",
+            None,
+            None,
+        );
+        assert_eq!(
+            layout.width,
+            Some(LengthSpec::Px(80.0)),
+            "stylesheet !important must beat prop/inline normals"
+        );
+        assert_eq!(
+            layout.height,
+            Some(LengthSpec::Px(40.0)),
+            "inline still wins over stylesheet normal"
+        );
+    }
+
+    #[test]
+    fn inline_important_beats_stylesheet_important() {
+        let rules = parse_stylesheet(".box { width: 80px !important; height: 20px; }", 0);
+        let classes = vec!["box".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let layout = rebuild_layout_style(
+            LayoutStyle::default(),
+            &rules,
+            &m,
+            "width:160px !important",
+            "width:200px !important;height:40px",
+            None,
+            None,
+        );
+        assert_eq!(
+            layout.width,
+            Some(LengthSpec::Px(200.0)),
+            "inline !important must beat stylesheet !important and prop !important"
+        );
+        assert_eq!(
+            layout.height,
+            Some(LengthSpec::Px(40.0)),
+            "inline still wins over stylesheet normal"
+        );
+    }
+
+    #[test]
+    fn inline_only_important_applies_as_width() {
+        let empty = BTreeMap::new();
+        let classes: Vec<String> = Vec::new();
+        let m = ctx("div", "", &classes, &empty, &[]);
+        let layout = rebuild_layout_style(
+            LayoutStyle::default(),
+            &[],
+            &m,
+            "",
+            "width:100px !important",
+            None,
+            None,
+        );
+        assert_eq!(
+            layout.width,
+            Some(LengthSpec::Px(100.0)),
+            "inline-only width:100px !important must write 100, not drop the declaration"
+        );
+    }
+
+    #[test]
     fn simple_not_class_and_attr_match() {
         let rules = parse_stylesheet(
             r#"
@@ -2361,20 +2461,23 @@ mod tests {
     #[test]
     fn important_flag_case_and_whitespace() {
         assert_eq!(
-            super::split_important_flag("10px !important"),
+            crate::css_map::split_important_flag("10px !important"),
             ("10px".into(), true)
         );
         assert_eq!(
-            super::split_important_flag("10px!IMPORTANT"),
+            crate::css_map::split_important_flag("10px!IMPORTANT"),
             ("10px".into(), true)
         );
         assert_eq!(
-            super::split_important_flag("10px ! Important"),
+            crate::css_map::split_important_flag("10px ! Important"),
             ("10px".into(), true)
         );
-        assert_eq!(super::split_important_flag("10px"), ("10px".into(), false));
         assert_eq!(
-            super::split_important_flag("calc(1px + 2px)"),
+            crate::css_map::split_important_flag("10px"),
+            ("10px".into(), false)
+        );
+        assert_eq!(
+            crate::css_map::split_important_flag("calc(1px + 2px)"),
             ("calc(1px + 2px)".into(), false)
         );
 

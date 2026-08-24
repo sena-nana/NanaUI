@@ -97,6 +97,26 @@ fn t_f18_flex_shrink_overflow() {
 fn t_f19_flex_shrink_min_width_freeze() {
     assert_pass_case("T-F19");
 }
+#[test]
+fn t_f22_flex_order() {
+    assert_pass_case("T-F22");
+}
+#[test]
+fn t_f23_align_content_center_wrap() {
+    assert_pass_case("T-F23");
+}
+#[test]
+fn t_f24_align_content_space_between_wrap() {
+    assert_pass_case("T-F24");
+}
+#[test]
+fn t_f25_align_content_stretch_wrap() {
+    assert_pass_case("T-F25");
+}
+#[test]
+fn t_f26_align_content_normal_is_stretch() {
+    assert_pass_case("T-F26");
+}
 
 // --- Size ---
 
@@ -223,6 +243,33 @@ fn t_s16_em_rem_sizes() {
     assert_pass_case("T-S16");
 }
 #[test]
+fn t_s17_max_content_width() {
+    assert_pass_case("T-S17");
+}
+#[test]
+fn t_s18_fit_content_clamps() {
+    assert_pass_case("T-S18");
+}
+#[test]
+fn t_s19_min_content_wrap_widest_child() {
+    assert_pass_case("T-S19");
+}
+#[test]
+fn t_s20_fit_content_not_fill_under_stretch() {
+    let case = load_fixture(&fixture_path("T-S20")).unwrap();
+    let box_ = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "box")
+        .expect("T-S20 box");
+    assert!(
+        (box_.w - 120.0).abs() < 0.5,
+        "T-S20 must expect 120 so Fill/stretch 400 fails, got w={}",
+        box_.w
+    );
+    assert_pass_case("T-S20");
+}
+#[test]
 fn t_b10_negative_margin_rem_padding() {
     assert_pass_case("T-B10");
 }
@@ -233,6 +280,10 @@ fn t_b11_logical_padding_ltr() {
 #[test]
 fn t_b12_logical_margin_ltr() {
     assert_pass_case("T-B12");
+}
+#[test]
+fn t_b13_margin_auto_center() {
+    assert_pass_case("T-B13");
 }
 #[test]
 fn t_g01_grid_template_columns() {
@@ -311,6 +362,78 @@ fn t_g19_grid_gap_percent() {
     assert_pass_case("T-G19");
 }
 #[test]
+fn t_g20_repeat_fixed_count() {
+    assert_pass_case("T-G20");
+}
+#[test]
+fn t_g21_percent_plus_fr() {
+    assert_pass_case("T-G21");
+}
+#[test]
+fn t_g22_inline_grid() {
+    assert_pass_case("T-G22");
+}
+#[test]
+fn t_g23_fit_content() {
+    assert_pass_case("T-G23");
+}
+#[test]
+fn t_g24_repeat_minmax() {
+    assert_pass_case("T-G24");
+}
+#[test]
+fn t_g25_grid_column_span_2() {
+    assert_pass_case("T-G25");
+}
+#[test]
+fn t_g26_auto_flow_wrap_second_row() {
+    assert_pass_case("T-G26");
+}
+#[test]
+fn t_g27_auto_fit_two_tracks() {
+    assert_pass_case("T-G27");
+}
+#[test]
+fn t_g28_justify_self_end() {
+    assert_pass_case("T-G28");
+}
+#[test]
+fn t_g29_named_grid_areas() {
+    assert_pass_case("T-G29");
+}
+#[test]
+fn t_g30_mixed_auto_fit() {
+    assert_pass_case("T-G30");
+}
+#[test]
+fn t_g31_named_grid_lines() {
+    assert_pass_case("T-G31");
+}
+#[test]
+fn t_g32_percent_fills_resolved_cell() {
+    assert_pass_case("T-G32");
+}
+#[test]
+fn t_g33_nth_named_grid_line() {
+    assert_pass_case("T-G33");
+}
+#[test]
+fn t_g34_auto_fill_nth_named_line_expanded() {
+    let case = load_fixture(&fixture_path("T-G34")).unwrap();
+    let cell = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "cell")
+        .expect("T-G34 cell");
+    assert!(
+        (cell.x - 80.0).abs() < 0.5 && (cell.w - 80.0).abs() < 0.5,
+        "T-G34 must expect the second 80px track so a single pattern copy (x=0) fails, got x={} w={}",
+        cell.x,
+        cell.w
+    );
+    assert_pass_case("T-G34");
+}
+#[test]
 fn t_p01_position_relative_inset() {
     assert_pass_case("T-P01");
 }
@@ -367,12 +490,92 @@ fn t_p14_logical_inset_ltr() {
     assert_pass_case("T-P14");
 }
 #[test]
+fn t_p18_sticky_in_flow_unstuck() {
+    assert_pass_case("T-P18");
+}
+#[test]
+fn t_p19_sticky_in_overflow_unstuck_at_rest() {
+    assert_pass_case("T-P19");
+}
+#[test]
+fn t_i01_inline_block_row() {
+    assert_pass_case("T-I01");
+}
+#[test]
+fn t_i02_text_align_center() {
+    assert_pass_case("T-I02");
+}
+#[test]
+fn t_i04_ifc_block_breaks_line() {
+    assert_pass_case("T-I04");
+}
+#[test]
+fn t_i03_white_space_pre() {
+    let case = load_fixture(&fixture_path("T-I03")).unwrap();
+    let node = nana_css_parity::fixture_to_layout_node(&case.tree);
+    assert_eq!(
+        node.style.font_size,
+        Some(16.0),
+        "T-I03 fixture must keep font-size:16px, got {:?}",
+        node.style.font_size
+    );
+    assert_eq!(
+        node.text.as_deref(),
+        Some("ab\ncd"),
+        "T-I03 fixture text must preserve the newline"
+    );
+    assert_pass_case("T-I03");
+}
+#[test]
+fn t_fl01_float_clear() {
+    assert_pass_case("T-FL01");
+}
+#[test]
+fn t_fl02_same_side_floats_stack() {
+    assert_pass_case("T-FL02");
+}
+#[test]
+fn t_fl03_clear_uses_packed_float_bottom() {
+    let case = load_fixture(&fixture_path("T-FL03")).unwrap();
+    let after = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "after")
+        .expect("T-FL03 after box");
+    assert!(
+        after.y >= 80.0,
+        "T-FL03 must assert y≥80 so pre-pack max-height 40 fails, got y={}",
+        after.y
+    );
+    assert_pass_case("T-FL03");
+}
+#[test]
+fn t_fl04_float_own_clear_left() {
+    let case = load_fixture(&fixture_path("T-FL04")).unwrap();
+    let b = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "b")
+        .expect("T-FL04 b");
+    assert!(
+        b.y >= 40.0 && b.x < 1.0,
+        "T-FL04 must assert b at (0,40) so packing beside a (x=60) fails, got x={} y={}",
+        b.x,
+        b.y
+    );
+    assert_pass_case("T-FL04");
+}
+#[test]
 fn t_v01_display_none() {
     assert_pass_case("T-V01");
 }
 #[test]
 fn t_v02_visibility_hidden_skips_like_display_none() {
     assert_pass_case("T-V02");
+}
+#[test]
+fn t_d01_display_contents_hoist_flex_row() {
+    assert_pass_case("T-D01");
 }
 
 #[test]
