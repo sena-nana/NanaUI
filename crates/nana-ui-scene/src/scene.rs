@@ -276,12 +276,20 @@ impl UiScene {
             }
         }
         let mut updated_nodes = 0;
+        let mut scroll_rebuild = Vec::new();
         for node in extracted {
             hierarchy_changed |= self
                 .nodes
                 .get(&node.id)
                 .is_none_or(|old| old.parent != node.parent || old.children != node.children);
+            let scroll_changed = self
+                .nodes
+                .get(&node.id)
+                .is_some_and(|old| old.scroll_offset != node.scroll_offset);
             changed.push(node.id);
+            if scroll_changed {
+                scroll_rebuild.push(node.id);
+            }
             self.nodes.insert(node.id, node);
             updated_nodes += 1;
         }
@@ -297,7 +305,14 @@ impl UiScene {
                     }
                 }
             }
-            for &id in &changed {
+            let mut rebuild = changed;
+            if !scroll_rebuild.is_empty() {
+                let extracted: HashSet<_> = rebuild.iter().copied().collect();
+                for root in scroll_rebuild {
+                    collect_unextracted_descendants(&self.nodes, root, &extracted, &mut rebuild);
+                }
+            }
+            for &id in &rebuild {
                 rebuilt_primitives += self.rebuild_node_primitives(id);
             }
             self.sort_primitives();
@@ -3288,6 +3303,23 @@ impl UiScene {
     }
 }
 
+fn collect_unextracted_descendants(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    root: StableNodeId,
+    extracted: &HashSet<StableNodeId>,
+    out: &mut Vec<StableNodeId>,
+) {
+    let Some(node) = nodes.get(&root) else {
+        return;
+    };
+    for &child in node.children.iter() {
+        if !extracted.contains(&child) {
+            out.push(child);
+        }
+        collect_unextracted_descendants(nodes, child, extracted, out);
+    }
+}
+
 fn local_opacity(node: &ExtractedNode) -> f32 {
     node.source_style
         .layout
@@ -5881,6 +5913,41 @@ mod tests {
         assert_eq!(text.clips.len(), 1);
         assert_eq!(text.clips[0].bounds.height, 50.0);
         assert_eq!(text.clips[0].transform, AffineTransform::IDENTITY);
+    }
+
+    #[test]
+    fn scroll_offset_delta_rebuilds_descendant_primitives_without_reextracting_them() {
+        let mut scroller = node(1, None, &[2]);
+        scroller.layout.height = 50.0;
+        scroller.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                overflow_y: nana_ui_core::OverflowSpec::Scroll,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.layout.y = 80.0;
+        child.text = Some(TextContent {
+            value: "Visible".into(),
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([scroller.clone(), child], []);
+        scroller.scroll_offset = nana_ui_runtime::ScrollOffset { x: 0.0, y: 60.0 };
+        let delta = scene.apply_delta([scroller], []);
+        assert_eq!(delta.updated_nodes, 1);
+        let text = scene
+            .primitive(PrimitiveId {
+                node: id(2),
+                slot: 2,
+            })
+            .unwrap();
+        assert_eq!(
+            text.transform.0[5], -60.0,
+            "extracting only the scroller must recompose descendant paint transforms"
+        );
+        assert_eq!(text.bounds.y, 80.0);
     }
 
     #[test]

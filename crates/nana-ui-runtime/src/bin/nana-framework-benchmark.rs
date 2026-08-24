@@ -718,10 +718,9 @@ fn main() {
         let scroll_work = context.take_system_work();
         // Shared list/scroll drain only. Catalog IME/dock/overlay/editor use
         // their own AppContext after this loop (see catalog_workloads).
-        // Scroll hit work is the scroller alone (in-place index patch);
-        // repaint still covers the 41 mounted nodes.
+        // Scroll hit/extract is the scroller; Scene recomposes the mounted window.
         assert_eq!(scroll_work.input_hit_test.len(), 1);
-        assert_eq!(scroll_work.render_extraction.len(), 41);
+        assert_eq!(scroll_work.render_extraction.len(), 1);
         assert!(scroll_work.layout.is_empty());
         let viewport_width = if iteration.is_multiple_of(2) {
             1_280.0

@@ -7,8 +7,12 @@
   `SceneWgpuPainter`。宿主拥有 Window、Surface、Device 与 Queue。Vue + JS
   是一等 L1/L2 消费方；不要把 WebView 当作产品 UI 路径。消费应用业务仍在
   框架外。
-- `crates/nana-ui` 负责主题、控件、Shell、Workspace 和 GPU 内容插槽；
-  `crates/nana-window` 独立负责平台窗口材质，普通控件不得访问窗口句柄。
+- `crates/nana-ui-core` 持有主题令牌、Style Model、`WorkspaceModel` 和几何。
+  `crates/nana-ui-runtime` 持有保留树、内建控件、Shell、Workspace、Dock 和
+  GPU 槽（`CustomRenderNode` / `gpu_slots`）。`crates/nana-ui` 是宿主适配器：
+  `run_runtime`、crate-root 再导出、`SceneWgpuPainter`。
+- `crates/nana-window` 负责系统材质以及标题栏拖拽 / 客户区 chrome / 缩放桥；
+  普通控件不得访问窗口句柄。
 - 消费应用拥有业务状态、配置存储和 Region 内容；NanaUI 只提供通用状态与合同。
 - 宿主拥有 Window、Surface、Device 与 Queue。`SceneWgpuPainter` 注入该 GPU
   上下文；禁止第二套 Device/Queue、正式路径 CPU 回读或伪零拷贝。GPU 内容是
@@ -19,11 +23,12 @@
 - Vue ECS 折入已落地（#6 为历史动机）：`gpu_slots` 权威是 Runtime
   `CustomRenderNode`，`event_flags` 权威是 `UiWorld` `EventListeners`，`attrs`
   仍是 DOM/CSS facade 且不复制树拓扑。host op 进 `PendingHostOps`，
-  `flush_host_frame` 才 commit。`LayoutBoxStore` 增量投影，滚动不写回 Runtime
-  `LayoutBox`。三个 facade 仍在。内建与插件控件走同一份
-  `ComponentRegistry` / `register_component`；Vue tag 与 L3 `create_component`
-  都解析 `ComponentTypeId`。`NativeComponentRegistry` 是 JS host 原生组件路径，
-  不是这条 Runtime ABI。
+  `flush_host_frame` 才 commit。`PendingHostOps` 镜像、`WidgetKind`、`ComponentSupport`
+  都不是第二套实例化 ABI。`LayoutBoxStore` 增量投影，滚动不写回 Runtime
+  `LayoutBox`。三个 facade 仍在；`nana-ui-web-api` 是 L1 兼容层，不是第四套绘制核。
+  内建与插件控件走同一份 `ComponentRegistry` / `register_component`；Vue tag 与 L3
+  `create_component` 都解析 `ComponentTypeId`。`NativeComponentRegistry` 是
+  JS host 原生组件路径，不是这条 Runtime ABI。
 - 依赖版本以 `Cargo.toml`、`Cargo.lock` 和实际依赖图为准，并保持单一 WGPU
   主版本。
 - 视觉改动以 LiliaUI 的真实源码、令牌、状态和快照为依据，不凭印象近似。

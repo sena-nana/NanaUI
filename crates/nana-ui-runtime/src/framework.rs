@@ -609,6 +609,8 @@ pub struct AppContext {
     layout_cache: crate::RetainedLayoutCache,
     /// Nodes recomputed by the last layout pass (relayout + shape scope).
     last_layout_scope: Vec<StableNodeId>,
+    /// Full (`force_full`) [`Self::layout_document`] calls on this context.
+    layout_full_invocations: usize,
     program_messages: Vec<ProgramMessage>,
 }
 
@@ -748,6 +750,7 @@ impl AppContext {
             profiling: false,
             layout_cache: crate::RetainedLayoutCache::default(),
             last_layout_scope: Vec::new(),
+            layout_full_invocations: 0,
             program_messages: Vec::new(),
         };
         context
@@ -1033,6 +1036,11 @@ impl AppContext {
         self.world.pending_layout_dirty()
     }
 
+    /// Full (`force_full`) layout passes. A viewport change must increment this once.
+    pub fn layout_full_invocations(&self) -> usize {
+        self.layout_full_invocations
+    }
+
     fn layout_document_impl(
         &mut self,
         document: DocumentId,
@@ -1040,6 +1048,9 @@ impl AppContext {
         dirty: &[StableNodeId],
         force_full: bool,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        if force_full {
+            self.layout_full_invocations += 1;
+        }
         let started = self.stage_clock();
         self.component_lifecycle
             .viewports
@@ -7878,12 +7889,9 @@ mod tests {
                 .unwrap()
         );
         let work = context.take_system_work();
-        // Scrolling repaints all 41 nodes (scroller + rows move under the
-        // viewport), but hit work is now the scroller alone: the index is
-        // patched in place from the recorded scroll delta instead of
-        // rebuilding per-subtree hit entries.
+        // Scroller-only hit/extract; Scene recomposes descendants from offset.
         assert_eq!(work.input_hit_test.len(), 1);
-        assert_eq!(work.render_extraction.len(), 41);
+        assert_eq!(work.render_extraction.len(), 1);
         assert!(work.layout.is_empty());
         let updates = context.take_scroll_hit_updates();
         assert!(

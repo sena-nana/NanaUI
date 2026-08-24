@@ -70,6 +70,9 @@ impl RuntimeDocument {
 
     /// Drain one canonical Runtime frame with host-owned text shaping and
     /// framework-owned layout. Applications do not write widget geometry.
+    ///
+    /// A viewport change forces one drain pass so layout still runs. That pass
+    /// is the only full `layout_document` for the resize.
     pub fn flush(
         &mut self,
         viewport: LayoutViewport,
@@ -77,11 +80,8 @@ impl RuntimeDocument {
     ) -> Result<RuntimeFrameUpdate, FrameworkError> {
         let document = self.document;
         let viewport_changed = self.viewport != Some(viewport);
-        if viewport_changed && self.viewport.is_some() {
-            self.context.layout_document(document, viewport)?;
-        }
         let mut force_layout = viewport_changed;
-        let update = self.flush_with(|context, work| {
+        let update = self.flush_loop(viewport_changed, |context, work| {
             context.world_mut().reconcile_focus(&work.focus_ime);
             context.shape_text(&work.text, shaper)?;
             if force_layout || !work.layout.is_empty() {
@@ -122,6 +122,14 @@ impl RuntimeDocument {
     /// layout writeback through the public `AppContext` mutation boundary.
     pub fn flush_with(
         &mut self,
+        run_text_and_layout: impl FnMut(&mut AppContext, &SystemWork) -> Result<(), FrameworkError>,
+    ) -> Result<RuntimeFrameUpdate, FrameworkError> {
+        self.flush_loop(false, run_text_and_layout)
+    }
+
+    fn flush_loop(
+        &mut self,
+        mut force_pass: bool,
         mut run_text_and_layout: impl FnMut(&mut AppContext, &SystemWork) -> Result<(), FrameworkError>,
     ) -> Result<RuntimeFrameUpdate, FrameworkError> {
         let mut passes = 0;
@@ -137,9 +145,10 @@ impl RuntimeDocument {
         self.context.begin_frame_profile();
         loop {
             let work = self.context.take_system_work();
-            if work.is_empty() {
+            if work.is_empty() && !force_pass {
                 break;
             }
+            force_pass = false;
             if passes == MAX_FRAME_PASSES {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
@@ -336,6 +345,17 @@ mod tests {
                 .unwrap()
                 .status,
             nana_ui_runtime::StageStatus::Unsupported
+        );
+
+        let layouts_before_resize = runtime.context().layout_full_invocations();
+        let resized = runtime
+            .flush(LayoutViewport::new(640.0, 180.0), &mut TestShaper)
+            .unwrap();
+        assert!(!resized.is_idle());
+        assert_eq!(
+            runtime.context().layout_full_invocations() - layouts_before_resize,
+            1,
+            "viewport change must run one full layout, not a pre-layout plus drain layout"
         );
     }
 

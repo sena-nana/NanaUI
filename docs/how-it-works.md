@@ -23,7 +23,7 @@ NanaUI
   把树抽成 UiScene，画进你的 Surface
 
 nana-window
-  系统材质（Vibrancy / Mica / Acrylic）和标题栏拖拽桥
+  系统材质（Vibrancy / Mica / Acrylic）和标题栏拖拽 / 客户区 chrome
   普通控件拿不到 HWND / NSWindow
 ```
 

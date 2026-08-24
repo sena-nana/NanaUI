@@ -2309,16 +2309,11 @@ impl UiWorld {
                 let previous = *self.component::<ScrollOffset>(*id);
                 if previous != offset {
                     *self.component_mut::<ScrollOffset>(*id) = offset;
-                    // Scrolling never changes hit-entry membership, order, or
-                    // clips — it pre-composes one translation onto every
-                    // descendant transform. Record the delta so the frame
-                    // driver can patch the index in place instead of
-                    // rebuilding the whole document; the scroller itself is
-                    // marked INPUT to signal the pending patch.
+                    // Hit-index patch + Scene extract of this scroller only.
+                    // Descendants keep LayoutBox; paint uses scroll_offset.
                     self.scroll_hit_updates
                         .push((*id, [previous.x - offset.x, previous.y - offset.y]));
-                    self.mark(*id, DirtyMask::INPUT);
-                    self.mark_subtree(*id, DirtyMask::RENDER);
+                    self.mark(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
             }
             UiMutation::SetScrollMetrics { id, metrics } => {
@@ -2332,14 +2327,9 @@ impl UiWorld {
                 let clamped = self.clamp_scroll_offset(*id, current);
                 if current != clamped {
                     *self.component_mut::<ScrollOffset>(*id) = clamped;
-                    // Same in-place hit-index patch contract as
-                    // `SetScrollOffset`: the clamp shifts descendants by a
-                    // single translation, so record the delta and mark the
-                    // scroller instead of invalidating the whole subtree.
                     self.scroll_hit_updates
                         .push((*id, [current.x - clamped.x, current.y - clamped.y]));
-                    self.mark(*id, DirtyMask::INPUT);
-                    self.mark_subtree(*id, DirtyMask::RENDER);
+                    self.mark(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
             }
             UiMutation::SetInteraction { id, interaction } => {
@@ -10396,10 +10386,9 @@ mod tests {
         assert_eq!(world.layout_box(node(3)).unwrap().y, 80.0);
         assert_eq!(world.scroll_offset(node(2)).unwrap().y, 60.0);
         let work = world.take_system_work();
-        // Scrolling marks only the scroller for hit work; the index is patched
-        // in place via the recorded delta instead of a subtree invalidation.
+        // Scroller-only hit/extract; Scene recomposes descendants from offset.
         assert_eq!(work.input_hit_test, vec![node(2)]);
-        assert_eq!(work.render_extraction, vec![node(2), node(3)]);
+        assert_eq!(work.render_extraction, vec![node(2)]);
         assert!(work.layout.is_empty());
         let scroll_updates = world.take_scroll_hit_updates();
         assert!(world.hit_test_work_is_scroll_only(&work.input_hit_test, &scroll_updates));
