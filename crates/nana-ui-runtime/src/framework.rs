@@ -1063,10 +1063,69 @@ impl AppContext {
                 }
             }
             self.last_layout_scope = scope;
-            self.commit_mutations(mutations)
+            let report = self.commit_mutations(mutations)?;
+            self.publish_document_scroll_metrics(document)?;
+            Ok(report)
         })();
         self.record_stage(FrameStage::Layout, started);
         result
+    }
+
+    fn publish_document_scroll_metrics(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<(), FrameworkError> {
+        let updates = self
+            .world
+            .document_order(document)
+            .into_iter()
+            .filter(|id| self.views.get(id).is_some_and(|view| view.is::<ScrollView>()))
+            .filter_map(|id| {
+                let metrics = self.scroll_metrics_from_layout(id)?;
+                (self.world.scroll_metrics(id) != Some(metrics))
+                    .then_some((Entity::<ScrollView>::from_stable_id(id), metrics))
+            })
+            .collect::<Vec<_>>();
+        for (entity, metrics) in updates {
+            self.set_scroll_metrics(entity, metrics)?;
+        }
+        Ok(())
+    }
+
+    fn scroll_metrics_from_layout(&self, id: StableNodeId) -> Option<ScrollMetrics> {
+        let viewport = self.world.layout_box(id)?;
+        if viewport.width <= 0.0 || viewport.height <= 0.0 {
+            return None;
+        }
+        let mut content_width = viewport.width;
+        let mut content_height = viewport.height;
+        let mut stack = self
+            .world
+            .node(id)
+            .map(|node| node.children)
+            .unwrap_or_default();
+        while let Some(child) = stack.pop() {
+            if self
+                .world
+                .node_style(child)
+                .is_some_and(|style| style.layout.omits_box())
+            {
+                continue;
+            }
+            if let Some(bounds) = self.world.layout_box(child) {
+                content_width = content_width.max(bounds.x + bounds.width - viewport.x);
+                content_height = content_height.max(bounds.y + bounds.height - viewport.y);
+            }
+            if let Some(node) = self.world.node(child) {
+                stack.extend(node.children);
+            }
+        }
+        Some(ScrollMetrics {
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
+            content_width: content_width.max(0.0),
+            content_height: content_height.max(0.0),
+        })
     }
 
     /// Re-queue LAYOUT after a host drained a frame without measuring.
@@ -7733,6 +7792,60 @@ mod tests {
             ),
             Err(FrameworkError::InvalidComponentValue(scroll.stable_id()))
         );
+    }
+
+    #[test]
+    fn layout_publishes_scroll_metrics_and_clamps_wheel_offset() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut viewport = NodeStyle::default();
+        {
+            let layout = std::sync::Arc::make_mut(&mut viewport.layout);
+            layout.width = Some(LengthSpec::Px(200.0));
+            layout.height = Some(LengthSpec::Px(120.0));
+        }
+        let scroll = context
+            .create_component(
+                document,
+                ScrollView::new(ScrollAxes::Vertical).style(viewport),
+            )
+            .unwrap();
+        for index in 0..5 {
+            let mut row = NodeStyle::default();
+            {
+                let layout = std::sync::Arc::make_mut(&mut row.layout);
+                layout.width = Some(LengthSpec::Fill);
+                layout.height = Some(LengthSpec::Px(40.0));
+            }
+            let row = context
+                .create_component(document, Text::new(format!("Row {index}")).style(row))
+                .unwrap();
+            context.append_child(scroll, row).unwrap();
+        }
+        context
+            .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+            .unwrap();
+        let metrics = context
+            .world()
+            .scroll_metrics(scroll.stable_id())
+            .expect("layout publishes scroll metrics");
+        assert!(
+            metrics.content_height > metrics.viewport_height,
+            "content {metrics:?} should overflow the viewport"
+        );
+        let max_y = (metrics.content_height - metrics.viewport_height).max(0.0);
+        assert!(
+            context
+                .scroll_by(scroll, ScrollOffset { x: 0.0, y: max_y + 400.0 })
+                .unwrap()
+        );
+        let offset = context.world().scroll_offset(scroll.stable_id()).unwrap();
+        assert!(
+            (offset.y - max_y).abs() < 0.01,
+            "wheel offset {} should clamp to {max_y}",
+            offset.y
+        );
+        assert_eq!(offset.x, 0.0);
     }
 
     #[test]
