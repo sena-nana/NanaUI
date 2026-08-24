@@ -8,11 +8,12 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nana_ui_core::AppearanceSettings;
+use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE};
 use nana_ui_platform::{
     ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType, TextInputPurpose,
     TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon, WindowId,
-    clear_registered_application_icon, register_application_icon,
+    WindowResizeEdge, clear_registered_application_icon, register_application_icon,
+    window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
@@ -20,8 +21,9 @@ use nana_ui_runtime::{
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
 use nana_window::{
-    Appearance, FallbackColor, MaterialEffect, MaterialOutcome, apply_hosted_system_material,
-    clear_system_material, prepare_client_chrome, suppress_system_caption,
+    Appearance, FallbackColor, FrameResizeEdge, MaterialEffect, MaterialOutcome,
+    apply_hosted_system_material, clear_system_material, prepare_client_chrome,
+    resize_custom_frame, suppress_system_caption,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{
@@ -134,6 +136,8 @@ struct SceneReady<Program: RuntimeProgram> {
     ime_requests: HashMap<WindowId, TextInputRequest>,
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
+    #[cfg(target_os = "macos")]
+    live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
 }
 
 struct WindowChromeSession {
@@ -328,6 +332,8 @@ fn initialize<Program: RuntimeProgram>(
         ime_requests: HashMap::new(),
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
+        #[cfg(target_os = "macos")]
+        live_frame_resize: None,
     };
     ready.prepare_window_chrome(WindowId::PRIMARY, ready.geometry.maximized);
     let update = ready.program.window_event(
@@ -427,6 +433,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.sync_window_cursor(id);
         }
         if let Some(input) = self.normalized_input(id, &event) {
+            if self.consume_frame_resize(id, &input) {
+                return;
+            }
             let disposition = self.dispatch_input(event_loop, id, input);
             if disposition.prevent_default || event_loop.exiting() {
                 return;
@@ -469,6 +478,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             WinitWindowEvent::Focused(focused) => {
                 if !*focused {
                     self.input_mut(id).clear_pointers();
+                    #[cfg(target_os = "macos")]
+                    if self
+                        .live_frame_resize
+                        .as_ref()
+                        .is_some_and(|(session, _)| *session == id)
+                    {
+                        self.live_frame_resize = None;
+                    }
                 }
                 self.forward_window_event(event_loop, id, &event);
                 self.apply_ime_request(id);
@@ -1047,6 +1064,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             return;
         }
         self.chrome.remove(&id);
+        #[cfg(target_os = "macos")]
+        if self
+            .live_frame_resize
+            .as_ref()
+            .is_some_and(|(session, _)| *session == id)
+        {
+            self.live_frame_resize = None;
+        }
         if let Some(host) = self.auxiliary.remove(&id) {
             #[cfg(target_os = "windows")]
             if let Some(parent) = host
@@ -1276,30 +1301,105 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn sync_window_cursor(&self, id: WindowId) {
-        use winit::window::CursorIcon;
         let cursor = self.input_of(id).cursor;
-        let icon = self
-            .program
-            .document(id)
-            .and_then(|document| {
-                let context = document.context();
-                let document_id = document.document();
-                context
-                    .split_handle_near(document_id, cursor.0, cursor.1)
-                    .or_else(|| context.dock_handle_near(document_id, cursor.0, cursor.1))
-                    .or_else(|| context.workspace_handle_near(document_id, cursor.0, cursor.1))
-                    .and_then(|handle| context.world().layout_box(handle))
-            })
-            .map(|bounds| {
-                if bounds.width <= bounds.height {
-                    CursorIcon::EwResize
-                } else {
-                    CursorIcon::NsResize
-                }
-            })
-            .unwrap_or(CursorIcon::Default);
+        let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
+        let handle = self.program.document(id).and_then(|document| {
+            let context = document.context();
+            let document_id = document.document();
+            context
+                .split_handle_near(document_id, cursor.0, cursor.1)
+                .or_else(|| context.dock_handle_near(document_id, cursor.0, cursor.1))
+                .or_else(|| context.workspace_handle_near(document_id, cursor.0, cursor.1))
+                .and_then(|handle| context.world().layout_box(handle))
+                .map(|bounds| (bounds.width, bounds.height))
+        });
         if let Some(window) = self.window(id) {
-            window.set_cursor(icon);
+            window.set_cursor(scene_cursor_icon(frame_edge, handle));
+        }
+    }
+
+    fn consume_frame_resize(&mut self, id: WindowId, input: &InputEvent) -> bool {
+        #[cfg(target_os = "macos")]
+        if let Some((session, live)) = self.live_frame_resize
+            && session == id
+        {
+            match input {
+                InputEvent::Pointer {
+                    phase: PointerPhase::Move,
+                    ..
+                } => {
+                    if let Some(window) = self.window(id) {
+                        let _ = live.update(window.as_ref());
+                    }
+                    self.sync_window_cursor(id);
+                    return true;
+                }
+                InputEvent::Pointer {
+                    phase: PointerPhase::Up | PointerPhase::Cancel,
+                    ..
+                } => {
+                    self.live_frame_resize = None;
+                    self.sync_window_cursor(id);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        let InputEvent::Pointer {
+            phase: PointerPhase::Down,
+            button: 0,
+            is_primary: true,
+            x,
+            y,
+            ..
+        } = input
+        else {
+            return false;
+        };
+        let Some(edge) = self.frame_resize_edge_at(id, *x, *y) else {
+            return false;
+        };
+        self.start_frame_resize(id, edge);
+        true
+    }
+
+    fn start_frame_resize(&mut self, id: WindowId, edge: WindowResizeEdge) {
+        let Some(window) = self.window(id).cloned() else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(live) =
+                nana_window::LiveFrameResize::begin(window.as_ref(), frame_resize_edge(edge))
+            {
+                self.live_frame_resize = Some((id, live));
+                return;
+            }
+        }
+        resize_scene_window(window.as_ref(), edge);
+    }
+
+    fn frame_resize_edge_at(&self, id: WindowId, x: f32, y: f32) -> Option<WindowResizeEdge> {
+        let fullscreen = self
+            .window(id)
+            .is_some_and(|window| window.fullscreen().is_some());
+        frame_resize_edge_for(
+            self.settings_of(id),
+            &self.geometry_of(id),
+            fullscreen,
+            x,
+            y,
+        )
+    }
+
+    fn settings_of(&self, id: WindowId) -> &RuntimeWindowSettings {
+        if id == WindowId::PRIMARY {
+            &self.settings
+        } else {
+            self.auxiliary
+                .get(&id)
+                .map(|host| &host.settings)
+                .unwrap_or(&self.settings)
         }
     }
 
@@ -1896,6 +1996,70 @@ fn drag_scene_window(window: &winit::window::Window) {
         return;
     }
     let _ = window.drag_window();
+}
+
+fn resize_scene_window(window: &winit::window::Window, edge: WindowResizeEdge) {
+    if resize_custom_frame(window, frame_resize_edge(edge)) {
+        return;
+    }
+    let _ = window.drag_resize_window(match edge {
+        WindowResizeEdge::North => winit::window::ResizeDirection::North,
+        WindowResizeEdge::South => winit::window::ResizeDirection::South,
+        WindowResizeEdge::East => winit::window::ResizeDirection::East,
+        WindowResizeEdge::West => winit::window::ResizeDirection::West,
+        WindowResizeEdge::NorthEast => winit::window::ResizeDirection::NorthEast,
+        WindowResizeEdge::NorthWest => winit::window::ResizeDirection::NorthWest,
+        WindowResizeEdge::SouthEast => winit::window::ResizeDirection::SouthEast,
+        WindowResizeEdge::SouthWest => winit::window::ResizeDirection::SouthWest,
+    });
+}
+
+fn frame_resize_edge(edge: WindowResizeEdge) -> FrameResizeEdge {
+    match edge {
+        WindowResizeEdge::North => FrameResizeEdge::North,
+        WindowResizeEdge::South => FrameResizeEdge::South,
+        WindowResizeEdge::East => FrameResizeEdge::East,
+        WindowResizeEdge::West => FrameResizeEdge::West,
+        WindowResizeEdge::NorthEast => FrameResizeEdge::NorthEast,
+        WindowResizeEdge::NorthWest => FrameResizeEdge::NorthWest,
+        WindowResizeEdge::SouthEast => FrameResizeEdge::SouthEast,
+        WindowResizeEdge::SouthWest => FrameResizeEdge::SouthWest,
+    }
+}
+
+fn frame_resize_edge_for(
+    settings: &RuntimeWindowSettings,
+    geometry: &WindowGeometry,
+    fullscreen: bool,
+    x: f32,
+    y: f32,
+) -> Option<WindowResizeEdge> {
+    if settings.system_caption || !settings.resizable || geometry.maximized || fullscreen {
+        return None;
+    }
+    window_resize_edge(geometry.logical_size, x, y, RESIZE_HANDLE_SIZE)
+}
+
+fn scene_cursor_icon(
+    frame_edge: Option<WindowResizeEdge>,
+    handle: Option<(f32, f32)>,
+) -> winit::window::CursorIcon {
+    use winit::window::CursorIcon;
+    match frame_edge {
+        Some(WindowResizeEdge::East | WindowResizeEdge::West) => CursorIcon::EwResize,
+        Some(WindowResizeEdge::North | WindowResizeEdge::South) => CursorIcon::NsResize,
+        Some(WindowResizeEdge::NorthEast | WindowResizeEdge::SouthWest) => CursorIcon::NeswResize,
+        Some(WindowResizeEdge::NorthWest | WindowResizeEdge::SouthEast) => CursorIcon::NwseResize,
+        None => handle
+            .map(|(width, height)| {
+                if width <= height {
+                    CursorIcon::EwResize
+                } else {
+                    CursorIcon::NsResize
+                }
+            })
+            .unwrap_or(CursorIcon::Default),
+    }
 }
 
 fn scene_paint_viewport(
@@ -2581,7 +2745,7 @@ mod tests {
     };
     use nana_ui_platform::{
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
-        WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
+        WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowResizeEdge, WindowSettings,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
@@ -3307,6 +3471,46 @@ mod tests {
         assert_eq!(
             route_window_command(&WindowCommand::Drag(WindowId(3)), &known),
             RoutedWindowCommand::Ignore
+        );
+    }
+
+    #[test]
+    fn client_frame_resize_hits_edges_unless_caption_or_maximized() {
+        use super::{frame_resize_edge_for, scene_cursor_icon};
+        use winit::window::CursorIcon;
+
+        let mut settings = WindowSettings::new("Scene");
+        let mut geometry = geometry();
+        geometry.logical_size = (800.0, 600.0);
+        assert_eq!(
+            frame_resize_edge_for(&settings, &geometry, false, 2.0, 300.0),
+            Some(WindowResizeEdge::West)
+        );
+        assert_eq!(
+            frame_resize_edge_for(&settings, &geometry, false, 400.0, 300.0),
+            None
+        );
+        settings.system_caption = true;
+        assert!(frame_resize_edge_for(&settings, &geometry, false, 2.0, 300.0).is_none());
+        settings.system_caption = false;
+        settings.resizable = false;
+        assert!(frame_resize_edge_for(&settings, &geometry, false, 2.0, 300.0).is_none());
+        settings.resizable = true;
+        geometry.maximized = true;
+        assert!(frame_resize_edge_for(&settings, &geometry, false, 2.0, 300.0).is_none());
+        geometry.maximized = false;
+        assert!(frame_resize_edge_for(&settings, &geometry, true, 2.0, 300.0).is_none());
+        assert_eq!(
+            scene_cursor_icon(Some(WindowResizeEdge::East), Some((8.0, 200.0))),
+            CursorIcon::EwResize
+        );
+        assert_eq!(
+            scene_cursor_icon(None, Some((8.0, 200.0))),
+            CursorIcon::EwResize
+        );
+        assert_eq!(
+            scene_cursor_icon(None, Some((200.0, 8.0))),
+            CursorIcon::NsResize
         );
     }
 

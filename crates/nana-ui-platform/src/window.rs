@@ -304,6 +304,53 @@ pub enum WindowCommand {
     Drag(WindowId),
 }
 
+/// Client-area edge used to start a window resize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowResizeEdge {
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
+/// Hit-test the outer frame of a client-area window. Corners win over edges.
+pub fn window_resize_edge(
+    logical_size: (f32, f32),
+    x: f32,
+    y: f32,
+    thickness: f32,
+) -> Option<WindowResizeEdge> {
+    if !thickness.is_finite() || thickness <= 0.0 {
+        return None;
+    }
+    let (width, height) = logical_size;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let left = x < thickness;
+    let right = x >= width - thickness;
+    let top = y < thickness;
+    let bottom = y >= height - thickness;
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(WindowResizeEdge::NorthWest),
+        (_, true, true, _) => Some(WindowResizeEdge::NorthEast),
+        (true, _, _, true) => Some(WindowResizeEdge::SouthWest),
+        (_, true, _, true) => Some(WindowResizeEdge::SouthEast),
+        (true, _, _, _) => Some(WindowResizeEdge::West),
+        (_, true, _, _) => Some(WindowResizeEdge::East),
+        (_, _, true, _) => Some(WindowResizeEdge::North),
+        (_, _, _, true) => Some(WindowResizeEdge::South),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +364,28 @@ mod tests {
             WindowCommand::Drag(WindowId::PRIMARY),
             WindowCommand::Drag(_)
         ));
+    }
+
+    #[test]
+    fn window_resize_edge_prefers_corners_and_ignores_the_interior() {
+        let size = (200.0, 100.0);
+        let hit = [
+            (2.0, 50.0, Some(WindowResizeEdge::West)),
+            (198.0, 50.0, Some(WindowResizeEdge::East)),
+            (100.0, 2.0, Some(WindowResizeEdge::North)),
+            (100.0, 98.0, Some(WindowResizeEdge::South)),
+            (2.0, 2.0, Some(WindowResizeEdge::NorthWest)),
+            (198.0, 2.0, Some(WindowResizeEdge::NorthEast)),
+            (2.0, 98.0, Some(WindowResizeEdge::SouthWest)),
+            (198.0, 98.0, Some(WindowResizeEdge::SouthEast)),
+            (100.0, 50.0, None),
+            (8.0, 50.0, None),
+        ];
+        for (x, y, expected) in hit {
+            assert_eq!(window_resize_edge(size, x, y, 8.0), expected);
+        }
+        assert_eq!(window_resize_edge(size, 100.0, 50.0, 0.0), None);
+        assert_eq!(window_resize_edge((0.0, 100.0), 0.0, 0.0, 8.0), None);
     }
 
     #[test]
