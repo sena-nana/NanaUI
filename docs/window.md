@@ -19,6 +19,28 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 
 `WindowChromeState` 绑在明确的 `WindowId` 上。单窗口可用默认入口（只认收到的第一扇窗）；多窗口在 `WindowCommand::Open` 拿到 ID 后用 `for_window` 各建一份。关窗后不会自动接管别的窗口。
 
+### Windows 客户端绘制标题栏契约
+
+Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_caption` 与 `transparent` 决定，实现见 `windows_scene_chrome`：
+
+| 设置 | 系统边框 | 阴影 / 圆角 | `WS_EX_NOREDIRECTIONBITMAP` |
+| --- | --- | --- | --- |
+| `system_caption: true` | 开（系统标题栏与缩放） | 系统默认 | 仅透明窗口打开 |
+| `system_caption: false` 且不透明 | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | `undecorated_shadow` + 圆角 | 关 |
+| `system_caption: false` 且 `transparent: true` | 关 | 无自绘阴影（避免 DWM 合成冲突） | 开 |
+
+命中顺序（逻辑像素，已含当前 `scale_factor`）：
+
+1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先，不启动拖拽。
+2. 标题栏空白处按下后移动超过 4px 才发出 `WindowChromeAction::Drag`；Scene host 调用 `nana_window::drag_custom_title_bar`，失败再 `winit::drag_window`。
+3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`；系统 caption 窗口不叠第二套缩放命中。
+
+DPI 与多显示器：指针、拖拽与缩放都用逻辑坐标；物理像素只用于 Surface。窗口位置由宿主记录，创建前按当前显示器工作区 clamp（原屏断开则主屏居中）。模态辅助窗在 Windows 上 `with_owner_window` 绑定父 HWND。
+
+IME：焦点输入把 `TextInputRequest::cursor_area` 交给 `set_ime_cursor_area`，候选框相对 caret，不相对系统非客户区。AccessKit 增量更新与视觉几何同一套 layout box；composition 期间不得出现悬空 `parent_and_index`。
+
+透明 Alpha（`settings.transparent`）强制 `MaterialEffect::Transparent`，不会改试 Mica / Acrylic。失败只能回不透明实色，并带 `MaterialFallback`。真机入口：`vue-hosted-acceptance --chrome-probe`、`--input-probe`、`--hybrid --windows`，以及 `nana-ui` 的 `transparent-window` 示例。
+
 ## 图标
 
 任务栏、exe、Dock 上的图标是应用身份，不是界面里的 `Icon` 字形。

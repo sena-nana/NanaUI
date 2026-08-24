@@ -170,9 +170,18 @@ impl RuntimeProgram for TransparentWindow {
     fn window_event(
         &mut self,
         event: WindowEvent,
-        _context: &RuntimeProgramContext<Self::Message>,
+        context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         match event {
+            WindowEvent::Ready { id, .. } => {
+                eprintln!(
+                    "nana window ready id={} material={:?} alpha={:?}",
+                    id.0,
+                    context.material(),
+                    context.surface_alpha_mode()
+                );
+                RuntimeProgramUpdate::default()
+            }
             WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
             _ => RuntimeProgramUpdate::default(),
         }

@@ -18,7 +18,7 @@ use nana_ui::{
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
     run_runtime,
 };
-use nana_ui_platform::{InputEvent, WindowEvent, WindowId};
+use nana_ui_platform::{ImeEvent, InputEvent, PointerType, WindowEvent, WindowId};
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 use nana_ui_vue::{
@@ -232,6 +232,26 @@ impl RuntimeProgram for AcceptanceProgram {
         event: &InputEvent,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        if let InputEvent::Pointer {
+            pointer_type: PointerType::Pen,
+            phase,
+            pointer_id,
+            x,
+            y,
+            pressure,
+            tilt_x,
+            tilt_y,
+            twist,
+            button,
+            buttons,
+            ..
+        } = event
+        {
+            eprintln!(
+                "nana pen window={} phase={phase:?} id={pointer_id} xy=({x:.1},{y:.1}) pressure={pressure:.3} tilt=({tilt_x},{tilt_y}) twist={twist} button={button} buttons={buttons}",
+                id.0
+            );
+        }
         self.inner.input_event(id, event, context)
     }
 
@@ -240,14 +260,28 @@ impl RuntimeProgram for AcceptanceProgram {
         event: WindowEvent,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        if let WindowEvent::Ready { id, .. } = &event {
-            if *id != WindowId::PRIMARY {
+        match &event {
+            WindowEvent::Ready { id, .. } => {
                 eprintln!(
-                    "nana surface alpha window={} {:?}",
+                    "nana window ready id={} material={:?} alpha={:?}",
                     id.0,
+                    context.material(),
                     context.surface_alpha_mode()
                 );
             }
+            WindowEvent::Ime { id, event: ime } => match ime {
+                ImeEvent::Preedit { text, selection } => {
+                    eprintln!(
+                        "nana ime window={} preedit={text:?} selection={selection:?}",
+                        id.0
+                    );
+                }
+                ImeEvent::Commit(text) => {
+                    eprintln!("nana ime window={} commit={text:?}", id.0);
+                }
+                other => eprintln!("nana ime window={} {other:?}", id.0),
+            },
+            _ => {}
         }
         self.inner.window_event(event, context)
     }
